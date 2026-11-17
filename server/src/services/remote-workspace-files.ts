@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { and, eq } from "drizzle-orm";
 import { environments, environmentLeases, executionWorkspaces, type Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease, WorkspaceFileListMode, WorkspaceFileSource } from "@paperclipai/shared";
@@ -13,6 +14,7 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { HttpError, notFound, unprocessable } from "../errors.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import type { OpenSavedWorkspaceArchive, SavedWorkspaceArchive } from "./saved-workspace-archive.js";
 
 const execFileAsync = promisify(execFile);
 const READ_TIMEOUT_MS = 30_000;
@@ -71,6 +73,8 @@ export interface RemoteWorkspaceFileOptions {
     snapshotId: string;
     signal?: AbortSignal;
   }): Promise<SavedWorkspaceFiles>;
+  openSavedWorkspaceArchive?: OpenSavedWorkspaceArchive;
+  savedFileDownloadLimits?: Partial<SavedFileDownloadLimits>;
 }
 
 export interface RemoteWorkspaceFiles {
@@ -258,6 +262,168 @@ async function verifyDownload(file: string, expected: RemoteWorkspaceFileEntry):
   } finally { await handle.close(); }
 }
 
+class ArchiveReadFailure extends Error {
+  constructor(readonly code: string) { super(code); }
+}
+
+const ARCHIVE_DENIED_NAMES = new Set([".git", ".paperclip", ".paperclip-runtime", "node_modules", ".pnpm-store", ".yarn", ".cache",
+  ".turbo", ".next", ".vite", ".vercel", "dist", "build", "coverage", "runtime-services", ".runtime"]);
+const ARCHIVE_LIST_SKIPPED = new Set(["ENOENT", "ENOTDIR", "denied_path", "symlink_denied", "not_regular_file"]);
+const archiveFail = (code: string): never => { throw new ArchiveReadFailure(code); };
+
+function archiveDeniedPath(relative: string) {
+  const parts = relative.toLowerCase().split("/");
+  const file = parts.at(-1) || "";
+  return parts.some(part => ARCHIVE_DENIED_NAMES.has(part) || part === ".aws" || part === ".ssh")
+    || file === ".env" || file.startsWith(".env.") || /\.(pem|key|p12|pfx)$/.test(file)
+    || ["id_rsa", "id_ed25519", ".npmrc", ".pypirc", ".netrc", "kubeconfig"].includes(file)
+    || (parts.at(-2) === ".docker" && file === "config.json") || (parts.at(-2) === ".kube" && file === "config");
+}
+
+function archiveNormalize(relative: unknown, allowRoot = false): string {
+  if (allowRoot && !relative) return "";
+  if (typeof relative !== "string" || !relative || relative.length > 4096 || /[\\\u0000-\u001f\u007f]/u.test(relative)
+    || path.isAbsolute(relative) || /^[a-z][a-z0-9+.-]*:/iu.test(relative) || relative.startsWith("~")
+    || relative.split("/").some(part => part === ".." || part === "." || part === "")) archiveFail("invalid_path");
+  if (archiveDeniedPath(relative as string)) archiveFail("denied_path");
+  return relative as string;
+}
+
+function archiveConfined(archive: SavedWorkspaceArchive, relative: string) {
+  let current = "";
+  for (const part of relative.split("/")) {
+    if (current && archive.entry(current)?.type !== "directory") archiveFail("ENOTDIR");
+    current = current ? `${current}/${part}` : part;
+    const entry = archive.entry(current);
+    if (!entry) archiveFail("ENOENT");
+    if (entry!.type === "symlink") archiveFail("symlink_denied");
+  }
+  return archive.entry(relative)!;
+}
+
+function archiveEntryInfo(archive: SavedWorkspaceArchive, relativePath: unknown) {
+  const relative = archiveNormalize(relativePath);
+  const entry = archiveConfined(archive, relative);
+  if (entry.type !== "directory" && entry.type !== "file") archiveFail("not_regular_file");
+  return { entry, result: { kind: entry.type === "directory" ? "directory" : "file", relativePath: relative,
+    byteSize: entry.type === "file" ? entry.size : null, modifiedAt: archive.savedAt } as RemoteWorkspaceFileEntry };
+}
+
+async function archiveEntry(archive: SavedWorkspaceArchive, relativePath: unknown, action: "stat" | "list", withHash: boolean,
+  signal?: AbortSignal): Promise<RemoteWorkspaceFileEntry> {
+  const { entry, result } = archiveEntryInfo(archive, relativePath);
+  if (entry.type === "file" && action === "stat") {
+    const chunks: Buffer[] = [];
+    for await (const chunk of await archive.read(entry, 0, Math.min(4096, entry.size), signal)) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const sample = Buffer.concat(chunks);
+    let controls = 0, nul = false;
+    for (const byte of sample) { if (!byte) nul = true; if (byte < 32 && ![9, 10, 13].includes(byte)) controls++; }
+    result.text = !nul && (!sample.length || controls / sample.length < 0.02);
+    if (withHash) result.sha256 = entry.sha256!;
+  }
+  return result;
+}
+
+function archiveList(archive: SavedWorkspaceArchive, requested: RemoteWorkspaceFileListInput) {
+  const start = archiveNormalize(requested.relativePath || "", true);
+  if (start && archiveConfined(archive, start).type !== "directory") archiveFail("not_directory");
+  const maxScanned = Math.min(5000, Math.max(1, requested.maxScannedEntries));
+  const maxDepth = Math.min(20, Math.max(0, requested.maxDepth));
+  const limit = Math.min(100, Math.max(1, requested.limit));
+  const offset = Math.min(10000, Math.max(0, requested.offset));
+  const query = (requested.query || "").toLowerCase();
+  let scannedCount = 0, truncated = false;
+  const entries: RemoteWorkspaceFileEntry[] = [];
+  const add = (relative: string) => {
+    try {
+      const { result } = archiveEntryInfo(archive, relative);
+      if (!query || relative.toLowerCase().includes(query)) entries.push(result);
+    } catch (error) {
+      if (!(error instanceof ArchiveReadFailure) || !ARCHIVE_LIST_SKIPPED.has(error.code)) throw error;
+    }
+  };
+  const immediate = requested.mode === "all" && !query;
+  const queue = [{ relative: start, depth: 0 }];
+  scan: while (queue.length) {
+    const current = queue.shift()!;
+    const sorted = archive.children(current.relative);
+    const passes = immediate ? [(entry: { type: string }) => entry.type === "directory", (entry: { type: string }) => entry.type !== "directory"]
+      : [() => true];
+    for (const include of passes) for (const child of sorted) {
+      if (!include(child)) continue;
+      if (++scannedCount > maxScanned) { truncated = true; break scan; }
+      const relative = current.relative ? `${current.relative}/${child.name}` : child.name;
+      if (archiveDeniedPath(relative) || child.type === "symlink" || /[\\\u0000-\u001f\u007f]/u.test(relative)) continue;
+      if (child.type === "directory") {
+        if (immediate) add(relative);
+        else if (current.depth < maxDepth) queue.push({ relative, depth: current.depth + 1 });
+        else truncated = true;
+      } else if (child.type === "file") add(relative);
+      if (immediate && entries.length > offset + limit) { truncated = true; break scan; }
+    }
+  }
+  if (requested.mode === "recent") entries.sort((a, b) => (b.modifiedAt || "").localeCompare(a.modifiedAt || "")
+    || a.relativePath.localeCompare(b.relativePath));
+  return { entries: entries.slice(offset, offset + limit), scannedCount: Math.min(scannedCount, maxScanned),
+    truncated: truncated || entries.length > offset + limit };
+}
+
+export type SavedFileDownloadLimits = { maxReservedBytes: number; freeSpaceMarginBytes: number; availableBytes: () => Promise<bigint> };
+const SAVED_FILE_DOWNLOAD_LIMITS: SavedFileDownloadLimits = {
+  maxReservedBytes: 4 * 1024 * 1024 * 1024, freeSpaceMarginBytes: 256 * 1024 * 1024,
+  availableBytes: async () => { const disk = await fs.statfs(os.tmpdir(), { bigint: true }); return disk.bavail * disk.bsize; },
+};
+let savedFileDownloadReservedBytes = 0;
+
+async function archiveRead(archive: SavedWorkspaceArchive, relativePath: string, expected: RemoteWorkspaceFileEntry, maxBytes: number,
+  signal?: AbortSignal): Promise<Buffer> {
+  const entry = archive.entry(relativePath);
+  if (!entry || entry.type !== "file" || entry.size !== expected.byteSize) throw fileFailure("file_changed");
+  if (entry.size > maxBytes) throw fileFailure("too_large");
+  const chunks: Buffer[] = [], hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of await archive.read(entry, 0, entry.size, signal)) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > entry.size) throw fileFailure("file_changed");
+    hash.update(bytes); chunks.push(bytes);
+  }
+  if (size !== entry.size || hash.digest("hex") !== entry.sha256) throw fileFailure("file_changed");
+  return Buffer.concat(chunks);
+}
+
+async function archiveDownload(archive: SavedWorkspaceArchive, relativePath: string, expected: RemoteWorkspaceFileEntry,
+  checkCurrent: () => Promise<void>, limits: SavedFileDownloadLimits, signal?: AbortSignal): Promise<RemoteWorkspaceDownload> {
+  const entry = archive.entry(relativePath);
+  if (!entry || entry.type !== "file" || entry.size !== expected.byteSize) throw fileFailure("file_changed");
+  if (entry.size > limits.maxReservedBytes) throw fileFailure("too_large");
+  if (savedFileDownloadReservedBytes + entry.size > limits.maxReservedBytes) throw fileFailure("workspace_unavailable");
+  savedFileDownloadReservedBytes += entry.size;
+  let released = false;
+  const release = () => { if (!released) { released = true; savedFileDownloadReservedBytes -= entry.size; } };
+  try {
+    if (await limits.availableBytes() < BigInt(savedFileDownloadReservedBytes + limits.freeSpaceMarginBytes)) {
+      throw fileFailure("workspace_unavailable");
+    }
+  } catch (error) { release(); throw error; }
+  let directory: string | undefined;
+  const cleanup = async () => {
+    try { if (directory) await fs.rm(directory, { recursive: true, force: true }); }
+    finally { release(); }
+  };
+  try {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-saved-file-"));
+    const file = path.join(directory, "file");
+    await pipeline(await archive.read(entry, 0, entry.size, signal), createWriteStream(file, { flags: "wx", mode: 0o600 }),
+      ...(signal ? [{ signal }] : []));
+    await verifyDownload(file, expected);
+    await checkCurrent();
+    return { stream: createReadStream(file), byteSize: entry.size, cleanup };
+  } catch (error) { await cleanup(); throw error; }
+}
+
 export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileOptions = {}): RemoteWorkspaceFiles {
   return {
     async open(input) {
@@ -270,6 +436,7 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
       if (!authority) return null;
       const initialAuthority = JSON.stringify(authority);
       let saved: SavedWorkspaceFiles | undefined;
+      let archive: SavedWorkspaceArchive | undefined;
       let savedLocationReleased = false;
       const checkCurrent = async () => {
         input.signal?.throwIfAborted();
@@ -280,7 +447,7 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
         // An extracted committed save no longer depends on the allocation.
         // Allow only its monotonic location removal; every logical field stays
         // pinned, and a foreign or reintroduced location remains a conflict.
-        if (saved && authority.location && currentAuthority?.location === null
+        if ((saved || archive) && authority.location && currentAuthority?.location === null
           && JSON.stringify({ ...currentAuthority, location: authority.location }) === initialAuthority) {
           savedLocationReleased = true;
           return;
@@ -294,17 +461,41 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
       let lease: EnvironmentLease | undefined;
       let source: WorkspaceFileSource;
       let root: string;
+      const savedReady = Boolean(options.loadSavedWorkspace || options.openSavedWorkspaceArchive);
       const loadSaved = async () => {
-        if (!authority.snapshotId || authority.dirty || authority.writerRunId || !options.loadSavedWorkspace) {
+        if (!authority.snapshotId || authority.dirty || authority.writerRunId || !savedReady) {
           throw fileFailure("workspace_unavailable");
         }
-        saved = await options.loadSavedWorkspace({ companyId: input.companyId, workspaceId: input.workspaceId, snapshotId: authority.snapshotId,
-          ...(input.signal ? { signal: input.signal } : {}) });
+        const scope = { companyId: input.companyId, workspaceId: input.workspaceId, snapshotId: authority.snapshotId,
+          ...(input.signal ? { signal: input.signal } : {}) };
+        if (options.openSavedWorkspaceArchive) {
+          try { archive = await options.openSavedWorkspaceArchive(scope); }
+          catch (error) {
+            if (error instanceof HttpError) throw error;
+            if (error instanceof Error && error.message === "remote_workspace_archive_entry_limit") throw fileFailure("too_large");
+            if (error instanceof Error && /^remote_workspace_(snapshot|archive)_/.test(error.message)) throw fileFailure("workspace_unavailable");
+            throw error;
+          }
+          return { root: "", source: { kind: "saved", savedAt: archive.savedAt, snapshotId: authority.snapshotId } as WorkspaceFileSource };
+        }
+        saved = await options.loadSavedWorkspace!(scope);
         return { root: saved.root, source: { kind: "saved", savedAt: saved.savedAt, snapshotId: authority.snapshotId } as WorkspaceFileSource };
+      };
+      const extractedRoot = async () => {
+        if (saved) return saved.root;
+        if (!options.loadSavedWorkspace || !authority.snapshotId) throw fileFailure("changed_unavailable");
+        try {
+          saved = await options.loadSavedWorkspace({ companyId: input.companyId, workspaceId: input.workspaceId, snapshotId: authority.snapshotId,
+            ...(input.signal ? { signal: input.signal } : {}) });
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 422) throw fileFailure("changed_unavailable");
+          throw error;
+        }
+        return saved.root;
       };
       // A final save clears dirty state and writer authority. Its accepted
       // bytes do not depend on an allocation that can already be closing.
-      if (authority.snapshotId && !authority.dirty && !authority.writerRunId && options.loadSavedWorkspace) {
+      if (authority.snapshotId && !authority.dirty && !authority.writerRunId && savedReady) {
         ({ root, source } = await loadSaved());
       } else if (authority.location) {
         const [leaseRow] = await db.select().from(environmentLeases).where(and(
@@ -330,16 +521,29 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
         ({ root, source } = await loadSaved());
       }
       let closed = false;
-      const close = async () => { if (closed) return; closed = true; await saved?.cleanup(); };
+      const close = async () => { if (closed) return; closed = true; archive?.close(); await saved?.cleanup(); };
       const execute = async <T>(action: "stat" | "list", args: Record<string, unknown>): Promise<T> => {
         if (closed) throw fileFailure("workspace_unavailable");
         await checkCurrent();
-        const payload = JSON.stringify({ root, action, ...args });
+        const changedList = action === "list" && (args.options as RemoteWorkspaceFileListInput | undefined)?.mode === "changed";
+        if (archive && !changedList) {
+          let value: unknown;
+          try {
+            value = action === "stat"
+              ? await archiveEntry(archive, args.relativePath, "stat", args.withHash === true, input.signal)
+              : archiveList(archive, args.options as RemoteWorkspaceFileListInput);
+          } catch (error) { throw fileFailure(error instanceof ArchiveReadFailure ? error.code : "workspace_unavailable"); }
+          await checkCurrent();
+          try { return parseHelperResult(action, value, args.withHash === true) as T; }
+          catch { throw fileFailure("workspace_unavailable"); }
+        }
+        const helperRoot = archive ? await extractedRoot() : root;
+        const payload = JSON.stringify({ root: helperRoot, action, ...args });
         let stdout: string;
         if (saved) {
           try {
             ({ stdout } = await execFileAsync(process.execPath, ["--input-type=commonjs", "-e", REMOTE_WORKSPACE_FILES_SCRIPT, payload], {
-              cwd: root, timeout: READ_TIMEOUT_MS, maxBuffer: MAX_HELPER_OUTPUT_BYTES,
+              cwd: helperRoot, timeout: READ_TIMEOUT_MS, maxBuffer: MAX_HELPER_OUTPUT_BYTES,
               signal: input.signal, env: { ...process.env, NODE_OPTIONS: "", NODE_PATH: "" },
             }));
           } catch (error) { throw fileFailure(String((error as { stderr?: string }).stderr ?? "workspace_unavailable").trim()); }
@@ -360,6 +564,8 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
       const download = async (relativePath: string): Promise<RemoteWorkspaceDownload> => {
         const expected = await execute<RemoteWorkspaceFileEntry>("stat", { relativePath, withHash: true });
         if (expected.kind !== "file") throw fileFailure("not_regular_file");
+        if (archive) return archiveDownload(archive, relativePath, expected, checkCurrent,
+          { ...SAVED_FILE_DOWNLOAD_LIMITS, ...options.savedFileDownloadLimits }, input.signal);
         if (saved) {
           await checkCurrent();
           const file = path.join(root, ...relativePath.split("/"));
@@ -384,6 +590,11 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
           const expected = await stat(relativePath);
           if (expected.kind !== "file") throw fileFailure("not_regular_file");
           if (expected.byteSize! > readOptions.maxBytes) throw fileFailure("too_large");
+          if (archive) {
+            const bytes = await archiveRead(archive, relativePath, expected, readOptions.maxBytes, input.signal);
+            await checkCurrent();
+            return bytes;
+          }
           const transfer = await download(relativePath);
           try {
             const chunks: Buffer[] = [];

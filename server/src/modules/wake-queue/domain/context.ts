@@ -81,8 +81,37 @@ export function wakeMustNotJoinActiveRun(
   wakeContext: Record<string, unknown>,
   interactionReceipt: boolean,
 ): boolean {
-  return interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+  // A context compaction run does no task work, so ordinary wakes and
+  // compactions never merge, in either arrival order.
+  return hasRetainedExternalChatRetry(activeRunContext) || interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+    Boolean(readNonEmptyString(parseObject(activeRunContext).contextCompactionRequestId)) ||
+    Boolean(readNonEmptyString(wakeContext.contextCompactionRequestId)) ||
     wakeChatConversationsConflict(activeRunContext, wakeContext);
+}
+
+const WAKE_REASONS_KEY = "wakeReasons";
+
+function readWakeReasons(context: unknown): string[] {
+  const parsed = parseObject(context);
+  const listed = Array.isArray(parsed[WAKE_REASONS_KEY]) ? parsed[WAKE_REASONS_KEY] as unknown[] : [];
+  return [...listed, parsed.wakeReason].flatMap((value) => readNonEmptyString(value) ?? []);
+}
+
+export function withMergedWakeReasons(
+  merged: Record<string, unknown>,
+  existing: unknown,
+  incoming: unknown,
+): Record<string, unknown> {
+  const reasons = [...new Set([...readWakeReasons(existing), ...readWakeReasons(incoming)])];
+  return reasons.length > 1 ? { ...merged, [WAKE_REASONS_KEY]: reasons } : merged;
+}
+
+export function hasRetainedExternalChatRetry(context: unknown): boolean {
+  const active = parseObject(context);
+  const activeSource = readNonEmptyString(active.source);
+  return readNonEmptyString(active.retryOfRunId) !== null &&
+    (activeSource?.startsWith("chat:") === true ||
+      (activeSource === "issue.interaction.respond" && active.externalChatContinuation === true));
 }
 
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {

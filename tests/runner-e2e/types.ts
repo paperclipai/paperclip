@@ -40,6 +40,7 @@ export type RunnerTaskFlow =
   | "continuation"
   | "first_task"
   | "agent_chat"
+  | "setup_health"
   | "governed_tool_review"
   | "single_turn"
   | "plan_revision_acceptance"
@@ -160,11 +161,19 @@ export interface RunnerTaskFixture {
   id: string;
   label: string;
   groups: readonly string[];
+  /**
+   * Opt-in group. When set, the task is selected only by naming this group
+   * (`--group`), the case (`--case`), or an exact execution ID. Suite, profile
+   * and environment selectors alone never select it.
+   */
+  explicitGroup?: string;
   workMode: RunnerTaskWorkMode;
   flow: RunnerTaskFlow;
   expectedRunCount: number;
   /** Optional lower bound; expectedRunCount remains the maximum/cost estimate. */
   minimumExpectedRunCount?: number;
+  expectedHumanMessageCount?: number;
+  optionalCompanySecretBindingApproval?: true;
   /** Admit only the first attempt, including provider or infrastructure failures. */
   automaticRetryPolicy?: "single_attempt";
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
@@ -296,6 +305,8 @@ export interface RunnerE2EBillingSummary {
 }
 
 export interface RunnerE2EResult {
+  /** Explicit optional owned Linux/arm64 Docker PG18.6 environment identity. */
+  databaseIdentity?: ReturnType<typeof import("./docker-postgres.js").publicDockerDatabaseIdentity>;
   schema: "paperclip.runner-e2e.result/v1" | "paperclip.runner-e2e.result/v2";
   accountingIdentity?: { campaignId: string; attemptId: string };
   executionId: string;
@@ -361,6 +372,7 @@ export interface RunnerE2EResult {
     passed: boolean;
     detail: string;
   }>;
+  screenshotPrivacy?: import("./screenshot-privacy.js").ScreenshotPrivacy;
   screenshots?: Array<{
     id: string;
     label: string;

@@ -480,7 +480,7 @@ export function resolvePaperclipRunnerProviderProfile(
   if (candidate === "acpx" && agentHarnessType("paperclip_runner", config) === "claude_local") {
     const unsupported = claudeRunnerUnsupportedSettings(config);
     if (unsupported.length) throw new PaperclipRunnerProviderProfileError("agent_runner_config_incompatible",
-      `Paperclip Runner cannot honor these settings: ${unsupported.join(", ")}. Remove them or select Legacy runner in Advanced.`);
+      `Paperclip Runner cannot honor these settings: ${unsupported.join(", ")}. Remove them before retrying.`);
   }
   assertPermissionMode(candidate, config);
   try {
@@ -656,6 +656,13 @@ export function resolvePaperclipRunnerProviderProfile(
     model: selectedModel,
     acpxAgent,
   };
+}
+
+export function supportsPaperclipRunnerPreconfiguredHome(adapterConfig: unknown, options: { companyId?: string } = {}): boolean {
+  const config = asRecord(adapterConfig);
+  const profile = resolvePaperclipRunnerProviderProfile(config, options);
+  return profile.provider === "codex" || (profile.provider === "acpx" && profile.acpxAgent === "claude"
+    && (config.acpxPermissionMode === undefined || config.acpxPermissionMode === "approve-all"));
 }
 
 /**

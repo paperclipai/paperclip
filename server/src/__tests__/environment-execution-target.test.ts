@@ -104,6 +104,17 @@ describe("resolveEnvironmentExecutionTarget", () => {
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
   });
 
+  it("forwards the physical task binding through the plugin task target", async () => {
+    const task = vi.fn(async () => ({ kind: "accepted" as const, taskId: "physical-task" }));
+    const target = await resolveEnvironmentExecutionTarget({ db: {} as never, companyId: "company", adapterType: "paperclip_runner",
+      environment: { id: "environment", driver: "plugin", config: {} }, leaseMetadata: {},
+      lease: { id: "lease", companyId: "company", environmentId: "environment", providerLeaseId: "physical-task", metadata: {} } as never,
+      environmentRuntime: { supportsTasks: async () => true, task } as never });
+    if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) throw new Error("Plugin task target unavailable");
+    await target.runnerTask({ kind: "stop" }, { expectedTaskId: "physical-task" });
+    expect(task).toHaveBeenCalledWith({ companyId: "company", leaseId: "lease", operation: { kind: "stop" }, expectedTaskId: "physical-task" });
+  });
+
   it("uses a bounded default cwd for sandbox targets when lease metadata omits remoteCwd", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",

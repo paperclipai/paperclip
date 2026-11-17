@@ -46,7 +46,7 @@ describe("task list views", () => {
     expect(loadTaskListView("key", denied)).toBe("all");
     expect(() => saveTaskListView("key", "inbox", denied)).not.toThrow();
   });
-  it("uses the coordinator's Inbox default for missing, invalid or denied preferences, preserving saved choices", () => {
+  it("honors an explicit fallback for missing, invalid or denied preferences, preserving saved choices", () => {
     for (const value of [null, "invalid", "all", "unread", "blocked", "inbox"]) {
       const storage = { getItem: () => value, setItem: () => {} };
       expect(loadTaskListView("key", storage, "inbox")).toBe(value === null || value === "invalid" ? "inbox" : value);

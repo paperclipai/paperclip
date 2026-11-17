@@ -319,6 +319,36 @@ describe("captureBrowserException", () => {
   });
 });
 
+describe("captureQueryException", () => {
+  it("does not throw when the gate is closed", async () => {
+    const { captureQueryException } = await importFreshSentry();
+
+    expect(() => captureQueryException(new Error("boom"), ["issues"])).not.toThrow();
+  });
+
+  it("groups each failing query's server error by status and query name", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureQueryException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const issuesError = Object.assign(new Error("Internal server error"), { status: 500 });
+    const agentsError = Object.assign(new Error("Internal server error"), { status: 500 });
+
+    captureQueryException(issuesError, ["issues", "company-uuid", "detail", "PAP-1"]);
+    captureQueryException(agentsError, ["agents", "company-uuid"]);
+    await initBrowserErrorMonitoring(DSN);
+
+    expect(mocks.captureException).toHaveBeenNthCalledWith(1, issuesError, {
+      tags: { query_kind: "issues", api_status: "500" },
+      fingerprint: ["api-error", "500", "issues"],
+    });
+    expect(mocks.captureException).toHaveBeenNthCalledWith(2, agentsError, {
+      tags: { query_kind: "agents", api_status: "500" },
+      fingerprint: ["api-error", "500", "agents"],
+    });
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toMatch(/company-uuid|PAP-1/);
+  });
+});
+
 describe("browser error diagnostics with the real SDK", () => {
   it("emits bounded component and translation context without page data or scope leakage", async () => {
     const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");

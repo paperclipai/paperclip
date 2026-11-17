@@ -19,7 +19,6 @@ export function useConversationHistoryPages(issueRef: string | undefined, active
   const query = useInfiniteQuery({
     queryKey: key,
     enabled: active && !!issueRef && started,
-    retry: false,
     initialPageParam: oldestCommentId ?? null,
     queryFn: async ({ pageParam, signal }): Promise<ConversationHistoryPage> => {
       const read = (cursor: string | null) => issuesApi.listComments(issueRef!, {

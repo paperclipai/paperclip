@@ -99,6 +99,8 @@ export async function apiFetch(input: string, init?: RequestInit): Promise<Respo
 }
 
 export interface RequestOptions {
+  /** Do not join an older in-flight read when validating a write. */
+  fresh?: boolean;
   /** Per-caller GET deadline, including the response body. A retry starts a fresh fetch. */
   timeoutMs?: number;
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
@@ -168,13 +170,14 @@ interface InflightGet {
   refs: Set<symbol>;
 }
 
-const inflightGets = new Map<string, InflightGet>();
+const inflightGets = new Map<string | symbol, InflightGet>();
 
 function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const signal = options?.signal;
   if (signal?.aborted) return Promise.reject(abortError());
 
-  let entry = inflightGets.get(path);
+  const key = options?.fresh ? Symbol(path) : path;
+  let entry = inflightGets.get(key);
   if (!entry) {
     const controller = new AbortController();
     const promise = request<T>(path, {
@@ -186,13 +189,13 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
     // Clear the shared entry once settled so later calls issue a fresh request.
     promise.then(
       () => {
-        if (inflightGets.get(path) === created) inflightGets.delete(path);
+        if (inflightGets.get(key) === created) inflightGets.delete(key);
       },
       () => {
-        if (inflightGets.get(path) === created) inflightGets.delete(path);
+        if (inflightGets.get(key) === created) inflightGets.delete(key);
       },
     );
-    inflightGets.set(path, created);
+    inflightGets.set(key, created);
     entry = created;
   }
 
@@ -204,7 +207,7 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
     if (!activeEntry.refs.delete(ref)) return;
     // Last caller gone before the fetch settled → abort the shared request.
     if (activeEntry.refs.size === 0) {
-      if (inflightGets.get(path) === activeEntry) inflightGets.delete(path);
+      if (inflightGets.get(key) === activeEntry) inflightGets.delete(key);
       activeEntry.controller.abort();
     }
   };
@@ -225,7 +228,7 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
       timer = setTimeout(() => {
         cleanup();
         // Other callers keep their request, but retries must not rejoin it.
-        if (inflightGets.get(path) === activeEntry) inflightGets.delete(path);
+        if (inflightGets.get(key) === activeEntry) inflightGets.delete(key);
         releaseRef();
         reject(new ApiError(errorCopy("TIMEOUT").body, 408, { error: "TIMEOUT" }));
       }, options.timeoutMs);
@@ -257,6 +260,11 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
  */
 export function detachInflightGet(path: string): void {
   inflightGets.delete(path);
+}
+
+/** End the sharing scope when identity changes; existing callers still settle. */
+export function detachInflightGets(): void {
+  inflightGets.clear();
 }
 
 function isRequestOptions(value: unknown): value is RequestOptions {

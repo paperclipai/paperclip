@@ -1,4 +1,5 @@
 import type { AggregatorAppsResponse, ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
+import type { ProviderToolIconsResponse } from "@paperclipai/shared";
 import type { ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
 import type {
   ToolApplication,
@@ -305,6 +306,16 @@ export const toolsApi = {
   },
   connectApp: (companyId: string, input: ConnectToolApp) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
+  createMachineSignIn: (companyId: string, input: import("@paperclipai/shared").CreateMachineSignIn) =>
+    api.post<import("@paperclipai/shared").MachineSignInSetupResult>(`/companies/${companyId}/tools/machine-sign-in`, input),
+  getMachineSignIn: (connectionId: string) =>
+    api.get<import("@paperclipai/shared").MachineSignInStatus>(`/tool-connections/${connectionId}/machine-sign-in`),
+  testMachineSignIn: (connectionId: string, input: import("@paperclipai/shared").TestMachineSignIn) =>
+    api.post<ConnectToolAppResult>(`/tool-connections/${connectionId}/machine-sign-in/test`, input),
+  rotateMachineSignIn: (connectionId: string, input: import("@paperclipai/shared").RotateMachineSignIn) =>
+    api.post<import("@paperclipai/shared").MachineSignInSetupResult & { completed: boolean }>(`/tool-connections/${connectionId}/machine-sign-in/rotate`, input),
+  completeMachineSignInRotation: (connectionId: string) =>
+    api.post<import("@paperclipai/shared").MachineSignInSetupResult>(`/tool-connections/${connectionId}/machine-sign-in/rotate/complete`, {}),
   startOAuth: (
     connectionId: string,
     input: {
@@ -339,8 +350,9 @@ export const toolsApi = {
     api.get<ToolConnectionReviewCounts>(`/tool-connections/${connectionId}/review-counts`),
   listAppsAttention: (companyId: string) =>
     api.get<ToolAppsAttentionResponse>(`/companies/${companyId}/tools/apps/attention`),
-  listApplications: (companyId: string) =>
-    api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
+  listApplications: (companyId: string, options?: RequestOptions) =>
+    options ? api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`, options)
+      : api.get<ToolApplicationsResponse>(`/companies/${companyId}/tools/applications`),
   createApplication: (companyId: string, input: CreateToolApplicationInput) =>
     api.post<ToolApplication>(`/companies/${companyId}/tools/applications`, input),
   updateApplication: (applicationId: string, input: UpdateToolApplicationInput) =>
@@ -349,16 +361,17 @@ export const toolsApi = {
     api.delete<ToolApplication>(`/tool-applications/${applicationId}`),
 
   // --- Connections ---
-  listConnections: (companyId: string) =>
-    api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
-  getConnection: (connectionId: string) =>
-    api.get<ToolConnection>(`/tool-connections/${connectionId}`),
+  listConnections: (companyId: string, options?: RequestOptions) =>
+    options ? api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`, options)
+      : api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
+  getConnection: (connectionId: string, options?: RequestOptions) =>
+    api.get<ToolConnection>(`/tool-connections/${connectionId}`, options),
   // --- Installs (Phase 3b, PAP-13618): which agents carry this connection's
   // tools in their runtime context. `installed ⊆ permitted`; the server
   // auto-extends access (adds profile bindings) for any newly-installed target.
-  getConnectionInstalls: (connectionId: string) =>
+  getConnectionInstalls: (connectionId: string, options?: RequestOptions) =>
     api.get<{ connectionId: string; installs: ToolConnectionInstall[] }>(
-      `/tool-connections/${connectionId}/installs`,
+      `/tool-connections/${connectionId}/installs`, options,
     ),
   putConnectionInstalls: (
     connectionId: string,
@@ -428,6 +441,8 @@ export const toolsApi = {
     }),
   refreshCatalog: (connectionId: string) =>
     api.post<ToolCatalogRefreshResult>(`/tool-connections/${connectionId}/catalog/refresh`, {}),
+  listProviderToolIcons: (companyId: string) =>
+    api.get<ProviderToolIconsResponse>(`/companies/${companyId}/tool-icons`),
   listCatalog: (connectionId: string) =>
     api.get<ToolCatalogResponse>(`/tool-connections/${connectionId}/catalog`),
   listConnectionActivity: (connectionId: string, limit = 20) =>
@@ -484,8 +499,8 @@ export const toolsApi = {
     ),
 
   // --- Profiles ---
-  listConnectionProfileConfiguration: (connectionId: string) =>
-    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`),
+  listConnectionProfileConfiguration: (connectionId: string, options?: RequestOptions) =>
+    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`, options),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
   getProfileNewTools: (profileId: string) =>
@@ -534,8 +549,8 @@ export const toolsApi = {
     api.get<ToolRuntimeSlot[]>(`/tool-gateway/runtime-slots?companyId=${encodeURIComponent(companyId)}`),
 
   // --- Policies (trust rules + decision simulator) ---
-  listPolicies: (companyId: string) =>
-    api.get<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies`),
+  listPolicies: (companyId: string, options?: RequestOptions) =>
+    api.get<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies`, options),
   createPolicy: (companyId: string, input: CreateToolPolicy) =>
     api.post<ToolPolicy>(`/companies/${companyId}/tools/policies`, input),
   reorderPolicies: (companyId: string, input: ReorderToolPolicies) =>
@@ -583,6 +598,8 @@ export const toolsApi = {
     api.patch<ToolMcpGatewayWithTokens>(`/tool-gateway/gateways/${gatewayId}`, { ...input, companyId }),
   createGatewayToken: (companyId: string, gatewayId: string, input: CreateGatewayTokenInput) =>
     api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateways/${gatewayId}/tokens`, { ...input, companyId }),
+  revealGatewayToken: (companyId: string, tokenId: string) =>
+    api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateway-tokens/${tokenId}/reveal`, { companyId }),
   revokeGatewayToken: (companyId: string, tokenId: string) =>
     api.post<ToolMcpGatewayToken>(`/tool-gateway/gateway-tokens/${tokenId}/revoke`, { companyId }),
 

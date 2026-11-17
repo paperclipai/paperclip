@@ -142,6 +142,12 @@ describe("live-event run read boundaries", () => {
       expect(await deliver(run.id, issueId)).toMatchObject([{ payload: { runId: run.id, issueId, status: "running" } }]);
       expect(queries.length - batchStart).toBeLessThanOrEqual(6);
       expect(queries.slice(batchStart).filter(query => query.startsWith("select ") && query.includes('from "issues"')).length).toBeLessThanOrEqual(2);
+      const [parent] = await db.insert(issues).values({ companyId, title: "Readable parent" }).returning();
+      await db.update(issues).set({ parentId: parent.id }).where(eq(issues.id, issueId));
+      expect(await deliver(run.id, issueId)).toMatchObject([{ payload: { recentSubtaskParentIds: [parent.id] } }]);
+      await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, parent.id));
+      expect(await deliver(run.id, issueId)).toMatchObject([{ payload: { recentSubtaskParentIds: [] } }]);
+      await db.update(issues).set({ parentId: null }).where(eq(issues.id, issueId));
       expect(await deliver(hiddenRun.id, issueId)).toEqual([]);
       expect(await deliver(run.id, hiddenIssueId)).toEqual([]);
       expect(await deliver(run.id, randomUUID())).toEqual([]);
@@ -164,7 +170,7 @@ describe("live-event run read boundaries", () => {
 
       expect(reads).toHaveLength(deliveries);
       for (const query of reads) {
-        expect(query).toMatch(/^select "company_id", "scope_kind", "issue_id" from "heartbeat_runs"/);
+        expect(query).toMatch(/^select "heartbeat_runs"\."company_id", "heartbeat_runs"\."scope_kind", "heartbeat_runs"\."issue_id", "issues"\."parent_id" from "heartbeat_runs"/);
         expect(query).not.toMatch(/context_snapshot|runner_profile_json|stdout_excerpt|result_json/);
       }
       expect(JSON.stringify(messages)).not.toMatch(/private-context|private-profile|private-output/);
@@ -180,6 +186,52 @@ describe("live-event run read boundaries", () => {
           .close(error => error ? reject(error) : resolve());
       });
       if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("delivers a burst of output without one permission read per event, and still stops at a revocation", async () => {
+    const companyId = randomUUID(), owner = randomUUID(), viewer = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Burst reads", issuePrefix: `BR${companyId.slice(0, 6)}` });
+    await db.insert(authUsers).values([owner, viewer].map(id => ({ id, name: "Fixture viewer", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values([owner, viewer].map(principalId => ({ companyId, principalType: "user", principalId, membershipRole: "operator", status: "active" })));
+    const [agent] = await db.insert(agents).values({ companyId, name: "Burst agent", adapterType: "process" }).returning();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Private task", visibility: "private", privacyRootIssueId: issueId, responsibleUserId: owner });
+    const [grant] = await db.insert(issueAccessGrants).values({ issueId, subjectType: "user", subjectId: viewer, source: "explicit" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId, status: "running" }).returning({ id: heartbeatRuns.id });
+    const queries: string[] = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) { queries.push(query); } } }) as Db;
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, observedDb, { deploymentMode: "authenticated",
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }) });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
+    const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
+    const burst = async (count: number) => {
+      const start = messages.length, queryStart = queries.length, barrier = randomUUID();
+      for (let seq = 1; seq <= count; seq++) {
+        publishLiveEvent({ companyId, type: "heartbeat.run.log", payload: { runId: run.id, seq, chunk: `token-${seq}` } });
+        publishLiveEvent({ companyId, type: "heartbeat.run.event", payload: { runId: run.id, seq,
+          payload: { prpEvent: { eventType: "item.delta", payload: { text: `native-${seq}` } } } } });
+      }
+      publishLiveEvent({ companyId, type: "agent.status", payload: { agentId: barrier, status: "idle" } });
+      await expect.poll(() => messages.some(message => message.payload.agentId === barrier), { timeout: 20_000 }).toBe(true);
+      return { delivered: messages.slice(start).filter(message => message.type.startsWith("heartbeat.run.")), queries: queries.slice(queryStart) };
+    };
+    try {
+      await once(socket, "open");
+      const first = await burst(100);
+      expect(first.delivered.filter(message => message.type === "heartbeat.run.log").map(message => message.payload.seq))
+        .toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
+      expect(first.delivered.filter(message => message.type === "heartbeat.run.event")).toHaveLength(100);
+      expect(first.queries.length).toBeLessThanOrEqual(40);
+      await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
+      expect((await burst(20)).delivered).toEqual([]);
+    } finally {
+      socket.terminate();
+      await Promise.all([...wss.clients].map(client => { const closed = new Promise<void>(resolve => client.on("close", resolve)); client.terminate(); return closed; }));
+      await new Promise<void>((resolve, reject) => (wss as typeof wss & { close(callback: (error?: Error) => void): void }).close(error => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
   });
 
@@ -278,6 +330,11 @@ describe("live-event run read boundaries", () => {
       await once(socket, "open");
       socket.send(JSON.stringify({ type: "live.interests", version: 1, revision: 1, runIds: [] }));
       await expect.poll(() => messages.some(message => message.type === "live.subscribed" && message.revision === 1)).toBe(true);
+      // Runtime-state refreshes reach the company without a transcript subscription.
+      const refreshedAgentId = randomUUID();
+      publishLiveEvent({ companyId, type: "agent.runtime_state.updated", payload: { agentId: refreshedAgentId } });
+      await barrier();
+      expect(messages.find(message => message.type === "agent.runtime_state.updated")?.payload).toMatchObject({ agentId: refreshedAgentId });
       const baseline = queries.length;
       publishLiveEvent({ companyId, type: "heartbeat.run.event", payload: sourcePayload }); await barrier();
       expect(messages.some(message => message.type === "heartbeat.run.event")).toBe(false);

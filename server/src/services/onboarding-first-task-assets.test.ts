@@ -153,10 +153,10 @@ describe("first-task proposal mode policy", () => {
     const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
     expect(skill).toContain("For a plan-only request, retain the accepted plan on this task");
     expect(skill).toContain("Do not start its implementation or hire the proposed team without authorization");
-    expect(skill).toContain("Create exactly one child linked to this onboarding task");
+    expect(skill).toContain("For an accepted single task, complete the work here.");
     expect(skill).toContain("For document-only child work, you may execute it directly");
     expect(skill).toContain("Save the finished output as a document on the child task and mark that child done");
-    expect(skill).toContain("On later wakes, continue that same child instead of creating another");
+    expect(skill).toContain("reuse any task already created for it");
   });
 });
 

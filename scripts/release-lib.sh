@@ -270,6 +270,89 @@ next_canary_version() {
   next_prerelease_version canary "$stable_version" "$@"
 }
 
+canary_source_position() {
+  local repo_root="$1"
+  if [ "$(git -C "$repo_root" rev-parse --is-shallow-repository)" = "true" ]; then
+    return 1
+  fi
+  git -C "$repo_root" rev-list --count HEAD
+}
+
+next_canary_version_from_source() {
+  local repo_root="$1"
+  local allow_registry_fallback="$2"
+  local stable_version="$3"
+  local run_attempt="$4"
+  shift 4
+  local position
+
+  if ! [[ "$run_attempt" =~ ^[1-9][0-9]?$ ]]; then
+    release_fail "canary numbering needs a run attempt from 1 to 99, got '${run_attempt}'."
+  fi
+  if ! position="$(canary_source_position "$repo_root")"; then
+    if [ "$allow_registry_fallback" = true ]; then
+      release_warn "shallow checkout: canary number falls back to the next registry number."
+      next_prerelease_version canary "$stable_version" "$@"
+      printf '\n'
+      return 0
+    fi
+    release_fail "canary numbering needs the full master history; this checkout is shallow."
+  fi
+  local candidate=$((position * 100 + run_attempt - 1))
+  local range_end=$((position * 100 + 99))
+  local published
+  published="$(node -e '
+    const [file, stable, low, high] = process.argv.slice(1);
+    let cache = {};
+    try { cache = JSON.parse(require("node:fs").readFileSync(file, "utf8")); } catch {}
+    const pattern = new RegExp(`^${stable.replace(/\./g, "\\.")}-canary\\.(\\d+)$`);
+    const numbers = new Set();
+    for (const versions of Object.values(cache)) for (const version of Array.isArray(versions) ? versions : []) {
+      const number = Number(pattern.exec(version)?.[1]);
+      if (number >= Number(low) && number <= Number(high)) numbers.add(number);
+    }
+    process.stdout.write([...numbers].join(" "));
+  ' "${RELEASE_PACKAGE_VERSIONS_FILE:-}" "$stable_version" "$candidate" "$range_end")"
+  while [[ " $published " == *" $candidate "* ]]; do
+    candidate=$((candidate + 1))
+  done
+  [ "$candidate" -le "$range_end" ] || release_fail "every canary number for master position ${position} is already published."
+  printf '%s-canary.%s\n' "$stable_version" "$candidate"
+}
+
+require_canary_number_from_master_commit() {
+  local version="$1"
+  local source_sha="$2"
+  local master_ref="${3:-origin/master}"
+  local number="${version##*-canary.}"
+  local position
+
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$source_sha" "$master_ref" \
+    || release_fail "${source_sha} is not on ${master_ref}"
+  position="$(canary_source_position "$REPO_ROOT")" || release_fail "canary confirmation needs the full master history; this checkout is shallow."
+  [ "$((number / 100))" = "$position" ] \
+    || release_fail "${version} was not numbered from ${source_sha} (master position ${position})"
+  release_info "  ✓ ${version} was numbered from ${source_sha} (master position ${position})"
+}
+
+push_release_tag_at() {
+  local remote="$1"
+  local tag_name="$2"
+  local source_sha="$3"
+  local existing_sha
+
+  existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$remote" "refs/tags/${tag_name}^{}" | awk '{print $1}')"
+  [ -n "$existing_sha" ] || existing_sha="$(git -C "$REPO_ROOT" ls-remote --tags "$remote" "refs/tags/${tag_name}" | awk '{print $1}')"
+  if [ -n "$existing_sha" ]; then
+    [ "$existing_sha" = "$source_sha" ] || release_fail "tag ${tag_name} already exists on ${existing_sha}, not ${source_sha}"
+    release_info "  ✓ ${tag_name} already points at ${source_sha}"
+    return 0
+  fi
+  git -C "$REPO_ROOT" tag "$tag_name" "$source_sha"
+  git -C "$REPO_ROOT" push "$remote" "refs/tags/${tag_name}"
+  release_info "  ✓ Pushed ${tag_name} at ${source_sha}"
+}
+
 release_notes_file() {
   printf '%s/releases/v%s.md\n' "$REPO_ROOT" "$1"
 }
@@ -489,12 +572,18 @@ wait_for_npm_package_versions() {
 verify_npm_installable() {
   local package_spec="$1"
   local expected_version="$2"
+  local install_timeout_seconds="${3:-}"
   local install_dir
   local installed_version
+  local install=(npm install --prefix "" "$package_spec" --no-audit --no-fund)
 
   install_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-install.XXXXXX")"
+  install[3]="$install_dir"
+  if [ -n "$install_timeout_seconds" ] && command -v timeout >/dev/null 2>&1; then
+    install=(timeout --kill-after=10 "$install_timeout_seconds" "${install[@]}")
+  fi
 
-  if ! npm install --prefix "$install_dir" "$package_spec" --no-audit --no-fund; then
+  if ! "${install[@]}"; then
     rm -rf "$install_dir"
     return 1
   fi
@@ -503,6 +592,29 @@ verify_npm_installable() {
   rm -rf "$install_dir"
 
   [ "$installed_version" = "$expected_version" ]
+}
+
+wait_for_npm_installable() {
+  local package_spec="$1"
+  local expected_version="$2"
+  local deadline_seconds="${3:-1200}"
+  local delay_seconds="${4:-30}"
+  local deadline=$(( $(date +%s) + deadline_seconds ))
+  local attempt=1
+  local remaining
+
+  while :; do
+    remaining=$(( deadline - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    if verify_npm_installable "$package_spec" "$expected_version" "$remaining"; then
+      return 0
+    fi
+    remaining=$(( deadline - $(date +%s) ))
+    [ "$remaining" -gt 0 ] || return 1
+    release_warn "${package_spec} did not install yet (attempt ${attempt}, ${remaining}s left); a large tarball can lag its metadata. Retrying in $(( delay_seconds < remaining ? delay_seconds : remaining ))s."
+    sleep $(( delay_seconds < remaining ? delay_seconds : remaining ))
+    attempt=$((attempt + 1))
+  done
 }
 
 wait_for_release_registry_state() {
@@ -540,6 +652,12 @@ wait_for_release_registry_state() {
 require_clean_worktree() {
   if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
     release_fail "working tree is not clean. Commit, stash, or remove changes before releasing."
+  fi
+}
+
+require_runner_lockfile_current() {
+  if ! node "$REPO_ROOT/scripts/check-release-runner-lockfile.mjs"; then
+    release_fail "a beta or stable release needs a pnpm-lock.yaml that matches the Runner's manifests at HEAD."
   fi
 }
 

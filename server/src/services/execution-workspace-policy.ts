@@ -94,7 +94,11 @@ export function isUnrunnableWorktreeCombo(input: {
   resolvedStrategy: string | null | undefined;
   reusableExecutionWorkspaceAvailable?: boolean | null;
   hasResolvablePriorSessionWorkspace?: boolean | null;
+  /** The wake continues a cut-off run in a new isolated workspace that the run
+   * prepares itself (`create_new`); it never needs the task's old binding. */
+  freshIsolatedContinuation?: boolean | null;
 }): boolean {
+  if (input.freshIsolatedContinuation === true) return false;
   if (input.resolvedMode !== "isolated_workspace" && input.resolvedMode !== "operator_branch") return false;
   if (input.resolvedStrategy !== "git_worktree") return false;
   if (input.issue.projectId || input.issue.projectWorkspaceId) return false;
@@ -274,6 +278,7 @@ export function selectEnvironmentExecutionWorkspaceSettings(
 
 export type ExecutionWorkspaceEnvironmentSource =
   | "issue"
+  | "run"
   | "agent"
   | "instance"
   | "default"

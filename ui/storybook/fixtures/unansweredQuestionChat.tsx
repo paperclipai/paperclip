@@ -33,7 +33,7 @@ export function QuestionChat({ movedOn = false, multiple = false, answered = fal
     return client;
   });
   const [interactions, setInteractions] = useState<IssueThreadInteraction[]>([
-    ...(review ? [{ ...genericPendingRequestConfirmationInteraction, id: "completion-review", title: "Review requested", summary: "Provide app configuration to finish integration.", payload: { version: 1 as const, prompt: "Provide app configuration to finish integration.", acceptLabel: "Approve completion", rejectLabel: "Continue work", target: { type: "custom" as const, key: "native_completion_review", label: "Completion decision" } } }] : []),
+    ...(review ? [{ ...genericPendingRequestConfirmationInteraction, id: "completion-review", createdAt: question.createdAt, title: "Review requested", summary: "Provide app configuration to finish integration.", payload: { version: 1 as const, prompt: "Provide app configuration to finish integration.", acceptLabel: "Approve completion", rejectLabel: "Continue work", target: { type: "custom" as const, key: "native_completion_review", label: "Completion decision" } } }] : []),
     ...(review ? [] : [answered ? { ...question, status: "answered" as const, resolvedAt: new Date("2026-04-01T12:06:00Z"), result: { version: 1 as const, answers: [{ questionId: "color", optionIds: ["blue"] }] } } : question]),
     ...(multiple ? [otherQuestion] : []),
   ]);

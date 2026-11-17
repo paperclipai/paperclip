@@ -195,6 +195,19 @@ test("split handoff commits relevant plans before execution and never creates ch
         })
       ).status(),
     ).toBe(422);
+    await expect.poll(async () => {
+      const comments = await json(await request.get(`/api/issues/${chat.id}/comments`));
+      const completed = comments.filter((comment: any) => comment.authorAgentId === f.agent.id &&
+        comment.body.startsWith("Delegated work completed:"));
+      return tasks.every((task: any) => completed.some((comment: any) => comment.body.includes(task.identifier)));
+    }, { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => await json(await request.get(`/api/companies/${f.company.id}/live-runs`)),
+      { timeout: 30_000 }).toEqual([]);
+    const settledTasks = await json(await request.get(`/api/companies/${f.company.id}/issues`));
+    expect(settledTasks.map((task: any) => ({ id: task.id, status: task.status, parentId: task.parentId }))
+      .sort((a: any, b: any) => a.id.localeCompare(b.id))).toEqual(tasks.map((task: any) => ({
+        id: task.id, status: "done", parentId: null,
+      })).sort((a: any, b: any) => a.id.localeCompare(b.id)));
   } finally {
     await f.restore();
   }
@@ -322,9 +335,8 @@ for (const mode of ["Ask", "Plan"])
         );
         expect(revised.latestRevisionId).not.toBe(first.latestRevisionId);
         expect(revised.body).toContain("Revised plan");
-        await expect(
-          page.getByRole("tab", { name: "Plan", exact: true }),
-        ).toBeVisible();
+        await page.getByRole("link", { name: /Open Revised plan revision 2 in task sidebar/ }).click();
+        await expect(page.getByRole("tab", { name: "Plan", exact: true })).toBeVisible();
       }
       expect(
         await json(await request.get(`/api/companies/${f.company.id}/issues`)),
@@ -603,17 +615,18 @@ test("shared history loads older messages without replacing the latest turn", as
   }
 });
 
-test("disabling the experiment lets an active turn settle and keeps idle history", async ({
+test("retired Chat opt-outs do not interrupt active turns or hide existing history", async ({
   page,
   request,
 }) => {
   const original = await json(
     await request.get("/api/instance/settings/experimental"),
   );
-  expect(original.enableAgentChat).toBe(false);
+  expect(original.enableAgentChat).toBe(true);
   const f = await setup(request);
   try {
     await page.goto(f.route);
+    await expect(page.getByRole("navigation", { name: "Workspace navigation" })).toBeVisible();
     await send(page, { action: "delayed" });
     await expect(
       page.getByText("Turn started before feature disable.", { exact: true }),
@@ -638,20 +651,13 @@ test("disabling the experiment lets an active turn settle and keeps idle history
             .conversationState,
       )
       .toBe("waiting");
-    expect(
-      (
-        await request.post(`/api/issues/${chat.id}/comments`, {
-          data: { body: "/new" },
-        })
-      ).status(),
-    ).toBe(404);
     const before = (
       await json(
         await request.get(`/api/companies/${f.company.id}/heartbeat-runs`),
       )
     ).length;
     await page.reload();
-    await expect(page.getByText(/Agent Chat is disabled/)).toBeVisible();
+    await expect(page.getByText("Active turn settled after feature disable.", { exact: true })).toBeVisible();
     expect(
       (
         await json(

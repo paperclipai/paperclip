@@ -5,12 +5,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AiManagedConnectionSummary, ToolConnection } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
+import { authApi } from "@/api/auth";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: vi.fn() } }));
 vi.mock("./AiConnectionAccountControls", () => ({
-  AiConnectionAccountControls: ({ account }: { account: AiManagedConnectionSummary }) => (
-    <section aria-label="AI account settings">{account.name}</section>
+  AiConnectionAccountControls: ({ account, grant }: { account: AiManagedConnectionSummary; grant: { id: string } }) => (
+    <section aria-label="AI account settings" data-grant-id={grant.id}>{account.name}</section>
   ),
 }));
 vi.mock("./AiConnectionUsagePanel", () => ({ AiConnectionUsagePanel: () => null }));
@@ -38,6 +40,7 @@ beforeEach(() => {
   blocked = null;
   denied = false;
   signals = [];
+  vi.mocked(authApi.getSession).mockReset().mockResolvedValue({ user: { id: "user" } } as Awaited<ReturnType<typeof authApi.getSession>>);
   fetchMock.mockReset().mockImplementation((url: string, init: RequestInit) => {
     if (url.endsWith("/active-runs")) return Promise.resolve(Response.json([]));
     const kind = url.endsWith("/grants") ? "grants" : "accounts";
@@ -49,7 +52,7 @@ beforeEach(() => {
     if (denied) return Promise.resolve(Response.json({ error: "Access denied" }, { status: 403 }));
     return Promise.resolve(Response.json(kind === "grants" ? grants : accounts));
   });
-  client = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: Infinity } } });
+  client = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, gcTime: Infinity, retry: false } } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -67,7 +70,8 @@ async function render() {
   await act(async () => {
     root.render(<QueryClientProvider client={client}><ManagedAiConnectionDetails connection={connection} /></QueryClientProvider>);
   });
-  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
 }
 
 it("reuses the grants already loaded by the permissions page", async () => {
@@ -75,6 +79,73 @@ it("reuses the grants already loaded by the permissions page", async () => {
   await render();
   expect(host.querySelector('[aria-label="AI account settings"]')?.textContent).toBe(account.name);
   expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/grants"))).toBe(false);
+});
+
+it("reports a failed session lookup and retries it before loading account data", async () => {
+  vi.mocked(authApi.getSession).mockRejectedValueOnce(new Error("Session lookup failed"));
+  await render();
+  expect(host.querySelector('[role="alert"]')).not.toBeNull();
+  expect(host.textContent).not.toContain("Loading AI account…");
+  expect(host.querySelector("button")?.textContent).toBe("Retry");
+  const accountReads = () => fetchMock.mock.calls.filter(([url]) => url.endsWith("/ai-connections"));
+  expect(accountReads()).toHaveLength(0);
+  expect(client.getQueryData(["ai-connections", "company", undefined, null])).toBeUndefined();
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  expect(authApi.getSession).toHaveBeenCalledTimes(2);
+  expect(accountReads()).toHaveLength(1);
+  expect(host.querySelector('[aria-label="AI account settings"]')?.textContent).toBe(account.name);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it("waits for session recovery before retrying an earlier account error", async () => {
+  await render();
+  denied = true;
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ["ai-connections"] });
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  vi.mocked(authApi.getSession).mockRejectedValue(new Error("Session lookup failed"));
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: queryKeys.auth.session });
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  const calls = fetchMock.mock.calls.length;
+  let recover!: (session: Awaited<ReturnType<typeof authApi.getSession>>) => void;
+  vi.mocked(authApi.getSession).mockImplementation(() => new Promise(resolve => { recover = resolve; }));
+  await act(async () => {
+    host.querySelector("button")!.click();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  expect(fetchMock).toHaveBeenCalledTimes(calls);
+  expect(host.querySelector('[aria-label="AI account settings"]')).toBeNull();
+  denied = false;
+  await act(async () => {
+    recover({ user: { id: "user" } } as Awaited<ReturnType<typeof authApi.getSession>>);
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  expect(host.querySelector('[aria-label="AI account settings"]')?.textContent).toBe(account.name);
+});
+
+it.each(["personal", "shared", "missing-first"] as const)("keeps an accessible %s grant visible without a saved personal default", async mode => {
+  const personal = { ...account, ownerUserId: "user", grantId: "personal-grant", name: "Personal account", isDefault: false };
+  const shared = { ...account, ownership: "shared" as const, grantId: "shared-grant", name: "Shared account", isDefault: false };
+  const other = { ...shared, grantId: "other-shared-grant", name: "Other shared account" };
+  const choices = mode === "personal" ? [shared, personal] : [other, shared];
+  const available = mode === "missing-first" ? [shared] : choices;
+  fetchMock.mockImplementation((url: string) => Promise.resolve(Response.json(url.endsWith("/active-runs") ? []
+    : url.endsWith("/grants") ? { ...grants, grants: available.map(choice => ({ id: choice.grantId })) }
+      : { ...accounts, connections: choices })));
+  await render();
+  const expected = mode === "personal" ? personal : mode === "missing-first" ? shared : other;
+  const controls = host.querySelector('[aria-label="AI account settings"]');
+  expect(controls?.textContent).toBe(expected.name);
+  expect(controls?.getAttribute("data-grant-id")).toBe(expected.grantId);
+  expect(host.textContent).not.toContain("not available to you");
 });
 
 it.each(["accounts", "grants"] as const)("bounds a stuck %s read, retries once, and recovers from the retry button", async kind => {

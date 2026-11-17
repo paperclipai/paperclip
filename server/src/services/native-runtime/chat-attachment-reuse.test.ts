@@ -564,6 +564,9 @@ describe("native same-conversation chat attachment reuse", () => {
     });
     const preparedId = (first as { prepared: { attachmentId: string } })
       .prepared.attachmentId;
+    const [preparationComment] = await db.select().from(issueComments)
+      .where(eq(issueComments.id, (first as { prepared: { commentId: string } }).prepared.commentId));
+    expect(preparationComment.metadata).toMatchObject({ attachmentPreparation: { attachmentId: preparedId } });
     const attachments = await db
       .select({
         id: issueAttachments.id,

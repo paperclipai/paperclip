@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { pipeline } from "node:stream/promises";
 import tar from "tar-stream";
 import { afterEach, expect, it } from "vitest";
-import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_BYTES } from "./native-harness-backup-archive.js";
+import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_BYTES,
+  MAX_NATIVE_HARNESS_ENTRIES, MAX_NATIVE_HARNESS_OBJECT_BYTES, MAX_NATIVE_HARNESS_PATH_BYTES,
+  nativeHarnessArchiveSizeLimit } from "./native-harness-backup-archive.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -16,6 +18,32 @@ async function maliciousArchive(root: string, headers: Array<tar.Headers>) {
   for (const header of headers) archive.entry(header, Buffer.alloc(0));
   archive.finalize(); await written; return file;
 }
+it("reserves the full entry budget using real maximum-path PAX encoding", async () => {
+  const root = await fixture(), name = "a/".repeat(MAX_NATIVE_HARNESS_PATH_BYTES / 2 - 1) + "aa";
+  const file = await maliciousArchive(root, [{ name, type: "symlink", linkname: "b".repeat(MAX_NATIVE_HARNESS_PATH_BYTES) }]);
+  // One real encoded record gives the repeated-entry size without creating a
+  // gigabyte fixture. Each hypothetical entry includes its own PAX records.
+  const entryBytes = (await stat(file)).size - 1024;
+  const denseArchiveBytes = entryBytes * MAX_NATIVE_HARNESS_ENTRIES + 1024;
+  const bound = nativeHarnessArchiveSizeLimit(0);
+  expect(denseArchiveBytes).toBeGreaterThan(MAX_NATIVE_HARNESS_OBJECT_BYTES - MAX_NATIVE_HARNESS_BYTES);
+  expect(denseArchiveBytes).toBeLessThanOrEqual(bound);
+  expect(denseArchiveBytes).toBeGreaterThan(bound * 0.9);
+  expect(nativeHarnessArchiveSizeLimit(MAX_NATIVE_HARNESS_BYTES)).toBe(MAX_NATIVE_HARNESS_OBJECT_BYTES);
+});
+it("captures at the exact archive byte limit and refuses one byte beyond it", async () => {
+  const root = await fixture(), source = join(root, "source"); await mkdir(source);
+  await writeFile(join(source, "manifest.json"), "{}"); await writeFile(join(source, "state"), "retained provider bytes");
+  const original = join(root, "original"); await captureNativeHarnessArchive(source, original);
+  const bytes = (await stat(original)).size, exact = join(root, "exact");
+  await captureNativeHarnessArchive(source, exact, undefined, bytes);
+  expect((await stat(exact)).size).toBe(bytes);
+  await restoreNativeHarnessArchive(exact, join(root, "restored-exact"));
+  expect(await readFile(join(root, "restored-exact", "state"), "utf8")).toBe("retained provider bytes");
+  const exceeded = join(root, "exceeded");
+  await expect(captureNativeHarnessArchive(source, exceeded, undefined, bytes - 1)).rejects.toThrow("native_harness_archive_invalid");
+  expect((await stat(exceeded)).size).toBeLessThan(bytes);
+});
 it.each([
   { name: "../escaped", type: "file" as const },
   { name: "/absolute", type: "file" as const },

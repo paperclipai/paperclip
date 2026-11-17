@@ -3,6 +3,7 @@ import path from "node:path";
 import { expect } from "@playwright/test";
 import { createTaskThroughUi, withBrowserEvent } from "../user-actions.js";
 import { createObservedReader } from "./observation-read.js";
+import { showPropertyRow } from "./task-panel.js";
 import { taskLifecycleEvidence, taskLifecycleLabelName, type LifecycleExpectation, type LifecycleLabel, type LifecycleObservation, type LifecycleTask } from "./task-lifecycle-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
@@ -17,22 +18,7 @@ const emptyObservation = (): LifecycleObservation => ({ task: null, runCount: nu
   titleVisible: false, descriptionVisible: false, statusVisible: false, labelVisible: false });
 
 async function properties(context: JourneyContext) {
-  const { page } = context;
-  // Closed panes keep their rows mounted. Their geometry alone does not make
-  // an inert or accessibility-hidden panel available for interaction.
-  const row = page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
-    .filter({ has: page.locator('[data-property-label="Labels"]') }).filter({ visible: true });
-  const toggle = page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true });
-  const propertiesButton = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).filter({ visible: true });
-  await expect.poll(async () => await row.isVisible() || await toggle.isVisible() || await propertiesButton.isVisible()).toBe(true);
-  if (!await row.isVisible()) {
-    if (await toggle.isVisible()) await toggle.click();
-    else await propertiesButton.click();
-  }
-  await expect(row).toBeVisible();
-  await row.scrollIntoViewIfNeeded();
-  await expect(row).toBeInViewport();
-  return row;
+  return await showPropertyRow(context.page, "Labels");
 }
 
 async function setStatus(context: JourneyContext, label: string) {

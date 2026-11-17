@@ -161,6 +161,18 @@ describe("reconstruction after confirmed native workspace loss", () => {
     } finally { unsubscribe(); unsubscribeRoutine(); }
   });
 
+  it("scopes the attention retention hint of a reconstruction to the task graph", async () => {
+    const f = await seed();
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try { await db.transaction(tx => reconstructNativeWorkspace({ ...f, db: tx as unknown as Db })); } finally { unsubscribe(); }
+    expect(hints).not.toContain(JSON.stringify({ companyId: f.companyId }));
+    expect(hints.some(hint => (JSON.parse(hint) as { issueIds?: string[]; issueId?: string }).issueIds?.includes(f.issueId)
+      || (JSON.parse(hint) as { issueId?: string }).issueId === f.issueId)).toBe(true);
+  });
+
   it("pins a historical cancelled workspace through public heartbeat startup without replaying its turn", async () => {
     const f = await seed();
     const later = await interveningCancelledRun(f, false);

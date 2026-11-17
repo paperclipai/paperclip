@@ -76,14 +76,14 @@ it.skipIf(!compilerAvailable || !existsSync(runner)).each(["discovery", "complet
         expect(seen).toEqual(tool !== "completion" ? ["paperclip_search_assigned_tools", "paperclip_finish"] : ["paperclip_finish"]);
         expect(text.join("")).toBe("Streaming progress. ".repeat(800));
         if (tool === "durable") {
-          const runnerPid = transport.processInfo().pid;
+          const runnerPid = transport.processInfo!().pid;
           await transport.attachRun!({ runId: "next-settled-run", turnId: "next-turn", itemId: "next-item" });
           completed = (async () => {
             for await (const event of transport.notifications()) if (event.method === "turn/completed") return;
           })();
           await transport.request("turn/start", { input: [{ type: "text", text: "stream-backlog-discovery" }] });
           await completed;
-          expect(transport.processInfo().pid).toBe(runnerPid);
+          expect(transport.processInfo!().pid).toBe(runnerPid);
           expect(seen).toEqual(["paperclip_search_assigned_tools", "paperclip_finish", "paperclip_search_assigned_tools", "paperclip_finish"]);
           const provider = JSON.parse(await readFile(join(root, "state", "runner", "codex-provider-state.json"), "utf8"));
           expect(provider.toolBridge.pending).toEqual({});

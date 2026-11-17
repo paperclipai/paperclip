@@ -15,6 +15,8 @@ import {
 } from "@/lib/connectivity";
 import { MAX_ONLINE_RESENDS, pendingSendKeyFor, readPendingSend, writePendingSend } from "@/lib/pending-send";
 import { queryKeys } from "@/lib/queryKeys";
+import { hasPendingWrites, subscribePendingWrites } from "@/lib/reload-safety";
+import { startServiceWorkerUpdates } from "@/lib/service-worker-updates";
 import { DETACHED_DRAFT_OWNER } from "./useDraftOwner";
 import { useAutoResend, useDurableSubmit, type AutoResendState, type DurableSubmit, type DurableSubmitOptions } from "./useDurableSubmit";
 
@@ -94,6 +96,44 @@ describe("useDurableSubmit", () => {
   });
   const advance = (ms: number) => act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
+  });
+
+  it("defers a hidden-tab update across online 429 retries until the keyed create finishes", async () => {
+    const client = new QueryClient();
+    let reject!: (error: unknown) => void;
+    const create = vi.fn<(payload: Payload) => Promise<{ id: string; body: string }>>()
+      .mockImplementationOnce(() => new Promise((_, no) => { reject = no; }))
+      .mockRejectedValueOnce(new ApiError("Try again", 429, null))
+      .mockResolvedValue({ id: "created-task", body: "Keep my attachment" });
+    const send = vi.fn((payload: Payload, _key: string) => client.getMutationCache().build(client, { mutationFn: create }).execute(payload));
+    render({ send });
+    let pending!: ReturnType<typeof current.submit>;
+    act(() => { pending = current.submit({ body: "Keep my attachment" }); });
+    const worker = Object.assign(new EventTarget(), { controller: {}, register: vi.fn().mockResolvedValue({ update: vi.fn() }) });
+    const doc = Object.assign(new EventTarget(), { visibilityState: "hidden" });
+    const reload = vi.fn();
+    const stop = startServiceWorkerUpdates({ container: worker as unknown as ServiceWorkerContainer,
+      documentRef: doc as unknown as Document, reload,
+      canReload: () => store.getSnapshot().pendingWrites === 0 && client.isMutating() === 0 && !hasPendingWrites(),
+      subscribeReloadSafety: listener => {
+        const cleanups = [store.subscribe(listener), client.getMutationCache().subscribe(listener), subscribePendingWrites(listener)];
+        return () => cleanups.forEach(cleanup => cleanup());
+      } });
+    try {
+      worker.dispatchEvent(new Event("controllerchange"));
+      await act(async () => { await Promise.resolve(); reject(new ApiError("Try again", 429, null)); await pending; });
+      expect(store.getSnapshot().status).toBe("online");
+      expect(client.isMutating()).toBe(0);
+      expect(reload).not.toHaveBeenCalled();
+      await advance(1_000);
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(reload).not.toHaveBeenCalled();
+      await advance(2_000);
+      expect(create).toHaveBeenCalledTimes(3);
+      expect(new Set(send.mock.calls.map(call => call[1])).size).toBe(1);
+      expect(current.pending).toBeNull();
+      expect(reload).toHaveBeenCalledOnce();
+    } finally { stop(); client.clear(); }
   });
 
   it("reports memory-only retention when browser storage rejects the request", async () => {

@@ -182,6 +182,10 @@ export class FakeCodexTransport implements CodexAppServerTransport {
         }
       );
     }
+    if (method === "thread/compact/start") {
+      // The runnerd transport binds the compaction turn like turn/start.
+      return { turn: { id: "turn-compact", status: "inProgress", items: [] } };
+    }
     if (method === "thread/goal/get") return { goal: this.goalState };
     if (method === "thread/goal/set") {
       this.goalState = {

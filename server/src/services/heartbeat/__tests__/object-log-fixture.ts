@@ -3,13 +3,14 @@ import { Readable } from "node:stream";
 import type { StorageProvider } from "../../../storage/types.js";
 import { createObjectRunLogStore } from "../../object-run-log-store.js";
 
-export function objectLogFixture() {
+export function objectLogFixture(beforeConditionalPut?: (input: Parameters<NonNullable<StorageProvider["putObjectConditional"]>>[0]) => Promise<void>) {
   const objects = new Map<string, Buffer>();
   const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
   const provider: StorageProvider = {
     id: "s3",
     async putObject() { throw new Error("unexpected unconditional write"); },
     async putObjectConditional(input) {
+      await beforeConditionalPut?.(input);
       const old = objects.get(input.objectKey);
       if (input.ifNoneMatch ? old : !old || digest(old) !== input.ifMatch)
         throw Object.assign(new Error("conflict"), { name: "PreconditionFailed" });

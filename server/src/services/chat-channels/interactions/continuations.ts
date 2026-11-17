@@ -43,6 +43,24 @@ type InteractionContinuationsOptions = {
   CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS: number;
 };
 
+/**
+ * A confirmation that the assignee's own run resolved from the user's reply:
+ * only resolve-from-comment records the reply's comment on the result, and it
+ * requires the active responding run of the current assignee.
+ */
+function decidedByRespondingRun(
+  interaction: { resolvedByAgentId?: string | null; resolvedByRunId?: string | null;
+    resolvedByUserId?: string | null; result?: unknown },
+  assigneeAgentId: string,
+): boolean {
+  const result = interaction.result && typeof interaction.result === "object"
+    ? interaction.result as Record<string, unknown> : null;
+  return interaction.resolvedByAgentId === assigneeAgentId
+    && typeof interaction.resolvedByRunId === "string"
+    && !interaction.resolvedByUserId
+    && typeof result?.commentId === "string";
+}
+
 export function createChatInteractionContinuations(db: Db, options: InteractionContinuationsOptions) {
   const { redactError, CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS } = options;
 
@@ -193,6 +211,28 @@ export function createChatInteractionContinuations(db: Db, options: InteractionC
           .set({
             status: "processed",
             result: { code: "interaction_wakeup_no_longer_applicable" },
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(chatActions.id, claimed.id),
+              eq(chatActions.status, "processing"),
+            ),
+          ));
+        processed += 1;
+        continue;
+      }
+      if (decidedByRespondingRun(currentInteraction, payload.agentId)) {
+        // The assignee's own running turn recorded this decision from the
+        // user's reply (resolve-from-comment) and already acts on it. The
+        // in-app route skips this self-wake too. A second wake would carry no
+        // undelivered chat message, so reviewed-chat attestation would refuse
+        // it as a failed run.
+        await writeAction(tx => tx
+          .update(chatActions)
+          .set({
+            status: "processed",
+            result: { code: "interaction_wakeup_owned_by_responding_run" },
             updatedAt: new Date(),
           })
           .where(

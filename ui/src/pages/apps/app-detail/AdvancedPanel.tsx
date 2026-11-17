@@ -4,6 +4,7 @@ import { ArrowUpRight, ChevronRight, Loader2, Lock } from "lucide-react";
 import type {
   AppDefinition,
   ConnectionGrant,
+  GoogleWorkspaceServiceSelection,
   ToolConnection,
   ToolConnectionCredentialPolicy,
 } from "@paperclipai/shared";
@@ -19,12 +20,13 @@ import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useToast } from "@/context/ToastContext";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
-import { navigateTopLevel } from "@/lib/browserNavigation";
-import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { cn } from "@/lib/utils";
 import { Link } from "@/lib/router";
 import type { AppDetailSectionProps } from "./types";
 import { RevokeGrantDialog } from "./IdentitiesSection";
+import { describeError } from "@/api/errors";
+import { useGoogleWorkspaceServiceGate } from "@/features/connections/GoogleWorkspaceServices";
 
 export function AdvancedPanel({
   connection,
@@ -160,34 +162,37 @@ export function ReconnectCard({
   reconnectUnavailableMessage?: string;
 }) {
   const { pushToast } = useToast();
+  const authorization = useAuthorizationWindow();
+  const workspaceGate = useGoogleWorkspaceServiceGate();
   const reconnectOAuth = useMutation({
     // Reconnect is not a new identity choice. Personal-only connections must
     // put the replacement token back on the signed-in user's existing grant;
     // shared and legacy fallback connections keep using the organization slot.
-    mutationFn: () => connection.credentialPolicy === "per_user"
-      ? toolsApi.startOAuth(connection.id, { asCurrentUser: true })
-      : toolsApi.startOAuth(connection.id),
+    mutationFn: (workspaceServices?: GoogleWorkspaceServiceSelection) => {
+      const services = workspaceServices ? { workspaceServices } : {};
+      return connection.credentialPolicy === "per_user"
+        ? toolsApi.startOAuth(connection.id, { asCurrentUser: true, ...services })
+        : workspaceServices ? toolsApi.startOAuth(connection.id, services) : toolsApi.startOAuth(connection.id);
+    },
     onSuccess: async (start) => {
       try {
-        const target = await prepareOAuthNavigation(start);
-        if (target.kind === "reauthentication" && start.handoff) {
-          savePendingCloudHandoff(start.handoff.session);
-        }
-        navigateTopLevel(target.url);
+        await authorization.open(start);
       } catch (error) {
         pushToast({
           title: "Couldn’t start sign-in",
-          body: error instanceof Error ? error.message : "Please try again.",
+          body: describeError(error).body,
           tone: "error",
         });
       }
     },
-    onError: (error) =>
+    onError: (error) => {
+      authorization.cancel();
       pushToast({
         title: "Couldn’t start sign-in",
-        body: error instanceof Error ? error.message : "Please try again.",
+        body: describeError(error).body,
         tone: "error",
-      }),
+      });
+    },
   });
   const verifyVercel = useMutation({
     mutationFn: () => toolsApi.checkConnectionHealth(connection.id),
@@ -201,7 +206,7 @@ export function ReconnectCard({
     },
     onError: (error) => pushToast({
       title: "Credential still needs attention",
-      body: error instanceof Error ? error.message : "Review the connector in Vercel Connect and try again.",
+      body: describeError(error).body,
       tone: "error",
     }),
   });
@@ -211,6 +216,8 @@ export function ReconnectCard({
 
   return (
     <div className="flex flex-col gap-4 rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3">
+      {authorization.fallback}
+      {workspaceGate.dialog}
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
           {methodUnavailable ? "Connection no longer supported" : oauth ? "Reconnect required" : "This app needs reconnecting"}
@@ -258,7 +265,7 @@ export function ReconnectCard({
             type="button"
             size="sm"
             disabled={reconnectOAuth.isPending}
-            onClick={() => reconnectOAuth.mutate()}
+            onClick={() => workspaceGate.run(connection, (services) => { authorization.reserve(); reconnectOAuth.mutate(services); })}
           >
             {reconnectOAuth.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             {reconnectOAuth.isPending ? "Opening sign-in…" : "Reconnect"}
@@ -334,7 +341,7 @@ function ReconnectForm({
     onError: (error) =>
       pushToast({
         title: "That key didn't work",
-        body: error instanceof Error ? error.message : "Check the key and try again.",
+        body: describeError(error).body,
         tone: "error",
       }),
   });

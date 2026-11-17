@@ -108,16 +108,13 @@ export async function preserveLegacyWorkspaceRestoreSources(db: Db, run: Run, so
     // The stop-only worker rechecks exact allocation ownership, including
     // competing leases, before dispatch. Persist the intent even when cleanup
     // must wait, so no terminal-run sweep can fall back to destruction.
-    const prepared = await prepareSandboxStopAndRetain(db, lease);
+    // The original policy lets the settled hold return a warm sandbox to reuse
+    // (settleRecoveredWorkspaceRestoreHolds). It grants nothing while held.
+    const prepared = await prepareSandboxStopAndRetain(db, lease, undefined, { leasePolicy: "retain_on_failure",
+      metadata: { workspaceRestoreRecovery: {
+        schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA, runId: run.id, originalLeasePolicy: lease.leasePolicy,
+      } } });
     if (!prepared) throw new Error("Workspace recovery lease ownership changed before terminal commit.");
-    await db.update(environmentLeases).set({ leasePolicy: "retain_on_failure",
-      metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ workspaceRestoreRecovery: {
-        schema: LEGACY_WORKSPACE_RECOVERY_SCHEMA, runId: run.id,
-      } })}::jsonb`,
-    }).where(and(
-      eq(environmentLeases.id, prepared.id), eq(environmentLeases.companyId, run.companyId),
-      eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.status, "pending_cleanup"),
-    ));
     retained.push(lease.id);
   }
   return retained;

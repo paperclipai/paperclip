@@ -1,12 +1,93 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases, protocolTestOpsFailure } from "./runner-protocol-testops.mjs";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases, protocolTestOpsFailure,
+  captureManualJobRunContext, parseOfficialJobRunContext, payloadFromSanitizedRun } from "./runner-protocol-testops.mjs";
 import { testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
+import { sanitizeProtocolEvalRuns } from "./runner-protocol-eval-campaign.mjs";
 
 const context = { runId: "123", workflowSha: "a".repeat(40), sourceSha: "a".repeat(40), evalsSha: "b".repeat(40),
   allureJobRunId: "7", jobId: 9, launchId: 11, accountingMode: "legacy" };
 const planned = contract.cases.map(row => ({ id: row.testCaseId, selector: row.fullName }));
 const selection = rows => selectCases(rows, context);
+
+function sanitizedRun() {
+  const expected = contract.cases[0];
+  const cell = { rosterId: contract.rosterId, caseId: expected.caseId, model: contract.model, provider: contract.provider,
+    driver: contract.driver, finalAttemptId: "attempt-1", disposition: "passed", passed: true };
+  const score = { schema: "paperclip-runner/eval-score/v1", attemptId: cell.finalAttemptId, caseId: cell.caseId,
+    disposition: cell.disposition, passed: true, checks: Object.entries(expected.checks).map(([id, kind]) => ({ id, kind, passed: true })) };
+  const artifact = { schema: "paperclip-runner/eval-session-artifact/v1", attemptId: cell.finalAttemptId,
+    requestedModel: contract.model, provider: contract.provider, driver: contract.driver,
+    publication: { schema: "paperclip.runner-protocol-eval.public-chat/v1" }, privateExtra: "PRIVATE-SECRET" };
+  const campaign = { schema: "paperclip.runner-protocol-eval.campaign/v1", source: { paperclip: { sha: context.sourceSha },
+    evals: { sha: context.evalsSha }, workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/123" }, results: [cell] };
+  return { cell, score, artifact, campaign };
+}
+
+test("binds sanitized structured records without reading or forwarding private report content", () => {
+  const { cell, score, artifact, campaign } = sanitizedRun();
+  const input = { selection: selection(planned.slice(0, 1)), campaign,
+    payloads: new Map([[cell.finalAttemptId, payloadFromSanitizedRun(score, artifact, cell)]]) };
+  assert.equal(projectResults(input)[0].result.status, "passed");
+  assert.ok(!JSON.stringify(input.payloads.get(cell.finalAttemptId)).includes("PRIVATE-SECRET"));
+  for (const mutate of [value => { delete value.publication; }, value => { value.requestedModel = "other-model"; },
+    value => { value.provider = "other-provider"; }, value => { value.driver = "other-driver"; },
+    value => { value.attemptId = "other-attempt"; }, value => { value.schema = "raw-private-record"; }]) {
+    const changed = structuredClone(artifact); mutate(changed);
+    assert.throws(() => payloadFromSanitizedRun(score, changed, cell), /sanitized_payload_binding/);
+  }
+  for (const mutate of [value => { value.attemptId = "other-attempt"; }, value => { value.caseId = "other-case"; },
+    value => { value.passed = "true"; }, value => { value.schema = "other-score"; }]) {
+    const changed = structuredClone(score); mutate(changed);
+    assert.throws(() => payloadFromSanitizedRun(changed, artifact, cell), /sanitized_payload_binding/);
+  }
+  for (const change of [checks => checks.pop(), checks => { checks[0].passed = false; }]) {
+    const changed = structuredClone(input); change(changed.payloads.get(cell.finalAttemptId).checks);
+    assert.throws(() => projectResults(changed), /unsupported_pass/);
+  }
+});
+
+test("exports the production sanitizer output as closed TestOps files under a controlled context", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runner-testops-structured-"));
+  try {
+    const { cell, score, artifact, campaign } = sanitizedRun();
+    const run = join(root, "raw-runs", cell.finalAttemptId);
+    await mkdir(run, { recursive: true });
+    delete artifact.publication;
+    artifact.providerSessionId = "PRIVATE-SECRET";
+    for (const [name, data] of [["selection.json", selectCases(planned.slice(0, 1), { ...context, accountingMode: "controlled" })], ["campaign.json", campaign],
+      [`raw-runs/${cell.finalAttemptId}/score.json`, score], [`raw-runs/${cell.finalAttemptId}/artifact.json`, artifact],
+      [`raw-runs/${cell.finalAttemptId}/case.json`, { id: cell.caseId, checks: score.checks }],
+      [`raw-runs/${cell.finalAttemptId}/config.json`, { schema: "paperclip-runner/eval-config/v1", id: "config",
+        model: contract.model, provider: contract.provider, driver: contract.driver }]]) {
+      await writeFile(join(root, name), JSON.stringify(data));
+    }
+    const sanitize = () => sanitizeProtocolEvalRuns({ runsRoot: join(root, "raw-runs"), publicRunsRoot: join(root, "runs") });
+    await sanitize();
+    const execute = output => spawnSync(process.execPath, [fileURLToPath(new URL("./runner-protocol-testops.mjs", import.meta.url)),
+      "export-runs", join(root, "selection.json"), join(root, "campaign.json"), join(root, "runs"), join(root, output)], {
+      encoding: "utf8", env: { PATH: process.env.PATH, PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST: "private-manifest" } });
+    const positive = execute("positive");
+    assert.equal(positive.status, 0, positive.stderr);
+    assert.deepEqual(JSON.parse(positive.stdout), { reported: 1, passed: 1 });
+    const files = await readdir(join(root, "positive"));
+    assert.equal(files.length, 2);
+    const values = await Promise.all(files.map(file => readFile(join(root, "positive", file), "utf8")));
+    assert.ok(!values.join("").includes("PRIVATE-SECRET"));
+    assert.equal(JSON.parse(values.find(value => JSON.parse(value).status)).status, "passed");
+    score.checks[0].passed = false;
+    await writeFile(join(run, "score.json"), JSON.stringify(score));
+    await sanitize();
+    const failed = execute("failed");
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, /runner_testops_unsupported_pass/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 function catalog() {
   const roster = { rosterId: contract.rosterId, model: contract.model, provider: contract.provider,
@@ -66,10 +147,14 @@ test("binds the selected TestOps job to this exact workflow run and standing pla
   delete run.job.url;
   assert.equal((await inspectSelection(api, env)).cases.length, 1);
   const manual = { version: "1.0", tests: planned.map(row => ({ ...row, id: String(row.id) })) };
-  const admittedManual = await inspectSelection(api, { ...env, RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "" }, manual);
+  const manualEnv = await captureManualJobRunContext({ ...env, ALLURE_JOB_RUN_ID: "", RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "",
+    ALLURE_ENDPOINT: "https://paperclip.testops.cloud", ALLURE_PROJECT_ID: "1" },
+  async () => ({ stdout: "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=11\n" }));
+  const admittedManual = await inspectSelection(api, manualEnv, manual);
   assert.equal(admittedManual.fullPlan, false);
   assert.equal(admittedManual.cases.length, 1);
   assert.equal(admittedManual.cases[0].testCaseId, 194);
+  await assert.rejects(inspectSelection(api, { ...manualEnv, RUNNER_TESTOPS_EXPECTED_LAUNCH_ID: "12" }, manual), /jobrun_binding/);
   const controlled = await inspectSelection(api, { ...env, PAPERCLIP_PROTOCOL_ACCOUNTING_MODE: "controlled" });
   assert.equal(controlled.accountingMode, "controlled");
   assert.equal(projectResults({ selection: controlled })[0].evidence.accountingMode, "controlled");
@@ -80,6 +165,32 @@ test("binds the selected TestOps job to this exact workflow run and standing pla
   assert.throws(() => standingPlanCases({ ...manual, version: "other" }), /standing_plan/);
   run.url = "https://github.com/paperclipai/paperclip/actions/runs/122";
   await assert.rejects(inspectSelection(api, env), /jobrun_binding/);
+});
+
+test("captures only official numeric manual job context without evaluating or exposing its environment", async () => {
+  const env = { RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "", ALLURE_JOB_RUN_ID: "",
+    ALLURE_ENDPOINT: "https://paperclip.testops.cloud", ALLURE_PROJECT_ID: "1" };
+  const captured = await captureManualJobRunContext(env, async (command, args, options) => {
+    assert.equal(command, "allurectl");
+    assert.deepEqual(args, ["job-run", "env"]);
+    assert.equal(options.shell, false);
+    assert.equal(options.timeout, 30_000);
+    assert.equal(options.maxBuffer, 16_384);
+    return { stdout: "ALLURE_TOKEN=PRIVATE-SECRET\nALLURE_JOB_RUN_ID=2550\r\nALLURE_LAUNCH_ID=2588\n" };
+  });
+  assert.equal(captured.ALLURE_JOB_RUN_ID, "2550");
+  assert.equal(captured.RUNNER_TESTOPS_EXPECTED_LAUNCH_ID, "2588");
+  assert.ok(!JSON.stringify(captured).includes("PRIVATE-SECRET"));
+  for (const text of ["", "ALLURE_JOB_RUN_ID=7\n", "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=0\n",
+    "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=11\nALLURE_JOB_RUN_ID=7\n",
+    "ALLURE_JOB_RUN_ID=$(private)\nALLURE_LAUNCH_ID=11\n", "x".repeat(16_385)]) {
+    assert.throws(() => parseOfficialJobRunContext(text), /bootstrap_context/);
+  }
+  await assert.rejects(captureManualJobRunContext({ ...env, ALLURE_JOB_RUN_ID: "9" },
+    async () => ({ stdout: "ALLURE_JOB_RUN_ID=7\nALLURE_LAUNCH_ID=11\n" })), /bootstrap_context/);
+  await assert.rejects(captureManualJobRunContext({ ...env, RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "7" },
+    async () => { throw new Error("must not execute"); }), /bootstrap_context/);
+  await assert.rejects(captureManualJobRunContext(env, async () => { throw new Error("PRIVATE-SECRET"); }), /bootstrap_context/);
 });
 
 test("reports every unexecuted selected case as broken when the report is unavailable", () => {

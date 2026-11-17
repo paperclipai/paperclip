@@ -101,16 +101,17 @@ cover the database and prompt contracts; they do not prove live provider deliver
 
 For Slack, enable **Require at-mention** and **Allow direct messages**. Send a
 plain DM and follow up without a mention: both should reach the agent, with
-top-level replies to top-level DMs. Channel messages and thread replies still
+top-level replies to top-level DMs. Channel messages and channel thread replies still
 require a mention when that setting is enabled. Disable direct messages and
-confirm a plain DM is rejected. Use a private channel for threaded conversations.
+confirm a plain DM is rejected. Threads also work in DMs.
 
 For Slack acknowledgement latency, mention the bot with and without an attachment.
 Eyes should appear after authorized task/comment persistence, independently of
 file preparation, subscription and agent startup. Duplicate delivery must keep
 one receipt; the final reply must remove only its source message's eyes. Record
 live mention-to-reaction timing separately from the PostgreSQL fixture tests and
-the `chat.slack.receipt` transport span described in [Observability](../../doc/observability.md).
+the `chat.slack.receipt` transport span in
+[`receipt-timing.ts`](../../server/src/services/chat-channels/slack/receipt-timing.ts).
 
 During a top-level DM run, verify that the bot adds eyes to the source message
 and removes them when the final reply arrives. The pinned Slack SDK encodes a

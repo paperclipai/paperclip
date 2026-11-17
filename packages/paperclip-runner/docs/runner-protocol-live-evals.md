@@ -550,7 +550,9 @@ from the default branch and provide:
   selection; `all` never spends against a lane that the eval program has
   marked disabled;
 - `accounting_mode`: `controlled` by default; `legacy` is an explicit manual
-  qualification path. Controlled mode supports native Codex and ACPX Claude.
+  qualification path. Controlled mode supports the profiles that have a
+  committed allocation in `hosted-defaults.json`; today that is ACPX Claude
+  Sonnet 5. Native Codex also needs a committed OpenAI price and allocation.
 - `max_infrastructure_retries`: zero by default and required for controlled
   mode. Legacy mode allows up to three retries only when an attempt explicitly
   reports a retryable infrastructure failure.
@@ -822,6 +824,15 @@ entry file. Installed dependencies still belong to that trusted checkout. The
 staged copies are removed after verified process cleanup and kept if cleanup is
 incomplete. This path requires the repository's Node 24.11+ runtime.
 
+Each Linux protocol worker snapshots its current Node executable into a fresh
+owner-only directory before credential steps. The copy keeps the same bytes
+and version, with directory mode `0700` and file mode `0500`. The worker verifies
+the copy's hash and actual `process.execPath`, then puts that directory first
+on its job-local `PATH`. `cell-output/provider-node-receipt.json` records the
+original and copied Node modes and hashes plus the actual sidecar mode and
+hash. This handles writable hosted tool caches without changing those caches
+or relaxing Runner's qualified-artifact permission and digest checks.
+
 Campaign reports verify the retained request binding and the digest of every
 request receipt before reducing a cell's allocation. Missing admission, request,
 or receipt evidence preserves known ledger charges and holds the rest of the
@@ -834,9 +845,10 @@ forced stop still leaves cleanup unverified and retains the full allocation.
 ## Controlled hosted workflow
 
 `accounting_mode=controlled` is the default for manual dispatch and the only
-scheduled mode. It supports explicitly selected native Codex and ACPX Claude
-rosters. `all` still means the entire maintained suite; unsupported cells fail
-admission rather than being omitted. Use `accounting_mode=legacy` explicitly
+scheduled mode. It supports explicitly selected rosters whose profiles have a
+committed allocation, today ACPX Claude Sonnet 5. `all` still means the entire
+maintained suite; unsupported cells fail the catalog step before any build
+rather than being omitted. Use `accounting_mode=legacy` explicitly
 for a manual qualification of other providers. Legacy runs retain their
 existing public artifact and publication behavior and do not claim complete
 controller cost coverage.
@@ -849,32 +861,49 @@ Re-running even one job is rejected at that worker before provider access.
 The existing nightly enable gate and exact eval SHA pin remain required.
 This change does not set either variable or enable paid recurrence.
 
-Set `RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON` only after its operating
-bounds have been reviewed. An absent, stale or invalid policy stops before
-provider work. The policy schema is `paperclip.runner-eval.hosted-policy/v1`:
+Controlled runs derive their campaign policy from committed defaults in
+`packages/paperclip-runner/scripts/controlled-evals/hosted-defaults.json`.
+Changing a price, allocation, overhead reservation or trace limit is a reviewed
+pull request, not a repository variable. The controller runtime packages the
+file, and `hosted.mjs prepare` reads that verified copy, never the workspace
+that the private evals program can modify. The file holds:
 
-- `controllerLockSha256`, the SHA-256 of the explicitly reviewed compatible
-  workspace lockfile. The existing unprivileged target-lock job resolves it;
-  inspect that immutable artifact before setting the policy. The controller
-  build requires its digest to match, installs with `--frozen-lockfile` and a
-  job-local store, and records the digest in the runtime receipt. Private
-  preparation checks that receipt binding again. A changed lockfile requires a
-  policy review. No lockfile is committed by this workflow integration.
-- `maxUsd`, `maxCells` (1–512), `durationMs` (at most four hours), current
-  `pricingVerifiedAt` and `pricingExpiresAt`.
-- `route`, optional gateway `projectId`, exact `models`, and the same
-  four-component `overhead` contract used by the controller.
-- `observability` with `projectId`, `capture` and `nativeLimits`. Tracing is
-  required for this mode. `BRAINTRUST_API_KEY` is delivered only to the
-  trusted controller step, even when model requests use the direct route.
+- `maxUsd`, the default campaign spend cap. The optional repository variable
+  `RUNNER_PROTOCOL_EVAL_MAX_USD` overrides it; it is the only setting.
+- `durationMs` (at most four hours) and `route`.
+- `models`, the committed price table. Prices carry a version and source URL
+  and no review expiry. Each campaign receives a pricing and overhead validity
+  window that starts when its manifest is prepared and ends one hour after its
+  deadline.
 - `allocations`, one entry per provider/agent/model profile, each with
   `maxUsd`, `maxRequests`, `maxConcurrent` and `timeoutMs`.
-- `capacityBound`, a reviewed full-lifecycle proof. Its `configurationSha256`
-  hashes `canonical(hostedPolicyConfiguration(policy))`, which excludes only
-  the proof itself. The proof must cover every selected cell up to `maxCells`,
-  trace and gateway processing, retained data, private archive transfers,
-  workflow setup/build/reporting and the full retention window. A policy
-  digest is a binding to evidence, not independent proof of vendor charges.
+- `overhead`, the four-component operating reservation with
+  `accountingReadiness: "model_requests"`.
+- `observability` capture flags and `nativeLimits`. Tracing is required. The
+  Braintrust project comes from `RUNNER_E2E_BRAINTRUST_PROJECT_ID`.
+  `BRAINTRUST_API_KEY` is delivered only to the trusted controller step, even
+  when model requests use the direct route.
+
+The cell limit is the selected catalog itself (1–512 cells). The campaign must
+still fit its spend cap: the once-only overhead plus every selected allocation
+must not exceed `maxUsd`, or preparation fails before provider work. With the
+committed defaults the 41-case Claude plan reserves $339 of the $400 cap.
+
+The controller installs the committed `pnpm-lock.yaml` of the trusted workflow
+revision with `--frozen-lockfile`, disabled install scripts and a job-local
+store. It fails if the checkout's lockfile differs from the commit. The runtime
+receipt records the lockfile digest; private preparation checks that it equals
+the committed lockfile before compiling requests. A dependency change is
+reviewed through its own pull request.
+
+The previous `RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON` variable is no longer
+read. Its hand-maintained `maxCells`, pricing windows, `controllerLockSha256`
+and self-hashed `capacityBound`/`provisionalBound` proofs are retired. Under
+model-request readiness every request settles from its own receipt, and an
+unresolved request fails the cell, so those proofs never changed admission or
+accounting. Retained manifests that include them still replay. The derived
+policy is retained next to the manifest as `hosted-policy.json` in private
+storage.
 
 The preparer compiles every selected private request once. It validates exact
 catalog membership, source and definition revisions, executable digests and
@@ -908,7 +937,7 @@ role, region and bucket variables. The role and bucket policy are unchanged.
 The transfer helper verifies bucket privacy and 30-day bounded retention,
 rejects unsafe archives, uses conditional immutable writes and does not retry.
 Each archive is at most 264 MiB (256 MiB source). The reviewed operating bound
-must cover up to `maxCells` cell archives, one controller archive, one report
+must cover every selected cell archive, one controller archive, one report
 archive, their download/receipt traffic and the GitHub code/build artifacts.
 Each shared manifest downloader supplies its worker cell ID or `report` as
 a receipt identity. Receipts use distinct immutable keys while all workers
@@ -953,13 +982,12 @@ paid recurrence disabled until these independent gates are qualified.
 
 ### Token-spend qualification with separate operating reconciliation
 
-A policy may explicitly set `overhead.accountingReadiness: "model_requests"`
-when model-token qualification is the operator's priority. In that mode an
-absent campaign capacity proof and absent observability cost proof do not block
-admission. Any supplied proofs must still validate. Current allowance/pricing
-windows, trace quotas, immutable source/request/runtime bindings, complete
-selection, per-cell allocations, request limits, no retries and the shared
-campaign admission cap remain required. Model reservation proofs remain required.
+The committed hosted defaults use `overhead.accountingReadiness: "model_requests"`.
+In that mode absent capacity, observability and model reservation proofs do not
+block admission; any supplied proofs must still validate. Trace quotas,
+immutable source/request/runtime bindings, complete selection, per-cell
+allocations, request limits, no retries and the campaign spend cap remain
+required.
 
 The final report retains the once-only operating allowance and labels operating
 reconciliation pending. Missing, failed or canceled model evidence still holds
@@ -986,10 +1014,12 @@ The existing workflow accepts the optional `ALLURE_JOB_RUN_ID` and
 roster, and an explicit `accounting_mode` for the standing 41-case protocol
 plan. The source must be the trusted current workflow revision. Qualification
 covers that recorded Claude Sonnet 5 configuration and accounting mode.
-Controlled mode preserves its reviewed policy, immutable lock/source/request
+Controlled mode preserves its committed policy, immutable lock/source/request
 bindings, tracing, private retention, first-attempt and zero-retry gates.
 Its paid workers use `ubuntu-latest`, matching the required GitHub-hosted
 operating origin even when the legacy AWS fleet selector is enabled.
+Requested parallelism must fit both the configured campaign ceiling and the
+selected runner limit. Without a request, the lower ceiling applies.
 Legacy mode uses direct-provider credentials. A pass in one mode does not prove
 the other's credential or routing path.
 
@@ -998,13 +1028,21 @@ job run, launch, standing plan and exact selected case identities. The full
 41-case roster is filtered to that selection before matrix fan-out. A manual
 reporting run validates the complete standing plan and executes only existing
 case 194 (`get-task-context`) to register the GitHub job with real evidence.
+A manual run captures numeric job-run and launch identities from the supported
+`allurectl job-run env` command inside the watch session; watch does not fill
+an empty `ALLURE_JOB_RUN_ID` input. The captured launch must match the
+authoritative job-run response. Service-triggered runs keep their supplied ID.
 A TestOps-triggered job uses its requested selection. Targeted selections retain their smaller coverage and omit the
 `full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
 
 The report job creates a closed projection of case identities, checks, numeric
-usage and statuses. For controlled mode this happens inside the existing
-private-history boundary; raw attempts, controller evidence and chat reports
-remain there. Only the closed Allure results and receipt cross into the final
+usage and statuses. For controlled mode, `runner-protocol-testops.mjs export-runs`
+reads sanitized structured score/artifact records inside the existing
+private-history boundary. It binds the original grade, complete checks,
+attempt, model, provider and driver before it can emit a pass. Raw attempts,
+controller evidence and canonical chat reports remain private. Controlled
+reporting never invokes the public viewer; legacy publication keeps that path.
+Only the closed Allure results and receipt cross into the final
 protected reporting job. It checks source and attempt identity, uploads one result
 per selected case, and verifies the saved case and status bindings. Missing
 execution/report evidence becomes a broken result. A passing campaign row

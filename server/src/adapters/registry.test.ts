@@ -384,3 +384,19 @@ function authorizeKimi(model: string) {
     platform: "linux", architecture: "x64", nativeClosureDigest: `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`,
     expiresAt: Date.now() + 60_000 }));
 }
+
+describe("plugin Runner-task environment checks", () => {
+  it.each([
+    { provider: "codex", model: "gpt-6.1-sol" },
+    { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" },
+  ])("requires a managed AI connection before any task operation: %j", async config => {
+    const runnerTask = vi.fn();
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ companyId: "company-test", adapterType: "paperclip_runner", config,
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "probe-lease",
+        runnerTaskProbe: { runId: "probe-run", sessionId: "probe-session" }, runnerTask } as never });
+    expect(result).toMatchObject({ adapterType: "paperclip_runner", status: "fail",
+      checks: [{ code: "ai_connection_required", level: "error", message: expect.stringContaining("requires a managed AI connection") }] });
+    expect(runnerTask).not.toHaveBeenCalled();
+    expect(() => assertHarnessTestPassed(result)).toThrow(expect.objectContaining({ code: "ai_connection_required" }));
+  });
+});

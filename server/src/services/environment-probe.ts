@@ -34,7 +34,8 @@ export function parseSandboxPlatformFacts(output: string): PlatformFacts {
     libc: libc === "glibc" || libc === "musl" ? libc : "unknown",
     ...(libc === "glibc" ? { glibcVersion: version?.trim() ?? "unknown" } : {}) };
 }
-async function sandboxBinding(db: Db, environment: Environment, companyId: string) {
+/** The immutable runner image or snapshot identity of a sandbox environment, or null. */
+export async function sandboxBinding(db: Db, environment: Environment, companyId: string) {
   const selectedTemplate: { value: SandboxTemplateIdentity } = { value: null };
   const parsed = await resolveEnvironmentDriverConfigForRuntime(db, companyId, environment, {
     applyCustomImageTemplate: true, readOnlyCustomImageTemplate: true,
@@ -281,6 +282,10 @@ export async function probeEnvironment(
       environmentId: environment.id,
       config: parsed.config,
     });
+  }
+
+  if (parsed.config.network === "tailscale" && !parsed.config.tailscaleSocket) {
+    return { ok: false, driver: "ssh", summary: "Save the Tailscale environment before testing its connection.", details: null };
   }
 
   try {

@@ -169,3 +169,54 @@ it("retains a prompt paused wake when a new request preempts a far-future deadli
   paused = false; await vi.advanceTimersByTimeAsync(30_000);
   expect(run).toHaveBeenCalledTimes(2); expect(coordinator.nextWakeAt()).toBeNull();
 });
+
+it("fences a null-deadline source hint through drain until owner reconciliation succeeds", async () => {
+  vi.useFakeTimers();
+  let draining = false;
+  const owner = installDatabaseWorkSignals({
+    execute: vi.fn(async () => [{ status: "committed" }]),
+    transaction: async (callback: (tx: object) => Promise<unknown>) => callback({ execute: async () => [{ xid: "1" }] }),
+  });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => !draining, canReconcile: () => true, onError: vi.fn() });
+  const run = vi.fn(async () => {});
+  const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.statusCardEvaluation,
+    { run, next: async () => null, canRun: () => !draining, retryMs: 30_000 });
+  expect(worker.reconciliationSnapshot().reconciled).toBe(false);
+  await worker.ready;
+  const settled = worker.reconciliationSnapshot();
+  expect(settled.reconciled).toBe(true);
+  draining = true;
+  expect(worker.reconciliationSnapshot()).toEqual(settled);
+  await owner.transaction(async tx => { await signalDatabaseWork(tx, DELIVERY_QUEUES.statusCardEvaluation); });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(worker.reconciliationSnapshot().reconciled).toBe(false);
+  expect(worker.reconciliationSnapshot().revision).not.toBe(settled.revision);
+  await vi.advanceTimersByTimeAsync(90_000);
+  expect(run).toHaveBeenCalledOnce();
+  expect(worker.reconciliationSnapshot().reconciled).toBe(false);
+  draining = false;
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(worker.reconciliationSnapshot().reconciled).toBe(true);
+  expect(coordinator.nextWakeAt()).toBeNull();
+  await coordinator.stop();
+  expect(worker.reconciliationSnapshot().reconciled).toBe(false);
+});
+
+it("does not certify a source hint arriving during a successful evaluation", async () => {
+  vi.useFakeTimers();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn() });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
+  let release!: () => void;
+  const run = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+  const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.statusCardEvaluation,
+    { run, next: async () => Date.now() + 60_000, canRun: () => true, retryMs: 30_000 });
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+  expect(worker.reconciliationSnapshot().reconciled).toBe(false);
+  worker.wake();
+  release(); await worker.ready;
+  expect(worker.reconciliationSnapshot().reconciled).toBe(false);
+  await vi.advanceTimersByTimeAsync(0);
+  release(); await vi.advanceTimersByTimeAsync(0);
+  expect(worker.reconciliationSnapshot().reconciled).toBe(true);
+});

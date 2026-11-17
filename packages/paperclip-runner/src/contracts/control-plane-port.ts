@@ -35,6 +35,13 @@ export interface AppendControlPlaneEventOptions {
    * acceptance. Ports that do not support deferral keep their usual behavior.
    */
   deferPostCommitObservers?: true;
+  /**
+   * For an event type in the port's `pipelinedEventTypes` (only `item.delta`
+   * when the port does not name them), on a port with `pipelinesStreamingEvents`: the
+   * caller does not wait for this receipt before its next append, so the port
+   * may hold the delta briefly to commit it with later ones.
+   */
+  streaming?: true;
 }
 
 export interface CheckpointControlPlaneSessionOptions {
@@ -80,6 +87,18 @@ export interface CompleteControlPlaneRunInput {
  * runner package never imports the server, UI, or database that sits behind it.
  */
 export interface ControlPlanePort {
+  /**
+   * True when the port commits `item.delta` events in batches. A caller may
+   * then append a delta with `streaming` and start the next append before its
+   * receipt settles. The port
+   * commits every other event, checkpoint and result only after every delta
+   * appended before it, and a delta's receipt settles only after its batch
+   * commits.
+   */
+  readonly pipelinesStreamingEvents?: boolean;
+  readonly pipelinedEventTypes?: ReadonlySet<PrpEvent["eventType"]>;
+  /** Commits the queued streaming deltas now, without waiting for the batch timer. */
+  flushStreamingEvents?(): void;
   normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   openRun(input: OpenControlPlaneRunInput): Promise<void>;
   loadSessionCheckpoint?(): Promise<PersistedNativeSession | null>;
@@ -99,4 +118,11 @@ export interface ControlPlanePort {
     result: NativeRunResult | CompleteControlPlaneRunInput,
     options?: FinalizeControlPlaneOperationOptions,
   ): Promise<void>;
+  /**
+   * Durable proof, across every runner instance, that this run has recorded no
+   * provider event, tool invocation, or accepted result. True only when the
+   * control plane can prove it; a port without this proof keeps every
+   * recovery refusal unchanged.
+   */
+  provesNoRunProviderWork?(options: FinalizeControlPlaneOperationOptions): Promise<boolean>;
 }
