@@ -1,3 +1,4 @@
+import { connectionRemovalToast } from "@/features/connections/googleAccessRemoval";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "@paperclipai/shared";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -191,17 +192,14 @@ export function Connections() {
 
     }) =>
       toolsApi.archiveConnection(target.id),
-    onSuccess: (_connection, target) => {
+    onSuccess: (removed, target) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
-      pushToast({
-        title: "Connection deleted",
-        body: target.remainingConnectionCount > 0
-          ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-          : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`,
-        tone: "success",
-      });
+      const body = target.remainingConnectionCount > 0
+        ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
+        : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`;
+      pushToast(connectionRemovalToast({ title: "Connection deleted", body, providerAccess: removed?.removal?.providerAccess }));
       setConnectionToDelete(null);
     },
     onError: (error) =>

@@ -1,3 +1,4 @@
+import { connectionRemovalToast } from "@/features/connections/googleAccessRemoval";
 import { AGGREGATOR_NAMES, aggregatorManagementUrl, isAppAggregator, type AggregatorAppSnapshot, type AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
 import type { CatalogSource } from "./CatalogSourceFilters";
 import { ConnectorsToolbar } from "./ConnectorsToolbar";
@@ -543,10 +544,11 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         if (!target.poolRevision) throw new Error("Open the confirmation again before removing this pool.");
         await aiConnectionPoolsApi.remove(selectedCompanyId!, target.id, target.poolRevision);
       } else {
-        await toolsApi.archiveConnection(target.id, { deleteStoredContent });
+        return toolsApi.archiveConnection(target.id, { deleteStoredContent });
       }
+      return null;
     },
-    onSuccess: (_connection, target) => {
+    onSuccess: (removed, target) => {
       queryClient.invalidateQueries({ queryKey: ["email-inboxes", selectedCompanyId!] });
       queryClient.invalidateQueries({
         queryKey: queryKeys.chatEndpoints.list(selectedCompanyId!),
@@ -560,17 +562,17 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       queryClient.invalidateQueries({
         queryKey: queryKeys.apps.attention(selectedCompanyId!),
       });
-      pushToast({
-        title: "Connection removed",
-        body:
+      const body =
           target.pool ? "The connections in the pool are kept." : target.kind === "chat"
             ? `${target.providerName} is disconnected. Existing Paperclip tasks remain available.`
             : target.remainingConnectionCount > 0
             ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
-            : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
-        ...(deleteStoredContent && !target.pool && target.kind !== "chat" ? { title: "Connection removed. Deleting its saved data." } : {}),
-        tone: "success",
-      });
+            : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`;
+      pushToast(connectionRemovalToast({
+        title: deleteStoredContent && !target.pool && target.kind !== "chat" ? "Connection removed. Deleting its saved data." : "Connection removed",
+        body,
+        providerAccess: removed?.removal?.providerAccess,
+      }));
       setConnectionToRemove(null);
     },
     onError: (error) =>

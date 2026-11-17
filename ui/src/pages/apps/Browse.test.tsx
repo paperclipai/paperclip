@@ -1692,6 +1692,42 @@ describe("Connectors landing page", () => {
     );
   });
 
+  it("tells the user when Paperclip could not end Google access and links to Google's page", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application()] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection()] });
+    archiveConnectionMock.mockResolvedValueOnce({
+      ...connection(), status: "archived",
+      removal: { providerAccess: { provider: "google", result: "not_ended", outcomes: ["broker_unavailable"] } },
+    });
+
+    await renderBrowse();
+    const menuTrigger = container.querySelector<HTMLButtonElement>('button[aria-label="Manage devinfoley@gmail.com connection"]');
+    await act(async () => {
+      menuTrigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    await flushReact();
+    const removeItem = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent?.trim() === "Remove connection");
+    await act(async () => {
+      removeItem?.dispatchEvent(new Event("click", { bubbles: true }));
+    });
+    await flushReact();
+    const confirmButton = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Remove connection");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Connection removed",
+      tone: "warn",
+      body: expect.stringContaining("Paperclip removed the connection but couldn't end its access at Google."),
+      action: expect.objectContaining({ label: "Open Google account connections" }),
+    }));
+    expect(JSON.stringify(pushToastMock.mock.calls.at(-1))).not.toContain("broker_unavailable");
+  });
+
   it("retains the confirmed pool revision when a concurrent edit rejects removal", async () => {
     const app = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
     listGalleryMock.mockResolvedValue({ apps: [app] });
