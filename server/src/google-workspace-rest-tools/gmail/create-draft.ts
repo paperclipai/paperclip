@@ -154,7 +154,6 @@ export const createDraft = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   args,
-  whenTooLarge: "The draft was created, but its details are too large to return. Find it with list_drafts.",
   async run(input, http) {
     assertDraftSupported(input);
     const reply = input.replyToMessageId

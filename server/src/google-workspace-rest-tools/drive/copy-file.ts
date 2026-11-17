@@ -48,7 +48,6 @@ export const copyFile = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   args,
-  whenTooLarge: "The copy was created, but its details are too large to return. Find it with search_files.",
   async run(input, http) {
     try {
       return copyFileResult(await http.send<RestFile>(copyFileRequest(input)));

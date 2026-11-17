@@ -90,7 +90,6 @@ export const updateDoc = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   args,
-  whenTooLarge: "The edit was applied, but Google's reply is too large to return. Read the document again with read_doc.",
   async run(input, http) {
     const request = updateDocRequest(input);
     return updateDocResult(await sendBatchUpdate<RestBatchUpdateResponse>(http, request, "document", "read_doc"));

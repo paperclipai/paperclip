@@ -244,7 +244,6 @@ export const updateEvent = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   args,
-  whenTooLarge: "The event was updated, but its details are too large to return.",
   async run(input, http) {
     assertTimeZone(input.timeZone);
     if (input.startTime !== undefined) parseTimeInput(input.startTime, "startTime");

@@ -14,7 +14,7 @@ export const FALLBACK_TOOL_LIMITS: ToolLimits = { maxResultBytes: FALLBACK_MAX_R
 export interface RestToolSpec<Args> {
   definition: Tool;
   args: z.ZodType<Args>;
-  whenTooLarge: string | ((args: Args) => string);
+  whenTooLarge?: string | ((args: Args) => string);
   run(args: Args, http: GoogleHttp, limits: ToolLimits): Promise<CallToolResult>;
 }
 
@@ -24,6 +24,10 @@ export interface RestTool {
 }
 
 export function defineTool<Args>(spec: RestToolSpec<Args>): RestTool {
+  const readOnly = spec.definition.annotations?.readOnlyHint === true;
+  if (readOnly !== (spec.whenTooLarge !== undefined)) {
+    throw new Error(`${spec.definition.name}: a read tool must say how to ask for less, and a write tool must not`);
+  }
   return {
     definition: spec.definition,
     async call(rawArgs, http, limits = FALLBACK_TOOL_LIMITS) {
@@ -33,8 +37,10 @@ export function defineTool<Args>(spec: RestToolSpec<Args>): RestTool {
         return { isError: true, content: [{ type: "text", text: `Invalid arguments for ${spec.definition.name}: ${detail}` }] };
       }
       try {
+        const result = await spec.run(parsed.data, http, limits);
+        if (!spec.whenTooLarge) return result;
         const advice = typeof spec.whenTooLarge === "string" ? spec.whenTooLarge : spec.whenTooLarge(parsed.data);
-        return withinResultBudget(await spec.run(parsed.data, http, limits), limits.maxResultBytes, advice);
+        return withinResultBudget(result, limits.maxResultBytes, advice);
       } catch (error) {
         if (error instanceof GoogleToolError) return toolErrorResult(error);
         throw error;

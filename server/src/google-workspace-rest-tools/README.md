@@ -187,8 +187,11 @@ replaced by a tool error that gives its size and the limit, says it was not
 returned, and says how to ask for less. Each tool states that advice in
 `whenTooLarge`: a smaller `pageSize` for list tools, a lighter
 `messageFormat` or view for Gmail, a narrower range for Sheets, `fields` for
-Slides. For a write, the advice says that the change was made and how to read
-the result. Nothing is ever cut short. Drive downloads also stop reading at the
+Slides. Nothing is ever cut short. Write tools are not checked: their result
+comes after the change was made, and an error then could lead the agent to
+make the change twice. A write result echoes its request or Google's reply
+to it, so its size follows the request. `defineTool` refuses a read tool without advice
+and a write tool with it. Drive downloads also stop reading at the
 limit, since larger content could never fit.
 
 `FALLBACK_MAX_RESULT_BYTES` (250,000) in `tool.ts` applies only when a direct

@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { oneTab, text } from "./docs/fixtures/docs-rest.js";
 import { fakeGoogle, json } from "./fixtures/fake-google.js";
 import { shape, slide } from "./slides/fixtures/slides-rest.js";
-import { FALLBACK_MAX_RESULT_BYTES, serializedResultBytes } from "./tool.js";
+import { z } from "zod";
+import { defineTool, FALLBACK_MAX_RESULT_BYTES, serializedResultBytes } from "./tool.js";
 import { callGoogleWorkspaceRestTool, type GoogleWorkspaceRestService } from "./tools.js";
 import { READ_LESS } from "./drive/file.js";
 
@@ -34,13 +35,6 @@ const CASES: BudgetCase[] = [
     arguments: () => ({}),
     answer: (size) => json({ labels: [{ id: "Label_1", name: filler(size), type: "user" }] }),
     advice: "Ask for fewer labels with a smaller pageSize.",
-  },
-  {
-    service: "gmail",
-    name: "create_draft",
-    arguments: (size) => ({ to: ["sam@example.test"], subject: "Report", body: filler(size) }),
-    answer: () => json({ id: "draft1", message: { id: "msg2", threadId: "thr2" } }),
-    advice: "The draft was created, but its details are too large to return. Find it with list_drafts.",
   },
   {
     service: "calendar",
@@ -137,6 +131,24 @@ describe("result budget", () => {
       expect(serializedResultBytes(supplied)).toBeGreaterThan(FALLBACK_MAX_RESULT_BYTES);
     },
   );
+
+  it("never turns a completed write into an error, whatever the size of its result", async () => {
+    const { fetch, calls } = fakeGoogle(() => json({ id: "draft1", message: { id: "msg2", threadId: "thr2" } }));
+    const body = filler(30_000);
+    const result = await callGoogleWorkspaceRestTool({ service: "gmail", name: "create_draft", arguments: { to: ["sam@example.test"], subject: "Report", body },
+      accessToken: "t", fetch, maxResultBytes: 1_000 });
+    expect(result.isError).toBeUndefined();
+    expect(serializedResultBytes(result)).toBeGreaterThan(1_000);
+    expect(result.structuredContent).toMatchObject({ id: "draft1", plaintextBody: body });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("requires advice from every read tool and none from a write tool", () => {
+    const definition = (readOnlyHint: boolean) => ({ name: "t", inputSchema: { type: "object" as const }, annotations: { readOnlyHint } });
+    const run = async () => ({ content: [] });
+    expect(() => defineTool({ definition: definition(true), args: z.object({}), run })).toThrow(/read tool must say how to ask for less/);
+    expect(() => defineTool({ definition: definition(false), args: z.object({}), whenTooLarge: "x", run })).toThrow(/write tool must not/);
+  });
 
   it("refuses a budget that is not a positive whole number before calling Google", async () => {
     const { fetch, calls } = fakeGoogle(() => json({ labels: [] }));
