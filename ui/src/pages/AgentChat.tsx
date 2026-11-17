@@ -66,6 +66,7 @@ export function AgentChat() {
     if (enabled && agent && session.isSuccess && chat.isSuccess && !(chatId && !chat.data))
       recordAgentChatVisit(agent.companyId, userId, agent.id, chat.data?.id ?? null);
   }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id, chatId]);
+  // The route decides which cached chat a new conversation fills, even when both routes show no chat yet.
   const ensureIssue = useCallback(async () => {
     if (!agent || !selectedCompanyId) throw new Error("Agent not found");
     if (chat.data) return chat.data;
@@ -83,7 +84,7 @@ export function AgentChat() {
       creating.current = null;
       throw error;
     }
-  }, [agent, selectedCompanyId, chat.data, client, userId]);
+  }, [agent, selectedCompanyId, chat.data, client, userId, chatId]);
   // An outage before anything loaded keeps the quiet loading copy; loaded
   // data renders through it.
   const reconnecting = agentsView.kind === "reconnecting" || sessionView.kind === "reconnecting"

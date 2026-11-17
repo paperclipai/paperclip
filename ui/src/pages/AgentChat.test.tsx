@@ -10,7 +10,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { AgentChat } from "./AgentChat";
 import { recordAgentChatVisit, recordedAgentChatIssueId } from "@/lib/recent-agent-chats";
 
-const api = vi.hoisted(() => ({ enabled: true, chatId: undefined as string | undefined, list: vi.fn(), get: vi.fn(), getChat: vi.fn(), listChats: vi.fn(), ensure: vi.fn(), session: vi.fn() }));
+const api = vi.hoisted(() => ({ enabled: true, chatId: undefined as string | undefined, list: vi.fn(), get: vi.fn(), getChat: vi.fn(), listChats: vi.fn(), ensure: vi.fn(), session: vi.fn(),
+  ensureIssue: undefined as undefined | (() => Promise<unknown>) }));
 const agentId = "18c5ad50-9d70-4e24-bd82-337e1d45a414";
 vi.mock("@/api/agents", () => ({ agentsApi: { list: api.list, get: api.get } }));
 vi.mock("@/api/agentChats", () => ({ agentChatsApi: { get: api.getChat, list: api.listChats, ensure: api.ensure } }));
@@ -18,7 +19,10 @@ vi.mock("@/api/auth", () => ({ authApi: { getSession: api.session } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-a" }) }));
 vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: api.enabled, loaded: true }) }));
 vi.mock("@/lib/router", () => ({ useParams: () => ({ agentRef: "18c5ad50-9d70-4e24-bd82-337e1d45a414", chatId: api.chatId }), Link: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={to}>{children}</a> }));
-vi.mock("./IssueDetail", () => ({ TaskDetailSurface: ({ conversation }: { conversation: { agent: Agent; issue?: { id: string } } }) => <div>History for {conversation.agent.name} {conversation.issue?.id}</div> }));
+vi.mock("./IssueDetail", () => ({ TaskDetailSurface: ({ conversation }: { conversation: { agent: Agent; issue?: { id: string }; ensureIssue: () => Promise<unknown> } }) => {
+  api.ensureIssue = conversation.ensureIssue;
+  return <div>History for {conversation.agent.name} {conversation.issue?.id}</div>;
+} }));
 
 let root: Root;
 let container: HTMLDivElement;
@@ -72,6 +76,27 @@ it("keeps the last opened chat when a named chat no longer exists", async () => 
   await waitFor(() => expect(container.textContent).toContain("Conversation not found."));
   expect(recordedAgentChatIssueId("company-a", "viewer-a", agentId)).toBe("second");
 });
+it("creates the default chat for the default route after leaving a chat that no longer exists", async () => {
+  api.chatId = "deleted";
+  api.list.mockResolvedValue([{ id: agentId, companyId: "company-a", name: "Helper" }]);
+  api.listChats.mockResolvedValue([]);
+  api.getChat.mockResolvedValue(null);
+  // The default route was opened before, so its empty result is cached.
+  api.chatId = undefined;
+  render();
+  await waitFor(() => expect(container.textContent).toContain("History for Helper"));
+  api.chatId = "deleted";
+  render();
+  await waitFor(() => expect(container.textContent).toContain("Conversation not found."));
+  // The same agent's default route, which has no chat yet, opens in place.
+  api.chatId = undefined;
+  render();
+  await waitFor(() => expect(container.textContent).toContain("History for Helper"));
+  api.ensure.mockResolvedValue({ id: "new-default", companyId: "company-a", conversationAgentId: agentId });
+  await api.ensureIssue!();
+  await waitFor(() => expect(container.textContent).toContain("History for Helper new-default"));
+});
+
 it("explains when Agent Chat is disabled without creating a conversation", async () => {
   api.enabled = false;
   api.list.mockResolvedValue([{ id: agentId, companyId: "company-a", name: "Helper" }]);
