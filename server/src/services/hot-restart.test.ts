@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findMissingHotRestartSnapshotRunIds,
@@ -149,6 +150,30 @@ describe("hot-restart path compatibility", () => {
       }),
     ).resolves.toBe("2026-08-01T01:02:04.000Z");
     expect(commands).toEqual(["powershell.exe", "pwsh.exe"]);
+  });
+
+  it.skipIf(process.platform !== "win32")("reads a protected Windows process identity when StartTime is unavailable", async () => {
+    await expect(readProcessStartedAt(19484, {
+      platform: "win32",
+      runCommand: async (_command, args) => execFileSync("powershell.exe", [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+        "function Get-Process { [pscustomobject]@{ StartTime = $null } }; " +
+        "function Get-CimInstance { param($ClassName, $Filter) " +
+        "if ($ClassName -ne 'Win32_Process' -or $Filter -ne 'ProcessId = 19484') { throw 'Wrong identity query' }; " +
+        "[pscustomobject]@{ CreationDate = [datetime]'2026-11-17T08:03:27Z' } }; " + args.at(-1),
+      ], { encoding: "utf8", windowsHide: true }),
+    })).resolves.toBe("2026-11-17T08:03:27.000Z");
+  });
+
+  it.skipIf(process.platform !== "win32")("keeps unknown protected process identities conservative", async () => {
+    await expect(readProcessStartedAt(19484, {
+      platform: "win32",
+      runCommand: async (_command, args) => execFileSync("powershell.exe", [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+        "function Get-Process { [pscustomobject]@{ StartTime = $null } }; " +
+        "function Get-CimInstance { [pscustomobject]@{ CreationDate = $null } }; " + args.at(-1),
+      ], { encoding: "utf8", windowsHide: true, stdio: "pipe" }),
+    })).rejects.toThrow("Process creation time is unavailable");
   });
 
   it("surfaces supported-platform process identity probe failures", async () => {
