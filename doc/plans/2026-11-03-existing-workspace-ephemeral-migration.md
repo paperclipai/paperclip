@@ -344,6 +344,15 @@ archives that were already verified:
 PAPERCLIP_NATIVE_HARNESS_PRESTAGE=true node --max-old-space-size=512 server/dist-runtime/native-harness-prestage.mjs --controllers-only
 ```
 
+Use this entry instead of an ad hoc migration script. In source mode,
+`server/src/vendor/paperclip-runner/*` loads the runner with a top-level
+`await import(...)`, so a CommonJS script that calls `require()` on the
+controller migration or the runner shim fails before doing any work: on Node 22
+and later, `require()` cannot load ESM that uses top-level await. If a one-off
+script cannot be avoided, write it as ESM (`.mts`, or next to a `package.json`
+with `"type": "module"`), and load server modules with static `import` or
+`await import(pathToFileURL(path).href)`.
+
 This finite entry adopts legacy controller checkpoints for successful
 retained sources whose finalizer is committed, has an accepted result, and has
 released its ownership. It locks only the source task and coordinator while
