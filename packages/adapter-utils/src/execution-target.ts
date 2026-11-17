@@ -48,6 +48,7 @@ import {
   syncRemoteTextFileWithHashSkip,
   syncRemoteTextFilesWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
+  type SandboxCallbackBridgeRoutePolicy,
 } from "./sandbox-callback-bridge.js";
 import {
   createHttp2BridgeServer,
@@ -4340,6 +4341,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // in `DEFAULT_DUPLEX_BROKER_BUDGETS` (30 s), so the current behavior does not
   // change when the caller sets no option.
   forwardTimeoutMs?: number | null;
+  // Routes that register their own deadline and concurrency limit with the file
+  // bridge (the Kubernetes driver uses it). A matching request runs concurrently
+  // with other routes under its own deadline, and the host forward budget, the
+  // per-request timeout and the in-pod response deadline all follow that deadline.
+  // At teardown the worker drains these requests before the pod goes away. The
+  // default is empty: the bridge then behaves exactly as before. File bridge only:
+  // the duplex (HTTP/2) transport ignores route policies and the drain timeout, and
+  // keeps the forward budget above for every route.
+  bridgeRoutePolicies?: readonly SandboxCallbackBridgeRoutePolicy[] | null;
+  // How long teardown waits for queued and running bridge requests. The default is
+  // the longest route deadline when route policies exist, and the earlier 2 s
+  // drain otherwise.
+  bridgeDrainTimeoutMs?: number | null;
   // The first strict gate for the duplex transport. The host selects duplex only
   // when this is exactly `true` and the resolved capability
   // `duplexCommandStream` is exactly `true`. Any other value of either gate
@@ -4474,6 +4488,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
        * buffers count toward the same host process ceiling as request buffers.
        */
       reservation?: BridgeBodyReservation;
+      /** The matched route's forward budget replaces the default one. */
+      forwardTimeoutMs?: number;
     },
   ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> => {
     const method = request.method.trim().toUpperCase() || "GET";
@@ -4497,7 +4513,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // Abort the forward when the caller aborts the request (its per-iteration
     // timeout or watchdog fired, or the broker's forward budget ended), or after
     // the forward budget here, whichever comes first.
-    const timeoutSignal = AbortSignal.timeout(forwardTimeoutMs);
+    const timeoutSignal = AbortSignal.timeout(options?.forwardTimeoutMs ?? forwardTimeoutMs);
     const forwardSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
     // Build the request-body init. A GET or a HEAD carries no body. The file
     // bridge passes legacy JSON as a string and binary data as a `Buffer`;
@@ -4913,8 +4929,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
       // The worker encodes binary bodies only at the queue boundary.
+      routePolicies: input.bridgeRoutePolicies,
       handleRequest: (request, options) => forwardBridgeRequest(request, options?.signal, {
         reservation: options?.reservation,
+        ...(options?.route ? { forwardTimeoutMs: options.route.forwardTimeoutMs } : {}),
       }),
     });
     server = await startSandboxCallbackBridgeServer({
@@ -4927,6 +4945,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: bridgeTimeoutMs,
       maxBodyBytes,
       shellCommand,
+      routePolicies: input.bridgeRoutePolicies,
     });
   } catch (error) {
     await Promise.allSettled([
@@ -4957,6 +4976,20 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     },
     runLogTail,
     stop: async () => {
+      if ((input.bridgeRoutePolicies?.length ?? 0) > 0) {
+        // Drain first. The in-pod gateway stays up while the worker finishes the
+        // queued and running route requests, so a relayed call that the agent
+        // fired at the end of its last turn still gets its response. Only then
+        // does the gateway stop, before the pod goes away.
+        const drainTimeoutMs = input.bridgeDrainTimeoutMs;
+        await Promise.allSettled([
+          worker?.stop(
+            typeof drainTimeoutMs === "number" && drainTimeoutMs > 0 ? { drainTimeoutMs } : undefined,
+          ),
+        ]);
+        await Promise.allSettled([server?.stop(), bridgeAsset.cleanup()]);
+        return;
+      }
       await Promise.allSettled([
         server?.stop(),
       ]);

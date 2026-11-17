@@ -86,6 +86,10 @@ const BACKSTOP_WRITE_RETRY_MS = 50;
 // exponential ramp below it keeps a hard-down channel from burning an exec
 // call every poll interval.
 const MAX_TRANSIENT_ITERATION_BACKOFF_MS = 5_000;
+// With route policies, the worker reads queued request files concurrently, so a
+// slow route cannot hold the poll loop. This caps those concurrent reads: each
+// one is a sandbox exec, and a full queue must not open dozens at once.
+const BRIDGE_INTAKE_CONCURRENCY = 4;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 export const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -117,6 +121,113 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX
 export interface SandboxCallbackBridgeRouteRule {
   method: string;
   path: RegExp;
+}
+
+/**
+ * A route that registers its own deadline and concurrency limit with the file
+ * queue bridge. A route with no policy keeps today's behavior exactly: the
+ * request runs on the single sequential lane under the 10 s per-request timeout
+ * and the 20 s watchdog, and the in-pod gateway waits the global response
+ * deadline. The policy list defaults to empty, so Pi and Claude are unchanged.
+ *
+ * `deadlineMs` is the in-pod response deadline for the route: how long the
+ * gateway waits for the host response. The host derives every other budget from
+ * it (see `resolveSandboxCallbackBridgeRouteTimings`), so the per-request
+ * timeout, the host forward budget and the in-pod deadline move together.
+ */
+export interface SandboxCallbackBridgeRoutePolicy {
+  /** Request method to match. Omit to match every method. */
+  method?: string;
+  /**
+   * Matched against the request pathname. Must not carry the `g` or `y` flag.
+   * The first matching policy wins.
+   */
+  path: RegExp;
+  /** In-pod response deadline for this route, in milliseconds. */
+  deadlineMs: number;
+  /** Concurrent requests allowed on this route. Defaults to 1. */
+  maxConcurrent?: number;
+}
+
+export interface SandboxCallbackBridgeRouteTimings {
+  /** What the in-pod gateway waits for the response. */
+  responseDeadlineMs: number;
+  /** When the host aborts the handler (the per-request timeout). */
+  requestTimeoutMs: number;
+  /** Host forward budget. A backstop behind the abort above. */
+  forwardTimeoutMs: number;
+  /** Grace the aborted handler gets before the 504 backstop writes. */
+  backstopGraceMs: number;
+}
+
+/**
+ * Derive the host-side budgets for a route from its in-pod response deadline.
+ * Every host budget lands inside the deadline, in this order: the handler abort,
+ * the forward budget, then the 504 backstop. So the caller always gets a
+ * terminal response before the in-pod gateway gives up. For the 30 s default
+ * this yields a 28 s abort, a 29 s forward budget and a 28.5 s backstop.
+ */
+export function resolveSandboxCallbackBridgeRouteTimings(
+  deadlineMs: number,
+): SandboxCallbackBridgeRouteTimings {
+  const responseDeadlineMs = normalizeTimeoutMs(deadlineMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
+  const margin = Math.min(2_000, Math.max(50, Math.floor(responseDeadlineMs / 10)));
+  return {
+    responseDeadlineMs,
+    requestTimeoutMs: Math.max(1, responseDeadlineMs - margin),
+    forwardTimeoutMs: Math.max(1, responseDeadlineMs - Math.floor(margin / 2)),
+    backstopGraceMs: Math.max(1, Math.floor(margin / 4)),
+  };
+}
+
+/** A matched route policy with its derived budgets. */
+export interface SandboxCallbackBridgeMatchedRoute extends SandboxCallbackBridgeRouteTimings {
+  policy: SandboxCallbackBridgeRoutePolicy;
+  maxConcurrent: number;
+}
+
+function matchRoutePolicy(
+  policies: readonly SandboxCallbackBridgeRoutePolicy[],
+  method: string,
+  pathname: string,
+): SandboxCallbackBridgeRoutePolicy | null {
+  const normalizedMethod = normalizeMethod(method);
+  for (const policy of policies) {
+    if (policy.method !== undefined && normalizeMethod(policy.method) !== normalizedMethod) continue;
+    policy.path.lastIndex = 0;
+    if (policy.path.test(pathname)) return policy;
+  }
+  return null;
+}
+
+function validateRoutePolicies(
+  policies: readonly SandboxCallbackBridgeRoutePolicy[] | null | undefined,
+): readonly SandboxCallbackBridgeRoutePolicy[] {
+  const list = policies ?? [];
+  for (const policy of list) {
+    if (policy.path.global || policy.path.sticky) {
+      throw new Error("Sandbox callback bridge route policy paths must not use the g or y flag.");
+    }
+    if (!(typeof policy.deadlineMs === "number" && Number.isFinite(policy.deadlineMs) && policy.deadlineMs > 0)) {
+      throw new Error("Sandbox callback bridge route policy needs a positive deadlineMs.");
+    }
+  }
+  return list;
+}
+
+// The env value the in-pod gateway reads. Empty for no policies, so the env of a
+// run without route policies is identical to the earlier env.
+function serializeRoutePolicies(
+  policies: readonly SandboxCallbackBridgeRoutePolicy[] | null | undefined,
+): string | null {
+  const list = validateRoutePolicies(policies);
+  if (list.length === 0) return null;
+  return JSON.stringify(list.map((policy) => ({
+    method: policy.method === undefined ? null : normalizeMethod(policy.method),
+    source: policy.path.source,
+    flags: policy.path.flags,
+    deadlineMs: resolveSandboxCallbackBridgeRouteTimings(policy.deadlineMs).responseDeadlineMs,
+  })));
 }
 
 // Routes the in-sandbox heartbeat skill is documented to call. The server
@@ -306,6 +417,13 @@ export interface SandboxCallbackBridgeQueueClient {
 }
 
 export interface SandboxCallbackBridgeWorkerHandle {
+  /**
+   * Stop the worker. The worker first drains: it keeps serving requests that are
+   * already queued or running, up to `drainTimeoutMs`. With route policies the
+   * default drain is the longest route deadline, so a slow relayed call that is
+   * still running finishes and delivers its response. Whatever is still running
+   * at the end gets a terminal 504 (started) or 503 (not started).
+   */
   stop(options?: { drainTimeoutMs?: number }): Promise<void>;
 }
 
@@ -472,8 +590,11 @@ export function buildSandboxCallbackBridgeEnv(input: {
   responseTimeoutMs?: number | null;
   maxQueueDepth?: number | null;
   maxBodyBytes?: number | null;
+  routePolicies?: readonly SandboxCallbackBridgeRoutePolicy[] | null;
 }): Record<string, string> {
+  const routeDeadlines = serializeRoutePolicies(input.routePolicies);
   return {
+    ...(routeDeadlines ? { PAPERCLIP_BRIDGE_ROUTE_DEADLINES: routeDeadlines } : {}),
     PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_FILE_MODE,
     PAPERCLIP_BRIDGE_QUEUE_DIR: input.queueDir,
     PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken,
@@ -795,6 +916,46 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   };
 }
 
+// A FIFO counting semaphore. `acquire` resolves with an idempotent release. An
+// aborted wait leaves the queue and rejects, so a timed-out request never takes
+// a slot later.
+function createBridgeLane(limit: number) {
+  let active = 0;
+  const waiters: Array<{ resume: () => void }> = [];
+  const makeRelease = () => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = waiters.shift();
+      if (next) next.resume();
+      else active -= 1;
+    };
+  };
+  return {
+    acquire(signal?: AbortSignal): Promise<() => void> {
+      if (signal?.aborted) return Promise.reject(new Error("Lane wait aborted."));
+      if (active < limit) {
+        active += 1;
+        return Promise.resolve(makeRelease());
+      }
+      return new Promise<() => void>((resolve, reject) => {
+        const waiter = { resume: () => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(makeRelease());
+        } };
+        const onAbort = () => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          reject(new Error("Lane wait aborted."));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        waiters.push(waiter);
+      });
+    },
+  };
+}
+
 async function writeBridgeResponse(
   client: SandboxCallbackBridgeQueueClient,
   requestPath: string,
@@ -828,6 +989,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // own response before the recovery path writes a non-retryable 504 backstop.
   // Defaults to DEFAULT_BRIDGE_ABORTED_HANDLER_GRACE_MS.
   abortedHandlerGraceMs?: number | null;
+  // Routes that register their own deadline and concurrency limit. A request
+  // that matches a policy runs off the sequential lane: it runs concurrently with
+  // other routes, up to the policy's `maxConcurrent`, under its own deadline, and
+  // the 20 s watchdog and the 10 s per-request timeout leave it alone. Empty by
+  // default: the worker then behaves exactly as before.
+  routePolicies?: readonly SandboxCallbackBridgeRoutePolicy[] | null;
   authorizeRequest?: (request: SandboxCallbackBridgeRequest) => string | null | Promise<string | null>;
   // Handle one bridge request. The worker passes an `AbortSignal` through
   // `options.signal`. The per-iteration timeout, the watchdog, and worker
@@ -838,7 +1005,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // earlier behavior.
   handleRequest: (
     request: Omit<SandboxCallbackBridgeRequest, "body" | "bodyEncoding"> & { body: string | Buffer },
-    options?: { signal: AbortSignal; reservation: BridgeBodyReservation },
+    options?: {
+      signal: AbortSignal;
+      reservation: BridgeBodyReservation;
+      // The matched route policy with its derived budgets. Absent for a request
+      // that matches no policy.
+      route?: SandboxCallbackBridgeMatchedRoute;
+    },
   ) => Promise<{
     status: number;
     headers?: Record<string, string>;
@@ -867,6 +1040,19 @@ export async function startSandboxCallbackBridgeWorker(input: {
   );
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
   const maxEnvelopeBytes = sandboxBridgeEnvelopeLimit(maxBodyBytes);
+  const routePolicies = validateRoutePolicies(input.routePolicies);
+  const tracked = routePolicies.length > 0;
+  const maxRouteDeadlineMs = Math.max(
+    DEFAULT_BRIDGE_STOP_TIMEOUT_MS,
+    ...routePolicies.map((policy) => policy.deadlineMs),
+  );
+  // One lane per route policy, plus the single sequential lane every other
+  // request uses (the earlier one-at-a-time behavior) and the intake lane.
+  const ordinaryLane = createBridgeLane(1);
+  const intakeLane = createBridgeLane(BRIDGE_INTAKE_CONCURRENCY);
+  const routeLanes = new Map<SandboxCallbackBridgeRoutePolicy, ReturnType<typeof createBridgeLane>>();
+  const dispatchedFiles = new Set<string>();
+  const backgroundTasks = new Set<Promise<void>>();
   // Load lazily to avoid the HTTP/2 module's constants depending on this module
   // during initialization. Both transports share the host process memory ceiling.
   const { createBridgeBodyReservation } = await import("./http2-bridge-server.js");
@@ -953,6 +1139,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
     controller: AbortController;
     finalized: boolean;
     backstopTimer?: ReturnType<typeof setTimeout>;
+    // Set once the request matched a route policy. The route's own deadline
+    // governs the request, so the sequential recovery passes (the per-request
+    // timeout and the watchdog) leave it alone.
+    route?: SandboxCallbackBridgeMatchedRoute;
+    // Cancels the wait for the route lane slot.
+    cancelWait?: () => void;
   };
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
 
@@ -975,6 +1167,36 @@ export async function startSandboxCallbackBridgeWorker(input: {
     inFlightRequestGuards.set(fileName, guard);
     const reservation = createBridgeBodyReservation();
     const envelopeReadReservation = createBridgeBodyReservation();
+    // With route policies the loop does not await this attempt, so the attempt
+    // owns its timers and lane slots. They stay unset without route policies.
+    let requestTimer: ReturnType<typeof setTimeout> | undefined;
+    let releaseIntake: (() => void) | undefined;
+    let releaseLane: (() => void) | undefined;
+    const waitAbort = new AbortController();
+    guard.cancelWait = () => waitAbort.abort();
+    const clearRequestTimer = () => {
+      if (requestTimer !== undefined) {
+        clearTimeout(requestTimer);
+        requestTimer = undefined;
+      }
+    };
+    const armRequestTimer = (ms: number, onFire: () => void) => {
+      clearRequestTimer();
+      requestTimer = setTimeout(onFire, ms);
+      if (typeof requestTimer.unref === "function") requestTimer.unref();
+    };
+    // The per-request timeout of a request on the sequential lane: the same
+    // recovery the loop runs when its awaited request times out.
+    const armSequentialTimer = () => {
+      armRequestTimer(iterationTimeoutMs, () => {
+        void recoverFromRequestFailure(new Error(
+          `Sandbox callback bridge process request ${fileName} timed out after ${iterationTimeoutMs}ms.`,
+        ));
+        // The loop used to move on at the timeout. Free the sequential lane so
+        // the next request does not wait behind a handler that never settles.
+        releaseLane?.();
+      });
+    };
     // Claim the request for the handler. Return `false` when the recovery path
     // already claimed it; the caller must then not run the mutation and must not
     // write a response, because the recovery path writes a 503 and the caller
@@ -1044,6 +1266,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
       await writeAbortedHandlerBackstop(fileName, guard, lastWriteError);
     };
     try {
+      if (tracked) {
+        armSequentialTimer();
+        releaseIntake = await intakeLane.acquire();
+      }
       // Bound the read and its encoded/parsed copies before allocating. Built-in
       // clients stat first so a high configured file limit does not reserve that
       // whole limit for a tiny request. Older clients use the conservative cap.
@@ -1104,6 +1330,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       // Keep only the actual request allocation reserved while forwarding;
       // an abandoned small request must not retain a maximum-sized reservation.
       envelopeReadReservation.release();
+      releaseIntake?.();
       if (!reservation.reserve(4 * Buffer.byteLength(raw) + 2 * Buffer.byteLength(request.body))) {
         await finalize({ id: request.id, status: 503,
           headers: { "content-type": "application/json" },
@@ -1123,6 +1350,61 @@ export async function startSandboxCallbackBridgeWorker(input: {
         return;
       }
 
+      // With route policies, wait for a lane slot. A request on a registered
+      // route takes a slot on its own lane, up to the route's `maxConcurrent`; any
+      // other request takes the single sequential lane. A request that waits in a
+      // lane has not started its host operation, so a timeout answers a retry-safe
+      // 503.
+      let route: SandboxCallbackBridgeMatchedRoute | undefined;
+      if (tracked) {
+        const policy = matchRoutePolicy(routePolicies, request.method, request.path);
+        let lane = ordinaryLane;
+        if (policy) {
+          route = {
+            ...resolveSandboxCallbackBridgeRouteTimings(policy.deadlineMs),
+            policy,
+            maxConcurrent: normalizeTimeoutMs(policy.maxConcurrent, 1),
+          };
+          guard.route = route;
+          const routeLane = routeLanes.get(policy) ?? createBridgeLane(route.maxConcurrent);
+          routeLanes.set(policy, routeLane);
+          lane = routeLane;
+          // One timer covers the lane wait and the handler. It lands inside the
+          // route's in-pod response deadline.
+          const matched = route;
+          armRequestTimer(matched.requestTimeoutMs, () => {
+            if (guard.claim === "unclaimed") {
+              waitAbort.abort();
+              return;
+            }
+            if (guard.claim === "handler") {
+              const message = `Bridge route deadline of ${matched.responseDeadlineMs}ms elapsed for ${request.method} ${request.path}.`;
+              guard.controller.abort(new Error(message));
+              scheduleAbortedHandlerBackstop(fileName, guard, message);
+              // The handler was told to stop. Free its slot now, so a handler
+              // that ignores the abort cannot hold the route shut for the rest
+              // of the run; its caller already gets the 504 backstop.
+              releaseLane?.();
+            }
+          });
+        } else {
+          clearRequestTimer();
+        }
+        try {
+          releaseLane = await lane.acquire(waitAbort.signal);
+        } catch {
+          await finalize({
+            id: request.id,
+            status: 503,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ error: "Bridge route is at its concurrency limit. Retry later." }),
+            completedAt: new Date().toISOString(),
+          });
+          return;
+        }
+        if (!route) armSequentialTimer();
+      }
+
       // Claim the request for the handler before the host operation starts. When
       // the recovery path already claimed it, it writes a 503 and the caller may
       // retry, so do not run the mutation; the retry then applies it once. When
@@ -1140,7 +1422,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
         const { bodyEncoding, ...forwardRequest } = request;
         const result = await input.handleRequest({ ...forwardRequest,
           body: bodyEncoding === "base64" ? decodeSandboxBridgeBody(request, maxBodyBytes) : request.body,
-        }, { signal: guard.controller.signal, reservation });
+        }, { signal: guard.controller.signal, reservation, ...(route ? { route } : {}) });
         handlerReturned = true;
         const responseBytes = Buffer.byteLength(result.body ?? "");
         if (responseBytes > maxBodyBytes) throw new Error("Bridge response body exceeded the configured size limit.");
@@ -1198,6 +1480,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       await finalize(response);
     } finally {
+      clearRequestTimer();
+      releaseIntake?.();
+      releaseLane?.();
       envelopeReadReservation.release();
       reservation.release();
       // Drop the guard only when it still points to this attempt. A retry can
@@ -1294,7 +1579,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
     }
     guard.backstopTimer = setTimeout(() => {
       void writeAbortedHandlerBackstop(fileName, guard, message);
-    }, abortedHandlerGraceMs);
+    }, guard.route?.backstopGraceMs ?? abortedHandlerGraceMs);
     if (typeof guard.backstopTimer.unref === "function") {
       guard.backstopTimer.unref();
     }
@@ -1326,7 +1611,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       // 503 for a handler-owned request: the recovery cannot cancel a committed
       // host mutation, so a retryable status there could apply the mutation twice.
       for (const [fileName, guard] of inFlightRequestGuards.entries()) {
-        if (guard.claim === "handler") {
+        if (guard.claim === "handler" && !guard.route) {
           guard.controller.abort(new Error(message));
           scheduleAbortedHandlerBackstop(fileName, guard, message);
         }
@@ -1343,6 +1628,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
     ).catch(() => [] as string[]);
     for (const fileName of fileNames) {
       const guard = inFlightRequestGuards.get(fileName);
+      if (guard?.route && options.abandonInFlight) {
+        // A route request runs under its own deadline, not the sequential
+        // lane's timeout or the watchdog. The recovery pass leaves it alone.
+        continue;
+      }
       if (guard && guard.claim === "handler" && (options.abandonInFlight || guard.controller.signal.aborted)) {
         // The handler already started this request's host operation, or it already
         // finalized the request. The timeout and watchdog cannot cancel a host
@@ -1456,6 +1746,68 @@ export async function startSandboxCallbackBridgeWorker(input: {
     console.warn(`[paperclip] ${error.message}`);
   };
 
+  // The recovery pass for a request on the sequential lane that failed or timed
+  // out while the loop does not await it (route policies on). It is the same
+  // pass the loop runs when its awaited request fails.
+  const recoverFromRequestFailure = async (error: unknown) => {
+    const message = buildWorkerFailureMessage(error);
+    await surfaceRunError(new Error(message));
+    try {
+      await failPendingRequests(message, { abandonInFlight: true });
+    } catch (failPendingError) {
+      console.warn(
+        `[paperclip] sandbox callback bridge failed to abort queued requests after a request failure: ${failPendingError instanceof Error ? failPendingError.message : String(failPendingError)}`,
+      );
+    }
+  };
+
+  // Start one request without awaiting it (route policies on). The attempt owns
+  // its timers and lane slots, so the poll loop keeps serving other requests
+  // while a slow route runs. Each attempt runs under the same run-parent span as
+  // the sequential path.
+  const startRequestAttempt = (fileName: string) => {
+    dispatchedFiles.add(fileName);
+    inFlight += 1;
+    const task: Promise<void> = Promise.resolve().then(async () => {
+      try {
+        await (input.runtimeSpan
+          ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () => processRequestFile(fileName))
+          : runWithRuntimeParent(input.getRuntimeParentContext?.(), () => processRequestFile(fileName)));
+      } catch (error) {
+        await recoverFromRequestFailure(error);
+      } finally {
+        dispatchedFiles.delete(fileName);
+        inFlight -= 1;
+        backgroundTasks.delete(task);
+      }
+    });
+    backgroundTasks.add(task);
+  };
+
+  // At the end of the drain, give every request that is still open a
+  // terminal response. With route policies every attempt runs in the background,
+  // ordinary ones included, so this covers all of them. A request that started gets a non-retryable 504 (its host
+  // operation may have committed). A request still waiting for a lane slot never
+  // started: abandon it, so the final pass answers a retry-safe 503.
+  const settleOpenRequests = async (message: string) => {
+    const started: Array<Promise<void>> = [];
+    for (const [fileName, guard] of inFlightRequestGuards.entries()) {
+      if (guard.finalized) continue;
+      if (guard.claim === "unclaimed") {
+        guard.claim = "abandon";
+        guard.cancelWait?.();
+      } else if (guard.claim === "handler") {
+        guard.controller.abort(new Error(message));
+        if (guard.backstopTimer !== undefined) {
+          clearTimeout(guard.backstopTimer);
+          guard.backstopTimer = undefined;
+        }
+        started.push(writeAbortedHandlerBackstop(fileName, guard, message));
+      }
+    }
+    await Promise.all(started);
+  };
+
   // The timestamp of the last successful loop iteration. The watchdog compares
   // it to the current time. The idle branch and every processed request update
   // it, so steady progress keeps the watchdog re-armed.
@@ -1554,7 +1906,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
         // an exec storm against a real sandbox channel, and with an in-memory
         // client a pure-microtask loop that starves every timer in the process
         // (including the guard's own backstop and abort timers).
-        const actionableFileNames = fileNames.filter((fileName) => !inFlightRequestGuards.has(fileName));
+        const actionableFileNames = fileNames.filter(
+          (fileName) => !inFlightRequestGuards.has(fileName) && !dispatchedFiles.has(fileName),
+        );
         if (actionableFileNames.length === 0) {
           lastSuccessfulIterationAt = Date.now();
           if (stopping) {
@@ -1565,6 +1919,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
         }
         for (const fileName of actionableFileNames) {
           if (stopping && Date.now() >= stopDeadline) break;
+          if (tracked) {
+            startRequestAttempt(fileName);
+            continue;
+          }
           inFlight += 1;
           try {
             // A request is run-time work, not startup work. Wrap it in a
@@ -1613,6 +1971,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
         if (stopping && Date.now() >= stopDeadline) {
           break;
         }
+        if (tracked) {
+          // The attempts run on their own, so wait a poll interval before the
+          // next listing instead of re-listing in a tight loop.
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        }
       }
     } catch (error) {
       const message = buildWorkerFailureMessage(error);
@@ -1638,13 +2001,34 @@ export async function startSandboxCallbackBridgeWorker(input: {
   return {
     stop: async (options = {}) => {
       stopping = true;
-      const drainMs = normalizeTimeoutMs(options.drainTimeoutMs, DEFAULT_BRIDGE_STOP_TIMEOUT_MS);
+      // With route policies the default drain is the longest route deadline, so a
+      // slow relayed call (a memory save at the end of the last turn) finishes
+      // and delivers its response before the pod goes away.
+      const drainMs = normalizeTimeoutMs(
+        options.drainTimeoutMs,
+        tracked ? maxRouteDeadlineMs : DEFAULT_BRIDGE_STOP_TIMEOUT_MS,
+      );
       stopDeadline = Date.now() + drainMs;
       if (!settled) {
+        let settleTimer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           settledPromise,
-          new Promise<void>((resolve) => setTimeout(resolve, drainMs)),
+          new Promise<void>((resolve) => {
+            settleTimer = setTimeout(resolve, drainMs);
+          }),
         ]);
+        if (settleTimer !== undefined) clearTimeout(settleTimer);
+      }
+      if (tracked && backgroundTasks.size > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          Promise.allSettled([...backgroundTasks]),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, Math.max(0, stopDeadline - Date.now()));
+          }),
+        ]);
+        if (timer !== undefined) clearTimeout(timer);
+        await settleOpenRequests("Bridge worker stopped before the request finished.");
       }
       await failPendingRequests("Bridge worker stopped before request could be handled.");
     },
@@ -1705,6 +2089,8 @@ export async function startSandboxCallbackBridgeServer(input: {
   shellCommand?: "bash" | "sh" | null;
   maxQueueDepth?: number | null;
   maxBodyBytes?: number | null;
+  // Per-route in-pod response deadlines. Empty by default.
+  routePolicies?: readonly SandboxCallbackBridgeRoutePolicy[] | null;
 }): Promise<StartedSandboxCallbackBridgeServer> {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
   const shellCommand = preferredShellForSandbox(input.shellCommand);
@@ -1730,6 +2116,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     responseTimeoutMs: input.responseTimeoutMs,
     maxQueueDepth: input.maxQueueDepth,
     maxBodyBytes: input.maxBodyBytes,
+    routePolicies: input.routePolicies,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
   const startResult = await runSandboxBridgeControlCommand(input.runner, {
@@ -2135,6 +2522,41 @@ const pollIntervalMs = Number(process.env.PAPERCLIP_BRIDGE_POLL_INTERVAL_MS || "
 const responseTimeoutMs = Number(
   process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "${DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS}",
 );
+// Per-route response deadlines. The host sets this only when a route registers
+// its own deadline; the default is empty, so every request waits the global
+// deadline above. The first matching entry wins. A malformed entry is ignored.
+const routeDeadlines = (() => {
+  try {
+    const parsed = JSON.parse(process.env.PAPERCLIP_BRIDGE_ROUTE_DEADLINES || "[]");
+    if (!Array.isArray(parsed)) return [];
+    const out = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry.source !== "string" || !(Number(entry.deadlineMs) > 0)) continue;
+      try {
+        out.push({
+          method: typeof entry.method === "string" ? entry.method.toUpperCase() : null,
+          path: new RegExp(entry.source, typeof entry.flags === "string" ? entry.flags : ""),
+          deadlineMs: Number(entry.deadlineMs),
+        });
+      } catch {
+        // Skip an entry whose pattern does not compile.
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+})();
+const maxResponseDeadlineMs = Math.max(responseTimeoutMs, ...routeDeadlines.map((entry) => entry.deadlineMs));
+function responseDeadlineFor(method, pathname) {
+  const upper = String(method || "GET").toUpperCase();
+  for (const entry of routeDeadlines) {
+    if (entry.method !== null && entry.method !== upper) continue;
+    entry.path.lastIndex = 0;
+    if (entry.path.test(pathname)) return entry.deadlineMs;
+  }
+  return responseTimeoutMs;
+}
 const maxQueueDepth = Number(process.env.PAPERCLIP_BRIDGE_MAX_QUEUE_DEPTH || "${DEFAULT_BRIDGE_MAX_QUEUE_DEPTH}");
 const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "${DEFAULT_BRIDGE_MAX_BODY_BYTES}");
 // The header allowlist. Both the file gateway and the http2 gateway strip an
@@ -2327,7 +2749,7 @@ async function runFileGateway() {
   // and left its queue behind. Orphans otherwise count toward the queue-depth
   // cap forever and wedge the gateway at a permanent 503.
   async function sweepStaleRequests() {
-    const staleBefore = Date.now() - responseTimeoutMs - 2000;
+    const staleBefore = Date.now() - maxResponseDeadlineMs - 2000;
     const entries = await fs.readdir(requestsDir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
@@ -2339,9 +2761,9 @@ async function runFileGateway() {
     }
   }
 
-  async function waitForResponse(requestId, reserveResponse) {
+  async function waitForResponse(requestId, reserveResponse, deadlineMs) {
     const responsePath = path.posix.join(responsesDir, \`\${requestId}.json\`);
-    const deadline = Date.now() + responseTimeoutMs;
+    const deadline = Date.now() + deadlineMs;
     while (Date.now() < deadline) {
       const handle = await fs.open(responsePath, "r").catch(error => {
         if (error.code === "ENOENT") return null;
@@ -2434,7 +2856,7 @@ async function runFileGateway() {
         response = await waitForResponse(requestId, bytes => {
           if (!processBodyLedger.reserve(bytes)) throw new BridgeProcessCapacityError();
           envelopeReservation += bytes;
-        });
+        }, responseDeadlineFor(req.method, url.pathname));
       } catch (error) {
         // The host never delivered a response inside the deadline. Remove this
         // request's file so it cannot pile up toward the queue-depth cap. The

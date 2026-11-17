@@ -11,6 +11,18 @@ and the in-repo notes at [`packages/adapters/AUTHORING.md`](../adapters/AUTHORIN
 
 ## Sandbox bridge deadlines
 
+The file-queue bridge accepts opt-in route policies (`bridgeRoutePolicies`, or
+`routePolicies` on the worker and server). A route registers its own in-pod
+response deadline and concurrency limit. The host derives the per-request
+timeout, the forward budget and the 504 backstop from that deadline, the
+sequential watchdog leaves the route alone, and teardown drains queued and
+running requests (`bridgeDrainTimeoutMs`, default the longest route deadline)
+before it stops the gateway. The gateway reads the deadlines from
+`PAPERCLIP_BRIDGE_ROUTE_DEADLINES`, which is set only when policies exist. The
+deadline counts from enqueue in the pod, while host budgets count from when the
+host reads the request, so keep a margin for polling and exec latency. The
+duplex transport ignores route policies.
+
 Command-managed bridge control operations (queue reads, input delivery, setup,
 and cleanup) have a host-enforced deadline of at most 30 seconds per shell
 command. A shorter configured timeout still applies. These operations cannot
