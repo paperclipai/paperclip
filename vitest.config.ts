@@ -1,5 +1,6 @@
 import { configDefaults, defineConfig } from "vitest/config";
 import { retryReporterEnabled } from "./scripts/ci/vitest-retry.mjs";
+import { stalledFileReporterEnabled } from "./scripts/ci/stalled-file-reporter.mjs";
 
 export default defineConfig({
   test: {
@@ -8,7 +9,9 @@ export default defineConfig({
         ? ["./scripts/ci/test-timing-reporter.mjs", "./scripts/ci/oversized-test-files.mjs"] : []),
       ...(process.env.PAPERCLIP_CI_PROFILE === "true" ? ["./scripts/ci-profile/vitest-reporter.mjs"] : []),
       // PR lanes pass --retry from scripts/run-vitest-stable.mjs; see scripts/ci/vitest-retry.mjs.
-      ...(retryReporterEnabled() ? ["./scripts/ci/retry-reporter.mjs"] : [])],
+      ...(retryReporterEnabled() ? ["./scripts/ci/retry-reporter.mjs"] : []),
+      // Fails a CI run whose file stops making progress, naming the file; see the reporter.
+      ...(stalledFileReporterEnabled() ? ["./scripts/ci/stalled-file-reporter.mjs"] : [])],
     projects: [
       "packages/shared",
       "packages/skills-catalog",

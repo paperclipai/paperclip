@@ -65,6 +65,7 @@ export type RemoteWarmSessionRecovery = {
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
   releasedSource?: DurableRecoveryIdentity;
+  releasedSourceRunner?: { version: string; digest: string };
   portableSourceTaskId?: string;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;

@@ -74,9 +74,11 @@ export async function promoteDeferredWorkIntents(tx: object, input: {
     : input.trigger === "lock_released" && input.runId ? { companyId: input.companyId, runId: input.runId }
     : input.trigger === "accounting_settled" && input.runId && !hardStop ? { companyId: input.companyId, runId: input.runId } : null;
   // Register the work signals before the write they announce.
-  await notifyRunDispatch(tx, scope ?? { companyId: input.companyId });
+  // A lifted pause or tree hold makes tasks eligible without changing their rows.
+  const liftsHold = input.trigger === "pause_lifted" || input.trigger === "tree_hold_released";
+  await notifyRunDispatch(tx, scope ?? { companyId: input.companyId, everyTask: liftsHold });
   await notifyDeferredExecutionEligibility(tx, { companyId: input.companyId });
-  if (!scope) await notifyIssueRecovery(tx, { companyId: input.companyId });
+  if (!scope) await notifyIssueRecovery(tx, { companyId: input.companyId, everyTask: liftsHold });
   if (input.issueId) await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
   const db = tx as Pick<Db, "update">;
   await db.update(agentWakeupRequests).set({

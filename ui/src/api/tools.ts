@@ -1,5 +1,6 @@
 import type { AggregatorAppsResponse, ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
 import type { ProviderToolIconsResponse } from "@paperclipai/shared";
+import { setPluginAppDefinitions } from "@paperclipai/shared";
 import type { ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
 import type {
   ToolApplication,
@@ -9,6 +10,8 @@ import type {
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionRemovalSummary,
+  ToolConnectionContentDeletion,
+  ToolConnectionStoredContent,
   ConnectToolAppResult,
   ConnectToolApp,
   FinishToolAppResult,
@@ -90,6 +93,8 @@ export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = {
   apps: AppDefinition[];
+  /** Full definitions of plugin-provided connectors (gallery entries may hide methods). */
+  pluginApps?: AppDefinition[];
   /** Server-authoritative OAuth callback URI, omitted when this deployment has no supported browser origin. */
   oauthCallbackUrl?: string;
   capabilities: ToolConnectionCreateCapabilities;
@@ -297,7 +302,13 @@ export const toolsApi = {
     api.post<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment", { companyId, label, returnTo }),
   // --- Applications ---
   listGallery: (companyId: string) =>
-    api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
+    api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`).then((gallery) => {
+      // Plugin-provided connectors are known only from the host. Make them
+      // resolvable by the same catalog lookups the setup screens use; apps of
+      // a plugin that was disabled since the last response drop out here.
+      setPluginAppDefinitions(gallery.pluginApps ?? gallery.apps.filter((app) => app.plugin));
+      return gallery;
+    }),
   preflightAppMetadata: (companyId: string, galleryKey: string, methodKey?: string | null) => {
     const query = methodKey ? `?methodKey=${encodeURIComponent(methodKey)}` : "";
     return api.get<ToolAppMetadataPreflightResult>(
@@ -364,14 +375,14 @@ export const toolsApi = {
   listConnections: (companyId: string, options?: RequestOptions) =>
     options ? api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`, options)
       : api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
-  getConnection: (connectionId: string) =>
-    api.get<ToolConnection>(`/tool-connections/${connectionId}`),
+  getConnection: (connectionId: string, options?: RequestOptions) =>
+    api.get<ToolConnection>(`/tool-connections/${connectionId}`, options),
   // --- Installs (Phase 3b, PAP-13618): which agents carry this connection's
   // tools in their runtime context. `installed ⊆ permitted`; the server
   // auto-extends access (adds profile bindings) for any newly-installed target.
-  getConnectionInstalls: (connectionId: string) =>
+  getConnectionInstalls: (connectionId: string, options?: RequestOptions) =>
     api.get<{ connectionId: string; installs: ToolConnectionInstall[] }>(
-      `/tool-connections/${connectionId}/installs`,
+      `/tool-connections/${connectionId}/installs`, options,
     ),
   putConnectionInstalls: (
     connectionId: string,
@@ -429,10 +440,16 @@ export const toolsApi = {
     api.post<RailwaySshSetup | null>(`/tool-connections/${connectionId}/railway/ssh`, input),
   // Removal is a credential-revoking teardown (PAP-17119), so the response
   // carries the cleanup receipt alongside the archived connection.
-  archiveConnection: (connectionId: string) =>
-    api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary }>(
-      `/tool-connections/${connectionId}`,
+  archiveConnection: (connectionId: string, options: { deleteStoredContent?: boolean } = {}) =>
+    api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary; contentDeletion?: ToolConnectionContentDeletion }>(
+      `/tool-connections/${connectionId}${options.deleteStoredContent ? "?deleteStoredContent=true" : ""}`,
     ),
+  getStoredContent: (connectionId: string) =>
+    api.get<ToolConnectionStoredContent>(`/tool-connections/${connectionId}/stored-content`),
+  deleteStoredContent: (connectionId: string) =>
+    api.post<{ deletion: ToolConnectionContentDeletion }>(`/tool-connections/${connectionId}/stored-content/deletion`, {}),
+  getStoredContentDeletion: (connectionId: string) =>
+    api.get<{ deletion: ToolConnectionContentDeletion | null }>(`/tool-connections/${connectionId}/stored-content/deletion`),
   checkConnectionHealth: (connectionId: string) =>
     api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/health-check`, {}),
   reconnectConnection: (connectionId: string, credentialValues: Record<string, string>) =>
@@ -499,8 +516,8 @@ export const toolsApi = {
     ),
 
   // --- Profiles ---
-  listConnectionProfileConfiguration: (connectionId: string) =>
-    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`),
+  listConnectionProfileConfiguration: (connectionId: string, options?: RequestOptions) =>
+    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`, options),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
   getProfileNewTools: (profileId: string) =>
@@ -549,8 +566,8 @@ export const toolsApi = {
     api.get<ToolRuntimeSlot[]>(`/tool-gateway/runtime-slots?companyId=${encodeURIComponent(companyId)}`),
 
   // --- Policies (trust rules + decision simulator) ---
-  listPolicies: (companyId: string) =>
-    api.get<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies`),
+  listPolicies: (companyId: string, options?: RequestOptions) =>
+    api.get<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies`, options),
   createPolicy: (companyId: string, input: CreateToolPolicy) =>
     api.post<ToolPolicy>(`/companies/${companyId}/tools/policies`, input),
   reorderPolicies: (companyId: string, input: ReorderToolPolicies) =>

@@ -35,6 +35,7 @@ import {
   reconcileReusedExecutionWorkspaceProjectWorkspaceId,
   recordWorkspaceConfigFreshnessOperation,
   prepareProjectRepositoryWorkspaces,
+  WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY,
 } from "./workspaces.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import fs from "node:fs/promises";
@@ -863,6 +864,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         reusableExistingExecutionWorkspace?.metadata ?? null,
       inferredMetadata: inferredExistingWorkspaceConfigMetadata,
       nextMetadata: latestWorkspaceConfigMetadata,
+      providerOwnedStorage: Boolean(pluginPrepared),
     },
   );
   const workspaceReuseProvisioningPolicy =
@@ -1182,9 +1184,13 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       );
     }
   }
+  const coreConfigFingerprint = baseExecutionWorkspaceMetadata?.[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY];
   const nextExecutionWorkspaceMetadata = {
     ...baseExecutionWorkspaceMetadata,
     ...(pluginPrepared?.metadata ?? {}),
+    ...(pluginPrepared && coreConfigFingerprint !== undefined
+      ? { [WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY]: coreConfigFingerprint }
+      : {}),
     ...(taskWorkspaceOwner && !pluginPrepared ? { runnerTaskWorkspaceOwner: taskWorkspaceOwner } : {}),
     ...(providerFresh && pluginTaskWorkspace && !pluginPrepared ? { runnerTaskFreshWorkspace: providerFresh } : {}),
     ...(copyOnlyProvisioning ? { [CONTROLLER_PROVISION_COPY_ONLY]: true } : {}),

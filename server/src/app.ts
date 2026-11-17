@@ -233,6 +233,7 @@ import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { registerInterruptedTurnChatRetry } from "./services/heartbeat/restart-interrupted-turn.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
+import { loadPluginAppCatalog } from "./services/plugin-app-catalog.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import {
@@ -263,6 +264,7 @@ import {
   stopServerMetrics,
 } from "./services/server-metrics.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
+import { postHogRequestContextMiddlewareForEnv } from "./services/posthog-direct/request-context.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -557,6 +559,11 @@ export async function createApp(
   app.use((req, res, next) => (dotPrincipalHttp.matchesPost(req) || ["/mcp/files/upload", "/mcp/runner/files/upload"].includes(req.path)) ? next() : jsonBodyParser(req, res, next));
   app.use("/api", apiCompression());
   app.use(httpLogger);
+  // Paperclip Cloud only: link server analytics events to the browser session
+  // that caused them. Self-hosted servers never mount this, so posthog-js
+  // tracing headers are ignored there.
+  const postHogRequestContext = postHogRequestContextMiddlewareForEnv();
+  if (postHogRequestContext) app.use(postHogRequestContext);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
@@ -905,6 +912,9 @@ export async function createApp(
   setPluginEventBus(eventBus);
   const jobStore = pluginJobStore(db);
   const lifecycle = pluginLifecycleManager(db, { workerManager });
+  // Seed the plugin-provided connector lookups; readers refresh them again
+  // from the plugins table whenever they need a current answer.
+  void loadPluginAppCatalog(db).catch((error) => logger.warn({ err: error }, "Could not load plugin connector catalog"));
   const scheduler = createPluginJobScheduler({
     isBackgroundWorkEnabled: () => !isWarmStandby() && !isIdleTaskDrainActive(),
     db,
