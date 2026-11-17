@@ -93,24 +93,33 @@ This value is used only for location, never for limits.
 
 ## Privacy
 
-Masking is deny by default. A surface that nobody marked stays masked.
+Session replay shows text by default, the way PostHog normally works. Text is
+masked only inside marked customer content. Input values and attribute values
+are always masked.
 
-- Session replay masks every input value and every text node.
-  `maskReplayText` in `ui/src/lib/analytics/privacy.ts` shows text only inside
-  elements with `ANALYTICS_UNMASK_PROPS`: sidebar items whose label is a fixed
-  string, and a shared `Button`, `Label`, `TabsTrigger` or `EmptyState` only
-  when its caller passes `analyticsChrome`. None of them opts in by default,
-  because they also render customer text such as agent names and titles.
+- Session replay masks every input value (`maskAllInputs`).
+- Replay masks text only inside these markers (`ANALYTICS_MASK_TEXT_SELECTOR`
+  in `ui/src/lib/analytics/privacy.ts`, passed as rrweb `maskTextSelector`):
+  - `ANALYTICS_MASK_CLASS` (`ph-mask ph-sensitive`): customer content.
+  - `ANALYTICS_NO_CAPTURE_CLASS` (`ph-no-capture`): secrets. Replay blocks
+    these elements entirely.
+  - `contenteditable` editors (not `contenteditable="false"`).
+
+  rrweb masks a text node only when its parent matches the selector or has an
+  ancestor that matches it. All other text, for example navigation, headings,
+  buttons, task titles, agent names, project names and company names, is
+  recorded as it is.
 - Replay also masks attribute values (`maskReplayAttribute`): only layout
   attributes (`class`, `style`, `role`, `data-state`, SVG geometry and similar),
   rrweb metadata and stylesheet links keep their values. `title`,
   `aria-label`, `alt`, `placeholder`, `src`, `href`, `data-*` values and
-  element references (`id`, `for`, `aria-labelledby`) are always masked, even on unmasked chrome, so images record as empty boxes and
-  link targets (for example download links with file paths) never leave.
-- `ANALYTICS_MASK_CLASS` keeps customer content masked even inside unmasked
-  chrome: rendered markdown (task bodies, comments, chat messages, documents),
-  task and issue chat threads, the comment timeline, the rich editor and the
-  file viewer. Text in a `contenteditable` editor is always masked.
+  element references (`id`, `for`, `aria-labelledby`) are always masked, so
+  images record as empty boxes and link targets (for example download links
+  with file paths) never leave.
+- Do not set a text masking selector in the PostHog project's replay settings.
+  posthog-js lets that remote setting replace `maskTextSelector`. The
+  `ph-mask` class stays masked in all cases, because it is the posthog-js
+  default `maskTextClass`.
 - `ANALYTICS_NO_CAPTURE_CLASS` replaces secrets with a blank box in replays:
   every password-type `Input`, environment variable values and new secret
   values.
@@ -125,11 +134,40 @@ Masking is deny by default. A surface that nobody marked stays masked.
 - Autocapture never records element text or attribute values
   (`mask_all_text`, `mask_all_element_attributes`). It keeps the click, the
   element tree and the page.
-- Connected-account content (Gmail bodies, Calendar events, Slack messages
-  in tasks, chat, tool results and previews) is Google user data or Slack
-  data. No human may read it in a replay (Google API Limited Use). It is never
-  inside the unmask allowlist, and autocapture records no element text at all.
-  `ui/src/lib/analytics/unmask-allowlist.test.ts` pins the allowlist: a new
-  unmask needs a reviewed entry there.
+- Connected-account content is Google user data or Slack data. No human may
+  read it in a replay (privacy policy and Google API Limited Use). Every
+  surface that can show it, or other free-form text that agents or customers
+  write, carries `ANALYTICS_MASK_CLASS` on its content element (not on the
+  chrome around it):
+  - Rendered markdown (task bodies, comments, chat messages, documents), the
+    rich editor, task and issue chat threads (messages, tool calls, tool
+    results, interaction cards), the comment timeline and the file viewer.
+  - Link preview cards, task quicklook descriptions, external object pills and
+    rows, and related-work titles.
+  - Email message cards and email send intents.
+  - Connected account names and email addresses (Browse, Connections, app
+    detail headers, the app sidebar, connection choice lists, connection
+    access and repair cards), GitHub logins and repositories, Slack workspace
+    names, chat channel and linked user labels.
+  - Inbox and decision rows (subject and detail line), obligation evidence,
+    Needs You notes and receipts, decision options and result summaries,
+    interaction cards (questions, options, answers, tool action requests,
+    suggested tasks) wherever they render.
+  - Approval payloads, action card input and reason, recovery card headline,
+    evidence and options, run ledger retry detail and interrupt handoff
+    previews.
+  - Run transcripts, run failure details and run events on the agent page.
+  - Search result snippets, toast bodies, voice transcripts and call
+    transcripts, case summaries, files and fields, attachment previews and
+    artifact previews (text, tables, patches and documents).
+
+  `ui/src/lib/analytics/replay-masking.test.tsx` pins this list. A new surface
+  that shows connected-account content needs the class and an entry there.
+- Residual risk: text that the owner accepted as visible can still hold
+  customer words. Task titles, agent names, project names, company names,
+  routine names, artifact and document titles, and activity rows (which name
+  the task or entity) are recorded as they are. An agent can copy email or
+  Slack text into a task title. A new surface that renders connected-account
+  content without the class is recorded until somebody marks it.
 - The UI never captures an event that the server already sends
   (`PAPERCLIP_EVENTS`); `product-analytics-events.test.ts` enforces this.

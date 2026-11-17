@@ -44,6 +44,7 @@ import {
   personalGrantFor,
   type GrantStatusTone,
 } from "../connection-identity";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const STATUS_CHIP: Record<GrantStatusTone, string> = {
   connected: brandChipBadge.green,
@@ -312,7 +313,7 @@ function GitHubConnectionSummary({
     <div className="divide-y divide-border border-y border-border">
       <div className="py-3">
         <div className="text-sm font-medium text-foreground">GitHub account</div>
-        <a className="text-sm text-muted-foreground hover:underline" href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
+        <a className={cn("text-sm text-muted-foreground hover:underline", ANALYTICS_MASK_CLASS)} href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
           @{github.login}
         </a>
       </div>
@@ -354,7 +355,7 @@ function GitHubConnectionSummary({
           </div>
         </div>
         {github.repositories ? (
-          github.repositories.length ? <ul aria-label="Accessible GitHub repositories" tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
+          github.repositories.length ? <ul aria-label="Accessible GitHub repositories" tabIndex={0} className={cn("max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm", ANALYTICS_MASK_CLASS)}>
             {github.repositories.map((repository) => (
               <li key={repository.id}>
                 <a className="flex items-center gap-2 text-muted-foreground hover:underline" href={`https://github.com/${repository.fullName.split("/").map(encodeURIComponent).join("/")}`} target="_blank" rel="noreferrer">
@@ -511,7 +512,7 @@ export function AudienceDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Who can use this identity</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className={ANALYTICS_MASK_CLASS}>
             {grantAccountLabel(grant)} · {appName}
           </DialogDescription>
         </DialogHeader>

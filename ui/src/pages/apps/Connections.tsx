@@ -54,6 +54,7 @@ import {
   type ConnectionOwnerProfile,
 } from "./connection-owner";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const BROWSE_HREF = "/apps";
 
@@ -464,7 +465,7 @@ export function Connections() {
                           />
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium text-foreground">{row.displayName}</span>
+                              <span className={cn("font-medium text-foreground", ANALYTICS_MASK_CLASS)}>{row.displayName}</span>
                               <ConnectionProvenanceChip connection={row.connection} />
                             </div>
                             {hint && (

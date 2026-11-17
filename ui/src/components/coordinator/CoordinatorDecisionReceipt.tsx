@@ -1,6 +1,8 @@
 import { ArrowUpRight, Check } from "lucide-react";
 import type { DecisionHistoryItem } from "@paperclipai/shared";
 import { decisionHistoryContext, decisionHistoryHeadline } from "@/lib/coordinator-attention";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /** A recorded decision links to its context; it is not a second approval form. */
 export function CoordinatorDecisionReceipt({ item, onOpen, userLabelMap }: {
@@ -16,7 +18,7 @@ export function CoordinatorDecisionReceipt({ item, onOpen, userLabelMap }: {
       <span className="block text-sm font-medium">{decisionHistoryHeadline(item, userLabelMap)}{handledFor ? <span className="font-normal text-muted-foreground"> · for @{handledFor}</span> : null}</span>
       <span className="block truncate text-sm text-muted-foreground">{decisionHistoryContext(item)}</span>
       {/* Who withdrew it is in the headline; the reason they gave is here (PAP-749 plan §3). */}
-      {item.reason ? <span className="block text-sm text-muted-foreground" data-decision-history-reason>Reason: {item.reason}</span> : null}
+      {item.reason ? <span className={cn("block text-sm text-muted-foreground", ANALYTICS_MASK_CLASS)} data-decision-history-reason>Reason: {item.reason}</span> : null}
     </span>
     <ArrowUpRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
   </button>;

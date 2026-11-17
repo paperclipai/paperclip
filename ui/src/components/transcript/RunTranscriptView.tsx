@@ -14,6 +14,7 @@ import {
   User,
 } from "lucide-react";
 import { toolTaxonomy } from "../task-chat/tool-taxonomy";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /** Family glyph for a tool block/row; the taxonomy falls back to Wrench. */
 function ToolFamilyIcon({ name, className }: { name: string; className?: string }) {
@@ -1868,7 +1869,7 @@ export function RunTranscriptView({
 
   if (entries.length === 0) {
     return (
-      <div className={cn("rounded-2xl border border-dashed border-border/70 bg-background/40 p-4 text-sm text-muted-foreground", className)}>
+      <div className={cn("rounded-2xl border border-dashed border-border/70 bg-background/40 p-4 text-sm text-muted-foreground", className, ANALYTICS_MASK_CLASS)}>
         {emptyMessage}
       </div>
     );
@@ -1876,14 +1877,14 @@ export function RunTranscriptView({
 
   if (mode === "raw") {
     return (
-      <div className={className}>
+      <div className={cn(className, ANALYTICS_MASK_CLASS)}>
         <RawTranscriptView entries={visibleEntries} density={density} />
       </div>
     );
   }
 
   return (
-    <div className={cn("space-y-3", className)}>
+    <div className={cn("space-y-3", className, ANALYTICS_MASK_CLASS)}>
       {keyedBlocks.map(({ block, key }, index) => (
         <div
           key={key}

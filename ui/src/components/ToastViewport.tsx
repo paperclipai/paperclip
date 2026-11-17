@@ -11,6 +11,7 @@ import {
   type ToastTone,
 } from "../context/ToastContext";
 import { cn } from "../lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const toneClasses: Record<ToastTone, string> = {
   info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/25 dark:bg-sky-950/60 dark:text-sky-100",
@@ -64,7 +65,7 @@ function AnimatedToast({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold leading-5">{toast.title}</p>
           {toast.body && (
-            <p className="mt-1 text-xs leading-4 opacity-70">
+            <p className={cn("mt-1 text-xs leading-4 opacity-70", ANALYTICS_MASK_CLASS)}>
               {toast.body}
             </p>
           )}

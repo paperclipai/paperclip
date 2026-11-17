@@ -22,6 +22,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Textarea } from "./ui/textarea";
 import { MarkdownBody } from "./MarkdownBody";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /**
  * Presentational card for a single Decisions-v1 decision (PAP-14966 / PAP-14939
@@ -473,7 +474,7 @@ export function DecisionCard({
                     )}
                   </div>
                   {option.description && (
-                    <div className="mt-1 text-sm leading-6 text-muted-foreground">{option.description}</div>
+                    <div className={cn("mt-1 text-sm leading-6 text-muted-foreground", ANALYTICS_MASK_CLASS)}>{option.description}</div>
                   )}
                   {option.effects.length > 0 && (
                     <ul className="mt-2 space-y-0.5">
@@ -599,7 +600,7 @@ export function DecisionCard({
                   return (
                     <li key={row.key} className="flex items-start gap-2">
                       {RESULT_ICON[row.status]}
-                      <span className="min-w-0 flex-1 text-sm text-foreground/90">{row.summary}</span>
+                      <span className={cn("min-w-0 flex-1 text-sm text-foreground/90", ANALYTICS_MASK_CLASS)}>{row.summary}</span>
                       <IssueLink ref={row.link} />
                     </li>
                   );

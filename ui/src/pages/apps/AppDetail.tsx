@@ -80,6 +80,7 @@ import {
   connectionOwnerProfile,
 } from "./connection-owner";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export { connectionAddress, connectionTransportLabel };
 
@@ -547,7 +548,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
 
   if (isRetiredComposioConnection(connection)) {
     return <div className="max-w-4xl space-y-6 pb-12">
-      <h1 className="text-xl font-semibold">{appName}</h1>
+      <h1 className={cn("text-xl font-semibold", ANALYTICS_MASK_CLASS)}>{appName}</h1>
       <section role="status" className="space-y-3 rounded-lg border border-border bg-muted p-4">
         <h2 className="text-sm font-semibold">Connection retired</h2>
         <p className="text-sm text-muted-foreground">{RETIRED_COMPOSIO_MESSAGE}</p>
@@ -828,7 +829,7 @@ export function AppDetailHeader({
             </form>
           ) : (
             <div className="flex items-center gap-1.5">
-              <h1 className="truncate text-xl font-bold">{appName}</h1>
+              <h1 className={cn("truncate text-xl font-bold", ANALYTICS_MASK_CLASS)}>{appName}</h1>
               <Button
                 variant="ghost"
                 size="icon"

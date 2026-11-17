@@ -72,6 +72,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 const tabs = ["settings", "access", "reviews", "conversations", "activity"] as const;
 type ChatTab = (typeof tabs)[number];
@@ -558,7 +560,7 @@ function Settings({
             {destinationResources.map((resource) => (
               <div key={resource.id} className="py-3 space-y-3">
               <div className="flex items-center gap-3">
-                <div className="min-w-0 flex-1">
+                <div className={cn("min-w-0 flex-1", ANALYTICS_MASK_CLASS)}>
                   <p className="truncate text-sm font-medium">
                     {resource.label}
                   </p>
@@ -821,7 +823,7 @@ function Access({
                     {link.paperclipUserImage && <AvatarImage src={link.paperclipUserImage} alt="" />}
                     <AvatarFallback>{deriveInitials(link.paperclipUserLabel ?? link.externalLabel)}</AvatarFallback>
                   </Avatar>
-                  <div className="min-w-0">
+                  <div className={cn("min-w-0", ANALYTICS_MASK_CLASS)}>
                     <p className="truncate text-sm" title={link.paperclipUserLabel ?? link.externalLabel}>{link.paperclipUserLabel ?? link.externalLabel}</p>
                     {(link.status !== "linked" || link.externalLabel !== link.paperclipUserLabel) && <p className="text-xs text-muted-foreground">
                       {link.status === "revoked" ? "Disconnected" : link.status === "linked"

@@ -5,6 +5,8 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { Link } from "@/lib/router";
 import { formatDateTime } from "@/lib/utils";
 import { AppLogo } from "../AppLogo";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function conversationDestination(
   row: ChatConversation,
@@ -92,7 +94,7 @@ export function ChatConversationList({
                   {conversationDestination(row, provider)}
                 </a>
               ) : (
-                <span className="break-all">{row.externalLabel}</span>
+                <span className={cn("break-all", ANALYTICS_MASK_CLASS)}>{row.externalLabel}</span>
               )}
               {row.updatedAt && (
                 <time dateTime={row.updatedAt}>

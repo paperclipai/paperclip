@@ -58,6 +58,7 @@ import { DecisionCardFooter } from "./DecisionCardFooter";
 import { ToolActionAuditHashCopy } from "./ToolActionAuditHashCopy";
 import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "./coordinator/NeedsYouCardKit";
 import { claimReviseDraftWork, clearReviseDraft, releaseReviseDraftWork, reviseDraftKey, useReviseDraft, type ReviseDraftWork } from "@/lib/revise-draft-store";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -2065,7 +2066,7 @@ function RequestToolActionCard({
     const preview = payload.previewMarkdown?.trim() ?? "";
     const previewIsLine = Boolean(preview) && !preview.includes("\n") && preview.length <= 120;
     return (
-      <div className="space-y-4 text-foreground">
+      <div className={cn("space-y-4 text-foreground", ANALYTICS_MASK_CLASS)}>
         <div className="space-y-3">
           <CompactDecisionAsk>{ask}</CompactDecisionAsk>
           <CompactDecisionNote note={compactDecisionNote(interaction, [ask, payload.previewMarkdown])} />
@@ -2116,7 +2117,7 @@ function RequestToolActionCard({
   }
 
   return (
-    <div className="text-foreground">
+    <div className={cn("text-foreground", ANALYTICS_MASK_CLASS)}>
       <div className="flex items-start gap-3">
         <span role="img" aria-label={payload.appDisplayName || payload.toolDisplayName}>
           <AppLogo name={payload.appDisplayName || payload.toolDisplayName} size={36} />
@@ -4437,7 +4438,7 @@ export function IssueThreadInteractionCard({
   if (coordinatorEnabled && !compactDecision && interaction.kind === "suggest_tasks") {
     return <InteractionAudienceContext.Provider value={audience}>
       <CoordinatorTaskCommitment interaction={interaction}>
-        <div className="p-4 space-y-3">
+        <div className={cn("p-4 space-y-3", ANALYTICS_MASK_CLASS)}>
           {interaction.status === "pending" ? <InteractionAudienceLine audience={audience} /> : null}
           <SuggestTasksCard interaction={interaction} agentMap={agentMap} currentUserId={currentUserId}
             userLabelMap={userLabelMap} onAcceptInteraction={onAcceptInteraction} onRejectInteraction={onRejectInteraction} />
@@ -4447,7 +4448,7 @@ export function IssueThreadInteractionCard({
   }
   if (!compactDecision && interaction.kind === "connection_intent" && interaction.payload.accessRequest) {
     return (
-      <div id={`interaction-${interaction.id}`}>
+      <div className={ANALYTICS_MASK_CLASS} id={`interaction-${interaction.id}`}>
         <ConnectionIntentInteractionBody
           footerSlot={footerSlot}
           interaction={interaction}
@@ -4526,7 +4527,7 @@ export function IssueThreadInteractionCard({
     // denial with the same audience the header states (PAP-17287).
     <InteractionAudienceContext.Provider value={audience}>
       <CompactArtifactRowContext.Provider value={compactDecision ? artifactRow : null}>
-      <div data-presentation={presentationVariant} className={compactDecision ? "coordinator-decision-content space-y-4" : cn("rounded-lg border p-5 shadow-none", styles.shell)}>
+      <div data-presentation={presentationVariant} className={compactDecision ? cn("coordinator-decision-content space-y-4", ANALYTICS_MASK_CLASS) : cn("rounded-lg border p-5 shadow-none", styles.shell, ANALYTICS_MASK_CLASS)}>
         {compactDecision ? <>
           {!bodyNamesDecision ? <CompactDecisionAsk><PromptText>{compactTitle}</PromptText></CompactDecisionAsk> : null}
           {/* Questions and confirmations put the note under their ask (UI1). */}

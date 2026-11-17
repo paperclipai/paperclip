@@ -51,6 +51,7 @@ import {
   readRecoveryRetryLineage,
   type RecoveryRetryLineage,
 } from "@/lib/recovery-lineage";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
@@ -1167,7 +1168,7 @@ export function IssueRecoveryActionCard({
               </>
             ) : null}
           </div>
-          <p className="mt-1 text-sm leading-6">{headline}</p>
+          <p className={cn("mt-1 text-sm leading-6", ANALYTICS_MASK_CLASS)}>{headline}</p>
         </div>
       </header>
       {variant === "compact" ? null : (
@@ -1310,7 +1311,7 @@ export function IssueRecoveryActionCard({
                 {evidenceSummary.text}
               </span>
             ) : (
-              <span className="text-xs leading-5 text-foreground/80">{evidenceSummary.text}</span>
+              <span className={cn("text-xs leading-5 text-foreground/80", ANALYTICS_MASK_CLASS)}>{evidenceSummary.text}</span>
             )
           ) : (
             <MissingValue />
@@ -1381,7 +1382,7 @@ export function IssueRecoveryActionCard({
                       )}
                     >
                       <span className="font-medium leading-5">{option.label}</span>
-                      <span className="text-(length:--text-micro) leading-4 text-muted-foreground">{option.description}</span>
+                      <span className={cn("text-(length:--text-micro) leading-4 text-muted-foreground", ANALYTICS_MASK_CLASS)}>{option.description}</span>
                     </button>
                   ))}
                 </div>

@@ -16,6 +16,8 @@ import { attachmentDownloadPath, isMarkdownAttachment, isTextAttachment } from "
 import { queryKeys } from "@/lib/queryKeys";
 
 import { readTextPreview, TEXT_PREVIEW_MAX_BYTES } from "@/lib/text-preview";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 export { readTextPreview, TEXT_PREVIEW_MAX_BYTES } from "@/lib/text-preview";
 
 export function TextAttachmentPreview({ title, text, markdown, html = false, csv = false, patch = isPatchFile(title), downloadUrl }: {
@@ -40,7 +42,7 @@ export function TextAttachmentPreview({ title, text, markdown, html = false, csv
           <a href={downloadUrl} download aria-label={`Download ${title}`} title={`Download ${title}`}><Download aria-hidden /></a>
         </Button>
       </header>
-      <div className={renderHtml || renderCsv ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 min-w-0 flex-1 overflow-auto p-4"}>
+      <div className={cn(renderHtml || renderCsv ? "flex min-h-0 flex-1 flex-col overflow-hidden" : "min-h-0 min-w-0 flex-1 overflow-auto p-4", ANALYTICS_MASK_CLASS)}>
         {text.length === 0 ? <p className="text-sm text-muted-foreground">File is empty.</p>
           : renderCsv ? <CsvPreview text={text} title={title} />
           : renderHtml ? <HtmlArtifactPreview html={text} title={title} />
