@@ -993,7 +993,7 @@ describe("durable Dot Runner integration", () => {
       await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, run!.id));
       const server = createServer(); await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
       const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing test server");
-      setupRunnerPrpWebSocketServer(server, { apiUrl: `http://127.0.0.1:${address.port}` });
+      setupRunnerPrpWebSocketServer(server);
       const observed: Array<Record<string, any>> = [];
       const appCall = vi.fn().mockResolvedValue({ status: "completed", result: { content: [{ type: "text", text: "synthetic gateway result" }] } });
       const gatewayTools = [{ name: "fixture:read_status", displayName: "Read fixture status", description: "Read a synthetic app", parametersSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "read" }];

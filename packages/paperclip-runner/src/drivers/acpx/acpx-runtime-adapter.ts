@@ -198,9 +198,6 @@ export interface QualifiedAcpxRuntimeDependencies {
   platform?: NodeJS.Platform;
 }
 
-/** @deprecated Use QualifiedAcpxRuntimeDependencies for provider-neutral ACPX runtimes. */
-export type CodexAcpxRuntimeDependencies = QualifiedAcpxRuntimeDependencies;
-
 /**
  * Adapt the pinned ACPX library to Paperclip's admitted runtime port. The
  * executable, launch environment, and spawn cwd stay host-owned and are never
@@ -865,9 +862,6 @@ export async function openQualifiedAcpxRuntime(
     throw error;
   }
 }
-
-/** Backward-compatible name retained for existing Codex-only consumers. */
-export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
 
 function classifySessionEnsureFailure(error: unknown, providerFailure: ProviderFailure | null): Error {
   const failure = error instanceof Error ? error
