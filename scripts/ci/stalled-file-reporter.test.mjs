@@ -73,7 +73,7 @@ test("finished files and hooks count as progress", () => {
 test("a file that never finishes loading is named from the moment it is queued", () => {
   let now = 0;
   const lines = [];
-  const reporter = new StalledFileReporter({ limitMs: 1000, now: () => now, write: line => lines.push(line), exit: () => {}, root: "/repo" });
+  const reporter = new StalledFileReporter({ limitMs: 1000, now: () => now, write: line => lines.push(line), exit: () => {}, root: "/repo", graceMs: 0 });
   reporter.onTestModuleQueued({ moduleId: "/repo/server/src/top-level-await.test.ts" });
   now = 1000; reporter.check();
   assert.match(lines[0] ?? "", /^::error file=server\/src\/top-level-await\.test\.ts,.*while in: loading the file\./);
