@@ -40,11 +40,12 @@ vi.spyOn(document.head, "appendChild").mockImplementation(<T extends Node>(node:
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-const user = { id: "user-1", email: "jane@example.com", name: "Jane", image: null };
+const ACTOR_ID = "paperclip-id:uf2X8Ha4H9hNdAMnc1rOy91VIRos5pch";
+const user = { id: ACTOR_ID, email: "jane@example.com", name: "Jane", image: null };
 
 function session(browserAnalytics: unknown) {
   return {
-    session: { id: "paperclip:session:user-1", userId: "user-1" },
+    session: { id: `paperclip:session:${ACTOR_ID}`, userId: ACTOR_ID },
     user,
     sentryDsn: null,
     browserAnalytics,
@@ -118,7 +119,8 @@ describe("ProductAnalyticsGate", () => {
     // PostHog's script comes through the same-origin proxy, never from PostHog directly.
     expect(injectedScripts().map((script) => new URL(script.src).pathname)).toEqual(["/_ph/static/array.js"]);
     expect(posthogMock.init).toHaveBeenCalledWith("phc_test", expect.objectContaining({ disable_session_recording: true }));
-    expect(posthogMock.identify).toHaveBeenCalledWith("user-1", { email: "jane@example.com", name: "Jane" });
+    // Same id, same format, as the server's actor id (its events' distinct_id).
+    expect(posthogMock.identify).toHaveBeenCalledWith(ACTOR_ID, { email: "jane@example.com", name: "Jane" });
     expect(posthogMock.group).toHaveBeenCalledWith("workspace", "stack-1");
     expect(posthogMock.register).toHaveBeenCalledWith({ deployment_source: "cloud", environment: "production" });
     act(() => root.unmount());

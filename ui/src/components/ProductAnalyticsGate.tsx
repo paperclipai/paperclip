@@ -27,7 +27,11 @@ export function ProductAnalyticsGate() {
   });
   const config = session?.browserAnalytics ?? null;
   const configKey = config ? JSON.stringify(config) : null;
-  const userId = session?.user.id ?? null;
+  // The authenticated actor's user id, verbatim (for example
+  // "paperclip-id:..."): the server copies `req.actor.userId` into
+  // `session.userId`, and server events use that same id as `distinct_id`,
+  // so browser and server events land on one PostHog person.
+  const userId = session?.session.userId ?? null;
   const email = session?.user.email ?? null;
   const name = session?.user.name ?? null;
 

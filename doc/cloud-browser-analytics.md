@@ -66,7 +66,9 @@ with the public project token, like PostHog's own ingest endpoint.
 
 ## Identity
 
-- After sign-in: `identify(userId, { email, name })`. Email and name are person
+- After sign-in: `identify(session.userId, { email, name })`. `session.userId`
+  is the authenticated actor's user id verbatim (`req.actor.userId`, for
+  example `paperclip-id:...`), the same id server events use as `distinct_id`. Email and name are person
   properties only, never event properties.
 - `group("workspace", stackId)`.
 - Every event carries `deployment_source: "cloud"` and `environment`. Without

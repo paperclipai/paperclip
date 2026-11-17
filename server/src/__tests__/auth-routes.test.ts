@@ -100,6 +100,15 @@ describe("auth routes", () => {
     });
   });
 
+  it("returns the authenticated actor's user id verbatim, the id browser analytics identifies with", async () => {
+    const actorId = "paperclip-id:uf2X8Ha4H9hNdAMnc1rOy91VIRos5pch";
+    const actor = { type: "board", userId: actorId, source: "cloud_tenant" } as Express.Request["actor"];
+    const res = await request(createApp(actor, { ...baseUser, id: actorId })).get("/api/auth/get-session");
+    expect(res.status).toBe(200);
+    // ProductAnalyticsGate calls identify(session.userId); server events use the actor id as distinct_id.
+    expect(res.body.session.userId).toBe(actorId);
+  });
+
   it("sends browserAnalytics only on Cloud with a PostHog token and the browser switch", async () => {
     const actor = { type: "board", userId: "user-1", source: "session" } as Express.Request["actor"];
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
