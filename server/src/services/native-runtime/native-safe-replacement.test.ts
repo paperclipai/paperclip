@@ -43,6 +43,7 @@ import {
   documentRevisions,
   issues,
   nativeRunFinalizations,
+  toolInvocations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -226,12 +227,12 @@ const support = externalDatabaseUrl
         }
       },
     );
-    it.each(["remote_sandbox", "remote_unconfirmed_action", "local_codex", "unknown_provider"] as const)(
+    it.each(["remote_sandbox", "remote_unconfirmed_action", "remote_completed_action", "local_codex", "unknown_provider"] as const)(
       "continues a transport failure whose stop can never be proven locally without waiting for a person (%s)",
       async (mode) => {
         const source = await seed();
         const workspace = await mkdtemp(join(tmpdir(), "paperclip-remote-transport-"));
-        const remote = mode === "remote_sandbox" || mode === "remote_unconfirmed_action";
+        const remote = mode === "remote_sandbox" || mode === "remote_unconfirmed_action" || mode === "remote_completed_action";
         try {
           await db.update(heartbeatRuns).set({ finishedAt: new Date(), errorCode: "provider_transport_failed",
             runnerProfileJson: mode === "unknown_provider" ? {} : { nativeExecutionInput: {
@@ -247,6 +248,14 @@ const support = externalDatabaseUrl
             eventType: "tool.execution.started", stream: "system",
             payload: { name: "send_email", executionId: "unconfirmed-send", transport: "mcp" },
           });
+          if (mode === "remote_completed_action") {
+            const [sent] = await db.insert(toolInvocations).values({ companyId: source.companyId, agentId: source.agentId,
+              issueId: source.issueId, runId: source.runId, toolName: "send_email", riskLevel: "write", status: "succeeded",
+              startedAt: new Date(), completedAt: new Date(), resultHash: "sha256:sent" } as typeof toolInvocations.$inferInsert).returning();
+            await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+              eventType: "tool.execution.started", stream: "system",
+              payload: { name: "send_email", executionId: sent!.id, transport: "mcp" } });
+          }
           const verifyStoppedSession = vi.fn(async () => null);
           invalidateNativeReplacementDiscovery(db);
           await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
@@ -270,11 +279,13 @@ const support = externalDatabaseUrl
             return;
           }
           expect(decision!.failureDetail?.replacementDenied).toBe("provider_failure_meaning_unverified");
+          expect(decision!.failureDetail?.unconfirmedActions).toBeUndefined();
           expect(holds).toMatchObject([{ status: "active", cause: "provider_failure_meaning_unverified" }]);
           await settleUnrecoverableExecutions(db);
           const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
           expect(settled).toMatchObject({ status: "resolved", outcome: "restored",
-            evidence: { freshContinuation: { trigger: "recovery_refused", sourceRunId: source.runId }, continuationDelivery: "pending" } });
+            evidence: { freshContinuation: { trigger: "recovery_refused", sourceRunId: source.runId, unverifiedActions: [] },
+              continuationDelivery: "pending" } });
         } finally {
           await rm(workspace, { recursive: true, force: true });
         }

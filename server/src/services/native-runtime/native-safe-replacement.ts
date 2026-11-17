@@ -544,15 +544,19 @@ export async function reconcileSafeNativeReplacements(
         && run.runnerProfileJson?.nativeWorkspaceSync == null && nativeRunHasNoWorkspaceAccess(run);
       if (preClaim && (invocations.length || !noWorkspaceToSave
         && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped))) continue;
+      const completedInvocation = (row: typeof invocations[number]) =>
+        row.status === "succeeded" && Boolean(row.completedAt) && Boolean(row.resultHash);
+      const startedPayloads = events.filter(event => event.eventType === "tool.execution.started").map(event => {
+        const envelope = record(event.payload);
+        return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
+      });
       const unconfirmedActions = stopProofUnavailable ? [...new Set([
-        ...invocations.filter(row => row.riskLevel !== "read" || row.status !== "succeeded" || !row.completedAt || !row.resultHash)
-          .map(row => row.toolName),
-        ...uncertainProviderActions.map(action => {
-          const started = events.filter(event => event.eventType === "tool.execution.started").map(event => {
-            const envelope = record(event.payload);
-            return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
-          }).find(payload => String(payload.executionId ?? payload.name) === action);
-          return typeof started?.name === "string" ? started.name : action;
+        ...invocations.filter(row => row.riskLevel !== "read" && !completedInvocation(row)).map(row => row.toolName),
+        ...uncertainProviderActions.flatMap(action => {
+          const started = startedPayloads.find(payload => String(payload.executionId ?? payload.name) === action);
+          if (started && started.transport !== "process" && invocations.some(row => completedInvocation(row)
+            && (row.id === started.executionId || row.correlationId === started.executionId))) return [];
+          return [typeof started?.name === "string" ? started.name : action];
         }),
       ])] : [];
       const unprovenAction = unconfirmedActions[0];
