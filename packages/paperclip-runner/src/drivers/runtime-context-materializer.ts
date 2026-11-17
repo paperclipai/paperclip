@@ -218,10 +218,10 @@ export async function verifyMaterializedNativeRuntimeSkills(context: NativeRunti
   nativeRuntimeContextAssets(context);
   const repositories = new Set<string>();
   for (const skill of context.skills) {
-    await verifyRuntimeAssetTree(safeMaterializationTarget(skillsHome, skill.runtimeName), await runtimeAssetManifest(skill.bundle));
+    await verifyRuntimeAssetTree(safeMaterializationTarget(skillsHome, skill.runtimeName), await runtimeAssetManifest(skill.bundle), undefined, dirname(skillsHome));
     if (skill.repository && !repositories.has(skill.repository.bundle.digest)) {
       repositories.add(skill.repository.bundle.digest);
-      await verifyRuntimeAssetTree(join(dirname(skillsHome), "repositories", skill.repository.bundle.digest), await runtimeAssetManifest(skill.repository.bundle));
+      await verifyRuntimeAssetTree(join(dirname(skillsHome), "repositories", skill.repository.bundle.digest), await runtimeAssetManifest(skill.repository.bundle), undefined, dirname(skillsHome));
     }
   }
 }
@@ -255,7 +255,7 @@ async function materializeSharedRuntimeSkills(context: NativeRuntimeContextSnaps
       if (skill.repository && !copied.has(skill.repository.bundle.digest)) {
         const asset = skill.repository.bundle;
         const target = join(repositories, asset.digest);
-        await copyVerifiedRuntimeAsset(asset, target);
+        await copyVerifiedRuntimeAsset(asset, target, staging);
         await protectStagedTree(target);
         copied.add(asset.digest);
       }
@@ -267,7 +267,7 @@ async function materializeSharedRuntimeSkills(context: NativeRuntimeContextSnaps
         }
       }
       const target = safeMaterializationTarget(skills, skill.runtimeName);
-      await copyVerifiedRuntimeAsset(skill.bundle, target);
+      await copyVerifiedRuntimeAsset(skill.bundle, target, staging);
       await protectStagedTree(target);
       if (process.platform === "win32") { await setWindowsRuntimeTreeReadOnly(target, true); sealedRoots.push(target); }
     }

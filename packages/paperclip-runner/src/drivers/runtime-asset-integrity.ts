@@ -1,13 +1,32 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { NativeRuntimeAssetReference } from "../contracts/runtime-context.js";
 
 type AssetFile = { path: string; sha256: string; mode: number; size: number };
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 function fail(): never { throw new Error("native_runtime_asset_integrity_mismatch"); }
 const MAX_BYTES = 64 * 1024 * 1024;
+
+async function directoryChain(anchor: string, target: string): Promise<() => Promise<void>> {
+  const base = resolve(anchor), end = resolve(target), child = relative(base, end);
+  if (isAbsolute(child) || child === ".." || child.startsWith(`..${sep}`)) fail();
+  const paths = [base];
+  for (const part of child ? child.split(sep) : []) paths.push(join(paths.at(-1)!, part));
+  const identities: Array<{ path: string; dev: number; ino: number }> = [];
+  for (const path of paths) {
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink()) fail();
+    identities.push({ path, dev: info.dev, ino: info.ino });
+  }
+  return async () => {
+    for (const entry of identities) {
+      const info = await lstat(entry.path);
+      if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== entry.dev || info.ino !== entry.ino) fail();
+    }
+  };
+}
 
 function safePath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !/[\\<>:"|?*\u0000-\u001f\u007f]/u.test(value)
@@ -38,7 +57,9 @@ async function bytes(filename: string, max: number, exactSize?: number): Promise
 export async function runtimeAssetManifest(asset: NativeRuntimeAssetReference): Promise<AssetFile[]> {
   if (!/^[a-f0-9]{64}$/.test(asset.digest) || !/^[a-f0-9]{64}$/.test(asset.manifestDigest)
     || asset.schema !== "paperclip.runtime-asset.v1") fail();
-  const text = await bytes(join(dirname(dirname(asset.rootPath)), "manifests", `${asset.digest}.json`), MAX_BYTES);
+  const store = dirname(dirname(asset.rootPath)), manifests = join(store, "manifests");
+  const recheck = await directoryChain(store, manifests);
+  const text = await bytes(join(manifests, `${asset.digest}.json`), MAX_BYTES);
   if (hash(text) !== asset.manifestDigest) fail();
   const manifest = JSON.parse(text.toString("utf8"));
   if (manifest.schema !== "paperclip.runtime-asset-manifest.v1" || manifest.digest !== asset.digest
@@ -57,11 +78,13 @@ export async function runtimeAssetManifest(asset: NativeRuntimeAssetReference): 
     if (total > MAX_BYTES) fail();
   }
   if (total !== asset.totalBytes) fail();
+  await recheck();
   return manifest.files;
 }
 
 /** Verify bytes on every platform; Windows timestamps never stand in for hashes. */
-export async function verifyRuntimeAssetTree(root: string, files: AssetFile[], target?: string): Promise<void> {
+export async function verifyRuntimeAssetTree(root: string, files: AssetFile[], target?: string, anchor = dirname(dirname(root))): Promise<void> {
+  const recheck = await directoryChain(anchor, root);
   const expected = new Map(files.map(file => [file.path, file]));
   const seen = new Set<string>();
   const directories = new Set([""]);
@@ -93,11 +116,12 @@ export async function verifyRuntimeAssetTree(root: string, files: AssetFile[], t
   }
   await visit();
   if (seen.size !== expected.size) fail();
+  await recheck();
 }
 
-export async function copyVerifiedRuntimeAsset(asset: NativeRuntimeAssetReference, target: string): Promise<void> {
+export async function copyVerifiedRuntimeAsset(asset: NativeRuntimeAssetReference, target: string, destinationAnchor = dirname(dirname(target))): Promise<void> {
   const files = await runtimeAssetManifest(asset);
   await mkdir(target, { mode: 0o700, recursive: true });
   await verifyRuntimeAssetTree(asset.rootPath, files, target);
-  await verifyRuntimeAssetTree(target, files);
+  await verifyRuntimeAssetTree(target, files, undefined, destinationAnchor);
 }

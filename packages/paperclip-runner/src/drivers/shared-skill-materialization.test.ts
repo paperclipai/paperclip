@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canonicalNativeRuntimeContextDigest, type NativeRuntimeAssetReference, type NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
-import { materializeNativeRuntimeSkills, nativeRuntimeContextReadOnlyRoots, prepareIsolatedCodexRecoveryHome, releaseMaterializedNativeRuntimeSkills } from "./runtime-context-materializer.js";
+import { materializeNativeRuntimeSkills, nativeRuntimeContextReadOnlyRoots, prepareIsolatedCodexRecoveryHome, releaseMaterializedNativeRuntimeSkills, verifyMaterializedNativeRuntimeSkills } from "./runtime-context-materializer.js";
 import { setWindowsRuntimeTreeReadOnly } from "./windows-runtime-permissions.js";
 import { nativeTaskSkillInputs } from "../backends/runtime-context.js";
 
@@ -47,6 +47,31 @@ async function fixture() {
 }
 
 describe("shared repository materialization", () => {
+  it("rejects a substituted source bundle parent with otherwise matching bytes", async () => {
+    const f = await fixture(), original = dirname(f.repo.rootPath), moved = join(f.root, "substituted-source");
+    await rename(original, moved);
+    try {
+      await symlink(moved, original, process.platform === "win32" ? "junction" : "dir");
+      await expect(materializeNativeRuntimeSkills(f.context, join(f.root, "home", "skills"))).rejects.toThrow(/integrity/);
+    } finally { await rm(original, { force: true }); await rename(moved, original); }
+  });
+  it.each(["repositories", "skills/nested"])("rejects a substituted %s parent even when its pinned bytes match", async parent => {
+    const f = await fixture(), home = join(f.root, "home");
+    await materializeNativeRuntimeSkills(f.context, join(home, "skills"));
+    const original = join(home, parent), moved = join(f.root, "substituted-parent");
+    if (process.platform === "win32") {
+      if (parent === "repositories") await setWindowsRuntimeTreeReadOnly(original, false, { recursive: false });
+      else await setWindowsRuntimeTreeReadOnly(join(original, "één"), false, { recursive: false });
+    }
+    await chmod(dirname(original), 0o700); await rename(original, moved);
+    try {
+      await symlink(moved, original, process.platform === "win32" ? "junction" : "dir");
+      await expect(verifyMaterializedNativeRuntimeSkills(f.context, join(home, "skills"))).rejects.toThrow(/integrity/);
+      expect(await readFile(join(home, "repositories", f.repo.digest, "shared.txt"), "utf8")).toBe("original");
+    } finally {
+      await rm(original, { force: true }); await rename(moved, original);
+    }
+  });
   it("admits the exact source and provider repository roots for read-only access", async () => {
     const f = await fixture(), home = join(f.root, "home");
     const roots = nativeRuntimeContextReadOnlyRoots(f.context, home);

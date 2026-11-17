@@ -72,3 +72,25 @@ test instance remains. Source data must not be silently moved to another volume.
 - Exercise filesystem capability handling for ReFS, NTFS and FAT32. Do not treat
   optional metadata support as a reason to skip byte checks or bypass a sandbox.
 - Require the final source revision's relevant local checks and CI before rollout.
+
+## Final review and current handoff status
+
+The independent branch review found two issues. The final patch checks directory
+ancestors before and after integrity reads. It rejects source and delivered
+parent junction substitutions. On Windows, a failed ACL operation has a fallback
+only after a positive FAT/FAT32/exFAT volume probe and a stable directory identity
+check. Byte checks, read-only file attributes and provider sandbox policy remain.
+Unknown filesystem or NTFS/ReFS permission errors still fail.
+
+The final focused Windows check passed 170 tests in six files. The Runner SDK
+TypeScript check also passed. The corresponding final Linux run did not pass:
+the materialization file reported eight timeouts after two passing cases.
+The isolated Linux server also stopped answering its health endpoint after its
+restart. These results need diagnosis. They are not successful acceptance tests.
+The local `pnpm verify` attempt produced no result before this handoff.
+
+No successful end-to-end first-tool or warm-resume measurement is available.
+This branch is a draft. The production instance has not been switched to it.
+Physical FAT32 acceptance and a successful native run on this machine's ReFS
+volume remain open. A positive mocked capability test is not physical-volume
+qualification. Required CI and the upstream review are pending.
