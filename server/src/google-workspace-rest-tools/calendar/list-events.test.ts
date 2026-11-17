@@ -4,7 +4,8 @@ import { createGoogleHttp } from "../google-http.js";
 import type { RestEvent } from "./event.js";
 import { ALL_DAY_EVENT, eventList, RECURRING_INSTANCE, TIMED_EVENT } from "./fixtures/calendar-rest.js";
 import {
-  descPageOffset,
+  decodePageToken,
+  encodePageToken,
   eventTypes,
   listEvents,
   listEventsRequest,
@@ -49,7 +50,7 @@ describe("list_events request", () => {
   const window = { timeMin: Date.parse("2026-11-17T00:00:00Z"), timeMax: Date.parse("2026-11-24T00:00:00Z") };
 
   it("expands recurring events into occurrences and filters to the default event types", () => {
-    expect(listEventsRequest({ calendarId: "team@example.test", fullText: "review", pageToken: "p2" }, window)).toEqual({
+    expect(listEventsRequest({ calendarId: "team@example.test", fullText: "review" }, window, { pageToken: "p2" })).toEqual({
       method: "GET",
       host: "www.googleapis.com",
       path: "/calendar/v3/calendars/team%40example.test/events",
@@ -98,8 +99,31 @@ describe("list_events tool", () => {
       timeZone: "Europe/Paris",
       accessRole: "owner",
       events: [{ id: "evt0001timed" }, { id: "evt0002allday", start: { date: "2026-11-20" } }, { id: "evt0003series_20261118T150000Z", recurringEventId: "evt0003series" }],
-      nextPageToken: "n2",
+      nextPageToken: encodePageToken({ timeMin: Date.parse("2026-11-17T08:00:00Z"), timeMax: Date.parse("2026-11-17T17:00:00Z"), googleToken: "n2" }),
     });
+  });
+
+  it("keeps the first page's time range for every later page, without reading the time zone again", async () => {
+    const { fetch, calls } = fakeGoogle(() => json(eventList([TIMED_EVENT], { nextPageToken: "n3" })));
+    const http = createGoogleHttp({ accessToken: "t", fetch });
+    const first = await listEvents.call({}, http);
+    const token = (first.structuredContent as { nextPageToken: string }).nextPageToken;
+    const second = await listEvents.call({ pageToken: token, startTime: "2030-01-01T00:00:00" }, http);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.url.searchParams.get("timeMin")).toBe(calls[0]!.url.searchParams.get("timeMin"));
+    expect(calls[1]!.url.searchParams.get("timeMax")).toBe(calls[0]!.url.searchParams.get("timeMax"));
+    expect(calls[1]!.url.searchParams.get("pageToken")).toBe("n3");
+    expect(second.isError).toBeUndefined();
+  });
+
+  it.each([
+    ["a raw Google token", "CiAKGjBpN", undefined],
+    ["garbage after the prefix", "pc1.!!!", undefined],
+    ["a reversed range", encodePageToken({ timeMin: 2, timeMax: 1, googleToken: "x" }), undefined],
+    ["a newest-first token for the default order", encodePageToken({ timeMin: 1, timeMax: 2, offset: 3 }), undefined],
+    ["a default-order token for newest first", encodePageToken({ timeMin: 1, timeMax: 2, googleToken: "x" }), "startTimeDesc"],
+  ] as const)("refuses %s as a page token", (_name, token, orderBy) => {
+    expect(() => decodePageToken(token, orderBy)).toThrow(/nextPageToken from list_events/);
   });
 
   it("does not read the calendar's time zone when the caller gives one", async () => {
@@ -136,20 +160,20 @@ describe("list_events newest first", () => {
     expect(calls.map((call) => call.url.searchParams.get("orderBy"))).toEqual(["startTime", "startTime"]);
     expect(calls.map((call) => call.url.searchParams.get("maxResults"))).toEqual(["250", "250"]);
     expect((first.structuredContent as { events: Array<{ id: string }> }).events.map((event) => event.id)).toEqual(["e254", "e253", "e252"]);
-    expect(first.structuredContent).toMatchObject({ nextPageToken: "desc.3" });
-    const second = await listEvents.call({ ...input, pageToken: "desc.3" }, http);
+    const window = { timeMin: Date.parse("2026-11-01T00:00:00Z"), timeMax: Date.parse("2026-11-02T00:00:00Z") };
+    expect(first.structuredContent).toMatchObject({ nextPageToken: encodePageToken({ ...window, offset: 3 }) });
+    const second = await listEvents.call({ ...input, pageToken: encodePageToken({ ...window, offset: 3 }) }, http);
     expect((second.structuredContent as { events: Array<{ id: string }> }).events.map((event) => event.id)).toEqual(["e251", "e250", "e249"]);
-    expect(calls.slice(2).every((call) => !call.url.searchParams.get("pageToken")?.startsWith("desc"))).toBe(true);
+    expect(calls.slice(2).every((call) => !call.url.searchParams.get("pageToken")?.startsWith("pc1."))).toBe(true);
   });
 
   it("ends without a token on the last page", () => {
-    const result = newestFirstPage(eventList([]), events(4), { pageSize: 3, pageToken: "desc.3" });
+    const result = newestFirstPage(eventList([]), events(4), { pageSize: 3 }, { timeMin: 1, timeMax: 2 }, 3);
     expect(result.structuredContent).toEqual(expect.not.objectContaining({ nextPageToken: expect.anything() }));
     expect((result.structuredContent as { events: Array<{ id: string }> }).events.map((event) => event.id)).toEqual(["e0"]);
   });
 
   it("refuses a Google page token and too many events", async () => {
-    expect(() => descPageOffset("CiAKGjBpN")).toThrow(/startTimeDesc/);
     let page = 0;
     const { fetch } = fakeGoogle(() => json(eventList(events(250), { nextPageToken: `p${++page}` })));
     const result = await listEvents.call({ startTime: "2026-01-01T00:00:00Z", endTime: "2026-12-31T00:00:00Z", orderBy: "startTimeDesc" }, createGoogleHttp({ accessToken: "t", fetch }));

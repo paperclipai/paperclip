@@ -26,7 +26,7 @@ export const MAX_SORTED_EVENTS = 2000;
 const WEEK_MS = 7 * 86_400_000;
 const ORDERS = ["default", "startTime", "startTimeDesc", "lastModified"] as const;
 const DEFAULT_EVENT_TYPES: McpEventType[] = ["DEFAULT", "OUT_OF_OFFICE", "FOCUS_TIME", "FROM_GMAIL"];
-const DESC_TOKEN_PREFIX = "desc.";
+const PAGE_TOKEN_PREFIX = "pc1.";
 
 const args = z.object({
   eventTypeFilter: z.array(z.string().max(64)).max(10).optional(),
@@ -76,7 +76,7 @@ export function eventTypes(input: Pick<ListEventsArgs, "eventType" | "eventTypeF
 export function listEventsRequest(
   input: ListEventsArgs,
   window: EventWindow,
-  page: { pageToken?: string; pageSize?: number } = { pageToken: input.pageToken },
+  page: { pageToken?: string; pageSize?: number } = {},
 ): GoogleRequest {
   const orderBy = input.orderBy === "startTime" || input.orderBy === "startTimeDesc" ? "startTime" : input.orderBy === "lastModified" ? "updated" : undefined;
   return {
@@ -110,23 +110,36 @@ export function listEventsResult(list: RestEventList, events: RestEvent[], nextP
   }));
 }
 
-export function descPageToken(offset: number): string {
-  return `${DESC_TOKEN_PREFIX}${offset}`;
+export interface PageState { timeMin: number; timeMax: number; googleToken?: string; offset?: number }
+
+export function encodePageToken(state: PageState): string {
+  return `${PAGE_TOKEN_PREFIX}${Buffer.from(JSON.stringify(state), "utf8").toString("base64url")}`;
 }
 
-export function descPageOffset(pageToken: string | undefined): number {
-  if (!pageToken) return 0;
-  const match = /^desc\.(\d{1,6})$/.exec(pageToken);
-  if (!match) throw new GoogleToolError("invalid_argument", "pageToken does not belong to a startTimeDesc listing.");
-  return Number(match[1]);
+export function decodePageToken(pageToken: string | undefined, orderBy: ListEventsArgs["orderBy"]): PageState | undefined {
+  if (!pageToken) return undefined;
+  const invalid = () => new GoogleToolError("invalid_argument", "pageToken is not a nextPageToken from list_events with the same orderBy.");
+  if (!pageToken.startsWith(PAGE_TOKEN_PREFIX)) throw invalid();
+  let state: Partial<PageState>;
+  try {
+    state = JSON.parse(Buffer.from(pageToken.slice(PAGE_TOKEN_PREFIX.length), "base64url").toString("utf8")) as Partial<PageState>;
+  } catch {
+    throw invalid();
+  }
+  const { timeMin, timeMax, googleToken, offset } = state;
+  if (!Number.isSafeInteger(timeMin) || !Number.isSafeInteger(timeMax) || timeMax! <= timeMin!) throw invalid();
+  const descending = orderBy === "startTimeDesc";
+  if (descending && !(Number.isSafeInteger(offset) && offset! >= 0)) throw invalid();
+  if (!descending && (typeof googleToken !== "string" || googleToken.length === 0)) throw invalid();
+  return descending ? { timeMin: timeMin!, timeMax: timeMax!, offset } : { timeMin: timeMin!, timeMax: timeMax!, googleToken };
 }
 
-export function newestFirstPage(list: RestEventList, all: RestEvent[], input: ListEventsArgs): CallToolResult {
-  const offset = descPageOffset(input.pageToken);
+export function newestFirstPage(list: RestEventList, all: RestEvent[], input: ListEventsArgs, window: EventWindow, offset: number): CallToolResult {
   const size = Math.min(input.pageSize ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
   const sorted = [...all].reverse();
   const page = sorted.slice(offset, offset + size);
-  return listEventsResult(list, page, offset + size < sorted.length ? descPageToken(offset + size) : undefined);
+  const next = offset + size < sorted.length ? encodePageToken({ ...window, offset: offset + size }) : undefined;
+  return listEventsResult(list, page, next);
 }
 
 async function readAllForDescending(input: ListEventsArgs, window: EventWindow, http: GoogleHttp): Promise<{ list: RestEventList; events: RestEvent[] }> {
@@ -190,14 +203,18 @@ export const listEvents = defineTool({
   args,
   async run(input, http) {
     assertTimeZone(input.timeZone);
-    const timeZone = input.timeZone ?? (needsCalendarTimeZone(input) ? await calendarTimeZone(input.calendarId, http) : undefined);
-    const window = listEventsWindow(input, timeZone, new Date());
-    if (input.orderBy === "startTimeDesc") {
-      descPageOffset(input.pageToken);
-      const { list, events } = await readAllForDescending(input, window, http);
-      return newestFirstPage(list, events, input);
+    const page = decodePageToken(input.pageToken, input.orderBy);
+    let window: EventWindow;
+    if (page) window = { timeMin: page.timeMin, timeMax: page.timeMax };
+    else {
+      const timeZone = input.timeZone ?? (needsCalendarTimeZone(input) ? await calendarTimeZone(input.calendarId, http) : undefined);
+      window = listEventsWindow(input, timeZone, new Date());
     }
-    const list = await http.send<RestEventList>(listEventsRequest(input, window));
-    return listEventsResult(list, list.items ?? [], list.nextPageToken);
+    if (input.orderBy === "startTimeDesc") {
+      const { list, events } = await readAllForDescending(input, window, http);
+      return newestFirstPage(list, events, input, window, page?.offset ?? 0);
+    }
+    const list = await http.send<RestEventList>(listEventsRequest(input, window, { pageToken: page?.googleToken }));
+    return listEventsResult(list, list.items ?? [], list.nextPageToken ? encodePageToken({ ...window, googleToken: list.nextPageToken }) : undefined);
   },
 });

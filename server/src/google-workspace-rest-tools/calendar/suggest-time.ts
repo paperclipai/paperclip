@@ -159,10 +159,17 @@ export function busyFromFreeBusy(answer: FreeBusyAnswer, emails: readonly string
     return !entry || (entry.errors?.length ?? 0) > 0;
   });
   if (missing.length) throw unavailable(missing);
-  return emails.flatMap((email) => (calendars.get(email.toLowerCase())!.busy ?? []).map((item) => ({
+  return emails.flatMap((email) => (calendars.get(email.toLowerCase())!.busy ?? []).map((item) => readableBusy({
     start: Date.parse(item.start ?? ""),
     end: Date.parse(item.end ?? ""),
-  }))).filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end));
+  })));
+}
+
+function readableBusy(item: Interval): Interval {
+  if (!Number.isFinite(item.start) || !Number.isFinite(item.end)) {
+    throw new GoogleToolError("invalid_response", "Google returned a busy time that could not be read, so no free time is suggested.");
+  }
+  return item;
 }
 
 export function attendeeEventsRequest(email: string, range: Interval, pageToken?: string): GoogleRequest {
@@ -183,7 +190,13 @@ export function attendeeEventsRequest(email: string, range: Interval, pageToken?
 
 function boundary(value: RestEvent["start"], timeZone: string): number {
   if (value?.dateTime) return Date.parse(value.dateTime);
-  if (value?.date) return instantOf(parseTimeInput(value.date), value.timeZone ?? timeZone);
+  if (value?.date) {
+    try {
+      return instantOf(parseTimeInput(value.date), value.timeZone ?? timeZone);
+    } catch {
+      return Number.NaN;
+    }
+  }
   return Number.NaN;
 }
 
@@ -191,8 +204,7 @@ export function busyFromEvents(events: readonly RestEvent[], calendarZone: strin
   return events
     .filter((event) => event.status !== "cancelled" && event.transparency !== "transparent")
     .filter((event) => !event.attendees?.some((attendee) => attendee.self && attendee.responseStatus === "declined"))
-    .map((event) => ({ start: boundary(event.start, calendarZone), end: boundary(event.end, calendarZone) }))
-    .filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end));
+    .map((event) => readableBusy({ start: boundary(event.start, calendarZone), end: boundary(event.end, calendarZone) }));
 }
 
 async function busyFromCalendars(emails: readonly string[], range: Interval, timeZone: string, http: GoogleHttp): Promise<Interval[]> {

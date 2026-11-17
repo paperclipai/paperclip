@@ -111,7 +111,9 @@ export function formatLocal(date: CivilDate, time: CivilTime): string {
 
 export function formatInZone(instant: number, timeZone: string): string {
   const local = wallClock(instant, timeZone);
-  return `${formatLocal(local.date, local.time)}${formatOffset(offsetMinutesAt(instant, timeZone))}`;
+  const millisecond = ((instant % 1000) + 1000) % 1000;
+  const fraction = millisecond ? `.${pad(millisecond, 3)}` : "";
+  return `${formatLocal(local.date, local.time)}${fraction}${formatOffset(offsetMinutesAt(instant, timeZone))}`;
 }
 
 export function localDateAt(instant: number, timeZone: string): CivilDate {

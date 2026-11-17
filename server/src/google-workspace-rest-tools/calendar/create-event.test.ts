@@ -181,3 +181,12 @@ describe("create_event tool", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("create_event sub-second times", () => {
+  it("keeps milliseconds so a short event never collapses to zero length", () => {
+    expect(eventTimes({ startTime: "2026-11-18T10:00:00.100Z", endTime: "2026-11-18T10:00:00.900Z" }, "UTC")).toEqual({
+      start: { dateTime: "2026-11-18T10:00:00.100Z", timeZone: "UTC" },
+      end: { dateTime: "2026-11-18T10:00:00.900Z", timeZone: "UTC" },
+    });
+  });
+});

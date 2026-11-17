@@ -73,6 +73,8 @@ describe("formatInZone", () => {
     ["2026-01-10T12:00:00Z", "Europe/London", "2026-01-10T12:00:00Z"],
     ["2026-06-01T03:30:00Z", "Asia/Kolkata", "2026-06-01T09:00:00+05:30"],
     ["2026-10-03T15:45:00Z", "Australia/Lord_Howe", "2026-10-04T02:45:00+11:00"],
+    ["2026-11-17T15:00:00.100Z", "UTC", "2026-11-17T15:00:00.100Z"],
+    ["1969-12-31T23:59:59.900Z", "UTC", "1969-12-31T23:59:59.900Z"],
   ])("formats %s in %s", (instant, timeZone, expected) => {
     expect(formatInZone(at(instant), timeZone)).toBe(expected);
   });

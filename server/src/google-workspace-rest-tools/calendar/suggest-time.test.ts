@@ -124,6 +124,13 @@ describe("free/busy answers", () => {
     }, ["a@example.test", "x@other.test", "y@other.test"])).toThrow("Google could not share availability for: x@other.test, y@other.test.");
   });
 
+  it("refuses a busy time it cannot read, on both paths, instead of treating it as free", () => {
+    expect(() => busyFromFreeBusy({ calendars: { "a@example.test": { busy: [{ start: "soon", end: "2026-11-17T11:00:00Z" }] } } }, ["a@example.test"]))
+      .toThrow(/could not be read/);
+    expect(() => busyFromEvents([{ start: { dateTime: "2026-11-17T10:00:00Z" } }], "UTC")).toThrow(/could not be read/);
+    expect(() => busyFromEvents([{ start: { date: "2026-02-30" }, end: { date: "2026-03-01" } }], "UTC")).toThrow(/could not be read/);
+  });
+
   it("counts only events that block time when reading calendars directly", () => {
     expect(show(busyFromEvents([
       { status: "confirmed", start: { dateTime: "2026-11-17T10:00:00-05:00" }, end: { dateTime: "2026-11-17T11:00:00-05:00" } },

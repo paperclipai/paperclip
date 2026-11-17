@@ -345,8 +345,12 @@ earliest first; working hours and out-of-office settings are not read.
   returned once, as the series. Default page size 25.
 - **`list_events` `orderBy: startTimeDesc`.** REST only sorts ascending, so
   this reads every matching page (up to 2,000 events; more is an error asking
-  for a narrower range), reverses it, and pages with tokens of the form
-  `desc.<offset>`.
+  for a narrower range), reverses it, and pages by offset.
+- **`list_events` page tokens** are ours (`pc1.` plus base64url JSON). They
+  carry the first page's resolved time range, so later pages use the same
+  range even when it defaulted to "now", plus Google's page token or the
+  newest-first offset. A token from another order, or a raw Google token, is
+  refused.
 - **`create_event`** does not add the signed-in user as an attendee when
   others are invited (Google's tool does on the primary calendar); learning
   the user's address needs a scope outside the allowlist.
