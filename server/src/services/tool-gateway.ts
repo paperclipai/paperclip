@@ -1396,7 +1396,7 @@ export function createToolGatewayService(
   } = {},
 ) {
   const injectionPrevention = promptInjectionPreventionService(db, { budgetHooks: options.budgetHooks, provider: options.promptInjectionProvider });
-  function resultClassifier(session: ToolGatewaySession, tool: ToolGatewayDescriptor, toolInvocationId: string | null,
+  function resultClassifier(session: ToolGatewaySession, tool: Pick<ToolGatewayDescriptor, "name" | "providerType">, toolInvocationId: string | null,
     { approvedAction = false, signal: callerSignal }: { approvedAction?: boolean; signal?: AbortSignal } = {}) {
     // Approved actions retain historical run attribution, not that run's lifetime.
     const runSignal = session.runId && !approvedAction
@@ -6329,6 +6329,20 @@ export function createToolGatewayService(
         params,
       }),
     );
+    // Resource contents are provider data handed to the agent, like a tool
+    // result (an email or document), so they pass the same result guard.
+    if (kind === "resource") {
+      const screened = { name: "paperclip_read_resource",
+        providerType: connection.transport === "local_stdio" ? "mcp_local_stdio" : "mcp_remote_http" } as const;
+      await validateToolContent({ value: result, direction: "result", sensitiveMode: "redact", promptInjectionMode: "block",
+        classifier: resultClassifier(session, screened, null) }).catch(async (error: unknown) => {
+        if (!(error instanceof ToolContentValidationError)) throw error;
+        await writeAudit({ session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
+          action: "tool_gateway.call_failed", details: { tool: screened.name, connectionId: connection.id, reasonCode: error.reasonCode,
+            findings: error.findings, promptInjection: error.detectorMetadata } });
+        throw new ToolGatewayHttpError(422, error.message, error.reasonCode, { findings: error.findings });
+      });
+    }
     if (kind === "resource" && Array.isArray(result?.contents)) {
       return {
         ...result,
