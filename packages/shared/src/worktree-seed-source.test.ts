@@ -7,7 +7,7 @@ import { resolveCanonicalWorktreeSeedSource } from "./worktree-seed-source.js";
 const cleanup: string[] = [];
 
 function makeInstance(prefix: string, instanceId: string) {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const cwd = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), prefix));
   cleanup.push(cwd);
   const configDir = path.join(cwd, ".paperclip");
   const configPath = path.join(configDir, "config.json");
@@ -22,7 +22,7 @@ function makeInstance(prefix: string, instanceId: string) {
  * names its instance by directory and has no adjacent .env.
  */
 function makeInstanceRoot(instanceId: string) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-seed-home-"));
+  const home = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "paperclip-seed-home-"));
   cleanup.push(home);
   const configDir = path.join(home, "instances", instanceId);
   fs.mkdirSync(configDir, { recursive: true });
@@ -33,7 +33,7 @@ function makeInstanceRoot(instanceId: string) {
 
 /** A managed project checkout: a plain clone with no `.paperclip` of its own. */
 function makePlainCheckout() {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-seed-checkout-"));
+  const cwd = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "paperclip-seed-checkout-"));
   cleanup.push(cwd);
   return cwd;
 }

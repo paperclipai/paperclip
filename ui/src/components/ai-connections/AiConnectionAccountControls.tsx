@@ -1,19 +1,23 @@
 import { useState, type ReactNode } from "react";
-import { CheckCircle2, RefreshCw, Star, TriangleAlert, Unplug } from "lucide-react";
+import { RefreshCw, Unplug } from "lucide-react";
 import type { ConnectionGrant } from "@paperclipai/shared";
 import { RevokeGrantDialog } from "@/pages/apps/app-detail/IdentitiesSection";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { AI_PROVIDERS, aiMethodLabel, type AiConnectionSummary } from "./model";
+import { AI_PROVIDERS, type AiConnectionSummary } from "./model";
+import { describeError } from "@/api/errors";
+import { AiDefaultCrown } from "./AiConnectionDefault";
+import { isOwnAiAccount } from "./useAiConnectionDefaults";
 
 /** AI-only account controls; identity, access and navigation belong to AppDetail. */
 export function AiConnectionAccountControls({
-  account, grant, currentUserId, readOnly, onMakeDefault, onReconnect, onRevoke, revocationDetails,
+  account, grant, currentUserId, readOnly, defaultPending, onMakeDefault, onReconnect, onRevoke, revocationDetails,
 }: {
   account: AiConnectionSummary;
   grant: ConnectionGrant;
   currentUserId: string;
   readOnly?: boolean;
+  defaultPending?: boolean;
   onMakeDefault: () => void;
   onReconnect: () => void;
   onRevoke: () => void | Promise<void>;
@@ -22,37 +26,29 @@ export function AiConnectionAccountControls({
   const [revoking, setRevoking] = useState(false);
   const [revokePending, setRevokePending] = useState(false);
   const [revokeError, setRevokeError] = useState<string>();
-  const ownPersonal = account.ownership === "personal" && account.ownerUserId === currentUserId;
+  const eligibleForDefault = isOwnAiAccount(account, currentUserId);
   const available = account.status === "connected";
   const activeDefault = account.isDefault && available;
+  const providerName = AI_PROVIDERS[account.provider].name;
   return (
     <section className="space-y-4" aria-label="AI account settings">
-      {ownPersonal && (
+      {eligibleForDefault && (
         <div className={cn(
           "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3",
           activeDefault && "border-(--status-task-done)/30 bg-(--status-task-done)/5",
         )}>
           <div className="flex items-center gap-3">
-            <Star aria-hidden className={cn("size-5 shrink-0", activeDefault ? "fill-current text-(--status-task-icon-done)" : "text-muted-foreground")} />
-            <div>
-              <h3 className="text-sm font-semibold">Personal default</h3>
-              <p className="text-xs text-muted-foreground">For your {AI_PROVIDERS[account.provider].name} tasks</p>
-            </div>
+            {account.isDefault && <AiDefaultCrown account={account} />}
+            <h3 role={account.isDefault ? "status" : undefined} className={cn("text-sm font-semibold", account.isDefault && !available && "text-destructive")}>{account.isDefault ? available ? `Default for ${providerName}` : "Default unavailable" : `Your ${providerName} default`}</h3>
           </div>
-          {account.isDefault ? (
-            <span role="status" className={cn("inline-flex items-center gap-1.5 text-sm font-medium", available ? "text-(--status-task-icon-done)" : "text-destructive")}>
-              {available ? <CheckCircle2 className="size-4" aria-hidden /> : <TriangleAlert className="size-4" aria-hidden />}
-              {available ? "Your default" : "Default unavailable"}
-            </span>
-          ) : !readOnly ? (
-            <Button variant="outline" size="sm" disabled={!available} onClick={onMakeDefault}>Make default</Button>
-          ) : <span className="text-xs text-muted-foreground">Not your default</span>}
+          {!account.isDefault && (!readOnly && account.canSetDefault ? (
+            <Button variant="outline" size="sm" disabled={!available || Boolean(account.unavailableReason) || defaultPending} onClick={onMakeDefault}>Set as default for {providerName}</Button>
+          ) : <span className="text-xs text-muted-foreground">Not default</span>)}
         </div>
       )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 text-sm">
-          <p className="font-medium">{aiMethodLabel(account.provider, account.method)}</p>
-          {account.accountLabel && <p className="break-words text-xs text-muted-foreground">{account.accountLabel}</p>}
+          <p className="break-words text-xs text-muted-foreground">{account.method === "subscription" ? "Subscription" : "API key"}{account.accountLabel ? ` · ${account.accountLabel}` : ""}</p>
         </div>
         {!readOnly && grant.capabilities?.canRevoke && (
           <div className="flex flex-wrap items-center gap-2">
@@ -63,7 +59,7 @@ export function AiConnectionAccountControls({
       </div>
       {revoking && <RevokeGrantDialog grant={grant} providerName={account.name} pending={revokePending} credentialPolicy={account.ownership === "shared" ? "shared" : "per_user"} isOwnIdentity={account.ownerUserId === currentUserId}
         description="New runs using this account will be blocked. Existing runs may retain credentials already issued to them. No other account will be selected automatically."
-        onCancel={() => setRevoking(false)} onConfirm={async () => { setRevokePending(true); setRevokeError(undefined); try { await onRevoke(); setRevoking(false); } catch (error) { setRevokeError(error instanceof Error ? error.message : "Could not revoke this account. Retry."); } finally { setRevokePending(false); } }}>{revokeError && <p role="alert" className="text-sm text-destructive">{revokeError}</p>}{revocationDetails}</RevokeGrantDialog>}
+        onCancel={() => setRevoking(false)} onConfirm={async () => { setRevokePending(true); setRevokeError(undefined); try { await onRevoke(); setRevoking(false); } catch (error) { setRevokeError(describeError(error).body); } finally { setRevokePending(false); } }}>{revokeError && <p role="alert" className="text-sm text-destructive">{revokeError}</p>}{revocationDetails}</RevokeGrantDialog>}
     </section>
   );
 }

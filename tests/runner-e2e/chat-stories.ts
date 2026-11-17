@@ -1,5 +1,5 @@
 import { expect } from "@playwright/test";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { sendChatMessage, type ChatFlowInput, type ChatIssue, type ChatRun } from "./chat-flow.js";
@@ -58,6 +58,16 @@ export function assertInterruptedChat(input: {
   }
 }
 
+export async function publishChatBrief(gate: string, content: string) {
+  const staging = `${gate}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(staging, content, { encoding: "utf8", flag: "wx" });
+    await rename(staging, gate);
+  } finally {
+    await rm(staging, { force: true });
+  }
+}
+
 export async function prepareChatBrief(workspacePath: string, nonce: string, timeoutMs = 120_000) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new Error("Brief wait must be bounded between 1 and 300000ms");
   await mkdir(workspacePath, { recursive: true });
@@ -67,6 +77,23 @@ export async function prepareChatBrief(workspacePath: string, nonce: string, tim
   const script = `const fs=require("node:fs");fs.writeFileSync(${JSON.stringify(ready)},"waiting");const end=Date.now()+${timeoutMs};const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){console.log(fs.readFileSync(${JSON.stringify(gate)},"utf8"));clearInterval(timer)}else if(Date.now()>end){clearInterval(timer);process.exitCode=1}},100);`;
   await writeFile(scriptPath, script, "utf8");
   return { gate, ready, scriptPath };
+}
+
+/**
+ * A bounded brief wait that resolves only from the agent's working directory.
+ * Sandboxed native providers can read their own task directory but not agent
+ * homes or unrelated project roots, so the command names no host path. The
+ * fixture publishes to `at(<the run's workspace>)` once that directory is known.
+ */
+export function workspaceChatBrief(nonce: string, timeoutMs = 120_000) {
+  if (!/^[A-Za-z0-9_-]+$/.test(nonce)) throw new Error("Brief nonce must be a plain file name segment");
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) throw new Error("Brief wait must be bounded between 1 and 300000ms");
+  const name = `chat-brief-${nonce}.txt`;
+  const script = `const fs=require("node:fs"),g="${name}",end=Date.now()+${Math.floor(timeoutMs)};fs.writeFileSync(g+".waiting","waiting");const t=setInterval(()=>{if(fs.existsSync(g)){console.log(fs.readFileSync(g,"utf8"));clearInterval(t)}else if(Date.now()>end){clearInterval(t);process.exitCode=1}},100)`;
+  return {
+    command: `node -e '${script}'`,
+    at: (workspacePath: string) => ({ gate: path.join(workspacePath, name), ready: path.join(workspacePath, `${name}.waiting`) }),
+  };
 }
 
 export async function runChatInterruption(context: Context & { refreshIssue(): Promise<void> }) {
@@ -106,7 +133,7 @@ export async function runChatInterruption(context: Context & { refreshIssue(): P
     activeAtFollowup = await input.api.get<ChatRun>(`/api/heartbeat-runs/${boundaryRun!.id}`);
     await input.evidence("chat-interruption-boundary.json", { first, followup, boundaryRun, activeAtFollowup, comments: await comments() });
     expect(activeAtFollowup.status, "Follow-up must persist while the first provider run is active").toBe("running");
-    await writeFile(gate, reference, "utf8");
+    await publishChatBrief(gate, reference);
     await expect.poll(async () => (await comments()).filter(comment => comment.authorAgentId).at(-1)?.body ?? "", { timeout: 240_000 }).toContain(marker);
     await idle(1); // Providers may queue a new run or steer the current run.
     const plan = revise ? await input.api.get<{ body: string }>(`/api/issues/${context.issue().id}/documents/plan`) : undefined;
@@ -118,7 +145,7 @@ export async function runChatInterruption(context: Context & { refreshIssue(): P
     expect(await input.api.get(`/api/companies/${input.fixtures.company.id}/projects`)).toEqual([]);
   } finally {
     // Always release a provider that is still waiting, including failed UI runs.
-    await writeFile(gate, reference, "utf8");
+    await publishChatBrief(gate, reference);
     const chatPath = `/api/companies/${input.fixtures.company.id}/chats/${input.fixtures.agent.id}`;
     const current = await input.api.get<ChatIssue | null>(chatPath).catch(() => null);
     await input.evidence("chat-interruption-state.json", {

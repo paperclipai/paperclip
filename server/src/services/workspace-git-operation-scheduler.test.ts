@@ -241,6 +241,37 @@ describe("WorkspaceGitOperationScheduler", () => {
     expect(scheduler.snapshot().inFlightCount).toBe(0);
   });
 
+  it("starts a fresh scan after a file changes while an older scan is still running", async () => {
+    const workspace = await makeWorkspace();
+    const firstCaptured = deferred();
+    const releaseFirst = deferred();
+    let calls = 0;
+    const runner: WorkspaceGitRunner = async () => {
+      calls += 1;
+      const files = await fs.readdir(workspace);
+      if (calls === 1) {
+        firstCaptured.resolve();
+        await releaseFirst.promise;
+      }
+      return { stdout: files.join("\n"), stderr: "" };
+    };
+    const scheduler = createWorkspaceGitOperationScheduler({ runner, concurrency: 2 });
+    const input = scanInput(workspace, "freshness");
+
+    const earlier = scheduler.run(input);
+    await firstCaptured.promise;
+    await fs.writeFile(path.join(workspace, "unsaved.txt"), "keep this work\n");
+    const fresh = await scheduler.run({ ...input, bypassSingleFlight: true });
+    releaseFirst.resolve();
+
+    expect((await earlier).stdout).toBe("");
+    expect(fresh).toMatchObject({ stdout: "unsaved.txt", cacheHit: false, singleFlightJoined: false });
+    expect(scheduler.snapshot()).toMatchObject({
+      cacheEntryCount: 0,
+      totals: { started: 2, singleFlightJoins: 0 },
+    });
+  });
+
   it("serves cached results until TTL expiry and evicts least-recently-used entries", async () => {
     const firstWorkspace = await makeWorkspace("same-name");
     const secondWorkspace = await makeWorkspace("same-name");

@@ -12,6 +12,7 @@ dry_run=false
 skip_verify=false
 print_version_only=false
 from_candidate=false
+defer_registry_confirmation=false
 notes_file_override=
 tag_name=""
 
@@ -20,7 +21,7 @@ cleanup_on_exit=false
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--notes-file PATH]
+  ./scripts/release.sh <canary|nightly|beta|stable> [--date YYYY-MM-DD] [--dry-run] [--skip-verify] [--print-version] [--notes-file PATH] [--defer-registry-confirmation]
 
 Examples:
   ./scripts/release.sh canary
@@ -36,7 +37,15 @@ Notes:
   - Stable versions use YYYY.MDD.P, where M is the UTC month, DD is the
     zero-padded UTC day, and P is the same-day stable patch slot.
   - Canary releases publish YYYY.MDD.P-canary.N under the npm dist-tag
-    "canary" and create the git tag canary/vYYYY.MDD.P-canary.N.
+    "canary" and create the git tag canary/vYYYY.MDD.P-canary.N. N is
+    100 x the source commit's position on master (git rev-list --count HEAD)
+    plus the run attempt minus 1 (GITHUB_RUN_ATTEMPT, default 1). Each commit
+    owns its own range, so neither a rerun nor an overlapping canary can take
+    another commit's number, and no registry lookup is involved.
+  - --defer-registry-confirmation (published canary only) stops after npm
+    accepts every publish. It skips the registry-visibility wait, the
+    dist-tag check and the git tag; scripts/confirm-canary-publication.sh
+    does those later, outside the release lock.
   - Nightly releases republish a commit that already shipped a canary (HEAD
     must carry a canary/v* tag) as YYYY.MDD.P-nightly.N under the npm
     dist-tag "nightly", with the git tag nightly/vYYYY.MDD.P-nightly.N.
@@ -118,6 +127,7 @@ while [ $# -gt 0 ]; do
     --skip-verify) skip_verify=true ;;
     --print-version) print_version_only=true ;;
     --from-candidate) from_candidate=true ;;
+    --defer-registry-confirmation) defer_registry_confirmation=true ;;
     --notes-file)
       shift
       [ $# -gt 0 ] || release_fail "--notes-file requires a path."
@@ -145,6 +155,10 @@ fi
 
 if [ -n "$notes_file_override" ] && [ "$channel" != "stable" ]; then
   release_fail "--notes-file only applies to the stable channel."
+fi
+
+if [ "$defer_registry_confirmation" = true ] && { [ "$channel" != "canary" ] || [ "$dry_run" = true ]; }; then
+  release_fail "--defer-registry-confirmation only applies to a published canary."
 fi
 
 PUBLISH_REMOTE="$(resolve_release_remote)"
@@ -178,7 +192,7 @@ DIST_TAG="latest"
 
 if [ "$channel" = "canary" ]; then
   require_on_master_branch
-  TARGET_PUBLISH_VERSION="$(next_prerelease_version canary "$TARGET_STABLE_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}")"
+  TARGET_PUBLISH_VERSION="$(next_canary_version_from_source "$REPO_ROOT" "$dry_run" "$TARGET_STABLE_VERSION" "${GITHUB_RUN_ATTEMPT:-1}" "${PUBLIC_PACKAGE_NAMES[@]}")"
   DIST_TAG="canary"
   tag_name="$(prerelease_tag_name canary "$TARGET_PUBLISH_VERSION")"
 elif [ "$channel" = "nightly" ]; then
@@ -222,6 +236,10 @@ fi
 
 require_clean_worktree
 require_npm_publish_auth "$dry_run"
+
+if [ "$channel" = "beta" ] || [ "$channel" = "stable" ]; then
+  require_runner_lockfile_current
+fi
 
 if [ "$channel" = "stable" ] && [ "$dry_run" = false ] && [ ! -f "$NOTES_FILE" ]; then
   release_fail "stable release notes file is required at $NOTES_FILE before publishing stable."
@@ -284,6 +302,20 @@ release_info ""
 release_info "==> Step 2/7: Building workspace artifacts..."
 cd "$REPO_ROOT"
 pnpm build
+if [ -n "${PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR:-}" ]; then
+  pack_args=()
+  if [ -n "${PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR:-}" ]; then
+    pack_args=("$PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR")
+  fi
+  node "$REPO_ROOT/packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs" \
+    assemble-daemons "$PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR" "$(git rev-parse HEAD)" "${pack_args[@]}"
+  cp -R "$REPO_ROOT/packages/paperclip-runner/dist/bin/." "$REPO_ROOT/server/dist/vendor/paperclip-runner/bin/"
+  if [ -d "$REPO_ROOT/packages/paperclip-runner/dist/remote-provider-packs" ]; then
+    cp -R "$REPO_ROOT/packages/paperclip-runner/dist/remote-provider-packs" "$REPO_ROOT/server/dist/vendor/paperclip-runner/"
+  fi
+elif [ "$dry_run" = false ]; then
+  release_fail "Public releases require the four hosted runner daemon artifacts; use the supported Release workflow."
+fi
 node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
 for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
@@ -404,19 +436,23 @@ else
     release_info "    ✓ npm accepted the publish"
   done <<< "$VERSIONED_PACKAGE_INFO"
   release_info "  ✓ npm accepted every package publish under dist-tag $DIST_TAG"
-  release_info "  Waiting for registry visibility of all packages concurrently..."
-  if ! wait_for_npm_package_versions \
-    "$VERIFY_ATTEMPTS" \
-    "$VERIFY_DELAY_SECONDS" \
-    "$VERSIONED_PACKAGE_INFO"; then
-    release_fail "stopping release: npm did not expose every published version under dist-tag $DIST_TAG"
+  if [ "$defer_registry_confirmation" = false ]; then
+    release_info "  Waiting for registry visibility of all packages concurrently..."
+    if ! wait_for_npm_package_versions \
+      "$VERIFY_ATTEMPTS" \
+      "$VERIFY_DELAY_SECONDS" \
+      "$VERSIONED_PACKAGE_INFO"; then
+      release_fail "stopping release: npm did not expose every published version under dist-tag $DIST_TAG"
+    fi
+    release_info "  ✓ Published the full package set under dist-tag $DIST_TAG"
   fi
-  release_info "  ✓ Published the full package set under dist-tag $DIST_TAG"
 fi
 
 release_info ""
 if [ "$dry_run" = true ]; then
   release_info "==> Step 6/7: Skipping npm verification in dry-run mode..."
+elif [ "$defer_registry_confirmation" = true ]; then
+  release_info "==> Step 6/7: Registry confirmation deferred to scripts/confirm-canary-publication.sh"
 else
   release_info "==> Step 6/7: Confirming npm package availability and dist-tag integrity..."
   REGISTRY_STATE_VERIFY_ATTEMPTS="${NPM_REGISTRY_STATE_VERIFY_ATTEMPTS:-12}"
@@ -449,7 +485,7 @@ else
   fi
 
   release_info "  Installing paperclipai@$DIST_TAG into a clean prefix..."
-  if ! verify_npm_installable "paperclipai@$DIST_TAG" "$TARGET_PUBLISH_VERSION"; then
+  if ! wait_for_npm_installable "paperclipai@$DIST_TAG" "$TARGET_PUBLISH_VERSION" "${NPM_INSTALL_VERIFY_TIMEOUT_SECONDS:-1200}" "${NPM_INSTALL_VERIFY_DELAY_SECONDS:-30}"; then
     release_fail "paperclipai@$DIST_TAG did not install cleanly at expected version ${TARGET_PUBLISH_VERSION}"
   fi
   release_info "    ✓ Clean-prefix install resolved ${TARGET_PUBLISH_VERSION}"
@@ -458,6 +494,11 @@ fi
 release_info ""
 if [ "$dry_run" = true ]; then
   release_info "==> Step 7/7: Dry run complete..."
+elif [ "$defer_registry_confirmation" = true ]; then
+  release_info "==> Step 7/7: Tag deferred until npm confirms ${TARGET_PUBLISH_VERSION}"
+  if [ -n "${PAPERCLIP_RELEASE_VERSION_FILE:-}" ]; then
+    printf '%s\n' "$TARGET_PUBLISH_VERSION" > "$PAPERCLIP_RELEASE_VERSION_FILE"
+  fi
 else
   release_info "==> Step 7/7: Creating git tag..."
   git -C "$REPO_ROOT" tag "$tag_name" "$CURRENT_SHA"
@@ -467,6 +508,8 @@ fi
 release_info ""
 if [ "$dry_run" = true ]; then
   release_info "Dry run complete for $channel ${TARGET_PUBLISH_VERSION}."
+elif [ "$defer_registry_confirmation" = true ]; then
+  release_info "Published $channel ${TARGET_PUBLISH_VERSION}; npm confirmation and the git tag follow in canary-finalize."
 else
   case "$channel" in
     canary|nightly|beta)

@@ -2,7 +2,8 @@
  * Copy contract for denied issue writes (open cross-task writes: failure UX).
  *
  * Cross-issue issue writes are default-open for standard-trust agents on issues
- * they can already read (see SPEC-implementation §9.3). The remaining walls are
+ * they can already read (see `doc/agent-permission-defaults.md`, "Shared
+ * default-open issue writes"). The remaining walls are
  * rare — but a real incident burned a full detour discovering a workaround
  * behind an opaque 403, so every one of them must say three things:
  *
@@ -29,6 +30,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_responsible_user_ceiling",
   "issue_write_responsible_user_unavailable",
   "issue_write_assignee_run_lock",
+  "issue_status_change_live_run",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
@@ -69,6 +71,8 @@ export interface IssueWriteDenialContext {
   assigneeLabel?: string | null;
   /** Target issue identifier, e.g. `TASK-482`. */
   issueIdentifier?: string | null;
+  /** Board path of the target issue, e.g. `/TASK/issues/TASK-482`. */
+  issuePath?: string | null;
   /** Per-run cross-issue influence cap. */
   cap?: number | null;
   /** Attempt count that tripped the cap. */
@@ -114,15 +118,6 @@ function actorLabel(name: string | null | undefined): string {
   return trimmed && trimmed.length > 0 ? trimmed : "this agent";
 }
 
-/**
- * The escape hatch an earlier incident had to discover by trial and error. Naming it in
- * every boundary denial is the point of plan §6 — an agent that reads the error
- * should not need a detour to find the supported path.
- */
-const CHILD_ISSUE_PATH =
-  "create a child issue with the request in its description (issue creation is a " +
-  "separate, open write path) and let its assignee act";
-
 export function describeIssueWriteDenial(
   code: IssueWriteDenialCode,
   context: IssueWriteDenialContext = {},
@@ -147,7 +142,7 @@ export function describeIssueWriteDenial(
         whoCanAct:
           `${assignee}, and any agent or board member the task is visible to.`,
         sanctionedPath:
-          `Ask the board to widen visibility for ${actor}, or ${CHILD_ISSUE_PATH}.`,
+          `Ask the board to widen visibility for ${actor}.`,
       };
 
     case "issue_write_actor_class_excluded":
@@ -220,6 +215,32 @@ export function describeIssueWriteDenial(
           `Comment instead of patching — comments stay open and wake ${assignee} — or ` +
           `wait for the run to release the lock and retry.`,
       };
+
+    case "issue_status_change_live_run": {
+      const identifier = context.issueIdentifier?.trim();
+      const path = context.issuePath?.trim();
+      const taskLink = identifier && path ? `[${identifier}](${path})` : issue;
+      return {
+        code,
+        status: 409,
+        tone: "boundary",
+        boundary: "Live run execution lock",
+        title: "Another run is executing this task",
+        description:
+          `A run is live on ${issue} and holds its execution lock. Changing the status ` +
+          `would release that lock without stopping the run, so the run would keep ` +
+          `going with no task bound to it. Agents cannot stop or interrupt another ` +
+          `agent's run, so this status change is refused.`,
+        whoCanAct:
+          `A board user, or the run of ${assignee} that holds the lock.`,
+        sanctionedPath:
+          `This refusal is final: do not retry with another status, assignee or route. ` +
+          `Reply now and send the person to ${taskLink}. To stop the live run they use its ` +
+          `Stop or Interrupt control there; to hold this task and the tasks under it, they ` +
+          `open the parent task and choose More task actions, then Pause subtree. To pass ` +
+          `a request to the running agent, comment on the task instead.`,
+      };
+    }
 
     case "cross_issue_influence_cap_exceeded": {
       const cap = context.cap ?? 20;

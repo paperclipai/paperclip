@@ -6,6 +6,7 @@ const mockApi = vi.hoisted(() => ({
 
 vi.mock("./client", () => ({
   api: mockApi,
+  detachInflightGet: vi.fn(),
 }));
 
 import { toolsApi } from "./tools";

@@ -12,7 +12,7 @@
 // (#13116) -- because nothing enforced it.
 //
 // This derives the required set from esbuild's own module-resolution scan
-// of the two entry points server actually imports (index.js, testing.js),
+// of the entry points server actually imports (index.js, testing.js, live/index.js),
 // with `write: false` so nothing is written to disk and `packages:
 // "external"` so npm imports are reported, not inlined. That is precise:
 // paperclip-runner declares dependencies (react-markdown, the codex/opencode
@@ -43,9 +43,8 @@ const runnerRoot = resolve(serverRoot, "../packages/paperclip-runner");
 const runnerDist = resolve(runnerRoot, "dist");
 
 // The only entry points server/src actually imports from the vendored
-// runner (server/src/**/*.ts import "../vendor/paperclip-runner/index.js"
-// or ".../testing.js").
-const ENTRY_POINT_NAMES = ["index.js", "testing.js"];
+// runner, including the installed-runtime readiness probe surface.
+const ENTRY_POINT_NAMES = ["index.js", "testing.js", "live/index.js"];
 
 const NODE_BUILTINS = new Set([
   ...builtinModules,
@@ -101,6 +100,21 @@ export async function findRunnerExternalPackages(entryPoints) {
   return externalPackageNames;
 }
 
+// Provider entrypoints are resolved with createRequire from profile metadata,
+// so esbuild cannot see them. These two bridges ship in the server package;
+// other ACP agents use separately provisioned provider packs.
+export async function findRunnerRuntimePackages(entryPoints, profileData) {
+  const packages = await findRunnerExternalPackages(entryPoints);
+  for (const agent of ["claude", "codex"]) {
+    const profile = profileData?.profiles?.[agent];
+    if (profileData?.schema !== "paperclip.acpx-profiles.v1" || !profile?.agentServerPackage) {
+      throw new Error(`paperclip-runner vendor check: missing ${agent} provider profile.`);
+    }
+    packages.add(profile.agentServerPackage);
+  }
+  return packages;
+}
+
 function readDependencyNames(packageJsonPath) {
   const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
   return new Map(Object.entries(packageJson.dependencies ?? {}));
@@ -126,7 +140,8 @@ function explainMissingDependencies(missing, runnerDependencyNames) {
 
 async function main() {
   const entryPoints = ENTRY_POINT_NAMES.map((name) => resolve(runnerDist, name));
-  const externalPackageNames = await findRunnerExternalPackages(entryPoints);
+  const profileData = JSON.parse(readFileSync(resolve(runnerRoot, "acpx-profiles.json"), "utf8"));
+  const externalPackageNames = await findRunnerRuntimePackages(entryPoints, profileData);
   const serverDependencyNames = readDependencyNames(resolve(serverRoot, "package.json"));
 
   const missing = findMissingVendorDependencies(

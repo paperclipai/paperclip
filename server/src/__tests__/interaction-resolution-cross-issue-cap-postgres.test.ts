@@ -273,6 +273,7 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
         count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
         mode: "enforce",
       });
+      expect(res.body.error).toContain("Try this:");
       // The refusal must not leak the run's own (possibly inaccessible) source
       // issue or the resolver policy it passed.
       expect(JSON.stringify(res.body)).not.toContain(sourceIssueId);
@@ -297,12 +298,16 @@ describeEmbeddedPostgres("cross-issue interaction resolution cap (routes + postg
       expect(wakes).toEqual([]);
 
       const resolutionActivity = await db
-        .select({ action: activityLog.action })
+        .select({ action: activityLog.action, details: activityLog.details })
         .from(activityLog)
         .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, targetIssueId)));
       expect(resolutionActivity.map((row) => row.action)).toEqual([
         "issue.cross_issue_influence_cap_rejected",
       ]);
+      expect(resolutionActivity[0].details).toMatchObject({
+        kind: "interaction_resolution",
+        allowed: false,
+      });
       expect(await countInfluenceRows(companyId, runId, "issue.cross_issue_influence_observed"))
         .toBe(CROSS_ISSUE_INFLUENCE_LIMIT);
     },

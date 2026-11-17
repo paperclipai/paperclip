@@ -5,6 +5,12 @@ export type WorkspaceFilePreviewKind = "text" | "image" | "video" | "pdf" | "uns
 export type WorkspaceFileResourceKind = "file" | "directory" | "remote_resource";
 export type WorkspaceFileContentEncoding = "utf8" | "base64";
 
+export interface WorkspaceFileSource {
+  kind: "live" | "saved";
+  savedAt: string | null;
+  snapshotId: string | null;
+}
+
 export interface WorkspaceFileRef {
   kind: "workspace_file";
   issueId?: string;
@@ -19,6 +25,7 @@ export interface WorkspaceFileRef {
 }
 
 export interface ResolvedWorkspaceResource {
+  source?: WorkspaceFileSource;
   kind: WorkspaceFileResourceKind;
   provider: "local_fs" | "git_worktree" | "remote_managed" | string;
   title: string;
@@ -48,6 +55,7 @@ export interface WorkspaceFileContent {
 }
 
 export interface WorkspaceFileListFileItem {
+  source?: WorkspaceFileSource;
   kind: "file";
   provider: "local_fs" | "git_worktree" | string;
   title: string;
@@ -70,6 +78,7 @@ export interface WorkspaceFileListFileItem {
 }
 
 export interface WorkspaceFileListDirectoryItem {
+  source?: WorkspaceFileSource;
   kind: "directory";
   provider: "local_fs" | "git_worktree" | string;
   title: string;
@@ -98,6 +107,7 @@ export interface WorkspaceFileListResponse {
   state: "available" | "unavailable";
   unavailableReason?: string | null;
   workspace: {
+    source?: WorkspaceFileSource;
     provider: "local_fs" | "git_worktree" | string;
     workspaceLabel: string;
     workspaceKind: WorkspaceFileWorkspaceKind;

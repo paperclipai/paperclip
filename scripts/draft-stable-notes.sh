@@ -129,10 +129,47 @@ subjects="$(git -C "$repo_dir" log --no-merges --format='%s' "$range")"
 # "What Changed" bullets, falls back to the first prose lines. Degrades
 # silently when gh or the network is unavailable (tests, offline runs);
 # set DRAFT_NOTES_SKIP_PR_ENRICHMENT=1 to disable explicitly.
+PR_BATCH_SIZE=50
+pr_cache=""
+
+fetch_pr_batch() {
+  local query="query(\$owner: String!, \$name: String!) { repository(owner: \$owner, name: \$name) {" pr_num num encoded
+  for pr_num in "$@"; do
+    query+=" pr${pr_num}: pullRequest(number: ${pr_num}) { body }"
+  done
+  query+=" } }"
+  (cd "$repo_dir" && gh api graphql -F owner='{owner}' -F name='{repo}' -f query="$query" 2>/dev/null) \
+    > "$pr_cache/batch.json" || true
+  while IFS=$'\t' read -r num encoded; do
+    [[ "$num" =~ ^[0-9]+$ ]] || continue
+    printf '%s' "$encoded" | base64 -d > "$pr_cache/$num" 2>/dev/null || rm -f "$pr_cache/$num"
+  done < <(jq -r '.data.repository // {} | to_entries[]
+      | select((.value | type) == "object" and (.value.body | type) == "string")
+      | "\(.key | ltrimstr("pr"))\t\(.value.body | @base64)"' "$pr_cache/batch.json" 2>/dev/null || true)
+}
+
+prefetch_pr_bodies() {
+  local pr_nums=() pr_num
+  [ "${DRAFT_NOTES_SKIP_PR_ENRICHMENT:-0}" = "1" ] && return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  while IFS= read -r pr_num; do
+    [ -n "$pr_num" ] && pr_nums+=("$pr_num")
+  done < <(printf '%s\n' "$subjects" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9\n' | sort -un || true)
+  [ "${#pr_nums[@]}" -gt 0 ] || return 0
+  pr_cache="$(mktemp -d)" || { pr_cache=""; return 0; }
+  trap 'rm -rf "$pr_cache"' EXIT
+  local start=0
+  while [ "$start" -lt "${#pr_nums[@]}" ]; do
+    fetch_pr_batch "${pr_nums[@]:$start:$PR_BATCH_SIZE}"
+    start=$((start + PR_BATCH_SIZE))
+  done
+}
+
 enrich_pr() {
   local pr_num="$1" pr_body excerpt
-  [ "${DRAFT_NOTES_SKIP_PR_ENRICHMENT:-0}" = "1" ] && return 0
-  pr_body="$(cd "$repo_dir" && gh pr view "$pr_num" --json body --jq .body 2>/dev/null || true)"
+  [ -n "$pr_cache" ] && [ -s "$pr_cache/$pr_num" ] || return 0
+  pr_body="$(cat "$pr_cache/$pr_num")"
   [ -n "$pr_body" ] || return 0
   if printf '%s\n' "$pr_body" | grep -q '^## What Changed'; then
     excerpt="$(printf '%s\n' "$pr_body" | sed -n '/^## What Changed/,/^## /p' | grep -E '^- ' | head -3 || true)"
@@ -162,6 +199,8 @@ section() {
   done <<< "$body"
   printf '\n'
 }
+
+prefetch_pr_bodies
 
 conventional='^(feat|fix)(\([^)]*\))?!?: '
 mkdir -p "$(dirname "$out_file")"

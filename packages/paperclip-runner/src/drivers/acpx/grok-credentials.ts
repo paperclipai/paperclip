@@ -1,7 +1,8 @@
-import { constants } from "node:fs";
-import { open, rename, rm, writeFile } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { stageManagedCodexCredential, type AcpxProviderLifetimeLease } from "./codex-credentials.js";
+
+import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 
 export const GROK_AUTH_REFRESH_FILE = "auth-refresh.json";
 
@@ -37,56 +38,10 @@ export async function stageManagedGrokCredential(input: {
     agentHomeDirectory: input.agentHomeDirectory,
     environment: inline ? { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: inline } : { OPENAI_API_KEY: apiKey },
   });
-  const refresh = join(input.agentHomeDirectory, GROK_AUTH_REFRESH_FILE);
-  await rm(refresh, { force: true }).catch(async (error) => { await lease.close(); throw error; });
-  let closed = false;
-  let closing: Promise<void> | null = null;
-  return {
-    lifetimeFenceCandidates: lease.lifetimeFenceCandidates,
-    lifetimeFenceFds: lease.lifetimeFenceFds,
-    activateLifetimeOwner: (pid) => lease.activateLifetimeOwner(pid),
-    close() {
-      if (closed) return Promise.resolve();
-      if (closing) return closing;
-      closing = (async () => {
-      // The runtime host calls close only after verified provider exit. Retain
-      // a private refresh handoff for the controller's existing Grok merge
-      // predicate, then scrub auth.json before releasing the process fence.
-      if (inline && (input.retainRefresh?.() ?? true)) {
-        const auth = await open(join(input.agentHomeDirectory, "auth.json"), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error) => {
-          if (error.code === "ENOENT") return null;
-          throw error;
-        });
-        if (auth) {
-          try {
-            const stat = await auth.stat();
-            if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 256 * 1024) throw new Error("Grok refreshed credential is invalid");
-            const buffer = Buffer.alloc(256 * 1024 + 1);
-            let size = 0;
-            while (size < buffer.length) {
-              const read = await auth.read(buffer, size, buffer.length - size, size);
-              if (!read.bytesRead) break;
-              size += read.bytesRead;
-            }
-            if (size > 256 * 1024) { buffer.fill(0); throw new Error("Grok refreshed credential exceeds its bound"); }
-            const bytes = buffer.subarray(0, size);
-            const temporary = `${refresh}.tmp`;
-            try {
-              await rm(temporary, { force: true });
-              await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
-              await rename(temporary, refresh);
-            } finally { bytes.fill(0); await rm(temporary, { force: true }); }
-          } finally { await auth.close(); }
-        }
-      }
-      // Grok diagnostics can contain account/authentication fields. They are
-      // disposable, unlike session history, and must not outlive this owner.
-      // close is invoked only after the provider has been contained.
-      await rm(join(input.agentHomeDirectory, "logs"), { recursive: true, force: true });
-      await lease.close();
-      closed = true;
-      })().finally(() => { closing = null; });
-      return closing;
-    },
-  };
+  return retainAcpxCredentialRefresh({
+    lease, agentHomeDirectory: input.agentHomeDirectory,
+    retainRefresh: () => Boolean(inline) && (input.retainRefresh?.() ?? true),
+    // Diagnostics may contain auth fields; session history remains resumable.
+    beforeClose: () => rm(join(input.agentHomeDirectory, "logs"), { recursive: true, force: true }),
+  });
 }
