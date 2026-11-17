@@ -26,6 +26,7 @@ request can create work directly. Project selection, budgets and hiring gates
 retain their normal authority. The conversation remains available after handoff.
 
 Local subscription setup waits for verified sign-in before enabling Connect.
-Pasting a Claude authorization code submits it automatically and shows a finishing state; a rejected code
-offers a fresh sign-in immediately. Switching providers clears the previous
-provider's model so subscription verification uses a compatible model.
+Pasting a Claude authorization code submits it automatically and shows a finishing
+state; a rejected code offers a fresh sign-in immediately. Switching providers
+clears the previous provider's model so subscription verification uses a
+compatible model.
