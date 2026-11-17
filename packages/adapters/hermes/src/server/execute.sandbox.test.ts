@@ -121,7 +121,6 @@ import {
   HERMES_SANDBOX_COMMAND_SCAN_UNSUPPORTED_MESSAGE,
   HERMES_SANDBOX_MANAGED_CONNECTION_UNSUPPORTED_MESSAGE,
   HERMES_SANDBOX_PROVIDER_UNSUPPORTED_MESSAGE,
-  HERMES_SANDBOX_MEMORY_PROVIDER_UNSUPPORTED_MESSAGE,
   HERMES_SANDBOX_RUNTIME_MEMORY_UNSUPPORTED_MESSAGE,
   HERMES_SANDBOX_SSH_UNSUPPORTED_MESSAGE,
   HERMES_SANDBOX_UNTRUSTED_COMMAND_MESSAGE,
@@ -130,7 +129,7 @@ import { HERMES_MAX_SYSTEM_PROMPT_BYTES } from "./execute.js";
 import { ROUTER_EXTRA_ARGS_UNSUPPORTED_MESSAGE, ROUTER_KEY_MISSING_MESSAGE } from "./router-readiness.js";
 import { probeHermesRouterSupportInTarget } from "./router-readiness-remote.js";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
-import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
+import { prepareAdapterExecutionTargetRuntime, startAdapterExecutionTargetPaperclipBridge } from "@paperclipai/adapter-utils/execution-target";
 
 const sandboxTarget: AdapterExecutionTarget = {
   kind: "remote",
@@ -313,6 +312,116 @@ describe("Hermes execute on a sandbox target (TECH-8174)", () => {
     expect(h.shellCalls.some((c) => c.startsWith("rm -rf") && c.includes(REMOTE_HERMES_HOME) && c.includes(`${REMOTE_RUNTIME}/query.txt`))).toBe(true);
     const localHome = prepare.assets?.[0]?.localDir ?? "";
     await expect(fs.stat(localHome)).rejects.toThrow();
+  });
+
+  describe("native mem0 memory through the bridge relay (TECH-8908)", () => {
+    const MEMORY_TOKEN = "memory-token-SENTINEL-8908-do-not-ship";
+    const memoryConfig = () => ({
+      memoryProvider: "mem0",
+      env: {
+        OPENAI_API_KEY: PROVIDER_KEY,
+        MEM0_HOST: "https://rh-memory.tailnet.ts.net",
+        MEM0_API_KEY: MEMORY_TOKEN,
+        MEM0_PROXY: "socks5://127.0.0.1:1055",
+        MEM0_USER_ID: "agent-1",
+        MEM0_AUTO_SYNC: "true",
+      },
+    });
+
+    it("points MEM0_HOST at the bridge relay and ships no memory token, host or proxy", async () => {
+      await execute(ctx({ config: memoryConfig() }));
+      const env = hermesCall().options.env;
+      expect(env.MEM0_HOST).toBe(`${BRIDGE_URL}/api/agent-memory-relay`);
+      expect(env.MEM0_API_KEY).toBe(BRIDGE_TOKEN);
+      expect(env.MEM0_PROXY).toBeUndefined();
+      expect(env.MEM0_USER_ID).toBe("agent-1");
+      expect(JSON.stringify(h.processCalls)).not.toContain(MEMORY_TOKEN);
+      expect(JSON.stringify(h.processCalls)).not.toContain("tailnet.ts.net");
+      expect(JSON.stringify(h.shipped)).not.toContain(MEMORY_TOKEN);
+      expect(h.shipped.hermesHome?.["config.yaml"]).toContain("provider: mem0");
+    });
+
+    it("registers the memory routes as their own bridge route policy with a 35 s deadline", async () => {
+      await execute(ctx({ config: memoryConfig() }));
+      const startBridge = vi.mocked(startAdapterExecutionTargetPaperclipBridge);
+      const policies = startBridge.mock.calls[0]![0].bridgeRoutePolicies ?? [];
+      expect(policies).toHaveLength(1);
+      expect(policies[0]!.deadlineMs).toBe(35_000);
+      expect(policies[0]!.maxConcurrent).toBeGreaterThan(0);
+      const memoryId = "44444444-4444-4444-8444-444444444444";
+      for (const p of ["search", "memories", `memories/${memoryId}`]) expect(policies[0]!.path.test(`/api/agent-memory-relay/${p}`)).toBe(true);
+      for (const p of ["/api/agents/me", "/api/agent-memory-relay/memories/x/y", "/api/agent-memory-relay/other"]) expect(policies[0]!.path.test(p)).toBe(false);
+    });
+
+    it("registers no route policy for a run without a memory provider", async () => {
+      await execute(ctx());
+      expect(vi.mocked(startAdapterExecutionTargetPaperclipBridge).mock.calls[0]![0].bridgeRoutePolicies).toBeUndefined();
+    });
+
+    it("a Ramp Router run with memory keeps the relay env and the Router strips and key handling", async () => {
+      const base = memoryConfig();
+      await execute(ctx({
+        config: {
+          ...base,
+          provider: "router",
+          model: "auto-jev-routing",
+          env: {
+            ...base.env,
+            RAMP_ROUTER_API_KEY: ROUTER_KEY,
+            RAMP_ROUTER_BASE_URL: "https://evil.example/v1",
+            OPENAI_BASE_URL: "https://evil.example/openai",
+            PYTHONPATH: "/tmp/shadow",
+          },
+        },
+      }));
+      const call = hermesCall();
+      const env = call.options.env;
+      // Memory: bridge relay only, no memory token, host or proxy.
+      expect(env.MEM0_HOST).toBe(`${BRIDGE_URL}/api/agent-memory-relay`);
+      expect(env.MEM0_API_KEY).toBe(BRIDGE_TOKEN);
+      expect(env.MEM0_PROXY).toBeUndefined();
+      expect(JSON.stringify(h.processCalls)).not.toContain(MEMORY_TOKEN);
+      expect(JSON.stringify(h.shipped)).not.toContain(MEMORY_TOKEN);
+      // Router: key only in the exec env, overrides stripped, probe ran, launch through `env -u`.
+      expect(env.RAMP_ROUTER_API_KEY).toBe(ROUTER_KEY);
+      expect(env.RAMP_ROUTER_BASE_URL).toBeUndefined();
+      expect(env.OPENAI_BASE_URL).toBeUndefined();
+      expect(env.PYTHONPATH).toBeUndefined();
+      expect(call.unsetNames).toEqual(expect.arrayContaining(["RAMP_ROUTER_BASE_URL", "OPENAI_BASE_URL", "PYTHONPATH"]));
+      expect(call.args).toEqual(expect.arrayContaining(["--provider", "router"]));
+      expect(probeHermesRouterSupportInTarget).toHaveBeenCalled();
+      expect(JSON.stringify(h.shipped)).not.toContain(ROUTER_KEY);
+      // The memory route policy is registered for a Router run too.
+      expect(vi.mocked(startAdapterExecutionTargetPaperclipBridge).mock.calls[0]![0].bridgeRoutePolicies).toHaveLength(1);
+      expect(h.shipped.hermesHome?.["config.yaml"]).toContain("provider: mem0");
+    });
+
+    it("keeps the memory lane and the MCP relay routes separate when a run has both", async () => {
+      await execute(ctx({
+        config: memoryConfig(),
+        extra: {
+          runtimeMcp: {
+            getServers: () => [{ name: "Gateway", url: "https://paperclip.example/mcp/gateways/g1", token: "mcp-token-8908", connectionId: "c1", allowedTools: ["t"] }],
+          },
+        } as Partial<AdapterExecutionContext>,
+      }));
+      const input = vi.mocked(startAdapterExecutionTargetPaperclipBridge).mock.calls[0]![0];
+      expect(input.relayRoutes).toHaveLength(1);
+      expect(input.bridgeRoutePolicies).toHaveLength(1);
+      expect(input.bridgeRoutePolicies![0]!.path.test("/api/agent-memory-relay/search")).toBe(true);
+      expect(input.relayRoutes![0]!.path).not.toMatch(/agent-memory-relay/);
+      expect(hermesCall().options.env.MEM0_HOST).toBe(`${BRIDGE_URL}/api/agent-memory-relay`);
+    });
+
+    it("strips MEM0 connection settings from a run that selects no memory provider", async () => {
+      const config = memoryConfig();
+      delete (config as Record<string, unknown>).memoryProvider;
+      await execute(ctx({ config }));
+      const env = hermesCall().options.env;
+      expect(env.MEM0_HOST).toBeUndefined();
+      expect(env.MEM0_API_KEY).toBeUndefined();
+      expect(env.MEM0_PROXY).toBeUndefined();
+    });
   });
 
   it("relays runtime MCP servers through bridge routes and ships none of their tokens", async () => {
@@ -546,7 +655,6 @@ describe("Hermes execute on a sandbox target (TECH-8174)", () => {
       () => ctx({ extra: { runtimeMemory: { getConfig: async () => ({}) } } as unknown as Partial<AdapterExecutionContext> }),
       HERMES_SANDBOX_RUNTIME_MEMORY_UNSUPPORTED_MESSAGE,
     ],
-    ["an env-configured memory provider", () => ctx({ config: { memoryProvider: "mem0" } }), HERMES_SANDBOX_MEMORY_PROVIDER_UNSUPPORTED_MESSAGE],
     [
       "a Ramp Router run without the agent's own RAMP_ROUTER_API_KEY binding",
       () => ctx({ config: { provider: "router", model: "auto-jev-routing", env: { OPENAI_API_KEY: PROVIDER_KEY } } }),

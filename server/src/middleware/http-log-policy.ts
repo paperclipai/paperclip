@@ -57,6 +57,13 @@ export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): bo
   return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
 }
 
+/** Relayed agent memory (queries, conversation turns, memory text) must never be copied into HTTP diagnostics (TECH-8908). */
+export function isPrivateAgentMemoryRelayHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return /^\/api\/agent-memory-relay(?:\/|$)/i.test(pathname);
+}
+
 /** Destination credentials stay private even on malformed settings requests. */
 export function isPrivateAgentObservabilityHttpRequest(url: string | undefined): boolean {
   if (!url) return false;
@@ -112,6 +119,7 @@ export function isSecretSensitiveHttpRequest(
   if (isPrivateWebhookHttpRequest(method, url) || isPrivateMuseHttpRequest(url)) return true;
   if (url && normalizePath(url).startsWith("/mcp/files/")) return true;
   if (isPrivateAgentCommentaryHttpRequest(url)) return true;
+  if (isPrivateAgentMemoryRelayHttpRequest(url)) return true;
   // Custom OTLP header values are arbitrary credentials, including on rejected
   // methods or malformed subpaths. Named-field redaction cannot identify them.
   if (isPrivateAgentObservabilityHttpRequest(url)) return true;

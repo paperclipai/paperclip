@@ -24,7 +24,6 @@ import { resolveEffectiveRunConfig } from "./detect-model.js";
 import { resolveHermesCommand } from "./execute.js";
 import {
   HERMES_SANDBOX_COMMAND_SCAN_UNSUPPORTED_MESSAGE,
-  HERMES_SANDBOX_MEMORY_PROVIDER_UNSUPPORTED_MESSAGE,
   HERMES_SANDBOX_PROVIDERS,
   HERMES_SANDBOX_PROVIDER_UNSUPPORTED_MESSAGE,
   HERMES_SANDBOX_ROUTER_KEY_UNREDACTABLE_MESSAGE,
@@ -99,14 +98,10 @@ export async function testRemoteEnvironment(
     },
   ];
 
-  let memoryProvider: string | undefined;
   try {
-    memoryProvider = resolveHermesMemoryProvider(config);
+    resolveHermesMemoryProvider(config);
   } catch (err) {
     checks.push({ level: "error", code: "hermes_memory_provider_invalid", message: err instanceof Error ? err.message : String(err) });
-  }
-  if (memoryProvider) {
-    checks.push({ level: "error", code: "hermes_memory_sandbox_unsupported", message: HERMES_SANDBOX_MEMORY_PROVIDER_UNSUPPORTED_MESSAGE });
   }
   const configEnv = (config.env && typeof config.env === "object" ? config.env : {}) as Record<string, unknown>;
   if (effective.isRouter) {

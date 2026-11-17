@@ -13,8 +13,10 @@
  *    goes through the callback bridge, whose env replaces PAPERCLIP_API_URL / PAPERCLIP_API_KEY.
  *
  * Scope (see docs/hermes-sandbox-execution.md): explicit providers including Ramp Router (stage 2,
- * verified by an in-sandbox registry probe), no memory, runtime MCP servers through bridge relay
- * routes (host-held credentials), sandbox targets only (never SSH).
+ * verified by an in-sandbox registry probe), runtime MCP servers through bridge relay routes
+ * (host-held credentials), sandbox targets only (never SSH). Native mem0 memory
+ * (`adapterConfig.memoryProvider`) works through a server relay on the callback bridge (TECH-8908):
+ * the pod holds no memory token and no route to the memory service.
  */
 
 import { createHash } from "node:crypto";
@@ -25,6 +27,7 @@ import path from "node:path";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
+  SandboxCallbackBridgeRoutePolicy,
 } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetDuplexObservabilityRecorder,
@@ -117,8 +120,23 @@ export const HERMES_SANDBOX_SSH_UNSUPPORTED_MESSAGE =
   "Refusing to start: Hermes runs in sandbox environments only, not over SSH. Select a sandbox or the local environment for this agent.";
 export const HERMES_SANDBOX_RUNTIME_MEMORY_UNSUPPORTED_MESSAGE =
   "Refusing to start: Paperclip runtime memory (per-company database) is not supported for Hermes in sandbox environments. Move the agent to the external memory service or select the local environment.";
-export const HERMES_SANDBOX_MEMORY_PROVIDER_UNSUPPORTED_MESSAGE =
-  "Refusing to start: adapterConfig.memoryProvider is not yet supported for Hermes in sandbox environments (the memory service is not reachable from the sandbox). Remove memoryProvider or select the local environment.";
+export const HERMES_SANDBOX_MEMORY_BRIDGE_REQUIRED_MESSAGE =
+  "Refusing to start: adapterConfig.memoryProvider in a sandbox environment needs the Paperclip callback bridge, which did not start for this run. Remove memoryProvider or select the local environment.";
+/**
+ * Bridge policy for the memory relay routes: their own concurrency lane and a 35 s in-pod deadline (Hermes's mem0
+ * client waits 30 s; the host abort lands at 33 s and the server relay gives up at 32 s). File bridge only: the
+ * duplex transport ignores route policies.
+ */
+export const HERMES_SANDBOX_MEMORY_ROUTE_POLICIES: readonly SandboxCallbackBridgeRoutePolicy[] = [
+  {
+    path: /^\/api\/agent-memory-relay\/(?:search|memories(?:\/[0-9a-f-]{36})?)$/i,
+    deadlineMs: 35_000,
+    maxConcurrent: 4,
+  },
+];
+
+/** Path of the server's mem0 relay under the bridge origin (server/src/routes/agent-memory-relay.ts). */
+export const HERMES_SANDBOX_MEMORY_RELAY_PATH = "/api/agent-memory-relay";
 export const HERMES_SANDBOX_COMMAND_SCAN_UNSUPPORTED_MESSAGE =
   "Refusing to start: PAPERCLIP_HERMES_COMMAND_SCAN=required is not yet supported for Hermes in sandbox environments.";
 export const HERMES_SANDBOX_ROUTER_KEY_UNREDACTABLE_MESSAGE =
@@ -230,16 +248,15 @@ async function executeHermesInSandbox(
     throw err;
   }
 
-  // ── Stage-1 gates (no memory in sandboxes yet) ──────────────────────────
+  // ── Gates ───────────────────────────────────────────────────────────────
   if (ctx.runtimeMemory) await refuse(ctx, HERMES_SANDBOX_RUNTIME_MEMORY_UNSUPPORTED_MESSAGE);
-  let memoryProvider: string | undefined;
+  let memoryProvider: ReturnType<typeof resolveHermesMemoryProvider>;
   try {
     memoryProvider = resolveHermesMemoryProvider(config);
   } catch (err) {
     await ctx.onLog("stderr", `[hermes] ${err instanceof Error ? err.message : "Invalid adapterConfig.memoryProvider"}\n`);
     throw err;
   }
-  if (memoryProvider) await refuse(ctx, HERMES_SANDBOX_MEMORY_PROVIDER_UNSUPPORTED_MESSAGE);
 
   if (config.managedAiRouting || config.managedAiConnection) {
     await refuse(ctx, HERMES_SANDBOX_MANAGED_CONNECTION_UNSUPPORTED_MESSAGE);
@@ -431,6 +448,7 @@ async function executeHermesInSandbox(
     const preparedHome = await prepareHermesMcpHome({
       servers: runtimeMcpServers,
       bridgeRelay: true,
+      ...(memoryProvider ? { memoryProvider } : {}),
       config,
       flags: hardeningFlags,
       onWarning: onCleanupWarning,
@@ -545,6 +563,8 @@ async function executeHermesInSandbox(
           deadlineMs: (server.requestTimeoutMs ?? HERMES_MCP_RELAY_DEFAULT_TOOL_TIMEOUT_MS) + HERMES_MCP_RELAY_DEADLINE_MARGIN_MS,
           label: server.name,
         })),
+        // The MCP relay routes above register their own policies; memory gets its own lane (TECH-8908).
+        ...(memoryProvider === "mem0" ? { bridgeRoutePolicies: HERMES_SANDBOX_MEMORY_ROUTE_POLICIES } : {}),
       });
     }
     const bridgeEnv = paperclipBridge?.env ?? {};
@@ -582,6 +602,9 @@ async function executeHermesInSandbox(
       if (key.startsWith("PAPERCLIP_RUNTIME_TOOLS_")) delete env[key];
     }
     for (const key of HERMES_FORBIDDEN_ENV_VARS) delete env[key];
+    // The pod never holds the memory token or a memory proxy: those names are stripped even without
+    // memoryProvider, and a memory run gets bridge-relayed values below (TECH-8908).
+    for (const name of ["MEM0_API_KEY", "MEM0_HOST", "MEM0_PROXY"]) delete env[name];
     // Endpoint overrides and aliases never reach Hermes; a Router run also drops the generic SDK
     // endpoints and the Python import-path overrides (the probe verified the image's own registry).
     for (const name of routerEnvNamesToStrip(env, isRouterRun)) delete env[name];
@@ -601,6 +624,16 @@ async function executeHermesInSandbox(
     const envCommentId = cfgString(wakeContext.commentId) || cfgString(wakeContext.wakeCommentId) || cfgString(ctx.config?.commentId);
     if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
     Object.assign(env, bridgeEnv);
+    if (memoryProvider === "mem0") {
+      if (!bridgeEnv.PAPERCLIP_API_URL || !bridgeEnv.PAPERCLIP_API_KEY) {
+        await refuse(ctx, HERMES_SANDBOX_MEMORY_BRIDGE_REQUIRED_MESSAGE);
+      }
+      // Hermes's mem0 client joins its paths onto this host. The API key is the per-run bridge token (the
+      // in-pod gateway requires it and strips it); the server picks the agent's own memory token.
+      env.MEM0_HOST = `${bridgeEnv.PAPERCLIP_API_URL!.replace(/\/+$/, "")}${HERMES_SANDBOX_MEMORY_RELAY_PATH}`;
+      env.MEM0_API_KEY = bridgeEnv.PAPERCLIP_API_KEY!;
+      if (hardeningFlags.mem0AutoSyncOff) env.MEM0_AUTO_SYNC = "false";
+    }
     // Applied last so no config env can redirect the home, Hermes home or protected invariants.
     Object.assign(env, buildRemoteRunHomeEnv(remoteHomeRoot));
     env.HERMES_HOME = remoteHermesHome;

@@ -209,3 +209,14 @@ describe("Muse HTTP privacy",()=>{
     expect(shouldSilenceHttpSuccessLog("GET","/api/muse/v1/signal",503)).toBe(false);
   });
 });
+
+describe("agent memory relay logging (TECH-8908)", () => {
+  it("keeps relayed memory content out of HTTP failure logs", () => {
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      for (const url of ["/api/agent-memory-relay/search", "/api/agent-memory-relay/memories", "/api/agent-memory-relay/memories/4444?x=1", "/API/Agent-Memory-Relay/search"]) {
+        expect(isSecretSensitiveHttpRequest(method, url)).toBe(true);
+      }
+    }
+    expect(isSecretSensitiveHttpRequest("POST", "/api/agent-memory-relayx")).toBe(false);
+  });
+});

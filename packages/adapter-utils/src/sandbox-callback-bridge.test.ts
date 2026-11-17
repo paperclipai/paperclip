@@ -3976,3 +3976,35 @@ describe("embedded sandbox gateway process body ledger", () => {
     expect(ledger.reservedBytes).toBe(100);
   });
 });
+
+describe("memory relay routes in the bridge allowlist (TECH-8908)", () => {
+  const ID = "44444444-4444-4444-8444-444444444444";
+  const P = "/api/agent-memory-relay";
+  const allowed: Array<[string, string]> = [
+    ["POST", `${P}/search`],
+    ["POST", `${P}/memories`],
+    ["PUT", `${P}/memories/${ID}`],
+    ["DELETE", `${P}/memories/${ID}`],
+  ];
+  it.each(allowed)("admits %s %s on both transports", (method, requestPath) => {
+    for (const routes of [undefined, HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST]) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes({ method, path: requestPath }, routes)).toBeNull();
+    }
+  });
+  it.each([
+    ["GET", `${P}/search`],
+    ["PUT", `${P}/search`],
+    ["POST", `${P}/memories/${ID}`],
+    ["GET", `${P}/memories/${ID}`],
+    ["PUT", `${P}/memories/not-a-uuid`],
+    ["DELETE", `${P}/memories/${ID}/extra`],
+    ["DELETE", `${P}/memories/${ID}%2f..%2fmcp`],
+    ["DELETE", `${P}/memories/..%2f..%2fmcp`],
+    ["DELETE", `${P}/memories`],
+    ["POST", `${P}/anything`],
+    ["POST", `${P}/search/`],
+  ])("denies %s %s", (method, requestPath) => {
+    expect(authorizeSandboxCallbackBridgeRequestWithRoutes({ method, path: requestPath }))
+      .toBe(`Route not allowed: ${method} ${requestPath}`);
+  });
+});

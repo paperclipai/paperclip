@@ -348,6 +348,14 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/routines\/[^/]+\/triggers$/ },
   { method: "PATCH", path: /^\/api\/routine-triggers\/[^/]+$/ },
   { method: "DELETE", path: /^\/api\/routine-triggers\/[^/]+$/ },
+
+  // Hermes native mem0 memory (TECH-8908). Four fixed routes, memory id a strict UUID. The server relays them to the
+  // configured memory service with the calling agent's own token. The Hermes adapter registers their deadline and
+  // concurrency lane as route policies (HERMES_SANDBOX_MEMORY_ROUTE_POLICIES).
+  { method: "POST", path: /^\/api\/agent-memory-relay\/search$/ },
+  { method: "POST", path: /^\/api\/agent-memory-relay\/memories$/ },
+  { method: "PUT", path: /^\/api\/agent-memory-relay\/memories\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i },
+  { method: "DELETE", path: /^\/api\/agent-memory-relay\/memories\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i },
 ] as const;
 
 // Keep the public alias for callers selecting the HTTP/2 transport.

@@ -5,7 +5,8 @@ import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import {
   isPrivateWebhookHttpRequest,
   isSecretSensitiveHttpRequest,
-  isPrivateAgentCommentaryHttpRequest,
+  isPrivateAgentCommentaryHttpRequest as isPrivateAgentCommentaryOnly,
+  isPrivateAgentMemoryRelayHttpRequest,
   isPrivateAgentObservabilityHttpRequest,
   isPrivateMuseHttpRequest,
   shouldSilenceHttpSuccessLog,
@@ -14,6 +15,10 @@ import {
   redactSensitive,
   stripSecretBearingUrlParts,
 } from "./redact-sensitive.js";
+
+/** Free-form agent feedback and relayed agent memory are private request content. */
+const isPrivateAgentCommentaryHttpRequest = (url: string | undefined) =>
+  isPrivateAgentCommentaryOnly(url) || isPrivateAgentMemoryRelayHttpRequest(url);
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",

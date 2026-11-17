@@ -123,6 +123,22 @@ describe("HTTP logger redaction", () => {
     expect(output).not.toContain(canary);
     expect(JSON.parse(output.trim()).reqBody).toBe("[REDACTED]");
   });
+  it.each([[400, "/api/agent-memory-relay/search"], [502, "/api/agent-memory-relay/memories"], [404, "/API/AGENT-MEMORY-RELAY/memories/x"]] as const)("keeps relayed agent memory content out of %i diagnostics for %s", async (status, url) => {
+    const canary = "private-agent-memory-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.use(express.json());
+    app.use((_req, res) => {
+      (res as any).err = new Error(`Upstream echoed ${canary}`);
+      res.status(status).end();
+    });
+    await request(app).post(url).send({ query: canary, messages: [{ role: "user", content: canary }], text: canary });
+    const output = chunks.join("");
+    expect(output).not.toContain(canary);
+    expect(JSON.parse(output.trim()).reqBody).toBe("[REDACTED]");
+  });
   it.each([
     { method: "POST", path: "/api/routine-triggers/public/private-url-canary/fire" },
     { method: "PUT", path: "/api/routine-triggers/public/private-url-canary/fire" },

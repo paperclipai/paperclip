@@ -21,6 +21,7 @@ const apiPrefixes: Record<string, string> = {
   "adapters.ts": "/api",
   "agents.ts": "/api",
   "agent-commentary.ts": "/api",
+  "agent-memory-relay.ts": "/api",
   "agent-avatars.ts": "/api",
   "agent-profile-avatar.ts": "/api",
   "announcements.ts": "/api",
@@ -117,6 +118,12 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Inspection uses its own versioned Cloud-permit/managed-run protocol,
   // documented in CUSTOMER-SUCCESS-INSPECTION.md and the shared contract.
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
+  // The sandbox memory relay is an internal bridge surface for the mem0 client
+  // inside a Hermes pod (fixed mem0 wire contract, run-JWT only), not a public API.
+  "POST /api/agent-memory-relay/search",
+  "POST /api/agent-memory-relay/memories",
+  "PUT /api/agent-memory-relay/memories/{id}",
+  "DELETE /api/agent-memory-relay/memories/{id}",
   "GET /api/customer-success/v1/run-authority",
   "POST /api/customer-success/v1/read",
   // OAuth discovery and protocol endpoints have their own metadata contract;

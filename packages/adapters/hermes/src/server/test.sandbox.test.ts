@@ -70,13 +70,12 @@ describe("hermes testEnvironment on a remote target (TECH-8174)", () => {
     expect(h.processCalls).toHaveLength(0);
   });
 
-  it("reports the run's gates: missing credential and memory provider", async () => {
+  it("reports the run's gates: missing credential, and accepts a memory provider", async () => {
     const result = await run({ provider: "openai-api", model: "gpt-5.4", memoryProvider: "mem0", env: {} });
     expect(result.status).toBe("fail");
-    expect(result.checks.map((c) => c.code)).toEqual(expect.arrayContaining([
-      "hermes_memory_sandbox_unsupported",
-      "hermes_explicit_credential_required",
-    ]));
+    const codes = result.checks.map((c) => c.code);
+    expect(codes).toContain("hermes_explicit_credential_required");
+    expect(codes).not.toContain("hermes_memory_sandbox_unsupported");
   });
 
   it("verifies a Router config inside the sandbox (version and registry probe), nothing on the host", async () => {

@@ -22,6 +22,10 @@ The full design review (options, security review, rollout) is the TECH-8174 desi
 - **Not available in the sandbox**: live progress from `state.db` (disabled) and the host memory import probe (not reached).
 - **Environment test**: `hermes --version` runs in the sandbox, not on the host.
 
+## Memory in the sandbox (stage 3, TECH-8908)
+
+`adapterConfig.memoryProvider: "mem0"` works in a pod. Hermes keeps its native mem0 provider, recall and sync; only the network path changes. The pod sets `MEM0_HOST` to `<bridge origin>/api/agent-memory-relay` and `MEM0_API_KEY` to the per-run bridge token (not a memory token). `MEM0_PROXY` and the agent's memory token are stripped from the pod env. The server relays four fixed routes (`POST /search`, `POST /memories`, `PUT /memories/:id` with a UUID id, `DELETE /memories/:id`) to its own `PAPERCLIP_AGENT_MEMORY_URL`, with the calling agent's own `agent_memory.<agentId>` secret chosen from the run JWT. The agent's adapter-config `MEM0_HOST` is never used, the body is forwarded unchanged, and no query string, redirect or header other than `content-type` is passed. Gate before relying on it: measure p50/p95 recall round trip from a live pod against Hermes's 3 s automatic recall budget.
+
 ## Ramp Router (stage 2)
 
 - **Key**: only the agent's own `RAMP_ROUTER_API_KEY` binding (company secret reference), delivered in the exec env (over stdin on Kubernetes). It is never in argv, never in a shipped file, and never in the plugin's `envKeys` Secret: keep `envKeys: []` for `hermes_local`. It is redacted from all output.
@@ -33,7 +37,6 @@ The full design review (options, security review, rollout) is the TECH-8174 desi
 
 | Config | Why | Stage that lifts it |
 |---|---|---|
-| `adapterConfig.memoryProvider` (mem0 over `MEM0_HOST`/`MEM0_PROXY`) | The tailnet memory service and the ECS proxy sidecar (`127.0.0.1:1055`) are unreachable from a pod | 3 (memory broker via bridge, decision D-1) |
 | Paperclip runtime memory (`mem0.json` with Postgres credentials) | Pods must never get DB credentials | never |
 | `PAPERCLIP_HERMES_COMMAND_SCAN=required` | Launcher trust is checked on host files | later |
 | Managed AI connections (`managedAiRouting`/`managedAiConnection`) | Connection testing and routing are host-local today | later |
