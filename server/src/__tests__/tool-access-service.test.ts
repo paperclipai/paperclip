@@ -66,6 +66,8 @@ import {
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   googleWorkspaceProfileWithinSubmittedScopes,
   googleWorkspaceSelectedScopes,
+  googleWorkspaceGrantedScopes,
+  googleWorkspaceSelectionForScopes,
   GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   getAvailableConnectionMethod,
   getConnectableAppDefinition,
@@ -2991,6 +2993,42 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(service.startOAuth(company.id, connected.connectionId, {
       redirectUri: "https://paperclip.example.test/api/tools/oauth/callback", actor, workspaceServices: {},
     })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it.each([
+    ["with", ["calendar.calendarlist.readonly", "calendar.events", "calendar.events.freebusy"]],
+    ["without", ["calendar.calendarlist.readonly", "calendar.events"]],
+  ] as const)("asks for free/busy with read and write Calendar and keeps Calendar working %s it", async (_label, granted) => {
+    const company = await createCompany(db);
+    const userId = `workspace-calendar-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const actor = { actorType: "user" as const, actorId: userId };
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "google-workspace", connectionMethodKey: "customer-workspace-oauth", grantKind: "user",
+      oauthClient: { clientId: "test-workspace-client", clientSecret: "test-workspace-secret" },
+    }, actor);
+    const redirectUri = "https://paperclip.example.test/api/tools/oauth/callback";
+    const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri, actor, workspaceServices: { calendar: "write" } });
+    const authorization = new URL(started.authorizationUrl);
+    const google = (value: string) => `https://www.googleapis.com/auth/${value}`;
+    expect(authorization.searchParams.get("scope")?.split(" "))
+      .toEqual(["calendar.calendarlist.readonly", "calendar.events", "calendar.events.freebusy"].map(google));
+    const tools = ["list_calendars", "list_events", "suggest_time", "create_event"];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "https://oauth2.googleapis.com/token") return Response.json({
+        access_token: "fixture-calendar-access", refresh_token: "fixture-calendar-refresh", expires_in: 3600, token_type: "Bearer",
+        scope: granted.map(google).join(" "),
+      });
+      expect(String(url)).toBe("https://calendarmcp.googleapis.com/mcp/v1");
+      return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: tools.map(name => ({ name })) } });
+    });
+    const completed = await service.completeOAuthCallback({ state: authorization.searchParams.get("state")!, code: "fixture-code", redirectUri, actor });
+    expect(completed.connection.status).toBe("active");
+    expect(completed.catalog.map((entry) => entry.toolName).sort()).toEqual(tools.map(name => `calendar__${name}`).sort());
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(googleWorkspaceGrantedScopes(grant!)).toEqual([...granted].map(google).sort());
+    expect(googleWorkspaceSelectionForScopes(googleWorkspaceGrantedScopes(grant!))).toEqual({ calendar: "write" });
   });
 
   it.each(["https://www.googleapis.com/auth/documents.readonly", undefined, "", "https://www.googleapis.com/auth/gmail.send"])(
