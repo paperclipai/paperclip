@@ -13,8 +13,8 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 | Item | Owner | State | Evidence / link |
 | --- | --- | --- | --- |
 | Phase 0 A: install ID stability + Cloud ingest URL source | subagent | in progress | |
-| Phase 0 B: compliance checklist status | subagent | in progress | |
-| Phase 0 C: PostHog entitlements | coordinator | in progress | |
+| Phase 0 B: compliance checklist status | subagent | done. Blocker for ANY production token: Terms §8 says telemetry "does not identify individual users" and Privacy §2 says "anonymized". No subprocessor list, no consent banner (website already runs GA4 + X pixel without consent), no SOC 2 program, DPA status unknown. Workspace delete (`paperclip-cloud` `SleepController.deleteStackInner`) makes no PostHog call; no self-serve account deletion | paperclip-website `web/app/terms/page.tsx:146-165`, `web/app/privacy/page.tsx:59-61` |
+| Phase 0 C: PostHog entitlements | coordinator | done: session replay available pay-as-you-go ($0 now); Group analytics add-on NOT enabled (needs Dotta; not blocking because events also carry `stack_id`); product analytics projected $1,186 this period from 40.1M events, almost all OSS | PostHog billing page, 2026-11-17 |
 | Phase 1: server direct sender | subagent | in progress | |
 | Phase 2: browser analytics | subagent | in progress | |
 | Phase 3: fleet config + legacy IDs | subagent | waiting on Phase 0 A | |
@@ -33,8 +33,14 @@ environment switch is set, and the switches must be set in a safe order:
 3. `PAPERCLIP_POSTHOG_LEGACY_DISTINCT_ID` must be set on every existing stack
    before its token is set. Otherwise that stack's history breaks.
 4. Order: legacy IDs on all stacks (inert) → token on staging → verify →
-   token on production → browser switch on staging → verify → browser switch
-   on production after compliance.
+   browser switch on staging → verify → **policy and terms updated** → token
+   on production → browser switch on production after consent approach is in
+   place.
+
+Production gate (Phase 0 B): the current Terms §8 and Privacy §2 promise
+anonymized telemetry. Even the server-side token (real user IDs) must wait
+for the updated policy and terms to be live. Phase 3 also adds PostHog
+group/person deletion to workspace deletion in `paperclip-cloud`.
 
 ## Goal
 
