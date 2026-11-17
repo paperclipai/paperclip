@@ -1,6 +1,5 @@
 import { lstat } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
-import path from "node:path";
+import { hostname } from "node:os";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { caseEvents, caseHandoffs, cases, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { persistActivity, type ActivityPublication } from "../activity-log.js";
@@ -14,7 +13,7 @@ import { assertActorCanReadCase, assertCaseTrustedForExecution } from "../case-a
 import { assertCaseHandoffSourceAuthority, lockCaseHandoffAuthorityRun } from "../case-handoff-authority.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { cleanupHeartbeatRunScratch, type HeartbeatRunScratch } from "../run-scratch.js";
+import { classifyRunScratchDir, cleanupHeartbeatRunScratch, type HeartbeatRunScratch } from "../run-scratch.js";
 
 const LEGACY_HANDOFF_CLEANUP_VERIFIED = "legacy.case_handoff_cleanup_verified";
 const LEGACY_HANDOFF_CLEANUP_SCHEMA = "paperclip.legacy-case-handoff-cleanup.v1";
@@ -102,8 +101,7 @@ async function recoverLegacyCaseHandoffCleanup(db: Db, run: typeof heartbeatRuns
   }
   if (typeof scratch?.dir !== "string" || scratch.metadata?.companyId !== run.companyId ||
       scratch.metadata.agentId !== run.agentId || scratch.metadata.runId !== run.id || scratch.metadata.issueId !== issueId) return false;
-  const relative = path.relative(path.resolve(tmpdir()), path.resolve(scratch.dir));
-  if (relative.startsWith("..") || path.isAbsolute(relative) || !path.basename(scratch.dir).startsWith("paperclip-run-")) return false;
+  if (classifyRunScratchDir(scratch.dir) === null) return false;
   try { await lstat(scratch.dir); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
   // A crash immediately before removal can safely retry the same marked

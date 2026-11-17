@@ -221,6 +221,12 @@ export async function prepareManagedAiRuntime(
     allowUninstalledPersonal?: boolean;
     allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
+    /**
+     * Parent directory for the managed AI home. Run executions pass their
+     * per-run scratch directory so the volatile credential home lives and is
+     * cleaned up with the run, outside any shared tmpfs.
+     */
+    managedHomeParent?: string;
     config: Record<string, unknown>;
   },
 ) {
@@ -310,7 +316,7 @@ export async function prepareManagedAiRuntime(
     const originalCredential = antigravitySubscription ? sanitizeAntigravityCredential(value) : value;
     home = await mkdtemp(
       path.join(
-        os.tmpdir(),
+        input.managedHomeParent ?? os.tmpdir(),
         `paperclip-ai-${input.companyId}-${selection.grant.id}-`,
       ),
     );
@@ -595,6 +601,7 @@ export async function prepareManagedAiRuntime(
       accountOwnerUserId: selection.grant.subjectUserId,
       identity,
       home,
+      homeRemoved: () => homeRemoved,
       cleanup: cleanupRuntime,
     };
   } catch (error) {

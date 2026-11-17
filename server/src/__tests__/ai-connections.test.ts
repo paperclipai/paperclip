@@ -341,6 +341,28 @@ describe("managed AI connections", () => {
     }
   });
 
+  it("creates the managed AI home inside the per-run scratch directory", async () => {
+    const owner = "scratch-home-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    const runScratchDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-scratch-home-"));
+    try {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, managedHomeParent: runScratchDir, config: {} });
+      try {
+        expect(runtime.home).toEqual(expect.any(String));
+        expect(runtime.home!.startsWith(runScratchDir + path.sep)).toBe(true);
+        expect(path.basename(runtime.home!).startsWith("paperclip-ai-")).toBe(true);
+        expect(runtime.homeRemoved()).toBe(false);
+        expect(runtime.config.env.HOME).toBe(runtime.home);
+      } finally { await runtime.cleanup(); }
+      expect(runtime.homeRemoved()).toBe(true);
+      await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(runScratchDir)).toEqual([]);
+    } finally {
+      await rm(runScratchDir, { recursive: true, force: true });
+    }
+  });
+
   it("uses a vaulted Copilot token with GitHub attribution and refuses revoked or foreign grants", async () => {
     const owner = "copilot-owner";
     const token = "github_pat_fixture_copilot";

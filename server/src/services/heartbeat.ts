@@ -2907,11 +2907,34 @@ export function heartbeatService(
         return { ...selection, sourceWorkspaceConfig };
       };
       let workspaceSelection = await selectWorkspace();
+      // The per-run scratch directory must exist before execution
+      // configuration: the managed AI credential home is created inside it,
+      // and its removal is owned by the same terminal-run cleanup below.
+      try {
+        runScratch = await prepareHeartbeatRunScratch({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          issueId: issueRef?.id ?? null,
+          issueIdentifier: issueRef?.identifier ?? null,
+        });
+      } catch (scratchPrepareError) {
+        runScratch = null;
+        logger.warn(
+          {
+            err: scratchPrepareError,
+            runId: run.id,
+            issueId,
+            agentId: agent.id,
+          },
+          "failed to prepare heartbeat run scratch directory; continuing without scratch env",
+        );
+      }
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
         run, agent,
         task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest,
           adoptingLiveRunner: adoptsLiveRemoteRunner({ run, restartRecovery: runOptions.nativeRestartRecovery, leaseOwner: runOptions.nativeLeaseOwner }) },
-        config: { sourceWorkspaceConfig: workspaceSelection.sourceWorkspaceConfig, aiBinding },
+        config: { sourceWorkspaceConfig: workspaceSelection.sourceWorkspaceConfig, aiBinding, runScratchDir: runScratch?.dir ?? null },
         policy: { trustPreset, useIsolatedTaskDirectory: workspaceSelection.useIsolatedTaskDirectory,
           explicitTaskDirectory: workspaceSelection.explicitTaskDirectory, requestedExecutionWorkspaceMode },
         environment: workspaceSelection,
@@ -3197,47 +3220,23 @@ export function heartbeatService(
           }
         }
       };
-      if (!executionTarget || executionTarget.kind === "local") {
-        try {
-          runScratch = await prepareHeartbeatRunScratch({
-            companyId: agent.companyId,
-            agentId: agent.id,
-            runId: run.id,
-            issueId: issueRef?.id ?? null,
-            issueIdentifier: issueRef?.identifier ?? null,
-          });
-          const existingRuntimeEnv = parseObject(runtimeConfig.env);
-          const scratchEnv = buildHeartbeatRunScratchEnv(
-            existingRuntimeEnv,
-            runScratch,
-          );
-          runtimeConfig = {
-            ...runtimeConfig,
-            env: {
-              ...existingRuntimeEnv,
-              ...scratchEnv.env,
-            },
-          };
-          context.paperclipScratch = {
-            type: "heartbeat_run",
-            dir: runScratch.dir,
-            cleanupPolicy: "terminal_run",
-            marker: HEARTBEAT_RUN_SCRATCH_MARKER,
-            tempKeysApplied: scratchEnv.tempKeysApplied,
-          };
-        } catch (scratchPrepareError) {
-          runScratch = null;
-          delete context.paperclipScratch;
-          logger.warn(
-            {
-              err: scratchPrepareError,
-              runId: run.id,
-              issueId,
-              agentId: agent.id,
-            },
-            "failed to prepare heartbeat run scratch directory; continuing without scratch env",
-          );
-        }
+      if ((!executionTarget || executionTarget.kind === "local") && runScratch) {
+        const existingRuntimeEnv = parseObject(runtimeConfig.env);
+        const scratchEnv = buildHeartbeatRunScratchEnv(runScratch);
+        runtimeConfig = {
+          ...runtimeConfig,
+          env: {
+            ...existingRuntimeEnv,
+            ...scratchEnv.env,
+          },
+        };
+        context.paperclipScratch = {
+          type: "heartbeat_run",
+          dir: runScratch.dir,
+          cleanupPolicy: "terminal_run",
+          marker: HEARTBEAT_RUN_SCRATCH_MARKER,
+          tempKeysApplied: scratchEnv.tempKeysApplied,
+        };
       } else {
         delete context.paperclipScratch;
       }
@@ -4231,6 +4230,19 @@ export function heartbeatService(
           isHeartbeatRunTerminalStatus(latestRun.status)
         ) {
           const scratchForCleanup = runScratch;
+          // A retained managed AI home still holds a credential this run could
+          // not write back. Its per-run directory must survive until the
+          // retained cleanup retires the home itself.
+          if (managedAiRuntime && !managedAiRuntime.homeRemoved()) {
+            caseHandoffCleanupSettled = false;
+            await appendRunEvent(latestRun, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: "run scratch cleanup skipped: ai_home_retained",
+              payload: { removed: false, dir: scratchForCleanup.dir, reason: "ai_home_retained" },
+            }).catch(() => undefined);
+          } else {
           let scratchCleanup: Awaited<
             ReturnType<typeof cleanupHeartbeatRunScratch>
           > | null = null;
@@ -4299,6 +4311,7 @@ export function heartbeatService(
                 logger.warn({ err: sweepError, runId: run.id }, "failed to sweep earlier run scratch attempts");
               });
             }
+          }
           }
         }
         if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
