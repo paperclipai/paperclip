@@ -43,7 +43,6 @@ import {
   documentRevisions,
   issues,
   nativeRunFinalizations,
-  toolInvocations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -227,12 +226,13 @@ const support = externalDatabaseUrl
         }
       },
     );
-    it.each(["remote_sandbox", "remote_unconfirmed_action", "remote_completed_action", "local_codex", "unknown_provider"] as const)(
+    it.each(["remote_sandbox", "remote_unconfirmed_action", "remote_completed_action", "remote_started_only_action",
+      "local_codex", "unknown_provider"] as const)(
       "continues a transport failure whose stop can never be proven locally without waiting for a person (%s)",
       async (mode) => {
         const source = await seed();
         const workspace = await mkdtemp(join(tmpdir(), "paperclip-remote-transport-"));
-        const remote = mode === "remote_sandbox" || mode === "remote_unconfirmed_action" || mode === "remote_completed_action";
+        const remote = mode.startsWith("remote_");
         try {
           await db.update(heartbeatRuns).set({ finishedAt: new Date(), errorCode: "provider_transport_failed",
             runnerProfileJson: mode === "unknown_provider" ? {} : { nativeExecutionInput: {
@@ -248,13 +248,15 @@ const support = externalDatabaseUrl
             eventType: "tool.execution.started", stream: "system",
             payload: { name: "send_email", executionId: "unconfirmed-send", transport: "mcp" },
           });
-          if (mode === "remote_completed_action") {
-            const [sent] = await db.insert(toolInvocations).values({ companyId: source.companyId, agentId: source.agentId,
-              issueId: source.issueId, runId: source.runId, toolName: "send_email", riskLevel: "write", status: "succeeded",
-              startedAt: new Date(), completedAt: new Date(), resultHash: "sha256:sent" } as typeof toolInvocations.$inferInsert).returning();
+          if (mode === "remote_completed_action" || mode === "remote_started_only_action") {
+            const execution = { schema: "paperclip.tool.execution.v1", executionId: "prt_1e7c7089f001EN3I04Bfmz",
+              transport: "mcp", name: "send_email" };
             await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId, agentId: source.agentId,
               eventType: "tool.execution.started", stream: "system",
-              payload: { name: "send_email", executionId: sent!.id, transport: "mcp" } });
+              payload: { prpEvent: { payload: { ...execution, status: "running" } } } });
+            if (mode === "remote_completed_action") await appendHeartbeatRunEvent(db, { companyId: source.companyId,
+              runId: source.runId, agentId: source.agentId, eventType: "tool.execution.completed", stream: "system",
+              payload: { prpEvent: { payload: { ...execution, status: "completed" } } } });
           }
           const verifyStoppedSession = vi.fn(async () => null);
           invalidateNativeReplacementDiscovery(db);
@@ -267,7 +269,7 @@ const support = externalDatabaseUrl
             expect(holds).toHaveLength(0);
             return;
           }
-          if (mode === "remote_unconfirmed_action") {
+          if (mode === "remote_unconfirmed_action" || mode === "remote_started_only_action") {
             expect(decision!.failureDetail?.replacementDenied).toBe("uncertain_external_action");
             expect(holds).toMatchObject([{ status: "active", cause: "uncertain_external_action",
               nextAction: expect.stringContaining("send_email") }]);

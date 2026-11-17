@@ -546,17 +546,28 @@ export async function reconcileSafeNativeReplacements(
         && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped))) continue;
       const completedInvocation = (row: typeof invocations[number]) =>
         row.status === "succeeded" && Boolean(row.completedAt) && Boolean(row.resultHash);
-      const startedPayloads = events.filter(event => event.eventType === "tool.execution.started").map(event => {
-        const envelope = record(event.payload);
-        return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
-      });
+      const executions = stopProofUnavailable ? (await db
+        .select({ seq: heartbeatRunEvents.seq, eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+          inArray(heartbeatRunEvents.eventType, ["tool.execution.started", "tool.execution.completed"]))))
+        .map(event => {
+          const envelope = record(event.payload);
+          return { seq: event.seq, eventType: event.eventType,
+            payload: envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope };
+        }) : [];
       const unconfirmedActions = stopProofUnavailable ? [...new Set([
         ...invocations.filter(row => row.riskLevel !== "read" && !completedInvocation(row)).map(row => row.toolName),
         ...uncertainProviderActions.flatMap(action => {
-          const started = startedPayloads.find(payload => String(payload.executionId ?? payload.name) === action);
-          if (started && started.transport !== "process" && invocations.some(row => completedInvocation(row)
-            && (row.id === started.executionId || row.correlationId === started.executionId))) return [];
-          return [typeof started?.name === "string" ? started.name : action];
+          const started = executions.find(event => event.eventType === "tool.execution.started"
+            && String(event.payload.executionId ?? event.payload.name) === action);
+          const executionId = started?.payload.executionId;
+          if (started && executionId != null && executions.some(event => event.eventType === "tool.execution.completed"
+            && event.seq > started.seq && event.payload.executionId === executionId && event.payload.status === "completed"))
+            return [];
+          if (started && started.payload.transport !== "process" && invocations.some(row => completedInvocation(row)
+            && (row.id === executionId || row.correlationId === executionId))) return [];
+          return [typeof started?.payload.name === "string" ? started.payload.name : action];
         }),
       ])] : [];
       const unprovenAction = unconfirmedActions[0];
