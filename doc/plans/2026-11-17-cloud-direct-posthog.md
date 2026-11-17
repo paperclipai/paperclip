@@ -131,8 +131,15 @@ env change restarts that stack. So the plan does not keep the old
   and writes `legacy_distinct_id` back onto the group with `$groupidentify`.
   The key never leaves that machine. No env vars, no restarts.
 - HogQL joins pre-switch events (`distinct_id = legacy_distinct_id`) to the
-  workspace. The script can run again after later boots to pick up new
-  hashes.
+  workspace.
+- The script writes `legacy_distinct_id` only when the computed ID matches
+  pre-switch Cloud events, and never overwrites a matched value. A later boot
+  with a new install ID therefore cannot replace a good mapping.
+- Scope of the history guarantee: workspaces whose install ID survived to the
+  switch (stacks on a persistent `/paperclip` volume). `single-ephemeral`
+  stacks, and stacks whose ID already changed before the switch (legacy
+  ephemeral disks, reshapes), cannot be matched. Their pre-switch events stay
+  in PostHog under the old IDs. The script reports them as unmatched.
 - All new events use real IDs only: acting user ID, else `workspace:<stackId>`.
 - Known cost: a one-time step in "unique installs" counts on cutover day,
   because events with no acting person switch from the old ID to
