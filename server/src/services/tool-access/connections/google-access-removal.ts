@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { companySecrets, connectionGrants, toolAccessAuditEvents, toolConnections } from "@paperclipai/db";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { ManagedGoogleAccessRemoval, ManagedGoogleRevocationOutcome } from "@paperclipai/shared";
 import { logger } from "../../../middleware/logger.js";
 import { resolveConnectionGrantSecret } from "../../connection-credentials.js";
@@ -20,8 +20,13 @@ type PreparedRevocation =
   | { kind: "skip"; outcome: ManagedGoogleRevocationOutcome };
 
 export type PreparedGoogleAccessRemoval = {
-  refreshSecretIds: string[];
   send(): Promise<ManagedGoogleAccessRemoval>;
+};
+
+export type GoogleAccessRemovalScope = {
+  grantId?: string;
+  removingConnection: boolean;
+  removeSecret(secretId: string): Promise<unknown>;
 };
 
 function refreshSecretId(grant: RemovedGrant): string | null {
@@ -108,13 +113,13 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
       { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
       "Could not prepare ending Google access for a removed connection",
     );
-    return { refreshSecretIds: [], send: async () => summarizeManagedGoogleAccess(["unexpected_error"]) };
+    return { send: async () => summarizeManagedGoogleAccess(["unexpected_error"]) };
   }
 
   async function recordAudit(
     connection: typeof toolConnections.$inferSelect,
     actor: ActorInfo | undefined,
-    scope: { grantId?: string },
+    scope: GoogleAccessRemovalScope,
     providerAccess: ManagedGoogleAccessRemoval,
   ) {
     try {
@@ -137,11 +142,51 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     }
   }
 
+  async function secretsHeldElsewhere(
+    connection: typeof toolConnections.$inferSelect,
+    grants: RemovedGrant[],
+    secretIds: string[],
+    removingConnection: boolean,
+  ): Promise<Set<string>> {
+    if (secretIds.length === 0) return new Set();
+    const wanted = new Set(secretIds);
+    const removedGrantIds = new Set(grants.map((grant) => grant.id));
+    const held = new Set<string>();
+    const liveGrants = await db.select({ id: connectionGrants.id, connectionId: connectionGrants.connectionId, refs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants)
+      .where(and(eq(connectionGrants.companyId, connection.companyId), ne(connectionGrants.status, "revoked")));
+    for (const row of liveGrants) {
+      if (removedGrantIds.has(row.id) || (removingConnection && row.connectionId === connection.id)) continue;
+      for (const ref of row.refs ?? []) if (wanted.has(ref.secretId)) held.add(ref.secretId);
+    }
+    const liveConnections = await db.select({ id: toolConnections.id, refs: toolConnections.credentialRefs, secretRefs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(and(eq(toolConnections.companyId, connection.companyId), ne(toolConnections.status, "archived")));
+    for (const row of liveConnections) {
+      if (removingConnection && row.id === connection.id) continue;
+      for (const ref of [...(row.refs ?? []), ...(row.secretRefs ?? [])]) if (wanted.has(ref.secretId)) held.add(ref.secretId);
+    }
+    return held;
+  }
+
+  async function deleteSentSecrets(connection: typeof toolConnections.$inferSelect, scope: GoogleAccessRemovalScope, secretIds: string[]) {
+    for (const secretId of secretIds) {
+      try {
+        await scope.removeSecret(secretId);
+      } catch (error) {
+        logger.warn(
+          { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
+          "Could not delete a refresh token after ending Google access",
+        );
+      }
+    }
+  }
+
   async function prepare(
     connection: typeof toolConnections.$inferSelect,
     grants: RemovedGrant[],
     actor: ActorInfo | undefined,
-    scope: { grantId?: string } = {},
+    scope: GoogleAccessRemovalScope,
   ): Promise<PreparedGoogleAccessRemoval | null> {
     const oauth = oauthConfig(connection);
     if (connection.authKind !== "oauth" || !isPaperclipCloudConnectorStrategy(oauth.strategy)) return null;
@@ -155,14 +200,20 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
       const stillStored = new Set(revokedSecretIds.length === 0 ? [] : (await db.select({ id: companySecrets.id }).from(companySecrets)
         .where(and(eq(companySecrets.companyId, connection.companyId), inArray(companySecrets.id, revokedSecretIds), isNull(companySecrets.deletedAt))))
         .map((row) => row.id));
+      const candidateSecretIds = grants.flatMap((grant) => {
+        const secretId = refreshSecretId(grant);
+        return secretId ? [secretId] : [];
+      });
+      const held = await secretsHeldElsewhere(connection, grants, candidateSecretIds, scope.removingConnection);
       const seen = new Set<string>();
       const revocations: PreparedRevocation[] = [];
-      const refreshSecretIds: string[] = [];
+      const sentSecretIds: string[] = [];
       for (const grant of grants) {
         const secretId = refreshSecretId(grant);
         const refreshRef = (grant.credentialSecretRefs ?? []).find((ref) => ref.configPath === "oauth.refresh_token");
         if (!secretId || !refreshRef || seen.has(secretId)) continue;
         if (grant.status === "revoked" && !stillStored.has(secretId)) continue;
+        if (held.has(secretId)) continue;
         seen.add(secretId);
         const subject = managedConnectorConsentSubject(grant, oauth);
         if (!subject) {
@@ -177,14 +228,13 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
             actorId: actor?.actorId ?? null,
           });
           revocations.push({ kind: "call", subject, token: value });
-          refreshSecretIds.push(secretId);
+          sentSecretIds.push(secretId);
         } catch {
           revocations.push({ kind: "skip", outcome: "credential_unavailable" });
         }
       }
       if (revocations.length === 0) return null;
       return {
-        refreshSecretIds,
         send: async () => {
           let summary: ManagedGoogleAccessRemoval;
           try {
@@ -192,6 +242,7 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
           } catch (error) {
             summary = await unexpectedFailure(connection, error).send();
           }
+          await deleteSentSecrets(connection, scope, sentSecretIds);
           await recordAudit(connection, actor, scope, summary);
           return summary;
         },
@@ -199,7 +250,6 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     } catch (error) {
       const failed = unexpectedFailure(connection, error);
       return {
-        refreshSecretIds: [],
         send: async () => {
           const summary = await failed.send();
           await recordAudit(connection, actor, scope, summary);

@@ -284,7 +284,14 @@ async function removeConnection(
         ),
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
-    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantRows, actor);
+    let secretsRevoked = 0;
+    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantRows, actor, {
+      removingConnection: true,
+      removeSecret: async (secretId) => {
+        const { owned } = await classifyConnectionSecrets(connection, [secretId]);
+        if (owned.includes(secretId) && await secrets.remove(secretId)) secretsRevoked += 1;
+      },
+    });
     if (grantsToRevoke.length > 0) {
       await db
         .update(connectionGrants)
@@ -304,14 +311,6 @@ async function removeConnection(
             grantsToRevoke.map((row) => row.id),
           ),
         );
-    }
-    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
-    let secretsRevoked = 0;
-    if (providerAccessRemoval && providerAccessRemoval.refreshSecretIds.length > 0) {
-      const sent = await classifyConnectionSecrets(connection, providerAccessRemoval.refreshSecretIds);
-      for (const secretId of sent.owned) {
-        if (await secrets.remove(secretId)) secretsRevoked += 1;
-      }
     }
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
@@ -611,6 +610,8 @@ async function removeConnection(
     if (isBrowserUseConnection(connection)) {
       await browserUseService(db, options.remoteHttpRequest).stopBeforeCredentialRemoval(connection.companyId, connection.id);
     }
+
+    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
 
     // Only now, with every access path closed, revoke the credentials. Each
     // `secrets.remove` marks the row deleted before it calls the provider, so a

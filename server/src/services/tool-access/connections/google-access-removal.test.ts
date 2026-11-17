@@ -10,9 +10,18 @@ import { logger } from "../../../middleware/logger.js";
 
 const companyId = "company-1";
 
-function fakeDb() {
-  return { insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })) } as unknown as Db;
+function fakeDb(rows: { grants?: unknown[]; connections?: unknown[] } = {}) {
+  return {
+    insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
+    select: vi.fn((columns: Record<string, unknown>) => ({
+      from: () => ({
+        where: async () => ("secretRefs" in columns ? rows.connections ?? [] : "refs" in columns ? rows.grants ?? [] : []),
+      }),
+    })),
+  } as unknown as Db;
 }
+
+const scope = () => ({ removingConnection: true, removeSecret: vi.fn(async () => true) });
 
 function connection(oauth: Record<string, unknown>, authKind = "oauth") {
   return { id: "connection-1", companyId, authKind, config: { oauth } } as never;
@@ -50,7 +59,7 @@ async function run(
   grants: never[],
   authKind?: string,
 ) {
-  const prepared = await removal.prepare(connection(oauth, authKind), grants, undefined);
+  const prepared = await removal.prepare(connection(oauth, authKind), grants, undefined, scope());
   return prepared ? prepared.send() : null;
 }
 
@@ -202,14 +211,14 @@ describe("managed Google access removal", () => {
   });
   it("records each result, including ended_unconfirmed, as its own audit event", async () => {
     const values = vi.fn(async () => undefined);
-    const db = { insert: vi.fn(() => ({ values })) } as unknown as Db;
+    const db = { ...fakeDb(), insert: vi.fn(() => ({ values })) } as unknown as Db;
     const outcomes = ["other_connections_remain", "revoked"];
     const connector = connectorWith(async () => ({ outcome: outcomes.shift() }));
     const removal = createManagedGoogleAccessRemoval(db, { currentCloudConnector: () => connector });
     const prepared = await removal.prepare(connection(managedGoogle), [
       grant("agent-a", "agent", { subjectAgentId: "a", consentSubject: "agent:a" }),
       grant("agent-b", "agent", { subjectAgentId: "b", consentSubject: "agent:b" }),
-    ], undefined, { grantId: "agent-a" });
+    ], undefined, { ...scope(), grantId: "agent-a" });
     await prepared!.send();
     expect(values).toHaveBeenCalledWith(expect.objectContaining({
       action: "connection.google_access_removal",
@@ -217,5 +226,25 @@ describe("managed Google access removal", () => {
       details: { grantId: "agent-a", providerAccess: { provider: "google", result: "ended_unconfirmed", outcomes: ["other_connections_remain", "revoked"] } },
     }));
     expect(JSON.stringify(values.mock.calls)).not.toContain("token-for");
+  });
+  it("deletes each sent refresh token only after the broker answered, whatever the outcome", async () => {
+    const order: string[] = [];
+    const connector = connectorWith(async (values) => { order.push(`revoke:${values.token}`); return { outcome: "provider_revocation_failed" }; });
+    const removal = createManagedGoogleAccessRemoval(fakeDb(), { currentCloudConnector: () => connector });
+    const removeSecret = vi.fn(async (secretId: string) => { order.push(`delete:${secretId}`); });
+    const prepared = await removal.prepare(connection(managedGoogle), [grant("user-grant", "user", { consentSubject: "user-1" })], undefined, { removingConnection: true, removeSecret });
+    await prepared!.send();
+    expect(order).toEqual(["revoke:token-for-user-grant-refresh", "delete:user-grant-refresh"]);
+  });
+
+  it("neither sends nor deletes a refresh token that a live connection or grant still uses", async () => {
+    const connector = connectorWith(async () => ({ outcome: "revoked" }));
+    const db = fakeDb({ connections: [{ id: "connection-1", refs: [], secretRefs: [{ secretId: "org-grant-refresh" }] }] });
+    const removal = createManagedGoogleAccessRemoval(db, { currentCloudConnector: () => connector });
+    const removeSecret = vi.fn();
+    await expect(removal.prepare(connection(managedGoogle), [grant("org-grant", "organization", { consentSubject: "user-1" })], undefined, { removingConnection: false, removeSecret }))
+      .resolves.toBeNull();
+    expect(connector.revoke).not.toHaveBeenCalled();
+    expect(removeSecret).not.toHaveBeenCalled();
   });
 });

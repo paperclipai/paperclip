@@ -251,24 +251,29 @@ broker's 409), `broker_unavailable` (timeout, network failure or no usable
 Cloud client), `broker_error`, `credential_unavailable` and
 `unexpected_error`.
 
-Order for removing a whole connection:
+Order for removing a whole connection: read the refresh tokens; run the whole
+local teardown (grants, installs, the app-managed profile, gateway tokens and
+sessions, runtime slots, catalog status, OAuth state, archive the connection);
+then call the broker, one token at a time under one 5-second deadline; then
+delete the refresh-token secrets that were sent, whatever the outcome; then
+delete the remaining secrets. The broker step never throws, is never retried,
+and never changes the local outcome. A failure anywhere in the teardown makes
+no broker call and leaves the token in place.
 
-1. Read the refresh tokens.
-2. Commit the grant revocation.
-3. Call the broker, one token at a time, under one 5-second deadline. This step
-   never throws, is never retried, and never changes the local outcome.
-4. Delete the refresh-token secrets that were sent.
-5. Run the remaining cleanup (installs, profiles, the connection, other
-   secrets).
+Order for removing one grant: read the token, commit the grant revocation,
+call the broker, then delete the grant's refresh-token secret. An organization
+grant shares its secrets with the connection's own credential (the shared
+sign-in writes the same refs to both), so revoking it alone neither calls the
+broker nor deletes the secret; removing the connection does both. The same
+holds for any refresh-token secret still used by another live grant or
+connection.
 
-Order for removing one grant: read the token, commit the grant revocation, call
-the broker. The single-grant path keeps the grant's secrets, as before.
-
-A refresh-token secret that still exists for a revoked managed Google grant
-means the call may still be owed (for example, the process stopped between
-steps 2 and 3, or the grant was revoked on its own). Every later removal
-includes such grants. A removal that failed before step 2 includes the grants
-on retry. A removal that failed after step 4 does not call the broker again.
+A revoked managed Google grant whose refresh-token secret still exists, and is
+used by nothing live, is a revocation still owed (for example, the process
+stopped after the teardown and before the call). Every later removal of that
+grant or connection sends it, then deletes the secret. Once the secret is
+gone, nothing is sent again. The token outlives the removal only in that crash
+window.
 
 `providerAccess: { provider, result, outcomes }` is returned with the removal
 and recorded in its activity entry, codes only. Once the broker call settles,

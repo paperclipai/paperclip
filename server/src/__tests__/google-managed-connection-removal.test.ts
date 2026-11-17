@@ -266,21 +266,23 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(JSON.stringify(logged)).not.toContain(REFRESH_TOKEN);
   });
 
-  it("ends access at Google right after the grants are revoked locally and before the remaining cleanup", async () => {
+  it("ends access at Google only after every local access path is closed", async () => {
     const fixture = await connectManagedGmail();
-    const seen: Array<{ connection?: string; grant?: string; liveSecrets: number }> = [];
+    const seen: Array<{ connection?: string; grant?: string; installs: number; refreshStored: boolean }> = [];
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
     fixture.connector.revoke.mockImplementation(async () => {
-      const [row] = await db.select({ status: toolConnections.status }).from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
+      const [row] = await db.select({ status: toolConnections.status, enabled: toolConnections.enabled }).from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
       const [grantRow] = await db.select({ status: connectionGrants.status }).from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
-      seen.push({ connection: row?.status, grant: grantRow?.status, liveSecrets: await liveSecretCount(fixture.company.id) });
+      const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, fixture.connectionId));
+      const [refresh] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(eq(companySecrets.id, refreshSecretId), isNull(companySecrets.deletedAt)));
+      seen.push({ connection: row?.enabled ? row.status : `${row?.status}:disabled`, grant: grantRow?.status, installs: installs.length, refreshStored: Boolean(refresh) });
       return { outcome: "revoked" };
     });
 
     const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
 
     expect(response.status).toBe(200);
-    expect(seen).toEqual([{ connection: "active", grant: "revoked", liveSecrets: expect.any(Number) }]);
-    expect(seen[0]!.liveSecrets).toBeGreaterThan(0);
+    expect(seen).toEqual([{ connection: "archived:disabled", grant: "revoked", installs: 0, refreshStored: true }]);
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
   });
 
@@ -309,17 +311,35 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(fixture.connector.revoke).not.toHaveBeenCalled();
   });
 
-  it("calls the broker once when cleanup fails after the grants were revoked, and the retry does not call it again", async () => {
+  it("makes no broker call when the teardown fails, keeps the token, and the retry sends it once", async () => {
     const fixture = await connectManagedGmail();
-    const transaction = vi.spyOn(db, "transaction").mockRejectedValue(new Error("cleanup failed"));
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValue(new Error("teardown failed"));
 
     const failed = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
     expect(failed.status).toBe(500);
-    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(fixture.connector.revoke).not.toHaveBeenCalled();
+    expect(await liveSecretCount(fixture.company.id)).toBeGreaterThan(0);
 
     transaction.mockRestore();
     const retried = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
     expect(retried.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(retried.body.removal.providerAccess).toEqual({ provider: "google", result: "ended", outcomes: ["revoked"] });
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
+
+    const again = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    expect(again.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a revocation still owed when the process stopped after the teardown and before the call", async () => {
+    const fixture = await connectManagedGmail();
+    await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() }).where(eq(connectionGrants.id, fixture.grant.id));
+    await db.update(toolConnections).set({ status: "archived", enabled: false }).where(eq(toolConnections.id, fixture.connectionId));
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
     expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
   });
@@ -449,15 +469,34 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
       { reasonCode: "other_connections_remain", providerAccess: { provider: "google", result: "other_connections_remain", outcomes: ["other_connections_remain"] } },
     ]);
 
-    fixture.connector.revoke.mockResolvedValue({ outcome: "revoked" });
+    const repeated = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+    expect(repeated.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+
     const removal = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
     expect(removal.status).toBe(200);
-    expect(fixture.connector.revoke).toHaveBeenCalledTimes(2);
-    expect(removal.body.removal.providerAccess).toEqual({ provider: "google", result: "ended", outcomes: ["revoked"] });
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(removal.body.removal.providerAccess).toBeUndefined();
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
+  });
 
-    const again = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
-    expect(again.status).toBe(200);
-    expect(fixture.connector.revoke).toHaveBeenCalledTimes(2);
+  it("neither ends access at Google nor deletes the token when revoking an organization grant the connection still uses", async () => {
+    const fixture = await connectManagedGmail("organization");
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
+    const shared = [...row!.credentialSecretRefs, ...row!.credentialRefs].some((ref) => ref.secretId === refreshSecretId);
+    expect(shared).toBe(true);
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+    expect(response.status).toBe(200);
+    expect(response.body.providerAccess).toBeUndefined();
+    expect(fixture.connector.revoke).not.toHaveBeenCalled();
+    const [refresh] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(eq(companySecrets.id, refreshSecretId), isNull(companySecrets.deletedAt)));
+    expect(refresh).toBeTruthy();
+
+    const removal = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    expect(removal.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
   });
 });
