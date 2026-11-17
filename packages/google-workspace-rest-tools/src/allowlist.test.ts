@@ -14,6 +14,26 @@ describe("tool allowlist", () => {
     }
   }
 
+  it("mentions only tools this package lists in any description", () => {
+    for (const service of GOOGLE_WORKSPACE_REST_SERVICES) {
+      const tools = listGoogleWorkspaceRestTools(service);
+      const names = new Set(tools.map((tool) => tool.name));
+      const descriptions: string[] = [];
+      const collect = (value: unknown) => {
+        if (Array.isArray(value)) value.forEach(collect);
+        else if (value && typeof value === "object") {
+          for (const [key, item] of Object.entries(value)) {
+            if (key === "description" && typeof item === "string") descriptions.push(item);
+            else collect(item);
+          }
+        }
+      };
+      tools.forEach(collect);
+      const mentioned = descriptions.flatMap((text) => text.match(/\b[a-z]+(?:_[a-z]+)+\b(?!:)/g) ?? []);
+      expect(mentioned.filter((name) => !names.has(name))).toEqual([]);
+    }
+  });
+
   it("implements no send tool", () => {
     const names = GOOGLE_WORKSPACE_REST_SERVICES.flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
     expect(names.filter((name) => /send/i.test(name))).toEqual([]);

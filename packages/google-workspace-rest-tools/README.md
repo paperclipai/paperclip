@@ -39,7 +39,8 @@ so they can be deleted cleanly when that happens.
   read), maps Google errors, and retries a read (GET) once after a network
   error or HTTP 502/503/504. **It never retries a write.** A write that fails
   after it was sent (network error, dropped connection, timeout, caller
-  cancellation or HTTP 5xx) says that the change may or may not have been made.
+  cancellation, HTTP 5xx, or a success answer that is too large or not JSON)
+  says that the change may or may not have been made.
 - **One tool, one file.** Each tool in `src/gmail/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
@@ -186,7 +187,10 @@ knows tool names and scopes and needs no change.
 ## Known differences from Google's MCP tools
 
 - **Descriptions** are our own wording; names, fields, types, enums, required
-  fields and annotations follow Google's reference. A contract test against a
+  fields and annotations follow Google's reference. Until a tool lands here,
+  descriptions do not mention it: Google's text points to `get_thread` and
+  `list_labels`, ours points to `get_message` and does not name a label tool.
+  A test fails if any description names a tool this package does not list. A contract test against a
   recorded `tools/list` from Google's servers is planned once a listing is
   recorded on the enrolled internal account.
 - **Result envelope.** Results carry the object both as `structuredContent`
@@ -204,7 +208,9 @@ knows tool names and scopes and needs no change.
   a result without the body. Google's reference does not say what its tool
   does here.
 - **Address comments** such as `(work)` are removed before the address is
-  taken.
+  taken. For RFC 5322 groups (`Team: a@example.test, b@example.test;`) the
+  members are returned without the group name; an empty group such as
+  `undisclosed-recipients:;` gives no address.
 - **`labelIds`** keeps user labels and the system labels Google lists (INBOX,
   SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT, CHAT); category labels
   are dropped.

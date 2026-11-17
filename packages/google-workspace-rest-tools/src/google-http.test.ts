@@ -129,6 +129,19 @@ describe("createGoogleHttp", () => {
     expect((readFailure as Error).message).not.toMatch(/may or may not/);
   });
 
+  it("warns that a write may have been applied when Google's success answer is unusable", async () => {
+    const html = await failure(client(() => new Response("<html>ok</html>", { status: 200 })).http.send(POST));
+    expect(html).toMatchObject({ kind: "invalid_response" });
+    expect((html as Error).message).toMatch(/may or may not have been made/);
+
+    const oversized = await failure(client(() => new Response("{}", { headers: { "content-length": String(MAX_RESPONSE_BYTES + 1) } })).http.send(POST));
+    expect(oversized).toMatchObject({ kind: "invalid_response" });
+    expect((oversized as Error).message).toMatch(/may or may not have been made/);
+
+    const readHtml = await failure(client(() => new Response("<html>")).http.send(GET));
+    expect((readHtml as Error).message).not.toMatch(/may or may not/);
+  });
+
   it("treats a connection that drops while the body streams like any network failure", async () => {
     const dropping = () => new Response(new ReadableStream({
       start(controller) {

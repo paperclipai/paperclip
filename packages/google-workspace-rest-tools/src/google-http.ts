@@ -83,7 +83,9 @@ export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
       });
       return { status: response.status, headers: response.headers, text: await readBounded(response) };
     } catch (error) {
-      if (error instanceof GoogleToolError) throw error;
+      if (error instanceof GoogleToolError) {
+        throw new GoogleToolError(error.kind, withWriteWarning(request, error.message), error.httpStatus);
+      }
       if (options.signal?.aborted) throw new GoogleToolError("timeout", withWriteWarning(request, "The request was cancelled."));
       if (isAbort(error)) throw new GoogleToolError("timeout", withWriteWarning(request, "Google did not answer in time."));
       throw new GoogleToolError("network", withWriteWarning(request, "Could not reach Google."));
@@ -115,7 +117,7 @@ export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
       try {
         return JSON.parse(answer.text) as T;
       } catch {
-        throw new GoogleToolError("invalid_response", "Google returned a response that is not JSON.", answer.status);
+        throw new GoogleToolError("invalid_response", withWriteWarning(request, "Google returned a response that is not JSON."), answer.status);
       }
     },
   };

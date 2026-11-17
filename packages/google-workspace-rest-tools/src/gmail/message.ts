@@ -92,7 +92,11 @@ export function parseAddressList(value: string | undefined): string[] {
     if (char === "\"") quoted = !quoted;
     else if (!quoted && char === "<") angle += 1;
     else if (!quoted && char === ">") angle = Math.max(0, angle - 1);
-    if (char === "," && !quoted && angle === 0) {
+    if (char === ":" && !quoted && angle === 0) {
+      current = "";
+      continue;
+    }
+    if ((char === "," || char === ";") && !quoted && angle === 0) {
       entries.push(current);
       current = "";
     } else current += char;

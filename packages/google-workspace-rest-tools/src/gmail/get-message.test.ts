@@ -62,6 +62,13 @@ describe("get_message result", () => {
     expect(parseAddressList(undefined)).toEqual([]);
   });
 
+  it("returns the members of RFC 5322 groups, and nothing for an empty group", () => {
+    expect(parseAddressList("Team: a@example.test, Bea <b@example.test>;")).toEqual(["a@example.test", "b@example.test"]);
+    expect(parseAddressList("undisclosed-recipients:;")).toEqual([]);
+    expect(parseAddressList("Team: a@example.test;, c@example.test")).toEqual(["a@example.test", "c@example.test"]);
+    expect(parseAddressList("\"Odd: name\" <d@example.test>")).toEqual(["d@example.test"]);
+  });
+
   it("drops RFC 5322 comments before taking the address", () => {
     expect(parseAddressList("Avery <avery@example.test> (work)")).toEqual(["avery@example.test"]);
     expect(parseAddressList("blake@example.test (Blake, (home)), \"C (x)\" <c@example.test>")).toEqual(["blake@example.test", "c@example.test"]);
