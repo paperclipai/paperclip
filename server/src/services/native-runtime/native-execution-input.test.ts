@@ -9,6 +9,18 @@ import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 
 describe("LCA-05 explicit native work mode", () => {
+  it("emits isolated Codex v12 only when the admitted context contains shared repositories", () => {
+    const context = nativeRuntimeContextFixture();
+    context.skills = [{ key: "one", runtimeName: "one", versionId: "saved", bundle: context.instructions.bundle,
+      repository: { bundle: context.instructions.bundle, entryPath: "skills/one/SKILL.md", policyPath: null } }];
+    context.aggregateDigest = canonicalNativeRuntimeContextDigest(context);
+    const args = { companyId: "company", runId: "run", agentId: "agent", issue: { id: "issue", identifier: "TEST-1", title: "test", description: "test", workMode: "standard" },
+      taskPrompt: "test", workspace: { id: "workspace", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null, provider: "codex" as const, planningContext: null, runtimeContext: context,
+      completionContract: { id: "contract", sha256: "hash", schemaVersion: "test", contract: { revision: "1", objective: "test", criteria: [{ id: "test", requirement: "test" }] } } };
+    expect(buildNativeExecutionInput(args)).toMatchObject({ schema: "paperclip.native-execution-input.v12", homeMode: "isolated" });
+    expect(() => buildNativeExecutionInput({ ...args, provider: "opencode", model: "provider/model" })).toThrow("shared repository");
+  });
   it.each(["standard", "planning", "ask", "skill_test"])("title and description cannot override %s mode", (workMode) => {
     for (const text of ["Inspect files", "Making a plan", "Create a report", "Research proposal", "Implement now; no plan needed"]) {
       const input = buildNativeExecutionInput({
