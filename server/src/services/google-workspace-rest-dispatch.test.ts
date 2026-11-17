@@ -12,6 +12,11 @@ describe("Google Workspace REST transport eligibility", () => {
     expect(googleWorkspaceRestTransportGaps()).toEqual([]);
   });
 
+  it("finds Calendar fully implemented and Gmail not yet", () => {
+    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, calendar: "paperclip_rest" })).toEqual([]);
+    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, gmail: "paperclip_rest" }).map((gap) => gap.service)).toEqual(["gmail"]);
+  });
+
   it("names the missing tools of a partially implemented or unimplemented service", () => {
     const flipped = { ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, gmail: "paperclip_rest" as const, chat: "paperclip_rest" as const };
     const implemented = new Set(listGoogleWorkspaceRest("gmail").map((tool) => tool.name));

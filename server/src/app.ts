@@ -263,6 +263,7 @@ import {
   stopServerMetrics,
 } from "./services/server-metrics.js";
 import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
+import { postHogRequestContextMiddlewareForEnv } from "./services/posthog-direct/request-context.js";
 import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
@@ -557,6 +558,11 @@ export async function createApp(
   app.use((req, res, next) => (dotPrincipalHttp.matchesPost(req) || ["/mcp/files/upload", "/mcp/runner/files/upload"].includes(req.path)) ? next() : jsonBodyParser(req, res, next));
   app.use("/api", apiCompression());
   app.use(httpLogger);
+  // Paperclip Cloud only: link server analytics events to the browser session
+  // that caused them. Self-hosted servers never mount this, so posthog-js
+  // tracing headers are ignored there.
+  const postHogRequestContext = postHogRequestContextMiddlewareForEnv();
+  if (postHogRequestContext) app.use(postHogRequestContext);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,

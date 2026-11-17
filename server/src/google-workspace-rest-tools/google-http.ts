@@ -1,16 +1,19 @@
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 
-export const GOOGLE_API_HOSTS = ["gmail.googleapis.com"] as const;
+export const GOOGLE_API_HOSTS = ["gmail.googleapis.com", "www.googleapis.com"] as const;
 export type GoogleApiHost = (typeof GOOGLE_API_HOSTS)[number];
+export const GOOGLE_API_PATH_PREFIXES: Partial<Record<GoogleApiHost, string>> = { "www.googleapis.com": "/calendar/v3/" };
 
 export type QueryValue = string | number | boolean | readonly string[] | undefined;
 
 export interface GoogleRequest {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   host: GoogleApiHost;
   path: string;
   query?: Record<string, QueryValue>;
   body?: unknown;
+  readOnly?: boolean;
+  ifMatch?: string;
 }
 
 export type GoogleFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -44,6 +47,8 @@ export function googleRequestUrl(request: GoogleRequest): string {
   if (!GOOGLE_API_HOSTS.includes(request.host)) throw new Error(`Host is not allowed: ${request.host}`);
   if (!request.path.startsWith("/") || request.path.startsWith("//")) throw new Error("Request path must be absolute");
   const url = new URL(`https://${request.host}${request.path}`);
+  const prefix = GOOGLE_API_PATH_PREFIXES[request.host];
+  if (prefix && !url.pathname.startsWith(prefix)) throw new Error(`Path is not allowed on ${request.host}`);
   for (const [key, value] of Object.entries(request.query ?? {})) {
     if (value === undefined) continue;
     if (Array.isArray(value)) for (const item of value) url.searchParams.append(key, item);
@@ -52,8 +57,9 @@ export function googleRequestUrl(request: GoogleRequest): string {
   return url.toString();
 }
 
-function isWrite(request: GoogleRequest): boolean {
-  return request.method !== "GET";
+export function isWrite(request: Pick<GoogleRequest, "method" | "readOnly">): boolean {
+  if (request.method === "GET") return false;
+  return !(request.method === "POST" && request.readOnly === true);
 }
 
 function withWriteWarning(request: GoogleRequest, message: string): string {
@@ -72,6 +78,7 @@ export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
       Accept: "application/json",
     };
     if (request.body !== undefined) headers["Content-Type"] = "application/json";
+    if (request.ifMatch) headers["If-Match"] = request.ifMatch;
     const url = googleRequestUrl(request);
     try {
       const response = await doFetch(url, {
@@ -192,8 +199,9 @@ export function googleError(
     return new GoogleToolError("rate_limited", "Google is rate limiting requests. Try again shortly.", status);
   }
   if (status === 403) return new GoogleToolError("permission_denied", message ?? "Google denied access to this item.", status);
-  if (status === 404) return new GoogleToolError("not_found", "Google could not find that item.", status);
-  if (status === 400 || status === 409 || status === 412 || status === 413) {
+  if (status === 404 || status === 410) return new GoogleToolError("not_found", "Google could not find that item.", status);
+  if (status === 412) return new GoogleToolError("invalid_argument", "The item changed after it was read, so nothing was changed. Read it again and retry.", status);
+  if (status === 400 || status === 409 || status === 413) {
     return new GoogleToolError("invalid_argument", message ?? "Google rejected the request.", status);
   }
   if (status >= 500) {

@@ -13,6 +13,15 @@ describe("probeGoogleWorkspaceRestService", () => {
     expect(new Headers(init.headers).get("authorization")).toBe("Bearer token-1");
   });
 
+  it("reads one Calendar list entry for Calendar", async () => {
+    const fetch = vi.fn(async () => Response.json({ items: [{ id: "primary" }] }));
+    await expect(probeGoogleWorkspaceRestService({ service: "calendar", accessToken: "token-1", fetch })).resolves.toEqual({ ok: true });
+    const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(new URL(url).pathname).toBe("/calendar/v3/users/me/calendarList");
+    expect(new URL(url).searchParams.get("maxResults")).toBe("1");
+    expect(init.method).toBe("GET");
+  });
+
   it("throws token problems so the caller can refresh or ask for reconnection", async () => {
     const unauthenticated = vi.fn(async () => new Response("{}", { status: 401 }));
     await expect(probeGoogleWorkspaceRestService({ service: "gmail", accessToken: "t", fetch: unauthenticated }))

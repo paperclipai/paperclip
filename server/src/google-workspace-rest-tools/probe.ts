@@ -1,9 +1,11 @@
+import { calendarProbeRequest } from "./calendar/list-calendars.js";
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 import { createGoogleHttp, type GoogleFetch, type GoogleRequest } from "./google-http.js";
 import type { GoogleWorkspaceRestService } from "./tools.js";
 
 const PROBES: Record<GoogleWorkspaceRestService, GoogleRequest> = {
   gmail: { method: "GET", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/profile" },
+  calendar: calendarProbeRequest(),
 };
 
 export interface GoogleWorkspaceRestProbeInput {

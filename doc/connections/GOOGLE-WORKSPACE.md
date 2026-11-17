@@ -74,9 +74,10 @@ test enforces that. On either transport, the same grant scope checks, approvals,
 audit, token refresh and reconnection, prompt-injection screening, cancellation
 and experimental-feature gate apply. On `paperclip_rest`, discovery and health
 checks prove the token with one cheap REST read per service (Gmail reads the
-account profile) instead of Google's `tools/list`, and a failed check makes only
-that service unavailable. See the folder's `README.md` for how to switch a
-service and how to remove the REST tools.
+account profile, Calendar reads one calendar list entry) instead of Google's
+`tools/list`, and a failed check makes only that service unavailable. See the
+folder's `README.md` for how to switch a service and how to remove the REST
+tools.
 
 Google results are untrusted content. The prompt-injection guard checks them
 before an agent receives them; see

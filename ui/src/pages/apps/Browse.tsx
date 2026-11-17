@@ -84,6 +84,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -414,6 +415,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const [aggregatorToConnect, setAggregatorToConnect] = useState<AggregatorAppCatalogEntry | null>(null);
   const [aggregatorToManage, setAggregatorToManage] = useState<{ app: AggregatorAppCatalogEntry; connectionId?: string } | null>(null);
   const [initialAggregatorProvider, setInitialAggregatorProvider] = useState<AggregatorAppCatalogEntry["routes"][number]["provider"]>();
+  const [deleteStoredContent, setDeleteStoredContent] = useState(false);
   const [connectionToRemove, setConnectionToRemove] =
     useState<ConnectionRemovalTarget | null>(null);
 
@@ -539,7 +541,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         if (!target.poolRevision) throw new Error("Open the confirmation again before removing this pool.");
         await aiConnectionPoolsApi.remove(selectedCompanyId!, target.id, target.poolRevision);
       } else {
-        await toolsApi.archiveConnection(target.id);
+        await toolsApi.archiveConnection(target.id, { deleteStoredContent });
       }
     },
     onSuccess: (_connection, target) => {
@@ -564,6 +566,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             : target.remainingConnectionCount > 0
             ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
             : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
+        ...(deleteStoredContent && !target.pool && target.kind !== "chat" ? { title: "Connection removed. Deleting its saved data." } : {}),
         tone: "success",
       });
       setConnectionToRemove(null);
@@ -577,6 +580,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   });
   async function requestConnectionRemoval(target: ConnectionRemovalTarget) {
     removeConnection.reset();
+    setDeleteStoredContent(false);
     if (!target.pool) { setConnectionToRemove(target); return; }
     try {
       const pool = (await aiConnectionPoolsApi.list(selectedCompanyId!)).find(pool => pool.id === target.id);
@@ -1125,6 +1129,22 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
                   : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {connectionToRemove && !connectionToRemove.pool && connectionToRemove.kind !== "chat" ? (
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <Checkbox
+                className="mt-0.5"
+                checked={deleteStoredContent}
+                disabled={removeConnection.isPending}
+                onCheckedChange={(checked) => setDeleteStoredContent(checked === true)}
+              />
+              <span>
+                Also delete data read through this connection
+                <span className="block text-xs text-muted-foreground">
+                  Permanently removes saved tool results and the transcripts of runs that used it. This cannot be undone.
+                </span>
+              </span>
+            </label>
+          ) : null}
           {removeConnection.error ? <p role="alert" className="text-sm text-destructive">
             {describeError(removeConnection.error).body}
           </p> : null}

@@ -39,6 +39,13 @@ describe("tool allowlist", () => {
     expect(names.filter((name) => /send/i.test(name))).toEqual([]);
   });
 
+  it("implements every allowlisted Calendar tool (9 of 9)", () => {
+    const allowlisted = ["list_calendars", "get_event", "list_events", "search_events", "suggest_time", "create_event", "update_event", "delete_event", "respond_to_event"];
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", name)), name).not.toBeNull();
+    expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", "unlisted_tool"))).toBeNull();
+    expect(listGoogleWorkspaceRestTools("calendar").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+  });
+
   it("implements the Gmail tools of this release", () => {
     expect(listGoogleWorkspaceRestTools("gmail").map((tool) => tool.name)).toEqual(["get_message", "search_threads", "create_draft"]);
   });
