@@ -2,10 +2,11 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   applyPendingMigrations,
+  closeRegisteredClients,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   chatEndpoints,
   chatConversations,
@@ -35,6 +36,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { companyService } from "../services/companies.ts";
+import { logActivity } from "../services/activity-log.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CLEANUP_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -53,7 +55,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   beforeAll(async () => {
     if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cleanup-removal-");
     if (external) await applyPendingMigrations(external);
-    db = createDb(external ?? tempDb!.connectionString);
+    db = createDb(external ?? tempDb!.connectionString, external ? { maxConnections: 4 } : undefined);
     configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
@@ -79,8 +81,15 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   });
 
   afterAll(async () => {
-    await db?.$client.end({ timeout: 1 });
-    await tempDb?.cleanup();
+    const errors: unknown[] = [];
+    for (const close of [
+      () => db?.$client.end({ timeout: 1 }),
+      () => external ? closeRegisteredClients(external, { scope: "database" }) : undefined,
+      () => tempDb?.cleanup(),
+    ]) {
+      try { await close(); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors, "Cleanup removal fixture failed to close");
   });
 
   async function seedFixture() {
@@ -351,5 +360,137 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(await db.select().from(companies).where(eq(companies.id, f.companyId))).toHaveLength(1);
     expect(await db.select().from(agents).where(eq(agents.id, f.agentId))).toHaveLength(1);
   });
+
+  it("deletes a company when authorized activity commits after its first audit cleanup", async () => {
+    const companyId = randomUUID(), otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyId, name: "Deleting company", issuePrefix: `D${companyId.slice(0, 7)}` },
+      { id: otherCompanyId, name: "Retained company", issuePrefix: `O${otherCompanyId.slice(0, 7)}` },
+    ]);
+    const initialActivity = await logActivity(db, { companyId, actorType: "user", actorId: "board",
+      action: "company.updated", entityType: "company", entityId: companyId });
+    expect(await db.select().from(activityLog).where(eq(activityLog.id, initialActivity.id))).toHaveLength(1);
+    const otherActivity = await logActivity(db, { companyId: otherCompanyId, actorType: "user",
+      actorId: "board", action: "company.updated", entityType: "company", entityId: otherCompanyId });
+    const writer = createDb(external ?? tempDb!.connectionString, { maxConnections: 1 });
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const participant = agentLifecycleCompanyDeletion.deleteCompanyData;
+    let participantCalls = 0, lateActivityCommitted = false, primary: unknown;
+    const gate = vi.spyOn(agentLifecycleCompanyDeletion, "deleteCompanyData").mockImplementation(async (tx, id) => {
+      await participant(tx, id);
+      if (id === companyId) {
+        participantCalls++;
+        if (participantCalls === 1) {
+          // This transaction sees its own first audit deletion; another
+          // connection would still see the original committed row under MVCC.
+          expect(await tx.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toEqual([]);
+          entered.resolve();
+          await release.promise;
+        }
+      }
+    });
+    const deletion = companyService(db).remove(companyId);
+    const joined = deletion.then(value => ({ status: "fulfilled" as const, value }),
+      reason => ({ status: "rejected" as const, reason }));
+    try {
+      await Promise.race([entered.promise, deletion.then(() => { throw new Error("Deletion missed its real participant gate"); })]);
+      const late = await logActivity(writer, { companyId, actorType: "user", actorId: "board",
+        action: "company.updated", entityType: "company", entityId: companyId });
+      lateActivityCommitted = true;
+      expect(await writer.select().from(activityLog).where(eq(activityLog.id, late.id))).toHaveLength(1);
+      release.resolve();
+      const outcome = await joined;
+      let original = outcome.status === "rejected" ? outcome.reason : undefined;
+      const failures: Array<{ code?: string; constraint?: string }> = [];
+      const seen = new Set<unknown>();
+      while (original && typeof original === "object" && !seen.has(original)) {
+        seen.add(original);
+        const failure = original as { code?: string; constraint_name?: string; constraint?: string; cause?: unknown };
+        if (failure.code) failures.push({ code: failure.code, constraint: failure.constraint_name ?? failure.constraint });
+        original = failure.cause;
+      }
+      console.info("COMPANY_DELETE_LATE_ACTIVITY_FRONTIER", JSON.stringify({ realParticipantReached: true,
+        firstAuditCleanupObserved: true, lateActivityCommitted, writerJoined: true,
+        deletionJoined: true, participantCalls, status: outcome.status, failures }));
+      if (outcome.status === "rejected") throw outcome.reason;
+      expect(outcome.value?.id).toBe(companyId);
+      expect(participantCalls).toBe(1);
+      expect(await db.select().from(companies).where(eq(companies.id, companyId))).toEqual([]);
+      expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toEqual([]);
+      expect(await db.select().from(companies).where(eq(companies.id, otherCompanyId))).toHaveLength(1);
+      expect(await db.select().from(activityLog).where(eq(activityLog.id, otherActivity.id))).toHaveLength(1);
+    } catch (error) { primary = error; }
+    finally {
+      release.resolve();
+      await joined;
+      gate.mockRestore();
+      const cleanup = await Promise.allSettled([writer.$client.end({ timeout: 1 })]);
+      const errors = cleanup.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (primary || errors.length) throw new AggregateError([...(primary ? [primary] : []), ...errors],
+        "Company deletion late activity original and cleanup failures");
+    }
+  }, 30_000);
+
+  it("propagates a different real company foreign key without retrying or losing audit rows", async () => {
+    const companyId = randomUUID(), otherCompanyId = randomUUID();
+    const suffix = randomUUID().replaceAll("-", "");
+    const tableName = `company_delete_guard_${suffix}`, constraintName = `company_delete_fk_${suffix}`;
+    await db.insert(companies).values([
+      { id: companyId, name: "Refused deletion", issuePrefix: `F${companyId.slice(0, 7)}` },
+      { id: otherCompanyId, name: "Untouched company", issuePrefix: `U${otherCompanyId.slice(0, 7)}` },
+    ]);
+    const originalActivity = await logActivity(db, { companyId, actorType: "user", actorId: "board",
+      action: "company.updated", entityType: "company", entityId: companyId });
+    const otherActivity = await logActivity(db, { companyId: otherCompanyId, actorType: "user", actorId: "board",
+      action: "company.updated", entityType: "company", entityId: otherCompanyId });
+    const priorDebug = db.$client.options.debug;
+    const participant = agentLifecycleCompanyDeletion.deleteCompanyData;
+    let parentDeleteStatements = 0, participantCalls = 0, primary: unknown;
+    const observed = vi.spyOn(agentLifecycleCompanyDeletion, "deleteCompanyData").mockImplementation(async (tx, id) => {
+      await participant(tx, id);
+      if (id === companyId) participantCalls++;
+    });
+    try {
+      // This is a real test-owned child, not a replacement constraint or SQL
+      // result. PostgreSQL temporary tables cannot reference a permanent parent.
+      await db.execute(sql`create table ${sql.identifier(tableName)} (
+        company_id uuid not null,
+        constraint ${sql.identifier(constraintName)} foreign key (company_id) references companies(id)
+      )`);
+      await db.execute(sql`insert into ${sql.identifier(tableName)} (company_id) values (${companyId})`);
+      db.$client.options.debug = (connection, query, parameters, types) => {
+        if (/^\s*delete\s+from\s+"companies"\s/i.test(query) && parameters.some(value => value === companyId))
+          parentDeleteStatements++;
+        if (typeof priorDebug === "function") priorDebug(connection, query, parameters, types);
+      };
+      let rejected: unknown;
+      try { await companyService(db).remove(companyId); } catch (error) { rejected = error; }
+      let driver = rejected;
+      const seen = new Set<unknown>();
+      while (driver && typeof driver === "object" && !seen.has(driver)) {
+        seen.add(driver);
+        const failure = driver as { code?: string; cause?: unknown };
+        if (failure.code) break;
+        driver = failure.cause;
+      }
+      expect(driver).toMatchObject({ code: "23503", constraint_name: constraintName });
+      expect(parentDeleteStatements).toBe(1);
+      expect(participantCalls).toBe(1);
+      expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(1);
+      expect(await db.select().from(activityLog).where(eq(activityLog.id, originalActivity.id))).toHaveLength(1);
+      expect(await db.select().from(companies).where(eq(companies.id, otherCompanyId))).toHaveLength(1);
+      expect(await db.select().from(activityLog).where(eq(activityLog.id, otherActivity.id))).toHaveLength(1);
+    } catch (error) { primary = error; }
+    finally {
+      db.$client.options.debug = priorDebug;
+      observed.mockRestore();
+      const cleanup = await Promise.allSettled([
+        db.execute(sql`drop table if exists ${sql.identifier(tableName)}`),
+      ]);
+      const errors = cleanup.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (primary || errors.length) throw new AggregateError([...(primary ? [primary] : []), ...errors],
+        "Company deletion foreign key control original and cleanup failures");
+    }
+  }, 30_000);
 
 });
