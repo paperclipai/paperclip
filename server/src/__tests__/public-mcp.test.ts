@@ -22,6 +22,7 @@ import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "../routes/pub
 import { authorizationService } from "../services/authorization.js";
 import { issueRoutes } from "../routes/issues.js";
 import { activityRoutes } from "../routes/activity.js";
+import { accessRoutes } from "../routes/access.js";
 import { documentService } from "../services/documents.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -622,6 +623,68 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect(paused).toHaveProperty("task.status", "todo");
       expect(paused.scheduling).toContain("does not guarantee execution has started");
       expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.status).toBe("paused");
+    } finally { wake.mockRestore(); }
+  });
+
+  it("creates tasks for a person or no one without starting an agent run, and keeps agent assignment", async () => {
+    const f = await fixture();
+    const wake = vi.spyOn(assignmentWakeups, "queueIssueAssignmentWakeup").mockResolvedValue(null);
+    try {
+      const [agent] = await db.insert(agents).values({ companyId: f.company.id, name: "Researcher", role: "researcher", adapterType: "process", status: "idle" }).returning();
+      const colleagueId = randomUUID();
+      await db.insert(authUsers).values({ id: colleagueId, name: "Colleague", email: colleagueId + "@example.com", createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: colleagueId, membershipRole: "member", status: "active" });
+      const outsider = await fixture();
+      const api = express.Router(); api.use(boardMutationGuard());
+      api.use(issueRoutes(db, createStorageService(createLocalDiskStorageProvider("/tmp/paperclip-public-mcp-unused-storage"))));
+      api.use(accessRoutes(db, { deploymentMode: "authenticated", deploymentExposure: "private", bindHost: "127.0.0.1", allowedHostnames: [] }));
+      const execute = createPublicMcpExecutor(db, oauth, createMcpApiDispatch(api));
+      const base = { companyId: f.company.id, description: "Filed from a colleague's instance" };
+
+      const people = await execute(f.tokens.access_token, "paperclip_list_people", { companyId: f.company.id });
+      expect(people.people).toEqual(expect.arrayContaining([{ userId: colleagueId, name: "Colleague", role: "member" }]));
+      expect(JSON.stringify(people)).not.toContain("@example.com");
+      expect(JSON.stringify(people)).not.toContain(outsider.actor.userId!);
+
+      const toPerson = { ...base, requestId: randomUUID(), title: "Review the contract", assigneeUserId: colleagueId };
+      const personResult: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_create_task", toPerson);
+      expect(personResult).toMatchObject({ task: { status: "todo", assigneeUserId: colleagueId, assigneeAgentId: null } });
+      expect(personResult.scheduling).toContain("No agent run was started");
+      expect(await execute(f.tokens.access_token, "paperclip_create_task", toPerson)).toEqual(personResult);
+
+      const unassigned = { ...base, requestId: randomUUID(), title: "Triage this request" };
+      const unassignedResult: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_create_task", unassigned);
+      expect(unassignedResult).toMatchObject({ task: { status: "todo", assigneeUserId: null, assigneeAgentId: null } });
+      expect(unassignedResult.scheduling).toContain("No agent run was started");
+      expect(await execute(f.tokens.access_token, "paperclip_create_task", unassigned)).toEqual(unassignedResult);
+
+      // Neither shape may wake an agent or create a run.
+      expect(wake.mock.calls.every(([input]) => input.issue.assigneeAgentId === null)).toBe(true);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(0);
+
+      const toAgent = { ...base, requestId: randomUUID(), title: "Write the report", assigneeAgentId: agent!.id };
+      const agentResult: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_create_task", toAgent);
+      expect(agentResult).toMatchObject({ task: { status: "todo", assigneeAgentId: agent!.id, assigneeUserId: null } });
+      expect(agentResult.scheduling).toContain("Submitted to normal Paperclip scheduling");
+      expect(await execute(f.tokens.access_token, "paperclip_create_task", toAgent)).toEqual(agentResult);
+      expect(wake.mock.calls.filter(([input]) => input.issue.assigneeAgentId === agent!.id)).toHaveLength(1);
+
+      // Both assignees at once is rejected before any receipt or task is written.
+      const both = { ...base, requestId: randomUUID(), title: "Ambiguous owner", assigneeAgentId: agent!.id, assigneeUserId: colleagueId };
+      await expect(execute(f.tokens.access_token, "paperclip_create_task", both)).rejects.toThrow("either assigneeAgentId or assigneeUserId");
+      expect(await db.select().from(mcpMutationReceipts).where(eq(mcpMutationReceipts.requestId, both.requestId))).toHaveLength(0);
+
+      // Another company's member is rejected by the REST assignment check, indistinguishable from a user id that does not exist.
+      const reject = async (assigneeUserId: string) => {
+        const { requestId: _requestId, ...result } = await execute(f.tokens.access_token, "paperclip_create_task", { ...base, requestId: randomUUID(), title: "Outside", assigneeUserId });
+        return result;
+      };
+      const nonMember = await reject(outsider.actor.userId!);
+      expect(nonMember).toMatchObject({ outcome: "rejected", status: 403 });
+      expect(await reject(randomUUID())).toEqual(nonMember);
+
+      const created = await db.select().from(issues).where(eq(issues.companyId, f.company.id));
+      expect(created.map((issue) => issue.title).sort()).toEqual(["Review the contract", "Triage this request", "Write the report"]);
     } finally { wake.mockRestore(); }
   });
 
