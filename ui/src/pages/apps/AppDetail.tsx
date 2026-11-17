@@ -66,6 +66,7 @@ import { actionPermissionMutation } from "./app-detail/action-permissions";
 import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { AccessRetryBanner } from "./app-detail/AccessRetryBanner";
+import { StoredContentDeletionRow } from "./app-detail/StoredContentDeletion";
 import {
   ReconnectCard,
   DangerZone,
@@ -757,6 +758,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 onManage={() => window.open(remoteMcpProviders[connection.config?.sourceTemplateKey as keyof typeof remoteMcpProviders].dashboardUrl, "_blank", "noopener,noreferrer")}
                 onDisconnect={() => disconnectRemote.mutateAsync()}
               />}
+              {grantsQuery.data?.capabilities.canConfigure === true && connection.connectionPurpose === "tool" && (
+                <section className="border-t border-border">
+                  <StoredContentDeletionRow connectionId={connectionId} appName={appName} />
+                </section>
+              )}
               </>}
             </div>
       )}

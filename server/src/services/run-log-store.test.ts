@@ -68,6 +68,20 @@ afterEach(async () => {
 const begin = { companyId: "co1", agentId: "ag1", runId: "run1" };
 
 describe("createDurableRunLogStore", () => {
+  it("removes a finalized log from local disk and its object mirror", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "tool result content", ts: "t1" });
+    await store.finalize(handle);
+    expect(objects.has(handle.logRef)).toBe(true);
+    await store.remove!(handle);
+    await store.remove!(handle);
+    expect(objects.has(handle.logRef)).toBe(false);
+    await expect(fs.stat(path.join(baseDir, handle.logRef))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(store.read(handle)).rejects.toThrow("Run log not found");
+  });
+
   it.each([false, true])("reads a complete long final record from a compact tail (S3 fallback: %s)", async (remote) => {
     const { provider, objects, calls } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });

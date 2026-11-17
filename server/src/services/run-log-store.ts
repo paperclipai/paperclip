@@ -85,6 +85,7 @@ export interface RunLogStore {
   recordVerifiedSourcePrefix?(handle: RunLogHandle, sourceCursor: number): Promise<void>;
   finalize(handle: RunLogHandle, options?: { computeDigest?: boolean }): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  remove?(handle: RunLogHandle, signal?: AbortSignal): Promise<void>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
   // in-flight mirror is not enabled.
@@ -494,6 +495,14 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       };
     },
 
+    async remove(handle, signal) {
+      if (handle.store !== "local_file") throw new Error("Invalid local run log backend");
+      signal?.throwIfAborted();
+      await retireInflightMirror(handle.logRef);
+      await fs.rm(resolveWithin(basePath, handle.logRef), { force: true });
+      if (s3) await s3.provider.deleteObject({ objectKey: s3Key(handle.logRef), signal });
+    },
+
     async flushInflightMirrors() {
       if (!s3 || inflightMirrorMs <= 0) return;
       const flushEntry = async (logRef: string, entry: InflightMirrorEntry) => {
@@ -602,6 +611,13 @@ export function getRunLogStore() {
         return external.read(handle, opts);
       }
       return local.read(handle, opts);
+    },
+    remove: async (handle, signal) => {
+      if (handle.store === "s3_segments" || handle.store === "s3_archive") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.remove!(handle, signal);
+      }
+      return local.remove!(handle, signal);
     },
     flushInflightMirrors: async () => { await Promise.all([local.flushInflightMirrors?.(), external?.flushInflightMirrors?.()]); },
   };
