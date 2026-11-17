@@ -6974,7 +6974,7 @@ describe("cold process admission budget", () => {
   it("bounds a cold OpenCode restore at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
   });
-  it("bounds a cold Codex session open at 60 seconds", () => {
+  it("defaults cold admission to Codex when the provider is omitted", () => {
     expect(coldAdmissionTimeoutMs("codex", undefined, true)).toBe(60_000);
     expect(coldAdmissionTimeoutMs(undefined, undefined, true)).toBe(60_000);
     expect(coldAdmissionTimeoutMs("codex", undefined, false)).toBe(30_000);
