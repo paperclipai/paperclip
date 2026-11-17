@@ -113,6 +113,10 @@ export function posthogUpstreamUrl(ingestHost: string, method: string, requestUr
  * `X-Forwarded-For` from the right and use the first public entry: that is the
  * address the platform edge appended, not a value the client supplied (a
  * client can only prepend entries to the left of it).
+ *
+ * This is local to the proxy on purpose: setting `TRUST_PROXY` on Cloud would
+ * change `req.ip` for every route (rate limits, auth logs), which is a separate
+ * decision from fixing analytics location.
  */
 export function posthogVisitorIp(peerIp: string | undefined, headers: IncomingHttpHeaders): string | undefined {
   if (peerIp && !isPrivateAddress(peerIp)) return peerIp;
