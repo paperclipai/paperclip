@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { activityLog, issueComments, issues } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { activityLog, issueComments, issueReferenceMentions, issues } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { issueService } from "../services/issues.js";
 import { chatAwaitsFirstAgentTurn, chatTitleFromMessage, setProvisionalChatTitle } from "../services/chat-titles.js";
@@ -54,6 +54,21 @@ describe("agent-named chats", () => {
   });
   const current = async (f: Fixture) => (await server.db.select({ title: issues.title, titleNeedsGeneration: issues.titleNeedsGeneration })
     .from(issues).where(eq(issues.id, f.issueId)))[0]!;
+
+  it("records a task named in the first message as referenced by the chat title", async () => {
+    const f = await chatFixture();
+    const svc = issueService(server.db);
+    const target = await svc.create(f.companyId, { title: "Export regression" });
+    // Identifiers are matched as an upper-case prefix, a dash and a number.
+    await server.db.update(issues).set({ identifier: "REF-1" }).where(eq(issues.id, target.id));
+    const body = "REF-1 fails again";
+    const first = await svc.addComment(f.issueId, body, { userId: f.responsibleUserId! }, { authorType: "user" });
+    await server.db.transaction(tx => setProvisionalChatTitle(tx as never, { companyId: f.companyId, issueId: f.issueId, commentId: first.id,
+      body, actor: { actorType: "user", actorId: f.responsibleUserId! } }, []));
+    expect((await current(f)).title).toBe(body);
+    expect(await server.db.select({ target: issueReferenceMentions.targetIssueId }).from(issueReferenceMentions)
+      .where(and(eq(issueReferenceMentions.sourceIssueId, f.issueId), eq(issueReferenceMentions.sourceKind, "title")))).toEqual([{ target: target.id }]);
+  });
 
   it("names a new chat after the first message only, and keeps it provisional for the agent", async () => {
     const f = await chatFixture();

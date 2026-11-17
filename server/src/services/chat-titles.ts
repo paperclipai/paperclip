@@ -1,6 +1,7 @@
 import { and, asc, eq, gt, isNotNull, ne, sql } from "drizzle-orm";
 import { issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
+import { issueReferenceService } from "./issue-references.js";
 
 /** A message from the person, not a /new session reset; a reset never names or opens the conversation. */
 const personMessage = sql`btrim(${issueComments.body}) <> '/new'`;
@@ -53,6 +54,8 @@ export async function setProvisionalChatTitle(
   await tx.update(issues).set({ title, updatedAt: new Date() }).where(and(
     eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), eq(issues.titleNeedsGeneration, true),
   ));
+  // A task named in the message is now referenced by the title too, so related work keeps it if the message goes.
+  await issueReferenceService(tx).syncIssue(input.issueId, tx);
   await logActivity(tx, {
     companyId: input.companyId, actorType: input.actor.actorType, actorId: input.actor.actorId,
     action: "issue.updated", entityType: "issue", entityId: input.issueId,
