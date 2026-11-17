@@ -101,8 +101,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
   const resolveMetadata = createClientMetadataResolver(options.metadataFetch);
   const settings = instanceSettingsService(db);
   const isEnabled = async (queryDb: Db = db) => {
+    // Personal assistant connections are always on; only agent connections keep experimental gates.
+    if (!agentConnection) return true;
     const experimental = await (queryDb === db ? settings : instanceSettingsService(queryDb)).getExperimental();
-    return museAgentConnection ? experimental.enableMuse && experimental.enableNativeRunner : experimental.enablePublicMcp && (!agentConnection || experimental.enableOpenAiDot || (experimental.enableGrokBot && experimental.enableNativeRunner));
+    return museAgentConnection ? experimental.enableMuse && experimental.enableNativeRunner : experimental.enableOpenAiDot || (experimental.enableGrokBot && experimental.enableNativeRunner);
   };
   async function assertEnabled(queryDb: Db = db) {
     if (!await isEnabled(queryDb)) throw new PublicMcpDisabledError();

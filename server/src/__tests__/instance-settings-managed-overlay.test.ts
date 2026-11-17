@@ -142,7 +142,7 @@ describe("instanceSettingsService managed overlay", () => {
       expect((await service.get()).experimental).toMatchObject(features);
       expect((await service.getExperimental()).managedKeys).toMatchObject(
         Object.fromEntries(Object.keys(features)
-          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators")
+          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators" && key !== "enablePublicMcp")
           .map((key) => [key, { managed: true, managedBy: "paperclip-cloud" }])),
       );
       for (const key of Object.keys(features)) {
