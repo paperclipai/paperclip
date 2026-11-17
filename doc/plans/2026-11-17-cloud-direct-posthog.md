@@ -198,8 +198,10 @@ the collector or directly to PostHog, never both.
   (`isCloudManagedInstance()`) and `PAPERCLIP_POSTHOG_PROJECT_TOKEN` is set,
   batches go to PostHog through `posthog-node` (loaded with dynamic `import()`,
   so self-hosted installs never load it). Otherwise behavior is unchanged.
-- On the direct path, typed helpers skip anonymization (`hashPrivateRef`) and
-  add `stack_id`, `user_id` and `company_id`. Event names, dimension names and
+- On the direct path, ID dimensions are raw (`agent_id`, `task_id`, user and
+  workspace IDs), and typed helpers add `stack_id`, `user_id` and
+  `company_id`. Private repo `source_ref` stays hashed on every path,
+  Cloud included, because it is customer content, not an ID. Event names, dimension names and
   enum normalization stay identical to the collector path, so insights keep
   working.
 - Keep `deployment_source: "cloud"`, `app`, `version`, `schema_version` and
@@ -220,6 +222,8 @@ the collector or directly to PostHog, never both.
   - Self-hosted installs (no Cloud env) never import `posthog-node`, keep
     posting to `/ingest`, and still hash private refs.
   - On Cloud: real IDs and the workspace group on every event.
+  - On Cloud: a private repo `source_ref` stays hashed
+    (`source_ref_hashed: true`).
   - `cloud.workspace_started` reaches the PostHog sender with `stack_id` and
     `install_hash`. `install_hash` appears on no other event.
   - No double sending: one batch goes to exactly one sender.
