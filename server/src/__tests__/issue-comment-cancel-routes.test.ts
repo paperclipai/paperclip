@@ -704,7 +704,7 @@ describe("issue comment cancel routes", () => {
     );
   });
 
-  it("rejects a board user that deletes a queued agent comment", async () => {
+  it("points a board user that deletes a queued agent comment at the queue discard", async () => {
     mockIssueService.getComment.mockResolvedValue(
       makeComment({
         authorAgentId: "33333333-3333-4333-8333-333333333333",
@@ -716,7 +716,9 @@ describe("issue comment cancel routes", () => {
       .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe(finalDenial);
+    expect(res.body.error).toContain("board user with access");
+    expect(res.body.error).toContain("[PAP-1353](/PAP/issues/PAP-1353)");
+    expect(res.body.error).not.toContain("no board, admin or agent override");
     expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
   });
 
