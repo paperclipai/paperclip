@@ -39,7 +39,20 @@ describe("tool allowlist", () => {
     expect(names.filter((name) => /send/i.test(name))).toEqual([]);
   });
 
-  it("implements the Gmail tools of this release", () => {
-    expect(listGoogleWorkspaceRestTools("gmail").map((tool) => tool.name)).toEqual(["get_message", "search_threads", "create_draft"]);
+  it("implements every Gmail tool on the allowlist (9 of 9) and nothing else", () => {
+    const allowlisted = [
+      "get_message", "get_thread", "get_draft", "list_drafts", "list_labels",
+      "search_threads", "list_threads", "search_messages", "create_draft",
+    ];
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("gmail", name)), name).not.toBeNull();
+    for (const name of ["label_message", "label_thread", "unlabel_message", "trash_message", "send_message"]) {
+      expect(googleWorkspaceToolTarget(googleWorkspaceToolName("gmail", name)), name).toBeNull();
+    }
+    expect(listGoogleWorkspaceRestTools("gmail").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+  });
+
+  it("implements only read tools besides create_draft", () => {
+    const writes = listGoogleWorkspaceRestTools("gmail").filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name);
+    expect(writes).toEqual(["create_draft"]);
   });
 });
