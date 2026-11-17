@@ -22,7 +22,7 @@ export function registerActiveRunSilenceWork(db: Db,
   const worker = registerScopedDeadlineWork<Entry, LiveRunRecoveryScope>(coordinator, {
     onStop: () => { for (const stop of subscriptions.splice(0)) stop(); },
     queue: DELIVERY_QUEUES.activeRunSilence,
-    reconstructionIntervalMs: 30_000,
+    reconstructionIntervalMs: scope => scope?.runId ? 0 : 30_000,
     beforePass: async () => { enabled = await owner.enabled(); },
     decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
     matches: (entry, scope) => !scope || entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId) && (!scope.issueId || entry.issueId === scope.issueId),
