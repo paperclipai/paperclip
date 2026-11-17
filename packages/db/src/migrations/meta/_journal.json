@@ -3431,6 +3431,13 @@
       "when": 1794935383823,
       "tag": "0491_common_gambit",
       "breakpoints": true
+    },
+    {
+      "idx": 492,
+      "version": "7",
+      "when": 1794952013385,
+      "tag": "0492_jittery_thor",
+      "breakpoints": true
     }
   ]
 }
