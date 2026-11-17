@@ -23,6 +23,7 @@ export async function mcpErrorMessage(
   headers: Record<string, string>,
   sensitiveValues: readonly string[] = [],
   classifier?: Parameters<typeof validateToolContent>[0]["classifier"],
+  onBlocked?: (finding: Pick<ToolContentValidationError, "reasonCode" | "findings" | "detectorMetadata">) => Promise<void>,
 ): Promise<string> {
   if (!error || typeof error !== "object" || Array.isArray(error)) return fallback;
   const { message } = error as Record<string, unknown>;
@@ -43,7 +44,11 @@ export async function mcpErrorMessage(
     await validateToolContent({ value: bounded, direction: "result",
       sensitiveMode: "redact", promptInjectionMode: "block", classifier });
   } catch (error) {
-    if (error instanceof ToolContentValidationError) return fallback;
+    if (error instanceof ToolContentValidationError) {
+      // Report only structured guard metadata, never the provider text.
+      await onBlocked?.({ reasonCode: error.reasonCode, findings: error.findings, detectorMetadata: error.detectorMetadata });
+      return fallback;
+    }
     throw error;
   }
   return `${fallback}. Upstream message (untrusted): ${bounded}`;

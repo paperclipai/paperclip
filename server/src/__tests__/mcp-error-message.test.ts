@@ -49,8 +49,13 @@ describe("remote MCP error messages", () => {
     const classifier = vi.fn(async (_content: string): Promise<PromptInjectionModelOutcome> => ({
       status: "classified", violation: true, findings: ["instruction_hijack"],
       model: "test-model", invocationId: "test-invocation", policyVersion: "test-policy" }));
-    expect(await mcpErrorMessage(fallback, { message: "Opaque private-credential diagnostic" }, {}, ["private-credential"], classifier))
+    const onBlocked = vi.fn(async () => {});
+    expect(await mcpErrorMessage(fallback, { message: "Opaque private-credential diagnostic" }, {}, ["private-credential"], classifier, onBlocked))
       .toBe(fallback);
+    expect(onBlocked).toHaveBeenCalledExactlyOnceWith({ reasonCode: "prompt_injection_blocked",
+      findings: ["instruction_hijack"], detectorMetadata: { detector: "model", model: "test-model",
+        invocationId: "test-invocation", policyVersion: "test-policy" } });
+    expect(JSON.stringify(onBlocked.mock.calls)).not.toContain("diagnostic");
     expect(classifier).toHaveBeenCalledOnce();
     expect(classifier.mock.calls[0][0]).not.toContain("private-credential");
   });

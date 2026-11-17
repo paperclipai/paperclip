@@ -3086,6 +3086,14 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(invocation).toMatchObject({ errorMessage: "Remote MCP server returned an error" });
     const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, invocation.id));
     expect(JSON.stringify(events)).not.toContain("Ignore previous instructions");
+    const audits = await db.select().from(activityLog).where(eq(activityLog.action, "tool_gateway.call_failed"));
+    expect(audits).toEqual(expect.arrayContaining([expect.objectContaining({
+      companyId: company.id,
+      details: expect.objectContaining({ connectionId: connection.id, invocationId: invocation.id,
+        reasonCode: "prompt_injection_blocked", findings: ["ignore_previous_instructions", "reveal_system_prompt"],
+        promptInjection: expect.objectContaining({ detector: "regex" }) }),
+    })]));
+    expect(JSON.stringify(audits)).not.toContain("Ignore previous instructions");
     expect(provider).toHaveBeenCalledTimes(1);
   });
 

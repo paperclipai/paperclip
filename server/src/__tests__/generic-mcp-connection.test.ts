@@ -539,6 +539,13 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(f.context(method, method === "resources/read" ? { uri: f.uri } : { name: f.name }))
       .rejects.toMatchObject({ status: 502, reasonCode: "remote_mcp_error",
         message: "Remote MCP context request returned an error", details: { code: -32602 } });
+    const audits = await db.select().from(activityLog).where(eq(activityLog.action, "tool_gateway.call_failed"));
+    expect(audits).toEqual(expect.arrayContaining([expect.objectContaining({
+      details: expect.objectContaining({ connectionId: f.connected.connectionId, method,
+        reasonCode: "prompt_injection_blocked", findings: ["ignore_previous_instructions", "reveal_system_prompt"],
+        promptInjection: expect.objectContaining({ detector: "regex" }) }),
+    })]));
+    expect(JSON.stringify(audits)).not.toContain("Ignore previous instructions");
   });
 
   it.each(["missing", "relabelled"])("omits disabled Notebook resources and prompts and denies retained handles with %s markers", async marker => {

@@ -6023,7 +6023,12 @@ export function createToolGatewayService(
         await mcpErrorMessage("Remote MCP context request returned an error", record?.error, lastRequestHeaders, [
           ...collectSensitiveStringValues(input.params), ...Object.values(resolvedCredentials),
           ...mcpErrorRequestSecrets(new URL(endpoint).searchParams),
-        ], resultClassifier(input.session, { name: input.method, providerType: "mcp_remote_http" }, null)),
+        ], resultClassifier(input.session, { name: input.method, providerType: "mcp_remote_http" }, null), async (finding) => {
+          const session = input.session;
+          await writeAudit({ session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
+            action: "tool_gateway.call_failed", details: { tool: input.method, method: input.method, connectionId: input.connection.id,
+              reasonCode: finding.reasonCode, findings: finding.findings, promptInjection: finding.detectorMetadata } });
+        }),
         "remote_mcp_error",
         {
           connectionId: input.connection.id,
@@ -8433,7 +8438,11 @@ export function createToolGatewayService(
               ...mcpErrorRequestSecrets(new URL(endpoint).searchParams),
             ], resultClassifier(session, tool, invocationId, {
               signal: taskSignals.caller, approvedAction: Boolean(session.approvedInvocationId),
-            })),
+            }), async (finding) => {
+              await writeAudit({ session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
+                action: "tool_gateway.call_failed", details: { tool: tool.name, connectionId: connection.id, invocationId,
+                  reasonCode: finding.reasonCode, findings: finding.findings, promptInjection: finding.detectorMetadata } });
+            }),
           "remote_mcp_error",
           {
             code:
