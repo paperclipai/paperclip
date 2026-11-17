@@ -1143,6 +1143,27 @@ describe("AppDetail", () => {
     expect(button.disabled).toBe(false);
   });
 
+  it("saves AI agent access through installs and keeps the response during refresh", async () => {
+    getConnectionMock.mockResolvedValue(connection({ connectionPurpose: "ai", transport: "runtime_auth", config: { provider: "openai", method: "api_key" } }));
+    const client = await renderAppDetail();
+    getConnectionInstallsMock.mockReturnValue(new Promise(() => {}));
+    const saved = { connectionId: "conn-1", installs: [{ targetType: "company", targetId: "company-1" }] };
+    putConnectionInstallsMock.mockResolvedValueOnce(saved);
+    const accessRadio = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .find(radio => radio.textContent?.includes(label))!;
+    await act(() => accessRadio("Any agent").click());
+    await flushReact();
+    expect(putConnectionInstallsMock).toHaveBeenLastCalledWith("conn-1", [{ targetType: "company", targetId: "company-1" }]);
+    expect(client.getQueryData(queryKeys.tools.connectionInstalls("conn-1"))).toEqual(saved);
+    expect(accessRadio("Any agent").getAttribute("aria-checked")).toBe("true");
+    await act(() => accessRadio("Just agents I pick").click());
+    await flushReact();
+    expect(putConnectionInstallsMock).toHaveBeenLastCalledWith("conn-1", []);
+    expect(client.getQueryData(queryKeys.tools.connectionInstalls("conn-1"))).toEqual({ connectionId: "conn-1", installs: [] });
+    expect(accessRadio("Just agents I pick").getAttribute("aria-checked")).toBe("true");
+    expect(finishAppMock).not.toHaveBeenCalled();
+  });
+
   it("uses the saved permission response for the next edit while refresh reads are pending", async () => {
     const client = await renderAppDetail();
     listConnectionProfileConfigurationMock.mockReturnValue(new Promise(() => {}));
