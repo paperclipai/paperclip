@@ -76,8 +76,10 @@ Masking is deny by default. A surface that nobody marked stays masked.
 
 - Session replay masks every input value and every text node.
   `maskReplayText` in `ui/src/lib/analytics/privacy.ts` shows text only inside
-  elements with `ANALYTICS_UNMASK_PROPS`. The shared `Button`, `Label`,
-  `TabsTrigger`, `SidebarNavItem` and `EmptyState` components carry it.
+  elements with `ANALYTICS_UNMASK_PROPS`: the shared `Label`, `TabsTrigger`
+  and `EmptyState` components, sidebar items whose label is a fixed string
+  (`analyticsChrome`), and a `Button` only when it passes `analyticsChrome`.
+  Buttons do not opt in by default, because many render customer names.
 - Replay also masks attribute values (`maskReplayAttribute`): only layout
   attributes (`class`, `style`, `role`, `data-state`, SVG geometry and similar),
   rrweb metadata, stylesheets and links outside customer content keep their
@@ -90,6 +92,11 @@ Masking is deny by default. A surface that nobody marked stays masked.
 - `ANALYTICS_NO_CAPTURE_CLASS` replaces secrets with a blank box in replays:
   every password-type `Input`, environment variable values and new secret
   values.
+- Every event and replay meta event goes through `scrubCapturedEvent`
+  (`before_send`). It redacts secrets in URLs: the token segment of
+  `/board-claim/<token>` and `/invite/<token>`, and secret query or hash values
+  such as `token`, `code` and `state` (`redactAnalyticsUrl`). Link `href`
+  attributes in replays get the same redaction.
 - Events never carry the page title (`before_send` drops `title`), because
   Paperclip page titles name the task and the organization.
 - Autocapture never records element text or attribute values

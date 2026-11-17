@@ -19,7 +19,13 @@
 
 import type { CaptureResult, PostHog, PostHogConfig } from "posthog-js";
 import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
-import { ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS, maskReplayAttribute, maskReplayText } from "./privacy";
+import {
+  ANALYTICS_MASK_TEXT_SELECTOR,
+  ANALYTICS_NO_CAPTURE_CLASS,
+  maskReplayAttribute,
+  maskReplayText,
+  redactAnalyticsUrl,
+} from "./privacy";
 
 export type ProductAnalyticsClient = Pick<
   PostHog,
@@ -49,18 +55,37 @@ async function loadPostHog(): Promise<ProductAnalyticsClient> {
   return module.default;
 }
 
+const GZIP_MAGIC = "\x1f\x8b";
+
+/** Redacts URL secrets in every string, including replay meta events (their `href`). */
+function redactStrings(value: unknown): unknown {
+  if (typeof value === "string") {
+    // Compressed replay data is binary in a string; its attributes were
+    // already masked by `maskReplayAttribute` before compression.
+    return value.startsWith(GZIP_MAGIC) ? value : redactAnalyticsUrl(value);
+  }
+  if (Array.isArray(value)) return value.map(redactStrings);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactStrings(entry)]));
+  }
+  return value;
+}
+
 /**
- * Last step before an event leaves the browser. posthog-js copies
- * `document.title` into page views, and Paperclip titles name the task and
- * the organization, so the title never leaves.
+ * Last step before an event leaves the browser.
+ * - Drops the page title: posthog-js copies `document.title` into page views,
+ *   and Paperclip titles name the task and the organization.
+ * - Redacts secrets in URLs (`$current_url`, `$referrer`, replay meta `href`,
+ *   ...): one-time claim and invite tokens and secret query values.
  */
 export function scrubCapturedEvent(event: CaptureResult | null): CaptureResult | null {
-  if (!event?.properties) return event;
-  if (!("title" in event.properties) && !("$title" in event.properties)) return event;
-  const properties = { ...event.properties };
-  delete properties.title;
-  delete properties.$title;
-  return { ...event, properties };
+  if (!event) return event;
+  const scrubbed = redactStrings(event) as CaptureResult;
+  if (scrubbed.properties) {
+    delete scrubbed.properties.title;
+    delete scrubbed.properties.$title;
+  }
+  return scrubbed;
 }
 
 export function buildPostHogInitOptions(

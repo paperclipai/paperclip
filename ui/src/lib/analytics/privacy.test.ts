@@ -7,6 +7,7 @@ import {
   ANALYTICS_UNMASK_ATTRIBUTE,
   maskReplayAttribute,
   maskReplayText,
+  redactAnalyticsUrl,
 } from "./privacy";
 
 function render(html: string) {
@@ -80,5 +81,21 @@ describe("session replay attribute masking", () => {
     const el = render(`<a id="nav" href="/VER/issues">Tasks</a><div class="${ANALYTICS_MASK_CLASS}"><a id="c" href="https://example.com/private">x</a></div>`);
     expect(maskReplayAttribute("href", "/VER/issues", el("nav"))).toBe("/VER/issues");
     expect(maskReplayAttribute("href", "https://example.com/private", el("c"))).toBe("***************************");
+  });
+});
+
+describe("analytics URL redaction", () => {
+  it("redacts claim and invite tokens and secret query values", () => {
+    expect(redactAnalyticsUrl("/board-claim/abc123")).toBe("/board-claim/REDACTED");
+    expect(redactAnalyticsUrl("https://x.paperclip.app/invite/tok?x=1")).toBe("https://x.paperclip.app/invite/REDACTED?x=1");
+    expect(redactAnalyticsUrl("https://x.paperclip.app/cli-auth/id1?token=s3cr3t")).not.toContain("s3cr3t");
+    expect(redactAnalyticsUrl("/VER/issues/VER-1")).toBe("/VER/issues/VER-1");
+    expect(redactAnalyticsUrl("Desktop")).toBe("Desktop");
+  });
+
+  it("redacts secrets in link attributes in replay", () => {
+    document.body.innerHTML = `<a id="a" href="/invite/tok-1">join</a>`;
+    expect(maskReplayAttribute("href", "/invite/tok-1", document.getElementById("a"))).toBe("/invite/REDACTED");
+    document.body.innerHTML = "";
   });
 });

@@ -162,4 +162,27 @@ describe("product analytics", () => {
     expect(buildPostHogInitOptions(config, "x").before_send).toBe(scrubCapturedEvent);
     expect(scrubCapturedEvent(null)).toBeNull();
   });
+
+  it("redacts one-time tokens from URLs in events and replay meta, and keeps compressed replay data intact", () => {
+    const gz = "\x1f\x8b\x08binary/board-claim/zzz";
+    const event = {
+      uuid: "u",
+      event: "$snapshot",
+      properties: {
+        $current_url: "https://acme.paperclip.app/board-claim/claim-secret-123",
+        $referrer: "https://acme.paperclip.app/cli-auth/abc?token=cli-secret-456",
+        $set_once: { $initial_current_url: "https://acme.paperclip.app/invite/invite-secret-789" },
+        $snapshot_data: [{ type: 4, data: { href: "https://acme.paperclip.app/oauth-handoff?code=c1&state=s1" } }, { type: 2, data: gz }],
+        $pathname: "/VER/issues/VER-1",
+      },
+    } as unknown as Parameters<typeof scrubCapturedEvent>[0];
+    const out = JSON.stringify(scrubCapturedEvent(event));
+    for (const secret of ["claim-secret-123", "cli-secret-456", "invite-secret-789", "code=c1", "state=s1"]) {
+      expect(out).not.toContain(secret);
+    }
+    expect(out).toContain("/board-claim/REDACTED");
+    expect(out).toContain("/VER/issues/VER-1");
+    const data = (scrubCapturedEvent(event)!.properties.$snapshot_data as Array<{ data: unknown }>)[1]!.data;
+    expect(data).toBe(gz);
+  });
 });

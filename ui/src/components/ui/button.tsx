@@ -45,12 +45,15 @@ const Button = React.forwardRef<
   React.ComponentProps<"button"> &
     VariantProps<typeof buttonVariants> & {
       asChild?: boolean
+      /** The label is fixed product copy, so session replay may show it. */
+      analyticsChrome?: boolean
     }
 >(function Button({
   className,
   variant = "default",
   size = "default",
   asChild = false,
+  analyticsChrome = false,
   ...props
 }, ref) {
   const Comp = asChild ? Slot.Root : "button"
@@ -59,7 +62,7 @@ const Button = React.forwardRef<
     <Comp
       ref={ref}
       data-slot="button"
-      {...ANALYTICS_UNMASK_PROPS}
+      {...(analyticsChrome ? ANALYTICS_UNMASK_PROPS : {})}
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}

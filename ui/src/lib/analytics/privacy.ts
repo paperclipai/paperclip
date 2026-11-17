@@ -1,14 +1,17 @@
 // Shared privacy markers for browser product analytics (PostHog).
 //
 // Session replay masks ALL text and ALL input values by default. Only UI
-// chrome that opts in with `ANALYTICS_UNMASK_PROPS` (navigation, buttons,
-// labels, tabs, empty states) shows its text. A surface nobody marked stays
+// chrome that opts in with `ANALYTICS_UNMASK_PROPS` (fixed sidebar labels,
+// form labels, tabs, empty states, and buttons that pass `analyticsChrome`)
+// shows its text. A surface nobody marked stays
 // masked. Autocapture never records element text or attribute values at all
 // (see `product-analytics.ts`).
 //
 // Apply these markers instead of PostHog class names, so `product-analytics.ts`
 // stays the one place that knows about PostHog. They have no effect when
 // analytics is off (self-hosted and local installs).
+
+import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 
 export const ANALYTICS_UNMASK_ATTRIBUTE = "data-analytics-unmask";
 
@@ -81,6 +84,19 @@ export function maskReplayAttribute(name: string, value: string, element?: Eleme
   if (LAYOUT_ATTRIBUTES.has(key)) return value;
   const tag = element?.tagName?.toLowerCase();
   // Stylesheets and in-app links render the page; customer-content links do not leave.
-  if (key === "href" && (tag === "link" || !element?.closest?.(FORCED_MASK_SELECTOR))) return value;
+  if (key === "href" && (tag === "link" || !element?.closest?.(FORCED_MASK_SELECTOR))) return redactAnalyticsUrl(value);
   return value.replace(/\S/g, "*");
+}
+
+/** Routes whose next path segment is a one-time secret (claim and invite links). */
+const SECRET_PATH_SEGMENT = /(\/(?:board-claim|invite)\/)[^/?#\s"']+/gi;
+
+/**
+ * Redacts credentials from a URL or path before analytics sends it: secret
+ * query and hash values (`token`, `code`, `state`, ...) and the token segment
+ * of claim and invite links.
+ */
+export function redactAnalyticsUrl(value: string): string {
+  if (!value.includes("/") && !value.includes("?") && !value.includes("#")) return value;
+  return redactUrlSecrets(value).replace(SECRET_PATH_SEGMENT, "$1REDACTED");
 }
