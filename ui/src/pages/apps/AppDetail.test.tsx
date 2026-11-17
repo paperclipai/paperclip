@@ -1143,6 +1143,49 @@ describe("AppDetail", () => {
     expect(button.disabled).toBe(false);
   });
 
+  it("uses the saved permission response for the next edit while refresh reads are pending", async () => {
+    const client = await renderAppDetail();
+    listConnectionProfileConfigurationMock.mockReturnValue(new Promise(() => {}));
+    listPoliciesMock.mockReturnValue(new Promise(() => {}));
+    finishAppMock.mockResolvedValue({
+      connection: connection(),
+      profile: { id: "app-profile", profileKey: "app:conn-1" },
+      profileEntries: [{ effect: "include", catalogEntryId: "catalog-read" }],
+      profileBindings: [{ targetType: "company", targetId: "company-1" }],
+      policies: [],
+    });
+    const writeOff = container.querySelector<HTMLButtonElement>('[aria-label="Write issue: Off"]')!;
+    await act(() => writeOff.click());
+    await flushReact();
+    expect(writeOff.getAttribute("aria-checked")).toBe("true");
+    expect(writeOff.disabled).toBe(false);
+    expect(client.getQueryData(queryKeys.tools.policies("company-1"))).toEqual({ policies: [] });
+    await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Read repo: Ask first"]')!.click());
+    await flushReact();
+    expect(finishAppMock).toHaveBeenLastCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["catalog-read"],
+      askFirstCatalogEntryIds: ["catalog-read"],
+      access: "all_agents",
+    });
+  });
+
+  it("shows an agent access change immediately and restores it if the save fails", async () => {
+    let rejectSave!: (error: Error) => void;
+    finishAppMock.mockReturnValue(new Promise((_, reject) => { rejectSave = reject; }));
+    await renderAppDetail();
+    const picked = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .find(radio => radio.textContent?.includes("Just agents I pick"))!;
+    await act(() => picked.click());
+    expect(picked.getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Choose agents");
+    expect(picked.disabled).toBe(true);
+    await act(async () => rejectSave(new Error("Save rejected")));
+    await flushReact();
+    expect(picked.getAttribute("aria-checked")).toBe("false");
+    expect(picked.disabled).toBe(false);
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ title: "Couldn't save that", tone: "error" }));
+  });
+
   it("persists agent access independently from always-installed agents", async () => {
     mockParams.tab = "permissions";
     listConnectionProfileConfigurationMock.mockResolvedValue({

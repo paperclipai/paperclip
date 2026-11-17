@@ -254,6 +254,7 @@ export function QuarantinedActionsReview({
   onSubmit: (enabledIds: string[]) => void;
 }) {
   const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set());
+  const [visibleLimit, setVisibleLimit] = useState(50);
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
   return (
@@ -287,7 +288,7 @@ export function QuarantinedActionsReview({
         </div>
       </div>
       <div className="divide-y divide-border">
-        {entries.map((entry) => {
+        {entries.slice(0, visibleLimit).map((entry) => {
           const enabled = enabledIds.has(entry.id);
           const label = entry.title ?? entry.toolName;
           return (
@@ -315,6 +316,11 @@ export function QuarantinedActionsReview({
           );
         })}
       </div>
+      {visibleLimit < count ? (
+        <Button type="button" variant="outline" size="sm" onClick={() => setVisibleLimit(limit => limit + 50)}>
+          Show more new actions
+        </Button>
+      ) : null}
       <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
           {selectedIds.length} of {count} will be on
