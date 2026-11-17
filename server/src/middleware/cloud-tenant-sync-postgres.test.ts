@@ -269,6 +269,46 @@ const aliasFields = ["name", "email-local", "email", "principal"] as const;
     }
   });
 
+  it("still authenticates when the default grant repair times out on a held lock", async () => {
+    const value = headers();
+    const actor = await resolve(db, value);
+    const companyId = actor!.companyIds![0]!;
+    const userId = value["x-paperclip-cloud-user-id"];
+    await db.delete(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalId, userId)));
+    const holder = freshDb();
+    let release!: () => void;
+    const released = new Promise<void>(done => { release = done; });
+    let locked!: () => void;
+    const lockHeld = new Promise<void>(done => { locked = done; });
+    // The company row is locked FOR UPDATE, so the grant insert's foreign-key
+    // check waits until its lock timeout.
+    const holding = holder.transaction(async tx => {
+      await tx.execute(sql`select id from companies where id = ${companyId} for update`);
+      await tx.execute(sql`select id from company_memberships where company_id = ${companyId}
+        and principal_type = 'user' and principal_id = ${userId} for update`);
+      locked();
+      await released;
+    });
+    await lockHeld;
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const outcome = await Promise.race([
+        resolve(freshDb(), value).then(result => ({ result }), error => ({ error })),
+        new Promise<"timed_out">(done => setTimeout(() => done("timed_out"), 6_000)),
+      ]);
+      expect(outcome).not.toBe("timed_out");
+      expect(outcome).not.toHaveProperty("error");
+      expect((outcome as { result: Awaited<ReturnType<typeof resolve>> }).result?.memberships?.[0])
+        .toEqual({ companyId, membershipRole: "owner", status: "active" });
+      expect(warn.mock.calls.some(call => call[1] === "Cloud tenant default grant repair failed; the sync retries it")).toBe(true);
+    } finally {
+      warn.mockRestore();
+      release();
+      await holding;
+    }
+  }, 15_000);
+
   it("preserves runtime invalidation on real membership changes while no-op conflicts produce no invalidation", async () => {
     const value = headers();
     const actor = await resolve(db, value);

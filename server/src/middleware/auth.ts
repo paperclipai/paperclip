@@ -783,8 +783,12 @@ async function resolveCloudTenantActorOnce(
       finishCloudTenantSyncInBackground(tenantSync, { userId, stackId });
       // Missing default grants deny the user, so this request waits for the
       // grant insert alone, bounded, and never for the rest of the sync.
+      // A failed repair never fails the request: authorization still denies
+      // what a missing grant covers, and the background sync retries it.
       return missesDefaultGrants(primary.grantedPermissionKeys, membershipRole)
-        ? repairCloudTenantDefaultGrants(db, { companyId, userId, membershipRole })
+        ? repairCloudTenantDefaultGrants(db, { companyId, userId, membershipRole }).catch((err) => {
+          logger.warn({ err, userId, stackId }, "Cloud tenant default grant repair failed; the sync retries it");
+        })
         : undefined;
     },
     () => tenantSync,
