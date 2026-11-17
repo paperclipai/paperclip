@@ -379,6 +379,13 @@ export {
   type McpRemoteHeaderRejection,
 } from "./mcp-remote-headers.js";
 export {
+  PAPERCLIP_PEER_MCP_PATH,
+  isSamePaperclipInstance,
+  paperclipPeerAgentInstructions,
+  paperclipPeerFromMcpUrl,
+  type PaperclipPeer,
+} from "./paperclip-peer.js";
+export {
   checkOAuthEndpointUrl,
   isSafeOAuthEndpointUrl,
   oauthEndpointDisplayHost,

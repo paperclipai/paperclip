@@ -25,7 +25,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { measureToolDiscovery, measureRunPhase } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
-import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
+import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
 import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
@@ -1765,7 +1765,12 @@ export function createToolGatewayService(
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
         const applicationKey = application.applicationKey ?? null;
-        const connectionNamespace = `${slugSegment(applicationKey ?? connection.name ?? application.name, "mcp")}-${shortStableId(connection.id)}`;
+        // Another Paperclip's tools share names with the agent's own, so name
+        // them after that instance. Other address-based connections keep their
+        // existing internal key so their tool names do not change.
+        const paperclipPeer = paperclipPeerFromMcpUrl(typeof connection.config?.url === "string" ? connection.config.url : null);
+        const namespaceSource = paperclipPeer ? connection.name : applicationKey ?? connection.name ?? application.name;
+        const connectionNamespace = `${slugSegment(namespaceSource, "mcp")}-${shortStableId(connection.id)}`;
         const toolSlug = slugSegment(catalogEntry.toolName, "tool");
         return `${connection.transport === "rest_api" ? "app" : "mcp"}.${connectionNamespace}:${toolSlug}`;
       },

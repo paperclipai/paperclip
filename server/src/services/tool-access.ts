@@ -87,7 +87,7 @@ import { connectorToolPolicy } from "./connectors/tool-policy.js";
 
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 
-import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
+import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
@@ -1530,6 +1530,8 @@ export function toolAccessService(
   }
 
   function defaultLinkName(link: string): string {
+    const peer = paperclipPeerFromMcpUrl(link);
+    if (peer) return peer.name;
     try {
       const url = new URL(link);
       const host = url.host.replace(/^www\./, "");
@@ -1743,6 +1745,12 @@ export function toolAccessService(
     }
 
     await assertConnectorConnectionSetupEnabled(requestedResumeConnection ?? {}, existingApplication?.applicationKey);
+    // Another Paperclip reached by address: tell agents those tools act on a
+    // different instance. Derived from the typed address, never from the server.
+    const paperclipPeer = galleryEntry ? null : paperclipPeerFromMcpUrl(input.link);
+    const newConnectionAgentInstructions = paperclipPeer
+      ? paperclipPeerAgentInstructions(paperclipPeer)
+      : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions);
     const requestedName =
       input.name ??
       existingApplication?.name ??
@@ -2533,7 +2541,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
@@ -2570,7 +2578,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
