@@ -44,6 +44,8 @@ node --import ./server/node_modules/tsx/dist/loader.mjs server/scripts/benchmark
 
 The source is read only. Omit `--source` for the default synthetic 671-file,
 10,993,664-byte fixture. The benchmark owns and cleans only its temporary trees.
+An explicit `--baseline-ref` is required. Select a revision from before the file
+functions were extracted; missing or incompatible baselines fail with an explanation.
 Both modes use the unchanged production manifest verifier, and the fixture's
 manifest digest must match across every sample.
 
@@ -64,3 +66,25 @@ manifest digest must match across every sample.
   the new benchmark script is a broad input. Required CI remains outstanding;
   focused passes do not replace it. Unrelated concurrent workspace edits were
   preserved.
+
+## Subsequent live observations
+
+A real native Codex run after restart used the same 13 skill asset digests as
+the earlier slow run: 24,975 files and 295,533,924 bytes. The skill phase measured
+171,290 ms versus the earlier 216,319 ms. That attempt was interrupted by an
+embedded database outage before the provider's first tool call, so it is not
+a completed end-to-end startup measurement.
+
+After database recovery, another actual run measured 309,711 ms for the skill
+phase. Concurrent task recovery and host load differed. The two observations
+do not establish a consistent full-workload speedup. The smaller filesystem
+benchmark above remains valid only for its stated scope.
+
+Repository skill projection intentionally embeds the whole pinned repository
+in each skill so authored relative references remain portable. Four selected
+skills in this live workload each carried 5,571 files, about 63 MB; four more
+each carried 671 files, about 11 MB. These are runtime filesystem payloads,
+not a 296 MB model prompt. The runner also copies the self-contained trees
+into its skills home. Reducing repeated repository copies is separate work
+that must preserve version pins, integrity, relative references, and transport
+portability.

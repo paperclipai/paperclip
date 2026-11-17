@@ -12,14 +12,21 @@ import { verifyFileManifest } from "../src/services/file-manifest-cache.js";
 const argument = (name: string) => process.argv.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1);
 const samples = Number(argument("--samples") ?? 3);
 assert.ok(Number.isSafeInteger(samples) && samples >= 1 && samples <= 10);
-const baselineRef = argument("--baseline-ref") ?? "HEAD";
+const baselineRef = argument("--baseline-ref");
+assert.ok(baselineRef, "Supply --baseline-ref=<commit> from before native asset file extraction");
 const baselineRevision = execFileSync("git", ["rev-parse", baselineRef], { encoding: "utf8" }).trim();
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-materialize-bench-"));
 try {
   const original = execFileSync("git", ["show", `${baselineRevision}:server/src/services/native-runtime/runtime-context.ts`], { encoding: "utf8" });
   // Load the exact original filesystem functions without the unrelated service graph.
-  const functions = original.slice(original.indexOf("const safeRelativePath ="), original.indexOf("async function verifyMaterializedAsset("));
-  const writing = original.slice(original.indexOf("for (const file of sorted) {"), original.indexOf("await fs.mkdir(path.dirname(rootPath)"));
+  const functionStart = original.indexOf("const safeRelativePath =");
+  const functionEnd = original.indexOf("async function verifyMaterializedAsset(");
+  const writeStart = original.indexOf("for (const file of sorted) {");
+  const writeEnd = original.indexOf("await fs.mkdir(path.dirname(rootPath)");
+  assert.ok(functionStart >= 0 && functionEnd > functionStart && writeStart >= 0 && writeEnd > writeStart,
+    "The baseline must contain the code from before native asset file extraction");
+  const functions = original.slice(functionStart, functionEnd);
+  const writing = original.slice(writeStart, writeEnd);
   assert.ok(functions.includes("async function collectDirectoryFiles"));
   assert.ok(writing.includes("fs.chmod"));
   const baselinePath = path.join(temporary, "baseline.mts");
