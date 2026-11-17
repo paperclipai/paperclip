@@ -86,8 +86,11 @@ export function nativeResultCommitWork(db: Db, finalize = finalizeNativeRun) {
     if (!run) return null;
     if (signal?.aborted) throw new Error("Native result commit stopped");
     try {
+      // This worker often finishes a run in place of its live heartbeat. Post
+      // the agent's reply in the same pass, as the heartbeat would; the
+      // presentation worker remains the retry owner if this attempt fails.
       await finalize({ db, runId: current.id, workspaceFinalizeStatus: "succeeded", projectRunStatus: true,
-        onlyWhenDue: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true,
+        onlyWhenDue: true, skipNativeReviewResponse: true,
         preserveProviderAttempt: Boolean(readNativeWorkspaceSyncReference(run.profile?.nativeWorkspaceSync)),
       });
     } catch (error) {

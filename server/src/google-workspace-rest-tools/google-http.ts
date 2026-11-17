@@ -2,11 +2,12 @@ import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 
 export const GOOGLE_API_HOSTS = ["gmail.googleapis.com", "www.googleapis.com", "docs.googleapis.com", "slides.googleapis.com", "sheets.googleapis.com"] as const;
 export type GoogleApiHost = (typeof GOOGLE_API_HOSTS)[number];
-export const GOOGLE_API_PATH_PREFIXES: Partial<Record<GoogleApiHost, string>> = {
-  "www.googleapis.com": "/calendar/v3/",
-  "docs.googleapis.com": "/v1/documents/",
-  "slides.googleapis.com": "/v1/presentations/",
-  "sheets.googleapis.com": "/v4/spreadsheets/",
+export const GOOGLE_API_PATH_PREFIXES: Readonly<Record<GoogleApiHost, readonly string[]>> = {
+  "gmail.googleapis.com": ["/gmail/v1/users/me/"],
+  "www.googleapis.com": ["/calendar/v3/", "/drive/v3/", "/upload/drive/v3/"],
+  "docs.googleapis.com": ["/v1/documents/"],
+  "slides.googleapis.com": ["/v1/presentations/"],
+  "sheets.googleapis.com": ["/v4/spreadsheets/"],
 };
 
 export type QueryValue = string | number | boolean | readonly string[] | undefined;
@@ -19,6 +20,12 @@ export interface GoogleRequest {
   body?: unknown;
   readOnly?: boolean;
   ifMatch?: string;
+  upload?: { contentType: string; data: Uint8Array };
+}
+
+export interface GoogleBytes {
+  data: Buffer;
+  contentType: string | null;
 }
 
 export type GoogleFetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -33,12 +40,13 @@ export interface GoogleHttpOptions {
 
 export interface GoogleHttp {
   send<T = unknown>(request: GoogleRequest): Promise<T>;
+  download(request: GoogleRequest, maxBytes: number): Promise<GoogleBytes>;
 }
 
 interface GoogleAnswer {
   status: number;
   headers: Headers;
-  text: string;
+  data: Buffer;
 }
 
 export const DEFAULT_TIMEOUT_MS = 20_000;
@@ -52,8 +60,8 @@ export function googleRequestUrl(request: GoogleRequest): string {
   if (!GOOGLE_API_HOSTS.includes(request.host)) throw new Error(`Host is not allowed: ${request.host}`);
   if (!request.path.startsWith("/") || request.path.startsWith("//")) throw new Error("Request path must be absolute");
   const url = new URL(`https://${request.host}${request.path}`);
-  const prefix = GOOGLE_API_PATH_PREFIXES[request.host];
-  if (prefix && !url.pathname.startsWith(prefix)) throw new Error(`Path is not allowed on ${request.host}`);
+  const prefixes = GOOGLE_API_PATH_PREFIXES[request.host];
+  if (!prefixes.some((prefix) => url.pathname.startsWith(prefix))) throw new Error(`Path is not allowed on ${request.host}`);
   for (const [key, value] of Object.entries(request.query ?? {})) {
     if (value === undefined) continue;
     if (Array.isArray(value)) for (const item of value) url.searchParams.append(key, item);
@@ -76,24 +84,26 @@ export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
 
-  async function attempt(request: GoogleRequest): Promise<GoogleAnswer> {
+  async function attempt(request: GoogleRequest, limit: Limit): Promise<GoogleAnswer> {
     const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(options.signal ? [options.signal] : [])]);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${options.accessToken}`,
-      Accept: "application/json",
+      Accept: limit.accept,
     };
+    if (request.body !== undefined && request.upload !== undefined) throw new Error("A request has either a JSON body or an upload");
     if (request.body !== undefined) headers["Content-Type"] = "application/json";
+    if (request.upload) headers["Content-Type"] = request.upload.contentType;
     if (request.ifMatch) headers["If-Match"] = request.ifMatch;
     const url = googleRequestUrl(request);
     try {
       const response = await doFetch(url, {
         method: request.method,
         headers,
-        body: request.body === undefined ? undefined : JSON.stringify(request.body),
+        body: request.upload ? Buffer.from(request.upload.data) : request.body === undefined ? undefined : JSON.stringify(request.body),
         signal,
-        redirect: "error",
+        redirect: "manual",
       });
-      return { status: response.status, headers: response.headers, text: await readBounded(response) };
+      return { status: response.status, headers: response.headers, data: await readBounded(response, limit) };
     } catch (error) {
       if (error instanceof GoogleToolError) {
         throw new GoogleToolError(error.kind, withWriteWarning(request, error.message), error.httpStatus);
@@ -104,44 +114,73 @@ export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
     }
   }
 
-  return {
-    async send<T>(request: GoogleRequest): Promise<T> {
-      let answer: GoogleAnswer;
-      for (let tries = 0; ; tries += 1) {
-        const mayRetry = !isWrite(request) && tries === 0;
-        try {
-          answer = await attempt(request);
-        } catch (error) {
-          if (mayRetry && error instanceof GoogleToolError && error.kind === "network") {
-            await delay(retryDelayMs, options.signal);
-            continue;
-          }
-          throw error;
-        }
-        if (mayRetry && RETRYABLE_READ_STATUSES.has(answer.status)) {
+  async function exchange(request: GoogleRequest, limit: Limit): Promise<GoogleAnswer> {
+    let answer: GoogleAnswer;
+    for (let tries = 0; ; tries += 1) {
+      const mayRetry = !isWrite(request) && tries === 0;
+      try {
+        answer = await attempt(request, limit);
+      } catch (error) {
+        if (mayRetry && error instanceof GoogleToolError && error.kind === "network") {
           await delay(retryDelayMs, options.signal);
           continue;
         }
-        break;
+        throw error;
       }
-      if (answer.status < 200 || answer.status >= 300) throw googleError(answer, answer.text, request);
-      if (answer.text.length === 0) return {} as T;
+      if (mayRetry && RETRYABLE_READ_STATUSES.has(answer.status)) {
+        await delay(retryDelayMs, options.signal);
+        continue;
+      }
+      break;
+    }
+    if (answer.status < 200 || answer.status >= 300) throw googleError(answer, answer.data.toString("utf8"), request);
+    return answer;
+  }
+
+  return {
+    async send<T>(request: GoogleRequest): Promise<T> {
+      const answer = await exchange(request, { accept: "application/json", maxBytes: MAX_RESPONSE_BYTES, kind: "invalid_response" });
+      const text = answer.data.toString("utf8");
+      if (text.length === 0) return {} as T;
       try {
-        return JSON.parse(answer.text) as T;
+        return JSON.parse(text) as T;
       } catch {
         throw new GoogleToolError("invalid_response", withWriteWarning(request, "Google returned a response that is not JSON."), answer.status);
       }
     },
+    async download(request: GoogleRequest, maxBytes: number): Promise<GoogleBytes> {
+      if (isWrite(request)) throw new Error("A download must be a read");
+      const answer = await exchange(request, { accept: "*/*", maxBytes: Math.min(maxBytes, MAX_RESPONSE_BYTES), kind: "too_large" });
+      return { data: answer.data, contentType: answer.headers.get("content-type") };
+    },
   };
 }
 
-async function readBounded(response: Response): Promise<string> {
-  const declared = Number(response.headers.get("content-length") ?? "0");
-  if (declared > MAX_RESPONSE_BYTES) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new GoogleToolError("invalid_response", "Google's response is too large.", response.status);
+interface Limit {
+  accept: string;
+  maxBytes: number;
+  kind: "invalid_response" | "too_large";
+}
+
+function tooLarge(response: Response, limit: Limit): GoogleToolError {
+  if (limit.kind === "too_large" && response.status >= 200 && response.status < 300) {
+    return new GoogleToolError("too_large", `The content is larger than ${formatBytes(limit.maxBytes)}, the most this tool returns. Nothing was returned.`, response.status);
   }
-  if (!response.body) return "";
+  return new GoogleToolError("invalid_response", "Google's response is too large.", response.status);
+}
+
+export function formatBytes(bytes: number): string {
+  return bytes % (1024 * 1024) === 0 ? `${bytes / (1024 * 1024)} MB` : `${bytes} bytes`;
+}
+
+async function readBounded(response: Response, limit: Limit): Promise<Buffer> {
+  const maxBytes = response.status >= 200 && response.status < 300 ? limit.maxBytes : MAX_RESPONSE_BYTES;
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw tooLarge(response, limit);
+  }
+  if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -149,13 +188,13 @@ async function readBounded(response: Response): Promise<string> {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_RESPONSE_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel().catch(() => undefined);
-      throw new GoogleToolError("invalid_response", "Google's response is too large.", response.status);
+      throw tooLarge(response, limit);
     }
     chunks.push(value);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 interface GoogleErrorBody {
@@ -188,6 +227,10 @@ export function googleError(
   ].filter((reason): reason is string => typeof reason === "string"));
   const authenticate = response.headers.get("www-authenticate") ?? "";
 
+  if (status === 0 || (status >= 300 && status < 400)) {
+    const redirect = "Google answered with a redirect, which is not followed.";
+    return new GoogleToolError("invalid_response", request ? withWriteWarning(request, redirect) : redirect, status);
+  }
   if (status === 401) return new GoogleWorkspaceAuthError("unauthenticated");
   if (status === 403 && (
     /\berror\s*=\s*"?insufficient_scope\b/i.test(authenticate)
@@ -202,6 +245,12 @@ export function googleError(
   }
   if (status === 429 || reasons.has("RATE_LIMIT_EXCEEDED") || reasons.has("rateLimitExceeded") || reasons.has("userRateLimitExceeded")) {
     return new GoogleToolError("rate_limited", "Google is rate limiting requests. Try again shortly.", status);
+  }
+  if (status === 403 && reasons.has("exportSizeLimitExceeded")) {
+    return new GoogleToolError("too_large", "This file is larger than Google's 10 MB export limit. Nothing was returned.", status);
+  }
+  if (status === 403 && reasons.has("appNotAuthorizedToFile")) {
+    return new GoogleToolError("permission_denied", "This connection can change only files that this app created or that were opened with it (Google Drive drive.file access). Nothing was changed.", status);
   }
   if (status === 403) return new GoogleToolError("permission_denied", message ?? "Google denied access to this item.", status, { status: error?.status, reasons: [...reasons] });
   if (status === 404 || status === 410) return new GoogleToolError("not_found", "Google could not find that item.", status);
