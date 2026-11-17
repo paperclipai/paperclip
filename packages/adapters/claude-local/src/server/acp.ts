@@ -620,9 +620,6 @@ async function claudeAcpUnavailableReason(
   });
   const managedSsh = target?.kind === "remote" && target.transport === "ssh"
     && target.spec.useHostAuth === false && Boolean(input.config.managedAiConnection);
-  if (managedSsh && target.workspaceRealization?.mode === "in_place") {
-    return "In-place SSH workspace realization requires the Claude CLI engine; ACP archive staging is not supported.";
-  }
   if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target) && !managedSsh) {
     if (target.transport === "sandbox") {
       return "Claude ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
