@@ -949,6 +949,29 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       ]);
     });
 
+    it("never revives a removed connection for a different server that has the same name", async () => {
+      installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const peer = await service.connectGalleryApp(company.id, { link: PEER_MCP_URL, name: "Shared name" });
+      await service.archiveConnection(peer.connectionId, company.id);
+
+      vi.restoreAllMocks();
+      installMcpOAuthFixture({ auth: "public" });
+      const other = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Shared name" });
+
+      expect(other.connectionId).not.toBe(peer.connectionId);
+      expect(other.application.id).not.toBe(peer.application.id);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, other.connectionId));
+      expect(connection!.agentInstructions).toBeNull();
+      expect(connection!.config).not.toHaveProperty("paperclipPeerToolNamespace");
+
+      // The same server still gets its retained identity back.
+      await service.archiveConnection(other.connectionId, company.id);
+      const again = await service.connectGalleryApp(company.id, { link: MCP_URL, name: other.application.name });
+      expect(again.application.id).toBe(other.application.id);
+    });
+
     it("keeps instructions the person supplied instead of the default", async () => {
       installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
       const company = await createCompany(db);

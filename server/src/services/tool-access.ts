@@ -1571,6 +1571,17 @@ export function toolAccessService(
     };
   }
 
+  /** Origin and path of a pasted MCP address; query strings may carry credentials and are ignored. */
+  function linkEndpoint(value: unknown): string | null {
+    if (typeof value !== "string" || !value.trim()) return null;
+    try {
+      const url = new URL(value.trim());
+      return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+      return null;
+    }
+  }
+
   function defaultLinkName(link: string): string {
     const peer = paperclipPeerFromMcpUrl(link);
     if (peer) return peer.name;
@@ -1777,10 +1788,24 @@ export function toolAccessService(
         : null;
       const requestedSource =
         galleryEntry?.slug ?? (input.link ? "link" : null);
+      // A pasted address names its own server. Default names can repeat
+      // across hosts (two `acme Paperclip`s), so a removed link connection is
+      // revived only for the same endpoint; otherwise the new server would
+      // inherit another server's identity, instructions and tool prefix.
+      const sameLinkEndpoint = async (applicationId: string) => {
+        const requested = linkEndpoint(input.link);
+        if (!requested) return false;
+        const retained = await db
+          .select({ config: toolConnections.config })
+          .from(toolConnections)
+          .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.applicationId, applicationId)));
+        return retained.some((row) => linkEndpoint(asRecord(row.config).url) === requested);
+      };
       if (
         recoverableApplication &&
         requestedSource &&
-        recoverableSource === requestedSource
+        recoverableSource === requestedSource &&
+        (requestedSource !== "link" || await sameLinkEndpoint(recoverableApplication.id))
       ) {
         existingApplication = recoverableApplication;
       }
