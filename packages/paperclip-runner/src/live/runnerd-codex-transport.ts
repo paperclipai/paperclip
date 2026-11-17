@@ -6592,7 +6592,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     await core.flushCheckpoint();
     this.#assertStartupOpen();
     // Prove confinement off the event loop; the launch below reads the cached result.
-    if (prepared.runnerOpenCodeLaunchProfile) await this.#awaitConfinementProbe();
+    if (prepared.runnerOpenCodeLaunchProfile) {
+      await this.#awaitConfinementProbe();
+      // A stop or close during the probe must not start a runner afterward.
+      this.#assertStartupOpen();
+    }
     this.#startupSteps?.begin("runner.process.launch");
     const handle = spawnRunner({
       connection: registration?.connection ?? {
@@ -7461,7 +7465,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (adoptedRunner) this.#startupSteps?.end();
     else {
       // Prove confinement off the event loop; the launch below reads the cached result.
-      if (runnerOpenCodeLaunchProfile) await this.#awaitConfinementProbe();
+      if (runnerOpenCodeLaunchProfile) {
+        await this.#awaitConfinementProbe();
+        // A stop or close during the probe must not start a runner afterward.
+        this.#assertStartupOpen();
+      }
       this.#startupSteps?.begin("runner.process.launch");
     }
     const handle = adoptedRunner

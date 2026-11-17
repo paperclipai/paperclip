@@ -125,7 +125,8 @@ temporarily stale. Self-hosted deployments continue to use their configured
 Agents in the local execution environment run as the server's operating-system
 user. Each local OpenCode session starts inside a per-session operating-system
 scope that all of its processes inherit: macOS uses a Seatbelt profile through
-`sandbox-exec`, and Linux uses a Landlock domain. The session keeps its own saved
+`sandbox-exec`, and Linux uses a Landlock domain (Landlock ABI 3, Linux 6.2 or
+newer, so that hidden files also cannot be truncated). The session keeps its own saved
 state, its own company directory and the shared instance directories. It cannot
 read other sessions' saved state or provider homes, other companies'
 directories, run logs,

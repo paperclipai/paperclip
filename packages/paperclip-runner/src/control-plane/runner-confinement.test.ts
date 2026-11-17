@@ -181,6 +181,8 @@ INSTANCE=\${state%/runtime/paperclip-runner/durable-sessions/*}; DB_PORT=$(cat "
 r() { if cat "$2" >/dev/null 2>&1; then echo "$1=readable"; else echo "$1=denied"; fi; }
 {
   r otherSessionConfig "$INSTANCE/runtime/paperclip-runner/durable-sessions/other-scope/opencode/s/config/opencode/opencode.json"
+  # truncate(2) by path, which needs no open file descriptor.
+  if /usr/bin/python3 -I -S -c 'import os,sys; os.truncate(sys.argv[1], 0)' "$INSTANCE/secrets/master.key" 2>/dev/null; then echo secretsTruncate=allowed; else echo secretsTruncate=denied; fi
   r otherOpencodeSession "$INSTANCE/runtime/paperclip-runner/opencode/other-session/config.json"
   r secrets "$INSTANCE/secrets/master.key"
   r acpxCredentials "$INSTANCE/runtime/paperclip-runner/acpx/other-session/home/auth.json"
@@ -273,6 +275,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       otherOpencodeSession: "denied",
       secrets: "denied",
       acpxCredentials: "denied",
+      secretsTruncate: "denied",
       databaseWal: "denied",
       runLog: "denied",
       environmentFile: "denied",
@@ -285,5 +288,6 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       savedProviderState: "usable",
       ownOpencodeSession: "readable",
     });
+    expect(readFileSync(join(instanceSessionStatePaths(join(root, "instance")).secrets, "master.key"), "utf8")).toBe("other session\n");
   }, 60_000);
 });

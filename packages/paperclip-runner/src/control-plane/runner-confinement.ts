@@ -260,12 +260,11 @@ def fail(message, code=125):
     sys.stderr.write("runner_confinement: %s\n" % message); sys.stderr.flush(); os._exit(code)
 def within(candidate, root):
     return candidate == root or candidate.startswith(root.rstrip("/") + "/")
-argv = sys.argv[1:]; required = False; probe = False; hidden = []; exposed = []; command = None; i = 0
+argv = sys.argv[1:]; required = False; hidden = []; exposed = []; command = None; i = 0
 while i < len(argv):
     token = argv[i]
     if token == "--": command = argv[i + 1:]; break
     if token == "--required": required = True
-    elif token == "--probe": probe = True
     elif token in ("--hide", "--expose") and i + 1 < len(argv):
         i += 1; value = os.path.realpath(argv[i])
         if not os.path.isabs(argv[i]) or value == "/": fail("invalid path: %s" % argv[i], 2)
@@ -280,6 +279,8 @@ def syscall(*args):
     return result
 def restrict():
     abi = syscall(ctypes.c_long(CREATE), ctypes.c_void_p(None), ctypes.c_long(0), ctypes.c_long(1))
+    # Below ABI 3 Landlock cannot deny truncate(), so a hidden file could still be erased.
+    if abi < 3: raise RuntimeError("Landlock ABI %d cannot deny truncation; ABI 3 or newer is required" % abi)
     handled = ABI1 | (REFER if abi >= 2 else 0) | (TRUNCATE if abi >= 3 else 0) | (IOCTL_DEV if abi >= 5 else 0)
     attr = Attr(handled)
     ruleset = syscall(ctypes.c_long(CREATE), ctypes.byref(attr), ctypes.c_long(ctypes.sizeof(attr)), ctypes.c_long(0))
@@ -315,10 +316,6 @@ def restrict():
             else: os.close(os.open(path, os.O_RDONLY | os.O_CLOEXEC))
         except OSError: continue
         raise RuntimeError("confinement ineffective: %s is still readable" % path)
-if probe:
-    try: syscall(ctypes.c_long(CREATE), ctypes.c_void_p(None), ctypes.c_long(0), ctypes.c_long(1))
-    except OSError as error: fail("Landlock is unavailable (%s)" % error)
-    os._exit(0)
 if not command: fail("missing command", 2)
 if hidden:
     try: restrict()
