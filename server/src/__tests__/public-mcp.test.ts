@@ -644,7 +644,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       const execute = createPublicMcpExecutor(db, oauth, createMcpApiDispatch(api));
       const base = { companyId: f.company.id, description: "Filed from a colleague's instance" };
 
-      const people = await execute(f.tokens.access_token, "paperclip_list_people", { companyId: f.company.id });
+      const people: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_list_people", { companyId: f.company.id });
       expect(people.people).toEqual(expect.arrayContaining([{ userId: colleagueId, name: "Colleague", role: "member" }]));
       expect(JSON.stringify(people)).not.toContain("@example.com");
       expect(JSON.stringify(people)).not.toContain(outsider.actor.userId!);
