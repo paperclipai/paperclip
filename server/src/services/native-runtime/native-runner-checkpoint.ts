@@ -128,11 +128,28 @@ export async function validateNativeRunnerCheckpointOwner(
   }
 }
 
+class SuccessorCoordinatorCreated extends Error {}
+
+async function lockSuccessorRows(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
+  const coordinatorRow = (db: CheckpointTransaction) => db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .where(and(eq(nativeRunFinalizations.runId, successorRunId), eq(nativeRunFinalizations.companyId, owner.companyId)));
+  for (let pass = 0; ; pass++) {
+    try {
+      return await tx.transaction(async locking => {
+        const [coordinator] = await coordinatorRow(locking).for("share");
+        const [run] = await locking.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, successorRunId), eq(heartbeatRuns.companyId, owner.companyId))).for("share");
+        if (run && !coordinator && pass < 2 && (await coordinatorRow(locking)).length) throw new SuccessorCoordinatorCreated();
+        return { coordinator, run };
+      });
+    } catch (error) {
+      if (!(error instanceof SuccessorCoordinatorCreated)) throw error;
+    }
+  }
+}
+
 async function unstartedSuccessorOfOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
-  const [coordinator] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
-    eq(nativeRunFinalizations.runId, successorRunId), eq(nativeRunFinalizations.companyId, owner.companyId))).for("share");
-  const [run] = await tx.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.id, successorRunId), eq(heartbeatRuns.companyId, owner.companyId))).for("share");
+  const { coordinator, run } = await lockSuccessorRows(tx, owner, successorRunId);
   if (!run) return [];
   const resumeClaim = sql`${nativeRunFinalizations.recoveryHistory}->-1`;
   const waitsOnlyForOwner = (waiting: SQL) => sql`(coalesce(${waiting}, 'null'::jsonb) = 'null'::jsonb

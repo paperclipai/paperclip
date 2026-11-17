@@ -796,6 +796,36 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     }
   });
 
+  it("accepts the outgoing server's save that waited while the incoming server selected native execution for the preparing follow-up", async () => {
+    registerControllerInstanceDb(db);
+    const behind = await followUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, saveSuspend, savedCommands } = behind;
+      await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId);
+      let fence!: Promise<void>;
+      await db.transaction(async selectTx => {
+        await selectTx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+        fence = db.transaction(async fenceTx => assertNativeRunnerCheckpointOwner(fenceTx, fixture.owner, false));
+        void fence.catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%heartbeat_runs%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        await selectTx.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: fixture.scope.issueId,
+          nativeSessionId: fixture.scope.normalizedSessionId, executionStage: null, controllerBootId: null, controllerLeaseExpiresAt: null })
+          .where(eq(heartbeatRuns.id, runId));
+        await selectTx.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed" });
+      });
+      await expect(fence).resolves.toBeUndefined();
+      await saveSuspend();
+      expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+    } finally {
+      await behind.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
   it.each(["expired-controller", "dispatching", "own-process", "own-process-event", "other-issue"] as const)(
     "refuses the outgoing server's idle checkpoint when the incoming server's preparing follow-up is no longer unstarted: %s", async scenario => {
       registerControllerInstanceDb(db);
