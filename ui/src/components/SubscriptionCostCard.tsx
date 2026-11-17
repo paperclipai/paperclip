@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { SUBSCRIPTION_CURRENCIES, centsToUsd, usdToCents, type SubscriptionAccountReport, type SubscriptionCostReport, type SubscriptionUsage } from "@paperclipai/shared";
 import { subscriptionsApi } from "../api/subscriptions";
-import { formatCents, formatDateTime, formatTokens, providerDisplayName } from "../lib/utils";
+import { cn, formatCents, formatDateTime, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Card } from "./ui/card";
@@ -56,7 +56,7 @@ function SubscriptionEditor({ account, accounts, companyId, onDone }: {
     </form>
     {targets.length > 0 && <div className="space-y-2 border-t border-border pt-4">
       <Label htmlFor="subscription-link">Same subscription as another account?</Label>
-      <select id="subscription-link" className={selectClass} value={targetId} onChange={event => setTargetId(event.target.value)}><option value="">Choose an account</option>{targets.map(row => <option key={row.id} value={row.id}>{row.name} · {row.price.plan}</option>)}</select>
+      <select id="subscription-link" className={cn(selectClass, ANALYTICS_MASK_CLASS)} value={targetId} onChange={event => setTargetId(event.target.value)}><option value="">Choose an account</option>{targets.map(row => <option key={row.id} value={row.id}>{row.name} · {row.price.plan}</option>)}</select>
       <p className="text-xs text-muted-foreground">Linking counts these accounts once, combines their Paperclip usage, and keeps the selected account’s price. Only link the same subscription or paid seat.</p>
       {link.error && <p role="alert" className="text-sm text-destructive">Could not link these accounts. Reopen their details and try again.</p>}
       <Button type="button" variant="outline" disabled={!targetId || busy} onClick={() => link.mutate()}>Link accounts</Button>

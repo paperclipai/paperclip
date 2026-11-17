@@ -122,8 +122,11 @@ are always masked.
   project masking settings empty, and change masking only in `privacy.ts`. The
   `ph-mask` class is also the posthog-js default `maskTextClass`.
 - `ANALYTICS_NO_CAPTURE_CLASS` replaces secrets with a blank box in replays:
-  every password-type `Input`, environment variable values and new secret
-  values.
+  every password-type `Input`, environment variable values, new secret
+  values, and secrets shown as text: one-time sign-in and device codes,
+  pairing and setup prompts, identity confirmation links, newly issued API
+  keys and gateway tokens, gateway client snippets, webhook URLs and secrets,
+  invite claim secrets, raw provider frames and SSH fallback commands.
 - Every event and replay meta event goes through `scrubCapturedEvent`
   (`before_send`). Every URL keeps only its origin and path: query and hash
   values never leave, because they can hold credentials, file paths or search
@@ -136,24 +139,27 @@ are always masked.
   (`mask_all_text`, `mask_all_element_attributes`). It keeps the click, the
   element tree and the page.
 - Connected-account content is Google user data or Slack data. No human may
-  read it in a replay (privacy policy and Google API Limited Use). Every
-  surface that can show it, or other free-form text that agents or customers
-  write, carries `ANALYTICS_MASK_CLASS` on its content element (not on the
-  chrome around it):
+  read it in a replay (privacy policy and Google API Limited Use). The
+  surfaces below, and other free-form text that agents or customers write,
+  carry `ANALYTICS_MASK_CLASS` on their content element (not on the chrome
+  around it):
   - Rendered markdown (task bodies, comments, chat messages, documents), the
     rich editor, task and issue chat threads (messages, tool calls, tool
     results, interaction cards), the comment timeline and the file viewer.
   - Link preview cards, task quicklook descriptions, external object pills and
     rows, and related-work titles.
   - Email message cards and email send intents.
-  - Connected account names and email addresses (Browse rows and the remove
-    dialog, Connections, app detail headers, the app sidebar, connection
-    choice lists, AI connection pickers, AI account details and controls,
-    subscription quota panels, adapter sign-in status, connection access and
-    repair cards),
-    GitHub logins and repositories, Slack workspace names (list and selected
-    value), chat channels, linked user labels, the external task banner and
-    chat identity pages.
+  - Connection names, connected account names, aliases and email addresses
+    (Browse rows and the remove dialog, Connections, app detail headers, the
+    app sidebar, connection choice lists and instructions, aggregator and
+    Composio account dialogs, Tailscale networks, agent tool and audit
+    tables, AI connection names, pickers, selects, account details and
+    controls, pool run details, subscription and quota panels, adapter
+    sign-in status, connection access and repair cards), GitHub logins
+    (identity rows, bot people, chat setup, run identity history) and
+    repositories, Slack workspace names (list and selected value), Slack
+    account pickers, chat channels, linked user labels, the external task
+    banner and chat identity pages.
   - App action test results (parsed preview and raw response).
   - Inbox and decision rows (subject and detail line), obligation evidence,
     Needs You notes and receipts, decision cards and compact decisions,
@@ -163,21 +169,26 @@ are always masked.
     evidence and options, run ledger retry details and interrupt handoff
     previews.
   - Run transcripts, run failure details, run events and the run invocation
-    prompt, context and environment on the agent page.
+    command, notes, prompt, context and environment on the agent page.
   - Document and case revision diffs.
   - Search result snippets, toasts (title and body), voice and call
     transcripts, case summaries, files and fields, attachment previews and
     artifact previews (text, tables, patches and documents).
 
-  `ui/src/lib/analytics/replay-masking.test.tsx` pins this list: for each
-  entry it checks that the content sits inside an element with the class. A
-  new surface that shows connected-account content needs the class and an
-  entry there.
+  Component tests render these surfaces with distinctive fixture text and
+  assert, through `ui/src/lib/analytics/replay-recording.test-utils.ts`, that
+  the text is rendered but not recorded (or is blocked, for secrets),
+  including alternate branches, dialog portals and selected values in
+  closed pickers. `ui/src/lib/analytics/replay-masking.test.tsx` also pins
+  the remaining surfaces at source level. A new surface that shows
+  connected-account content needs the class and a test.
 - Residual risk: text that the owner accepted as visible can still hold
   customer words. Task titles, agent names, project names, company names,
   routine names, artifact and document titles, and activity rows (which name
-  the task or entity) are recorded as they are. An agent can copy email or
-  Slack text into a task title. A new surface that renders connected-account
-  content without the class is recorded until somebody marks it.
+  the task or entity) are recorded as they are. Paperclip member names and
+  email addresses on member, access and profile pages are recorded too. An
+  agent can copy email or Slack text into a task title. Masking is opt-in per
+  surface, so a new surface that renders connected-account content without
+  the class is recorded until somebody marks it.
 - The UI never captures an event that the server already sends
   (`PAPERCLIP_EVENTS`); `product-analytics-events.test.ts` enforces this.

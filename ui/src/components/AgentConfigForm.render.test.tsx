@@ -13,6 +13,7 @@ import { ToastProvider } from "../context/ToastContext";
 import { AgentConfigForm, AdapterLoginPanel, ModelDropdown, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { AgentLifecycleStatus, useAgentLifecycleStatus } from "./AgentLifecycleStatus";
 import { queryKeys } from "../lib/queryKeys";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
@@ -2437,6 +2438,17 @@ describe("AgentConfigForm environment selector", () => {
     const urlIndex = result.container.textContent!.indexOf("https://auth.example.test/device");
     expect(codeIndex).toBeGreaterThan(-1);
     expect(urlIndex).toBeGreaterThan(codeIndex);
+  });
+
+  it("blocks the displayed login code from session replay", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+
+    expect(isBlockedFromReplay("WXYZ-1234", document.body)).toBe(true);
   });
 
   it("keeps the code and URL visible after a later poll returns no prompt", async () => {

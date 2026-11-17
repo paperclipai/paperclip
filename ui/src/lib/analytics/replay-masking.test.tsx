@@ -2,12 +2,22 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { DocumentRevision } from "@paperclipai/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { DocumentDiffModal } from "@/components/DocumentDiffModal";
+import { RunInvocationCard } from "@/components/run-log/RunDetails";
+import { ChatConversationList } from "@/pages/apps/chat/ChatConversationList";
 import { VoiceTranscript } from "@/components/voice/VoiceTranscript";
 import { RunTranscriptView } from "@/components/transcript/RunTranscriptView";
 import { buildPostHogInitOptions } from "./product-analytics";
 import { ANALYTICS_MASK_CLASS, ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS } from "./privacy";
+import { isBlockedFromReplay, replayLeaks } from "./replay-recording.test-utils";
+
+vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 
 const UI_SRC = join(import.meta.dirname, "../..");
 
@@ -55,7 +65,40 @@ const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "features/connections/ConnectionIntentInteractionBody.tsx", content: "“{accessRequest.connectionName}”" },
   { file: "features/connections/ConnectionIntentInteractionBody.tsx", content: "{repair.connection.name} is ready." },
   { file: "features/connections/ConnectionIntentInteractionBody.tsx", content: "must reconnect ${repair.connection.name}" },
-  { file: "pages/apps/app-detail/IdentitiesSection.tsx", content: "@{github.login}" },
+  { file: "pages/apps/app-detail/IdentitiesSection.tsx", content: "<span className={ANALYTICS_MASK_CLASS}>@{github.login}</span>" },
+  { file: "pages/apps/app-detail/IdentitiesSection.tsx", content: "@{github.login}\n" },
+  { file: "pages/apps/app-detail/IdentitiesSection.tsx", content: "<Identity name={connectedName}" },
+  { file: "pages/apps/app-detail/IdentitiesSection.tsx", content: "<AlertDialogTitle className={ANALYTICS_MASK_CLASS}>{title}" },
+  { file: "pages/apps/AggregatorAppManager.tsx", content: "{account.alias ||" },
+  { file: "pages/apps/AggregatorAppManager.tsx", content: "“{connection.name}”" },
+  { file: "pages/apps/ComposioAppManager.tsx", content: "{account.alias ||" },
+  { file: "pages/apps/ComposioAppManager.tsx", content: "“{connection.name}”" },
+  { file: "pages/apps/TailscaleConnector.tsx", content: "{connected.map(connection => connection.name)" },
+  { file: "pages/apps/TailscaleConnector.tsx", content: "{connection.name}</p>" },
+  { file: "pages/apps/TailscaleConnector.tsx", content: "<span className={ANALYTICS_MASK_CLASS}>{connection.name}</span></Button>\n" },
+  { file: "pages/apps/TailscaleConnector.tsx", content: "<span className={ANALYTICS_MASK_CLASS}>{connection.name}</span></Button>}" },
+  { file: "pages/apps/ArcadeDiscoverySetup.tsx", content: "“{connection.name}”" },
+  { file: "pages/apps/ExecutorManagementSetup.tsx", content: "“{connection.name}”" },
+  { file: "pages/apps/AggregatorConnectDialog.tsx", content: "{existing.map(" },
+  { file: "pages/apps/app-detail/ConnectedAggregatorApps.tsx", content: "{accounts[0].alias}" },
+  { file: "pages/apps/chat/GitHubBotConfiguration.tsx", content: "@{person.login}</p>" },
+  { file: "pages/apps/chat/GitHubBotConfiguration.tsx", content: "`@${candidate.login} is already listed" },
+  { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{legacyIdentity?.login}" },
+  { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{state.identity.login}" },
+  { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{account.login ?? account.name}" },
+  { file: "pages/apps/chat/GitHubChatSetup.tsx", content: "{legacyIdentity.login}" },
+  { file: "pages/AgentDetail.tsx", content: "{person?.user?.name ?? person?.user?.email" },
+  { file: "pages/AgentDetail.tsx", content: "{responsibleUserName ?? responsibleUserLabel(null)}" },
+  { file: "pages/AgentToolsTab.tsx", content: "{connection.name}</span>" },
+  { file: "pages/AgentToolsTab.tsx", content: "{connectionNameById.get(tool.connectionId) ?? \"—\"}" },
+  { file: "pages/tools/connection-dialogs.tsx", content: "<span className={ANALYTICS_MASK_CLASS}>{connection.name}</span></DialogTitle>" },
+  { file: "pages/tools/AuditTab.tsx", content: "{connectionName}\n" },
+  { file: "pages/tools/profiles/ProfileDetail.tsx", content: "{tool.applicationName ?? tool.connectionName" },
+  { file: "features/connections/ConnectionInstructions.tsx", content: "{connection.name}</Link>" },
+  { file: "components/decision-models/DecisionHistory.tsx", content: "{row.connectionName ??" },
+  { file: "components/IssueThreadInteractionCard.tsx", content: "<span className={ANALYTICS_MASK_CLASS}>{connectionName}</span>" },
+  { file: "components/ai-connections/AiConnectionField.tsx", content: "For you: ${pendingAccount" },
+  { file: "components/skill-studio/SkillSourceConnectionRepair.tsx", content: "<RadioCardGroup ariaLabel=\"GitHub connection\"" },
   { file: "pages/apps/app-detail/IdentitiesSection.tsx", content: "{grantAccountLabel(grant)}" },
   { file: "pages/apps/chat/slack/ManagedSlackSetup.tsx", content: "{workspaces[0]!.workspaceName}" },
   { file: "pages/apps/chat/slack/ManagedSlackSetup.tsx", content: "<SelectValue" },
@@ -210,7 +253,87 @@ describe("session replay text masking", () => {
     expect(recordedTextOf(html, "Globex renewal")).not.toMatch(/[A-Za-z]/);
   });
 
-  it.each(MASKED_SURFACES)("masks $content in $file", ({ file, content }) => {
+  it("masks the adapter command, prompt, context and environment of a run invocation", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => root.render(
+      <RunInvocationCard
+        censorUsernameInLogs={false}
+        payload={{
+          adapterType: "claude_local",
+          command: "claude",
+          commandArgs: ["--append", "Reply to jane@globex.com"],
+          commandNotes: ["Loaded Globex renewal notes"],
+          prompt: "Summarize the Globex renewal thread",
+          context: { inbox: "jane@globex.com" },
+          env: { GLOBEX_ACCOUNT: "globex-tenant" },
+        }}
+      />,
+    ));
+    const details = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("Details"));
+    await act(async () => details!.click());
+    expect(replayLeaks("Reply to jane@globex.com", host)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Loaded Globex renewal notes", host)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Summarize the Globex renewal thread", host)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("jane@globex.com", host).recorded).toBe(false);
+    expect(replayLeaks("globex-tenant", host)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Prompt", host)).toEqual({ rendered: true, recorded: true });
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it("masks document revision diff lines inside the diff dialog portal", async () => {
+    const revision = (revisionNumber: number, body: string) => ({
+      id: `rev-${revisionNumber}`, companyId: "c", documentId: "d", issueId: "i", key: "plan", revisionNumber,
+      title: "Plan", format: "markdown", body, changeSummary: null, createdByAgentId: null, createdByUserId: null,
+      createdAt: "2026-01-01T00:00:00Z",
+    }) as unknown as DocumentRevision;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(
+      <QueryClientProvider client={client}>
+        <DocumentDiffModal
+          documentKey="plan"
+          latestRevisionNumber={2}
+          open
+          onOpenChange={() => {}}
+          revisionsQueryKey={["diff-test"]}
+          revisionsQueryFn={async () => [revision(1, "Call Globex about renewal"), revision(2, "Email jane@globex.com the renewal")]}
+        />
+      </QueryClientProvider>,
+    ));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Email jane@globex.com the renewal"));
+    expect(host.contains(document.querySelector('[role="dialog"]'))).toBe(false);
+    expect(replayLeaks("Call Globex about renewal", document.body)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Email jane@globex.com the renewal", document.body)).toEqual({ rendered: true, recorded: false });
+    await act(async () => root.unmount());
+    client.clear();
+    host.remove();
+  });
+
+  it("blocks secret markers entirely instead of masking them", () => {
+    document.body.innerHTML = `<p class="${ANALYTICS_NO_CAPTURE_CLASS}"><span>pcgw_live_123</span></p><p>Copy token</p>`;
+    expect(isBlockedFromReplay("pcgw_live_123")).toBe(true);
+    expect(isBlockedFromReplay("Copy token")).toBe(false);
+  });
+
+  it.each([
+    { name: "a linked Slack conversation", provider: "slack" as const, externalUrl: "https://globex.slack.com/archives/C1", label: "#globex-deals" },
+    { name: "an unlinked Slack conversation", provider: "slack" as const, externalUrl: null, label: "#globex-deals" },
+    { name: "a linked GitHub thread", provider: "github" as const, externalUrl: "https://github.com/globex/renewals/issues/7", label: "globex/renewals #7" },
+    { name: "an email conversation", provider: "agentmail" as const, externalUrl: null, label: "jane@globex.com" },
+  ])("masks the destination of $name in the conversation list", ({ provider, externalUrl, label }) => {
+    document.body.innerHTML = renderToStaticMarkup(
+      <ChatConversationList provider={provider} rows={[{ id: "c1", externalLabel: label, externalUrl, state: "completed", updatedAt: "2026-01-01T00:00:00Z" }]} />,
+    );
+    expect(replayLeaks(label)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Completed")).toEqual({ rendered: true, recorded: true });
+  });
+
+  it.each(MASKED_SURFACES)("keeps the source mask on $content in $file", ({ file, content }) => {
     const source = readFileSync(join(UI_SRC, file), "utf8");
     const index = source.indexOf(content);
     expect(index, `content not found in ${file}`).toBeGreaterThanOrEqual(0);

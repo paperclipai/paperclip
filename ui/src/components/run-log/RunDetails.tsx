@@ -209,7 +209,7 @@ export function RunInvocationCard({
             {commandLine && (
               <div className="text-xs break-all">
                 <span className="text-muted-foreground">Command: </span>
-                <span className="font-mono">{commandLine}</span>
+                <span className={cn("font-mono", ANALYTICS_MASK_CLASS)}>{commandLine}</span>
               </div>
             )}
             {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
@@ -219,7 +219,7 @@ export function RunInvocationCard({
                   {payload.commandNotes
                     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
                     .map((note, idx) => (
-                      <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                      <li key={`${idx}-${note}`} className={cn("text-xs break-all font-mono", ANALYTICS_MASK_CLASS)}>
                         {note}
                       </li>
                     ))}
