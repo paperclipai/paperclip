@@ -791,6 +791,8 @@ export interface DecisionHistoryPage {
 /** Operational alerts stay inspectable without becoming human decision requests. */
 export function supportsAttentionRecoveryResolution(cause: string): boolean {
   return !requiresExecutionReconciliation(cause) && !isNativeWorkspaceExportRepairCause(cause) && ![
+    // Both export failures keep a saved result that only its own export repair may recover.
+    "native_workspace_sync_out_unrecoverable",
     "native_workspace_sync_out_unsafe_archive",
     "native_workspace_finalization_owner_unverified",
     "ownership_owner_unprovable",
