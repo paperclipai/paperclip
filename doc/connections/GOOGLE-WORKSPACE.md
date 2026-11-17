@@ -63,6 +63,11 @@ endpoints remain separate. Paperclip namespaces actions by service and routes th
 to a closed endpoint registry using the combined grant. It does not create child
 connections or send provider tokens through Paperclip ID.
 
+Google results are untrusted content. The prompt-injection guard checks them
+before an agent receives them; see
+[Google Workspace content](../prompt-injection-prevention.md#google-workspace-content)
+for what it covers and what it does not.
+
 The catalog reuses the existing reviewed Google mark (`google-people.svg`),
 registered under its own `google-workspace` brand identity. No new artwork is
 downloaded or substituted for a product logo.
