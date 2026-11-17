@@ -381,7 +381,7 @@ export function createPluginRunnerTaskOwner(input: {
         },
         resume: async (identity: DurableRecoveryIdentity, ticket: string) => {
           const outcome = await resume(identity, ticket);
-          if (outcome === "resumed") await input.onResumed?.(identity);
+          if (outcome === "resumed" || typeof outcome === "object" && outcome.outcome === "resumed") await input.onResumed?.(identity);
           return outcome;
         },
       };
