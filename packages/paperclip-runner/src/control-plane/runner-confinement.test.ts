@@ -164,6 +164,9 @@ r() { if cat "$2" >/dev/null 2>&1; then echo "$1=readable"; else echo "$1=denied
   r otherOpencodeSession "$INSTANCE/runtime/paperclip-runner/opencode/other-session/config.json"
   r secrets "$INSTANCE/secrets/master.key"
   r acpxCredentials "$INSTANCE/runtime/paperclip-runner/acpx/other-session/home/auth.json"
+  # Linux: another process's environment (here the unconfined test worker that launched runnerd).
+  # Landlock denies ptrace-mode reads of processes outside the session's own domain.
+  if [ -e "/proc/$PPID/environ" ]; then r otherProcessEnvironment "/proc/$PPID/environ"; fi
   r databaseWal "$INSTANCE/db/pg_wal/000000010000000000000001"
   r runLog "$INSTANCE/data/run-logs/c/a/other.ndjson"
   r environmentFile "$INSTANCE/.env"
@@ -232,12 +235,15 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
 
   it("leaves an unconfined session able to read every session's state", async () => {
     const result = await launch(false);
+    if (process.platform === "linux") expect(result.otherProcessEnvironment).toBe("readable");
     expect(result).toMatchObject({ otherSessionConfig: "readable", secrets: "readable", acpxCredentials: "readable", sessionListing: "listable", otherCompanyFile: "readable" });
   }, 60_000);
 
   it("keeps the session to its own state", async () => {
     const result = await launch(true);
     if (process.platform === "darwin") expect(result.database).toBe("blocked");
+    // macOS hides other processes' environments by refusing set-user-ID `ps`; Linux by Landlock's ptrace scope.
+    if (process.platform === "linux") expect(result.otherProcessEnvironment).toBe("denied");
     expect(result).toMatchObject({
       otherSessionConfig: "denied",
       otherOpencodeSession: "denied",
