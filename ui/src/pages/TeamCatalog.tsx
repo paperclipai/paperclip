@@ -114,6 +114,7 @@ import {
   XOctagon,
 } from "lucide-react";
 import { GithubIcon } from "../components/icons/github-icon";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 // Matches design §11 breakpoints. Module-level so stories and the page agree.
 const DESKTOP_MIN = 1024;
@@ -853,7 +854,7 @@ export function TeamDetailPane({
                     <MarkdownBody>{fileContent}</MarkdownBody>
                   </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap break-words font-mono text-xs">{fileContent}</pre>
+                  <pre className={cn("whitespace-pre-wrap break-words font-mono text-xs", ANALYTICS_MASK_CLASS)}>{fileContent}</pre>
                 )}
               </div>
             </div>

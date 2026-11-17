@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNotNull, isNull, ne, notLike, or } from "drizzle-orm";
-import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { dedicatedDbConnectionStats, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { readDatabaseSessionWaits } from "../database-session-waits.js";
 import { logger } from "../../middleware/logger.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -18,7 +19,10 @@ import {
   settleReattachRun,
   type ClaimableReattachRun,
   type ReattachClaimableReason,
+  type ReattachPhaseSummary,
 } from "./run-admission.js";
+
+export { readDatabaseSessionWaits, type DatabaseSessionWait } from "../database-session-waits.js";
 
 export const REATTACH_PHASE_DEFAULT_CAP_MS = 180_000;
 export const REATTACH_PHASE_MIN_CAP_MS = 5_000;
@@ -95,6 +99,7 @@ type ReattachWatch = {
   worker: ReattachWorker | null;
   stopListening: () => void;
   claim?: (runIds: string[]) => Promise<unknown>;
+  stallReports: Set<Promise<void>>;
 };
 
 let watch: ReattachWatch | null = null;
@@ -215,9 +220,18 @@ export function registerReattachPhaseWork(
   if (capMs <= 0) return null;
   if (watch) void stopReattachWatch();
   enableReattachPhase(capMs);
+  const stopEndListener = options.onEnd ? onReattachPhaseEnd(options.onEnd) : () => undefined;
   const current: ReattachWatch = { db, bootId: options.bootId ?? currentControllerBootId(), initialized: false,
-    notified: false, watching: false, leases: new Map(), worker: null, claim: options.claim,
-    stopListening: options.onEnd ? onReattachPhaseEnd(options.onEnd) : () => undefined };
+    notified: false, watching: false, leases: new Map(), worker: null, claim: options.claim, stallReports: new Set(),
+    stopListening: () => undefined };
+  const stopStallReport = onReattachPhaseEnd(summary => {
+    if (watch !== current || !stalledReattach(summary)) return;
+    const report: Promise<void> = reportStalledReattach(db, summary)
+      .catch(error => logger.warn({ err: error }, "reattach phase could not read database session waits"))
+      .finally(() => { current.stallReports.delete(report); });
+    current.stallReports.add(report);
+  });
+  current.stopListening = () => { stopEndListener(); stopStallReport(); };
   watch = current;
   const release = () => {
     if (watch !== current) return;
@@ -235,10 +249,26 @@ export function registerReattachPhaseWork(
   return current.worker;
 }
 
+function authenticatedButUnreached(summary: ReattachPhaseSummary): string[] {
+  return summary.runs.filter(run => run.outcome === "outstanding" && run.authenticatedMs !== null).map(run => run.runId);
+}
+
+function stalledReattach(summary: ReattachPhaseSummary): boolean {
+  return summary.reason === "cap_reached" && authenticatedButUnreached(summary).length > 0;
+}
+
+async function reportStalledReattach(db: Db, summary: ReattachPhaseSummary): Promise<void> {
+  const runIds = authenticatedButUnreached(summary);
+  const waits = await readDatabaseSessionWaits(db);
+  logger.warn({ runIds, pool: dedicatedDbConnectionStats(db), waits },
+    "reattach phase ended with authenticated runs that were never reached; database sessions waiting or holding locks");
+}
+
 export async function stopReattachWatch(): Promise<void> {
   const current = watch;
   if (!current) return;
   watch = null;
   current.stopListening();
   await current.worker?.stop();
+  await Promise.all(current.stallReports);
 }

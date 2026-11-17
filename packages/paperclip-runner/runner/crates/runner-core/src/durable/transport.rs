@@ -1771,6 +1771,8 @@ fn hex_nibble(byte: u8) -> Result<u8, DurableRunnerError> {
 mod tests {
     #[cfg(unix)]
     include!("tests/hosted_retention.rs");
+    #[cfg(unix)]
+    include!("tests/acpx_park_relaunch.rs");
     include!("tests/ack_release_poll.rs");
     include!("tests/indeterminate_terminal_ack.rs");
 
@@ -1834,6 +1836,13 @@ mod tests {
         let credential = CredentialMaterial::from_token(server_credential.token);
         assert_eq!(payload["credentialId"], credential.credential_id);
         assert_eq!(payload["credentialKind"], server_credential.kind);
+        let warm_transition_id = state
+            .warm_transition
+            .as_ref()
+            .map(|transition| transition.receipt.transition_id.clone());
+        if let Some(id) = &warm_transition_id {
+            assert_eq!(payload["warmTransitionId"], *id);
+        }
         let mut challenge = AuthChallenge {
             credential_id: credential.credential_id.clone(),
             credential_kind: server_credential.kind.to_owned(),
@@ -1853,8 +1862,8 @@ mod tests {
             credential_lease_id: server_credential.lease_id.map(str::to_owned),
             revocation_epoch: server_credential.revocation_epoch,
             server_proof: String::new(),
-            warm_transition_version: None,
-            warm_transition_id: None,
+            warm_transition_version: warm_transition_id.as_ref().map(|_| 1),
+            warm_transition_id,
             recovery_cursor_version: Some(1),
             recovery_acked_source_seq: payload["resume"]["ackedSourceSeq"].as_u64(),
         };
@@ -1889,6 +1898,8 @@ mod tests {
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
                     "serverProof": &challenge.server_proof,
+                    "warmTransitionVersion": challenge.warm_transition_version,
+                    "warmTransitionId": &challenge.warm_transition_id,
                     "recoveryCursorVersion": challenge.recovery_cursor_version,
                     "recoveryAckedSourceSeq": challenge.recovery_acked_source_seq,
                 },

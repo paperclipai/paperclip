@@ -7,16 +7,16 @@ function fixture(rows: Array<{ experimental: unknown }> = []) {
   return { db: { select, insert: mutation, update: mutation, delete: mutation, execute: mutation } as unknown as Db, mutation, select };
 }
 describe("read-only experimental settings view", () => {
-  it("returns disabled public-MCP defaults without creating a missing singleton", async () => {
+  it("returns enabled public-MCP defaults without creating a missing singleton", async () => {
     const f = fixture();
     const value = await instanceSettingsService(f.db,{ runtimeEnv: {} }).getExperimentalReadOnly();
-    expect(value.enablePublicMcp).toBe(false);
+    expect(value.enablePublicMcp).toBe(true);
     expect(f.select).toHaveBeenCalledTimes(1);
     expect(f.mutation).not.toHaveBeenCalled();
   });
   it("preserves the existing managed overlay on missing and stored rows", async () => {
     const runtimeEnv = { PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "test",
-      features: { enablePublicMcp: true, enableOpenAiDot: true }, plugins: { autoInstall: [] } }) };
+      features: { enablePublicMcp: false, enableOpenAiDot: true }, plugins: { autoInstall: [] } }) };
     for (const rows of [[], [{ experimental: { enablePublicMcp: false } }]]) {
       const f = fixture(rows);
       const value = await instanceSettingsService(f.db,{ runtimeEnv }).getExperimentalReadOnly();

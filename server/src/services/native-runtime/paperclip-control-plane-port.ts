@@ -36,6 +36,7 @@ import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-
 import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, type NativeControllerCompatibility } from "./native-controller-recovery.js";
 import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
+import { trackRunIntake } from "../run-intake-stall-watch.js";
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
@@ -399,6 +400,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
+    const eventType = (value as { eventType?: unknown }).eventType;
+    return trackRunIntake(this.#binding.runId, "received", typeof eventType === "string" ? eventType : "unknown",
+      () => this.#appendEvent(value, options));
+  }
+
+  async #appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
     const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");

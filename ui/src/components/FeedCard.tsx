@@ -401,10 +401,6 @@ interface FeedCardProps {
   agentMap: Map<string, Agent>;
   entityNameMap: Map<string, string>;
   entityTitleMap?: Map<string, string>;
-  /** Retained for call-site compatibility; no longer read — the collapsed
-   *  card always shows the event-derived status. Lifecycle aggregation (a
-   *  later pass) will pass the live status through its own wrapper. */
-  entityStatusMap?: Map<string, string>;
   isActive?: boolean;
   /** Tier 2 treatment: mutes the verb and title text. Actor name and
    *  timestamp retain their color; leading icon retains its color. */

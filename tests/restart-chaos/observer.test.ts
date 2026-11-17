@@ -123,6 +123,54 @@ describe("TaskObserver", () => {
     expect(observer.record.restAt).toBe(start + 1_000);
   });
 
+  describe("deadline versus rest confirmation", () => {
+    async function observe(statusAt: (now: number, start: number) => string) {
+      let start = 0;
+      let current = 0;
+      const { api } = fakeApi({ "/api/issues/i1": route => route.endsWith("/runs")
+        ? [{ runId: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }]
+        : { id: "i1", status: statusAt(current, start), interruption: null } });
+      const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+      await observer.launch();
+      start = observer.record.createdAt!;
+      observer.record.deadlineAt = start + 60_000;
+      const poll = (at: number) => { current = at; return observer.poll(at); };
+      return { observer, start, poll };
+    }
+
+    it("confirms a task that began resting just before its deadline instead of timing it out", async () => {
+      const { observer, start, poll } = await observe((now, begin) => now >= begin + 59_000 ? "done" : "in_progress");
+      await poll(start + 58_000);
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(false);
+      expect(observer.record.timedOut).toBe(false);
+      await poll(start + 59_000 + REST_CONFIRM_MS);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(false);
+      expect(observer.record.finalStatus).toBe("done");
+      expect(observer.record.restAt).toBe(start + 59_000);
+    });
+
+    it("times out a task that is still running at its deadline", async () => {
+      const { observer, start, poll } = await observe(() => "in_progress");
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(true);
+      expect(observer.record.finalStatus).toBe("in_progress");
+    });
+
+    it("times out a task that only starts resting after its deadline", async () => {
+      const { observer, start, poll } = await observe((now, begin) => now > begin + 60_000 ? "done" : "in_progress");
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(true);
+      expect(observer.record.restAt).toBeNull();
+    });
+  });
+
   it("reports a failed workspace-operation read as a sweep error, not a clean rest", async () => {
     const { api } = fakeApi({ "/workspace-operations": () => { throw new Error("timeout"); } });
     const observer = new TaskObserver(plan, api, lab, new Timeline(null), ready);

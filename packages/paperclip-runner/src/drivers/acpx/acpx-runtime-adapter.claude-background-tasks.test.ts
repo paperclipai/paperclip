@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { expect, it, vi } from "vitest";
 
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -108,7 +108,7 @@ it("knows from the real Claude ACP stream when a turn leaves background work run
     mcpServers: [],
     retainFailedAdmissionCleanup: vi.fn(),
   } as AcpxRuntimePortOpenOptions;
-  let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+  let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
   const runTurn = async (turnId: string, text: string) => {
     const before = await port!.getStatus();
     const turn = port!.startTurn({ text, requestId: turnId, onPermissionRequest: async () => ({ outcome: "allow_once" }) });
@@ -119,7 +119,7 @@ it("knows from the real Claude ACP stream when a turn leaves background work run
     return { result, state, usage };
   };
   try {
-    port = await openCodexAcpxRuntime(options, {
+    port = await openQualifiedAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
     });

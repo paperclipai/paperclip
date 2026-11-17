@@ -9,19 +9,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { GatewaysTab } from "./GatewaysTab";
 import { RelativeTime } from "./shared";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 
 const listGatewaysMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const listProjectsMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
+const createGatewayTokenMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGateways: (companyId: string) => listGatewaysMock(companyId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
     createGateway: vi.fn(),
-    createGatewayToken: vi.fn(),
+    createGatewayToken: (...args: unknown[]) => createGatewayTokenMock(...args),
     revokeGatewayToken: vi.fn(),
   },
 }));
@@ -308,5 +310,46 @@ describe("GatewaysTab", () => {
 
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
     expect(container.textContent).toContain("Dotta's MacBook");
+  });
+
+  it("blocks the new bearer token and client snippets from session replay", async () => {
+    listGatewaysMock.mockResolvedValue({
+      gateways: [
+        gateway({
+          clientSnippets: [{
+            client: "cursor",
+            label: "Cursor",
+            config: { mcpServers: { paperclip: { headers: { Authorization: "Bearer pcgw_snip_R7tY2wQx" } } } },
+            notes: [],
+          }],
+        }),
+      ],
+    });
+    createGatewayTokenMock.mockResolvedValue({ ...token({ name: "Laptop token" }), token: "pcgw_live_9KdmZ3qVt8" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(
+      <QueryClientProvider client={client}>
+        <GatewaysTab companyId="company-1" />
+      </QueryClientProvider>,
+    );
+    expect(isBlockedFromReplay("pcgw_snip_R7tY2wQx", container)).toBe(true);
+
+    await act(async () => {
+      [...container.querySelectorAll("button")].find((button) => button.textContent === "Issue token")!.click();
+    });
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    for (const placeholder of ["Dotta's MacBook", "Cursor on work laptop", "Who owns this token and why it exists"]) {
+      await act(async () => {
+        const input = container.querySelector<HTMLInputElement>(`input[placeholder="${placeholder}"]`)!;
+        setValue.call(input, "Laptop");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await act(async () => {
+      container.querySelector<HTMLFormElement>("form:has(input[placeholder=\"Dotta's MacBook\"])")!.requestSubmit();
+    });
+    await flushReact();
+    expect(createGatewayTokenMock).toHaveBeenCalled();
+    expect(isBlockedFromReplay("pcgw_live_9KdmZ3qVt8", container)).toBe(true);
   });
 });
