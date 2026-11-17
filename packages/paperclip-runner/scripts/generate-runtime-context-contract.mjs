@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const schema = JSON.parse(
   await readFile(resolve(root, "protocol/provider-schemas/runtime-context.schema.json"), "utf8"),
 );
-const objects = ["runtimeContext", "prompt", "instructions", "workingCopy", "skill", "mcp", "connectionInstructions", "asset"];
+const objects = ["runtimeContext", "prompt", "instructions", "workingCopy", "skill", "repository", "mcp", "connectionInstructions", "asset"];
 const fields = objects.map((name) => {
   const definition = schema.$defs?.[name];
   if (definition?.type !== "object" || definition.additionalProperties !== false || !definition.properties) {

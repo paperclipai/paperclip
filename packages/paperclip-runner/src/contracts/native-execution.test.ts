@@ -60,6 +60,25 @@ const input: NativeExecutionInputV1 = {
 };
 
 describe("NativeExecutionInputV1", () => {
+  it("admits shared repositories only in isolated Codex v12 and preserves the saved context", () => {
+    const digest = "0".repeat(64);
+    const bundle = { schema: NATIVE_RUNTIME_ASSET_SCHEMA, digest, manifestDigest: digest, rootPath: "/assets/repo", fileCount: 1, totalBytes: 42 };
+    const context = {
+      prompt: { revision: "saved", text: "saved", digest: createHash("sha256").update("saved").digest("hex") },
+      instructions: { entryPath: "AGENTS.md", bundle },
+      skills: [{ key: "skill", runtimeName: "skill", versionId: "version", bundle, repository: { bundle, entryPath: "skills/skill/SKILL.md", policyPath: null } }],
+      mcp: { assignmentSetId: "none", digest, bindingId: null },
+    };
+    const wire = { ...input, schema: "paperclip.native-execution-input.v12", homeMode: "isolated", executionMode: "default", planningContext: null,
+      provider: { ...input.provider, approvalPolicy: "never" }, runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) } };
+    expect(parseNativeExecutionInput(wire)).toEqual(wire);
+    for (const schema of ["v3", "v4", "v5", "v7", "v9", "v10"]) {
+      const old = { ...wire, schema: `paperclip.native-execution-input.${schema}`, provider: schema === "v3" ? input.provider : wire.provider };
+      if (["v3", "v4", "v5"].includes(schema)) delete (old as Record<string, unknown>).homeMode;
+      expect(() => parseNativeExecutionInput(old)).toThrow("shared repository");
+    }
+    expect(() => parseNativeExecutionInput({ ...wire, homeMode: "preconfigured" })).toThrow("isolated Codex");
+  });
   it.each(["paperclip.native-execution-input.v3", "paperclip.native-execution-input.v4", NATIVE_EXECUTION_INPUT_SCHEMA])(
     "preserves a saved %s execution through recovery parsing",
     (schema) => {

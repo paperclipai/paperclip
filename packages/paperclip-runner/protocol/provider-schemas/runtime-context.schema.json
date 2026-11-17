@@ -57,7 +57,18 @@
         "key": { "$ref": "#/$defs/nonEmptyText" },
         "runtimeName": { "$ref": "#/$defs/nonEmptyText" },
         "versionId": { "anyOf": [{ "$ref": "#/$defs/nonEmptyText" }, { "type": "null" }] },
+        "repository": { "$ref": "#/$defs/repository" },
         "bundle": { "$ref": "#/$defs/asset" }
+      },
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": "object",
+      "required": ["bundle", "entryPath", "policyPath"],
+      "properties": {
+        "bundle": { "$ref": "#/$defs/asset" },
+        "entryPath": { "$ref": "#/$defs/nonEmptyText" },
+        "policyPath": { "anyOf": [{ "$ref": "#/$defs/nonEmptyText" }, { "type": "null" }] }
       },
       "additionalProperties": false
     },
