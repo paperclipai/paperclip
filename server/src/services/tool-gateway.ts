@@ -81,6 +81,8 @@ import { pluginAppCatalogFor } from "./plugin-app-catalog.js";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
+import { collectSensitiveStringValues } from "../middleware/redact-sensitive.js";
+import { mcpErrorMessage, mcpErrorRequestSecrets } from "./mcp-error-message.js";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -5908,13 +5910,9 @@ export function createToolGatewayService(
       input.connection,
       grant,
     );
+    const resolvedCredentials = await resolveCredentialHeaders(input.session, input.connection, grant);
     const credentialHeaders = {
-      ...projectedConnectionHeaders(input.connection),
-      ...(await resolveCredentialHeaders(
-        input.session,
-        input.connection,
-        grant,
-      )),
+      ...projectedConnectionHeaders(input.connection), ...resolvedCredentials,
     };
     const { headers } = buildRemoteHeaders({
       session: input.session,
@@ -5952,6 +5950,7 @@ export function createToolGatewayService(
     // The session this read used. On a 400/404 only that session is dropped:
     // other identities' sessions and in-flight initializations are untouched.
     let usedSession: { scope: string; headers: Record<string, string>; sessionId: string } | null = null;
+    let lastRequestHeaders = headers;
     const send = async (fresh: boolean) => {
       let requestHeaders: Record<string, string> = isModernMcpProtocolVersion(protocolVersion)
         ? { ...headers, "MCP-Protocol-Version": protocolVersion }
@@ -5968,6 +5967,7 @@ export function createToolGatewayService(
           await persistMcpProtocolVersion(input.connection, negotiated);
         }
       }
+      lastRequestHeaders = requestHeaders;
       return dispatch({
         ...mcpHttpRequestInit(requestHeaders, { id: requestId, method: input.method, params: input.params }),
         redirect: "manual",
@@ -6046,7 +6046,15 @@ export function createToolGatewayService(
     ) {
       throw new ToolGatewayHttpError(
         502,
-        "Remote MCP context request returned an error",
+        await mcpErrorMessage("Remote MCP context request returned an error", record?.error, lastRequestHeaders, [
+          ...collectSensitiveStringValues(input.params), ...Object.values(resolvedCredentials),
+          ...mcpErrorRequestSecrets(new URL(endpoint).searchParams),
+        ], resultClassifier(input.session, { name: input.method, providerType: "mcp_remote_http" }, null), async (finding) => {
+          const session = input.session;
+          await writeAudit({ session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
+            action: "tool_gateway.call_failed", details: { tool: input.method, method: input.method, connectionId: input.connection.id,
+              reasonCode: finding.reasonCode, findings: finding.findings, promptInjection: finding.detectorMetadata } });
+        }),
         "remote_mcp_error",
         {
           connectionId: input.connection.id,
@@ -7851,9 +7859,9 @@ export function createToolGatewayService(
     // Method-defined headers are trusted catalog configuration. Treat them as
     // managed headers so callers cannot override the scope that was reviewed
     // during tools/list. Credentials remain authoritative on collisions.
+    let resolvedCredentials = await resolveCredentialHeaders(session, connection, grant);
     let credentialHeaders = {
-      ...projectedConnectionHeaders(connection),
-      ...(await resolveCredentialHeaders(session, connection, grant)),
+      ...projectedConnectionHeaders(connection), ...resolvedCredentials,
     };
     let builtHeaders = buildRemoteHeaders({
       session,
@@ -8250,11 +8258,9 @@ export function createToolGatewayService(
         connection.credentialSource === "paperclip_vault" &&
         isPaperclipCloudConnectorStrategy(oauth?.strategy)
       ) {
+        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
         credentialHeaders = {
-          ...projectedConnectionHeaders(connection),
-          ...(await resolveCredentialHeaders(session, connection, grant, {
-            forceRefresh: true,
-          })),
+          ...projectedConnectionHeaders(connection), ...resolvedCredentials,
         };
         builtHeaders = buildRemoteHeaders({
           session,
@@ -8273,11 +8279,9 @@ export function createToolGatewayService(
         !isPaperclipCloudConnectorStrategy(oauth?.strategy) &&
         options.oauthGrantRefresher
       ) {
+        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
         credentialHeaders = {
-          ...projectedConnectionHeaders(connection),
-          ...(await resolveCredentialHeaders(session, connection, grant, {
-            forceRefresh: true,
-          })),
+          ...projectedConnectionHeaders(connection), ...resolvedCredentials,
         };
         builtHeaders = buildRemoteHeaders({
           session,
@@ -8310,11 +8314,9 @@ export function createToolGatewayService(
           companyId: connection.companyId,
         });
         vercelConnect.evict(tokenRequest);
+        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
         credentialHeaders = {
-          ...projectedConnectionHeaders(connection),
-          ...(await resolveCredentialHeaders(session, connection, grant, {
-            forceRefresh: true,
-          })),
+          ...projectedConnectionHeaders(connection), ...resolvedCredentials,
         };
         builtHeaders = buildRemoteHeaders({
           session,
@@ -8450,10 +8452,23 @@ export function createToolGatewayService(
         });
       }
       if (payloadRecord.error !== undefined) {
+        // The remote response is complete. Screening has its own classifier
+        // deadline; it must not turn a received protocol error into a timeout.
+        clearTimeout(timer);
         const errorRecord = asRecord(payloadRecord.error);
         throw new ToolGatewayHttpError(
           502,
-          "Remote MCP server returned an error",
+          await mcpErrorMessage("Remote MCP server returned an error", payloadRecord.error,
+            { ...requestHeaders, ...headers, ...credentialHeaders }, [
+              ...collectSensitiveStringValues(parameters), ...Object.values(resolvedCredentials),
+              ...mcpErrorRequestSecrets(new URL(endpoint).searchParams),
+            ], resultClassifier(session, tool, invocationId, {
+              signal: taskSignals.caller, approvedAction: Boolean(session.approvedInvocationId),
+            }), async (finding) => {
+              await writeAudit({ session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
+                action: "tool_gateway.call_failed", details: { tool: tool.name, connectionId: connection.id, invocationId,
+                  reasonCode: finding.reasonCode, findings: finding.findings, promptInjection: finding.detectorMetadata } });
+            }),
           "remote_mcp_error",
           {
             code:
