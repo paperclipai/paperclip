@@ -1107,10 +1107,35 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     const grant = await assertSecretRotationWrite({ db, proposals }, req, existing, req.body);
     const body = req.body as RotateSecret;
     if (grant.mode === "agent") {
-      if (existing.provider === "local_encrypted" && typeof body.value === "string") {
-        if (createHash("sha256").update(body.value).digest("hex") !== body.valueFingerprintSha256) {
-          throw conflict("valueFingerprintSha256 does not match the value supplied for rotation");
-        }
+      // The board approved a value, not a vault migration. An agent rotation
+      // may carry that value and nothing else: no external reference, no
+      // provider pin, no move to another provider vault. Any of those would
+      // let the agent decide where the secret points after the board approved
+      // only a value.
+      if (body.externalRef !== undefined && body.externalRef !== null) {
+        throw forbidden(
+          "An agent rotation may not change externalRef: the board approves a value, not a reference",
+        );
+      }
+      if (body.providerVersionRef !== undefined && body.providerVersionRef !== null) {
+        throw forbidden("An agent rotation may not pin providerVersionRef");
+      }
+      if (body.providerConfigId !== undefined && body.providerConfigId !== null) {
+        throw forbidden("An agent rotation may not move the secret to another provider vault");
+      }
+      // `requireSecretRotationInput` guarantees a non-empty value source and
+      // the three rejections above remove every source other than `value`, so
+      // the plaintext below is the one the board approved. `assertSecretRotationWrite`
+      // already proved that `body.valueFingerprintSha256` equals the
+      // proposal's fingerprint, so this is what ties the plaintext to that
+      // approval — for every provider, before any provider write. The
+      // post-write check below is defence in depth, not the control: a
+      // provider that commits first and fails that check would already hold
+      // the approved value, never a different one. An absent value hashes to
+      // something no proposal can approve, so it fails closed here too.
+      const suppliedValue = typeof body.value === "string" ? body.value : "";
+      if (createHash("sha256").update(suppliedValue).digest("hex") !== body.valueFingerprintSha256) {
+        throw conflict("valueFingerprintSha256 does not match the value supplied for rotation");
       }
     }
 

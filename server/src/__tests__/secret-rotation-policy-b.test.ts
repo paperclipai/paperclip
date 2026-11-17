@@ -834,4 +834,80 @@ describeEmbeddedPostgres("ADR 033 policy B: agent secret rotation", () => {
     expect(rejected.body.error ?? rejected.body.message).toContain("not active");
     expect(await readAdapterConfig(fixture.agentId)).not.toHaveProperty("access.T23_SECOND");
   });
+
+  it("T24: an agent rotation may not carry a reference or a vault selector the board never approved", async () => {
+    const fixture = await seedRun();
+    const secret = await seedLiveSecret(fixture, "dev/t24/token", OLD_VALUE);
+    const ready = await readyAgentRotation(fixture, secret.id);
+
+    const selectors: Array<Record<string, unknown>> = [
+      { externalRef: "vault://another/place" },
+      { providerVersionRef: "v-2" },
+      { providerConfigId: randomUUID() },
+    ];
+    for (const selector of selectors) {
+      const response = await rotateAsAgent(fixture, secret.id, {
+        value: ready.value,
+        expectedLatestVersion: ready.expectedLatestVersion,
+        valueFingerprintSha256: NEW_FP,
+        authorizationProposalId: ready.proposalId,
+        deploymentAssertionId: ready.assertionId,
+        ...selector,
+      });
+      expect(response.status).toBe(403);
+      expect(response.body.error ?? response.body.message).toContain("agent rotation may not");
+    }
+
+    expect((await readSecret(secret.id))!.latestVersion).toBe(1);
+    expect((await readCurrentVersion(secret.id))!.fingerprintSha256).toBe(OLD_FP);
+    expect((await db.select().from(companySecretDeploymentAssertions))[0]).toMatchObject({ status: "pending" });
+  });
+
+  it("T25: the approved fingerprint is checked before the provider write, whatever the provider is", async () => {
+    const fixture = await seedRun();
+    // A live row on a provider that is not configured in this deployment. If
+    // the value check ran after the provider write, this request would reach
+    // the provider and answer 422 instead of 409.
+    const [secret] = await db.insert(companySecrets).values({
+      companyId: fixture.companyId,
+      scope: "company",
+      key: "T25_TOKEN",
+      name: "dev/t25/token",
+      provider: "vault",
+      status: "active",
+      latestVersion: 1,
+    }).returning();
+    await db.insert(companySecretVersions).values({
+      secretId: secret!.id,
+      version: 1,
+      material: {},
+      valueSha256: OLD_FP,
+      fingerprintSha256: OLD_FP,
+      status: "current",
+    });
+
+    const proposalId = await proposeSecret(fixture, secret!.name, NEW_VALUE);
+    const assertion = await registerAssertion(fixture, secret!.id, {
+      expectedLatestVersion: 1,
+      valueFingerprintSha256: NEW_FP,
+      previousValueFingerprintSha256: OLD_FP,
+    });
+    expect(assertion.status).toBe(201);
+    expect((await approveProposal(fixture, proposalId)).status).toBe(200);
+
+    // The request declares the fingerprint the board approved and sends a
+    // different value. The mismatch must be caught before the provider runs.
+    const response = await rotateAsAgent(fixture, secret!.id, {
+      value: OTHER_VALUE,
+      expectedLatestVersion: 1,
+      valueFingerprintSha256: NEW_FP,
+      authorizationProposalId: proposalId,
+      deploymentAssertionId: assertion.body.id,
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error ?? response.body.message).toContain("does not match the value supplied");
+    expect((await readSecret(secret!.id))!.latestVersion).toBe(1);
+    expect((await readCurrentVersion(secret!.id))!.fingerprintSha256).toBe(OLD_FP);
+  });
 });
