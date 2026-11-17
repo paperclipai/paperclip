@@ -197,6 +197,7 @@ r() { if cat "$2" >/dev/null 2>&1; then echo "$1=readable"; else echo "$1=denied
   r companyFile "$INSTANCE/companies/c/agents/a/notes.md"
   install="\${INSTANCE%/instance}/server-install"
   r serverCodeRead "$install/dist/index.js"
+  r installConfig "$install/config.json"
   if echo hijack >> "$install/dist/index.js" 2>/dev/null || touch "$install/dist/new.js" 2>/dev/null || mv "$install/dist" "$install/moved" 2>/dev/null; then echo serverCodeWrite=allowed; else echo serverCodeWrite=denied; fi
   r otherCompanyFile "$INSTANCE/companies/other/agents/b/notes.md"
   if stat "$INSTANCE/runtime/paperclip-runner/durable-sessions" >/dev/null 2>&1; then echo sessionRootStat=allowed; else echo sessionRootStat=denied; fi
@@ -231,6 +232,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
     writeFixture(join(instance, "companies", "c", "agents", "a", "notes.md"), "shared\n");
     writeFixture(join(instance, "companies", "other", "agents", "b", "notes.md"));
     writeFixture(join(root, "server-install", "dist", "index.js"), "server\n");
+    writeFixture(join(root, "server-install", "config.json"), '{"llm":{"apiKey":"x"}}\n');
     // Provider state saved by an earlier launch (or an earlier release) of this session.
     writeFixture(join(paths.durableSessions, "own-scope", "opencode", "own-session", "data", "opencode", "opencode.db"), "saved\n");
     const ownState = join(paths.durableSessions, "own-scope", "runner");
@@ -258,7 +260,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       runnerDigest: "test",
       opencodeLaunchProfile: OPENCODE_LAUNCH_PROFILE,
       environment: { PAPERCLIP_PROVIDER_TRACE_PATH: join(paths.providerTraces, "run", "attempt", "trace.ndjson") },
-      ...(confine ? { confinement: { mode: "required" as const, instanceRoot: instance, companyId: "c", readOnlyPaths: [join(root, "server-install")], deniedLoopbackPorts: databasePort ? [databasePort] : [] } } : {}),
+      ...(confine ? { confinement: { mode: "required" as const, instanceRoot: instance, companyId: "c", readOnlyPaths: [join(root, "server-install")], privatePaths: [join(root, "server-install", "config.json")], deniedLoopbackPorts: databasePort ? [databasePort] : [] } } : {}),
     });
     const result = await waitForProcess(handle, 30_000);
     expect(result.code).toBe(0);
@@ -290,6 +292,8 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       otherCompanyFile: "denied",
       serverCodeRead: "readable",
       serverCodeWrite: "denied",
+      // A hidden file inside the read-only tree stays hidden, and the launch still starts.
+      installConfig: "denied",
       sessionRootStat: "allowed",
       ownStateMkdirP: "allowed",
       ownNestedTrace: "writable",

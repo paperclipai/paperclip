@@ -79,7 +79,12 @@ export function serverInstallationRoot(moduleFile: string = fileURLToPath(import
       if (existsSync(join(directory, "node_modules"))) { root = directory; break; }
     }
   }
-  if (!root || existsSync(join(root, ".git"))) return null;
+  if (!root) return null;
+  // A Git checkout (its .git may sit above the server package, as in the monorepo) stays writable.
+  for (let directory = dirname(resolve(moduleFile)); ; directory = dirname(directory)) {
+    if (existsSync(join(directory, ".git"))) return null;
+    if (directory === parse(directory).root) break;
+  }
   const resolvedHome = resolve(home);
   if (root === parse(root).root || resolvedHome === root || resolvedHome.startsWith(`${root}${sep}`)) return null;
   return root;

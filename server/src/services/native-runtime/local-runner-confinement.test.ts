@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -58,7 +59,8 @@ describe("serverInstallationRoot", () => {
       .toBe("/usr/lib/node_modules/paperclipai");
     expect(serverInstallationRoot("/opt/x/node_modules/@paperclipai/server/dist/index.js", "/home/u")).toBe("/opt/x/node_modules/@paperclipai/server");
     expect(serverInstallationRoot("/home/u/node_modules/paperclipai/dist/index.js", "/home/u")).toBe("/home/u/node_modules/paperclipai");
-    const base = mkdtempSync(join(process.cwd(), ".server-install-test-"));
+    // Outside any Git checkout, so only the fixtures' own .git counts.
+    const base = mkdtempSync(join(tmpdir(), "server-install-test-"));
     try {
       // An image layout: /app/node_modules beside /app/server.
       mkdirSync(join(base, "app", "node_modules"), { recursive: true });
@@ -67,8 +69,13 @@ describe("serverInstallationRoot", () => {
       // A source checkout stays writable.
       mkdirSync(join(base, "app", ".git"));
       expect(serverInstallationRoot(join(base, "app", "server", "dist-runtime", "index.mjs"), "/home/u")).toBeNull();
-      // Never the home directory.
       rmSync(join(base, "app", ".git"), { recursive: true });
+      // The pnpm monorepo: server/node_modules beside the server, .git at the repository root.
+      mkdirSync(join(base, "repo", "server", "node_modules"), { recursive: true });
+      mkdirSync(join(base, "repo", "server", "dist"), { recursive: true });
+      mkdirSync(join(base, "repo", ".git"));
+      expect(serverInstallationRoot(join(base, "repo", "server", "dist", "index.js"), "/home/u")).toBeNull();
+      // Never the home directory.
       expect(serverInstallationRoot(join(base, "app", "server", "dist-runtime", "index.mjs"), join(base, "app"))).toBeNull();
     } finally {
       rmSync(base, { recursive: true, force: true });

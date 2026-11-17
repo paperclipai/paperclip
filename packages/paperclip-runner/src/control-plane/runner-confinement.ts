@@ -327,7 +327,19 @@ def restrict():
                 continue
             allow(child)
     grant("/")
-    for path in readonly: allow(path, read_only=True)
+    # A read-only tree may hold hidden paths (an install's config.json): grant
+    # read access around them instead of to the whole tree.
+    def grant_read_only(path):
+        if any(within(path, hidden_path) for hidden_path in hidden): return
+        if not any(within(hidden_path, path) for hidden_path in hidden):
+            allow(path, read_only=True); return
+        try: names = sorted(os.listdir(path))
+        except OSError: return
+        for name in names:
+            child = os.path.join(path, name)
+            if os.path.islink(child) and any(within(os.path.realpath(child), h) or within(h, os.path.realpath(child)) for h in hidden): continue
+            grant_read_only(child)
+    for path in readonly: grant_read_only(path)
     for path in exposed: allow(path)
     if libc.prctl(ctypes.c_int(38), ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
         raise RuntimeError("prctl(PR_SET_NO_NEW_PRIVS) failed")
