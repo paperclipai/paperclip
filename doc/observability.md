@@ -293,7 +293,10 @@ navigation links through a bounded `beforeSend` hook.
   performance trace and no profile.
 - The server hook reads only saved run and company metadata for navigation.
   It copies no request data and preserves the event if the lookup fails.
-  The browser adds no `beforeSend` hook. Neither runtime adds a custom filter.
+  The browser `beforeSend` hook only adds the diagnostics listed in
+  "Browser data" and never drops an event. The browser drops one class of
+  browser-injected errors with the built-in `ignoreErrors` option (see
+  "Browser data"). The server adds no filter.
 
 ### Server request data
 
@@ -477,6 +480,15 @@ element identifiers, arbitrary CSS classes, route, or query string. Failed
 diagnostic reads do not prevent the original exception from being reported.
 The monitoring gate and sign-out behavior still apply. This context does not
 suppress errors, change DOM operations, or disable browser translation.
+
+The browser does not send an error whose message contains `__firefox__`.
+Firefox for iOS injects Reader-mode and helper scripts into each page, and
+these scripts read a `__firefox__` global. When such a script runs before its
+setup is complete, the page reports "Can't find variable: __firefox__" or
+"undefined is not an object (evaluating 'window.__firefox__.reader')". No
+Paperclip code defines or reads `__firefox__`, so these errors do not come
+from Paperclip. The built-in `ignoreErrors` option drops them. All other
+errors from the same browser are still sent.
 
 ### Fail-open behavior
 

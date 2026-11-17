@@ -37,6 +37,15 @@
 // still captures `window.onerror` and `window.onunhandledrejection`
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
+//
+// Browser-injected script note: Firefox for iOS injects its Reader-mode and
+// helper scripts into every page it loads, and they read a `__firefox__`
+// global. When one of those scripts runs before its own setup finishes, the
+// page's `window.onerror` reports "Can't find variable: __firefox__" or
+// "undefined is not an object (evaluating 'window.__firefox__.reader')".
+// The error comes from the browser, not from this app — no Paperclip code
+// defines or reads `__firefox__` — so the initializer drops it with the
+// built-in `ignoreErrors` option.
 
 import {
   buildBrowserErrorContext,
@@ -210,6 +219,8 @@ export function buildBrowserSentryInitOptions(
         : undefined,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    // Errors from Firefox for iOS's injected scripts; see the module comment.
+    ignoreErrors: ["__firefox__"],
     beforeSend: (event, hint) => {
       // Global handlers do not pass through our React boundaries. Give their
       // reports the same bounded document state, without URLs or breadcrumbs.
