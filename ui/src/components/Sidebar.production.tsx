@@ -21,6 +21,7 @@ import {
   MessagesSquare,
   GanttChartSquare,
   LayoutGrid,
+  Compass,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -37,6 +38,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useAttentionBadge } from "../hooks/useAttentionViews";
 import { useInboxBadge } from "../hooks/useInboxBadge";
+import { useResponsibilitiesEnabled } from "../hooks/useResponsibilitiesEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
@@ -104,6 +106,13 @@ export function Sidebar() {
   // is a new surface, hidden entirely while the flag is off (same no-flash
   // pattern as showWorkspacesLink above).
   const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;
+  // Responsibilities (experimental) is home: it leads the primary group with
+  // Tasks and Inbox directly beneath it (this shell has no Chat row), and
+  // Dashboard moves down into Work.
+  const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
+  const tasksItem = <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleDot} />;
+  // With Responsibilities as home it takes the "Dashboard" name, so this one is the classic dashboard.
+  const dashboardItem = <SidebarNavItem analyticsChrome to="/dashboard" label={responsibilitiesHome ? "Classic dashboard" : "Dashboard"} icon={LayoutDashboard} liveCount={liveRunCount} />;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -150,7 +159,12 @@ export function Sidebar() {
               collapsed rail, where the old header icon was dropped entirely.
               Cmd/Ctrl+K remains the keyboard path (command palette). */}
           <SidebarNavItem analyticsChrome to="/search" label="Search" icon={Search} />
-          <SidebarNavItem analyticsChrome to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          {responsibilitiesHome ? (
+            <>
+              <SidebarNavItem analyticsChrome to="/responsibilities" label="Dashboard" icon={Compass} />
+              {tasksItem}
+            </>
+          ) : dashboardItem}
           <SidebarNavItem analyticsChrome
             to="/inbox"
             label="Inbox"
@@ -178,7 +192,7 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
-          <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleDot} />
+          {responsibilitiesHome ? dashboardItem : tasksItem}
           {showCases ? (
             <SidebarNavItem analyticsChrome to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           ) : null}

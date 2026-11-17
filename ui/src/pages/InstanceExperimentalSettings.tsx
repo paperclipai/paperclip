@@ -239,6 +239,7 @@ export function InstanceExperimentalSettings() {
   const statusCardsBlockedByManagedSummaries = summariesManaged && !enableSummaries;
   const summariesRequiredByManagedStatusCards = statusCardsManaged && enableStatusCards;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
+  const enableResponsibilities = experimentalQuery.data?.enableResponsibilities === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
@@ -539,6 +540,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableMuse"
           managed={managedKeys.enableMuse}
           ariaLabel="Toggle Muse experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="New dashboard"
+          description="Replace the classic dashboard with one built around the areas you care about and the responsibilities you own in each. An agent can interview you to create it, and you can undo any change."
+          footnote="Turning this off brings back the classic dashboard. Your areas and responsibilities are kept."
+          checked={enableResponsibilities}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableResponsibilities: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableResponsibilities"
+          managed={managedKeys.enableResponsibilities}
+          ariaLabel="Toggle new dashboard experimental setting"
         />
 
         <ExperimentalToggleCard

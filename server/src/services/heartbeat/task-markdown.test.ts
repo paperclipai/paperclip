@@ -9,6 +9,23 @@ const issue = {
 };
 
 describe("heartbeat task markdown rendering", () => {
+  it("tells agents on ordinary tasks when to offer a routine, only while routine offers are enabled", () => {
+    for (const nativeRunner of [true, false]) {
+      const markdown = buildPaperclipTaskMarkdown({ issue, nativeRunner, routineSuggestionsEnabled: true })!;
+      expect(markdown).toContain("Routine offer:");
+      expect(markdown).toContain("POST /api/issues/task-1/routine-suggestions");
+      expect(markdown).toContain("Do not offer for one-off work");
+      expect(markdown).toContain("just before finish_task");
+      expect(buildPaperclipTaskMarkdown({ issue, nativeRunner })).not.toContain("Routine offer:");
+    }
+    // Chats, Ask and Plan work are not repeatable task completions.
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId: "agent-1" }, routineSuggestionsEnabled: true }))
+      .not.toContain("Routine offer:");
+    for (const workMode of ["ask", "planning"]) {
+      expect(buildPaperclipTaskMarkdown({ issue: { ...issue, workMode }, routineSuggestionsEnabled: true })).not.toContain("Routine offer:");
+    }
+  });
+
   it.each([true, false])("keeps native task clarification in the current task on full and resumed assignments (description=%s)", (includeDescription) => {
     const markdown = buildPaperclipTaskMarkdown({
       issue: { ...issue, description: "Write a blog post about our launch." },

@@ -25,6 +25,7 @@ import {
   GanttChartSquare,
   LayoutGrid,
   Users,
+  Compass,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -35,6 +36,7 @@ import { SidebarProjects } from "./SidebarProjects";
 import { SidebarStarredProjects } from "./SidebarStarredProjects";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
+import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -122,6 +124,40 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
   // is a new surface, hidden entirely while the flag is off (same no-flash
   // pattern as showWorkspacesLink above).
   const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;
+  // Responsibilities (experimental) is home: it leads the primary group with
+  // Chat, Tasks and Inbox directly beneath it, and Dashboard moves down into
+  // Work. Hidden until the flag is known (no-flash, same as above).
+  const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
+
+  const chatItem = <SidebarNavItem analyticsChrome to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />;
+  // Combined Inbox + Task List: Inbox is a view inside Tasks, so the
+  // unread/failed-run badge rides on Tasks.
+  const tasksItem = combinedInboxTasks ? (
+    <SidebarNavItem analyticsChrome
+      to="/issues"
+      label="Tasks"
+      icon={CircleCheck}
+      badge={inboxBadge.inbox}
+      badgeLabel="unread"
+      badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
+      alert={inboxBadge.failedRuns > 0}
+    />
+  ) : (
+    <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleCheck} />
+  );
+  const inboxItem = !combinedInboxTasks ? (
+    <SidebarNavItem analyticsChrome
+      to="/inbox"
+      label="Inbox"
+      icon={Inbox}
+      badge={inboxBadge.inbox}
+      badgeLabel="unread"
+      badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
+      alert={inboxBadge.failedRuns > 0}
+    />
+  ) : null;
+  // With Responsibilities as home it takes the "Dashboard" name, so this one is the classic dashboard.
+  const dashboardItem = <SidebarNavItem analyticsChrome to="/dashboard" label={responsibilitiesHome ? "Classic dashboard" : "Dashboard"} icon={LayoutDashboard} liveCount={liveRunCount} />;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -177,19 +213,20 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               collapsed rail, where the old header icon was dropped entirely.
               Cmd/Ctrl+K remains the keyboard path (command palette). */}
           <SidebarNavItem analyticsChrome to="/search" label="Search" icon={Search} />
-          <SidebarNavItem analyticsChrome to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
-          {!combinedInboxTasks ? (
-            <SidebarNavItem analyticsChrome
-              to="/inbox"
-              label="Inbox"
-              icon={Inbox}
-              badge={inboxBadge.inbox}
-              badgeLabel="unread"
-              badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-              alert={inboxBadge.failedRuns > 0}
-            />
-          ) : null}
-          {agentChatEnabled && !chatRail ? <SidebarNavItem analyticsChrome to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" /> : null}
+          {responsibilitiesHome ? (
+            <>
+              <SidebarNavItem analyticsChrome to="/responsibilities" label="Dashboard" icon={Compass} />
+              {agentChatEnabled ? chatItem : null}
+              {tasksItem}
+              {inboxItem}
+            </>
+          ) : (
+            <>
+              {dashboardItem}
+              {inboxItem}
+              {agentChatEnabled && !chatRail ? chatItem : null}
+            </>
+          )}
           {showDecisions ? (
             <SidebarNavItem analyticsChrome
               to="/decisions"
@@ -211,23 +248,13 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
           {/* Agent Chat: Chat leads the Work group as a single row — the
               agents you talk to live in the Chat surface's own secondary rail
               (ChatContextualSidebar), not in the primary nav. */}
-          {chatRail ? (
-            <SidebarNavItem analyticsChrome to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
-          ) : null}
-          {/* Combined Inbox + Task List: Inbox is a view inside Tasks, so the
-              unread/failed-run badge rides on Tasks. */}
-          {combinedInboxTasks ? (
-            <SidebarNavItem analyticsChrome
-              to="/issues"
-              label="Tasks"
-              icon={CircleCheck}
-              badge={inboxBadge.inbox}
-              badgeLabel="unread"
-              badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-              alert={inboxBadge.failedRuns > 0}
-            />
+          {responsibilitiesHome ? (
+            dashboardItem
           ) : (
-            <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleCheck} />
+            <>
+              {chatRail ? chatItem : null}
+              {tasksItem}
+            </>
           )}
           {streamlinedUiEnabled ? (
             <>

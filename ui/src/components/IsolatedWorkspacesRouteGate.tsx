@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Navigate, Outlet } from "@/lib/router";
+import { Outlet } from "@/lib/router";
+import { CompanyHomeRedirect } from "@/components/CompanyHomeRedirect";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
@@ -11,7 +12,7 @@ import { queryKeys } from "@/lib/queryKeys";
  * The sidebar entry for these pages already reads `enableIsolatedWorkspaces`,
  * but the routes rendered for anyone who typed or bookmarked the URL, so the
  * whole workspace surface stayed reachable on an instance with the feature off.
- * The gate redirects to the dashboard instead, mirroring
+ * The gate redirects to the company home instead, mirroring
  * {@link HiddenSettingsPageGate}.
  *
  * Nothing renders until the flag query settles, so an instance that has the
@@ -42,7 +43,7 @@ export function IsolatedWorkspacesRouteGate() {
     return null;
   }
   if (query.data.enableIsolatedWorkspaces !== true) {
-    return <Navigate to="/dashboard" replace />;
+    return <CompanyHomeRedirect />;
   }
   return <Outlet />;
 }

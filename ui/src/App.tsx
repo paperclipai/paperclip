@@ -7,6 +7,9 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
+import { ResponsibilitiesGate } from "./components/ResponsibilitiesGate";
+import { CompanyHomeRedirect } from "./components/CompanyHomeRedirect";
+import { useCompanyHomePath } from "./hooks/useCompanyHomePath";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
 import { CloudManagedPageGate } from "./components/CloudManagedPageGate";
@@ -73,6 +76,8 @@ const Agents = lazy(() => import("./pages/Agents").then((module) => ({ default: 
 const Cases = lazy(() => import("./pages/Cases").then((module) => ({ default: module.Cases })));
 const CaseDetail = lazy(() => import("./pages/CaseDetail").then((module) => ({ default: module.CaseDetail })));
 const Dashboard = lazy(() => import("./pages/Dashboard").then((module) => ({ default: module.Dashboard })));
+const Responsibilities = lazy(() => import("./pages/Responsibilities").then((module) => ({ default: module.Responsibilities })));
+const ResponsibilityDetail = lazy(() => import("./pages/ResponsibilityDetail").then((module) => ({ default: module.ResponsibilityDetail })));
 const DashboardLive = lazy(() => import("./pages/DashboardLive").then((module) => ({ default: module.DashboardLive })));
 const Timeline = lazy(() => import("./pages/Timeline").then((module) => ({ default: module.Timeline })));
 const Companies = lazy(() => import("./pages/Companies").then((module) => ({ default: module.Companies })));
@@ -152,8 +157,13 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
   const mergedTasks = streamlinedUiEnabled && combinedInboxTasksEnabled;
   return (
     <>
-      <Route index element={<Navigate to="dashboard" replace />} />
+      <Route index element={<CompanyHomeRedirect />} />
       <Route path="dashboard" element={<Dashboard />} />
+      {/* Areas of responsibility (experimental): home when the flag is on. */}
+      <Route element={<ResponsibilitiesGate />}>
+        <Route path="responsibilities" element={<Responsibilities />} />
+        <Route path="responsibilities/:responsibilityId" element={<ResponsibilityDetail />} />
+      </Route>
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route
         path="timeline"
@@ -649,8 +659,9 @@ export function OnboardingRoutePage() {
 function CompanyRootRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
   const location = useLocation();
+  const home = useCompanyHomePath();
 
-  if (loading) {
+  if (loading || !home.loaded) {
     return <PaperclipLoading />;
   }
 
@@ -667,7 +678,7 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  return <Navigate to={`/${targetCompany.issuePrefix}${home.path}`} replace />;
 }
 
 function StatusCardsLegacyRedirect() {
@@ -824,6 +835,8 @@ export function App() {
           <Route path="status-cards" element={<UnprefixedBoardRedirect />} />
           <Route path="status-cards/:cardId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
+          <Route path="responsibilities" element={<UnprefixedBoardRedirect />} />
+          <Route path="responsibilities/:responsibilityId" element={<UnprefixedBoardRedirect />} />
           <Route path="audit" element={<UnprefixedBoardRedirect />} />
           {streamlinedUiEnabled ? (
             <>
