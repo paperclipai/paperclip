@@ -47,8 +47,10 @@ result return values, summary hashes, signatures, and ignored paths are unchange
 A blocked tool result cannot undo a write already performed by the tool.
 
 MCP resource contents that an agent reads through a named MCP gateway
-(`resources/read`) pass the same guard as tool results. A blocked read returns
-`prompt_injection_blocked` and is recorded in the audit log.
+(`resources/read`) pass the same guard as tool results, and the agent receives
+the same redacted value a tool result would deliver. A blocked read returns
+`prompt_injection_blocked` and is recorded in the audit log. A client disconnect
+cancels the read's model check.
 
 **Test model checks** uses two fixed samples (benign code and malicious
 instructions) from saved settings. Both must receive correct model verdicts to
@@ -104,9 +106,14 @@ a Google result, Paperclip checks the whole result, including structured data,
 text inside embedded file resources and error text from Google. If it finds
 instructions aimed at the agent, such as "ignore previous instructions" or a
 request to send credentials, it withholds the entire result and the agent gets a
-`prompt_injection_blocked` error instead. Built-in pattern detection always
-runs. If the company has turned on model checks, the result is also classified
-by the selected model, and an unsafe verdict blocks it the same way.
+`prompt_injection_blocked` error instead. One detector decides each result. By
+default it is the built-in pattern detection. If the company has turned on model
+checks, the selected model classifies the result, and a valid model verdict
+replaces the pattern verdict: an unsafe verdict blocks the result, and a safe
+verdict lets it through even if a pattern matched. When the model check cannot
+give a valid verdict (for example a timeout, a provider failure, a missing
+budget, a result too large for the model request, or redaction that would hide
+delivered text from the model), the built-in patterns decide instead.
 
 The check runs on every path that hands Google content to an agent: direct tool
 calls, repeated calls that collect a long-running result, ask-first actions when
@@ -118,8 +125,8 @@ still checked in full by the built-in patterns.
 
 The check does not guarantee that every attack is caught. Built-in patterns
 cover a small set of common English phrasings; reworded, translated or
-obfuscated instructions can pass, and model checks reduce but do not remove this
-risk. Text is checked as it appears in the result: base64-encoded file bytes and
+obfuscated instructions can pass. A model verdict can also be wrong, and a
+safe model verdict is final even when a pattern matched. Text is checked as it appears in the result: base64-encoded file bytes and
 images are not decoded or read. Blocking a result cannot undo a write the same
 call already made. Not checked: tool names and descriptions that Google
 publishes, prompt templates (`prompts/get`), questions Google asks a person

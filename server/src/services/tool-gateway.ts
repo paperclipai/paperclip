@@ -6241,6 +6241,7 @@ export function createToolGatewayService(
       "resources/list" | "resources/read" | "prompts/list" | "prompts/get";
     params?: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
+    signal?: AbortSignal;
   }) {
     const session = await namedGatewaySessionFromBearer({
       gatewayId: input.gatewayId ?? null,
@@ -6320,7 +6321,7 @@ export function createToolGatewayService(
       kind === "resource"
         ? { uri: handle.value }
         : { name: handle.value, arguments: input.params?.arguments ?? {} };
-    const result = asRecord(
+    let result = asRecord(
       await callAssignedConnectionProtocol({
         ...input,
         session,
@@ -6329,19 +6330,18 @@ export function createToolGatewayService(
         params,
       }),
     );
-    // Resource contents are provider data handed to the agent, like a tool
-    // result (an email or document), so they pass the same result guard.
     if (kind === "resource") {
       const screened = { name: "paperclip_read_resource",
         providerType: connection.transport === "local_stdio" ? "mcp_local_stdio" : "mcp_remote_http" } as const;
-      await validateToolContent({ value: result, direction: "result", sensitiveMode: "redact", promptInjectionMode: "block",
-        classifier: resultClassifier(session, screened, null) }).catch(async (error: unknown) => {
+      const validation = await validateToolContent({ value: result, direction: "result", sensitiveMode: "redact", promptInjectionMode: "block",
+        classifier: resultClassifier(session, screened, null, { signal: input.signal }) }).catch(async (error: unknown) => {
         if (!(error instanceof ToolContentValidationError)) throw error;
         await writeAudit({ session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
           action: "tool_gateway.call_failed", details: { tool: screened.name, connectionId: connection.id, reasonCode: error.reasonCode,
             findings: error.findings, promptInjection: error.detectorMetadata } });
         throw new ToolGatewayHttpError(422, error.message, error.reasonCode, { findings: error.findings });
       });
+      result = asRecord(validation.value);
     }
     if (kind === "resource" && Array.isArray(result?.contents)) {
       return {
@@ -11403,6 +11403,7 @@ export function createToolGatewayService(
         "resources/list" | "resources/read" | "prompts/list" | "prompts/get";
       params?: Record<string, unknown>;
       callerHeaders?: Record<string, string | string[] | undefined>;
+      signal?: AbortSignal;
     }): Promise<Record<string, unknown>> {
       return namedGatewayContextProtocol(input);
     },
