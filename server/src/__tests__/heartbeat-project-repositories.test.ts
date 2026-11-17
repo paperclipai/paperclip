@@ -938,15 +938,15 @@ suite("task project repository provisioning", () => {
     }, { timeout: 15_000 });
     const input = execute.mock.calls.find(([ctx]) => ctx.runId === run!.id)![0];
     const hints = input.context.paperclipWorkspaces as Array<{ workspaceId: string; cwd: string }>;
+    if (count === 2) {
+      expect(input.context.paperclipTaskMarkdown).toContain("Repositories in this workspace");
+      expect(input.context.paperclipTaskMarkdown).toContain("`.paperclip-repositories/");
+    }
     for (let index = 0; index < count; index++) {
       const hint = hints.find((entry) => entry.workspaceId === repositoryRows[index]!.id);
       expect(hint?.cwd).toBeTruthy();
       expect(await readFile(path.join(hint!.cwd, "README.md"), "utf8")).toBe(`repository ${index}`);
       expect(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: hint!.cwd, encoding: "utf8" }).trim()).toBe(await realpath(hint!.cwd));
-    }
-    if (count === 2) {
-      expect(input.context.paperclipTaskMarkdown).toContain("Repositories in this workspace");
-      expect(input.context.paperclipTaskMarkdown).toContain("`.paperclip-repositories/");
     }
   }, 25_000);
 });
