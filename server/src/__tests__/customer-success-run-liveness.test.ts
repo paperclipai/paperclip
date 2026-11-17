@@ -112,7 +112,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const now = Math.floor(Date.now() / 1000);
     expect((await ask(claims({ sub: "other-stack" }))).status).toBe(403);
     expect((await ask(claims({ iat: now - 120, exp: now - 60 }))).status).toBe(403);
-    expect((await ask(claims({ exp: now + 61 }))).status).toBe(403);
+    expect((await ask(claims({ iat: now, exp: now + 61 }))).status).toBe(403);
     const value = claims();
     expect((await ask(value, token(value, { privateKey: generateKeyPairSync("ed25519").privateKey }))).status).toBe(403);
     expect((await ask(value, token(value, { typ: "paperclip-inspection+jwt" }))).status).toBe(403);

@@ -6,6 +6,24 @@ import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { forbidden } from "../errors.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "./agent-identity.js";
 
+/**
+ * The one rule for "this agent's run is live", shared by run authority and
+ * the Cloud run liveness check so the two can never disagree.
+ */
+function isActiveAgentRun(
+  agent: { status: string } | undefined,
+  run: (typeof heartbeatRuns.$inferSelect) | undefined,
+): run is typeof heartbeatRuns.$inferSelect {
+  return Boolean(
+    agent &&
+      ["idle", "running", "active"].includes(agent.status) &&
+      run &&
+      run.status === "running" &&
+      !run.finishedAt &&
+      !agentRunWritesRevoked(run),
+  );
+}
+
 /** No actor/session resolution, key provisioning, or run identity capture. */
 export async function customerSuccessRunAuthority(db: Db, bearer: string): Promise<RunAuthority> {
   const claims = verifyLocalAgentJwt(bearer, { strictRunAuthority: true });
@@ -29,11 +47,7 @@ export async function customerSuccessRunAuthority(db: Db, bearer: string): Promi
       if (
         !agent ||
         !supportsManagedAgentIdentity(agent.adapterType, agent.adapterConfig, run?.driverKind) ||
-        !["idle", "running", "active"].includes(agent.status) ||
-        !run ||
-        run.status !== "running" ||
-        run.finishedAt ||
-        agentRunWritesRevoked(run)
+        !isActiveAgentRun(agent, run)
       )
         throw forbidden("The managed run is not active");
       const identity = await agentIdentityService(tx as unknown as Db).getPublicIdentity(
@@ -82,14 +96,7 @@ export async function customerSuccessRunLiveness(
             eq(heartbeatRuns.companyId, question.companyId),
           ),
         );
-      return Boolean(
-        agent &&
-          ["idle", "running", "active"].includes(agent.status) &&
-          run &&
-          run.status === "running" &&
-          !run.finishedAt &&
-          !agentRunWritesRevoked(run),
-      );
+      return isActiveAgentRun(agent, run);
     },
     { accessMode: "read only" },
   );
