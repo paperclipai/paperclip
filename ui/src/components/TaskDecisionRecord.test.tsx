@@ -43,7 +43,7 @@ it("opens a compact receipt in its task's named full record with recorded inputs
   }
   await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/ORG/decisions"]}><Journey /></MemoryRouter></QueryClientProvider>));
   expect(mocks.get).not.toHaveBeenCalled();
-  await act(async () => host.querySelector("button")!.click());
+  await act(async () => host.querySelector<HTMLAnchorElement>("a.coordinator-decision-receipt")!.click());
   await vi.waitFor(() => expect(host.querySelector("#decision-decision-1")?.textContent).toContain("Blog draft queued"));
   expect(host.textContent).toContain("Own blog first");
   expect(host.textContent).toContain("The draft is ready");

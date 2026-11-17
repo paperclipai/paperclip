@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { NeedsYouPanel, NeedsYouPanelRow, needsYouCardLabel } from "./NeedsYouCardKit";
+import { openInPlace } from "./open-in-place";
 
 /**
  * Who is asking (PAP-775, UI2): the requester's avatar and name, agent or
@@ -111,12 +112,12 @@ export function NeedsYouTaskLink({ task, short = false, onOpen }: {
 }) {
   if (!task?.href) return null;
   const href = task.href;
-  return <button type="button" data-attention-task-link title={task.title ?? undefined} onClick={() => onOpen(href)}
+  return <Link to={href} disableIssueQuicklook data-attention-task-link title={task.title ?? undefined} onClick={(event) => openInPlace(event, href, onOpen)}
     className={cn("flex min-w-0 items-center gap-1.5 text-left text-(length:--text-compact) leading-5 text-muted-foreground hover:text-foreground", short ? "shrink-0" : "max-w-full")}>
     {task.status ? <StatusIcon status={task.status} size="sm" /> : null}
     <span className="min-w-0 truncate">{task.identifier ?? "Open task"}{short || !task.title ? null : ` · ${task.title}`}</span>
     <ArrowUpRight className="size-4 shrink-0" />
-  </button>;
+  </Link>;
 }
 
 /**

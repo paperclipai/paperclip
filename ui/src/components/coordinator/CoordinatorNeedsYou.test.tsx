@@ -76,7 +76,7 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks(); });
 async function flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); }
 async function click(text: string) {
-  const button = [...container.querySelectorAll("button")].find((entry) => entry.textContent?.includes(text));
+  const button = [...container.querySelectorAll<HTMLElement>("button, a[data-attention-task-link]")].find((entry) => entry.textContent?.includes(text));
   expect(button, text).toBeTruthy();
   await act(async () => button!.click()); await flush();
 }

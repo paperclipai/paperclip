@@ -13,7 +13,7 @@ import { usePanel } from "@/context/PanelContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
-import { useNavigate, useSearchParams } from "@/lib/router";
+import { Link, useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorAssignee, coordinatorAssigneeTarget, coordinatorAudienceKey, coordinatorCardDetail, coordinatorCardTitle, recentDecisionReceipts, type CoordinatorAssignee } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
@@ -363,7 +363,7 @@ export function CoordinatorNeedsYou() {
         : type === "review_task" ? <>{heading}<ReviewTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : type === "blocked_task" ? <>{heading}<BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : type === "recovery" ? <>{heading}<RecoveryCardBody item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
-        : <>{heading}{footerContext}<DecisionCardFooter leading={taskLink}><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></DecisionCardFooter></>}
+        : <>{heading}{footerContext}<DecisionCardFooter leading={taskLink}>{item.subject.href ? <Button asChild><Link to={item.subject.href} disableIssueQuicklook>{openLabel(item)}<ArrowUpRight className="size-4" /></Link></Button> : <Button disabled>{openLabel(item)}<ArrowUpRight className="size-4" /></Button>}</DecisionCardFooter></>}
       </AttentionForOtherGate>
     </article>}
     </CoordinatorTaskMotion>

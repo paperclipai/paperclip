@@ -26,7 +26,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const Approved: Story = {
   play: async ({ canvasElement, args }) => {
-    await userEvent.click(within(canvasElement).getByRole("button", { name: /Copy approved/ }));
+    await userEvent.click(within(canvasElement).getByRole("link", { name: /Copy approved/ }));
     expect(args.onOpen).toHaveBeenCalledWith(receipt.href);
   },
 };
