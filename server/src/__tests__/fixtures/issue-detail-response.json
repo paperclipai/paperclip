@@ -45,6 +45,7 @@
   "billingCode": null,
   "assigneeAdapterOverrides": null,
   "difficultyRouting": null,
+  "assignmentRouting": null,
   "executionPolicy": null,
   "executionState": null,
   "monitorNextCheckAt": null,

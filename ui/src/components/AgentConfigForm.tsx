@@ -104,6 +104,8 @@ import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 import { difficultyEffortConfigKey, difficultyRoutingSupported } from "@paperclipai/shared";
 import { readDifficultyRoutingDraft, runtimeConfigWithDifficultyRouting } from "../lib/difficulty-routing";
 import { AgentDifficultyRoutingFields } from "./AgentDifficultyRoutingFields";
+import { readAutoAssignmentDraft, runtimeConfigWithAutoAssignment } from "../lib/agent-assignment";
+import { AgentAutoAssignmentFields } from "./AgentAutoAssignmentFields";
 
 /* ---- Create mode values ---- */
 
@@ -2077,6 +2079,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   models={models}
                   agentModel={currentModelId}
                   effortOptionsForModel={showThinkingEffort && difficultyEffortConfigKey(adapterType) ? thinkingEffortOptionsFor : null}
+                />
+              )}
+              {!isCreate && (
+                <AgentAutoAssignmentFields
+                  value={readAutoAssignmentDraft(((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig).autoAssignment)}
+                  onChange={(next) => mark("runtime", "runtimeConfig", runtimeConfigWithAutoAssignment(runtimeConfig, overlay.runtime.runtimeConfig as Record<string, unknown> | undefined, next))}
                 />
               )}
           </>)}

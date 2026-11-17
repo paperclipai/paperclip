@@ -102,6 +102,7 @@ import {
   runnerGoalActionRequestSchema,
   selectTaskWorkspaceSchema,
   setIssueDifficultyTierSchema,
+  autoAssignIssueSchema,
   prepareWorkspaceRepositorySchema,
   // Project
   createProjectSchema,
@@ -4690,6 +4691,26 @@ registry.registerPath({
   tags: ["issues"],
   summary: "Return the task to automatic difficulty routing",
   description: "Clears the stored tier. Paperclip rates the task again before the next run: with the decision model, the assignee's own sign-in, or fixed rules.",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/auto-assign",
+  tags: ["issues"],
+  summary: "Assign the task to the best matching agent",
+  description: "Scores agents that have automatic assignment on by quota, cost, load, health, and quality with the chosen strategy, then assigns the top eligible agent. Each candidate must pass the caller's own task assignment check. Works only on unassigned backlog, todo, or blocked tasks that are not running. Stores the decision on the task as `assignmentRouting`.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(autoAssignIssueSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/assignment-routing",
+  tags: ["issues"],
+  summary: "Read the task's automatic assignment decision",
+  description: "Returns the stored `assignmentRouting`, or null when the task was never auto-assigned.",
   request: { params: z.object({ id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

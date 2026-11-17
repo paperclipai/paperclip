@@ -233,6 +233,41 @@ Removes the saved tier. The next run rates the task again. Returns `{ "difficult
 
 Both routes need permission to change the task, and write an activity log entry.
 
+## Automatic Assignment
+
+An agent can opt in to automatic assignment in `runtimeConfig.autoAssignment`:
+
+```json
+{ "enabled": true, "capabilities": ["frontend", "sql"], "quality": 4 }
+```
+
+`capabilities` are lowercase tags. `quality` is optional, from 1 (light) to 5 (strongest).
+
+### Auto-assign a Task
+
+```
+POST /api/issues/{issueId}/auto-assign
+{ "strategy": "balanced", "requiredCapabilities": ["sql"] }
+```
+
+Both fields are optional. `strategy` is `balanced` (default), `cost`, `quality`, or `speed`, and sets how much each score counts. Every agent in the company is listed, but only agents that opted in can be chosen. An agent is excluded when, for example, it lacks a required capability, cannot take work, has no free run slot, has hit its usage limit, or fails the caller's own task assignment check. The others get a `quota`, `cost`, `load`, `health`, and `quality` score from 0 to 1, and the highest total wins.
+
+Each score has a `source`: `observed` (measured, for example from the provider's usage report), `estimated`, `configured` (from the agent profile), or `unknown`. An `unknown` score is a neutral 0.5 because Paperclip could not observe the signal. Paperclip never makes up a quota.
+
+The task must have no assignee, be in `backlog`, `todo`, or `blocked`, and not be running. Otherwise the route returns `409` or `422`. Returns `{ "assignmentRouting": { ... } }`. When no agent qualifies, `status` is `no_candidate` and the task stays unassigned.
+
+If an auto-assigned agent then hits its usage limit, Paperclip moves the task once to the next candidate and records this in `assignmentRouting.fallback`. Choosing an assignee by hand always overrides automatic assignment.
+
+### Read the Decision
+
+```
+GET /api/issues/{issueId}/assignment-routing
+```
+
+Returns `{ "assignmentRouting": { ... } }`, or `{ "assignmentRouting": null }` when the task was never auto-assigned. The decision lists each candidate with its scores, total, and rank, or the reasons it was excluded.
+
+Both routes need permission to change the task. Auto-assign writes an activity log entry.
+
 ## Comments
 
 ### List Comments

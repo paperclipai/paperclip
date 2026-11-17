@@ -1221,7 +1221,7 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
   });
 
-  it.each(['[data-config-section="run-policy"] [role="switch"]', '[aria-label="Automatic model by difficulty"]'])("clears dirty state when a runtime toggle is restored (%s)", async selector => {
+  it.each(['[data-config-section="run-policy"] [role="switch"]', '[aria-label="Automatic model by difficulty"]', '[aria-label="Automatic assignment"]'])("clears dirty state when a runtime toggle is restored (%s)", async selector => {
     const dirty = vi.fn();
     const result = await renderForm([], {}, { content: "configuration", onDirtyChange: dirty });
     roots.push(result.root);

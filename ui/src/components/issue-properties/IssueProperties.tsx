@@ -122,6 +122,8 @@ import { PropertyChip, PropertyRow, PropertySection } from "./primitives";
 import { IssueContextUsageRow } from "./context-usage-row";
 import { IssueDifficultyRoutingRow } from "./IssueDifficultyRouting";
 import { agentUsesDifficultyRouting } from "../../lib/difficulty-routing";
+import { IssueAssignmentRoutingRow } from "./IssueAssignmentRouting";
+import { canAutoAssignIssue } from "../../lib/agent-assignment";
 import {
   buildWorkspaceSelectionUpdate,
   currentWorkspaceSelection,
@@ -2407,6 +2409,16 @@ export function IssueProperties({
         >
           {assigneeContent}
         </PropertyPicker>
+
+        {issue.assignmentRouting || canAutoAssignIssue(issue) ? (
+          <IssueAssignmentRoutingRow
+            issueId={issue.id}
+            companyId={issue.companyId}
+            routing={issue.assignmentRouting ?? null}
+            canAutoAssign={canAutoAssignIssue(issue)}
+            inline={inline}
+          />
+        ) : null}
 
         {showAssigneeAdapterOptions ? (
           <PropertyPicker
