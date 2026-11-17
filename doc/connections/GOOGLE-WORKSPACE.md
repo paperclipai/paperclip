@@ -63,6 +63,21 @@ endpoints remain separate. Paperclip namespaces actions by service and routes th
 to a closed endpoint registry using the combined grant. It does not create child
 connections or send provider tokens through Paperclip ID.
 
+Each service has a tool transport, set in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`
+(`packages/shared/src/google-workspace-connectors.ts`). `google_mcp` sends calls
+to Google's hosted MCP server for that service. `paperclip_rest` runs Paperclip's
+own tools over Google's REST APIs, in the server process
+(`server/src/google-workspace-rest-tools/`), with the same tool names, inputs
+and results. Every service is on `google_mcp` today. A service can move to
+`paperclip_rest` only when Paperclip implements every tool on its allowlist; a
+test enforces that. On either transport, the same grant scope checks, approvals,
+audit, token refresh and reconnection, prompt-injection screening, cancellation
+and experimental-feature gate apply. On `paperclip_rest`, discovery and health
+checks prove the token with one cheap REST read per service (Gmail reads the
+account profile) instead of Google's `tools/list`, and a failed check makes only
+that service unavailable. See the folder's `README.md` for how to switch a
+service and how to remove the REST tools.
+
 Google results are untrusted content. The prompt-injection guard checks them
 before an agent receives them; see
 [Google Workspace content](../prompt-injection-prevention.md#google-workspace-content)

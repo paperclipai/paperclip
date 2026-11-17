@@ -24,6 +24,7 @@ import { connectionManagementService, type ConnectionManagementContext } from ".
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { measureToolDiscovery, measureRunPhase } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
+import { callGoogleWorkspaceRest, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
@@ -564,7 +565,7 @@ type RemoteHttpExecutionResult = {
 type RemoteHttpExecutionAudit = {
   transport: "mcp_remote";
   request: {
-    protocol: "MCP JSON-RPC 2.0" | "Railway GraphQL" | "Railway GraphQL + SSH";
+    protocol: "MCP JSON-RPC 2.0" | "Railway GraphQL" | "Railway GraphQL + SSH" | "Google Workspace REST";
     httpMethod: "POST";
     endpoint: string;
     mcpMethod: "tools/call";
@@ -7849,18 +7850,20 @@ export function createToolGatewayService(
     // only when the whole call finishes, so a later stop never loses one.
     const legacyAnswered: Array<{ row: McpElicitationRow; responses: Record<string, McpElicitationResponse> }> = [];
     try {
+      const assertWorkspaceGrantCurrent = async () => {
+        if (!workspaceTarget) return;
+        const [currentGrant] = await db.select().from(connectionGrants).where(and(
+          eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id), eq(connectionGrants.status, "active"),
+        ));
+        if (!currentGrant || !isGoogleWorkspaceToolGranted(entry.toolName, googleWorkspaceGrantedScopes(currentGrant))) {
+          throw new ToolGatewayHttpError(403, "This Google action is not covered by the current permission grant.", "oauth_insufficient_scope");
+        }
+      };
       const dispatchRemote = async (target: string, init: RequestInit) => {
         // Refresh can reduce consent. Recheck the selected grant after refreshing
         // credentials and before every dispatch (including an authorization retry).
-        if (workspaceTarget) {
-          const [currentGrant] = await db.select().from(connectionGrants).where(and(
-            eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId),
-            eq(connectionGrants.connectionId, connection.id), eq(connectionGrants.status, "active"),
-          ));
-          if (!currentGrant || !isGoogleWorkspaceToolGranted(entry.toolName, googleWorkspaceGrantedScopes(currentGrant))) {
-            throw new ToolGatewayHttpError(403, "This Google action is not covered by the current permission grant.", "oauth_insufficient_scope");
-          }
-        }
+        await assertWorkspaceGrantCurrent();
         return options.remoteHttpRequest
           ? options.remoteHttpRequest(target, init)
           : guardedRemoteHttpFetch(target, init, {
@@ -7892,6 +7895,39 @@ export function createToolGatewayService(
           { connectionId: connection.id, catalogEntryId: entry.id, execution },
         );
       };
+      if (workspaceTarget?.transport === "paperclip_rest") {
+        execution.request.protocol = "Google Workspace REST";
+        execution.request.endpoint = googleWorkspaceRestAuditEndpoint(workspaceTarget.service);
+        await assertWorkspaceGrantCurrent();
+        const signal = taskSignals.run ? AbortSignal.any([controller.signal, taskSignals.run]) : controller.signal;
+        const outcome = await callGoogleWorkspaceRest({
+          service: workspaceTarget.service,
+          toolName: workspaceTarget.leaf,
+          arguments: parameters,
+          credentialHeaders,
+          signal,
+          fetch: (url, init) => options.remoteHttpRequest
+            ? options.remoteHttpRequest(url, init)
+            : guardedRemoteHttpFetch(url, init, { ...remoteHttpFetchOptions(), responseTimeoutMs: ms }),
+        });
+        if (signal.aborted) throw new DOMException("The Google Workspace call was cancelled.", "AbortError");
+        if (!outcome.ok && outcome.authFailure === "insufficient_scope") {
+          await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
+          throw new ToolGatewayHttpError(403, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, "oauth_insufficient_scope", { connectionId: connection.id });
+        }
+        if (!outcome.ok) {
+          const oauth = asRecord(asRecord(connection.config)?.oauth);
+          if (connection.authKind === "oauth" && connection.credentialSource === "paperclip_vault"
+            && (isPaperclipCloudConnectorStrategy(oauth?.strategy) || options.oauthGrantRefresher)) {
+            await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
+            await requireExplicitRetryAfterOAuthRefresh(new Response(null, { status: 401 }));
+          }
+          throw new ToolGatewayHttpError(502, "Remote MCP server returned an HTTP error", "mcp_remote_status", {
+            status: 401, connectionId: connection.id, catalogEntryId: entry.id, execution,
+          });
+        }
+        return await completeRemoteMcpCall(outcome.result);
+      }
       if (isRailwayEndpoint(connection.config.url) && normalizeRailwayToolName(entry.toolName).startsWith(RAILWAY_TOOL_PREFIX)) {
         if (!isRailwayConnection(connection) || connection.config.railwayApiStatus !== "available") {
           throw new ToolGatewayHttpError(422, "Railway API access is not verified. Refresh actions or reconnect this Railway connection.", "railway_api_not_verified");

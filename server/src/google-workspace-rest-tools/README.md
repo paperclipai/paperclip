@@ -26,9 +26,9 @@ so they can be deleted cleanly when that happens.
   only files in this folder, Node built-ins, `@modelcontextprotocol/sdk` and
   `zod` (both existing server dependencies). Test files and `fixtures/` may
   also import `vitest` and `@paperclipai/shared`. Nothing in this folder
-  imports other server code. In this release nothing else in the server
-  imports this folder; the test also checks that, and the switch PR relaxes
-  that one check.
+  imports other server code. The only server file that imports this folder
+  is the gateway adapter `server/src/services/google-workspace-rest-dispatch.ts`,
+  through `index.ts`; the test checks that too.
 - **Same tools as Google's MCP servers.** Same tool names, same input fields,
   same result shape. Names, field names, types and enums come from Google's
   published reference (Gmail:
@@ -77,116 +77,74 @@ so they can be deleted cleanly when that happens.
 Token problems are thrown, not returned, so a caller can refresh the token or
 ask the user to reconnect exactly as it does for Google's MCP servers.
 
-## How it plugs in (seam trace)
+## How it plugs in
 
-Traced on `origin/master` at `ca34aca777`.
+The gateway calls this folder in process. There is no loopback or hosted MCP
+endpoint. `createGoogleWorkspaceRestServer()` (a standard MCP server that reads
+the token from the transport's auth info) stays available if an HTTP or stdio
+deployment is ever needed; the gateway does not use it.
 
-### Today's dispatch path
+### The switch
 
-1. **Tool name to target.** `googleWorkspaceToolTarget(name)` in
-   `packages/shared/src/google-workspace-connectors.ts` turns `gmail__get_message`
-   into `{ service, upstreamName, leaf, serverUrl, appSlug, requiredScopes, write }`.
-   `serverUrl` comes from the closed `SERVICE_PROFILES` registry.
-2. **Discovery (`tools/list`).** `remoteTools()` in
-   `server/src/services/tool-access/catalog/discovery.ts` (Google branch near
-   line 130) lists each granted service by calling itself with
-   `profile.serverUrl`, prefixes names with `googleWorkspaceToolName(service, …)`,
-   and filters by the granted scopes. It speaks MCP over HTTP through
-   `requestRemoteHttpEndpoint`, negotiating a protocol era per endpoint
-   (`mcpEraKey`, saved on the connection by `saveMcpNegotiation` in
-   `server/src/services/tool-access/mcp-protocol-config.ts`).
-3. **Call (`tools/call`).** `executeRemoteHttpTool()` in
-   `server/src/services/tool-gateway.ts` (near line 7784) computes
-   `workspaceTarget`, refuses a tool whose scopes are not granted
-   (`oauth_insufficient_scope`), sets `endpoint = workspaceTarget.serverUrl`,
-   builds headers with the user's `Authorization: Bearer <token>` from
-   `resolveCredentialHeaders`, rechecks the grant before every dispatch, and
-   posts JSON-RPC through `guardedRemoteHttpFetch`
-   (`server/src/services/remote-http-fetch.ts`, behind
-   `server/src/services/tool-access/remote-http.ts`). A 401 forces a token
-   refresh and asks for an explicit retry; `isInsufficientConnectionScope`
-   (`server/src/services/connection-permission-errors.ts`) maps a scope
-   failure. The MCP result goes through `completeRemoteMcpCall` →
-   `normalizeMcpToolResult`. Prompt-injection screening, audit and invocation
-   records happen in the caller of `executeRemoteHttpTool`, so they apply to any
-   result it returns.
-4. **MCP Tasks.** The background task path (near line 7578) also reads
-   `workspaceTarget.serverUrl`. It only runs for calls a remote server turned
-   into a task; REST calls never do.
+One setting per service, `GOOGLE_WORKSPACE_TOOL_TRANSPORT` in
+`packages/shared/src/google-workspace-connectors.ts`:
 
-The gateway speaks MCP `2026-07-28` (stateless) first, then the legacy
-handshake versions `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`
-(`server/src/services/mcp-http.ts`). The MCP SDK the server uses (1.31) speaks
-the legacy versions only, so over HTTP every new session would pay a failed
-modern probe plus an `initialize` round trip.
+- `google_mcp` (every service today): calls go to Google's hosted MCP server
+  for that service, exactly as before this folder existed.
+- `paperclip_rest`: calls go to this folder.
 
-### Recommendation: call it in process
+`googleWorkspaceToolTarget(name)` returns the setting as `transport`. It is a
+plain constant: no environment variable, instance setting or database row.
 
-The code already runs in the server process, so the gateway calls
-`callGoogleWorkspaceRestTool()` and `listGoogleWorkspaceRestTools()` directly,
-the way it already runs other REST-backed tool sets (`restConnectorFor` in
-`server/src/services/connectors/rest-registry.ts` and
-`nativeProviderCatalogFor` in `server/src/services/native-provider-catalogs.ts`).
-No loopback or hosted MCP endpoint.
+### Where the gateway branches
 
-- **Speed.** Measured locally: about 13 µs of overhead per call with a stubbed
-  fetch. The MCP SDK and zod are already loaded by the server, so there is no
-  extra cold-start cost beyond this folder's own modules. An HTTP hop would
-  add a connection, JSON-RPC framing, and the protocol probe and handshake
-  above to every call. `tools/list` becomes a static list: no network, no token.
-- **Token handling.** The token stays in the server process and goes only to
-  Google.
-- **Self-hosted and Cloud run the same code.** Nothing to deploy, configure or
-  publish. A loopback endpoint would not work on authenticated public
-  deployments: `allowPrivateRemoteEndpoints()` refuses loopback addresses there.
-- **Egress stays guarded.** The gateway passes its `guardedRemoteHttpFetch` as
-  the `fetch` option, so calls to Google go through the same egress policy as
-  today.
-- **Swap-back is unchanged.** Tool names, inputs and results are Google's, so
-  the catalog, policies, approvals and audit records written under
-  `paperclip_rest` stay valid under `google_mcp`.
+- **Adapter.** `server/src/services/google-workspace-rest-dispatch.ts` is the
+  only server file that imports this folder. It takes the gateway's resolved
+  credential headers (it keeps only the bearer token), the call's cancellation
+  signal and the gateway's egress-guarded fetch, and returns either the MCP
+  result or a token problem (`unauthenticated` or `insufficient_scope`).
+- **Calls.** `executeRemoteHttpTool()` in `server/src/services/tool-gateway.ts`.
+  The REST branch runs after everything the MCP path runs first: the
+  experimental-feature gate, per-caller grant selection, the allowlist and
+  grant scope check. It then rechecks the current grant, calls the adapter with
+  the call's deadline (and the run's stop signal when there is one), and
+  returns through the same result handling as an MCP result. Approval, audit,
+  invocation records and prompt-injection screening run in the callers of
+  `executeRemoteHttpTool`, so they apply unchanged. Token problems map to the
+  MCP path's outcomes: `insufficient_scope` to `oauth_insufficient_scope`;
+  `unauthenticated` to a forced token refresh and `oauth_refreshed_retry_required`
+  (never an automatic replay), or `mcp_remote_status` when the connection cannot
+  refresh. This folder turns a cancelled or timed-out request into a tool
+  error result; the gateway checks its own signal after the call and reports
+  `tool_timeout`, as on the MCP path. The audit record names the protocol
+  `Google Workspace REST`.
+- **Discovery and health.** The Google branch of `remoteTools()` in
+  `server/src/services/tool-access/catalog/discovery.ts`. For a
+  `paperclip_rest` service it runs this folder's probe with the caller's token
+  (`probeGoogleWorkspaceRestService`; Gmail reads `users.getProfile`), then
+  lists this folder's tools under the same `service__tool` names, filtered by
+  the granted scopes. The probe replaces Google's `tools/list` as the proof
+  that the token works. A 401 refreshes the token and probes once more; a
+  second 401 on a managed grant marks it `needs_reauthorization`, as the MCP
+  path does. Any other probe failure makes that one service unavailable while
+  the others stay usable. Health checks use the same branch.
 
-`createGoogleWorkspaceRestServer()` (a standard MCP server that reads the token
-from the transport's auth info) stays available if an HTTP or stdio
-deployment is ever needed; the in-process path does not use it.
+MCP Tasks, MCP resources and elicitation only exist on the `google_mcp` path.
 
-### The switch (follow-up PR, not this one)
+Measured with a stubbed fetch, the adapter adds about 15 µs per call. A full
+`gmail__get_message` through `executeTool` (policy, records, screening) took a
+median of 18.2 ms on either transport.
 
-One per-service setting in `packages/shared/src/google-workspace-connectors.ts`:
+### Flipping a service
 
-```ts
-export const GOOGLE_WORKSPACE_TOOL_TRANSPORT: Record<GoogleWorkspaceService, "google_mcp" | "paperclip_rest"> = {
-  gmail: "paperclip_rest", drive: "google_mcp", /* … */
-};
-```
+1. Implement every tool in that service's allowlist (`toolScopes` in the
+   shared file) in this folder, plus a probe in `probe.ts` and the service's
+   API host in `google-http.ts`.
+2. Set the service to `paperclip_rest` in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`.
 
-`googleWorkspaceToolTarget()` returns it as `transport`. Files the follow-up
-touches:
-
-- `packages/shared/src/google-workspace-connectors.ts`: the setting above, and
-  `transport` on the target.
-- One new server adapter outside this folder, for example
-  `server/src/services/google-workspace-rest-dispatch.ts`, the only importer of
-  `server/src/google-workspace-rest-tools/index.ts`. It strips `Bearer ` from
-  the resolved `Authorization` header, passes the guarded fetch and the call's
-  deadline signal, and maps `GoogleWorkspaceAuthError` to the gateway's existing
-  outcomes (`unauthenticated` to the forced refresh plus
-  `oauth_refreshed_retry_required`; `insufficient_scope` to
-  `oauth_insufficient_scope`).
-- `server/src/services/tool-gateway.ts`, `executeRemoteHttpTool`: after the
-  grant checks and before `endpoint` is chosen, when
-  `workspaceTarget.transport === "paperclip_rest"`, recheck the grant (as
-  `dispatchRemote` does), call the adapter, and return through
-  `normalizeMcpToolResult(result, "mcp_http", false, sourceTemplateKey)`.
-- `server/src/services/tool-access/catalog/discovery.ts`, the Google branch of
-  `remoteTools`: for a `paperclip_rest` service, use the adapter's static tool
-  list instead of an HTTP `tools/list`.
-- `boundary.test.ts`: allow that one adapter as the only importer.
-
-No dependency, workspace, Docker or release change is needed. Everything else
-(picker, scopes, grant checks, allowlist, approval, audit, injection
-screening, risk classification in `catalog/descriptors.ts`) only knows tool
-names and scopes and needs no change.
+`googleWorkspaceRestTransportGaps()` in the adapter, run by
+`google-workspace-rest-dispatch.test.ts`, fails while any service set to
+`paperclip_rest` is missing an allowlisted tool, so a partial flip cannot ship.
 
 ## Known differences from Google's MCP tools
 
@@ -256,17 +214,19 @@ names and scopes and needs no change.
 - Each Google Cloud project behind a connection needs the REST APIs enabled
   (Gmail now; Drive, Docs, Sheets, Slides and Calendar as their tools land).
   Without that, calls return the `api_disabled` tool error.
-- With `paperclip_rest`, `tools/list` no longer proves the token works. A live
-  health check needs a cheap REST probe (for example Gmail `users.getProfile`).
 
 ## Removal procedure
 
 1. Set every service in `GOOGLE_WORKSPACE_TOOL_TRANSPORT` to `google_mcp`.
 2. Delete this folder, `server/src/google-workspace-rest-tools/`.
-3. Delete the server adapter that imports it and its two call sites (gateway
-   and discovery).
+3. Delete `server/src/services/google-workspace-rest-dispatch.ts` and its
+   test, and the two call sites: the `paperclip_rest` branch in
+   `executeRemoteHttpTool` (`server/src/services/tool-gateway.ts`) and
+   `googleWorkspaceRestTools` in
+   `server/src/services/tool-access/catalog/discovery.ts`. Delete
+   `server/src/__tests__/google-workspace-rest-transport.test.ts`.
 4. Check that the build, typecheck and tests pass, then delete the setting
-   itself if nothing else uses it.
+   and `transport` itself if nothing else uses them.
 
 ## Development
 
