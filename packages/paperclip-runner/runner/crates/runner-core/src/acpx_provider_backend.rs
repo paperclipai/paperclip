@@ -3557,7 +3557,7 @@ pub(crate) fn secure_directory(path: &Path, label: &str) -> Result<(), DurableRu
 
 #[cfg(all(test, unix))]
 #[path = "tests/acpx_park_relaunch.rs"]
-mod park_relaunch_tests;
+pub(crate) mod park_relaunch_tests;
 
 #[cfg(test)]
 mod tests {
