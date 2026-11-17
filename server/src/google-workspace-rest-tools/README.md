@@ -60,8 +60,11 @@ so they can be deleted cleanly when that happens.
   GET (POST, PATCH, PUT, DELETE) is a write; the only exception is a POST the
   request marks `readOnly` (Calendar's free/busy query). `www.googleapis.com`
   is allowed only under the prefixes `GOOGLE_API_PATH_PREFIXES` lists for it
-  (`/calendar/v3/`, `/drive/v3/`, `/upload/drive/v3/`), and
-  `sheets.googleapis.com` only under `/v4/spreadsheets/`, checked after URL
+  (`/calendar/v3/`, `/drive/v3/`, `/upload/drive/v3/`),
+  `sheets.googleapis.com` only under `/v4/spreadsheets/` and
+  `gmail.googleapis.com` only under `/gmail/v1/users/me/`; every allowed host
+  must have a prefix list (the type requires it, and `google-http.test.ts`
+  requires an allowed and a rejected path for each). Paths are checked after URL
   normalization, so `..` and `%2e%2e` segments cannot leave them. Redirects are
   never followed: requests use `redirect: "manual"` and any 3xx is a tool error.
 - **One tool, one file.** Each tool in `gmail/`, `calendar/`, `drive/` and `sheets/` is a set of pure functions

@@ -1,7 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 import { fakeGoogle, json } from "./fixtures/fake-google.js";
-import { createGoogleHttp, googleError, googleRequestUrl, isWrite, MAX_RESPONSE_BYTES, type GoogleRequest } from "./google-http.js";
+import { createGoogleHttp, GOOGLE_API_HOSTS, googleError, googleRequestUrl, isWrite, MAX_RESPONSE_BYTES, type GoogleApiHost, type GoogleRequest } from "./google-http.js";
+
+const HOST_PATHS: ReadonlyArray<readonly ["allows" | "rejects", string, string]> = [
+  ["allows", "/gmail/v1/users/me/messages/m1", "gmail.googleapis.com"],
+  ["allows", "/gmail/v1/users/me/profile", "gmail.googleapis.com"],
+  ["rejects", "/gmail/v1/users/other@example.test/messages", "gmail.googleapis.com"],
+  ["rejects", "/upload/gmail/v1/users/me/messages", "gmail.googleapis.com"],
+  ["rejects", "/gmail/v1/users/me/../../../oauth2/v1/tokeninfo", "gmail.googleapis.com"],
+  ["rejects", "/drive/v3/files/f1", "gmail.googleapis.com"],
+  ["allows", "/calendar/v3/calendars/primary/events/e1", "www.googleapis.com"],
+  ["allows", "/drive/v3/files/f1", "www.googleapis.com"],
+  ["allows", "/drive/v3/files/f1/export", "www.googleapis.com"],
+  ["allows", "/upload/drive/v3/files", "www.googleapis.com"],
+  ["rejects", "/drive/v2/files", "www.googleapis.com"],
+  ["rejects", "/gmail/v1/users/me/profile", "www.googleapis.com"],
+  ["rejects", "/calendar/v30/x", "www.googleapis.com"],
+  ["rejects", "/drive/v3", "www.googleapis.com"],
+  ["rejects", "/upload/drive/v2/files", "www.googleapis.com"],
+  ["rejects", "/upload/calendar/v3/x", "www.googleapis.com"],
+  ["rejects", "/calendar/v3/../../drive/v2/files", "www.googleapis.com"],
+  ["rejects", "/drive/v3/../../oauth2/v1/tokeninfo", "www.googleapis.com"],
+  ["rejects", "/drive/v3/%2e%2e/%2e%2e/oauth2/v1/tokeninfo", "www.googleapis.com"],
+  ["rejects", "/upload/drive/v3/../../../storage/v1/b", "www.googleapis.com"],
+  ["rejects", "/v4/spreadsheets/s1", "www.googleapis.com"],
+  ["allows", "/v4/spreadsheets/s1", "sheets.googleapis.com"],
+  ["allows", "/v4/spreadsheets/s1:batchUpdate", "sheets.googleapis.com"],
+  ["rejects", "/v4/spreadsheets", "sheets.googleapis.com"],
+  ["rejects", "/v4/other", "sheets.googleapis.com"],
+  ["rejects", "/v4/spreadsheets/../other", "sheets.googleapis.com"],
+  ["rejects", "/drive/v3/files/f1", "sheets.googleapis.com"],
+];
 
 const GET: GoogleRequest = { method: "GET", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/labels" };
 const POST: GoogleRequest = { method: "POST", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/drafts", body: { message: { raw: "eA" } } };
@@ -262,34 +292,21 @@ describe("writes beyond POST", () => {
     expect(await failure(client(() => json({ error: { code: 410 } }, 410)).http.send(DELETE))).toMatchObject({ kind: "not_found" });
   });
 
-  it.each([
-    "/calendar/v3/calendars/primary/events/e1",
-    "/drive/v3/files/f1",
-    "/drive/v3/files/f1/export",
-    "/upload/drive/v3/files",
-  ])("allows www.googleapis.com under its listed prefixes: %s", (path) => {
-    expect(googleRequestUrl({ ...GET, host: "www.googleapis.com", path })).toBe(`https://www.googleapis.com${path}`);
+  it.each(HOST_PATHS)("%s %s on %s", (expected, path, host) => {
+    const attempt = () => googleRequestUrl({ ...GET, host: host as GoogleApiHost, path });
+    if (expected === "rejects") expect(attempt).toThrow(/not allowed/);
+    else expect(new URL(attempt()).host).toBe(host);
   });
 
-  it.each([
-    "/drive/v2/files",
-    "/gmail/v1/users/me/profile",
-    "/calendar/v30/x",
-    "/drive/v3",
-    "/upload/drive/v2/files",
-    "/upload/calendar/v3/x",
-    "/calendar/v3/../../drive/v2/files",
-    "/drive/v3/../../oauth2/v1/tokeninfo",
-    "/drive/v3/%2e%2e/%2e%2e/oauth2/v1/tokeninfo",
-    "/upload/drive/v3/../../../storage/v1/b",
-    "/drive/v3/files/..%2f..%2f",
-  ])("rejects www.googleapis.com paths outside the list, after normalization: %s", (path) => {
-    const attempt = () => googleRequestUrl({ ...GET, host: "www.googleapis.com", path });
-    if (path === "/drive/v3/files/..%2f..%2f") {
-      expect(new URL(attempt()).pathname.startsWith("/drive/v3/files/")).toBe(true);
-    } else {
-      expect(attempt).toThrow(/not allowed/);
+  it("has an allowed and a rejected path for every allowed host", () => {
+    for (const host of GOOGLE_API_HOSTS) {
+      expect(HOST_PATHS.some(([expected, , rowHost]) => expected === "allows" && rowHost === host), `${host} allowed row`).toBe(true);
+      expect(HOST_PATHS.some(([expected, , rowHost]) => expected === "rejects" && rowHost === host), `${host} rejected row`).toBe(true);
     }
+  });
+
+  it("keeps an encoded slash inside one path segment", () => {
+    expect(new URL(googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/drive/v3/files/..%2f..%2f" })).pathname.startsWith("/drive/v3/files/")).toBe(true);
   });
 });
 

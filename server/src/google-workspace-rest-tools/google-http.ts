@@ -2,7 +2,8 @@ import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 
 export const GOOGLE_API_HOSTS = ["gmail.googleapis.com", "www.googleapis.com", "sheets.googleapis.com"] as const;
 export type GoogleApiHost = (typeof GOOGLE_API_HOSTS)[number];
-export const GOOGLE_API_PATH_PREFIXES: Partial<Record<GoogleApiHost, readonly string[]>> = {
+export const GOOGLE_API_PATH_PREFIXES: Readonly<Record<GoogleApiHost, readonly string[]>> = {
+  "gmail.googleapis.com": ["/gmail/v1/users/me/"],
   "www.googleapis.com": ["/calendar/v3/", "/drive/v3/", "/upload/drive/v3/"],
   "sheets.googleapis.com": ["/v4/spreadsheets/"],
 };
@@ -58,7 +59,7 @@ export function googleRequestUrl(request: GoogleRequest): string {
   if (!request.path.startsWith("/") || request.path.startsWith("//")) throw new Error("Request path must be absolute");
   const url = new URL(`https://${request.host}${request.path}`);
   const prefixes = GOOGLE_API_PATH_PREFIXES[request.host];
-  if (prefixes && !prefixes.some((prefix) => url.pathname.startsWith(prefix))) throw new Error(`Path is not allowed on ${request.host}`);
+  if (!prefixes.some((prefix) => url.pathname.startsWith(prefix))) throw new Error(`Path is not allowed on ${request.host}`);
   for (const [key, value] of Object.entries(request.query ?? {})) {
     if (value === undefined) continue;
     if (Array.isArray(value)) for (const item of value) url.searchParams.append(key, item);
