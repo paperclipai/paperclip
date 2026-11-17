@@ -39,6 +39,7 @@ import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { useSignOut } from "@/hooks/useSignOut";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
@@ -271,7 +272,8 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
               : `Open ${switcherNoun} switcher`
           }
         >
-          <span className="flex min-w-0 flex-1 items-center gap-2">
+          {/* Customer data: the organization name stays masked in session replay. */}
+          <span className={cn("flex min-w-0 flex-1 items-center gap-2", ANALYTICS_MASK_CLASS)}>
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             {/* The header has room for ~110px of name beside the collapse
                 control (~142px on mobile, which hides it) — search moved to

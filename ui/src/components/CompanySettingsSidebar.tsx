@@ -93,7 +93,7 @@ export function CompanySettingsSidebar() {
         className="flex h-(--sz-60px) shrink-0 items-center px-3"
       >
         <div data-slot="settings-back-group" className={`${primarySidebarStyles.group} w-full`}>
-          <SidebarNavItem to="/dashboard" label="Back to app" icon={ArrowLeft} />
+          <SidebarNavItem analyticsChrome to="/dashboard" label="Back to app" icon={ArrowLeft} />
         </div>
       </div>
       <nav
@@ -102,9 +102,9 @@ export function CompanySettingsSidebar() {
         className={primarySidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={primarySidebarStyles.group}>
-          <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+          <SidebarNavItem analyticsChrome to="/company/settings" label="General" icon={SlidersHorizontal} end />
           {showPage("instance.profile") && (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`}
               label="Profile"
               icon={UserRoundPen}
@@ -112,7 +112,7 @@ export function CompanySettingsSidebar() {
             />
           )}
           {showPage("company.members") && (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to="/company/settings/members"
               label="Members"
               icon={Users}
@@ -132,19 +132,19 @@ export function CompanySettingsSidebar() {
               />
             ))}
           {showPage("company.secrets") && (
-            <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
+            <SidebarNavItem analyticsChrome to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
           )}
           {showPage("instance.environments") && (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
               label="Environments"
               icon={MonitorCog}
               end
             />
           )}
-          <SidebarNavItem to="/company/settings/connections" label="Connections" icon={Link2} end />
+          <SidebarNavItem analyticsChrome to="/company/settings/connections" label="Connections" icon={Link2} end />
           {showPage("instance.access") && (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
               label="Access"
               icon={Shield}
@@ -152,20 +152,20 @@ export function CompanySettingsSidebar() {
             />
           )}
           {showPage("company.export") && (
-            <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+            <SidebarNavItem analyticsChrome to="/company/export" label="Export" icon={Download} />
           )}
           {!isCloud && showPage("company.import") && (
-            <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
+            <SidebarNavItem analyticsChrome to="/company/import" label="Import" icon={Upload} end />
           )}
           {showPage("instance.experimental") && (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
               label="Experimental"
               icon={FlaskConical}
             />
           )}
           {showPlugins && (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
               label="Plugins"
               icon={Puzzle}
@@ -193,7 +193,7 @@ export function CompanySettingsSidebar() {
             </div>
           ) : null}
           {showPage("instance.adapters") && (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
               label="Adapters"
               icon={Cpu}

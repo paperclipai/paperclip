@@ -179,6 +179,7 @@ import {
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
+import { resolvePostHogProxyMount } from "./routes/posthog-proxy.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -535,6 +536,10 @@ export async function createApp(
   // Default is unset → Express trusts nothing, which is the only safe choice
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
+  // Browser analytics on Paperclip Cloud only. Mounted before every body
+  // parser so PostHog payloads stream through unread; see routes/posthog-proxy.ts.
+  const posthogProxy = resolvePostHogProxyMount(process.env);
+  if (posthogProxy) app.use(posthogProxy.path, posthogProxy.router);
 
   app.use(
     COMPANY_IMPORT_API_PATH,

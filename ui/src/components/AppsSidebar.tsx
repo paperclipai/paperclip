@@ -38,8 +38,8 @@ export function AppsSidebar() {
         className={contextualSidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-          <SidebarNavItem to="/apps" label="Browse" icon={Store} end />
-          <SidebarNavItem
+          <SidebarNavItem analyticsChrome to="/apps" label="Browse" icon={Store} end />
+          <SidebarNavItem analyticsChrome
             to="/apps/review"
             label="Review"
             icon={ShieldQuestion}

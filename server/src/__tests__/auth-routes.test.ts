@@ -96,6 +96,32 @@ describe("auth routes", () => {
       sentryDsn: null,
       sentryEnvironment: null,
       browserTracing: null,
+      browserAnalytics: null,
+    });
+  });
+
+  it("sends browserAnalytics only on Cloud with a PostHog token and the browser switch", async () => {
+    const actor = { type: "board", userId: "user-1", source: "session" } as Express.Request["actor"];
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "stack-1");
+    vi.stubEnv("PAPERCLIP_POSTHOG_PROJECT_TOKEN", "phc_test");
+    vi.stubEnv("PAPERCLIP_POSTHOG_BROWSER_ENABLED", undefined);
+
+    const off = await request(createApp(actor, baseUser)).get("/api/auth/get-session");
+    expect(off.status).toBe(200);
+    expect(off.body.browserAnalytics).toBeNull();
+
+    vi.stubEnv("PAPERCLIP_POSTHOG_BROWSER_ENABLED", "1");
+    vi.stubEnv("PAPERCLIP_POSTHOG_ENVIRONMENT", "staging");
+    const on = await request(createApp(actor, baseUser)).get("/api/auth/get-session");
+    expect(on.status).toBe(200);
+    expect(on.body.browserAnalytics).toEqual({
+      token: "phc_test",
+      apiHost: "/_ph",
+      uiHost: "https://us.posthog.com",
+      environment: "staging",
+      stackId: "stack-1",
+      replayEnabled: true,
     });
   });
 

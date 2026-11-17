@@ -2,6 +2,7 @@ import { Plus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { ANALYTICS_UNMASK_PROPS } from "@/lib/analytics/privacy";
 
 interface EmptyStateProps {
   icon: LucideIcon;
@@ -29,7 +30,7 @@ export function EmptyState({
   hideActionIcon = false,
 }: EmptyStateProps) {
   return (
-    <div className={graphic ? "empty-state-artwork flex flex-col items-center justify-center gap-5 py-16 text-center" : "flex flex-col items-center justify-center py-16 text-center"}>
+    <div {...ANALYTICS_UNMASK_PROPS} className={graphic ? "empty-state-artwork flex flex-col items-center justify-center gap-5 py-16 text-center" : "flex flex-col items-center justify-center py-16 text-center"}>
       {graphic ? <div className="empty-state-graphic" aria-hidden="true">{graphic}</div> : <div className="bg-muted/50 p-4 mb-4">
         <Icon className="h-10 w-10 text-muted-foreground/50" />
       </div>}
