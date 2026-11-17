@@ -301,6 +301,11 @@ export interface PluginLifecycleManagerOptions {
  * @see PLUGIN_SPEC.md §21.3 — `plugins.status` column
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
+async function retireConnectorConnectionsFor(db: Db, pluginKey: string): Promise<void> {
+  const { retirePluginAppConnections } = await import("./plugin-app-catalog.js");
+  await retirePluginAppConnections(db, pluginKey);
+}
+
 export function pluginLifecycleManager(
   db: Db,
   options?: PluginLoader | PluginLifecycleManagerOptions,
@@ -320,6 +325,7 @@ export function pluginLifecycleManager(
   }
 
   const registry = pluginRegistryService(db);
+  const retireConnectorConnections = (pluginKey: string) => retireConnectorConnectionsFor(db, pluginKey);
   const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
@@ -541,6 +547,7 @@ export function pluginLifecycleManager(
       // If already uninstalled and removeData, hard-delete
       if (plugin.status === "uninstalled") {
         if (removeData) {
+          await retireConnectorConnections(plugin.pluginKey);
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
           const deleted = await registry.uninstall(pluginId, true);
           log.info(
@@ -561,15 +568,16 @@ export function pluginLifecycleManager(
       }
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      // Connections made from this plugin's connector types stay for audit,
+      // archived, with their grants revoked and owned credentials deleted.
+      // This runs before the status change so a failure leaves the uninstall
+      // retryable instead of reporting success with credentials left behind.
+      await retireConnectorConnections(plugin.pluginKey);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
 
       // Perform the uninstall via registry (handles soft/hard delete)
       const result = await registry.uninstall(pluginId, removeData);
 
-      // Connections made from this plugin's connector types stay for audit,
-      // archived, with their grants revoked and owned credentials deleted.
-      const { retirePluginAppConnections } = await import("./plugin-app-catalog.js");
-      await retirePluginAppConnections(db, plugin.pluginKey);
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, removeData },

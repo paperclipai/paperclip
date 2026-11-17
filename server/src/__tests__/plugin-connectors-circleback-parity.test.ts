@@ -26,7 +26,7 @@ import {
   issues, plugins, toolConnectionInstalls, toolConnections,
 } from "@paperclipai/db";
 import {
-  APP_DEFINITIONS, pluginAppSlug, pluginManifestV1Schema, type AppDefinition,
+  APP_DEFINITIONS, pluginAppSlug, pluginManifestV1Schema, type AppDefinition, type PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
 import { toolAccessService, type McpToolDescriptor } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
@@ -39,7 +39,7 @@ const pluginCircleback = JSON.parse(readFileSync(new URL("circleback.json", fixt
 const fixtureManifest = pluginManifestV1Schema.parse({
   ...JSON.parse(readFileSync(new URL("manifest.json", fixtureDir), "utf8")),
   apps: [pluginCircleback],
-});
+}) as PaperclipPluginManifestV1;
 const PLUGIN_KEY = fixtureManifest.id;
 const PLUGIN_SLUG = pluginAppSlug(PLUGIN_KEY, "circleback");
 
@@ -146,10 +146,10 @@ const support = await getEmbeddedPostgresTestSupport();
     return { company, agentA, agentB, provider, service, gateway, app, sessions, circlebackTools, connectionsBySlug, gallerySlugs };
   }
 
-  async function connectAccount(f: Awaited<ReturnType<typeof setup>>, galleryKey: string) {
+  async function connectAccount(f: Awaited<ReturnType<typeof setup>>, galleryKey: string, { saveAgentSelection = true } = {}) {
     const connected = await f.service.connectGalleryApp(f.company.id, { galleryKey, connectionMethodKey: "mcp-oauth" }, actor);
     // The setup screen saves the operator's agent selection (none yet) before sign-in.
-    await f.service.putConnectionInstalls(connected.connectionId, { installs: [] });
+    if (saveAgentSelection) await f.service.putConnectionInstalls(connected.connectionId, { installs: [] });
     const start = await f.service.startOAuth(f.company.id, connected.connectionId, { redirectUri, actor });
     const authorization = new URL(start.authorizationUrl);
     expect(start.registrationSource).toBe("dcr");
@@ -230,7 +230,13 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(tokensByTool).toHaveLength(2);
     expect(new Set(tokensByTool).size).toBe(2);
 
-    const pluginConnectionIds = [fromPlugin.first.connectionId, fromPlugin.second.connectionId];
+    // Rule 2, without the setup screen: signing in a plugin account through
+    // the API alone never installs it for agents.
+    const apiOnly = await connectAccount(f, PLUGIN_SLUG, { saveAgentSelection: false });
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, apiOnly.connectionId))).toEqual([]);
+    expect((await f.gateway.listToolsForSession(f.sessions.b.token)).some(tool => tool.connectionId === apiOnly.connectionId)).toBe(false);
+
+    const pluginConnectionIds = [fromPlugin.first.connectionId, fromPlugin.second.connectionId, apiOnly.connectionId];
     const installsBefore = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, fromPlugin.first.connectionId));
     const grantsBefore = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fromPlugin.first.connectionId));
 
@@ -280,7 +286,7 @@ const support = await getEmbeddedPostgresTestSupport();
       .flatMap(grant => grant.credentialSecretRefs.map(ref => ref.secretId));
     expect(secretIdsBefore.length).toBeGreaterThan(0);
     await db.update(plugins).set({ status: "uninstalled" }).where(eq(plugins.id, plugin.id));
-    expect(await retirePluginAppConnections(db, PLUGIN_KEY)).toBe(2);
+    expect(await retirePluginAppConnections(db, PLUGIN_KEY)).toBe(3);
     const retired = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, f.company.id)));
     for (const row of retired) {
       if (pluginConnectionIds.includes(row.id)) expect(row).toMatchObject({ status: "archived", enabled: false });

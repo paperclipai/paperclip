@@ -15,6 +15,9 @@ const PLUGIN_APP_SLUG = /^plugin-((?:[0-9a-f]{2})+)-([a-z0-9]+(?:-[a-z0-9]+)*)$/
 
 const PLUGIN_KEY = /^[a-z0-9][a-z0-9._-]*$/;
 
+/** Longest namespaced slug the connect API accepts (`galleryKey`). */
+export const PLUGIN_APP_SLUG_MAX_LENGTH = 300;
+
 export function pluginAppSlug(pluginKey: string, appSlug: string): string {
   const encoded = Array.from(pluginKey, (character) => character.charCodeAt(0).toString(16).padStart(2, "0")).join("");
   return `plugin-${encoded}-${appSlug}`;

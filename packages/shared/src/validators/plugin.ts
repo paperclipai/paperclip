@@ -28,6 +28,8 @@ import {
 } from "../constants.js";
 import { routineVariableSchema } from "./routine.js";
 import { appDefinitionSchema } from "./app-definition.js";
+import { CONNECTABLE_APP_DEFINITIONS } from "../app-definitions.js";
+import { PLUGIN_APP_SLUG_MAX_LENGTH, pluginAppSlug } from "../plugin-apps.js";
 import { jsonSchemaSchema } from "./json-schema.js";
 import { externalObjectProviderKeySchema, externalObjectTypeSchema } from "./external-object.js";
 
@@ -898,6 +900,9 @@ export const pluginManifestV1Schema = z.object({
   }
   const appSlugs = new Set<string>();
   for (const [index, app] of (manifest.apps ?? []).entries()) {
+    if (pluginAppSlug(manifest.id, app.slug).length > PLUGIN_APP_SLUG_MAX_LENGTH) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Plugin id and app slug "${app.slug}" are too long together`, path: ["apps", index, "slug"] });
+    }
     if (appSlugs.has(app.slug)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate app slug "${app.slug}"`, path: ["apps", index, "slug"] });
     }
@@ -916,6 +921,24 @@ export const pluginManifestV1Schema = z.object({
       }
       if ((method.purpose && method.purpose !== "tool") || method.provider || method.ai) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Plugin app methods provide agent tools only", path: ["apps", index, "methods", methodIndex] });
+      }
+      // Host-managed credentials (a Paperclip-brokered OAuth token or Vercel
+      // Connect) must only reach the provider they were issued for. A plugin
+      // method may reuse a managed profile only with the exact endpoint of the
+      // built-in method that declares that profile.
+      if (method.credentialSources?.vercelConnect) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Plugin app methods cannot use Vercel Connect credentials", path: ["apps", index, "methods", methodIndex, "credentialSources"] });
+      }
+      if (method.oauthStrategy) {
+        const pinned = CONNECTABLE_APP_DEFINITIONS.some((core) => core.methods.some((coreMethod) =>
+          coreMethod.oauthStrategy === method.oauthStrategy
+          && coreMethod.connectorProfile === method.connectorProfile
+          && Boolean(coreMethod.defaults?.serverUrl)
+          && coreMethod.defaults?.serverUrl === method.defaults?.serverUrl
+          && !method.defaults?.serverUrlTemplate));
+        if (!pinned) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A managed OAuth profile must use the endpoint of the built-in connector that declares it", path: ["apps", index, "methods", methodIndex, "defaults", "serverUrl"] });
+        }
       }
     }
   }

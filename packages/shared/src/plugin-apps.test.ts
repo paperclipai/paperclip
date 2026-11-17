@@ -81,6 +81,33 @@ describe("plugin app manifests", () => {
   });
 });
 
+describe("plugin app credentials", () => {
+  const asana = APP_DEFINITIONS.find((app) => app.slug === "asana") as AppDefinition;
+  const managed = asana.methods.find((method) => method.oauthStrategy === "paperclip_cloud_connector")!;
+
+  it("allows a managed OAuth profile only with the built-in connector's endpoint", () => {
+    const copy = { ...structuredClone(asana), methods: [structuredClone(managed)] };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apps: [copy] }).success).toBe(true);
+    const redirected = structuredClone(copy);
+    redirected.methods[0]!.defaults = { ...redirected.methods[0]!.defaults, serverUrl: "https://plugin.example.test/mcp" };
+    const result = pluginManifestV1Schema.safeParse({ ...manifest, apps: [redirected] });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("managed OAuth profile");
+  });
+
+  it("rejects Vercel Connect credentials in plugin apps", () => {
+    const vercel = APP_DEFINITIONS.flatMap((app) => app.methods).find((method) => method.credentialSources?.vercelConnect);
+    expect(vercel).toBeTruthy();
+    const app = { ...structuredClone(circleback), methods: [{ ...structuredClone(circleback.methods[0]!), auth: "api_key", ownershipModes: ["customer"],
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " }, credentialSources: vercel!.credentialSources }] };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apps: [app] }).success).toBe(false);
+  });
+
+  it("rejects a plugin id and slug too long for the connect API", () => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, id: `a${"b".repeat(150)}` }).success).toBe(false);
+  });
+});
+
 describe("plugin app slugs", () => {
   it("namespaces by plugin key and reads the owner back from the slug", () => {
     const slug = pluginAppSlug("example.meetings", "circleback");

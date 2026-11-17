@@ -18,7 +18,8 @@
  * grants come back unchanged when the plugin is enabled again. Uninstalling
  * retires the connections through the normal connection removal path.
  */
-import { and, eq, like, ne, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq, like, or, sql } from "drizzle-orm";
 import { plugins, toolConnections, type Db } from "@paperclipai/db";
 import {
   appDefinitionSchema,
@@ -38,6 +39,8 @@ export interface PluginAppCatalog {
   /** False only for a plugin connector whose plugin or app is not available. */
   isAvailable(sourceSlug: string | null | undefined): boolean;
 }
+
+const parsedDefinitions = new Map<string, AppDefinition[]>();
 
 const ALL_AVAILABLE: PluginAppCatalog = { definitions: [], isAvailable: () => true };
 
@@ -72,7 +75,17 @@ export async function loadPluginAppCatalog(db: Db): Promise<PluginAppCatalog> {
       eq(plugins.status, "ready"),
       sql`${plugins.manifestJson}->'capabilities' @> '["connectors.provide"]'::jsonb`,
     ));
-  const definitions = rows.flatMap(pluginRowAppDefinitions);
+  const definitions = rows.flatMap((row) => {
+    // Parsing is the costly part; reuse it while the manifest is unchanged.
+    const key = `${row.pluginKey}\u0000${createHash("sha256").update(JSON.stringify(row.manifestJson)).digest("hex")}`;
+    let cached = parsedDefinitions.get(key);
+    if (!cached) {
+      cached = pluginRowAppDefinitions(row);
+      if (parsedDefinitions.size > 500) parsedDefinitions.clear();
+      parsedDefinitions.set(key, cached);
+    }
+    return cached;
+  });
   setPluginAppDefinitions(definitions);
   const available = new Set(definitions.map((app) => app.slug));
   return {
@@ -101,31 +114,37 @@ export function pluginKeyForConnectionSource(sourceSlug: string | null | undefin
 }
 
 /**
- * Retire every connection made from an uninstalled plugin's apps. Uses the
- * standard connection removal, so rows stay (archived) for audit while grants
- * are revoked and connection-owned credentials are deleted.
+ * Retire every connection made from a plugin's apps when it is uninstalled.
+ * Uses the standard connection removal, so rows stay (archived) for audit
+ * while grants are revoked and connection-owned credentials are deleted.
+ * Removal is idempotent, so archived rows are retried too: a removal that
+ * failed part-way finishes on the next attempt. Any failure is thrown, so
+ * the uninstall is not reported as done while credentials remain.
  */
 export async function retirePluginAppConnections(db: Db, pluginKey: string): Promise<number> {
   const prefix = `${pluginAppSlug(pluginKey, "x").slice(0, -1)}%`;
   const rows = await db
-    .select({ id: toolConnections.id, companyId: toolConnections.companyId, config: toolConnections.config })
+    .select({ id: toolConnections.id, companyId: toolConnections.companyId, config: toolConnections.config, transportConfig: toolConnections.transportConfig })
     .from(toolConnections)
-    .where(and(
-      ne(toolConnections.status, "archived"),
+    .where(or(
       like(sql<string>`${toolConnections.config}->>'sourceTemplateKey'`, prefix),
+      like(sql<string>`${toolConnections.transportConfig}->>'sourceTemplateKey'`, prefix),
     ));
-  if (rows.length === 0) return 0;
+  const owned = rows.filter((row) => pluginKeyForConnectionSource(connectionSourceSlug(row)) === pluginKey);
+  if (owned.length === 0) return 0;
   const { toolAccessService } = await import("./tool-access.js");
   const access = toolAccessService(db);
-  let retired = 0;
-  for (const row of rows) {
-    if (pluginKeyForConnectionSource(connectionSourceSlug(row)) !== pluginKey) continue;
+  const failures: unknown[] = [];
+  for (const row of owned) {
     try {
       await access.archiveConnection(row.id, row.companyId);
-      retired += 1;
     } catch (error) {
       logger.warn({ err: error, pluginKey, connectionId: row.id }, "Could not retire a plugin connector connection");
+      failures.push(error);
     }
   }
-  return retired;
+  if (failures.length > 0) {
+    throw new Error(`Could not remove ${failures.length} connection(s) of this plugin's connectors. Try uninstalling again.`);
+  }
+  return owned.length;
 }

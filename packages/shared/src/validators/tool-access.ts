@@ -462,7 +462,7 @@ export const googleWorkspaceServiceSelectionSchema = z.object({
 export const connectToolAppSchema = z.object({
   workspaceServices: googleWorkspaceServiceSelectionSchema.optional(),
   agentInstructions: connectionAgentInstructionsSchema.nullable().optional(),
-  galleryKey: z.string().trim().min(1).max(120).optional(),
+  galleryKey: z.string().trim().min(1).max(300).optional(),
   connectionMethodKey: z.string().trim().min(1).max(120).optional(),
   link: z.string().trim().url().max(2000).optional(),
   name: z.string().trim().min(1).max(160).optional(),
