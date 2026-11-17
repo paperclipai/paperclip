@@ -529,6 +529,15 @@ export function captureLegacyDurablePrpCheckpoint(contents: string, expected: {
   return decodeDurablePrpCheckpoint(captureCheckpoint(value, artifact.runnerVersion, artifact.runnerDigest).records);
 }
 
+export function inspectDurablePrpCheckpointRunner(contents: string): { version: string; digest: string } | null {
+  try {
+    const header = parseCheckpointHeader(contents);
+    return { version: header.runnerVersion, digest: header.runnerDigest };
+  } catch {
+    return null;
+  }
+}
+
 function parseCheckpointHeader(contents: string): Record<string, unknown> & {
   runnerVersion: string; runnerDigest: string;
   state: Record<string, unknown> & { identity: DurableRecoveryIdentity };
@@ -2852,15 +2861,21 @@ export class DurablePrpControlPlane {
     );
   }
 
-  acceptRelaunchedRunner(bootstrapTicket: string, runner: { version: string; digest: string }): void {
+  acceptRelaunchedRunner(
+    bootstrapTicket: string,
+    runner: { version: string; digest: string },
+    parked: { version: string; digest: string } = { version: this.#expectedRunnerVersion, digest: this.#expectedRunnerDigest },
+  ): void {
     this.#store.assertWritable();
+    if (!stableIdPattern.test(runner.version) || !runnerDigestPattern.test(runner.digest)
+      || !runnerVersionCanResume(runner.version, parked.version)) {
+      throw new Error("native_runner_relaunched_build_unaccepted");
+    }
     if (runner.version === this.#expectedRunnerVersion && runner.digest === this.#expectedRunnerDigest) return;
     const ticket = this.#store.state.tickets[credentialMaterial(bootstrapTicket).credentialId];
     if (this.#connections.size !== 0 || !ticket || ticket.usedAt !== null
       || canonicalJson(ticket.identity) !== canonicalJson(this.#identity)
-      || ticket.runnerVersion !== this.#expectedRunnerVersion || ticket.runnerDigest !== this.#expectedRunnerDigest
-      || !/^sha256:[a-f0-9]{64}$/.test(runner.digest)
-      || !runnerVersionCanResume(runner.version, this.#expectedRunnerVersion)) {
+      || ticket.runnerVersion !== this.#expectedRunnerVersion || ticket.runnerDigest !== this.#expectedRunnerDigest) {
       throw new Error("native_runner_relaunched_build_unaccepted");
     }
     ticket.runnerVersion = runner.version;

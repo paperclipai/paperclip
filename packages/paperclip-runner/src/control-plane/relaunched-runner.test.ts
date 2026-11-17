@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
-import { DurablePrpControlPlane, type DurablePrpCheckpoint } from "./durable-prp-control-plane.js";
+import { DurablePrpControlPlane, inspectDurablePrpCheckpointRunner, type DurablePrpCheckpoint } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
 
 const identity: DurableRecoveryIdentity = {
@@ -50,6 +50,7 @@ it.each([
   ["a prerelease of the same version", { version: "0.4.0-rc.1", digest: `sha256:${"b".repeat(64)}` }],
   ["an unparseable version", { version: "latest", digest: `sha256:${"b".repeat(64)}` }],
   ["a malformed digest", { version: "0.4.1", digest: "sha256:short" }],
+  ["a version the control plane cannot store", { version: "0.4.1+build.2", digest: `sha256:${"b".repeat(64)}` }],
 ])("refuses %s and keeps the parked build", async (_name, runner) => withCore(async core => {
   const ticket = core.issueBootstrapTicket();
   expect(() => core.acceptRelaunchedRunner(ticket, runner)).toThrow("native_runner_relaunched_build_unaccepted");
@@ -62,4 +63,19 @@ it("refuses a ticket that is unknown or already used", async () => withCore(asyn
   const ticket = core.issueBootstrapTicket();
   ticketRecord(core).usedAt = new Date().toISOString();
   expect(() => core.acceptRelaunchedRunner(ticket, relaunched)).toThrow("native_runner_relaunched_build_unaccepted");
+}));
+
+it("records the parked build in the checkpoint header for a later claim", async () => withCore(async (core, checkpoints) => {
+  await core.flushCheckpoint();
+  expect(inspectDurablePrpCheckpointRunner(checkpoints.at(-1)!.records.get("header")!)).toEqual(parked);
+  expect(inspectDurablePrpCheckpointRunner("{}")).toBeNull();
+}, true));
+
+it("checks a reported build against the parked build, not only the build Core expects", async () => withCore(async core => {
+  const ticket = core.issueBootstrapTicket();
+  const newerParked = { version: "0.4.1", digest: `sha256:${"c".repeat(64)}` };
+  expect(() => core.acceptRelaunchedRunner(ticket, parked, newerParked)).toThrow("native_runner_relaunched_build_unaccepted");
+  const relaunched = { version: "0.4.2", digest: `sha256:${"d".repeat(64)}` };
+  core.acceptRelaunchedRunner(ticket, relaunched, newerParked);
+  expect(ticketRecord(core)).toMatchObject({ runnerVersion: relaunched.version, runnerDigest: relaunched.digest });
 }));

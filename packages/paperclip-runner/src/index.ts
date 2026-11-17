@@ -51,6 +51,7 @@ export {
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectDurablePrpCheckpointRunner,
   inspectUnclaimedBootstrapCheckpoint,
   inspectUnauthenticatedBootstrapCheckpoint,
   inspectUnclaimedBootstrapState,

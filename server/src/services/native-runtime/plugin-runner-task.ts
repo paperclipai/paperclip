@@ -51,6 +51,7 @@ export function createPluginRunnerTaskOwner(input: {
   releaseResumeVersion?: 1;
   resumeLaunchInputsVersion?: 1;
   resumeRelaunchedRunnerVersion?: 1;
+  releasedSourceRunner?: { version: string; digest: string };
   launchDigestVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
@@ -371,6 +372,7 @@ export function createPluginRunnerTaskOwner(input: {
       if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) return undefined;
       return {
         releasedSource: input.releasedSource,
+        releasedSourceRunner: input.releasedSourceRunner,
         release: async (identity: DurableRecoveryIdentity) => {
           requireReleaseResume();
           const outbound = activeOutbound;
@@ -381,7 +383,8 @@ export function createPluginRunnerTaskOwner(input: {
         },
         resume: async (identity: DurableRecoveryIdentity, ticket: string) => {
           const outcome = await resume(identity, ticket);
-          if (outcome === "resumed" || typeof outcome === "object" && outcome.outcome === "resumed") await input.onResumed?.(identity);
+          if (typeof outcome === "object") return { ...outcome, settled: async () => { await input.onResumed?.(identity); } };
+          if (outcome === "resumed") await input.onResumed?.(identity);
           return outcome;
         },
       };

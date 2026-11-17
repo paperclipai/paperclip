@@ -4253,6 +4253,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #releaseEpisode: {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
+    parked?: { version: string; digest: string } | null;
   } | null = null;
   #relaunchedRunnerArtifact: { version: string; digest: string } | null = null;
   #startupDrainTimedOut = false;
@@ -4982,6 +4983,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         assertPending();
         let outcome: "resumed" | "unavailable" | undefined;
         let relaunched: { version: string; digest: string } | undefined;
+        let settled: (() => Promise<void>) | undefined;
         try {
           if (!episode.ticket) {
             episode.ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -4995,6 +4997,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           const result = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
           outcome = typeof result === "string" ? result : result.outcome;
           relaunched = typeof result === "string" ? undefined : result.runner;
+          settled = typeof result === "string" ? undefined : result.settled;
         } catch (error) {
           // A generic RPC error cannot prove refusal. Keep this exact pending claim quiet.
           assertPending();
@@ -5006,12 +5009,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         if (outcome === "unavailable") throw new Error("native_runner_reuse_unavailable");
         if (relaunched) {
           try {
-            core.acceptRelaunchedRunner(episode.ticket!, relaunched);
+            if (episode.parked === null) throw new Error("native_runner_relaunched_build_unaccepted");
+            core.acceptRelaunchedRunner(episode.ticket!, relaunched, episode.parked);
           } catch {
             throw new Error("native_runner_reuse_unavailable");
           }
           this.#relaunchedRunnerArtifact = structuredClone(relaunched);
           await Promise.race([core.flushCheckpoint(), deadline, closed]);
+          await Promise.race([settled?.(), deadline, closed]);
         }
         episode.claimed = true;
       }
@@ -7435,7 +7440,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const source = this.options.releaseResume.releasedSource;
       if (!recoveryIdentityMatches(source, core.store.state.identity)) throw new Error("native_runner_released_source_mismatch");
       if (!this.#controlPlaneCheckpoint) throw new Error("native_runner_released_cleanup_unavailable");
-      this.#releaseEpisode = { source: structuredClone(source), confirmed: true };
+      this.#releaseEpisode = { source: structuredClone(source), confirmed: true,
+        parked: this.options.releaseResume.releasedSourceRunner ? structuredClone(this.options.releaseResume.releasedSourceRunner) : null };
       await this.#claimReleasedRunner(this.#authorityRunId() ?? "");
       runnerArtifact = this.#relaunchedRunnerArtifact ?? runnerArtifact;
     }

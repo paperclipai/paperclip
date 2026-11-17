@@ -615,12 +615,16 @@ describe("plugin Runner release/resume facade", () => {
   it.each([
     ["the parked build", undefined],
     ["a relaunched build", { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` }],
-  ])("clears the released Runner proof after a resume on %s", async (_label, runner) => {
+  ])("clears the released Runner proof after a resume on %s, once Core saved a relaunched build", async (_label, runner) => {
     const task = vi.fn(async (): Promise<unknown> => ({ kind: "resume", taskId: "task", outcome: "resumed", ...(runner ? { runner } : {}) }));
     const onResumed = vi.fn(async () => {});
     const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, onResumed, resumeRelaunchedRunnerVersion: 1 });
-    await expect(owner.driver.releaseResume!.resume(requirements.identity, "transient-ticket"))
-      .resolves.toEqual(runner ? { outcome: "resumed", runner } : "resumed");
+    const outcome = await owner.driver.releaseResume!.resume(requirements.identity, "transient-ticket");
+    if (runner) {
+      expect(outcome).toEqual({ outcome: "resumed", runner, settled: expect.any(Function) });
+      expect(onResumed).not.toHaveBeenCalled();
+      if (typeof outcome === "object") await outcome.settled?.();
+    } else expect(outcome).toBe("resumed");
     expect(onResumed).toHaveBeenCalledExactlyOnceWith(requirements.identity);
   });
 
