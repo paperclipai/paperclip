@@ -158,8 +158,7 @@ export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimit
     }
 
     // Bound the work one browser, or all of them, can put on this process.
-    const visitorIp = posthogVisitorIp(req.ip, req.headers);
-    const client = visitorIp ?? "unknown";
+    const client = req.ip ?? "unknown";
     const clientInFlight = inFlightByClient.get(client) ?? 0;
     if (inFlight >= limits.maxInFlight || clientInFlight >= limits.maxInFlightPerClient) {
       res.setHeader("Retry-After", "1");
@@ -178,7 +177,7 @@ export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimit
     const transport = target.protocol === "https:" ? https : http;
     const upstreamReq = transport.request(target, {
       method: req.method,
-      headers: posthogForwardRequestHeaders(req.headers, visitorIp, target.host),
+      headers: posthogForwardRequestHeaders(req.headers, posthogVisitorIp(req.ip, req.headers), target.host),
       timeout: UPSTREAM_TIMEOUT_MS,
     });
 
