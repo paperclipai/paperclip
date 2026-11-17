@@ -238,7 +238,7 @@ jobs:
         run: node tests/runner-e2e/prepare-report-lock.mjs
 
       - name: Validate report dependency manifests offline
-        run: pnpm install --lockfile-only --frozen-lockfile --ignore-scripts --offline
+        run: node tests/runner-e2e/prepare-report-lock.mjs --reporting-preflight
 
       - name: Classify manual evidence before any protected credential job
         id: evidence_route
@@ -1122,7 +1122,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           node tests/runner-e2e/prepare-report-lock.mjs
-          pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/manual-private-publication-store"
+          node tests/runner-e2e/prepare-report-lock.mjs --reporting-install -- pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/manual-private-publication-store"
 
       - name: Bind protected original run and compatible target evidence protocol
         id: manual_private
@@ -1593,7 +1593,7 @@ jobs:
         run: node tests/runner-e2e/prepare-report-lock.mjs
 
       - name: Install pinned reporting dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-report-store"
+        run: node tests/runner-e2e/prepare-report-lock.mjs --reporting-install -- pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-report-store"
 
       - name: Prepare exact manual report storage identity
         id: manual_report
@@ -2211,7 +2211,7 @@ jobs:
         run: node tests/runner-e2e/prepare-report-lock.mjs
 
       - name: Install pinned publication dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-publisher-store"
+        run: node tests/runner-e2e/prepare-report-lock.mjs --reporting-install -- pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-publisher-store"
 
       - name: Install publisher-only Chromium
         run: pnpm exec playwright install --with-deps --only-shell chromium

@@ -282,9 +282,10 @@ describe("public repository paid workflow security", () => {
     expect(authorizeJob.match(/actions\/checkout@/gu)).toHaveLength(1);
     expect(authorizeJob).toContain("ref: ${{ github.sha }}");
     expect(authorizeJob).not.toContain("ref: ${{ needs.authorize.outputs.target_sha }}");
-    expect(authorizeJob.match(/run: pnpm install.*$/gmu)).toEqual([
-      "run: pnpm install --lockfile-only --frozen-lockfile --ignore-scripts --offline",
+    expect(authorizeJob.match(/run: node tests\/runner-e2e\/prepare-report-lock\.mjs --reporting-preflight$/gmu)).toEqual([
+      "run: node tests/runner-e2e/prepare-report-lock.mjs --reporting-preflight",
     ]);
+    expect(authorizeJob).not.toContain("run: pnpm install");
     expect(targetLockJob).toContain("name: Resolve target pnpm lockfile");
     expect(targetLockJob).toContain("needs: authorize");
     expect(targetLockJob).toContain(
@@ -800,6 +801,8 @@ describe("public repository paid workflow security", () => {
       expect(job).not.toContain("resolved-target-lockfile");
       expect(job, jobName).not.toContain("--no-frozen-lockfile");
       expect(job, jobName).not.toContain("--lockfile-only");
+      expect(job, jobName).not.toContain("--reporting-preflight");
+      expect(job, jobName).toContain("--reporting-install -- pnpm install --frozen-lockfile --ignore-scripts");
       expect(install, jobName).toBeGreaterThan(job.indexOf("ref: ${{ github.sha }}"));
       const credentials = job.indexOf("aws-actions/configure-aws-credentials@");
       if (credentials >= 0) expect(install).toBeLessThan(credentials);
