@@ -1,3 +1,8 @@
+import { createServer } from "node:http";
+import { once } from "node:events";
+import express from "express";
+import request from "supertest";
+import { toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolReviewProjectionService } from "../services/tool-review-projection.js";
 import { registerToolReviewProjectionWork } from "../services/tool-review-projection-work.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -352,7 +357,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       let release!: () => void, entered!: () => void;
       const gate = new Promise<void>(resolve => { release = resolve; });
       const started = new Promise<void>(resolve => { entered = resolve; });
-      const provider = vi.fn(async (_url, init) => {
+      const provider = vi.fn(async (_url: string, init: RequestInit) => {
         const payload = JSON.parse(String(init.body));
         expect(payload.method).toBe("tools/call");
         entered(); await gate;
@@ -1341,7 +1346,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
         let release!: () => void, entered!: () => void;
         const gate = new Promise<void>(resolve => { release = resolve; });
         const started = new Promise<void>(resolve => { entered = resolve; });
-        const provider = vi.fn(async (_url, init) => {
+        const provider = vi.fn(async (_url: string, init: RequestInit) => {
           const payload = JSON.parse(String(init.body));
           expect(payload.method).toBe("tools/call");
           entered(); await gate;
@@ -2968,7 +2973,11 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const siblingTool = tools.find((tool) => tool.upstreamToolName === "read_status")!;
 
     await expect(gateway.executeTool({ sessionToken: session.token, tool: failingTool.name, parameters: {} }))
-      .rejects.toMatchObject({ reasonCode });
+      .rejects.toMatchObject({ reasonCode, ...(failure === "JSON-RPC error" ? {
+        status: 502,
+        message: expect.stringContaining("Invalid tool arguments"),
+        details: { code: -32602, connectionId: connection.id, catalogEntryId: catalogEntry.id },
+      } : {}) });
     expect(calls).toEqual([catalogEntry.toolName]);
     await expect(gateway.executeTool({ sessionToken: session.token, tool: siblingTool.name, parameters: {} }))
       .resolves.toMatchObject({ status: "completed" });
@@ -2979,6 +2988,60 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(updated.healthStatus).toBe("ok");
     const [failed] = await db.select().from(toolInvocations).where(eq(toolInvocations.errorCode, reasonCode));
     expect(failed).toMatchObject({ status: reasonCode === "tool_timeout" ? "timed_out" : "failed" });
+  });
+
+  it("delivers safe remote error details over HTTP and persists them without a retry", async ({ onTestFinished }) => {
+    const { company, agent, run } = await createRunFixture(db);
+    const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
+    await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted", name: "MCP key", key: `mcp.${randomUUID()}`, value: "opaque-upstream-credential",
+    });
+    await db.update(connectionGrants).set({ credentialSecretRefs: [{ secretId: secret.id,
+      configPath: "oauth.access_token", versionSelector: "latest" }] }).where(eq(connectionGrants.connectionId, connection.id));
+    await db.update(toolConnections).set({ authKind: "oauth", credentialSource: "paperclip_vault",
+      config: { ...connection.config, url: `${connection.config.url}?key=opaque-query-credential` } })
+      .where(eq(toolConnections.id, connection.id));
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const rpc = JSON.parse(Buffer.concat(chunks).toString());
+      const credential = req.headers.authorization?.replace(/^Bearer /, "");
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, error: {
+        code: -32602,
+        message: `Skill refunds was not found; ${credential}; opaque-query-credential; TOKEN=private-message-credential`,
+        data: { password: "private-data-credential", stack: "private-provider-stack" },
+      } }));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    onTestFinished(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+    const address = server.address() as { port: number };
+    // Use a real HTTP provider fixture while keeping egress local and controlled.
+    const provider = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer opaque-upstream-credential");
+      return fetch(`http://127.0.0.1:${address.port}/mcp`, init);
+    });
+    const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const tool = (await gateway.listToolsForSession(session.token)).find(entry => entry.connectionId === connection.id)!;
+    const app = express().use(express.json()).use(toolGatewayRoutes(db, gateway));
+    const response = await request(app).post("/tool-gateway/tools/call")
+      .set("x-paperclip-tool-gateway-token", session.token).send({ tool: tool.name, parameters: {} });
+    expect(response.status).toBe(502);
+    expect(response.body).toMatchObject({
+      error: expect.stringContaining("Upstream message (untrusted): Skill refunds was not found"),
+      reasonCode: "remote_mcp_error", code: -32602,
+      connectionId: connection.id, catalogEntryId: catalogEntry.id,
+    });
+    expect(response.body).not.toHaveProperty("execution");
+    expect(JSON.stringify(response.body)).not.toMatch(/opaque-query-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
+    expect(provider).toHaveBeenCalledTimes(1);
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.connectionId, connection.id));
+    expect(invocation).toMatchObject({ status: "failed", errorCode: "remote_mcp_error", errorMessage: response.body.error });
+    const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, invocation.id));
+    expect(JSON.stringify(events)).not.toMatch(/opaque-query-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
   });
 
   it.each([401, 403])("keeps the connection blocked after an HTTP %s authentication failure", async (status) => {
@@ -3195,7 +3258,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       .where(eq(connectionGrants.connectionId, connection.id));
     await db.update(toolCatalogEntries).set({ name: toolName, toolName }).where(eq(toolCatalogEntries.id, catalogEntry.id));
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow reads", policyType: "allow", selectors: { riskLevel: "read" } });
-    const provider = vi.fn(async (_url, init) => {
+    const provider = vi.fn(async (_url: string, init: RequestInit) => {
       const payload = JSON.parse(String(init.body));
       return Response.json({ jsonrpc: "2.0", id: payload.id, result: { content: [{ type: "text", text: "Test document." }] } });
     });
@@ -3261,7 +3324,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       } },
     }).where(eq(toolCatalogEntries.id, catalogEntry.id));
     await db.insert(toolPolicies).values(readPolicyRow(company, "Allow Chat reads"));
-    const provider = vi.fn(async (_url, init) => {
+    const provider = vi.fn(async (_url: string, init: RequestInit) => {
       const payload = JSON.parse(String(init.body));
       if (payload.method === "notifications/initialized") return new Response(null, { status: 202 });
       return Response.json({ jsonrpc: "2.0", id: payload.id, result: payload.method === "initialize"

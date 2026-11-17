@@ -81,6 +81,8 @@ import { pluginAppCatalogFor } from "./plugin-app-catalog.js";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
+import { collectSensitiveStringValues } from "../middleware/redact-sensitive.js";
+import { mcpErrorMessage } from "./mcp-error-message.js";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -5926,6 +5928,7 @@ export function createToolGatewayService(
     // The session this read used. On a 400/404 only that session is dropped:
     // other identities' sessions and in-flight initializations are untouched.
     let usedSession: { scope: string; headers: Record<string, string>; sessionId: string } | null = null;
+    let lastRequestHeaders = headers;
     const send = async (fresh: boolean) => {
       let requestHeaders: Record<string, string> = isModernMcpProtocolVersion(protocolVersion)
         ? { ...headers, "MCP-Protocol-Version": protocolVersion }
@@ -5942,6 +5945,7 @@ export function createToolGatewayService(
           await persistMcpProtocolVersion(input.connection, negotiated);
         }
       }
+      lastRequestHeaders = requestHeaders;
       return dispatch({
         ...mcpHttpRequestInit(requestHeaders, { id: requestId, method: input.method, params: input.params }),
         redirect: "manual",
@@ -6020,7 +6024,9 @@ export function createToolGatewayService(
     ) {
       throw new ToolGatewayHttpError(
         502,
-        "Remote MCP context request returned an error",
+        mcpErrorMessage("Remote MCP context request returned an error", record?.error, lastRequestHeaders, [
+          ...collectSensitiveStringValues(input.params), ...new URL(endpoint).searchParams.values(),
+        ]),
         "remote_mcp_error",
         {
           connectionId: input.connection.id,
@@ -8427,7 +8433,10 @@ export function createToolGatewayService(
         const errorRecord = asRecord(payloadRecord.error);
         throw new ToolGatewayHttpError(
           502,
-          "Remote MCP server returned an error",
+          mcpErrorMessage("Remote MCP server returned an error", payloadRecord.error,
+            { ...requestHeaders, ...headers, ...credentialHeaders }, [
+              ...collectSensitiveStringValues(parameters), ...new URL(endpoint).searchParams.values(),
+            ]),
           "remote_mcp_error",
           {
             code:
