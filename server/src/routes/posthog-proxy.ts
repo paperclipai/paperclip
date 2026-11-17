@@ -18,6 +18,7 @@ import http from "node:http";
 import https from "node:https";
 import { pipeline, Transform } from "node:stream";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
+import { isIP } from "node:net";
 import { Router, type Request, type Response } from "express";
 import { logger } from "../middleware/logger.js";
 import type { CloudInstanceEnv } from "../services/cloud-instance.js";
@@ -104,6 +105,34 @@ export function posthogUpstreamUrl(ingestHost: string, method: string, requestUr
   return new URL(`${origin}${path}${query}`);
 }
 
+/**
+ * The visitor's IP for analytics location and per-visitor limits. Behind a
+ * platform proxy without `TRUST_PROXY` (Paperclip Cloud on Railway), `req.ip`
+ * is the proxy's private hop, so every visitor shares one address and PostHog
+ * cannot resolve a location. When the socket peer is private, use the first
+ * valid `X-Forwarded-For` entry instead. A client can spoof that entry, but it
+ * only changes its own analytics location; the global in-flight limit still
+ * applies.
+ */
+export function posthogVisitorIp(peerIp: string | undefined, headers: IncomingHttpHeaders): string | undefined {
+  if (peerIp && !isPrivateAddress(peerIp)) return peerIp;
+  const raw = headers["x-forwarded-for"];
+  const first = (Array.isArray(raw) ? raw[0] : raw)?.split(",")[0]?.trim();
+  if (first && isIP(first) !== 0) return first;
+  return peerIp;
+}
+
+function isPrivateAddress(address: string): boolean {
+  const ip = address.startsWith("::ffff:") ? address.slice(7) : address;
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split(".").map(Number) as [number, number];
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
+  }
+  const lower = ip.toLowerCase();
+  return lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80:");
+}
+
 export function posthogForwardRequestHeaders(
   headers: IncomingHttpHeaders,
   clientIp: string | undefined,
@@ -146,7 +175,8 @@ export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimit
     }
 
     // Bound the work one browser, or all of them, can put on this process.
-    const client = req.ip ?? "unknown";
+    const visitorIp = posthogVisitorIp(req.ip, req.headers);
+    const client = visitorIp ?? "unknown";
     const clientInFlight = inFlightByClient.get(client) ?? 0;
     if (inFlight >= limits.maxInFlight || clientInFlight >= limits.maxInFlightPerClient) {
       res.setHeader("Retry-After", "1");
@@ -165,7 +195,7 @@ export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimit
     const transport = target.protocol === "https:" ? https : http;
     const upstreamReq = transport.request(target, {
       method: req.method,
-      headers: posthogForwardRequestHeaders(req.headers, req.ip, target.host),
+      headers: posthogForwardRequestHeaders(req.headers, visitorIp, target.host),
       timeout: UPSTREAM_TIMEOUT_MS,
     });
 
