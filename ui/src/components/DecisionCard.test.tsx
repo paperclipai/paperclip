@@ -128,13 +128,12 @@ afterEach(() => {
 });
 
 describe("DecisionCard", () => {
-  it("renders a pending decision with provenance, effect summary and dismiss", () => {
+  it("renders a pending decision with provenance and effect summary", () => {
     const el = render({});
     expect(el.textContent).toContain("Pending");
     expect(el.textContent).toContain("Gardener");
     expect(el.textContent).toContain("PAP-123");
     expect(el.textContent).toContain("Comment on PAP-456");
-    expect([...el.querySelectorAll("button")].some((b) => b.textContent?.includes("Dismiss"))).toBe(true);
   });
 
   it("links the target issue the decision applies to, not just the origin", () => {
@@ -192,11 +191,10 @@ describe("DecisionCard", () => {
     expect(onDecide).toHaveBeenCalledWith("comment", expect.any(Object));
   });
 
-  it("fires onDismiss from the always-present zero-effect dismiss", () => {
-    const onDismiss = vi.fn();
-    const el = render({ onDismiss });
-    clickButtonWithText(el, "Dismiss");
-    expect(onDismiss).toHaveBeenCalled();
+  it("offers no \"Dismiss — no effects\" verb; closing lives in the card's Close… menu (PAP-749 Rule 8)", () => {
+    const el = render({});
+    expect(el.textContent).not.toContain("Dismiss — no effects");
+    expect(el.textContent).not.toContain("Not now?");
   });
 
   it("warns and disables strict options when a target is stale", () => {

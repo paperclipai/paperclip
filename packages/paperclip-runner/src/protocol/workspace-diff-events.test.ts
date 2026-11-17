@@ -10,6 +10,7 @@ function workspaceEvent(eventType: "workspace.change.updated" | "workspace.diff.
     sourceInstanceId: "runner-1",
     sourceKind: "runner",
     runId: "run-1",
+    normalizedSessionId: "session-1",
     turnId: "turn-1",
     eventType,
     schemaVersion: 1,
@@ -44,7 +45,7 @@ describe("PRP workspace change events", () => {
 
   it("rejects traversal paths and incomplete recorded diffs", () => {
     const traversal = workspaceEvent("workspace.diff.recorded");
-    traversal.payload.files[0]!.path = "../secret";
+    (traversal.payload.files as Array<{ path: string }>)[0]!.path = "../secret";
     expect(validatePrpEvent(traversal).ok).toBe(false);
     const incomplete = workspaceEvent("workspace.diff.recorded");
     incomplete.payload.complete = false;
@@ -59,6 +60,7 @@ describe("PRP workspace change events", () => {
       sourceInstanceId: "runner-1",
       sourceKind: "runner",
       runId: "run-1",
+      normalizedSessionId: "session-1",
       turnId: "turn-1",
       eventType: "workspace.file.referenced",
       schemaVersion: 1,

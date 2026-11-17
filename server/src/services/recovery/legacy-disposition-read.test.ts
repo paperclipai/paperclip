@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -37,7 +37,7 @@ describe.skipIf(!support.supported)("legacy disposition source reads", () => {
       errorCode: "adapter_failed", resultJson: { executionRecovery: { providerWorkStarted: true }, stdout: bulk } }).returning();
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       expect(await readLegacyDispositionSource(db, { companyId, issueId, runId: before.id }))
@@ -77,7 +77,7 @@ describe.skipIf(!support.supported)("legacy disposition source reads", () => {
     const enqueueWakeup = vi.fn(async () => { throw new Error("native work must not enter legacy recovery"); });
     const service = recoveryService(db, { enqueueWakeup });
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try { expect(await service.reconcileLegacyContinuation(before.id)).toBe("skipped"); }
     finally { capture.flush(); }

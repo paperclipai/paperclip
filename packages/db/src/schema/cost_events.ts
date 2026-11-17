@@ -26,6 +26,7 @@ export const costEvents = pgTable(
     receiptHash: text("receipt_hash"),
     providerRequestId: text("provider_request_id"),
     reportedCostCents: numeric("reported_cost_cents", { precision: 24, scale: 7 }),
+    reportedUsageJson: jsonb("reported_usage_json").$type<Record<string, unknown>>(),
     pricingProvenance: jsonb("pricing_provenance").$type<Record<string, unknown>>(),
     provider: text("provider").notNull(),
     biller: text("biller").notNull().default("unknown"),

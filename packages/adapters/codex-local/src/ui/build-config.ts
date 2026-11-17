@@ -111,6 +111,18 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
     return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true, dotWorkspaceAccess: schemaValues.dotWorkspaceAccess === true, dotAttachmentAccess: schemaValues.dotAttachmentAccess === true,
       ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
   }
+  if (provider === "cursor_cloud") {
+    const model = typeof config.model === "string" && config.model.trim()
+      ? config.model.trim() : typeof schemaValues.model === "string" ? schemaValues.model.trim() : "";
+    if (!model) throw new Error("Cursor Cloud requires an explicit model before saving.");
+    if (v.promptTemplate?.trim() || v.bootstrapPrompt?.trim()) throw new Error("Cursor Cloud with Paperclip Runner uses assigned instructions. Remove custom prompt templates before saving.");
+    const cloudKeys = ["repoUrl", "repoRef", "prUrl", "cloudEnvType", "cloudEnvName", "runtimeEnvType", "runtimeEnvName", "repoStartingRef", "repoPullRequestUrl", "workOnCurrentBranch", "autoCreatePR", "skipReviewerRequest", "cursorCloudTimeoutMs"];
+    return { provider, model, lifecycleMode: "per_turn",
+      ...(config.instructionsFilePath ? { instructionsFilePath: config.instructionsFilePath } : {}),
+      ...(config.env ? { env: config.env } : {}),
+      ...Object.fromEntries(cloudKeys.filter(key => schemaValues[key] !== undefined).map(key => [key, schemaValues[key]])),
+    };
+  }
   const selectedAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent);
   const candidate = context?.candidateHarnesses?.find(candidate => candidate.agent === schemaValues.acpxAgent);
   const selectedModel = typeof v.model === "string" && v.model ? v.model : schemaValues.model;
@@ -184,7 +196,8 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
     "AWS AgentCore timeoutSeconds",
   );
   const lifecycleCandidate = v.paperclipRunnerLifecycleMode ?? schemaValues.lifecycleMode;
-  const lifecycleMode = lifecycleCandidate === "warm" ? "warm" : "per_turn";
+  // No choice stores no lifecycleMode; the server applies the product default.
+  const lifecycleMode = lifecycleCandidate === "warm" || lifecycleCandidate === "per_turn" ? lifecycleCandidate : undefined;
   const configuredIdleTimeoutMs =
     v.paperclipRunnerIdleTimeoutMs ?? schemaValues.idleTimeoutMs;
   const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(
@@ -310,7 +323,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
           timeoutSeconds,
         }
       : {}),
-    lifecycleMode,
+    ...(lifecycleMode ? { lifecycleMode } : {}),
     ...(lifecycleMode === "warm" ? { idleTimeoutMs } : {}),
   };
 }

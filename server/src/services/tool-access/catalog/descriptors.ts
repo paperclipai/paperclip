@@ -3,6 +3,7 @@ import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { googleWorkspaceToolTarget } from "@paperclipai/shared";
 import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
 import { isMemoryConnectorId } from "@paperclipai/shared";
+import { readMcpAppToolUi, readMcpIcons, type McpAppToolUi, type McpIcon } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import type { ToolRiskLevel } from "@paperclipai/shared";
 import { GOOGLE_WORKSPACE_CONNECTOR_PROFILES, type GoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
@@ -20,6 +21,10 @@ export type McpToolDescriptor = {
   description?: string | null;
   inputSchema?: Record<string, unknown>;
   annotations?: Record<string, unknown>;
+  /** MCP Apps view declaration from the tool's `_meta.ui`. */
+  ui?: McpAppToolUi | null;
+  /** Sanitized provider icons (SEP-973). Display only: not part of the version hash. */
+  icons?: McpIcon[] | null;
 };
 
 export function normalizeToolDescriptor(tool: unknown): McpToolDescriptor | null {
@@ -33,6 +38,8 @@ export function normalizeToolDescriptor(tool: unknown): McpToolDescriptor | null
       typeof record.description === "string" ? record.description : null,
     inputSchema: asRecord(record.inputSchema ?? record.input_schema),
     annotations: asRecord(record.annotations),
+    ui: readMcpAppToolUi(record._meta),
+    icons: readMcpIcons(record.icons),
   };
 }
 

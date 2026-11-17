@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyGitHubWebhookRecovery } from "./chat-channels/github/webhook-recovery-notifications.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { connectionManagementService, type ConnectionManagementContext } from "./connection-management.js";
@@ -173,8 +174,10 @@ export function githubChatWizardService(
     values: Partial<NonNullable<Endpoint["setup"]["github"]>>,
   ) {
     await db.transaction(async tx => {
-      if (values.cloudRegistrationId !== undefined)
+      if (values.cloudRegistrationId !== undefined) {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionEvents, bot.companyId);
         await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: bot.id });
+      }
       await tx
         .update(chatEndpoints)
         .set({

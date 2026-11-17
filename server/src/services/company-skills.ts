@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { skillExecutionContent } from "./skill-execution-content.js";
 import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
 import { managedSkillContent, type SkillContentPublication } from "./managed-skill-content.js";
@@ -408,6 +409,13 @@ type RuntimeSkillEntryOptions = {
   includeLegacy?: boolean;
   onlyKeys?: Set<string>;
   snapshotLatest?: boolean;
+  /**
+   * Resolve exact saved versions for a turn whose Runner already holds their
+   * files. Access and version existence are still checked; this server neither
+   * materializes the bytes nor takes the company skill cache lock, so `source`
+   * names the cache location only and must not be read.
+   */
+  admittedVersionsOnly?: boolean;
 };
 
 type SkillActor = {
@@ -5980,7 +5988,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   }
 
   async function materializeVersionSnapshot(companyId: string, skill: CompanySkill, version: StoredSkillVersion): Promise<string> {
-    return executionContent.withVersion({ companyId, skillId: skill.id, versionId: version.id }, async directory => directory);
+    return executionContent.withReadableVersion({ companyId, skillId: skill.id, versionId: version.id }, async directory => directory);
   }
 
   function resolveRuntimeSkillMaterializedPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
@@ -6005,6 +6013,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           detail: "The selected skill version no longer exists.",
         };
       }
+      if (options.admittedVersionsOnly) return { status: "available", source: versionPath };
       // A failed snapshot materialization must surface as a "missing" entry
       // with the real cause — a silent drop makes the skill vanish from the
       // runtime while the library still shows it installed.
@@ -6124,14 +6133,20 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     if (!preparedSelection) {
       await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
     }
-    return withSkillPackageReadScope(db, () => withSkillVersionCacheLock(db, companyId, async () => {
+    const resolve = async (selected: RuntimeSkillEntryOptions) => {
       // Recheck scope on the full row read: a public-to-project change between
       // the probe and consumption must fail closed.
-      const runtimeOptions = preparedSelection ? { ...options, onlyKeys: requested } : options;
+      const runtimeOptions = preparedSelection ? { ...selected, onlyKeys: requested } : selected;
       const entries = await listRuntimeSkillEntriesLocked(companyId, runtimeOptions,
         Boolean(preparedSelection && installed.every(skill => skill.accessSourceId === null)));
       return measureRunPhase("skills.consume", () => consume(entries));
-    }));
+    };
+    // Saved versions only: nothing is published to or pinned in the cache, so
+    // a reattaching turn does not queue behind other runs' materialization.
+    if (options.admittedVersionsOnly) {
+      return withSkillPackageReadScope(db, () => resolve({ ...options, snapshotLatest: false }));
+    }
+    return withSkillPackageReadScope(db, () => withSkillVersionCacheLock(db, companyId, () => resolve(options)));
   }
 
   async function listRuntimeSkillEntriesLocked(
@@ -7345,6 +7360,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     for (const row of rows) {
       await db.transaction(async (tx) => {
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+        await notifyStatusCardIssueChange(tx, companyId);
         await tx
           .update(issues)
           .set({ hiddenAt: now, updatedAt: now })
@@ -7401,7 +7417,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       .filter((skill): skill is CompanySkill => Boolean(skill));
     async function assertUnused(skill: CompanySkill, database: DbOrTransaction = db) {
       const usedByAgents = await usage(companyId, skill.key, database);
-      const pins = await protectedVersions(database as Db, companyId);
+      const pins = await protectedVersions(database as Db, companyId, { createdAt: skill.createdAt });
       const versions = await database.select({ id: companySkillVersions.id }).from(companySkillVersions).where(and(
         eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skill.id)));
       if (pins.versions === null || versions.some(version => pins.versions!.has(version.id))) {

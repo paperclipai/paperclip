@@ -42,6 +42,23 @@ export const experimentalApiPaths: readonly [string, string, z.ZodTypeAny | unde
   ["post", "/api/companies/{companyId}/smoke-lab/reset", undefined],
 ];
 
+// Searchable summaries for experimental reads agents need to find. Routes not
+// listed here keep the generated method-and-path summary.
+export const experimentalApiDocs: Record<string, { summary: string; description: string }> = {
+  "GET /api/companies/{companyId}/cases": { summary: "List company cases",
+    description: "Lists the cases the caller can read, with each case's id, identifier, title, status and primary task (workIssueId)." },
+  "GET /api/issues/{issueId}/cases": { summary: "Find the cases for a task",
+    description: "Accepts a task UUID or identifier and returns each readable case linked to that task, as { id, role, case: { id, identifier, ... } }. The top-level id is the link; pass case.id to read_case or the case audit history." },
+  "GET /api/cases/{id}": { summary: "Read a case and its current facts",
+    description: "Returns the case identifier, title, status, current facts (fields) and primary task." },
+  "PATCH /api/cases/{id}": { summary: "Update a case's facts, labels or status",
+    description: "Updates title, summary, fields, labels, project, parent case or status. For a case with a primary task, agents do not close it here: the agent assigned to that task records a terminal handoff to done, and only that agent may cancel or reopen the case." },
+  "GET /api/cases/{id}/events": { summary: "Read a case's audit history of fact changes, handoffs and links",
+    description: "Newest first. Each event has its kind (such as fields_changed, status_changed, issue_linked), the actor and time. An agent actor has actorAgentId and actorAgentName; a person has actorType user and actorUserId, without a display name. A fields_changed event records who changed the facts and when; it does not retain the previous fact values. Document edits are in document revisions and handoffs in the case handoff history." },
+  "GET /api/cases/{id}/documents/{key}/revisions": { summary: "Read a case document's revision history",
+    description: "Returns every revision of a case-owned document, newest first, with body, author and time. An agent author has actorAgentName; a person has createdByUserId, without a display name." },
+};
+
 // Query contracts shared with the runtime parser where one exists.
 export const experimentalApiQueries: Record<string, z.ZodObject<any>> = {
   "GET /api/companies/{companyId}/cases": caseSchemas.listCasesQuerySchema,

@@ -142,6 +142,7 @@ async function syncCredentialBindings(
       actor?: ActorInfo;
       existingRefs?: typeof connectionGrants.$inferSelect.credentialSecretRefs;
       ownerUserId?: string;
+      preserveOAuthIdentity?: boolean;
     },
     context?: {
       dbClient: Db | DbTransaction;
@@ -154,6 +155,7 @@ async function syncCredentialBindings(
     const write = (client: Db | DbTransaction) => writeConnectionCredential(client, {
       companyId: input.companyId, connectionName: input.connection.name, configPath: input.configPath,
       label: input.label, value: input.value, existingRef: existing ?? undefined, actor: actorForSecret(input.actor),
+      preserveOAuthIdentity: input.preserveOAuthIdentity,
       // Registration authenticates the OAuth client, never the person invoking tools.
       ownerUserId: input.configPath === "oauth.client_secret" ? undefined : input.ownerUserId,
       definitionKey: input.ownerUserId ? `tool_oauth.${input.connection.id}.${input.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}` : undefined,

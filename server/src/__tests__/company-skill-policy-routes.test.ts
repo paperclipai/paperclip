@@ -80,7 +80,6 @@ describeEmbeddedPostgres("company skill policy routes", () => {
               source: "agent_key",
               agentId,
               companyId: actor === "cross-company" ? otherCompanyId : companyId,
-              runId: null,
             };
       next();
     });

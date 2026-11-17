@@ -1,7 +1,5 @@
 /**
- * Plain-language presentation of *who may resolve* an issue-thread interaction
- * (PAP-17280, Phase 3 of the open-default resolver contract in
- * `doc/SPEC-implementation.md` §9.8.1).
+ * Plain-language presentation of *who may resolve* an issue-thread interaction.
  *
  * The product default is open: an interaction created without an explicit
  * `resolverPolicy` is resolvable by `anyone` in the company — the board or any

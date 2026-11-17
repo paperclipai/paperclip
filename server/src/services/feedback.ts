@@ -48,8 +48,10 @@ import {
   sha256Digest,
 } from "./feedback-redaction.js";
 import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
+import { isObjectJournalBusyError } from "./object-byte-journal.js";
 import { recoverSettledNativeRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { announceInstanceSettingsChange } from "./instance-settings-cache.js";
 
 const FEEDBACK_SCHEMA_VERSION = "paperclip-feedback-envelope-v2";
 const FEEDBACK_BUNDLE_VERSION = "paperclip-feedback-bundle-v2";
@@ -333,7 +335,10 @@ async function readFullRunLog(db: Db, run: {
     const result = await store.read({ store: run.logStore, logRef: run.logRef }, {
       offset,
       limitBytes: 512_000,
-    }).catch(() => null);
+    }).catch((error) => {
+      if (isObjectJournalBusyError(error)) throw error;
+      return null;
+    });
     if (!result) return combined || null;
     combined += result.content;
     if (result.nextOffset == null) break;
@@ -2023,6 +2028,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           getOperatorSettingDefaults(),
         );
         if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
+          await announceInstanceSettingsChange(tx);
           const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
           const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
           await tx

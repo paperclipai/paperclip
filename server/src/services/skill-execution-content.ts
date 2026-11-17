@@ -17,8 +17,11 @@ export function skillExecutionContent(db: Db, options: { actor?: AuthorizationAc
   const packages = skillPackageStore(options.packageDb ?? db);
   const runtime = skillPackageRuntime(options.packageDb ?? db);
   async function withVersion<T>(reference: SkillContentReference, consume: (directory: string) => Promise<T>): Promise<T> {
+    await skillAccessService(db, options.actor).assertSkill(reference.companyId, reference.skillId);
+    return withReadableVersion(reference, consume);
+  }
+  async function withReadableVersion<T>(reference: SkillContentReference, consume: (directory: string) => Promise<T>): Promise<T> {
     const { companyId, skillId, versionId } = reference;
-    await skillAccessService(db, options.actor).assertSkill(companyId, skillId);
     return withSkillVersionCacheLock(db, companyId, async () => {
       const version = await packages.version(companyId, skillId, versionId);
       if (!version) throw notFound("Skill version not found");
@@ -48,5 +51,5 @@ export function skillExecutionContent(db: Db, options: { actor?: AuthorizationAc
       return consume(directory);
     });
   }
-  return { withVersion };
+  return { withVersion, withReadableVersion };
 }

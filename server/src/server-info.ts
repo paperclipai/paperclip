@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ServerGitInfo, ServerGitLocalChanges, ServerInfoSnapshot } from "@paperclipai/shared";
 import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 
@@ -9,7 +11,21 @@ type BuildCommitCommand = () => string | null;
 
 const SHORT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
+function workingDirectoryIsInsideGitCheckout(): boolean {
+  if (process.env.GIT_DIR) return true;
+  let directory = process.cwd();
+  for (;;) {
+    if (existsSync(join(directory, ".git"))) return true;
+    const parent = dirname(directory);
+    if (parent === directory) return false;
+    directory = parent;
+  }
+}
+
 function defaultGitCommand() {
+  if (!workingDirectoryIsInsideGitCheckout()) {
+    throw new Error("The working directory is not inside a Git checkout");
+  }
   return execFileSync(
     "git",
     ["show", "-s", "--format=%H%n%h%n%s%n%cI", "HEAD"],
@@ -171,6 +187,11 @@ export function createServerInfoSnapshot(
 const GIT_INFO_CACHE_TTL_MS = 3000;
 const processStartedAt = new Date().toISOString();
 let gitInfoCache: { value: ServerGitInfo; expiresAt: number } | null = null;
+
+// Lifecycle identity must not run the synchronous Git probes used by diagnostics.
+export function getServerProcessStartedAt(): string {
+  return processStartedAt;
+}
 
 export function getServerInfoSnapshot(
   opts: {

@@ -53,7 +53,7 @@ function registerModuleMocks() {
 
 let appImportCounter = 0;
 
-async function createApp(actor: any, db: any = {} as any, options: { cliAuthCreateRateLimiter?: InviteRateLimiter; cliAuthPollRateLimiter?: InviteRateLimiter } = {}) {
+async function createApp(actor: any, db: any = {} as any, options: { authPublicBaseUrl?: string; cliAuthCreateRateLimiter?: InviteRateLimiter; cliAuthPollRateLimiter?: InviteRateLimiter } = {}) {
   appImportCounter += 1;
   const routeModulePath = `../routes/access.js?cli-auth-routes-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?cli-auth-routes-${appImportCounter}`;
@@ -106,6 +106,38 @@ describe("cli auth routes", () => {
     await Promise.all([import("../routes/access.js"), import("../middleware/index.js")]);
   });
 
+  it.each([
+    [true, false],
+    [false, true],
+  ])("reports effective Cloud owner access when actor admin=%s and stored admin=%s", async (effectiveAdmin, storedAdmin) => {
+    mockBoardAuthService.resolveBoardAccess.mockResolvedValue({
+      user: { id: "user-1", name: "User One", email: "user@example.com" },
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: storedAdmin,
+    });
+    const app = await createApp({ type: "board", source: "cloud_tenant", userId: "user-1", isInstanceAdmin: effectiveAdmin });
+    const res = await request(app).get("/api/cli-auth/me");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ source: "cloud_tenant", isInstanceAdmin: effectiveAdmin, companyIds: ["company-1"] });
+  });
+
+  it.each(["session", "board_key"])("keeps the fresh stored access snapshot for %s authentication", async source => {
+    mockBoardAuthService.resolveBoardAccess.mockResolvedValue({ user: null, companyIds: [], isInstanceAdmin: false });
+    const app = await createApp({ type: "board", source, userId: "user-1", isInstanceAdmin: true });
+    const res = await request(app).get("/api/cli-auth/me");
+    expect(res.status).toBe(200);
+    expect(res.body.isInstanceAdmin).toBe(false);
+  });
+
+  it.each([{ type: "none", source: "none" }, { type: "agent", source: "agent_key", agentId: "agent-1" }])(
+    "denies the board access summary to $type callers", async actor => {
+      const app = await createApp(actor);
+      expect((await request(app).get("/api/cli-auth/me")).status).toBe(401);
+      expect(mockBoardAuthService.resolveBoardAccess).not.toHaveBeenCalled();
+    },
+  );
+
   it("creates a CLI auth challenge with approval metadata", async () => {
     mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
       challenge: {
@@ -135,6 +167,31 @@ describe("cli auth routes", () => {
     });
     expect(res.body.boardApiToken).toBe("pcp_board_token");
     expect(res.body.approvalUrl).toContain("/cli-auth/12345678-1234-4123-8123-123456789abc?token=pcp_cli_auth_secret");
+  });
+
+  it("uses the configured public origin for CLI approval behind an upstream proxy", async () => {
+    mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
+      challenge: {
+        id: "12345678-1234-4123-8123-123456789abc",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      challengeSecret: "pcp_cli_auth_secret",
+      pendingBoardToken: "pcp_board_token",
+    });
+    const app = await createApp({ type: "none", source: "none" }, {}, {
+      authPublicBaseUrl: "https://workspace.example.com/",
+    });
+    const res = await request(app)
+      .post("/api/cli-auth/challenges")
+      .set("Host", "upstream.example.net")
+      .set("X-Forwarded-Host", "upstream.example.net")
+      .set("X-Forwarded-Proto", "https")
+      .send({ command: "paperclipai auth login", requestedAccess: "board" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.approvalUrl).toBe(
+      `https://workspace.example.com${res.body.approvalPath}`,
+    );
   });
 
   it("bounds anonymous create and poll independently without trusting spoofed forwarding headers", async () => {

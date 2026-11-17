@@ -1,4 +1,4 @@
-import Ajv2020 from "ajv/dist/2020.js";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { questionSetSchema } from "../protocol/generated/schema-bundle.js";
 import { describe, expect, it } from "vitest";
 

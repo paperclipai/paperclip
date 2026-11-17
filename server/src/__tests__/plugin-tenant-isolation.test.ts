@@ -156,7 +156,7 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     await db.insert(pluginJobRuns).values([
       { jobId: jobAId, pluginId, companyId: companyA, trigger: "manual" },
       { jobId: jobBId, pluginId, companyId: companyB, trigger: "manual" },
-      { jobId: jobAId, pluginId, trigger: "scheduled" },
+      { jobId: jobAId, pluginId, trigger: "schedule" },
     ]);
 
     await db.insert(pluginWebhookDeliveries).values([
@@ -372,6 +372,14 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(fromInstance?.companyId).toBeNull();
     expect(fromInstance?.title).toBe("instance");
 
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+    await expect(services.entities.list({
+      entityType: "issue", scopeKind: "company", scopeId: companyB, externalId: "ext-shared", limit: 1,
+    })).resolves.toEqual([expect.objectContaining({ title: "B" })]);
+    await expect(services.entities.list({
+      entityType: "issue", scopeKind: "company", scopeId: randomUUID(), externalId: "ext-shared", limit: 1,
+    })).resolves.toEqual([]);
+
     // Unknown tenant returns null, not another tenant's row.
     const unknown = await registry.getEntityByExternalId(
       pluginId,
@@ -398,7 +406,7 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
 
     const runA = await registry.createJobRun(pluginId, jobId, "manual", companyA);
     const runB = await registry.createJobRun(pluginId, jobId, "manual", companyB);
-    const runInstance = await registry.createJobRun(pluginId, jobId, "scheduled", null);
+    const runInstance = await registry.createJobRun(pluginId, jobId, "schedule", null);
 
     expect(runA?.companyId).toBe(companyA);
     expect(runB?.companyId).toBe(companyB);

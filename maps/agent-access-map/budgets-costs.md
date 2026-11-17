@@ -4,15 +4,16 @@ Product map: [Costs, budgets, and spending controls](../feature-map/budgets-cost
 
 Feature ID: `budgets-costs`.
 
-Budget admission commits under the company accounting lock. A separate ownership
-transaction rechecks scope and capacity immediately before provider handoff;
-provider work does not hold the company accounting lock. Company, applicable
+Paid admission reads budget exposure without a company accounting writer mutex.
+Reservations record best-effort obligations; concurrent admissions can exceed an
+observed balance. Final handoff retains shared manual-control and scoped ownership
+fences; settlement does not acquire those admission fences. Company, applicable
 agent, and applicable project limits include unsettled
 observed run usage and reservations without counting either twice. A committed
 hard stop prevents fresh provider work immediately; scoped cancellation delivery
 runs asynchronously and preserves existing Stop acknowledgement and recovery
 requirements. Project enforcement does not pause an agent's unrelated projects.
-Hosted browser dispatch reserves a separate scoped hold, rechecks authority at
+Hosted browser dispatch records a separate scoped hold, rechecks authority at
 the paid POST, and retains unknown charges until terminal accounting. The parent
 run reservation does not authorize or replace this separate browser cost cap.
 

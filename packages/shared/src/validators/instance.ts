@@ -44,6 +44,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableAiConnectionRouters: z.boolean().default(false),
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
+  remoteWorkspaceStorageEnabled: z.boolean().default(true),
   enableIsolatedWorkspacesByDefault: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
   enableStreamlinedUi: z.boolean().default(true),
@@ -61,12 +62,14 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableMcpAggregators: z.boolean().default(true),
   enableMemoryConnectors: z.boolean().default(false),
   enablePaperclipNotebook: z.boolean().default(false),
+  enableGoogleWorkspaceConnector: z.boolean().default(false),
   enableCases: z.boolean().default(false),
-  enableAgentChat: z.boolean().default(false),
+  enableAgentChat: z.boolean().default(true),
   enableCombinedInboxTasks: z.boolean().default(false),
-  enableArtifactsV1: z.boolean().default(false),
+  enableArtifactsV1: z.boolean().default(true),
   enableConferenceRoomChat: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
+  enableLegacyComposerSubmit: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
@@ -90,6 +93,9 @@ export const instanceExperimentalSettingsSchema = z.object({
   // off the host keeps the file bridge for every run with no manifest change and
   // no redeploy. The host reads this per run before it selects the transport.
   enableSandboxDuplexBridge: z.boolean().default(false),
+  // MCP Tasks (io.modelcontextprotocol/tasks): durable long provider calls.
+  // Off: Paperclip never declares the extension, so servers never return tasks.
+  enableMcpTasks: z.boolean().default(false),
   // Deprecated compatibility key. Runner ingress follows enableNativeRunner;
   // this remains accepted so older stored rows and managed configs keep loading.
   enableRunnerPreviewIngress: z.boolean().default(false),

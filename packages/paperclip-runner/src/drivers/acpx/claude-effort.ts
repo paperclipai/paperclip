@@ -9,7 +9,7 @@ export function resolveClaudeEffort(agent: string, value: unknown): ClaudeEffort
 }
 export function createClaudeEffortAdmission(expected: ClaudeEffort) {
   return createAcpxConfigAdmission(expected, { label: "Claude effort", configId: "effort",
-    supportedValues: ["default", "low", "medium", "high", "xhigh", "max"] });
+    supportedValues: ["default", "low", "medium", "high", "xhigh", "max"], reselectsRestoredMode: true });
 }
 export function admittedClaudeEffort(agent: string, requested: unknown, descriptor: Record<string, unknown>, identity: Record<string, unknown>): ClaudeEffort | undefined {
   const expected = resolveClaudeEffort(agent, requested);

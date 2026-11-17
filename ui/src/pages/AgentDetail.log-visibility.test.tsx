@@ -5,8 +5,9 @@ import type { HeartbeatRun, HeartbeatRunEvent, LiveEvent } from "@paperclipai/sh
 import { afterEach, expect, it, vi } from "vitest";
 import { __liveUpdatesTestUtils, type CompanyLiveEventHandler } from "../context/LiveUpdatesProvider";
 import { LiveTranscriptInterests } from "../lib/live-transcript-interests";
-import { LogViewer } from "./AgentDetail";
-import { LogViewer as ProductionLogViewer } from "./AgentDetail.production";
+import { ApiError } from "../api/client";
+import { ConnectivityProvider, createConnectivityStore } from "../lib/connectivity";
+import { LogViewer } from "../components/run-log/LogViewer";
 
 const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async (_runId?: string, _cursor?: number, _limit?: number, _options?: { signal?: AbortSignal }): Promise<import("@paperclipai/shared").HeartbeatRunEvent[]> => []), empty: [] }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { log, events } }));
@@ -25,7 +26,7 @@ vi.mock("../components/transcript/RunTranscriptView", () => ({
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); log.mockReset(); events.mockReset(); events.mockResolvedValue([]); });
 
-it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only the next offset on visibility recovery (%#)", async (Viewer) => {
+it("retains legacy history and reads only the next offset on visibility recovery", async () => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: `2026-09-10T12:00:0${seq}Z`, stream: "stdout", chunk }) + "\n";
   const first = row(1, "retained history");
@@ -36,7 +37,7 @@ it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only
   document.body.append(container);
   const root = createRoot(container);
   try {
-    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    await act(async () => root.render(<LogViewer run={run} adapterType="codex_local" />));
     expect(container.textContent).toContain("retained history");
     await act(async () => {
       visibility.mockReturnValue("hidden");
@@ -55,7 +56,7 @@ it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only
     await act(async () => complete({ content: second, nextOffset: first.length + second.length }));
     expect(container.textContent).toContain("retained history new output");
     log.mockResolvedValueOnce({ content: first, nextOffset: first.length });
-    await act(async () => root.render(<Viewer run={{ ...run, id: "run-2" }} adapterType="codex_local" />));
+    await act(async () => root.render(<LogViewer run={{ ...run, id: "run-2" }} adapterType="codex_local" />));
     expect(log).toHaveBeenLastCalledWith("run-2", 0, expect.any(Number), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(container.textContent).not.toContain("new output");
   } finally {
@@ -64,7 +65,7 @@ it.each([LogViewer, ProductionLogViewer])("retains legacy history and reads only
   }
 });
 
-it.each([LogViewer, ProductionLogViewer])("uses shared streaming and retains fallback reads until negotiation (%#)", async (Viewer) => {
+it("uses shared streaming and retains fallback reads until negotiation", async () => {
   vi.useFakeTimers();
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const socket = vi.fn();
@@ -77,7 +78,7 @@ it.each([LogViewer, ProductionLogViewer])("uses shared streaming and retains fal
   const subscription = { companyId: "company-1", transcripts, subscribe: () => () => {} };
   const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
   try {
-    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="codex_local" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="codex_local" /></LiveEventSubscriptionContext.Provider>));
     const initialReads = log.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(2000));
     expect(log.mock.calls.length).toBeGreaterThan(initialReads);
@@ -98,7 +99,41 @@ it.each([LogViewer, ProductionLogViewer])("uses shared streaming and retains fal
   expect(messages.at(-1)?.runIds).toEqual([]);
 });
 
-it.each([LogViewer, ProductionLogViewer])("re-enables cancelled history paging after hiding and showing a completed run (%#)", async Viewer => {
+it("catches persisted log output on a brief reconnect and resync without waiting for a poll", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: "2025-01-01T00:00:00Z", stream: "stdout", chunk }) + "\n";
+  let saved = row(1, "Initial output");
+  log.mockImplementation(async (_runId, offset) => ({ content: saved.slice(offset), nextOffset: saved.length }));
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running", logRef: "log" } as HeartbeatRun;
+  const transcripts = new LiveTranscriptInterests();
+  const messages: Array<{ revision?: number }> = [];
+  const connect = () => {
+    transcripts.open({ send: text => messages.push(JSON.parse(text)) });
+    transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
+    transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+  };
+  const subscription = { companyId: run.companyId, transcripts, subscribe: () => () => {} };
+  const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="codex_local" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => connect());
+    expect(container.textContent).toContain("Initial output");
+    saved += row(2, "Output missed during reconnect");
+    await act(async () => { transcripts.close(); connect(); });
+    expect(container.textContent).toContain("Output missed during reconnect");
+    saved += row(3, "Output recovered by resync");
+    await act(async () => {
+      transcripts.receive({ type: "live.resync", version: 1, revision: messages.at(-1)?.revision });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+    });
+    expect(container.textContent).toContain("Output recovered by resync");
+  } finally { await act(async () => root.unmount()); }
+});
+
+it("re-enables cancelled history paging after hiding and showing a completed run", async () => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
   const rows = Array.from({ length: 1001 }, (_, index) => ({ id: index + 1, seq: index + 1,
@@ -113,7 +148,7 @@ it.each([LogViewer, ProductionLogViewer])("re-enables cancelled history paging a
   const root = createRoot(container);
   const more = () => [...container.querySelectorAll("button")].find(button => /Load more events|Loading\.\.\./.test(button.textContent ?? ""));
   try {
-    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    await act(async () => root.render(<LogViewer run={run} adapterType="codex_local" />));
     await act(async () => more()!.click());
     expect(more()!.disabled).toBe(true);
     const cancelledSignal = events.mock.calls[1]![3]!.signal;
@@ -132,7 +167,7 @@ it.each([LogViewer, ProductionLogViewer])("re-enables cancelled history paging a
   } finally { await act(async () => root.unmount()); }
 }, 30_000);
 
-it.each([LogViewer, ProductionLogViewer])("bounds automatic event history and pages further only on request (%#)", async Viewer => {
+it("bounds automatic event history and pages further only on request", async () => {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
   const rows = Array.from({ length: 2_001 }, (_, index) => ({ id: index + 1, seq: index + 1,
@@ -144,7 +179,7 @@ it.each([LogViewer, ProductionLogViewer])("bounds automatic event history and pa
   const container = document.createElement("div");
   const root = createRoot(container);
   try {
-    await act(async () => root.render(<Viewer run={run} adapterType="codex_local" />));
+    await act(async () => root.render(<LogViewer run={run} adapterType="codex_local" />));
     expect(events).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("invocation-retained-proof");
     const more = [...container.querySelectorAll("button")].find(button => button.textContent === "Load more events");
@@ -161,7 +196,7 @@ it.each([LogViewer, ProductionLogViewer])("bounds automatic event history and pa
   } finally { await act(async () => root.unmount()); }
 }, 30_000);
 
-it.each([LogViewer, ProductionLogViewer])("preserves saved event details and catches up payload-free commit signals (%#)", async Viewer => {
+it("preserves saved event details and catches up payload-free commit signals", async () => {
   vi.useFakeTimers();
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
@@ -186,7 +221,7 @@ it.each([LogViewer, ProductionLogViewer])("preserves saved event details and cat
   const root = createRoot(container);
   const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
   try {
-    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
     await act(async () => {
       transcripts.open({ send: text => messages.push(JSON.parse(text)) });
       transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
@@ -214,13 +249,13 @@ it.each([LogViewer, ProductionLogViewer])("preserves saved event details and cat
     expect(container.textContent).toContain("saved event details");
     expect(container.textContent).toContain("live row 2205");
     expect(container.textContent).toContain("Events (2200)");
-    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={{ ...run, status: "succeeded" }} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={{ ...run, status: "succeeded" }} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
     expect(container.textContent).toContain("saved event details");
     expect(container.textContent).toContain("live row 2205");
   } finally { await act(async () => root.unmount()); }
 }, 30_000);
 
-it.each([LogViewer, ProductionLogViewer])("merges saved and live rows with colliding database and run-sequence IDs (%#)", async Viewer => {
+it("merges saved and live rows with colliding database and run-sequence IDs", async () => {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
   log.mockResolvedValue({ content: "", nextOffset: 0 });
@@ -240,7 +275,7 @@ it.each([LogViewer, ProductionLogViewer])("merges saved and live rows with colli
     for (const listener of listeners) listener(event);
   };
   try {
-    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
     await act(async () => { emit(2, "live second row"); emit(3, "live third row"); });
     expect(container.textContent).toContain("saved first row");
     expect(container.textContent).toContain("live second row");
@@ -250,9 +285,9 @@ it.each([LogViewer, ProductionLogViewer])("merges saved and live rows with colli
 });
 
 it.each([
-  { Viewer: LogViewer, stalled: "log" }, { Viewer: ProductionLogViewer, stalled: "log" },
-  { Viewer: LogViewer, stalled: "events" }, { Viewer: ProductionLogViewer, stalled: "events" },
-])("finishes a slow $stalled page while the other reader catches up (%#)", async ({ Viewer, stalled }) => {
+  { stalled: "log" },
+  { stalled: "events" },
+])("finishes a slow $stalled page while the other reader catches up", async ({ stalled }) => {
   vi.useFakeTimers();
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "" });
@@ -277,7 +312,7 @@ it.each([
   let finishEvents!: (value: HeartbeatRunEvent[]) => void;
   const held = stalled === "log" ? log : events;
   try {
-    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
     await act(async () => {
       transcripts.open({ send: text => messages.push(JSON.parse(text)) });
       transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
@@ -312,7 +347,7 @@ it.each([
   } finally { await act(async () => root.unmount()); }
 });
 
-it.each([LogViewer, ProductionLogViewer])("shows and retries an initial event-history failure instead of claiming empty history (%#)", async Viewer => {
+it("shows and retries an initial event-history failure instead of claiming empty history", async () => {
   vi.useFakeTimers();
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
@@ -321,7 +356,7 @@ it.each([LogViewer, ProductionLogViewer])("shows and retries an initial event-hi
   const container = document.createElement("div");
   const root = createRoot(container);
   try {
-    await act(async () => root.render(<Viewer run={run} adapterType="paperclip_runner" />));
+    await act(async () => root.render(<LogViewer run={run} adapterType="paperclip_runner" />));
     expect(container.textContent).toContain("Could not load events. Try again.");
     expect(container.textContent).not.toContain("No log events.");
     await act(async () => vi.advanceTimersByTimeAsync(2000));
@@ -341,7 +376,7 @@ it.each([LogViewer, ProductionLogViewer])("shows and retries an initial event-hi
 });
 
 
-it.each([LogViewer, ProductionLogViewer])("recovers a paginated live tail and preserves pages explicitly loaded afterward (%#)", async Viewer => {
+it("recovers a paginated live tail and preserves pages explicitly loaded afterward", async () => {
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
   const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running" } as HeartbeatRun;
@@ -356,7 +391,7 @@ it.each([LogViewer, ProductionLogViewer])("recovers a paginated live tail and pr
     subscribe(fn: CompanyLiveEventHandler) { listeners.add(fn); return () => { listeners.delete(fn); }; } };
   const container = document.createElement("div"), root = createRoot(container);
   const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
-  const render = async (status = "running") => act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={{ ...run, status } as HeartbeatRun} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+  const render = async (status = "running") => act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={{ ...run, status } as HeartbeatRun} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
   const emit = (row: HeartbeatRunEvent) => { for (const listener of listeners) listener({ id: row.seq,
     companyId: run.companyId, type: "heartbeat.run.event", createdAt: row.createdAt.toISOString(), payload: { ...row } }); };
   try {
@@ -389,7 +424,7 @@ it.each([LogViewer, ProductionLogViewer])("recovers a paginated live tail and pr
 }, 60_000);
 
 
-it.each([LogViewer, ProductionLogViewer].flatMap(Viewer => ["completed-return", "catchup-retry"].map(mode => ({ Viewer, mode }))))("preserves event read mode for $mode (%#)", async ({ Viewer, mode }) => {
+it.each(["completed-return", "catchup-retry"].map(mode => ({ mode })))("preserves event read mode for $mode", async ({ mode }) => {
   vi.useFakeTimers();
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
@@ -409,7 +444,7 @@ it.each([LogViewer, ProductionLogViewer].flatMap(Viewer => ["completed-return", 
   const container = document.createElement("div"), root = createRoot(container);
   const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
   try {
-    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
     expect(events).toHaveBeenCalledTimes(1);
     if (mode === "completed-return") {
       await act(async () => { visibility.mockReturnValue("hidden"); document.dispatchEvent(new Event("visibilitychange")); });
@@ -435,7 +470,7 @@ it.each([LogViewer, ProductionLogViewer].flatMap(Viewer => ["completed-return", 
   } finally { await act(async () => root.unmount()); }
 }, 60_000);
 
-it.each([LogViewer, ProductionLogViewer])("recovers the latest saved tail when acknowledgement aborts the initial history read (%#)", async Viewer => {
+it("recovers the latest saved tail when acknowledgement aborts the initial history read", async () => {
   vi.useFakeTimers();
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });
@@ -453,7 +488,7 @@ it.each([LogViewer, ProductionLogViewer])("recovers the latest saved tail when a
   const container = document.createElement("div"), root = createRoot(container);
   const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
   try {
-    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><Viewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider>));
     const initialSignal = events.mock.calls[0]![3]!.signal!;
     await act(async () => {
       transcripts.open({ send: text => sent.push(JSON.parse(text)) });
@@ -476,3 +511,66 @@ it.each([LogViewer, ProductionLogViewer])("recovers the latest saved tail when a
     await act(async () => root.unmount());
   }
 }, 60_000);
+
+
+it.each([429, 503])("keeps completed event-only history pending after an initial %s", async (status) => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  events.mockRejectedValueOnce(new ApiError("Temporarily unavailable", status, {}));
+  const run = { id: "run-pending", companyId: "company-1", agentId: "agent-1", status: "succeeded" } as HeartbeatRun;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<LogViewer run={run} adapterType="paperclip_runner" />));
+    expect(container.textContent).toContain("Loading run logs...");
+    expect(container.textContent).not.toContain("No log events.");
+    expect(container.textContent).not.toContain("Could not load events");
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(events).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("No log events.");
+    await act(async () => vi.advanceTimersByTimeAsync(90_000));
+    expect(events).toHaveBeenCalledTimes(2);
+  } finally { await act(async () => root.unmount()); }
+});
+
+
+it("retries an unfilled legacy log gap on a healthy stream and stops after it is persisted", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: "2025-01-01T00:00:00Z", stream: "stdout", chunk }) + "\n";
+  const store = createConnectivityStore({ browserOnline: true, probe: async () => ({ reachable: true, retryAfterMs: null }) });
+  const prefix = row(1, "Retained prefix");
+  let history = prefix;
+  log.mockImplementation(async () => ({ content: history }));
+  const run = { id: "run-gap", companyId: "company-1", agentId: "agent-1", status: "running", logRef: "log" } as HeartbeatRun;
+  const transcripts = new LiveTranscriptInterests();
+  const listeners = new Set<CompanyLiveEventHandler>();
+  const messages: Array<{ revision?: number }> = [];
+  const subscription = { companyId: run.companyId, transcripts,
+    subscribe(fn: CompanyLiveEventHandler) { listeners.add(fn); return () => { listeners.delete(fn); }; } };
+  const container = document.createElement("div"), root = createRoot(container);
+  const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
+  try {
+    await act(async () => root.render(<ConnectivityProvider store={store}><LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider></ConnectivityProvider>));
+    await act(async () => {
+      transcripts.open({ send: text => messages.push(JSON.parse(text)) });
+      transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+    });
+    await act(async () => {
+      for (const listener of listeners) listener({ id: 2, companyId: run.companyId, type: "heartbeat.run.log", createdAt: new Date().toISOString(),
+        payload: { runId: run.id, agentId: run.agentId, logRef: "log", seq: 2, truncated: true } });
+    });
+    const staleReads = log.mock.calls.length;
+    expect(container.textContent).toContain("Retained prefix");
+    await act(async () => vi.advanceTimersByTimeAsync(1999));
+    expect(log).toHaveBeenCalledTimes(staleReads);
+    history = prefix + row(2, "Recovered missing chunk");
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(log).toHaveBeenCalledTimes(staleReads + 1);
+    expect(container.textContent).toContain("Recovered missing chunk");
+    expect(container.textContent?.match(/Retained prefix/g)).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(log).toHaveBeenCalledTimes(staleReads + 1);
+  } finally { await act(async () => root.unmount()); store.dispose(); }
+});

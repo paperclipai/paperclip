@@ -12,6 +12,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
 import { queryKeys } from "../lib/queryKeys";
+import { attentionObligationEvidence, foldAttentionObligations } from "../lib/attention-obligations";
 import {
   ATTENTION_AGING_DAYS,
   attentionIsAging,
@@ -38,6 +39,8 @@ import {
 } from "../lib/attention";
 import { cn } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
+import { describeError } from "../api/errors";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
 import { DecisionsToolbar } from "../components/DecisionsToolbar";
 import { Curtain, AgingItemRow } from "../components/DecisionShelf";
@@ -93,11 +96,7 @@ export function DecisionQueuePage() {
   });
   const queue = useMemo(() => queues?.find((q) => q.key === queueKey) ?? null, [queues, queueKey]);
 
-  const {
-    data: feed,
-    isLoading,
-    error,
-  } = useQuery({
+  const feedQuery = useQuery({
     queryKey: [
       ...queryKeys.attention(selectedCompanyId!),
       "queue",
@@ -109,6 +108,8 @@ export function DecisionQueuePage() {
     enabled: !!selectedCompanyId && !!queueKey,
     refetchOnWindowFocus: true,
   });
+  const { data: feed, isLoading } = feedQuery;
+  const feedView = useQueryView(feedQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -144,9 +145,11 @@ export function DecisionQueuePage() {
     [feed?.generatedAt],
   );
 
+  // One card for each obligation (PAP-749 Rule 11): evidence folds into its lead.
+  const obligations = useMemo(() => foldAttentionObligations(feed?.items ?? []), [feed]);
   const activeItems = useMemo(
-    () => (feed?.items ?? []).filter((item) => !(item.dismissal?.isActive ?? false)),
-    [feed],
+    () => obligations.cards.filter((item) => !(item.dismissal?.isActive ?? false)),
+    [obligations],
   );
 
   // Aging shelf (§4.4): items the server flags as idle past retention leave the
@@ -208,7 +211,7 @@ export function DecisionQueuePage() {
     onError: (err) =>
       pushToast({
         title: "Could not update seeding",
-        body: err instanceof Error ? err.message : "Please try again.",
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -216,8 +219,21 @@ export function DecisionQueuePage() {
   if (!selectedCompanyId) {
     return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
-  if (isLoading) {
+  // Keep a loaded queue on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || feedView.kind === "reconnecting") {
     return <PageSkeleton variant="approvals" />;
+  }
+  if (feedView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={feedView.error}
+        action="load this queue"
+        onRetry={feedView.retry}
+        retrying={feedView.isFetching}
+      />
+    );
   }
 
   const isEmpty = activeItems.length === 0;
@@ -264,8 +280,6 @@ export function DecisionQueuePage() {
         />
       )}
 
-      {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
-
       {isEmpty ? (
         <div className="rounded-xl border border-dashed border-border py-14 text-center">
           <p className="text-sm font-medium text-foreground">This queue is empty.</p>
@@ -310,9 +324,10 @@ export function DecisionQueuePage() {
                           currentUserId={currentUserId}
                           expanded={expandedId === item.id}
                           onToggleExpand={handleToggleExpand}
-                          onDismiss={(next) => dismiss(next.dismissalKey)}
-                          onSnooze={(next, until) => snooze(next.dismissalKey, until)}
+                          onDismiss={(next) => dismiss(next.dismissalKey, next.changeFingerprint)}
+                          onSnooze={(next, until) => snooze(next.dismissalKey, until, next.changeFingerprint)}
                           onExcluded={invalidate}
+                          evidence={attentionObligationEvidence(obligations, item)}
                         />
                       ))}
                     </div>
@@ -343,8 +358,9 @@ export function DecisionQueuePage() {
                   currentUserId={currentUserId}
                   expanded={expandedId === item.id}
                   onToggleExpand={handleToggleExpand}
-                  onDismiss={(next) => dismiss(next.dismissalKey)}
-                  onSnooze={(next, until) => snooze(next.dismissalKey, until)}
+                  onDismiss={(next) => dismiss(next.dismissalKey, next.changeFingerprint)}
+                  onSnooze={(next, until) => snooze(next.dismissalKey, until, next.changeFingerprint)}
+                  evidence={attentionObligationEvidence(obligations, item)}
                 />
               ))}
             </Curtain>
@@ -420,6 +436,7 @@ function QueueItemRow({
   onDismiss,
   onSnooze,
   onExcluded,
+  evidence,
 }: {
   item: AttentionItem;
   companyId: string;
@@ -432,6 +449,7 @@ function QueueItemRow({
   onDismiss: (item: AttentionItem) => void;
   onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
   onExcluded: () => void;
+  evidence: readonly AttentionItem[];
 }) {
   const { pushToast } = useToastActions();
   const [open, setOpen] = useState(false);
@@ -455,7 +473,7 @@ function QueueItemRow({
     onError: (err) =>
       pushToast({
         title: "Could not exclude",
-        body: err instanceof Error ? err.message : "Please try again.",
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -507,6 +525,7 @@ function QueueItemRow({
         agents={agents}
         showTriage
         currentUserId={currentUserId}
+        evidence={evidence}
       />
     </div>
   );

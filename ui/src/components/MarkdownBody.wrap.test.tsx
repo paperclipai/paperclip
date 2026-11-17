@@ -48,6 +48,21 @@ describe("MarkdownBody code block wrapping", () => {
     container.remove();
   });
 
+  it.each(["diff", "patch"])("highlights %s fences without changing source or wrap controls", (language) => {
+    const text = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n--- old\n+++ <script>new</script>\n";
+    flushSync(() => root.render(<QueryClientProvider client={queryClient}><ThemeProvider>
+      <MarkdownBody>{"```" + language + "\n" + text + "```"}</MarkdownBody>
+    </ThemeProvider></QueryClientProvider>));
+    expect(container.querySelector("pre code")?.textContent).toBe(text);
+    expect(container.querySelector('[data-patch-line="remove"]')?.textContent).toBe("--- old\n");
+    expect(container.querySelector('[data-patch-line="add"]')?.textContent).toBe("+++ <script>new</script>\n");
+    expect(container.querySelector("script")).toBeNull();
+    const wrap = container.querySelector<HTMLButtonElement>('[aria-label="Wrap lines"]');
+    flushSync(() => wrap!.click());
+    expect(container.querySelector("pre")?.style.overflowWrap).toBe("anywhere");
+    expect(container.querySelector("pre code")?.textContent).toBe(text);
+  });
+
   it("toggles fenced code blocks between horizontal scroll and wrapped lines", () => {
     flushSync(() => {
       root.render(

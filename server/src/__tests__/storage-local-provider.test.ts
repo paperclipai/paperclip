@@ -119,6 +119,32 @@ describe("local disk storage provider", () => {
     await expect(service.getObject("company-1", stored.objectKey)).rejects.toMatchObject({ status: 404 });
   });
 
+  it.each(["EACCES", "EIO"])("retains storage uncertainty for %s instead of reporting absence", async code => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    const stored = await service.putFile({ companyId: "company-1", namespace: "issues/issue-1", originalFilename: "retained.txt",
+      contentType: "text/plain", body: Buffer.from("must not disappear") });
+    const failure = Object.assign(new Error("controlled filesystem failure"), { code });
+    const unlink = vi.spyOn(fs, "unlink").mockRejectedValueOnce(failure);
+    try { await expect(service.deleteObject("company-1", stored.objectKey)).rejects.toBe(failure); }
+    finally { unlink.mockRestore(); }
+    expect(await service.headObject("company-1", stored.objectKey)).toMatchObject({ exists: true });
+    const stat = vi.spyOn(fs, "stat").mockRejectedValueOnce(failure);
+    try { await expect(service.headObject("company-1", stored.objectKey)).rejects.toBe(failure); }
+    finally { stat.mockRestore(); }
+    expect(await readStreamToBuffer((await service.getObject("company-1", stored.objectKey)).stream)).toEqual(Buffer.from("must not disappear"));
+  });
+
+  it("treats a non-directory object path as absent", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-storage-"));
+    tempRoots.push(root);
+    await fs.writeFile(path.join(root, "company-1"), "not a directory");
+    const service = createStorageService(createLocalDiskStorageProvider(root));
+    expect(await service.headObject("company-1", "company-1/object")).toEqual({ exists: false });
+    await expect(service.deleteObject("company-1", "company-1/object")).resolves.toBeUndefined();
+  });
+
   it.each(["headObject", "deleteObject"] as const)("cancels %s even if a provider stops responding", async method => {
     const provider = createLocalDiskStorageProvider(os.tmpdir());
     const request = vi.spyOn(provider, method).mockImplementation(async () => new Promise<never>(() => {}));

@@ -272,7 +272,7 @@ function makeDeps(overrides?: {
   const installedRows = new Map(
     Object.entries(rows).map(([key, row]) => [key, normalize(row)] as const),
   );
-  const installPlugin = vi.fn(async ({ localPath }: { localPath: string }) => {
+  const installPlugin = vi.fn(async ({ localPath }: { localPath: string }): Promise<{ manifest: { id: string } | null }> => {
     if (overrides?.installError) throw overrides.installError;
     const entry = BUNDLED_PLUGIN_CATALOG.find((candidate) =>
       localPath.endsWith(candidate.relativePath),
