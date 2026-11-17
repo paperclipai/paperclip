@@ -55,6 +55,8 @@ vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: pool
 
 const assistantConnectionsMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/publicMcp", () => ({ publicMcpApi: { connections: assistantConnectionsMock } }));
+const tailscaleConnectionsMock = vi.hoisted(() => vi.fn(async () => [] as Array<{ id: string; companyId: string; name: string; status: string }>));
+vi.mock("@/api/tailscale", () => ({ tailscaleApi: { list: tailscaleConnectionsMock } }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -63,6 +65,7 @@ const listAiConnectionsMock = vi.hoisted(() => vi.fn());
 const setAiDefaultMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: listAiConnectionsMock, setDefault: setAiDefaultMock } }));
 const listUserDirectoryMock = vi.hoisted(() => vi.fn());
+const boardAccessMock = vi.hoisted(() => vi.fn());
 const archiveConnectionMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
@@ -99,6 +102,7 @@ vi.mock("@/api/tools", () => ({
 vi.mock("@/api/access", () => ({
   accessApi: {
     listUserDirectory: (companyId: string) => listUserDirectoryMock(companyId),
+    getCurrentBoardAccess: boardAccessMock,
   },
 }));
 
@@ -199,6 +203,7 @@ describe("Connectors landing page", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    boardAccessMock.mockReset().mockResolvedValue({ source: "session", isInstanceAdmin: true });
     accountIdentity.userId = "board-user"; accountIdentity.settled = true;
     assistantConnectionsMock.mockReset().mockResolvedValue([]);
     syncComposioAppsMock.mockReset().mockImplementation((...args) => listComposioAppsMock(...args));
@@ -302,6 +307,35 @@ describe("Connectors landing page", () => {
     await act(() => button!.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
     expect(chatSetupMock).not.toHaveBeenCalled();
+  });
+
+  it("finds Tailscale in Connectors and opens network setup without creating a tool connection", async () => {
+    await renderBrowse(false);
+    await search("Tailscale");
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Connect Tailscale"]');
+    expect(button).not.toBeNull();
+    await act(() => button!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/tailscale");
+    expect(container.textContent).not.toContain("No connectors match");
+  });
+
+  it("does not advertise Tailscale setup or request tailnets for non-instance-admin members", async () => {
+    boardAccessMock.mockResolvedValue({ source: "session", isInstanceAdmin: false });
+    await renderBrowse(false);
+    await search("Tailscale");
+    expect(container.querySelector('[aria-label="Connect Tailscale"]')).toBeNull();
+    expect(container.querySelector('[data-app-slug="tailscale"]')).toBeNull();
+    expect(tailscaleConnectionsMock).not.toHaveBeenCalled();
+  });
+
+  it("shows a connected tailnet in Installed and removes it when disconnected", async () => {
+    tailscaleConnectionsMock.mockResolvedValueOnce([{ id: "tailnet", companyId: "company-1", name: "Home tailnet", status: "connected" }]);
+    const client = await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.querySelector('[data-app-slug="tailscale"]')?.textContent).toContain("Home tailnet");
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tailscale-connections", "company-1"] }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="tailscale"]')).toBeNull();
   });
 
   it("keeps assistant setup in the Paperclip catalog when filtering connection sources", async () => {
@@ -1388,6 +1422,7 @@ describe("Connectors landing page", () => {
       "notion",
       "slack",
       "speko",
+      "tailscale",
       "telegram",
       "custom-mcp",
     ]);

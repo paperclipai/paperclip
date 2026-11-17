@@ -3,6 +3,7 @@ import { asRecord, originOf } from "./metadata.js";
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
 import type { OAuthProviderEndpoints, OAuthTokenEndpointAuthMethod, OAuthTransport } from "./types.js";
 import { oauthApplicationType } from "./client-metadata.js";
+import { CLIENT_ASSERTION_TYPE } from "./client-credentials.js";
 
 const MAX_OAUTH_DCR_CLIENT_ID_LENGTH = 4_096;
 
@@ -309,6 +310,12 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     refreshToken?: string | null;
     /** RFC 8707 resource indicator: the MCP server this token is for. */
     resource?: string | null;
+    /**
+     * RFC 7523 signed client assertion (`private_key_jwt`). When present it is
+     * the only client authentication sent: the client is identified by the
+     * assertion's `sub`, so no client_id or secret goes in the request.
+     */
+    clientAssertion?: string | null;
   }) {
     const body = new URLSearchParams();
     if (input.grantType === "client_credentials") {
@@ -324,10 +331,14 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       body.set("redirect_uri", input.redirectUri ?? "");
       body.set("code_verifier", input.codeVerifier ?? "");
     }
-    const tokenEndpointAuthMethod =
-      input.tokenEndpointAuthMethod ??
-      (input.clientSecret ? "client_secret_post" : "none");
-    if (tokenEndpointAuthMethod !== "client_secret_basic")
+    const tokenEndpointAuthMethod = input.clientAssertion
+      ? "private_key_jwt"
+      : input.tokenEndpointAuthMethod ??
+        (input.clientSecret ? "client_secret_post" : "none");
+    if (input.clientAssertion) {
+      body.set("client_assertion_type", CLIENT_ASSERTION_TYPE);
+      body.set("client_assertion", input.clientAssertion);
+    } else if (tokenEndpointAuthMethod !== "client_secret_basic")
       body.set("client_id", input.clientId);
     if (tokenEndpointAuthMethod === "client_secret_post") {
       if (!input.clientSecret) {

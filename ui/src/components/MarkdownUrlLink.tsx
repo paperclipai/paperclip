@@ -57,7 +57,7 @@ export function MarkdownUrlLink({ href, children, title, style, knownState, exte
   const label = github?.label ? compactUrlLabel(children, href, github.label) : children;
   const target = recognizeLinkPreview(href);
   const render = (state: LinkPreviewState = knownState ?? "unknown", describedBy?: string, preview?: Preview | null) => {
-    const StateIcon = target ? linkPreviewStateIcon[state] : Icon;
+    const StateIcon = target ? linkPreviewStateIcon[state] ?? linkPreviewStateIcon.unknown : Icon;
     const leadingIcon = github ? <StateIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" /> : null;
     const trailingIcon = external && !github ? <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" /> : null;
     return <a
@@ -67,7 +67,7 @@ export function MarkdownUrlLink({ href, children, title, style, knownState, exte
       data-external-link={externalStatus ? "resolved" : undefined}
       data-external-status={externalStatus?.category}
       data-external-liveness={externalStatus?.liveness}
-      aria-label={preview ? `${target!.label} ${linkPreviewStateLabel[state]}: ${preview.title}` : externalStatus?.ariaLabel}
+      aria-label={preview ? `${target!.label} ${linkPreviewStateLabel[state] ?? state}: ${preview.title}` : externalStatus?.ariaLabel}
       data-link-state={target ? state : undefined}
       className={target ? `link-preview-status${externalStatus ? " paperclip-markdown-external-ref" : ""}` : undefined}
       data-state={target ? state : undefined}

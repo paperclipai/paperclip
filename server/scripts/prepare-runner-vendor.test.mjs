@@ -313,6 +313,47 @@ describe("prepareRunnerVendor", () => {
     expect(readBuildInputsStamp(stampPath)).not.toBeNull();
   });
 
+  it("with PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1, accepts a Runner built elsewhere for the committed lockfile and refuses it once the lockfile is refreshed for another package", () => {
+    const committed = [
+      "lockfileVersion: '9.0'",
+      "importers:",
+      "  packages/paperclip-runner:",
+      "    dependencies:",
+      "      ajv: { specifier: ^8.20.0, version: 8.20.0 }",
+      "  ui:",
+      "    dependencies:",
+      "      react: { specifier: ^19.2.7, version: 19.2.8 }",
+      "",
+    ].join("\n");
+    const built = makeRepo();
+    writeFileSync(path.join(built.repoRoot, "pnpm-lock.yaml"), committed);
+    recordCurrentBuild(built);
+
+    const { repoRoot, packageRoot } = makeRepo();
+    writeFileSync(path.join(repoRoot, "pnpm-lock.yaml"), committed);
+    writeTree(repoRoot, {
+      "packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json": readFileSync(buildInputsStampPath(built.packageRoot), "utf8"),
+    });
+    const env = { [REQUIRE_CURRENT_VARIABLE]: "1" };
+    let runs = 0;
+    const prepare = (lines) => prepareRunnerVendor({ repoRoot, env, run: () => { runs += 1; return 0; }, log: (line) => lines.push(line) });
+
+    const reused = [];
+    expect(prepare(reused)).toBe(0);
+    expect(reused[1]).toMatch(/,action:reuse,reason:inputs_unchanged,/);
+
+    writeFileSync(path.join(repoRoot, "pnpm-lock.yaml"), committed.replace("specifier: ^19.2.7", "specifier: ^19.2.8"));
+    const refused = [];
+    expect(prepare(refused)).toBe(1);
+    expect(refused[0]).toContain("pnpm-lock.yaml included");
+    expect(refused[1]).toMatch(/,action:fail,reason:inputs_changed,/);
+
+    writeFileSync(path.join(repoRoot, "pnpm-lock.yaml"), committed);
+    expect(prepare([])).toBe(0);
+    expect(runs).toBe(0);
+    expect(readBuildInputsStamp(buildInputsStampPath(packageRoot))).not.toBeNull();
+  });
+
   it.skipIf(process.platform === "win32")(
     "end to end: the first server build rebuilds the Runner, the second reuses it, a change or a lost output rebuilds again",
     async () => {

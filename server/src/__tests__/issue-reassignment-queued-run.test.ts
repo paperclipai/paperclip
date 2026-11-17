@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
   agents,
@@ -31,15 +31,12 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("reassigning a task whose previous assignee's run has not started", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companySequence = 0;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-reassign-queued-");
     db = createDb(tempDb.connectionString);
   }, 30_000);
-
-  afterEach(async () => {
-    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
-  });
 
   afterAll(async () => {
     await db?.$client.end();
@@ -71,8 +68,9 @@ describeEmbeddedPostgres("reassigning a task whose previous assignee's run has n
     const morganId = randomUUID();
     const issueId = randomUUID();
     const queuedRunId = randomUUID();
+    const issuePrefix = `REA${++companySequence}`;
     await db.insert(companies).values({
-      id: companyId, name: "Reassign Co", issuePrefix: "REA", requireBoardApprovalForNewAgents: false,
+      id: companyId, name: "Reassign Co", issuePrefix, requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values([ceoId, morganId].map((id, index) => ({
       id, companyId, name: index === 0 ? "CEO" : "Morgan", role: index === 0 ? "ceo" : "engineer",
@@ -90,7 +88,7 @@ describeEmbeddedPostgres("reassigning a task whose previous assignee's run has n
       status: "queued", contextSnapshot: { issueId, wakeReason: "issue_assigned" },
     });
     await db.insert(issues).values({
-      id: issueId, companyId, identifier: "REA-1", title: "Write the announcement", status: "todo",
+      id: issueId, companyId, identifier: `${issuePrefix}-1`, title: "Write the announcement", status: "todo",
       priority: "medium", assigneeAgentId: ceoId, executionRunId: options.queuedRunHoldsLock === false ? null : queuedRunId,
     });
     return { companyId, ceoId, morganId, issueId, queuedRunId };

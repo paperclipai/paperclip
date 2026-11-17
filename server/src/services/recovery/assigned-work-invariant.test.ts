@@ -9,13 +9,16 @@ import {
   SETTLING_MAX_MS,
   STALE_BLOCK_MS,
   SYSTEM_RECOVERY_WORKING_BOUND_MS,
+  SAVED_WORK_RECOVERY_START_BOUND_MS,
   VIOLATION_REASONS,
   type AssignedWorkFacts,
+  type SavedWorkRecoveryFact,
 } from "./assigned-work-invariant.js";
 
 const now = new Date("2026-11-12T14:35:00Z");
 const ago = (ms: number) => new Date(now.getTime() - ms);
 const AGENT = "agent-1";
+const HOUR = 60 * 60_000;
 
 type Overrides = Omit<Partial<AssignedWorkFacts>, "issue"> & { issue?: Partial<AssignedWorkFacts["issue"]> };
 function facts(overrides: Overrides = {}): AssignedWorkFacts {
@@ -111,6 +114,49 @@ describe("assigned-work invariant", () => {
       expect(evaluateAssignedWork(facts({ issue: { monitorNextCheckAt: ago(1) } }), now)).toMatchObject({ kind: "violation" });
       expect(evaluateAssignedWork(facts({ interruption: { responsibility: "system", state: "retry_scheduled", userAction: null,
         nextRetryAt: ago(1).toISOString(), canRetry: true } }), now)).toMatchObject({ kind: "violation", reason: "no_pending_path" });
+    });
+  });
+
+  describe("a saved-work recovery the recovery queue owes", () => {
+    // Staging, 2026-11-13: a legacy retry failed in setup, its files are held
+    // for recovery, the queue never attempted it, and nothing else is pending.
+    const stagingHold = (stoppedAgoMs: number, recovery: Partial<SavedWorkRecoveryFact> = {}): Overrides => ({
+      latestRun: { id: "run-1", status: "failed", errorCode: "setup_failed", finishedAt: ago(stoppedAgoMs),
+        settlingUntil: null, operatorStopped: false },
+      interruption: { responsibility: "system", state: "failed", userAction: null, nextRetryAt: null, canRetry: false },
+      savedWorkRecovery: { actionId: "hold-1", runId: "run-1", state: "scheduled", nextAttemptAt: null, activeAt: null,
+        sourceFinishedAt: ago(stoppedAgoMs), ...recovery },
+    });
+
+    it("is the task's pending path while the queue has time to start it", () => {
+      expect(evaluateAssignedWork(facts(stagingHold(SAVED_WORK_RECOVERY_START_BOUND_MS - 60_000)), now))
+        .toEqual({ kind: "ok", clause: "pending_intent", intent: "saved_work_recovery" });
+    });
+
+    it("is overdue, not 'nothing pending', once the queue has not started it in time", () => {
+      expect(evaluateAssignedWork(facts(stagingHold(45 * 60_000)), now))
+        .toEqual({ kind: "violation", reason: "saved_work_recovery_overdue", stale: false });
+      // Blocked by the same hold: the recovery is still what the task waits on.
+      expect(evaluateAssignedWork(facts({ ...stagingHold(45 * 60_000), issue: { status: "blocked" }, blockedBy: "system" }), now))
+        .toMatchObject({ kind: "violation", reason: "saved_work_recovery_overdue" });
+    });
+
+    it("stays pending while an attempt runs or its next attempt is scheduled", () => {
+      expect(evaluateAssignedWork(facts(stagingHold(3 * HOUR, { state: "running", activeAt: now.getTime() - 10_000 })), now))
+        .toMatchObject({ kind: "ok", intent: "saved_work_recovery" });
+      expect(evaluateAssignedWork(facts(stagingHold(3 * HOUR, { nextAttemptAt: now.getTime() + 60_000 })), now))
+        .toMatchObject({ kind: "ok", intent: "saved_work_recovery" });
+      // A retry that became due recently gets the whole bound again.
+      expect(evaluateAssignedWork(facts(stagingHold(3 * HOUR, { nextAttemptAt: now.getTime() - 60_000 })), now))
+        .toMatchObject({ kind: "ok", intent: "saved_work_recovery" });
+      // An attempt that stopped renewing is not running.
+      expect(evaluateAssignedWork(facts(stagingHold(3 * HOUR, { state: "running", activeAt: now.getTime() - SAVED_WORK_RECOVERY_START_BOUND_MS - 1 })), now))
+        .toMatchObject({ kind: "violation", reason: "saved_work_recovery_overdue" });
+    });
+
+    it("leaves someone else's move as the wait", () => {
+      expect(evaluateAssignedWork(facts({ ...stagingHold(45 * 60_000), pendingInteractions: 1 }), now))
+        .toEqual({ kind: "ok", clause: "waiting", reason: "question" });
     });
   });
 

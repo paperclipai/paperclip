@@ -210,7 +210,7 @@ export function selectNativeSessionResumeRun<
   return null;
 }
 
-const NATIVE_SESSION_PROVIDER_EVENT_TYPES = [
+export const NATIVE_SESSION_PROVIDER_EVENT_TYPES = [
   "harness.ready",
   "session.started",
   "session.resumed",

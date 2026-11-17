@@ -10,6 +10,7 @@ import {
 import type { ValidateFunction } from "ajv/dist/2020.js";
 import { admitToolInputSchema } from "./tool-input-schema.js";
 import { toolInputError } from "./tool-input-error.js";
+import { admitToolInput, TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA } from "./tool-input-coercion.js";
 import { RepeatedToolInputRejectionGuard } from "./repeated-tool-input-rejection.js";
 import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 
@@ -64,6 +65,8 @@ export interface RunnerToolBridgeOptions {
   socketPath?: string;
   sessionScope?: () => string | null;
   scopeToken?: () => string | null;
+  /** Receives one JSON diagnostic per call accepted after input coercion. */
+  onDiagnostic?: (message: string) => void;
 }
 
 export interface RunnerToolBridge {
@@ -106,6 +109,22 @@ const RESERVED_TOOLS: readonly RunnerToolDefinition[] = [
     inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   },
 ];
+
+function inputCoercionDiagnostics(onDiagnostic: ((message: string) => void) | undefined) {
+  let recorded = 0;
+  // Names the coerced fields, never their values.
+  return (tool: string, callId: string, paths: string[]) => {
+    if (!onDiagnostic || recorded++ >= 64) return;
+    const diagnostic = {
+      schema: TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA,
+      tool,
+      callIdSha256: createHash("sha256").update(callId).digest("hex"),
+      coercion: "json_string_to_object",
+      paths,
+    };
+    try { onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
+  };
+}
 
 export function canonicalRunnerToolName(name: string): string {
   const trimmed = name.trim();
@@ -154,6 +173,7 @@ export async function startRunnerToolBridge(
     admittedTools: new Map(admittedTools.map((tool) => [tool.name, tool])),
     validators,
     rejections: new RepeatedToolInputRejectionGuard(),
+    diagnoseInputCoercion: inputCoercionDiagnostics(options.onDiagnostic),
     calls,
     controllers,
     requestCalls: new Map<string, string>(),
@@ -246,6 +266,7 @@ async function handleRequest(
     admittedTools: Map<string, RunnerToolDefinition>;
     validators: Map<string, ValidateFunction>;
     rejections: RepeatedToolInputRejectionGuard;
+    diagnoseInputCoercion: (tool: string, callId: string, paths: string[]) => void;
     calls: Map<string, AdmittedCall>;
     controllers: Map<string, AbortController>;
     requestCalls: Map<string, string>;
@@ -393,9 +414,11 @@ async function handleRequest(
   const requestKey = sessionKey + rpcIdKey(id);
   const callKey = providerToolUseId === undefined ? requestKey : `tool-use:${providerToolUseId}`;
   const cancelKey = mcpSessionKey(request) + requestKey;
-  const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
-  const rejection = validator === undefined || !validator(args)
+  const received = params.arguments ?? {};
+  const admitted = admitToolInput(validator, received);
+  const { args } = admitted;
+  const rejection = !admitted.schemaValid
     ? toolInputError(validator, args)
     // The completion tool's yielded-only continuation rule is not part of its
     // advertised schema; some hosts hide a root conditional's arguments.
@@ -450,11 +473,13 @@ async function handleRequest(
       if (!normalizationInvalid) normalizedInputSha256 = digest;
     };
   };
+  // The receipt binds the arguments as the host sent them, which a provider
+  // compares with its own raw input; the handler gets any coerced form.
   const withReceipt = (result: RunnerToolCallResult): RunnerToolCallResult => {
     receiptSealed = true;
     if (!context.captureSemanticReceipt) return result;
     try {
-      const bound = appendSemanticToolReceipt({ tool, callId, arguments: args, normalizedInputSha256: normalizationInvalid ? null : normalizedInputSha256 }, result);
+      const bound = appendSemanticToolReceipt({ tool, callId, arguments: received, normalizedInputSha256: normalizationInvalid ? null : normalizedInputSha256 }, result);
       try { observeReceipt?.(bound.receipt); } catch { /* Evidence cannot change the tool outcome. */ }
       return bound.result;
     } catch { return result; }
@@ -484,6 +509,7 @@ async function handleRequest(
       return withReceipt({ isError: true, content: [{ type: "text", text: safeError(error) }] });
     });
   if (!existing) {
+    if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
     context.calls.set(callKey, { fingerprint, promise: execution });
     context.controllers.set(callKey, controller!);
     void execution

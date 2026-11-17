@@ -344,6 +344,18 @@ test("the client refuses to follow pagination to another host", async () => {
   await assert.rejects(client.paginate("/repos/paperclipai/paperclip/commits/x/pulls"), /Refusing to call https:\/\/example.com/);
 });
 
+test("a step cancelled as \"A task was canceled.\" counts as lost only with shutdown evidence", async () => {
+  const annotations = [{ annotation_level: "failure", message: "A task was canceled." }];
+  const lost = await classifyJob({ id: 1 }, {
+    annotations,
+    readLog: async () => "##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n##[error]A task was canceled.\n",
+  });
+  assert.equal(lost.lost, true);
+  const noSignal = await classifyJob({ id: 1 }, { annotations, readLog: async () => "##[error]A task was canceled.\n" });
+  assert.equal(noSignal.lost, false);
+  assert.match(noSignal.evidence, /A task was canceled\./);
+});
+
 test("classification is conservative about cancelled jobs", async () => {
   const cancelled = [{ annotation_level: "failure", message: "The operation was canceled." }];
   const noSignal = await classifyJob({ id: 1 }, { annotations: cancelled, readLog: async () => "##[error]The operation was canceled.\n" });

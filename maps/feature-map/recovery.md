@@ -468,8 +468,7 @@ only. Separately inspect the underlying execution if it is still stuck.
   silently trigger recovery that fights the user's instruction.
 - Source inspection and mocked component tests do not qualify real server
   restart continuity. Use the appropriate runtime suite for that claim.
-- See [execution semantics](../../doc/execution-semantics.md) for the governing
-  recovery contract and [steering](./steering.md) for saved follow-ups.
+- See [steering](./steering.md) for saved follow-ups.
 
 ### Storybook verification
 

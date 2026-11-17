@@ -3080,14 +3080,17 @@ describeEmbeddedPostgres("tool gateway service", () => {
         status: "pending",
         issueId: session.issueId,
       });
+      // The card names the app, only people answer it, and the provider's
+      // enum becomes a real choice (see MCP-ELICITATION.md).
+      expect(interaction).toMatchObject({ requestedResolverPolicy: "human_only", title: expect.stringMatching(/needs your input$/) });
       expect(interaction.payload).toMatchObject({
-        title: "Which workspace should be used?",
+        questionSet: { description: "Which workspace should be used?" },
         questions: [
           {
             id: "workspace",
             prompt: "Workspace",
             required: true,
-            options: [{ id: "ops", label: "ops" }, { id: "engineering", label: "engineering" }],
+            options: [{ id: "choice_1", label: "ops" }, { id: "choice_2", label: "engineering" }],
           },
         ],
       });
@@ -3294,7 +3297,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const calls = provider.mock.calls.map(([, init]) => JSON.parse(String(init.body)))
       .filter((payload) => payload.method === "tools/call");
     expect(calls).toHaveLength(1);
-    expect(calls[0].params).toEqual({ name: "search_messages", arguments: parameters });
+    expect(calls[0].params).toEqual({ name: "search_messages", arguments: parameters, _meta: { progressToken: expect.stringMatching(/^paperclip-progress-/) } });
   });
 
   it("explains Google Workspace preview enrollment when a tool call is denied", async () => {

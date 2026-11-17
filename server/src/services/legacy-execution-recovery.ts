@@ -111,6 +111,58 @@ export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run
       && !(await isPreDispatchExecutionWaitVerified(db, run)));
 }
 
+async function findRecordedLegacyDecision(db: Db, run: Run, taskId: string, resultJson: Run["resultJson"]) {
+  const [reconciled] = await db.select({ id: issueRecoveryActions.id })
+    .from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, run.companyId),
+      eq(issueRecoveryActions.sourceIssueId, taskId),
+      eq(issueRecoveryActions.status, "resolved"),
+      ...(hasRequiredWorkspaceRecovery(resultJson) ? [
+        sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
+      ] : []),
+      or(
+        sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
+        and(
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          sql`exists (
+            select 1 from heartbeat_runs successor
+            where successor.id = ${canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId'`)}
+              and successor.company_id = ${run.companyId} and successor.agent_id = ${run.agentId}
+              and coalesce(successor.native_issue_id::text, successor.issue_id::text,
+                successor.context_snapshot->>'issueId') = ${taskId}
+              and successor.context_snapshot->>'previousRunId' = ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'previousRunId'
+              and successor.context_snapshot->'explicitUserContinuation'->>'previousRunId' = ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'previousRunId'
+              and successor.context_snapshot->'explicitUserContinuation'->>'commentId' is not distinct from
+                ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'commentId'
+          )`,
+        ),
+        and(
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          or(sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
+            sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`),
+          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+        ),
+        and(
+          eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE),
+          eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+        ),
+      ),
+    )).limit(1);
+  return reconciled ?? null;
+}
+
+function decisionOwner(task: typeof issues.$inferSelect, run: Run, retainedLeaseCount: number) {
+  const review = task.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
+  const isCurrentReviewer = review?.status === "pending" &&
+    review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
+  const owns = !isSupersededConversationRun(task, run) &&
+    (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
+    (!["done", "cancelled"].includes(task.status) || retainedLeaseCount > 0);
+  return { owns, isCurrentReviewer };
+}
+
 /** Persist the failed legacy run, owned lock release and operator decision together. */
 export async function terminalizeLegacyExecution(input: {
   db: Db;
@@ -152,13 +204,23 @@ export async function terminalizeLegacyExecution(input: {
     )).for("update");
     if (!current || (current.runtimeMode !== "legacy" && !(input.recordRestoreFailureOnly && current.runtimeMode === "native")) ||
         (!input.recordRestoreFailureOnly && !(input.fromStatuses ?? [run.status]).includes(current.status))) return null;
+    if (!input.recordRestoreFailureOnly && current.status === status && Object.keys(patch ?? {}).length === 0
+        && !hasWorkspaceRestoreFailure(current.resultJson) && !hasRequiredWorkspaceRecovery(current.resultJson)
+        && task?.executionRunId !== run.id && task?.checkoutRunId !== run.id) {
+      const [unchanged] = await tx.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+      if (input.reconcileIfNeeded && !(await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, unchanged)))
+        return unchanged;
+      if (!task || !decisionOwner(task, unchanged, 0).owns) return unchanged;
+      if (await findRecordedLegacyDecision(tx as unknown as Db, run, task.id, unchanged.resultJson)) return unchanged;
+    }
     if (patch?.resultJson !== undefined) patch = { ...patch,
       resultJson: preserveWorkspaceRestoreRecoveryMetadata(current.resultJson,
         input.recordRestoreFailureOnly ? { ...current.resultJson, ...patch.resultJson } : patch.resultJson),
     };
     if (issueId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: current.companyId, issueId });
     await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
-    await notifyExecutionRunWork(tx, { companyId: current.companyId });
+    await notifyExecutionRunWork(tx, { companyId: current.companyId, runId: current.id });
     let [updated] = await tx
       .update(heartbeatRuns)
       .set({
@@ -231,6 +293,17 @@ export async function terminalizeLegacyExecution(input: {
       )).orderBy(desc(issueRecoveryActions.createdAt)).limit(1).for("update");
       const decision = existing?.evidence.executionReconciliation as Record<string, unknown> | undefined;
       if (hasRequiredWorkspaceRecovery(existing?.evidence) && decision?.runId === run.id) return updated;
+      // The stranded sweep revisits this terminal run every pass. The hold
+      // already records this exact no-replay decision, or a fresh continuation
+      // already took it over: rewriting it would only churn its timestamps and
+      // reset a coalesced continuation's delivery state.
+      const recorded = existing?.evidence.automaticRecovery as Record<string, unknown> | undefined;
+      const continuation = existing?.evidence.freshContinuation as Record<string, unknown> | undefined;
+      if (existing && (continuation?.sourceRunId === run.id || (existing.status === "resolved"
+        && recorded?.runId === run.id && recorded.replay === "blocked"
+        && existing.evidence.workspaceRestoreFailure === updated.resultJson!.workspaceRestoreFailure
+        && JSON.stringify(existing.evidence.workspaceRestoreRecovery) === JSON.stringify(updated.resultJson!.workspaceRestoreRecovery))))
+        return updated;
       const now = new Date();
       const evidence = {
         ...existing?.evidence,
@@ -255,58 +328,15 @@ export async function terminalizeLegacyExecution(input: {
         fingerprint, attemptCount: 1 });
       return updated;
     }
-    const review = task?.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
-    const isCurrentReviewer = review?.status === "pending" &&
-      review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
-    if (
-      task &&
-      !isSupersededConversationRun(task, updated) &&
-      (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
-      (!["done", "cancelled"].includes(task.status) || retainedLeaseIds.length > 0)
-    ) {
+    const owner = task ? decisionOwner(task, updated, retainedLeaseIds.length) : null;
+    if (task && owner?.owns) {
+      const { isCurrentReviewer } = owner;
       // Periodic stranded-work checks may revisit this terminal run before its
       // reconciled or explicitly requested continuation is dispatched. Preserve
       // its recorded decision instead of creating another hold. The explicit
       // receipt must identify an actual successor under the same task/agent;
       // retained user intent remains authoritative after that successor finishes.
-      const [reconciled] = await tx.select({ id: issueRecoveryActions.id })
-        .from(issueRecoveryActions).where(and(
-          eq(issueRecoveryActions.companyId, run.companyId),
-          eq(issueRecoveryActions.sourceIssueId, task.id),
-          eq(issueRecoveryActions.status, "resolved"),
-          ...(hasRequiredWorkspaceRecovery(updated.resultJson) ? [
-            sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
-          ] : []),
-          or(
-            sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
-            and(
-              sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-              sql`exists (
-                select 1 from heartbeat_runs successor
-                where successor.id = ${canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId'`)}
-                  and successor.company_id = ${run.companyId} and successor.agent_id = ${run.agentId}
-                  and coalesce(successor.native_issue_id::text, successor.issue_id::text,
-                    successor.context_snapshot->>'issueId') = ${task.id}
-                  and successor.context_snapshot->>'previousRunId' = ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'previousRunId'
-                  and successor.context_snapshot->'explicitUserContinuation'->>'previousRunId' = ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'previousRunId'
-                  and successor.context_snapshot->'explicitUserContinuation'->>'commentId' is not distinct from
-                    ${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'commentId'
-              )`,
-            ),
-            and(
-              sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-              or(sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
-                sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`),
-              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
-            ),
-            and(
-              eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE),
-              eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
-              sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
-            ),
-          ),
-        )).limit(1);
+      const reconciled = await findRecordedLegacyDecision(tx as unknown as Db, run, task.id, updated.resultJson);
       if (reconciled) return updated;
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
         companyId: run.companyId,
@@ -451,8 +481,11 @@ export async function settleCancelledLegacyPreparation(
   return db.transaction(async tx => {
     const [task] = await tx.select().from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
+    // The dispatch gate writes this marker under the same run lock before
+    // calling the adapter. A prior owner's local flag cannot disprove handoff.
     const [run] = await tx.select().from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
+      .where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId),
+        sql`${heartbeatRuns.usageJson}#>'{budgetDispatch,handedOffAt}' is null`)).for("update");
     const recovery = run?.resultJson?.executionRecovery as Record<string, unknown> | undefined;
     // Only a requested Stop qualifies, and only while it is still classified as
     // an unknown outcome: existing wait or bootstrap receipts already decide it.
@@ -474,8 +507,16 @@ export async function settleCancelledLegacyPreparation(
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
       : !hasRemoteTerminationReceipt(lease))) return null;
     const now = new Date();
+    const cancellation = readRunCancellation(run.resultJson);
+    const operatorStop = cancellation?.source === "operator" && cancellation.initiator.type === "user";
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
+      // The preparation owner has unwound and every execution reference agrees.
+      // Confirm the user's Stop; system cancellations keep their delivery path.
+      ...(operatorStop ? { executionCancellation: {
+        ...(run.resultJson?.executionCancellation as Record<string, unknown> | undefined),
+        state: "acknowledged", proof: "preparation_settled", acknowledgedAt: now.toISOString(),
+      } } : {}),
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     // The automatic disposition may already have closed the incident with
     // replay blocked, and moved the task to blocked. Correct both verdicts.
@@ -501,9 +542,12 @@ export async function settleCancelledLegacyPreparation(
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",
       resolutionNote: "The run was stopped before its adapter started; there are no provider actions to reconcile.",
       resolvedAt: now, updatedAt: now,
-      evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
-        then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
-        else ${issueRecoveryActions.evidence} end`,
+      // A verified operator Stop no longer needs a recovery notice. System
+      // cancellations still use this metadata to deliver pending saved input.
+      evidence: operatorStop ? sql`${issueRecoveryActions.evidence} - 'automaticRecovery'`
+        : sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+          then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"allowed"'::jsonb, false)
+          else ${issueRecoveryActions.evidence} end`,
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: task.id });

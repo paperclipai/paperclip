@@ -788,3 +788,45 @@ describe("runner bridge repeated identical input rejections", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 });
+
+describe("runner bridge input coercion", () => {
+  it("accepts an object-typed field sent as JSON text, records it, and keeps text fields as text", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startRunnerToolBridge({
+      tools: [{ name: "update_case", inputSchema: { type: "object", additionalProperties: false, required: ["title", "patch"], properties: {
+        title: { type: "string" }, patch: { type: ["object", "null"], required: ["status"], properties: { status: { type: "string" } } },
+      } } }],
+      handler,
+      onDiagnostic: message => diagnostics.push(message),
+    });
+    bridges.push(bridge);
+    const send = async (id: number, args: unknown) => ((await (await rpc(bridge, { id, method: "tools/call", params: { name: "update_case", arguments: args } })).json()) as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    }).result;
+    expect((await send(1, { title: '{"a":1}', patch: '{"status":"done"}' })).isError).not.toBe(true);
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { title: '{"a":1}', patch: { status: "done" } } }));
+    expect(diagnostics.map(message => JSON.parse(message))).toEqual([
+      expect.objectContaining({ schema: "paperclip.runner.tool-input-coerced/v1", tool: "update_case", paths: ["/patch"] }),
+    ]);
+    expect((await send(2, { title: "t", patch: "done" })).isError).toBe(true);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+});
+
+describe("runner bridge receipts for coerced input", () => {
+  it("binds the receipt to the arguments as the host sent them, while the handler gets the parsed object", async () => {
+    const receipts: SemanticToolReceipt[] = [];
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const bridge = await startRunnerToolBridge({ captureSemanticReceipt: () => receipt => receipts.push(receipt), handler });
+    bridges.push(bridge);
+    const continuation = { kind: "response_wake", summary: "wait", idempotencyKey: "k" };
+    const raw = { reportedWorkDisposition: "yielded", summary: "Waiting for the reply.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [] }, continuation: JSON.stringify(continuation) };
+    const body = await (await rpc(bridge, { id: 9, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } })).json() as ToolCallBody;
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { ...raw, continuation } }));
+    expect(receipts).toHaveLength(1);
+    expect(readNativeSemanticReceipt({ contents: body.result.content })).toEqual(receipts[0]);
+    expect(receipts[0]!.inputSha256).toBe(semanticInputSha256(raw));
+  });
+});

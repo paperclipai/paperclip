@@ -163,7 +163,7 @@ describe("Application image Runner", () => {
   it("compiles the Runner only in the runner-artifacts stages", () => {
     const names = [...dockerfile.matchAll(/^FROM \S+ AS (\S+)$/gm)].map((match) => match[1]);
     const application = names.filter((name) => !name.startsWith("runner-artifacts"));
-    expect(application).toEqual(["base", "deps", "build", "runner-provider-pack", "production", "cloud-plugins", "cloud-server-deps", "cloud"]);
+    expect(application).toEqual(["base", "tailscale-client", "runner-lockfile", "deps", "build", "runner-provider-pack", "production", "cloud-plugins", "cloud-server-deps", "cloud"]);
     for (const name of application) {
       expect(stageBody(dockerfile, name), name).not.toMatch(/\b(?:cargo|rustup|rustc|gcc)\b/);
     }
@@ -175,8 +175,9 @@ describe("Application image Runner", () => {
     for (const [name, source] of [["standard", workflow], ["preview", previewWorkflow], ["merge group", mergeGroupWorkflow], ["pull request", appCheckWorkflow]]) {
       expect(source, name).toContain("PAPERCLIP_BUILD_COMMIT=");
       expect(source, name).not.toMatch(/PAPERCLIP_RUNNER_(?:SOURCE_REVISION|IMAGE_PUBLICATION)/);
-      expect(source, name).not.toMatch(/runner-artifacts|build-contexts?\b/);
+      if (name !== "standard") expect(source, name).not.toMatch(/runner-artifacts|build-contexts?\b/);
     }
+    expect(workflow.match(/runner-artifacts|build-contexts?\b/g)).toEqual(["runner-artifacts", "build-contexts"]);
   });
 });
 

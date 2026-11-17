@@ -1,8 +1,9 @@
 import { kimiManagedConfiguration } from "./kimi-config.js";
 import { kimiInstructionBinding } from "./kimi-instructions.js";
+import { acpxInstructionsAdmissionError } from "./admission-diagnostics.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-observability.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
-import { configuredEnvironmentKeys } from "../../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { COPILOT_SYSTEM_INSTRUCTIONS_FILE } from "./copilot-profile.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
 import { randomBytes } from "node:crypto";
@@ -47,6 +48,7 @@ const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_SANDBOX_ENVIRONMENT_BYTES = 512 * 1024;
 const MAX_WORKSPACE_RECORD_BYTES = 64 * 1024;
+const MAX_PROVIDER_INSTRUCTIONS_BYTES = 32 * 1024;
 
 export interface AcpxRuntimeSandbox {
   root: string;
@@ -352,7 +354,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   if (input.agent === "pi" && (input.providerPolicy === undefined || typeof input.providerPolicy.readOnly !== "boolean")) {
     throw new Error("Pi admission requires an explicit task execution policy");
   }
-  const policy = await validateProviderPolicy(input.providerPolicy);
+  const policy = await validateProviderPolicy(input.providerPolicy, input.agent);
   const expectedRoot = input.binding.runtimeRoot;
   if (resolve(expectedRoot) !== expectedRoot) {
     throw new Error("ACPX runtime root must be an absolute normalized path");
@@ -513,6 +515,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
           `include_only = ${JSON.stringify([...new Set([
             "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
             "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+            // Certificate-trust names stay inheritable for execution-side injection.
+            ...CERTIFICATE_ENVIRONMENT_KEYS,
             ...taskEnvironmentKeys,
             // Unselected provider/config secrets keep Codex's default shell exclusions;
             // only Paperclip's scoped API token is required by Bash/curl skills.
@@ -614,7 +618,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   };
 }
 
-async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined): Promise<{
+async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined, agent: QualifiedAcpxAgent): Promise<{
   readOnly: boolean; readRoots: string[]; protectedPaths: string[]; systemInstructions: string;
 }> {
   if (policy !== undefined && typeof policy.readOnly !== "boolean") throw new Error("Provider task execution policy is invalid");
@@ -627,7 +631,8 @@ async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefi
     }));
   };
   const systemInstructions = policy?.systemInstructions ?? "";
-  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0") || Buffer.byteLength(systemInstructions) > 32 * 1024) throw new Error("Provider runtime instructions exceed their bounded size");
+  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0")) throw acpxInstructionsAdmissionError("Provider runtime instructions are invalid");
+  if (agent === "pi" && Buffer.byteLength(systemInstructions) > MAX_PROVIDER_INSTRUCTIONS_BYTES) throw acpxInstructionsAdmissionError("Provider runtime instructions exceed their bounded size");
   return {
     readOnly: policy?.readOnly ?? true,
     readRoots: await paths(policy?.readRoots, true),
@@ -695,8 +700,8 @@ export async function refreshCopilotSystemInstructions(
   sandbox: Pick<AcpxRuntimeSandbox, "agentHomeDirectory">,
   instructions: string,
 ): Promise<void> {
-  if (instructions.includes("\0") || Buffer.byteLength(instructions) > 32 * 1024) {
-    throw new Error("Provider runtime instructions exceed their bounded size");
+  if (instructions.includes("\0") || Buffer.byteLength(instructions) > MAX_PROVIDER_INSTRUCTIONS_BYTES) {
+    throw acpxInstructionsAdmissionError("Provider runtime instructions exceed their bounded size");
   }
   // Native Copilot reloads this file on session/load. Empty text clears old text.
   await writePrivateFile(

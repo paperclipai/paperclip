@@ -175,4 +175,22 @@ describe("Claude tool-use admission", () => {
     admission.announce("turn-2", "toolu_idle");
     await expect(admission.admit("turn-1", "toolu_idle", live())).rejects.toThrow("not bound to the active turn");
   });
+
+  it("has room for another turn only while a full turn of admissions still fits its ledger", async () => {
+    const admission = new ClaudeToolUseAdmission();
+    expect(admission.hasRoomForAnotherTurn()).toBe(true);
+    admission.beginTurn("turn-1");
+    for (let index = 0; index < 4_096; index += 1) {
+      const id = `toolu_first${index}`;
+      admission.announce("turn-1", id);
+      await admission.admit("turn-1", id, live());
+    }
+    admission.endTurn("turn-1");
+    expect(admission.hasRoomForAnotherTurn()).toBe(true);
+    admission.beginTurn("turn-2");
+    admission.announce("turn-2", "toolu_second");
+    await admission.admit("turn-2", "toolu_second", live());
+    admission.endTurn("turn-2");
+    expect(admission.hasRoomForAnotherTurn()).toBe(false);
+  });
 });

@@ -401,3 +401,16 @@ it("tells the operator to switch a preconfigured Runner home to an isolated one"
   expect(notice.nextAction).toContain("isolated Runner home");
   expect(notice.nextAction).not.toContain("Choose an AI connection");
 });
+
+it("never tells a person to press Retry when the task offers no Retry", () => {
+  const sourceRun = { id: "run-1", status: "cancelled", errorCode: "execution_reconciliation_required" };
+  for (const seed of [buildNoRunningExecutionNoticeSeed({ status: "in_progress" }), null]) {
+    const offered = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun });
+    expect(`${offered.body} ${JSON.stringify(allRows(offered.metadata))}`).toMatch(/Press Retry/);
+    const withheld = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun,
+      retryOffered: false });
+    expect(withheld.body).not.toMatch(/retry/i);
+    expect(JSON.stringify(allRows(withheld.metadata))).not.toMatch(/retry/i);
+    expect(withheld.body).toContain("Paperclip is holding this task until its saved work is settled.");
+  }
+});

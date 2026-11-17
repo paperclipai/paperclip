@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { semanticCanonicalJson } from "./semantic-tool-receipt.js";
+import { declaredSchemaTypes, jsonValueType, matchesDeclaredType } from "./tool-input-coercion.js";
 
 /** Identical rejections after which the guard tells the model to stop. */
 export const REPEATED_TOOL_INPUT_REJECTION_LIMIT = 2;
@@ -37,11 +38,11 @@ export class RepeatedToolInputRejectionGuard {
     const expected = expectedProperties(schema);
     if (count === REPEATED_TOOL_INPUT_REJECTION_LIMIT) {
       return `${error} This exact call has now been rejected ${count} times with the same arguments. ${receivedArguments(args)}${expected ? ` ${expected}` : ""} `
-        + `If you meant to send other arguments, they did not arrive: send every field as a top-level argument of ${tool} in one call. `
+        + `${inputProblem(tool, args, schema)} `
         + "An identical call will not be accepted again in this run. Change the arguments, or stop and tell the user what blocked you.";
     }
     return `This call was not accepted: ${tool} was already rejected ${count - 1} times in this run with these exact arguments. ${receivedArguments(args)}${expected ? ` ${expected}` : ""} `
-      + `The error each time was: ${error} Repeating it unchanged cannot succeed. Stop calling ${tool} with these arguments: change them, or stop and tell the user what blocked you.`;
+      + `The error each time was: ${error} ${inputProblem(tool, args, schema)} Repeating it unchanged cannot succeed. Stop calling ${tool} with these arguments: change them, or stop and tell the user what blocked you.`;
   }
 }
 
@@ -68,4 +69,45 @@ export function expectedProperties(schema: unknown): string {
   const required = Array.isArray(root.required) ? root.required.filter((key): key is string => typeof key === "string" && properties.includes(key)) : [];
   const optional = properties.filter(key => !required.includes(key));
   return `Expected properties: ${required.length ? `required ${names(required)}` : "none required"}${optional.length ? `; optional ${names(optional)}` : ""}.`;
+}
+
+const TYPE_NAMES: Record<string, string> = {
+  object: "an object", array: "an array", string: "text", number: "a number", integer: "a whole number", boolean: "true or false", null: "null",
+};
+
+function typeList(types: readonly string[]): string {
+  const named = types.map(type => TYPE_NAMES[type] ?? type);
+  return named.length <= 1 ? named.join("") : `${named.slice(0, -1).join(", ")} or ${named.at(-1)}`;
+}
+
+/**
+ * Names what is actually wrong with the repeated call. Required fields that
+ * are absent may have been dropped by the host; fields that arrived with the
+ * wrong type did arrive and must be sent differently. Telling a model that
+ * sent every field that its arguments "did not arrive" sends it looking for
+ * the wrong fault.
+ */
+export function inputProblem(tool: string, args: unknown, schema: unknown): string {
+  const root = typeof schema === "object" && schema !== null ? schema as Schema : {};
+  const properties = typeof root.properties === "object" && root.properties !== null ? root.properties as Record<string, unknown> : {};
+  const received = typeof args === "object" && args !== null && !Array.isArray(args) ? args as Record<string, unknown> : {};
+  const required = Array.isArray(root.required) ? root.required.filter((key): key is string => typeof key === "string") : [];
+  const missing = required.filter(key => !Object.hasOwn(received, key));
+  const wrongTypes = Object.keys(received).sort()
+    .filter(key => Object.hasOwn(properties, key) && !matchesDeclaredType(properties[key], received[key]))
+    .slice(0, MAX_LISTED)
+    .map(key => {
+      const actual = jsonValueType(received[key]);
+      const encoded = actual === "string" && declaredSchemaTypes(properties[key])?.includes("object") ? " (send the object itself, not its JSON as quoted text)" : "";
+      return `${key} must be ${typeList(declaredSchemaTypes(properties[key]) ?? [])}, not ${TYPE_NAMES[actual] ?? actual}${encoded}`;
+    });
+  const parts: string[] = [];
+  if (missing.length) {
+    parts.push(`Required ${missing.length === 1 ? "field" : "fields"} ${names(missing)} did not arrive; if you sent ${missing.length === 1 ? "it" : "them"}, send every field as a top-level argument of ${tool} in one call.`);
+  }
+  if (wrongTypes.length) {
+    parts.push(`${missing.length ? "The fields you did send arrived" : "Every field you sent arrived"}, but ${wrongTypes.length === 1 ? "one has" : "some have"} the wrong type: ${wrongTypes.join("; ")}.`);
+  }
+  if (!parts.length) parts.push("Every field you sent arrived; change the values the error names.");
+  return parts.join(" ");
 }

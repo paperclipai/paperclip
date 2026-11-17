@@ -12,7 +12,40 @@ RUN usermod -u $USER_UID --non-unique node \
   && groupmod -g $USER_GID --non-unique node \
   && usermod -g $USER_GID -d /paperclip node
 
-FROM base AS deps
+FROM base AS tailscale-client
+ARG TARGETARCH
+WORKDIR /out
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) digest=720cbbccbfc03d8b55df72afc19e5a72e31b0f65934700aa6fa38074d4ad7bf7 ;; \
+      arm64) digest=e900b0e6e25023a1e504b2c237ce2a32ea0535e006f8c1a1097a490886493b6c ;; \
+      *) echo "Unsupported Tailscale architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    curl --fail --silent --show-error --location --retry 2 --connect-timeout 15 --max-time 120 --proto '=https' --proto-redir '=https' \
+      "https://pkgs.tailscale.com/stable/tailscale_1.104.5_${TARGETARCH}.tgz" -o tailscale.tgz; \
+    printf '%s  tailscale.tgz\n' "$digest" > tailscale.sha256; \
+    sha256sum -c tailscale.sha256; \
+    tar -xzf tailscale.tgz --strip-components=1; \
+    gosu node /out/tailscale version; \
+    gosu node /out/tailscaled --version
+COPY docker/tailscale.LICENSE /out/LICENSE
+
+FROM base AS runner-lockfile
+WORKDIR /runner-lockfile
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
+COPY packages/paperclip-eval-kernel/package.json packages/paperclip-eval-kernel/
+COPY packages/paperclip-runner/package.json packages/paperclip-runner/
+COPY patches/ patches/
+RUN pnpm install --frozen-lockfile --lockfile-only --offline --ignore-scripts --filter '@paperclipai/paperclip-runner...' > /tmp/runner-lockfile.log 2>&1 \
+  || { cat /tmp/runner-lockfile.log >&2; \
+    if grep -Eq 'ERR_PNPM_OUTDATED_LOCKFILE|ERR_PNPM_LOCKFILE_CONFIG_MISMATCH' /tmp/runner-lockfile.log; then \
+      echo "ERROR: pnpm-lock.yaml is behind the manifests the Runner is installed from: package.json, pnpm-workspace.yaml, patches, packages/paperclip-runner/package.json or packages/paperclip-eval-kernel/package.json. The image build installs the Runner with a frozen lockfile, so it stops here. Run this command in the checkout, then build again: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile" >&2; \
+    else \
+      echo "ERROR: pnpm could not check pnpm-lock.yaml against the manifests the Runner is installed from. Its output is above." >&2; \
+    fi; \
+    exit 1; }
+
+FROM runner-lockfile AS deps
 WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY cli/package.json cli/
@@ -353,6 +386,10 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
+
+COPY --from=tailscale-client /out/tailscale /out/tailscaled /usr/local/bin/
+COPY --from=tailscale-client /out/LICENSE /usr/local/share/licenses/tailscale/LICENSE
+RUN gosu node tailscale version && gosu node tailscaled --version
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

@@ -238,7 +238,14 @@ describe("automatic retained workspace recovery", () => {
         recoveryWorker = registerWorkspaceRecoveryWork(db, recoveryCoordinator, runtime, heartbeat.resumeRemoteStopComments);
         await recoveryWorker.ready;
         const retryIntent = { observedRunId: completed.id, idempotencyKey: randomUUID() };
-        const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
+        // Until saved-work recovery verifies the files, admission refuses this
+        // Retry and the answer says so. The saved request still starts by
+        // itself once the files are verified.
+        const answer = await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent);
+        expect([200, 202]).toContain(answer.status);
+        if (answer.status === 200) expect(answer.body).toMatchObject({ accepted: false,
+          refused: { reason: "previous_execution_unverified" } });
+        const retry = answer.body;
         const resumed = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
           sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${retry.requestId}`));
         await expect.poll(async () => await hasVerifiedWorkspaceRepair(db, await run(completed.id)), { timeout: 20_000 }).toBe(true);

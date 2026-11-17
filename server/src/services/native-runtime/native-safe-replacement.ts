@@ -610,7 +610,7 @@ export async function reconcileSafeNativeReplacements(
             (ownershipBound && !await ownershipProofExpired(tx, run))
           )
             return;
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           await tx
             .update(nativeRunFinalizations)
             .set({
@@ -775,8 +775,8 @@ export async function reconcileSafeNativeReplacements(
             idempotencyKey: `native-safe-replacement:${run.id}`,
           })
           .returning();
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
-        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId, runId: run.id });
         await tx.insert(heartbeatRuns).values({
           id: successorRunId,
           companyId: run.companyId,
