@@ -27,7 +27,7 @@ describe("callGoogleWorkspaceRest", () => {
     const controller = new AbortController();
     const fetch = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ id: "draft1", message: { id: "m", threadId: "t" } }));
     const outcome = await callGoogleWorkspaceRest({
-      service: "gmail", toolName: "create_draft", arguments: { subject: "Hi", body: "Hello" },
+      service: "gmail", toolName: "create_draft", arguments: { subject: "Hi", body: "Hello" }, maxResultBytes: 1_000_000,
       credentialHeaders: { authorization: "Bearer token-1", "x-paperclip-run": "run-1" }, fetch, signal: controller.signal,
     });
     expect(outcome).toMatchObject({ ok: true, result: { structuredContent: { id: "draft1", subject: "Hi" } } });
@@ -41,7 +41,7 @@ describe("callGoogleWorkspaceRest", () => {
   it("returns token problems as outcomes and leaves other failures as tool errors", async () => {
     const answer = (status: number, body: unknown) => vi.fn(async () => Response.json(body, { status }));
     const call = (fetch: ReturnType<typeof answer>, credentialHeaders: Record<string, string> = { Authorization: "Bearer t" }) =>
-      callGoogleWorkspaceRest({ service: "gmail", toolName: "get_message", arguments: { messageId: "m1" }, credentialHeaders, fetch });
+      callGoogleWorkspaceRest({ service: "gmail", toolName: "get_message", arguments: { messageId: "m1" }, maxResultBytes: 1_000_000, credentialHeaders, fetch });
     await expect(call(answer(401, {}))).resolves.toEqual({ ok: false, authFailure: "unauthenticated" });
     await expect(call(answer(200, {}), {})).resolves.toEqual({ ok: false, authFailure: "unauthenticated" });
     await expect(call(answer(403, { error: { errors: [{ reason: "insufficientPermissions" }] } })))
@@ -49,8 +49,25 @@ describe("callGoogleWorkspaceRest", () => {
     await expect(call(answer(404, { error: { code: 404 } }))).resolves.toMatchObject({ ok: true, result: { isError: true } });
   });
 
+  it("passes the gateway's result budget to the REST tools, which enforce exactly that number", async () => {
+    const body = "a".repeat(30_000);
+    const message = { id: "m1", threadId: "t1", internalDate: "1763337600000",
+      payload: { mimeType: "text/plain", headers: [], body: { size: body.length, data: Buffer.from(body).toString("base64url") } } };
+    const call = (maxResultBytes: number) => callGoogleWorkspaceRest({
+      service: "gmail", toolName: "get_message", arguments: { messageId: "m1" }, maxResultBytes,
+      credentialHeaders: { Authorization: "Bearer t" }, fetch: vi.fn(async () => Response.json(message)),
+    });
+    const fits = await call(1_000_000);
+    expect(fits).toMatchObject({ ok: true, result: { structuredContent: { plaintextBody: body } } });
+    const bytes = Buffer.byteLength(JSON.stringify(fits.ok && fits.result), "utf8");
+    await expect(call(bytes)).resolves.toMatchObject({ ok: true, result: { structuredContent: { plaintextBody: body } } });
+    const over = await call(bytes - 1);
+    expect(over).toMatchObject({ ok: true, result: { isError: true } });
+    expect(JSON.stringify(over)).toContain(`more than the ${(bytes - 1).toLocaleString("en-US")} bytes this tool can return`);
+  });
+
   it("refuses a service the REST tools do not implement", async () => {
-    await expect(callGoogleWorkspaceRest({ service: "drive", toolName: "search_files", arguments: {}, credentialHeaders: {}, fetch: vi.fn() }))
+    await expect(callGoogleWorkspaceRest({ service: "chat", toolName: "send_message", arguments: {}, maxResultBytes: 1_000_000, credentialHeaders: {}, fetch: vi.fn() }))
       .rejects.toThrow("no Paperclip REST tools");
   });
 });

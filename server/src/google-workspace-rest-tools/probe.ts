@@ -1,6 +1,7 @@
 import { CALENDAR_BASE, CALENDAR_HOST } from "./calendar/event.js";
 import { calendarProbeRequest } from "./calendar/list-calendars.js";
 import { freeBusyRequest } from "./calendar/suggest-time.js";
+import { driveProbeRequest } from "./drive/index.js";
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 import { createGoogleHttp, type GoogleFetch, type GoogleRequest } from "./google-http.js";
 import type { GoogleWorkspaceRestService } from "./tools.js";
@@ -37,6 +38,15 @@ export const GOOGLE_WORKSPACE_REST_PROBES: Readonly<Record<GoogleWorkspaceRestSe
       request: (now) => freeBusyRequest(["primary"], { start: now, end: now + PROBE_WINDOW_MS }, "UTC"),
     },
   ],
+  drive: [
+    {
+      anyOfScopes: [scope("drive.readonly"), scope("drive.file")],
+      request: () => driveProbeRequest(),
+    },
+  ],
+  docs: [],
+  slides: [],
+  sheets: [],
 };
 
 export function googleWorkspaceRestProbeFor(service: GoogleWorkspaceRestService, grantedScopes: readonly string[]): ProbeCandidate | null {

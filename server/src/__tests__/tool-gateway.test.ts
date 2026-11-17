@@ -73,6 +73,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { grantLegacyPluginTools } from "./helpers/legacy-plugin-tools.js";
 
 const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_GATEWAY_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -6591,6 +6592,7 @@ rl.on("line", (line) => {
       },
     };
     const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    await grantLegacyPluginTools(db, company.id, "demo-plugin");
 
     await expect(gateway.listPluginToolsForAgent({ companyId: company.id, agentId: agent.id })).resolves.toEqual([]);
     await gateway.executePluginTool({

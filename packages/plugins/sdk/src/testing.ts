@@ -34,6 +34,10 @@ import type {
   ScopeKey,
   ToolResult,
   ToolRunContext,
+  ToolRunConnection,
+  ConnectorToolRunContext,
+  ConnectorToolListConnection,
+  ConnectorToolDescriptor,
   PluginWorkspace,
   PluginExecutionWorkspaceMetadata,
   AgentSession,
@@ -142,6 +146,16 @@ export interface TestHarness {
   ): Promise<T>;
   /** Execute a registered tool handler via `ctx.tools.execute(...)`. */
   executeTool<T = ToolResult>(name: string, params: unknown, runCtx?: Partial<ToolRunContext>): Promise<T>;
+  /** Execute a `ctx.connectors.register(...)` handler on a test connection. */
+  executeConnectorTool<T = ToolResult>(
+    appSlug: string,
+    toolName: string,
+    params: unknown,
+    connection?: Partial<ToolRunConnection>,
+    runCtx?: Partial<ToolRunContext>,
+  ): Promise<T>;
+  /** Call a `ctx.connectors.listTools(...)` handler for a test connection. */
+  listConnectorTools(appSlug: string, connection?: Partial<ConnectorToolListConnection>): Promise<ConnectorToolDescriptor[]>;
   /** Read raw in-memory state for assertions. */
   getState(input: ScopeKey): unknown;
   /** Simulate a streaming event arriving for an active session. */
@@ -596,6 +610,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
   >();
   const toolHandlers = new Map<string, (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>>();
+  const connectorToolHandlers = new Map<string, (params: unknown, runCtx: ConnectorToolRunContext) => Promise<ToolResult>>();
+  const connectorToolListers = new Map<string, (connection: ConnectorToolListConnection) => Promise<ConnectorToolDescriptor[]>>();
 
   function localFolderKey(companyId: string, folderKey: string): string {
     return `${companyId}:${folderKey}`;
@@ -2585,6 +2601,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         toolHandlers.set(name, fn);
       },
     },
+    connectors: {
+      register(appSlug, toolName, fn) {
+        requireCapability(manifest, capabilitySet, "connectors.provide");
+        connectorToolHandlers.set(`${appSlug}\u0000${toolName}`, fn);
+      },
+      listTools(appSlug, fn) {
+        requireCapability(manifest, capabilitySet, "connectors.provide");
+        connectorToolListers.set(appSlug, fn);
+      },
+    },
     metrics: {
       async write(name, value, tags) {
         requireCapability(manifest, capabilitySet, "metrics.write");
@@ -2721,6 +2747,41 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         projectId: runCtx.projectId ?? "project-test",
       };
       return await handler(params, ctxToPass) as T;
+    },
+    async executeConnectorTool<T = ToolResult>(
+      appSlug: string,
+      toolName: string,
+      params: unknown,
+      connection: Partial<ToolRunConnection> = {},
+      runCtx: Partial<ToolRunContext> = {},
+    ) {
+      const handler = connectorToolHandlers.get(`${appSlug}\u0000${toolName}`);
+      if (!handler) throw new Error(`No connector tool handler registered for '${appSlug}/${toolName}'`);
+      return await handler(params, {
+        agentId: runCtx.agentId ?? "agent-test",
+        runId: runCtx.runId ?? randomUUID(),
+        companyId: runCtx.companyId ?? "company-test",
+        projectId: runCtx.projectId ?? "project-test",
+        connection: {
+          id: connection.id ?? "connection-test",
+          appSlug,
+          methodKey: connection.methodKey ?? "default",
+          grantId: connection.grantId ?? "grant-test",
+          settings: connection.settings ?? {},
+          ...(connection.credential ? { credential: connection.credential } : {}),
+        },
+      }) as T;
+    },
+    async listConnectorTools(appSlug: string, connection: Partial<ConnectorToolListConnection> = {}) {
+      const lister = connectorToolListers.get(appSlug);
+      if (!lister) throw new Error(`No connector tool list handler registered for '${appSlug}'`);
+      return lister({
+        id: connection.id ?? "connection-test",
+        appSlug,
+        methodKey: connection.methodKey ?? "default",
+        settings: connection.settings ?? {},
+        ...(connection.credential ? { credential: connection.credential } : {}),
+      });
     },
     getState(input) {
       return state.get(stateMapKey(input));

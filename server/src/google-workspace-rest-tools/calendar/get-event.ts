@@ -27,6 +27,7 @@ export const getEvent = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "This tool cannot return part of an event.",
   async run(input, http) {
     return getEventResult(await http.send<RestEvent>(getEventRequest(input.calendarId, input.eventId)));
   },

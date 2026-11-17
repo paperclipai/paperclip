@@ -1,49 +1,69 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 05644099..c533906b 100644
+index c533906b..fa7698ab 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -16,7 +16,7 @@ overrides:
+@@ -1097,6 +1097,9 @@ importers:
+       pino-pretty:
+         specifier: ^13.1.3
+         version: 13.1.3
++      posthog-node:
++        specifier: 5.38.2
++        version: 5.38.2(rxjs@7.8.2)
+       sharp:
+         specifier: ^0.35.4
+         version: 0.35.4(@types/node@24.13.3)
+@@ -3899,6 +3902,12 @@ packages:
+     engines: {node: '>=20'}
+     hasBin: true
  
- patchedDependencies:
-   '@agentclientprotocol/claude-agent-acp@0.73.0':
--    hash: syoits7l7g3sthy3olttp2fv24
-+    hash: wnht4big7mwol7j2skbsa5mefq
-     path: patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
-   '@agentclientprotocol/codex-acp@1.6.2':
-     hash: 2iynuypg76nxmydiylgtffhr7e
-@@ -186,7 +186,7 @@ importers:
-     dependencies:
-       '@agentclientprotocol/claude-agent-acp':
-         specifier: ^0.73.0
--        version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
-+        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
-       '@anthropic-ai/sdk':
-         specifier: 0.129.0
-         version: 0.129.0(zod@4.6.7)
-@@ -511,7 +511,7 @@ importers:
-     dependencies:
-       '@agentclientprotocol/claude-agent-acp':
-         specifier: 0.73.0
--        version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
-+        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
-       '@agentclientprotocol/codex-acp':
-         specifier: 1.6.2
-         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
-@@ -904,7 +904,7 @@ importers:
-         version: 0.5.0
-       '@agentclientprotocol/claude-agent-acp':
-         specifier: 0.73.0
--        version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
-+        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
-       '@agentclientprotocol/codex-acp':
-         specifier: 1.6.2
-         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
-@@ -9548,7 +9548,7 @@ snapshots:
++  '@posthog/core@1.68.0':
++    resolution: {integrity: sha512-5kjPcLquzj47qBGn52+7RRXrJJvrTHaRKgxV9izYPFzoVFEftFqSXYZF/ug+yialxDU73dR9apyi+mSaAeaXPw==}
++
++  '@posthog/types@1.425.1':
++    resolution: {integrity: sha512-mh7jyQ5lN+XCeOnMdYkBEFtO/G0TxeLOKTWNH6E6OZjxS4nVM0Tb2xQt+FG5DCFM9qzL2HmuX6A793TwlJVDvw==}
++
+   '@preact/signals-core@1.14.4':
+     resolution: {integrity: sha512-HNB6HYeYKhQbJ1aKl+YRjrS4+QWHLKX6qKoUsfS/m0vqzsVaEBiZiaKbG/e+NKk2ch5ALQr/ihWaMHxiCuuWHA==}
  
-   '@adobe/css-tools@4.5.0': {}
+@@ -8392,6 +8401,15 @@ packages:
+     resolution: {integrity: sha512-GD3qdB0x1z9xgFI6cdRD6xu2Sp2WCOEoe3mtnyB5Ee0XrrL5Pe+e4CCnJrRMnL1zYtRDZmQQVbvOttLnKDLnaw==}
+     engines: {node: '>=12'}
  
--  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))':
-+  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))':
++  posthog-node@5.38.2:
++    resolution: {integrity: sha512-eiKpU+vX4hVuHbO/EosvPHsmh2AVIdoVmWss/uUOs1t4b0ViCblw2o8OIFqHxKj3mYRnSOBlX0Dw3wBvcCaYpA==}
++    engines: {node: ^20.20.0 || >=22.22.0}
++    peerDependencies:
++      rxjs: ^7.0.0
++    peerDependenciesMeta:
++      rxjs:
++        optional: true
++
+   powershell-utils@0.1.0:
+     resolution: {integrity: sha512-dM0jVuXJPsDN6DvRpea484tCUaMiXWjuCn++HGTqUWzGDjv5tZkEZldAJ/UMlqRYGFrD/etByo4/xOuC/snX2A==}
+     engines: {node: '>=20'}
+@@ -12133,6 +12151,12 @@ snapshots:
      dependencies:
-       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
-       '@anthropic-ai/claude-agent-sdk': 0.3.286(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(zod@4.4.3)
+       playwright: 1.62.1
+ 
++  '@posthog/core@1.68.0':
++    dependencies:
++      '@posthog/types': 1.425.1
++
++  '@posthog/types@1.425.1': {}
++
+   '@preact/signals-core@1.14.4': {}
+ 
+   '@protobufjs/aspromise@1.1.2': {}
+@@ -16815,6 +16839,12 @@ snapshots:
+ 
+   postgres@3.4.9(patch_hash=7s673zkrux4f7d7y4kyzk7opyu): {}
+ 
++  posthog-node@5.38.2(rxjs@7.8.2):
++    dependencies:
++      '@posthog/core': 1.68.0
++    optionalDependencies:
++      rxjs: 7.8.2
++
+   powershell-utils@0.1.0: {}
+ 
+   powershell-utils@0.2.0: {}

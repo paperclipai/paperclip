@@ -58,6 +58,7 @@ export const searchEvents = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer events with a smaller pageSize.",
   async run(input, http) {
     return searchEventsResult(await http.send<RestEventList>(searchEventsRequest(input)));
   },

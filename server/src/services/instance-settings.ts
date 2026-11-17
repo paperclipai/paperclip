@@ -1,4 +1,3 @@
-import { prepareMcpClientMirrorPolicy } from "./public-mcp/client-mirror-mutations.js";
 import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
@@ -259,7 +258,8 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       // continuing to accept the compatibility key in stored settings.
       enableApps: true,
       enableMcpAggregators: true,
-      enablePublicMcp: parsed.data.enablePublicMcp ?? false,
+      // Assistant connections (MCP) graduated from Experimental; ignore historical off values.
+      enablePublicMcp: true,
       enableOpenAiDot: parsed.data.enableOpenAiDot ?? false,
       enableMuse: parsed.data.enableMuse ?? false,
       enableGrokBot: parsed.data.enableGrokBot ?? false,
@@ -319,7 +319,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableStreamlinedUi: true,
     enableApps: true,
     enableMcpAggregators: true,
-    enablePublicMcp: false,
+    enablePublicMcp: true,
     enableOpenAiDot: false,
     enableMuse: false,
     enableGrokBot: false,
@@ -388,8 +388,9 @@ export function applyManagedExperimentalOverlay(
     [ManagedExperimentalFeatureKey, boolean]
   >) {
     // Existing Cloud stack configs may still carry retired flags. Accept the
-    // document during rollout, but never let retired flags disable Apps, Agent Chat or MCP aggregators.
-    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators") continue;
+    // document during rollout, but never let retired flags disable Apps, Agent Chat, MCP aggregators
+    // or Assistant connections (MCP).
+    if (key === "enableApps" || key === "enableAgentChat" || key === "enableMcpAggregators" || key === "enablePublicMcp") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }
@@ -629,6 +630,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
+        // Retired always-on keys are ignored on read, so an old client's write must not be rejected.
+        if (key === "enablePublicMcp") continue;
         if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
           throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
             code: "settings_operator_managed",
@@ -661,7 +664,6 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         await announceInstanceSettingsChange(tx);
         if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
         if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
-        if(toExperimentalView(current.experimental).enablePublicMcp!==toExperimentalView(nextExperimental).enablePublicMcp)await prepareMcpClientMirrorPolicy(tx as unknown as Db,toExperimentalView(nextExperimental).enablePublicMcp);
         if (patch.enableMcpTasks !== undefined) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);
