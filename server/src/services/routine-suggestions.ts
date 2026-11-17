@@ -1,6 +1,6 @@
-import { and, eq, gte, ne, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues, routines as routinesTable } from "@paperclipai/db";
+import { issues } from "@paperclipai/db";
 import {
   AUTOMATION_CONVERSATION_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
@@ -28,7 +28,7 @@ import {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { issueThreadInteractionService, type AcceptClaim } from "./issue-thread-interactions.js";
 import { responsibilityService } from "./responsibilities.js";
 import { routineService } from "./routines.js";
 import { workspacePreferenceService } from "./workspace-preferences.js";
@@ -288,6 +288,8 @@ export function routineSuggestionService(
       trigger: AutomationFromTaskTrigger;
     },
     actor: { userId: string; runId: string | null },
+    /** Called once the routine exists, before its trigger; a throw archives it. */
+    onRoutineCreated?: (routineId: string) => Promise<void>,
   ): Promise<AutomationFromTask> {
     let routine: Routine | null = null;
     let created: Awaited<ReturnType<typeof routines.createTrigger>>;
@@ -298,6 +300,7 @@ export function routineSuggestionService(
         assigneeAgentId: spec.assigneeAgentId,
         projectId: spec.projectId,
       }), actor, { origin: { kind: ROUTINE_FROM_TASK_ORIGIN_KIND, id: issue.id } });
+      if (onRoutineCreated) await onRoutineCreated(routine.id);
       const wanted = spec.trigger;
       created = await routines.createTrigger(routine.id, createRoutineTriggerSchema.parse(
         wanted.kind === "schedule"
@@ -352,6 +355,7 @@ export function routineSuggestionService(
       timezone: string;
     },
     actor: { userId: string; runId: string | null },
+    onRoutineCreated?: (routineId: string) => Promise<void>,
   ): Promise<{ routine: Routine; trigger: RoutineTrigger; filed: FiledUnder }> {
     const { routine, trigger, filed } = await createAutomation(issue, {
       title: spec.title,
@@ -359,43 +363,55 @@ export function routineSuggestionService(
       assigneeAgentId: spec.assigneeAgentId,
       projectId: spec.projectId,
       trigger: { kind: "schedule", cadenceLabel: spec.cadenceLabel, cronExpression: spec.cronExpression, timezone: spec.timezone },
-    }, actor);
+    }, actor, onRoutineCreated);
     return { routine, trigger, filed };
   }
 
-  /**
-   * Archive what an interrupted accept left behind: live routines made from
-   * this task since that accept claimed its card. The accept that takes the
-   * claim over then makes the routine again, so exactly one remains.
-   */
-  async function archiveStrandedAutomations(
-    issue: { id: string; companyId: string },
-    since: Date,
-    actor: { userId: string; runId: string | null },
-  ) {
-    const stranded = await db.select({ id: routinesTable.id }).from(routinesTable).where(and(
-      eq(routinesTable.companyId, issue.companyId),
-      eq(routinesTable.originKind, ROUTINE_FROM_TASK_ORIGIN_KIND),
-      eq(routinesTable.originId, issue.id),
-      ne(routinesTable.status, "archived"),
-      gte(routinesTable.createdAt, since),
-    ));
-    for (const row of stranded) await routines.update(row.id, { status: "archived" }, actor);
+  async function archiveRoutine(routineId: string, actor: { userId: string; runId: string | null }) {
+    await routines.update(routineId, { status: "archived" }, actor).catch((error) => {
+      logger.warn({ err: error, routineId }, "Could not archive a routine an interrupted accept made");
+    });
   }
 
-  /** Whether `claimed` took over an earlier, interrupted accept (its claim predates this request). */
-  function tookOverClaim(claimed: { resolvedAt?: Date | string | null }, startedAt: number): Date | null {
-    if (!claimed.resolvedAt) return null;
-    const at = new Date(claimed.resolvedAt);
-    return at.getTime() < startedAt ? at : null;
+  /**
+   * Before an accept that took over an interrupted one makes its routine:
+   * archive only the routine the interrupted accept had made (noted on the
+   * card), and stop if the task already repeats through another routine (a
+   * person made one by hand meanwhile). Then the card is closed, not replaced.
+   */
+  async function prepareTakenOverAccept(
+    issue: { id: string; companyId: string },
+    interactionId: string,
+    claim: AcceptClaim,
+    actor: { userId: string; runId: string | null },
+    /** The task the card is on, when it is not the task being automated (an automation conversation). */
+    cardIssue: { id: string; companyId: string } = issue,
+  ) {
+    if (!claim.tookOver) return;
+    if (claim.strandedRoutineId) await archiveRoutine(claim.strandedRoutineId, actor);
+    const live = await routines.liveOriginIds(issue.companyId, ROUTINE_FROM_TASK_ORIGIN_KIND, [issue.id]);
+    if (live.has(issue.id)) {
+      await interactions.expireAcceptClaim(cardIssue, interactionId, claim.claimId);
+      throw conflict("This task already repeats through another routine", { code: "routine_from_task_exists" });
+    }
+  }
+
+  /** Note the routine an accept just made on its card; fails when the claim was taken over. */
+  function noteRoutineFor(issue: { id: string; companyId: string }, interactionId: string, claimId: string) {
+    return async (routineId: string) => {
+      if (!(await interactions.noteAcceptClaimRoutine(issue, interactionId, claimId, routineId))) {
+        throw conflict("Another accept took this over", { code: "accept_claim_taken_over" });
+      }
+    };
   }
 
   return {
     assertEnabled,
     resolveTimeZone,
     createAutomation,
-    archiveStrandedAutomations,
-    tookOverClaim,
+    archiveRoutine,
+    prepareTakenOverAccept,
+    noteRoutineFor,
 
     /**
      * Whether a person may automate this task: it exists, is not cancelled,
@@ -464,13 +480,13 @@ export function routineSuggestionService(
       await assertEnabled();
       const issue = await loadIssue(issueRef.id, issueRef.companyId);
       const timezone = await resolveTimeZone(input.timezone, actor.userId);
-      const startedAt = Date.now();
       const claimed = await interactions.claimRoutineSuggestion(issue, interactionId, "accepted", { userId: actor.userId });
+      const claim = claimed.claim!;
       const { payload } = claimed;
+      const routineActor = { userId: actor.userId, runId: actor.runId ?? null };
+      await prepareTakenOverAccept(issue, interactionId, claim, routineActor);
       let created: Awaited<ReturnType<typeof createScheduledRoutine>>;
       try {
-        const strandedSince = tookOverClaim(claimed, startedAt);
-        if (strandedSince) await archiveStrandedAutomations(issue, strandedSince, { userId: actor.userId, runId: actor.runId ?? null });
         created = await createScheduledRoutine(issue, {
           title: payload.title,
           description: payload.instructions,
@@ -479,18 +495,25 @@ export function routineSuggestionService(
           cadenceLabel: payload.cadenceLabel,
           cronExpression: payload.cronExpression,
           timezone,
-        }, { userId: actor.userId, runId: actor.runId ?? null });
+        }, routineActor, noteRoutineFor(issue, interactionId, claim.claimId));
       } catch (error) {
-        await interactions.releaseRoutineSuggestionClaim(issue, interactionId);
+        await interactions.releaseRoutineSuggestionClaim(issue, interactionId, claim.claimId);
         throw error;
       }
-      const interaction = await interactions.recordAcceptedRoutineSuggestion(issue, interactionId, {
-        routineId: created.routine.id,
-        routineTitle: created.routine.title,
-        cadenceLabel: payload.cadenceLabel,
-        timezone,
-        responsibilityIds: created.filed.map((entry) => entry.responsibilityId),
-      });
+      let interaction: SuggestRoutineInteraction;
+      try {
+        interaction = await interactions.recordAcceptedRoutineSuggestion(issue, interactionId, claim.claimId, {
+          routineId: created.routine.id,
+          routineTitle: created.routine.title,
+          cadenceLabel: payload.cadenceLabel,
+          timezone,
+          responsibilityIds: created.filed.map((entry) => entry.responsibilityId),
+        });
+      } catch (error) {
+        // Another accept took the card over while this one ran: its routine is the one that stays.
+        await archiveRoutine(created.routine.id, routineActor);
+        throw conflict("Another accept took this over", { code: "accept_claim_taken_over", cause: String(error) });
+      }
       return { interaction, ...created };
     },
 
@@ -523,7 +546,7 @@ export function routineSuggestionService(
       const cadenceLabel = routineSuggestionCadenceLabel(cadence);
 
       // Settle an open offer on the task with this routine; a held one (task not done) stays as it is.
-      let claimedOffer: SuggestRoutineInteraction | null = null;
+      let claimedOffer: (SuggestRoutineInteraction & { claim: AcceptClaim | null }) | null = null;
       if (issue.status === "done") {
         const pending = (await interactions.routineSuggestionsForIssues(issue.companyId, [issue.id]))
           .find((offer) => offer.status === "pending");
@@ -548,12 +571,12 @@ export function routineSuggestionService(
           timezone,
         }, { userId: actor.userId, runId: actor.runId ?? null });
       } catch (error) {
-        if (claimedOffer) await interactions.releaseRoutineSuggestionClaim(issue, claimedOffer.id);
+        if (claimedOffer?.claim) await interactions.releaseRoutineSuggestionClaim(issue, claimedOffer.id, claimedOffer.claim.claimId);
         throw error;
       }
 
-      const acceptedOffer = claimedOffer
-        ? await interactions.recordAcceptedRoutineSuggestion(issue, claimedOffer.id, {
+      const acceptedOffer = claimedOffer?.claim
+        ? await interactions.recordAcceptedRoutineSuggestion(issue, claimedOffer.id, claimedOffer.claim.claimId, {
           routineId: created.routine.id,
           routineTitle: created.routine.title,
           cadenceLabel,

@@ -399,17 +399,25 @@ export function automationConversationService(
       await assertEnabled();
       const issue = await loadConversationIssue(issueRef);
       const source = await suggestions.assertCanBeAutomated({ id: issue.originId!, companyId: issue.companyId });
-      const startedAt = Date.now();
       const claimed = await interactions.claimAutomationProposal(issue, interactionId, "accepted", { userId: actor.userId });
+      const claim = claimed.claim!;
       const { payload } = claimed;
       let timezone: string | null = null;
       let created: AutomationFromTask;
       try {
         if (payload.sourceIssueId !== source.id) throw notFound("Interaction not found");
-        const strandedSince = suggestions.tookOverClaim(claimed, startedAt);
-        if (strandedSince) {
-          await suggestions.archiveStrandedAutomations({ id: source.id, companyId: source.companyId }, strandedSince, actor);
-        }
+      } catch (error) {
+        await interactions.releaseAutomationProposalClaim(issue, interactionId, claim.claimId);
+        throw error;
+      }
+      await suggestions.prepareTakenOverAccept(
+        { id: source.id, companyId: source.companyId },
+        interactionId,
+        claim,
+        actor,
+        issue,
+      );
+      try {
         const trigger = payload.trigger;
         if (trigger.kind === "schedule") timezone = await suggestions.resolveTimeZone(input.timezone, actor.userId);
         const description = trigger.kind === "webhook"
@@ -427,24 +435,31 @@ export function automationConversationService(
             : trigger.kind === "webhook"
               ? { kind: "webhook", label: clip(`Webhook: ${trigger.caller}`, 120) }
               : { kind: "heartbeat", label: "Standing check on each wake-up" },
-        }, { userId: actor.userId, runId: actor.runId });
+        }, { userId: actor.userId, runId: actor.runId }, suggestions.noteRoutineFor(issue, interactionId, claim.claimId));
       } catch (error) {
-        await interactions.releaseAutomationProposalClaim(issue, interactionId).catch((releaseError) => {
+        await interactions.releaseAutomationProposalClaim(issue, interactionId, claim.claimId).catch((releaseError) => {
           logger.warn({ err: releaseError, interactionId }, "Could not reopen an automation proposal whose automation failed");
         });
         throw error;
       }
       const secret: RoutineTriggerSecretMaterial | null = created.secretMaterial;
-      const interaction = await interactions.recordAcceptedAutomationProposal(issue, interactionId, {
-        routineId: created.routine.id,
-        routineTitle: created.routine.title,
-        triggerId: created.trigger.id,
-        cadenceLabel: payload.trigger.kind === "schedule" ? payload.trigger.cadenceLabel : null,
-        timezone,
-        webhookUrl: secret?.webhookUrl ?? null,
-        signingMode: payload.trigger.kind === "webhook" ? created.trigger.signingMode ?? "bearer" : null,
-        responsibilityIds: created.filed.map((entry) => entry.responsibilityId),
-      });
+      let interaction: ProposeAutomationInteraction;
+      try {
+        interaction = await interactions.recordAcceptedAutomationProposal(issue, interactionId, claim.claimId, {
+          routineId: created.routine.id,
+          routineTitle: created.routine.title,
+          triggerId: created.trigger.id,
+          cadenceLabel: payload.trigger.kind === "schedule" ? payload.trigger.cadenceLabel : null,
+          timezone,
+          webhookUrl: secret?.webhookUrl ?? null,
+          signingMode: payload.trigger.kind === "webhook" ? created.trigger.signingMode ?? "bearer" : null,
+          responsibilityIds: created.filed.map((entry) => entry.responsibilityId),
+        });
+      } catch (error) {
+        // Another accept took the card over while this one ran: its routine is the one that stays.
+        await suggestions.archiveRoutine(created.routine.id, actor);
+        throw conflict("Another accept took this over", { code: "accept_claim_taken_over", cause: String(error) });
+      }
       return { ...created, interaction, timezone };
     },
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { completionReviewStageEntry } from "./issue-execution-policy.js";
 import { agentConfigurationChangeTargetId } from "./change-consent-gate.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -2404,6 +2405,27 @@ function strandedAcceptClaim(
   return at.getTime() - new Date(current.updatedAt).getTime() >= STRANDED_ACCEPT_CLAIM_MS;
 }
 
+/**
+ * Who holds an accept claim. Each accept gets its own `claimId`, written on
+ * the card; recording, releasing and noting its routine all require it, so a
+ * slow accept that was taken over can no longer change the card.
+ * `strandedRoutineId` is the routine the taken-over accept had made, if any.
+ */
+export interface AcceptClaim {
+  claimId: string;
+  tookOver: boolean;
+  strandedRoutineId: string | null;
+}
+
+function pendingRoutineIdOf(result: unknown): string | null {
+  const value = (result as { pendingRoutineId?: unknown } | null)?.pendingRoutineId;
+  return typeof value === "string" ? value : null;
+}
+
+function claimIdMatches(claimId: string) {
+  return sql`${issueThreadInteractions.result} ->> 'claimId' = ${claimId}`;
+}
+
 export function issueThreadInteractionService(
   db: Db,
   opts: IssueThreadInteractionServiceOptions = {},
@@ -3539,7 +3561,10 @@ export function issueThreadInteractionService(
       interactionId: string,
       outcome: "accepted" | "declined",
       actor: InteractionActor,
-    ): Promise<SuggestRoutineInteraction> => {
+    ): Promise<SuggestRoutineInteraction & { claim: AcceptClaim | null }> => {
+      let claim: string | null = null;
+      let tookOver = false;
+      let strandedRoutineId: string | null = null;
       const updated = await db.transaction(async (tx) => {
         const [issueRow] = await tx
           .select({ status: issues.status })
@@ -3564,12 +3589,15 @@ export function issueThreadInteractionService(
           throw conflict("This offer opens once the task is done", { code: "routine_suggestion_task_not_done" });
         }
         assertInteractionResolutionAllowed(current, actor);
-        const result: SuggestRoutineResult = { version: 1, outcome };
-        // Taking over a stranded claim keeps its first resolvedAt, so the caller can find what it left behind.
+        const claimId = outcome === "accepted" ? randomUUID() : null;
+        const result = { version: 1, outcome, ...(claimId ? { claimId } : {}) } as SuggestRoutineResult;
+        strandedRoutineId = stranded ? pendingRoutineIdOf(current.result) : null;
+        tookOver = stranded;
+        claim = claimId;
         const [row] = await tx
           .update(issueThreadInteractions)
           .set(stranded
-            ? { resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            ? { result, resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
             : {
               status: outcome === "accepted" ? "accepted" : "rejected",
               result,
@@ -3591,12 +3619,16 @@ export function issueThreadInteractionService(
       await touchIssue(db, issue.id, issue.companyId);
       const interaction = hydrateInteraction(updated) as SuggestRoutineInteraction;
       if (outcome === "declined") await emitInteractionResolvedTelemetry(db, interaction);
-      return interaction;
+      const accepted: SuggestRoutineInteraction & { claim: AcceptClaim | null } = Object.assign(interaction, {
+        claim: claim ? { claimId: claim, tookOver, strandedRoutineId } : null,
+      });
+      return accepted;
     },
 
     recordAcceptedRoutineSuggestion: async (
       issue: { id: string; companyId: string },
       interactionId: string,
+      claimId: string,
       result: Omit<SuggestRoutineResult, "version" | "outcome">,
     ): Promise<SuggestRoutineInteraction> => {
       const parsed = suggestRoutineResultSchema.parse({ version: 1, outcome: "accepted", ...result });
@@ -3609,6 +3641,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.issueId, issue.id),
           eq(issueThreadInteractions.kind, "suggest_routine"),
           eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
         ))
         .returning();
       if (!row) throw interactionNotFoundError();
@@ -3664,10 +3697,60 @@ export function issueThreadInteractionService(
       });
     },
 
+    /**
+     * Note on the card the routine an accept claim just made, before its
+     * trigger and filing, so an accept that takes the claim over can archive
+     * it. False when the claim is no longer this accept's.
+     */
+    noteAcceptClaimRoutine: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+      routineId: string,
+    ): Promise<boolean> => {
+      const rows = await db
+        .update(issueThreadInteractions)
+        .set({
+          result: sql`jsonb_set(${issueThreadInteractions.result}, '{pendingRoutineId}', to_jsonb(${routineId}::text))`,
+          updatedAt: now(),
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          inArray(issueThreadInteractions.kind, ["suggest_routine", "propose_automation"]),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ))
+        .returning({ id: issueThreadInteractions.id });
+      return rows.length > 0;
+    },
+
+    /** Close an accept claim that has nothing left to do: the task already repeats. */
+    expireAcceptClaim: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+    ) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "expired", result: null, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          inArray(issueThreadInteractions.kind, ["suggest_routine", "propose_automation"]),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ));
+      await touchIssue(db, issue.id, issue.companyId);
+    },
+
     /** Reopen an accepted offer whose routine could not be created. */
     releaseRoutineSuggestionClaim: async (
       issue: { id: string; companyId: string },
       interactionId: string,
+      claimId: string,
     ) => {
       await db
         .update(issueThreadInteractions)
@@ -3678,6 +3761,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.issueId, issue.id),
           eq(issueThreadInteractions.kind, "suggest_routine"),
           eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
           sql`${issueThreadInteractions.result} ->> 'routineId' is null`,
         ));
       await touchIssue(db, issue.id, issue.companyId);
@@ -4151,7 +4235,10 @@ export function issueThreadInteractionService(
       interactionId: string,
       outcome: "accepted" | "declined",
       actor: InteractionActor,
-    ): Promise<ProposeAutomationInteraction> => {
+    ): Promise<ProposeAutomationInteraction & { claim: AcceptClaim | null }> => {
+      let claim: string | null = null;
+      let tookOver = false;
+      let strandedRoutineId: string | null = null;
       const updated = await db.transaction(async (tx) => {
         const [issueRow] = await tx
           .select({ status: issues.status })
@@ -4174,12 +4261,15 @@ export function issueThreadInteractionService(
         if (current.status !== "pending" && !stranded) throw interactionTerminalError(current);
         if (!isAutomationProposalOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
         assertInteractionResolutionAllowed(current, actor);
-        const result: ProposeAutomationResult = { version: 1, outcome };
-        // Taking over a stranded claim keeps its first resolvedAt, so the caller can find what it left behind.
+        const claimId = outcome === "accepted" ? randomUUID() : null;
+        const result = { version: 1, outcome, ...(claimId ? { claimId } : {}) } as ProposeAutomationResult;
+        strandedRoutineId = stranded ? pendingRoutineIdOf(current.result) : null;
+        tookOver = stranded;
+        claim = claimId;
         const [row] = await tx
           .update(issueThreadInteractions)
           .set(stranded
-            ? { resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            ? { result, resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
             : {
               status: outcome === "accepted" ? "accepted" : "rejected",
               result,
@@ -4201,12 +4291,16 @@ export function issueThreadInteractionService(
       await touchIssue(db, issue.id, issue.companyId);
       const interaction = hydrateInteraction(updated) as ProposeAutomationInteraction;
       if (outcome === "declined") await emitInteractionResolvedTelemetry(db, interaction);
-      return interaction;
+      const accepted: ProposeAutomationInteraction & { claim: AcceptClaim | null } = Object.assign(interaction, {
+        claim: claim ? { claimId: claim, tookOver, strandedRoutineId } : null,
+      });
+      return accepted;
     },
 
     recordAcceptedAutomationProposal: async (
       issue: { id: string; companyId: string },
       interactionId: string,
+      claimId: string,
       result: Omit<ProposeAutomationResult, "version" | "outcome">,
     ): Promise<ProposeAutomationInteraction> => {
       const parsed = proposeAutomationResultSchema.parse({ version: 1, outcome: "accepted", ...result });
@@ -4219,6 +4313,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.issueId, issue.id),
           eq(issueThreadInteractions.kind, "propose_automation"),
           eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
         ))
         .returning();
       if (!row) throw interactionNotFoundError();
@@ -4232,6 +4327,7 @@ export function issueThreadInteractionService(
     releaseAutomationProposalClaim: async (
       issue: { id: string; companyId: string },
       interactionId: string,
+      claimId: string,
     ) => {
       await db
         .update(issueThreadInteractions)
@@ -4242,6 +4338,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.issueId, issue.id),
           eq(issueThreadInteractions.kind, "propose_automation"),
           eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
           sql`${issueThreadInteractions.result} ->> 'routineId' is null`,
         ));
       await touchIssue(db, issue.id, issue.companyId);
