@@ -71,6 +71,7 @@ describe("explicit file output requirements", () => {
     "Save the summary of the log as the file is named ledger.csv.",
     "Save the summary of the log as the file is called ledger.csv.",
     "Save the summary of the log as the file is currently titled ledger.csv.",
+    "Save the summary of the log as the file is actually named ledger.csv.",
   ])("recognizes an explicit output request: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(true);
   });
