@@ -128,9 +128,13 @@ every customer trust, so it has to be decided before the first release.
   publish only the new key. Calls fail for at most the AWS cache window, and
   the connection health message says so. Per AWS's guidance, the customer can
   also revoke active role sessions.
-- **Master key rotation:** these rows are re-encrypted like any other vault
-  secret. The signing key itself doesn't change, so customer trust is
-  unaffected.
+- **Master key rotation is not supported yet.** No step re-encrypts vault
+  material when the master key changes, and that includes these rows and
+  `agent_identity_keys`. Replacing the master key makes the stored signing
+  keys unreadable, so signing fails closed. Operators must keep the original
+  master key; Cloud already keeps it stable per stack across release rolls.
+  Future work: a master-key re-encryption step that covers these rows. It
+  would keep the signing key itself, so customer trust would be unaffected.
 - AWS allows at most 100 EC keys per key set. One active key plus one next key
   per company is far below that.
 

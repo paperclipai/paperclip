@@ -110,24 +110,28 @@ setup.
 federation, the same mechanism GitHub Actions, GitLab and Vercel use to reach
 AWS.
 
-- *Once per instance:* Paperclip publishes
-  `https://<instance>/.well-known/openid-configuration` and a public key set
-  (JWKS). The private signing key stays in the instance's secrets. It is
-  separate from sign-in keys and is used only for these tokens.
+- *Once per company:* Paperclip publishes the company's issuer
+  `https://<instance>/oidc/companies/<companyId>`. Its discovery document is
+  at `<issuer>/.well-known/openid-configuration` and its public key set at
+  `<issuer>/jwks.json` (see
+  [the issuer design](./2026-11-17-workload-identity-issuer.md)). The private
+  signing key stays in the instance's database, encrypted with the vault
+  master key. It is separate from sign-in keys and is used only for these
+  tokens.
 - *Once per connection (customer, via CloudFormation):*
-  - Register the instance's URL as an IAM OIDC identity provider. This is
-    skipped if the account already has it.
+  - Register the company's issuer URL as an IAM OIDC identity provider.
+    This is skipped if the account already has it.
   - Create a role whose trust policy allows
     `sts:AssumeRoleWithWebIdentity` only when the token's `sub` equals this
     connection (for example `connection:<id>`) and `aud` equals
     `sts.amazonaws.com`.
 - *At call time:*
-  1. Paperclip signs a 5-minute JWT: issuer is the instance URL, `sub` is the
-     connection, `aud` is `sts.amazonaws.com`.
+  1. Paperclip signs a 5-minute JWT: issuer is the company's issuer URL,
+     `sub` is the connection, `aud` is `sts.amazonaws.com`.
   2. Paperclip calls `AssumeRoleWithWebIdentity`. That call needs no AWS
      credentials at all; the signed JWT is the proof.
-  3. AWS checks the signature against the public keys at the instance's URL,
-     then returns one-hour role credentials.
+  3. AWS checks the signature against the public keys at the company's
+     issuer, then returns one-hour role credentials.
 - *Requirements:*
   - The instance does not have to run on AWS. It only has to serve those two
     URLs over HTTPS with a publicly trusted certificate, reachable from the
@@ -136,9 +140,9 @@ AWS.
     instances don't, and use method 2.
   - The issuer URL must stay stable. Changing an instance's domain breaks
     existing trusts until the customer updates the identity provider.
-- *What a compromise means:* an attacker holding the instance's signing key
-  could act as any of that instance's connections, but only toward roles that
-  already trust that instance and that connection. Keys rotate by publishing
+- *What a compromise means:* an attacker holding a company's signing key
+  could act as any of that company's connections, but only toward roles that
+  already trust that company's issuer and that connection. Keys rotate by publishing
   the new key next to the old one.
 
 **Method 2: access key.** The customer creates a dedicated IAM user for this
@@ -213,7 +217,7 @@ need the CLI is option D, which is a later opt-in.
 1. **Connect AWS** asks for one choice: **Role** (recommended, offered only
    when AWS can reach the instance over public HTTPS) or **Access key**.
    - The **Role** choice opens a one-click CloudFormation link, filled in
-     with this instance's URL and this connection. It creates the identity
+     with this company's issuer URL and this connection. It creates the identity
      provider (if missing) and a role trusted only by this connection, with
      `AWSMCPSignInOAuthAccessPolicy` (which allows the token exchange) and
      the permissions the customer picks (read-only to start, or their own
@@ -261,9 +265,9 @@ client registration. Verify it in the spike.
 
 1. **Decided: identity is per connection.** Role via OIDC is the default on
    public HTTPS instances, and an access key is the fallback everywhere.
-   Open question: one issuer per instance (simplest), or one per company
-   (`https://<instance>/oidc/<company>`), so a customer's identity provider
-   trusts only their own company even on a shared instance?
+   **Decided: one issuer per company**
+   (`https://<instance>/oidc/companies/<companyId>`), so a customer's identity
+   provider trusts only their own company, even on a shared instance.
 2. **Read-only by AWS session policy** (recommended), rather than hiding the
    write tools. It needs `PolicyArns` support carried into the token, which the
    spike verifies.
