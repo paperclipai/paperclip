@@ -17,7 +17,7 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 | Phase 0 C: PostHog entitlements | coordinator | done: session replay available pay-as-you-go ($0 now); Group analytics add-on NOT enabled (needs Dotta; not blocking: events carry `stack_id`, and the history join uses link events, not group properties); product analytics projected $1,186 this period from 40.1M events, almost all OSS | PostHog billing page, 2026-11-17 |
 | Phase 1: server direct sender | subagent | in progress | |
 | Phase 2: browser analytics | subagent | in progress | |
-| Phase 3: workspace-delete cleanup + legacy group backfill script | subagent | in progress | |
+| Phase 3: workspace-delete cleanup + legacy link backfill script | subagent | in progress | |
 | Phase 4: staging rollout + verification | coordinator | pending | |
 
 ### Continuous deployment rule
@@ -33,7 +33,7 @@ environment switch is set, and the switches must be set in a safe order:
 3. Fleet env vars are set with fleet `env_config` campaigns, which drain and
    restart stacks and rebuild the warm pool. Set all switches for a fleet in
    one campaign where possible.
-4. Order: token on staging → verify → legacy group backfill →
+4. Order: token on staging → verify → legacy link backfill →
    browser switch on staging → verify → **policy and terms updated** → token
    on production → browser switch on production after consent approach is in
    place.
@@ -205,13 +205,19 @@ the collector or directly to PostHog, never both.
   them in request-scoped context so events emitted during that request carry
   `$session_id` and `$window_id`. It ignores `X-POSTHOG-DISTINCT-ID`. The
   acting user always comes from the authenticated request.
-- `install_hash` on the startup `$groupidentify`, as described above.
+- On startup, send `cloud.workspace_started` (with `stack_id`,
+  `install_hash`, `environment`) and the workspace `$groupidentify`. Both use
+  the direct posthog-node path, not `TelemetryClient.track()`, which drops
+  names that are not in `PAPERCLIP_EVENTS`. These Cloud-only events are never
+  added to `PAPERCLIP_EVENTS`.
 - Flush on shutdown so deploy restarts don't drop queued events.
 - Kill switch: `PAPERCLIP_POSTHOG_DIRECT=0` sends through the collector again.
 - Tests:
   - Self-hosted installs (no Cloud env) never import `posthog-node`, keep
     posting to `/ingest`, and still hash private refs.
-  - On Cloud: real IDs, group, `install_hash` only on the group.
+  - On Cloud: real IDs and the workspace group on every event.
+  - `cloud.workspace_started` reaches the PostHog sender with `stack_id` and
+    `install_hash`. `install_hash` appears on no other event.
   - No double sending: one batch goes to exactly one sender.
   - Session headers are ignored on self-hosted installs.
 
@@ -253,12 +259,12 @@ the collector or directly to PostHog, never both.
 - Masking and autocapture defaults never capture input values. Secret and
   credential fields are always excluded (`ph-no-capture`).
 
-### Phase 3: workspace cleanup and legacy group backfill (paperclip-cloud PR + telemetry-backend PR)
+### Phase 3: workspace cleanup and legacy link backfill (paperclip-cloud PR + telemetry-backend PR)
 
 - paperclip-cloud: workspace deletion deletes that workspace's PostHog group
   and the events tagged with its stack ID. It never deletes a person. It is
   inert until a PostHog personal API key is configured in the control plane.
-- telemetry-backend: the legacy group backfill script described above, with a
+- telemetry-backend: the legacy link backfill script described above, with a
   dry-run mode and a count of workspaces matched and skipped.
 - Fleet env vars are set by the coordinator during Phase 4 with fleet
   `env_config` campaigns: `PAPERCLIP_POSTHOG_PROJECT_TOKEN`,
@@ -272,8 +278,9 @@ the collector or directly to PostHog, never both.
 
 1. Staging stacks first, for 24 hours:
    - Events show real IDs.
-   - Workspace groups carry `install_hash`, and after the backfill,
-     `legacy_distinct_id` joins pre-switch events.
+   - Each stack sends `cloud.workspace_started` with `install_hash`. After
+     the backfill, `cloud.workspace_legacy_link` events join pre-switch
+     events to their stack.
    - Server events triggered from the UI show up in that user's session replay.
    - No duplicate uuids.
    - Per-hour counts are within normal variance.
@@ -293,7 +300,7 @@ the collector or directly to PostHog, never both.
       events, sessions and replays in PostHog, including server events from
       their session.
 - [ ] For workspaces that existed before the switch, pre-switch events can be
-      joined to the workspace through `legacy_distinct_id` on its group.
+      joined to the workspace through `cloud.workspace_legacy_link` events.
 - [ ] No signing key is stored anywhere in Cloud infrastructure.
 - [ ] No duplicate events. Server event uuids are derived from a stable
       per-event key (the same formula the loader uses), so
@@ -310,7 +317,7 @@ the collector or directly to PostHog, never both.
 | Risk | Mitigation |
 | --- | --- |
 | Real IDs leak into the OSS path | Direct-path-only code branch; tests that self-hosted output stays hashed |
-| Install IDs weren't stable on Cloud | History joins through the workspace group; new events use the stack ID, which is stable |
+| Install IDs weren't stable on Cloud | History joins through `cloud.workspace_legacy_link` events; new events use the stack ID, which is stable |
 | Customer content or pasted secrets show up in replays or autocapture | Mask all inputs and content areas by default; exclude credential fields; review sample replays before production |
 | A deletion request leaves PII behind | Email and name only on person profiles; account deletion deletes the PostHog person |
 | An enterprise customer forbids recording | Per-workspace replay and analytics switch |
