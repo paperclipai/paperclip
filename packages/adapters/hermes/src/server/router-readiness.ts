@@ -385,7 +385,7 @@ export const ROUTER_PROBE_PROTOCOL_VERSION = 1;
  * prints one fixed JSON code. Hermes output is discarded; no object, env, URL or exception text is
  * ever reported.
  */
-const ROUTER_PROBE_SCRIPT = [
+export const ROUTER_PROBE_SCRIPT = [
   "import os, sys, json",
   "_OUT = os.dup(1)",
   "_NULL = os.open(os.devnull, os.O_WRONLY)",
@@ -498,7 +498,7 @@ const KNOWN_FAILURE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /** Probe output limit: one short JSON line. Anything larger is treated as malformed. */
-const PROBE_MAX_OUTPUT_BYTES = 1024;
+export const PROBE_MAX_OUTPUT_BYTES = 1024;
 
 interface ProbeProcessOutcome {
   stdout: string;
@@ -641,6 +641,53 @@ function buildProbeEnv(launchEnv: Record<string, string | undefined>, root: stri
 }
 
 /**
+ * Map one probe process outcome to a capability result. Shared by the host probe and the in-target
+ * probe (TECH-8174), so both report exactly the same codes and messages.
+ */
+export function interpretRouterProbeOutcome(
+  command: string,
+  outcome: { stdout: string; timedOut: boolean; overflow: boolean; failed: boolean },
+  timeoutMs: number,
+): RouterCapabilityResult {
+  const couldNotVerify = (detail: string): RouterCapabilityResult => ({
+    supported: false,
+    reason: "unknown",
+    message: `Cannot verify Ramp Router support for "${command}": ${detail}.`,
+  });
+  if (outcome.timedOut) {
+    return {
+      supported: false,
+      reason: "timeout",
+      message: `Cannot verify Ramp Router support for "${command}": the registry check did not finish within ${timeoutMs}ms.`,
+    };
+  }
+  if (outcome.overflow) return couldNotVerify("the registry check produced unexpected output");
+  const response = parseProbeResponse(outcome.stdout);
+  if (!response) {
+    return couldNotVerify(outcome.failed ? "the registry check failed" : "the registry check produced unexpected output");
+  }
+  if (outcome.failed) {
+    return couldNotVerify(
+      response.code === "sandbox_violation"
+        ? "Hermes attempted network or process access while loading its provider registry"
+        : "Hermes provider modules could not be loaded from this installation",
+    );
+  }
+  if (response.code === "ok") return { supported: true };
+  if (UNSUPPORTED_CODES.has(response.code)) {
+    const detail = response.field ? ` (${response.field})` : "";
+    return {
+      supported: false,
+      reason: "unsupported",
+      message:
+        `The installed Hermes at "${command}" does not provide the native Ramp Router provider${detail}. ` +
+        "Upgrade this Hermes installation to a release with native Router support, or choose a different provider for this agent.",
+    };
+  }
+  return couldNotVerify("the registry check failed");
+}
+
+/**
  * Verify, through the exact installation the run launches, that Hermes registers the native Ramp
  * Router provider with the contract Paperclip relies on (api_key auth, codex_responses, the canonical
  * endpoint and RAMP_ROUTER_API_KEY). Bounded by `timeoutMs`; never cached, so a changed install is
@@ -678,12 +725,6 @@ export async function probeHermesRouterSupport(options: {
     launcher = resolved;
   }
 
-  const couldNotVerify = (detail: string): RouterCapabilityResult => ({
-    supported: false,
-    reason: "unknown",
-    message: `Cannot verify Ramp Router support for "${options.command}": ${detail}.`,
-  });
-
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-router-probe-"));
   try {
     const env = buildProbeEnv({ ...options.env, PATH: probePath }, root);
@@ -696,37 +737,7 @@ export async function probeHermesRouterSupport(options: {
       ["-B", "-c", ROUTER_PROBE_SCRIPT, launcher.launcherDir],
       { cwd: work, env, timeoutMs },
     );
-    if (outcome.timedOut) {
-      return {
-        supported: false,
-        reason: "timeout",
-        message: `Cannot verify Ramp Router support for "${options.command}": the registry check did not finish within ${timeoutMs}ms.`,
-      };
-    }
-    if (outcome.overflow) return couldNotVerify("the registry check produced unexpected output");
-    const response = parseProbeResponse(outcome.stdout);
-    if (!response) {
-      return couldNotVerify(outcome.failed ? "the registry check failed" : "the registry check produced unexpected output");
-    }
-    if (outcome.failed) {
-      return couldNotVerify(
-        response.code === "sandbox_violation"
-          ? "Hermes attempted network or process access while loading its provider registry"
-          : "Hermes provider modules could not be loaded from this installation",
-      );
-    }
-    if (response.code === "ok") return { supported: true };
-    if (UNSUPPORTED_CODES.has(response.code)) {
-      const detail = response.field ? ` (${response.field})` : "";
-      return {
-        supported: false,
-        reason: "unsupported",
-        message:
-          `The installed Hermes at "${options.command}" does not provide the native Ramp Router provider${detail}. ` +
-          "Upgrade this Hermes installation to a release with native Router support, or choose a different provider for this agent.",
-      };
-    }
-    return couldNotVerify("the registry check failed");
+    return interpretRouterProbeOutcome(options.command, outcome, timeoutMs);
   } finally {
     await fs.rm(root, { recursive: true, force: true }).catch(() => {});
   }

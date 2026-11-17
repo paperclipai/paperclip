@@ -1,6 +1,6 @@
 # Hermes in sandbox environments (TECH-8174)
 
-Status: stage 1 implemented (this PR). Stages 2-4 follow as separate PRs.
+Status: stages 1 (sandbox execution) and 2 (Ramp Router) implemented. Stages 3-4 wait on decisions D-1/D-2.
 The full design review (options, security review, rollout) is the TECH-8174 design note. This page lists what the code requires.
 
 ## How a sandbox run works
@@ -12,7 +12,7 @@ The full design review (options, security review, rollout) is the TECH-8174 desi
 - **Prompt**: written to `<runtime>/query.txt` over exec stdin and passed as `--query-file`. Argv carries only flags and paths, because argv becomes the Kubernetes exec URI and lands in the audit log.
 - **System prompt and secrets**: passed in env (`HERMES_EPHEMERAL_SYSTEM_PROMPT`, the agent's provider key). The Kubernetes provider delivers env over stdin (#415). The 131040-byte maximum is tested end to end through the real shell wrapper.
 - **Paperclip API**: through the callback bridge only. The run JWT never enters the sandbox (#416); the bridge env supplies `PAPERCLIP_API_URL`/`PAPERCLIP_API_KEY`, and the prompt uses the bridge URL.
-- **Env**: agent env plus Paperclip ids plus bridge env plus sandbox paths. The host process env, host `PATH`, forbidden DB variables, Router endpoint overrides and `RAMP_ROUTER_API_KEY` are never included.
+- **Env**: agent env plus Paperclip ids plus bridge env plus sandbox paths. The host process env, host `PATH`, forbidden DB variables, and Router endpoint overrides are never included. `RAMP_ROUTER_API_KEY` is included only for a Ramp Router run (see below).
 - **Instructions bundle**: a Paperclip-managed bundle directory is shipped whole as the `instructions` asset. An external instructions file is shipped alone, never its directory. Symlinks are not followed. The prompt note names the sandbox path.
 - **Command**: always the image's `/opt/hermes/bin/hermes`. A custom `hermesCommand` is refused.
 - **Sessions**: none, as on hosted runs today. Every run has a fresh home, returns `clearSession: true`, and never passes `--resume`.
@@ -22,11 +22,17 @@ The full design review (options, security review, rollout) is the TECH-8174 desi
 - **Not available in the sandbox**: live progress from `state.db` (disabled) and the host memory import probe (not reached).
 - **Environment test**: `hermes --version` runs in the sandbox, not on the host.
 
-## Refused in stage 1 (clear error before anything is staged)
+## Ramp Router (stage 2)
+
+- **Key**: only the agent's own `RAMP_ROUTER_API_KEY` binding (company secret reference), delivered in the exec env (over stdin on Kubernetes). It is never in argv, never in a shipped file, and never in the plugin's `envKeys` Secret: keep `envKeys: []` for `hermes_local`. It is redacted from all output.
+- **Gates**: the same as on the host. A missing key or `extraArgs` refuses the run. Endpoint overrides (`RAMP_ROUTER_*`, aliases, `OPENAI_BASE_URL`/`OPENAI_API_BASE`) and Python import-path overrides (`PYTHONPATH`/`PYTHONHOME`/`PYTHONUSERBASE`) are dropped from the env Paperclip sends. The fixed names are also unset at launch (`env -u`), so the pod's own environment cannot reintroduce them.
+- **Readiness**: verified inside the sandbox, never on the host. One exec checks that `/opt/hermes/bin/hermes` is the venv's own entrypoint (not a symlink, venv-interpreter shebang). It then runs the same sealed registry probe as the host, with `env -i` (no credentials) in a fresh per-probe home that is deleted afterwards. The environment test runs the same probe.
+- **Egress**: allow-list `api.router.com` for the environment.
+
+## Still refused (clear error before anything is staged)
 
 | Config | Why | Stage that lifts it |
 |---|---|---|
-| Ramp Router provider | Readiness probe must run in the pod; key delivery | 2 |
 | `adapterConfig.memoryProvider` (mem0 over `MEM0_HOST`/`MEM0_PROXY`) | The tailnet memory service and the ECS proxy sidecar (`127.0.0.1:1055`) are unreachable from a pod | 3 (memory broker via bridge, decision D-1) |
 | Paperclip runtime memory (`mem0.json` with Postgres credentials) | Pods must never get DB credentials | never |
 | `PAPERCLIP_HERMES_COMMAND_SCAN=required` | Launcher trust is checked on host files | later |

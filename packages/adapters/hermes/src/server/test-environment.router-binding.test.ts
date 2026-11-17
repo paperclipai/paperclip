@@ -128,10 +128,21 @@ describe("Router remote target", () => {
       strictHostKeyChecking: true,
     },
   };
-  const targets = [
-    ["sandbox", { kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/workspace", providerKey: "daytona" }],
-    ["ssh", sshTarget],
-  ] as const;
+  // TECH-8174: a sandbox target now verifies Router readiness inside the target (test-sandbox.ts);
+  // only SSH keeps the up-front refusal.
+  const targets = [["ssh", sshTarget]] as const;
+
+  it("never launches anything on the host for a Router config on a sandbox target (TECH-8174)", async () => {
+    const result = await run(
+      { hermesCommand: "no-such-hermes-7895", provider: "router", model: "auto-jev-routing", env: { RAMP_ROUTER_API_KEY: "router-test-key-7895" } },
+      { executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "kubernetes" } as never },
+    );
+    expect(result.status).toBe("fail");
+    expect(result.checks.map((check) => check.code)).toContain("hermes_untrusted_launcher");
+    expect(execFile).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(routerProbe).not.toHaveBeenCalled();
+  });
 
   it.each(targets)("rejects a Router config on a remote %s target before any CLI or Python subprocess", async (_label, executionTarget) => {
     // A command that exists nowhere: if the preliminary checks ran, the inherited-host-env spawn would
