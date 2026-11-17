@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -94,20 +95,53 @@ export function bindRetainedAiCredentialHome(home: string, scope: RetainedAiClea
 }
 
 /**
+ * Canonical filesystem identity of `p`: `undefined` means the path is verified
+ * absent (ENOENT), `null` means the identity cannot be verified (permissions,
+ * symlink loop, ...) and callers must not guess.
+ */
+async function canonicalIdentity(p: string): Promise<string | null | undefined> {
+  try {
+    return await fs.realpath(p);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return null;
+  }
+}
+
+function isAtOrUnder(root: string, candidate: string): boolean {
+  const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+  return candidate === root || candidate.startsWith(prefix);
+}
+
+/**
  * True while a pending credential write-back still owns a home at or under
  * `dir`: every removal entrance (direct cleanup and the orphan sweep) must
  * keep the directory until the retained cleanup retires the home, or the only
  * copy of a rotated credential is lost.
+ *
+ * Provider homes are registered after `realpath` (Antigravity canonicalizes
+ * its home) while the scratch directory may be reached through a symlinked
+ * ancestor, so a purely lexical comparison can miss a home that is physically
+ * inside. Both sides are therefore compared as canonical identities, and a
+ * directory whose relation to a retained home cannot be verified is kept.
  */
-export function retainedAiCredentialCleanupHomeInside(dir: string): boolean {
-  const root = path.resolve(dir);
-  const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+export async function retainedAiCredentialCleanupHomeInside(dir: string): Promise<boolean> {
+  const retainedHomes: string[] = [];
   for (const entries of retained.values()) {
     for (const entry of entries) {
-      if (!entry.home) continue;
-      const home = path.resolve(entry.home);
-      if (home === root || home.startsWith(prefix)) return true;
+      if (entry.home) retainedHomes.push(entry.home);
     }
+  }
+  if (retainedHomes.length === 0) return false;
+  const root = path.resolve(dir);
+  if (retainedHomes.some((home) => isAtOrUnder(root, path.resolve(home)))) return true;
+  const canonicalRoot = await canonicalIdentity(root);
+  if (canonicalRoot === null) return true;
+  if (canonicalRoot === undefined) return false;
+  for (const home of retainedHomes) {
+    const canonicalHome = await canonicalIdentity(path.resolve(home));
+    if (canonicalHome === null) return true;
+    if (canonicalHome !== undefined && isAtOrUnder(canonicalRoot, canonicalHome)) return true;
   }
   return false;
 }

@@ -320,7 +320,7 @@ export async function cleanupHeartbeatRunScratch(input: {
   // A retained managed AI home inside this directory still holds a credential
   // the run could not write back; the directory survives until the retained
   // cleanup retires the home.
-  if (retainedAiCredentialCleanupHomeInside(dir)) {
+  if (await retainedAiCredentialCleanupHomeInside(dir)) {
     return { removed: false, dir, reason: "ai_home_retained" };
   }
 
@@ -454,7 +454,7 @@ export async function sweepOrphanedRunScratch(input: {
   for (const { dir, marker } of candidates) {
     const state = states.get(marker.runId) ?? "active";
     const removable = state === "terminal" && input.isRunProcessGroupAlive?.(marker.runId) !== true &&
-      !retainedAiCredentialCleanupHomeInside(dir);
+      !(await retainedAiCredentialCleanupHomeInside(dir));
     if (!removable || result.removed.length >= maxRemove) {
       if (removable) result.truncated = true;
       result.kept += 1;

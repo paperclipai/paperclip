@@ -364,6 +364,41 @@ describe("run scratch tree removal safety", () => {
       release();
     }
   });
+
+  it("keeps a retained credential home when the scratch root is reached through a symlinked ancestor", async () => {
+    const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-real-"));
+    cleanupDirs.add(realRoot);
+    const alias = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-alias-"));
+    await fs.rmdir(alias);
+    await fs.symlink(realRoot, alias);
+    cleanupDirs.add(alias);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: runId("eeee6666"),
+      root: alias,
+    }));
+    const providerHome = path.join(scratch.dir, "paperclip-ai-company-1-grant", "provider");
+    await fs.mkdir(providerHome, { recursive: true });
+    await fs.writeFile(path.join(providerHome, "auth.json"), "fixture-credential");
+    // The Antigravity runtime registers its home after realpath: the retained
+    // home is canonical while the scratch directory keeps the symlinked name.
+    const canonicalHome = await fs.realpath(providerHome);
+    expect(canonicalHome).not.toBe(providerHome);
+    const scope = { companyId: "company-1", accountKey: "grant-eeee6666" };
+    const release = bindRetainedAiCredentialHome(canonicalHome, scope);
+    retainAiCredentialCleanup({ scope, home: canonicalHome, cleanup: async () => {} });
+    try {
+      const result = await cleanupHeartbeatRunScratch({ scratch, runTempRootOverride: alias });
+
+      expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "ai_home_retained" });
+      await expect(fs.readFile(path.join(providerHome, "auth.json"), "utf8")).resolves.toBe("fixture-credential");
+      await expect(fs.stat(scratch.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+    } finally {
+      await reconcileRetainedAiCleanup(scope).catch(() => undefined);
+      release();
+    }
+  });
 });
 
 describe("orphaned run scratch sweep", () => {
@@ -550,6 +585,53 @@ describe("orphaned run temp sweep", () => {
   const exists = (p: string) => fs.stat(p).then(() => true, () => false);
   const states = (m: Record<string, RunScratchSweepRunState>) => async (ids: string[]) =>
     new Map(ids.map((id) => [id, m[id] ?? "missing"] as const));
+
+  it("keeps a terminal run's directory behind a symlinked temp root until the retained home retires", async () => {
+    const realRoot = await makeTempRoot();
+    const alias = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtemp-alias-"));
+    await fs.rmdir(alias);
+    await fs.symlink(realRoot, alias);
+    cleanupDirs.add(alias);
+    const isolated = await makeIsolatedTempRoot();
+    const dir = await leaveTemp(alias, runId("gggg7777"));
+    const providerHome = path.join(dir, "paperclip-ai-c-grant", "provider");
+    await fs.mkdir(providerHome, { recursive: true });
+    await fs.writeFile(path.join(providerHome, "auth.json"), "fixture-credential");
+    // The retained home is registered canonically (realpath) while the sweep
+    // sees the run's directory through the symlinked temp root.
+    const canonicalHome = await fs.realpath(providerHome);
+    expect(canonicalHome).not.toBe(providerHome);
+    const scope = { companyId: "c", accountKey: "grant-gggg7777" };
+    const release = bindRetainedAiCredentialHome(canonicalHome, scope);
+    retainAiCredentialCleanup({ scope, home: canonicalHome, cleanup: async () => {} });
+    try {
+      const pending = await sweepOrphanedRunScratch({
+        tmpRoot: isolated,
+        runTempRootOverride: alias,
+        resolveRunStates: states({ [runId("gggg7777")]: "terminal" }),
+      });
+
+      expect(pending.removed).toEqual([]);
+      expect(await exists(path.join(providerHome, "auth.json"))).toBe(true);
+      expect(await exists(dir)).toBe(true);
+
+      // Once the write-back retires the home, the canonical match disappears
+      // and the sweep completes the removal through the symlinked root.
+      await reconcileRetainedAiCleanup(scope);
+
+      const swept = await sweepOrphanedRunScratch({
+        tmpRoot: isolated,
+        runTempRootOverride: alias,
+        resolveRunStates: states({ [runId("gggg7777")]: "terminal" }),
+      });
+
+      expect(swept.removed).toEqual([dir]);
+      expect(await exists(dir)).toBe(false);
+    } finally {
+      await reconcileRetainedAiCleanup(scope).catch(() => undefined);
+      release();
+    }
+  });
 
   it("sweeps terminal-run directories that carry no paperclip-run prefix", async () => {
     const root = await makeTempRoot();
