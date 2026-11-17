@@ -313,6 +313,24 @@ const support = await getEmbeddedPostgresTestSupport();
     await f.service.putConnectionInstalls(connected.connectionId, { installs: [] });
     const start = await f.service.startOAuth(f.company.id, connected.connectionId, { redirectUri, actor });
     await f.service.completeOAuthCallback({ state: new URL(start.authorizationUrl).searchParams.get("state")!, code: "race", iss: origin, redirectUri, actor });
+    // Disabled while an account signs in: the saved setup stays, hidden.
+    const paused = await f.service.connectGalleryApp(f.company.id, { galleryKey: slug, connectionMethodKey: "mcp-oauth", name: "Paused account" }, actor);
+    await f.service.putConnectionInstalls(paused.connectionId, { installs: [] });
+    const pausedStart = await f.service.startOAuth(f.company.id, paused.connectionId, { redirectUri, actor });
+    const beforeDisable = f.provider.fetchFixture.getMockImplementation()!;
+    f.provider.fetchFixture.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.endsWith("/oauth/token")) await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.pluginKey, pluginKey));
+      return beforeDisable(url, init);
+    });
+    await expect(f.service.completeOAuthCallback({ state: new URL(pausedStart.authorizationUrl).searchParams.get("state")!, code: "paused", iss: origin, redirectUri, actor }))
+      .rejects.toMatchObject({ status: 404 });
+    f.provider.fetchFixture.mockImplementation(beforeDisable);
+    const [pausedRow] = await db.select().from(toolConnections).where(eq(toolConnections.id, paused.connectionId));
+    expect(pausedRow.status).not.toBe("archived");
+    await db.update(plugins).set({ status: "ready" }).where(eq(plugins.pluginKey, pluginKey));
+    expect((await f.service.listConnections(f.company.id)).map(connection => connection.id)).toContain(paused.connectionId);
+    await f.service.archiveConnection(paused.connectionId, f.company.id, actor);
+
     // The plugin goes away while a second account signs in.
     const second = await f.service.connectGalleryApp(f.company.id, { galleryKey: slug, connectionMethodKey: "mcp-oauth", name: "Second account" }, actor);
     await f.service.putConnectionInstalls(second.connectionId, { installs: [] });
