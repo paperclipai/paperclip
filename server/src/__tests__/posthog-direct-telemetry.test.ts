@@ -283,6 +283,32 @@ describe("server telemetry sender selection", () => {
     expect(routines[2]!.properties).toMatchObject({ distinct_id: "workspace:stack-123", $process_person_profile: false });
   });
 
+  it("Cloud: uses a board user's only company on routes without a company id", async () => {
+    const posthog = fakePostHog();
+    initTelemetry({ enabled: true }, { env: CLOUD_ENV, postHogFactory: posthog.factory });
+    const app = express();
+    app.use(postHogRequestContextMiddlewareForEnv(CLOUD_ENV)!);
+    app.use((req, _res, next) => {
+      const companyIds = req.header("x-test-companies")!.split(",");
+      req.actor = { type: "board", userId: "user-1", companyIds, source: "cloud_tenant" };
+      next();
+    });
+    app.post("/issues/:id/interactions/:interactionId/reject", (_req, res) => {
+      trackRoutineCreated(getTelemetryClient()!);
+      res.json({});
+    });
+    await request(app).post("/issues/i-1/interactions/x-1/reject").set("x-test-companies", "company-1").expect(200);
+    await request(app)
+      .post("/issues/i-1/interactions/x-1/reject")
+      .set("x-test-companies", "company-1,company-2")
+      .expect(200);
+    await shutdownTelemetry();
+
+    const routines = posthog.captured.filter((message) => message.event === "routine.created");
+    expect(routines[0]!.properties).toMatchObject({ company_id: "company-1", user_id: "user-1" });
+    expect(routines[1]!.properties).not.toHaveProperty("company_id");
+  });
+
   it("Cloud: work that outlives its request does not inherit the request's user", async () => {
     const posthog = fakePostHog();
     initTelemetry({ enabled: true }, { env: CLOUD_ENV, postHogFactory: posthog.factory });

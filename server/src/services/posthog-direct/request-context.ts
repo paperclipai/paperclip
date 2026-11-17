@@ -81,10 +81,18 @@ function actingUserId(req: Request): string | undefined {
   return actor.userId;
 }
 
+/**
+ * The company the request acts in, when the request itself says so: an agent
+ * actor's company, the route's `:companyId`, or else the board actor's only
+ * company (a Cloud stack usually has one). A board user with several companies
+ * on a route without `:companyId` has no known company.
+ */
 function knownCompanyId(req: Request): string | undefined {
   if (req.actor?.companyId) return req.actor.companyId;
   const fromParams = (req.params as Record<string, unknown> | undefined)?.companyId;
-  return typeof fromParams === "string" && fromParams ? fromParams : undefined;
+  if (typeof fromParams === "string" && fromParams) return fromParams;
+  const companyIds = req.actor?.companyIds;
+  return companyIds?.length === 1 ? companyIds[0] : undefined;
 }
 
 /** Snapshot of the current request's analytics context, taken at track time. */
