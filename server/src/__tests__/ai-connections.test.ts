@@ -2400,6 +2400,22 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, held!.issueId)).toMatchObject({ cause: "configuration_incomplete" });
     });
 
+    it.each(["todo", "backlog"] as const)("retires the AI repair card on a %s owner task without waking it", async (status) => {
+      const f = await latchedFleet(`waiting-${status}`, 1);
+      const [task] = f.tasks;
+      await connectionIntentService(db).requestForRunAuthFailure(task!.runId!);
+      const [card] = await f.cardsFor([task!.issueId]);
+      await db.update(issues).set({ status }).where(eq(issues.id, task!.issueId));
+      await f.reconnect();
+      await sweepAll();
+      expect((await f.cardsFor([task!.issueId]))[0]).toMatchObject({ status: "expired", resolvedByUserId: null,
+        result: { outcome: "expired", connectionId: f.account.connectionId } });
+      expect(await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, card!.id))).toHaveLength(0);
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup).not.toHaveBeenCalled();
+      expect((await db.select().from(issues).where(eq(issues.id, task!.issueId)))[0]!.status).toBe(status);
+    });
+
     it("does not restore a linked task whose newer failure is on another connection", async () => {
       const f = await latchedFleet("other-connection", 2);
       for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
