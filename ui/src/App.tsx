@@ -26,6 +26,7 @@ import { ConnectionStatusBanner } from "./components/ConnectionStatusBanner";
 import { PageLoadTracker } from "./components/PageLoadTracker";
 import { ShellConfigurationGate } from "./components/ShellConfigurationGate";
 import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
+import { QueryErrorState } from "./components/QueryView";
 import { AGENT_FILTER_TABS } from "./lib/agent-filter-tabs";
 import { useCombinedInboxTasksEnabled } from "./hooks/useCombinedInboxTasksEnabled";
 import { ChatConnectorsExperimentalGate } from "./components/ChatConnectorsExperimentalGate";
@@ -661,6 +662,9 @@ function CompanyRootRedirect() {
   const location = useLocation();
   const home = useCompanyHomePath();
 
+  if (!loading && home.error) {
+    return <QueryErrorState error={home.error} size="page" action="load your settings" onRetry={home.retry} />;
+  }
   if (loading || !home.loaded) {
     return <PaperclipLoading />;
   }
