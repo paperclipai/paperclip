@@ -90,6 +90,14 @@ export async function allocateHeartbeatRunEventSeq(
   runId: string,
   runUpdate: HeartbeatRunEventRunUpdate = {},
 ): Promise<number> {
+  return trackRunIntake(runId, "write", "event_sequence", () => reserveRunEventSeq(db, runId, runUpdate));
+}
+
+async function reserveRunEventSeq(
+  db: Db,
+  runId: string,
+  runUpdate: HeartbeatRunEventRunUpdate,
+): Promise<number> {
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
@@ -614,7 +622,7 @@ async function appendLockedEvent(
     await notifyNativeResponsePresentation(tx, { companyId: run.companyId, runId: input.runId });
   }
   if (wakes.retention) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "failed_run" });
-  const seq = await allocateHeartbeatRunEventSeq(tx, input.runId, input.runUpdate);
+  const seq = await reserveRunEventSeq(tx, input.runId, input.runUpdate ?? {});
   const [row] = await tx.insert(heartbeatRunEvents).values({
     companyId: input.companyId,
     runId: input.runId,

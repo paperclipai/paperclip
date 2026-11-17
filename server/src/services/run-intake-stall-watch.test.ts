@@ -6,7 +6,7 @@ import { logger } from "../middleware/logger.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import type { DatabaseSessionWait } from "./database-session-waits.js";
-import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { allocateHeartbeatRunEventSeq, appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { persistHeartbeatRunProcessMetadata } from "./heartbeat/run-lifecycle.js";
 import { beginRunIntake, installRunIntakeStallWatch, stopRunIntakeStallWatch } from "./run-intake-stall-watch.js";
 
@@ -202,6 +202,33 @@ describe.skipIf(!support.supported)("run intake stall watch on a database", () =
     expect(info.mock.calls.filter(call => call[1] === CLEARED_MESSAGE).map(call => call[0])).toEqual([
       expect.objectContaining({ runId: run.id, stage: "process_identity" }),
     ]);
+  });
+
+  it("reports a direct event sequence reservation that waits behind a held run row", async () => {
+    const run = await seedRun("RIQ");
+    const warn = vi.spyOn(logger, "warn");
+    installRunIntakeStallWatch(db, { stallMs: 300 });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const isLocked = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.execute(sql.raw(`select id from heartbeat_runs where id = '${run.id}' for update`));
+      locked();
+      await held;
+    });
+    await isLocked;
+    const reserved = allocateHeartbeatRunEventSeq(db, run.id);
+    try {
+      await vi.waitFor(() => expect(stallReports(warn)).toHaveLength(1), { timeout: 5_000, interval: 20 });
+      expect(stallReports(warn)[0]!.operations).toEqual([
+        expect.objectContaining({ runId: run.id, stage: "write", label: "event_sequence" }),
+      ]);
+    } finally {
+      release();
+      await holder;
+    }
+    await expect(reserved).resolves.toBeTypeOf("number");
   });
 
   it("stays silent while run event writes keep committing", async () => {
