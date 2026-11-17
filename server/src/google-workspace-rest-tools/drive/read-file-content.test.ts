@@ -27,7 +27,7 @@ describe("read plan", () => {
   );
 
   it("refuses a text file over the cap before downloading", () => {
-    expect(() => readPlan({ ...HUGE_PDF, mimeType: "text/plain" })).toThrow(/larger than 10 MB/);
+    expect(() => readPlan({ ...HUGE_PDF, mimeType: "text/plain" })).toThrow(/larger than 1 MB/);
   });
 
   it("decodes UTF-8, drops a byte order mark, and rejects bytes that are not UTF-8", () => {
@@ -105,8 +105,21 @@ describe("read_file_content tool", () => {
   });
 
   it("refuses content that grows past the cap while streaming", async () => {
-    const { fetch } = route(SLIDES, new Uint8Array(10 * 1024 * 1024 + 1));
+    const { fetch } = route(SLIDES, new Uint8Array(1024 * 1024 + 1));
     const result = await readFileContent.call({ fileId: SLIDES.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The content is larger than 10 MB, the most this tool returns. Nothing was returned." }] });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The content is larger than 1 MB, the most this tool returns. Nothing was returned." }] });
+  });
+
+  it("refuses text whose escaped result would pass 3 MB, even under the content cap", async () => {
+    const { fetch } = route(SLIDES, "\u0001".repeat(1024 * 1024));
+    const result = await readFileContent.call({ fileId: SLIDES.id }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The result would be larger than 3 MB, the most this tool returns. Nothing was returned." }] });
+  });
+
+  it("returns 1 MB of ordinary text within the result limit", async () => {
+    const { fetch } = route(SLIDES, "a".repeat(1024 * 1024));
+    const result = await readFileContent.call({ fileId: SLIDES.id }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.isError).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(3 * 1024 * 1024);
   });
 });

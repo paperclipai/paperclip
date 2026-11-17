@@ -1,3 +1,4 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
@@ -7,7 +8,8 @@ export const DRIVE_HOST = "www.googleapis.com" as const;
 export const DRIVE_BASE = "/drive/v3";
 export const DRIVE_UPLOAD_BASE = "/upload/drive/v3";
 
-export const MAX_CONTENT_BYTES = 10 * 1024 * 1024;
+export const MAX_CONTENT_BYTES = 1024 * 1024;
+export const MAX_RESULT_BYTES = 3 * 1024 * 1024;
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_PAGE_SIZE = 10;
 export const MAX_PAGE_SIZE = 100;
@@ -163,6 +165,13 @@ export const richMetadataInput = {
 
 export function listResult(list: RestFileList, rich = false): Record<string, unknown> {
   return compact({ files: (list.files ?? []).map((file) => toMcpFile(file, rich)), nextPageToken: list.nextPageToken || undefined });
+}
+
+export function boundedResult(result: CallToolResult): CallToolResult {
+  if (Buffer.byteLength(JSON.stringify(result), "utf8") > MAX_RESULT_BYTES) {
+    throw new GoogleToolError("too_large", `The result would be larger than ${MAX_RESULT_BYTES / (1024 * 1024)} MB, the most this tool returns. Nothing was returned.`);
+  }
+  return result;
 }
 
 export function isGoogleType(mimeType: string | undefined): boolean {

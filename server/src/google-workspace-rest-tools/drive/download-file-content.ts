@@ -2,19 +2,19 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { defineTool, structuredResult } from "../tool.js";
 import { downloadPlan, fetchContent, readContentMeta } from "./content.js";
-import { fileId, fileIdInput, mimeTypeArg, revisionId, type RestFile } from "./file.js";
+import { boundedResult, fileId, fileIdInput, mimeTypeArg, revisionId, type RestFile } from "./file.js";
 
 const args = z.object({ fileId, exportMimeType: mimeTypeArg.optional(), revisionId: revisionId.optional() });
 export type DownloadFileContentArgs = z.infer<typeof args>;
 
 export function downloadFileContentResult(file: RestFile, contentType: string, data: Buffer): CallToolResult {
-  return structuredResult({ id: file.id ?? "", title: file.name ?? "", mimeType: contentType, content: data.toString("base64") });
+  return boundedResult(structuredResult({ id: file.id ?? "", title: file.name ?? "", mimeType: contentType, content: data.toString("base64") }));
 }
 
 export const downloadFileContent = defineTool({
   definition: {
     name: "download_file_content",
-    description: "Downloads a Drive file's content as base64. Google Docs, Sheets, Slides, Drawings and Apps Script files are exported: by default Docs and Slides as text/plain, Sheets as text/csv (first sheet only; pass exportMimeType application/vnd.openxmlformats-officedocument.spreadsheetml.sheet for every sheet), Drawings as image/svg+xml, Apps Script as JSON. Other files are returned as stored. At most 10 MB; a larger file is refused with an error, never cut short. For a readable text version of a document, use read_file_content.",
+    description: "Downloads a Drive file's content as base64. Google Docs, Sheets, Slides, Drawings and Apps Script files are exported: by default Docs and Slides as text/plain, Sheets as text/csv (first sheet only; pass exportMimeType application/vnd.openxmlformats-officedocument.spreadsheetml.sheet for every sheet), Drawings as image/svg+xml, Apps Script as JSON. Other files are returned as stored. At most 1 MB of content; a larger file is refused with an error, never cut short. For a readable text version of a document, use read_file_content.",
     inputSchema: {
       type: "object",
       properties: {

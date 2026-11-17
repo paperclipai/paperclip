@@ -532,16 +532,22 @@ type of the returned bytes (the export format for Google files).
 true`, the field Google's result has for this case. Text that is not valid
 UTF-8 is also not supported.
 
-**Size cap.** Both content tools return at most 10 MB (`MAX_CONTENT_BYTES` in
-`drive/file.ts`), the same as Google's export limit ("the exported content is
-limited to 10 MB",
-<https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>).
-Base64 of 10 MB is about 13.4 MB, under the 20 MB `MAX_RESPONSE_BYTES`. A
-stored file whose metadata size is larger is refused before any download.
-Exports and revisions are read through `GoogleHttp.download`, which stops at
-the cap. Either way the tool returns a `too_large` error that says nothing was
-returned; it never returns cut-short content. Google's
-`exportSizeLimitExceeded` answer gives the same kind of error. `create_file`
+**Size cap.** Both content tools read at most 1 MB of content
+(`MAX_CONTENT_BYTES` in `drive/file.ts`), and the whole result may be at most
+3 MB (`MAX_RESULT_BYTES`). The result is limited by what an agent can receive:
+the smallest MCP response limit among Paperclip's agent runtimes is 4 MB (Pi),
+and a result carries its content twice (`structuredContent` and its JSON
+text), base64 adds a third for downloads, and JSON escaping can add more for
+text. 1 MB of bytes gives a download result of about 2.7 MB. Both limits are
+well under Google's 10 MB export limit ("the exported content is limited to 10
+MB",
+<https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>)
+and the 20 MB `MAX_RESPONSE_BYTES`. A stored file whose metadata size is over
+the cap is refused before any download. Exports and revisions are read through
+`GoogleHttp.download`, which stops at the cap, and the finished result is
+measured before it is returned. Either way the tool returns a `too_large`
+error that says nothing was returned; it never returns cut-short content.
+Google's `exportSizeLimitExceeded` answer gives the same kind of error. `create_file`
 uploads at most 5 MB, the limit for one multipart upload.
 
 **Redirects.** `files.export` and `alt=media` downloads are answered by

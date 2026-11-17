@@ -4,7 +4,7 @@ import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
 import { downloadPlan } from "./content.js";
 import { downloadFileContent } from "./download-file-content.js";
-import { MAX_CONTENT_BYTES, type RestFile } from "./file.js";
+import { MAX_CONTENT_BYTES, MAX_RESULT_BYTES, type RestFile } from "./file.js";
 import { DOC, DRAWING, FOLDER, FORM, HUGE_PDF, PDF, SHEET, SLIDES, TEXT_FILE } from "./fixtures/drive-rest.js";
 
 const target = (file: RestFile, exportMimeType?: string, revision?: string) => {
@@ -32,7 +32,7 @@ describe("download plan", () => {
     [FOLDER, undefined, /have no content to download/],
     [FORM, undefined, /have no content to download/],
     [DOC, "rev0001", /Earlier revisions/],
-    [HUGE_PDF, undefined, /larger than 10 MB/],
+    [HUGE_PDF, undefined, /larger than 1 MB/],
   ] as const)("%#: refuses %s", (file, revision, message) => {
     expect(() => downloadPlan(file, undefined, revision)).toThrow(GoogleToolError);
     expect(() => downloadPlan(file, undefined, revision)).toThrow(message);
@@ -64,7 +64,7 @@ describe("download_file_content tool", () => {
     const result = await downloadFileContent.call({ fileId: HUGE_PDF.id }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(calls).toHaveLength(1);
     expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toMatch(/^This file is 10485761 bytes, larger than 10 MB/);
+    expect((result.content[0] as { text: string }).text).toMatch(/^This file is 10485761 bytes, larger than 1 MB/);
   });
 
   it("refuses an export that streams past the cap, and never returns a cut-short result", async () => {
@@ -78,7 +78,18 @@ describe("download_file_content tool", () => {
       }))
       : json(SHEET)));
     const result = await downloadFileContent.call({ fileId: SHEET.id }, createGoogleHttp({ accessToken: "t", fetch }));
-    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The content is larger than 10 MB, the most this tool returns. Nothing was returned." }] });
+    expect(result).toEqual({ isError: true, content: [{ type: "text", text: "The content is larger than 1 MB, the most this tool returns. Nothing was returned." }] });
+  });
+
+  it("keeps the whole result of a file at the cap under 4 MB, the smallest response an agent runtime accepts", async () => {
+    const { fetch } = fakeGoogle(({ url }) => (url.searchParams.get("alt") === "media"
+      ? new Response(new Uint8Array(MAX_CONTENT_BYTES).fill(0xff))
+      : json({ ...PDF, size: String(MAX_CONTENT_BYTES) })));
+    const result = await downloadFileContent.call({ fileId: PDF.id }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.isError).toBeUndefined();
+    const size = Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: 1, result }));
+    expect(size).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(size).toBeLessThan(4 * 1024 * 1024);
   });
 
   it("reports Google's export size limit as too large", async () => {

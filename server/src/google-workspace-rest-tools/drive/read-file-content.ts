@@ -4,7 +4,7 @@ import { GoogleToolError } from "../errors.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
 import { compact, defineTool, structuredResult } from "../tool.js";
 import { assertWithinCap, exportRequest, fetchContent, mediaRequest, readContentMeta, type ContentPlan } from "./content.js";
-import { DRIVE_HOST, fileId, fileIdInput, filePath, GOOGLE_DOC, GOOGLE_SHEET, GOOGLE_SLIDES, type RestFile } from "./file.js";
+import { boundedResult, DRIVE_HOST, fileId, fileIdInput, filePath, GOOGLE_DOC, GOOGLE_SHEET, GOOGLE_SLIDES, type RestFile } from "./file.js";
 
 const args = z.object({ fileId, includeComments: z.boolean().optional() });
 export type ReadFileContentArgs = z.infer<typeof args>;
@@ -91,13 +91,13 @@ export async function readComments(id: string, http: GoogleHttp): Promise<RestCo
 
 export function readFileContentResult(file: RestFile, text: string | null, comments: RestComment[] | null, includeComments: boolean): CallToolResult {
   const commentable = COMMENTABLE.has(file.mimeType ?? "");
-  return structuredResult(compact({
+  return boundedResult(structuredResult(compact({
     fileContent: text ?? "",
     contentAnchoredComments: includeComments ? [] : undefined,
     unanchoredComments: includeComments ? (comments ?? []).map(toCommentThread) : undefined,
     textFormattingNotSupported: text === null ? true : undefined,
     commentsNotSupported: includeComments && !commentable ? true : undefined,
-  }));
+  })));
 }
 
 const postSchema = {
@@ -122,7 +122,7 @@ const threadSchema = {
 export const readFileContent = defineTool({
   definition: {
     name: "read_file_content",
-    description: "Returns a text version of a Drive file. Google Docs come back as Markdown, Slides as plain text, and Sheets as CSV of the first sheet only (the text says so). Text files (text/*, JSON, XML and similar) are returned as stored. Other files, such as PDFs, Office files and images, are not converted: the result has textFormattingNotSupported true and empty fileContent; use download_file_content for their bytes. At most 10 MB; a larger file is refused with an error, never cut short. With includeComments, the comment threads of a Google Doc, Sheet or Slides file are listed in unanchoredComments; they are not placed in the text. Get fileId from search_files or list_recent_files first.",
+    description: "Returns a text version of a Drive file. Google Docs come back as Markdown, Slides as plain text, and Sheets as CSV of the first sheet only (the text says so). Text files (text/*, JSON, XML and similar) are returned as stored. Other files, such as PDFs, Office files and images, are not converted: the result has textFormattingNotSupported true and empty fileContent; use download_file_content for their bytes. At most 1 MB of content; a larger file is refused with an error, never cut short. With includeComments, the comment threads of a Google Doc, Sheet or Slides file are listed in unanchoredComments; they are not placed in the text. Get fileId from search_files or list_recent_files first.",
     inputSchema: {
       type: "object",
       properties: {
