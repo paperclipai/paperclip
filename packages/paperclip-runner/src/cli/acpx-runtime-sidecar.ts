@@ -17,7 +17,7 @@ import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } 
 import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolveCompletionContinuation } from "../drivers/completion-continuation.js";
-import { createInterface } from "node:readline";
+import { createJsonlLineReader } from "../jsonl-line-reader.js";
 import { deliverAcpxResponse, requireAcpxResponseDelivery } from "../drivers/acpx/response-delivery.js";
 import { createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 
@@ -219,11 +219,7 @@ const normalizingTools = new Set<string>();
 const inputs = new Map<string, PendingInput>();
 const permissions = new Map<string, PendingPermission>();
 
-const lines = createInterface({
-  input: process.stdin,
-  crlfDelay: Infinity,
-  terminal: false,
-});
+const lines = createJsonlLineReader({ input: process.stdin });
 lines.on("line", (line) => {
   pendingInput = enqueueAcpxSidecarInput(
     pendingInput,

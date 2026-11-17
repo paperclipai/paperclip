@@ -101,6 +101,33 @@ describe("plugin worker unavailable refusals", () => {
   });
 });
 
+describe("plugin worker JSONL framing", () => {
+  it("preserves Unicode separators in every RPC direction", async () => {
+    const payload = { text: "中文\u2028第一段\u2029第二段" };
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: path.join(FIXTURES_DIR, "plugin-worker-jsonl.mjs"),
+      execArgv: ["--import", import.meta.resolve("tsx")],
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: { "companies.get": async () => payload as never },
+      rpcTimeoutMs: 1_000,
+      autoRestart: false,
+    });
+    try {
+      await handle.start();
+      for (const key of ["worker-response", "echo", "host-response"]) {
+        await expect(handle.call("getData", {
+          key, params: key === "echo" ? payload : {},
+        })).resolves.toEqual(payload);
+      }
+    } finally {
+      await handle.stop();
+    }
+  });
+});
+
 describe("resolveRpcCallTimeoutMs", () => {
   const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
   const MAX_NODE_TIMER_TIMEOUT_MS = 2_147_483_647;

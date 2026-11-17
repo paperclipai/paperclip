@@ -27,6 +27,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { beginIdleTrackedWork, readTaskDrain, trackIdleWork } from "./task-admission.js";
 import { EventEmitter } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { createJsonlLineReader, type JsonlLineReader } from "@paperclipai/shared/jsonl-line-reader";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   JSONRPC_VERSION,
@@ -942,7 +943,7 @@ export function createPluginWorkerHandle(
 
   // Worker process state
   let childProcess: ChildProcess | null = null;
-  let readline: ReadlineInterface | null = null;
+  let readline: JsonlLineReader | null = null;
   let stderrReadline: ReadlineInterface | null = null;
   let status: WorkerStatus = "stopped";
   let startedAt: number | null = null;
@@ -3123,7 +3124,7 @@ export function createPluginWorkerHandle(
   function attachStdioHandlers(child: ChildProcess): void {
     // Read NDJSON from stdout
     if (child.stdout) {
-      readline = createInterface({ input: child.stdout });
+      readline = createJsonlLineReader({ input: child.stdout });
       readline.on("line", handleLine);
     }
 

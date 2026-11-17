@@ -129,6 +129,38 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it("keeps the frame-size limit and processes the next complete record", async () => {
+    const sidecar = startSidecar();
+    const request = {
+      protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
+      id: 15,
+      command: "tool.resolve",
+      params: { callId: "missing", turnId: "missing", result: "界".repeat(ACPX_SIDECAR_MAX_FRAME_BYTES / 3) },
+    };
+    sidecar.write(request);
+    await expect(sidecar.next(frame => frame.eventType === "runtime.diagnostic"))
+      .resolves.toMatchObject({ payload: { code: "oversized_frame" } });
+    sidecar.write({ ...request, id: 16, params: { ...request.params, result: "正常\u2028结果" } });
+    await expect(sidecar.next(frame => frame.id === 16)).resolves.toMatchObject({
+      id: 16, ok: false, error: { message: "tool call is stale or unknown" },
+    });
+  });
+
+  it("acknowledges tool.resolve containing Unicode line separators", async () => {
+    const sidecar = startSidecar();
+    sidecar.write({
+      protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION,
+      id: 16,
+      command: "tool.resolve",
+      params: { callId: "missing", turnId: "missing", result: { text: "中文\u2028第一段\u2029第二段" } },
+    });
+    await expect(sidecar.next(frame => frame.id === 16)).resolves.toMatchObject({
+      id: 16, ok: false, error: { message: "tool call is stale or unknown" },
+    });
+    expect(sidecar.stderr()).not.toContain("malformed_frame");
+  });
+
+
   it.each(["snapshot", "unavailable", "oversized", "payload-under-limit", "payload-limit", "payload-over-limit"])("emits the real completed terminal with optional goal observation: %s", async mode => {
     const root = mkdtempSync(join(tmpdir(), "acpx-terminal-goal-"));
     const loader = join(root, "provider-loader.mjs"), host = join(root, "terminal-host.mjs");
