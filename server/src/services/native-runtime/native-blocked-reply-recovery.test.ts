@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
-  nativeRunFinalizations, statusDecisions, workAssessments, type Db } from "@paperclipai/db";
+  nativeRunFinalizations, statusDecisions, workAssessments, workspaceOperations, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
+import { nativeResultCommitWork } from "./native-result-commit-work.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_BLOCKED_REPLY_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -23,7 +24,7 @@ describe.skipIf(!support.supported)("blocked task reply after a retried workspac
   const summary = "Blocked: the deploy key for the staging bucket was revoked. Please re-issue it so I can finish the upload.";
   const finalReply = "I could not finish the upload because the staging deploy key was revoked. Please re-issue it.";
 
-  async function blockedRun(options: { finalReply?: boolean; source?: string } = {}) {
+  async function blockedRun(options: { finalReply?: boolean; source?: string; workspaceSaved?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID(), runnerId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Blocked reply fixture", issuePrefix: companyId.slice(0, 8) });
@@ -51,6 +52,13 @@ describe.skipIf(!support.supported)("blocked task reply after a retried workspac
     if (options.finalReply) await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 90, eventType: "item.completed",
       payload: { prpEvent: { runId, normalizedSessionId: sessionId, turnId: "upload-turn", sourceEventId: "upload-final",
         payload: { kind: "agentMessage", channel: "final", providerPhase: "final", text: finalReply } } } });
+    if (options.workspaceSaved) {
+      // The live heartbeat saved the workspace, then the result commit worker
+      // committed the result before the heartbeat's own finalizer did.
+      await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId,
+        phase: "workspace_finalize", status: "succeeded" });
+      return { companyId, agentId, issueId, runId };
+    }
     await recordNativeFinalizationFailure({ db, runId, error: new Error("native_workspace_sync_out_failed"),
       failureScope: "workspace", projectRunStatus: true });
     return { companyId, agentId, issueId, runId };
@@ -96,6 +104,19 @@ describe.skipIf(!support.supported)("blocked task reply after a retried workspac
     expect(await work.load({ companyId: f.companyId, issueId: f.issueId })).toEqual([]);
     await expect(work.check(entry)).resolves.toBeNull();
     expect(await comments(f.issueId)).toHaveLength(1);
+  });
+
+  it("posts the agent's reply when the result commit worker finishes the run instead of the heartbeat", async () => {
+    const f = await blockedRun({ finalReply: true, workspaceSaved: true });
+    const work = nativeResultCommitWork(db);
+    const [entry] = await work.load({ companyId: f.companyId, issueId: f.issueId });
+    expect(entry).toMatchObject({ id: f.runId });
+    await expect(work.check(entry)).resolves.toBeNull();
+
+    expect((await issue(f.issueId)).status).toBe("blocked");
+    expect((await run(f.runId)).status).toBe("succeeded");
+    expect(await comments(f.issueId)).toEqual([expect.objectContaining({ body: finalReply, createdByRunId: f.runId })]);
+    expect(await nativeResponsePresentationWork(db).load({ companyId: f.companyId, issueId: f.issueId })).toEqual([]);
   });
 
   it("presents a channel task's blocker from the worker instead of recording a publication failure", async () => {
