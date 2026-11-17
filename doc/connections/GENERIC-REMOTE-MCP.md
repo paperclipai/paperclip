@@ -89,12 +89,17 @@ only the address you typed (nothing the other server says):
 
 - names the connection after that instance with its distinctive part first —
   `acme Paperclip` for `acme.paperclip.app`, `localhost-3101 Paperclip` for a
-  local instance — and uses that name as the tool prefix, so agents see
+  local instance — and prefixes its tools with the same host-derived label,
+  so agents see
   `mcp.acme-paperclip-<id>:paperclip-create-task` (native runners:
   `app_mcp_acme_paperclip_…_paperclip_create_task_…`), never a bare
   `create_task` that looks like their own. Other address-based connections
-  keep their existing tool names;
-- adds editable agent instructions saying these tools act on a different
+  keep their existing tool names. The prefix comes from the stored address,
+  so renaming the connection never changes tool names that agents or pending
+  approvals already hold;
+- adds agent instructions (template `paperclip.peer`, editable and
+  resettable under **Agent instructions** on the connection's Permissions page)
+  saying these tools act on a different
   Paperclip, that agents keep using their own Paperclip tools for their own
   work, and that links from the other instance must be quoted in full;
 - refuses the address of this same instance (`paperclip_self_connection`,

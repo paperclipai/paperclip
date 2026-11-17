@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { connectionAgentInstructionsSchema } from "./connection-instructions.js";
-import { isSamePaperclipInstance, paperclipPeerAgentInstructions, paperclipPeerFromMcpUrl } from "./paperclip-peer.js";
+import { isSamePaperclipInstance, paperclipPeerAgentInstructions, paperclipPeerFromMcpUrl, paperclipPeerInstructionTemplate } from "./paperclip-peer.js";
 
 describe("paperclipPeerFromMcpUrl", () => {
   it.each([
@@ -15,8 +15,9 @@ describe("paperclipPeerFromMcpUrl", () => {
     expect(paperclipPeerFromMcpUrl(url)).toMatchObject({ label, name });
   });
 
-  it("puts the distinctive part first so the agent's tool prefix carries it", () => {
-    expect(paperclipPeerFromMcpUrl("https://acme.paperclip.app/mcp/paperclip")?.name.startsWith("acme")).toBe(true);
+  it("derives a tool prefix from the address, with the distinctive part first", () => {
+    expect(paperclipPeerFromMcpUrl("https://acme.paperclip.app/mcp/paperclip")?.toolNamespace).toBe("acme-paperclip");
+    expect(paperclipPeerFromMcpUrl("https://paperclip.app/mcp/paperclip")?.toolNamespace).toBe("paperclip");
   });
 
   it.each([
@@ -57,6 +58,8 @@ describe("paperclipPeerAgentInstructions", () => {
     const instructions = paperclipPeerAgentInstructions(peer());
     expect(connectionAgentInstructionsSchema.parse(instructions)).toEqual(instructions);
     expect(instructions.enabled).toBe(true);
+    expect(instructions.template).toEqual({ id: "paperclip.peer", version: 1 });
+    expect(instructions.text).toBe(paperclipPeerInstructionTemplate(peer()).text);
     expect(instructions.text).toContain("https://acme.paperclip.app");
     expect(instructions.text).toContain("not the Paperclip you work in");
     expect(instructions.text).toContain("keep using your own Paperclip tools");

@@ -1,4 +1,4 @@
-import type { ConnectionAgentInstructions } from "./connection-instructions.js";
+import { defaultConnectionAgentInstructions, type ConnectionAgentInstructions, type ConnectionInstructionTemplate } from "./connection-instructions.js";
 
 /**
  * Another Paperclip instance connected through "Connect your own MCP server".
@@ -22,8 +22,10 @@ export interface PaperclipPeer {
   host: string;
   /** Short distinctive part of the host: `acme`, `staging`, `localhost-3101`. */
   label: string;
-  /** Default connection name. The label comes first so tool prefixes stay distinctive. */
+  /** Default connection name. The label comes first so it reads distinctively. */
   name: string;
+  /** Tool-name prefix agents see. Derived from the address, so renaming never changes it. */
+  toolNamespace: string;
 }
 
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
@@ -67,6 +69,7 @@ export function paperclipPeerFromMcpUrl(value: string | null | undefined): Paper
     host: url.host,
     label,
     name: label === "paperclip" ? `Paperclip ${url.host}` : `${label} Paperclip`,
+    toolNamespace: label === "paperclip" ? "paperclip" : `${label}-paperclip`,
   };
 }
 
@@ -89,10 +92,13 @@ export function isSamePaperclipInstance(peer: PaperclipPeer, ownOrigins: Array<s
   });
 }
 
-/** Standing guidance attached to a new peer connection. People can edit or turn it off. */
-export function paperclipPeerAgentInstructions(peer: PaperclipPeer): ConnectionAgentInstructions {
+export const PAPERCLIP_PEER_INSTRUCTIONS_TEMPLATE_ID = "paperclip.peer";
+
+/** Default guidance for a peer connection; the connection screen edits and resets against it. */
+export function paperclipPeerInstructionTemplate(peer: PaperclipPeer): ConnectionInstructionTemplate {
   return {
-    enabled: true,
+    id: PAPERCLIP_PEER_INSTRUCTIONS_TEMPLATE_ID,
+    version: 1,
     text: [
       `These tools act on a different Paperclip instance at ${peer.origin}, not the Paperclip you work in.`,
       "For your own tasks, comments and documents, keep using your own Paperclip tools.",
@@ -101,4 +107,9 @@ export function paperclipPeerAgentInstructions(peer: PaperclipPeer): ConnectionA
       `Task IDs and links from ${peer.host} do not exist in your own Paperclip: quote the full ${peer.origin} links these tools return.`,
     ].join(" "),
   };
+}
+
+/** Standing guidance attached to a new peer connection. People can edit or turn it off. */
+export function paperclipPeerAgentInstructions(peer: PaperclipPeer): ConnectionAgentInstructions {
+  return defaultConnectionAgentInstructions(paperclipPeerInstructionTemplate(peer))!;
 }

@@ -457,7 +457,8 @@ export function toolAccessRoutes(
       trustedBrowserBaseUrl(req),
       requestLoopbackBaseUrl(req),
       requestHost ? `${req.protocol}://${requestHost}` : null,
-      process.env.PORT ? `http://localhost:${process.env.PORT}` : null,
+      // The port this server actually listens on; startup may move off PORT.
+      process.env.PAPERCLIP_LISTEN_PORT ? `http://localhost:${process.env.PAPERCLIP_LISTEN_PORT}` : null,
     ];
     if (isSamePaperclipInstance(peer, ownOrigins)) {
       throw unprocessable(

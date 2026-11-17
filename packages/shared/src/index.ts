@@ -381,8 +381,10 @@ export {
 export {
   PAPERCLIP_PEER_MCP_PATH,
   isSamePaperclipInstance,
+  PAPERCLIP_PEER_INSTRUCTIONS_TEMPLATE_ID,
   paperclipPeerAgentInstructions,
   paperclipPeerFromMcpUrl,
+  paperclipPeerInstructionTemplate,
   type PaperclipPeer,
 } from "./paperclip-peer.js";
 export {

@@ -1766,10 +1766,12 @@ export function createToolGatewayService(
       ({ catalogEntry, connection, application }) => {
         const applicationKey = application.applicationKey ?? null;
         // Another Paperclip's tools share names with the agent's own, so name
-        // them after that instance. Other address-based connections keep their
-        // existing internal key so their tool names do not change.
+        // them after that instance. The prefix comes from the stored address,
+        // not the editable connection name, so a rename cannot break tool names
+        // agents or pending approvals already hold. Other address-based
+        // connections keep their existing internal key.
         const paperclipPeer = paperclipPeerFromMcpUrl(typeof connection.config?.url === "string" ? connection.config.url : null);
-        const namespaceSource = paperclipPeer ? connection.name : applicationKey ?? connection.name ?? application.name;
+        const namespaceSource = paperclipPeer ? paperclipPeer.toolNamespace : applicationKey ?? connection.name ?? application.name;
         const connectionNamespace = `${slugSegment(namespaceSource, "mcp")}-${shortStableId(connection.id)}`;
         const toolSlug = slugSegment(catalogEntry.toolName, "tool");
         return `${connection.transport === "rest_api" ? "app" : "mcp"}.${connectionNamespace}:${toolSlug}`;

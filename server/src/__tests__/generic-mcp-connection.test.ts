@@ -880,7 +880,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, result.connectionId));
       expect(connection!.name).toBe("8-8-8-8 Paperclip");
-      expect(connection!.agentInstructions).toMatchObject({ enabled: true });
+      expect(connection!.agentInstructions).toMatchObject({ enabled: true, template: { id: "paperclip.peer", version: 1 } });
       expect(connection!.agentInstructions!.text).toContain(`a different Paperclip instance at ${MCP_ORIGIN}`);
       expect(connection!.agentInstructions!.text).toContain("keep using your own Paperclip tools");
       // Writes start on, the same as any other connection.
@@ -898,10 +898,13 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         });
         const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent!.id, invocationSource: "on_demand", status: "running" }).returning();
         const gateway = createToolGatewayService(db);
-        const session = await gateway.createSession({ companyId: company.id, agentId: agent!.id, runId: run!.id });
-        return (await gateway.listToolsForSession(session.token))
-          .filter((tool) => tool.connectionId === connected.connectionId)
-          .sort((a, b) => a.name.localeCompare(b.name));
+        const list = async () => {
+          const session = await gateway.createSession({ companyId: company.id, agentId: agent!.id, runId: run!.id });
+          return (await gateway.listToolsForSession(session.token))
+            .filter((tool) => tool.connectionId === connected.connectionId)
+            .sort((a, b) => a.name.localeCompare(b.name));
+        };
+        return Object.assign(await list(), { list, service, connectionId: connected.connectionId });
       };
 
       installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
@@ -911,6 +914,10 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         expect.stringMatching(/^mcp\.8-8-8-8-paperclip-[0-9a-f]+:list-insights$/),
       ]);
       expect(assignedToolName(peerTools[0]!.name)).toMatch(/^app_mcp_8_8_8_8_papercli_create_insight_/);
+
+      // Renaming the connection must not rename tools agents or approvals already hold.
+      await peerTools.service.updateConnection(peerTools.connectionId, { name: "Ops intake" });
+      expect((await peerTools.list()).map((tool) => tool.name)).toEqual(peerTools.map((tool) => tool.name));
 
       // Other address-based connections keep their existing names.
       vi.restoreAllMocks();
