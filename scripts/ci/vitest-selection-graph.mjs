@@ -26,14 +26,14 @@ const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "
 // not reads of arbitrary repository inputs. Pin contents, not just paths: any
 // edit disables this exception until its effects are reviewed again. Continue
 // following local imports even for these files; helper changes affect all tests.
-// setup-supertest.ts also clears the in-process instance settings cache before
-// each test (#21768). That module reaches the database packages, so it is
-// reviewed as external: in setup it only drops a cached row from memory and
-// reads no repository input. Tests that import it still select through it.
 const reviewedSetup = new Map([
   ["server/src/__tests__/setup-supertest.ts", {
     hash: "15a53631d5015910d4a3e9506158f9e4bd8269ac340afb52d94089da77fc3ced",
-    external: ["supertest/lib/test.js", "../services/instance-settings-cache.js"],
+    external: ["supertest/lib/test.js"],
+  }],
+  ["server/src/services/instance-settings-cache.ts", {
+    hash: "d5535ee52e7a8e2c776534a67912a30632ed79e6adf7a0a6929844244d387ff5",
+    external: ["drizzle-orm", "drizzle-orm/pg-core", "@paperclipai/db/work-signals"],
   }],
   ["server/src/__tests__/helpers/isolated-test-home.ts", {
     hash: "bd5645dc590087f26b473beab06d5c3ddd7956a79949f0b3e9713f11897a0c1b",
