@@ -37,6 +37,19 @@ export function structuredResult(value: Record<string, unknown>): CallToolResult
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }
 
+export const MAX_RESULT_BYTES = 250_000;
+
+export function serializedResultBytes(result: CallToolResult): number {
+  return Buffer.byteLength(JSON.stringify(result), "utf8");
+}
+
+export function boundedStructuredResult(value: Record<string, unknown>, maxBytes: number, tooLarge: (bytes: number) => string): CallToolResult {
+  const result = structuredResult(value);
+  const bytes = serializedResultBytes(result);
+  if (bytes > maxBytes) throw new GoogleToolError("incomplete", tooLarge(bytes));
+  return result;
+}
+
 export function toolErrorResult(error: GoogleToolError): CallToolResult {
   return { isError: true, content: [{ type: "text", text: error.message }] };
 }

@@ -36,14 +36,21 @@ export type GoogleToolErrorKind =
   | "unsupported"
   | "incomplete";
 
+export interface GoogleErrorDetail {
+  status?: string;
+  reasons?: readonly string[];
+}
+
 export class GoogleToolError extends Error {
   readonly kind: GoogleToolErrorKind;
   readonly httpStatus: number | null;
+  readonly google: GoogleErrorDetail;
 
-  constructor(kind: GoogleToolErrorKind, message: string, httpStatus: number | null = null) {
+  constructor(kind: GoogleToolErrorKind, message: string, httpStatus: number | null = null, google: GoogleErrorDetail = {}) {
     super(message);
     this.name = "GoogleToolError";
     this.kind = kind;
     this.httpStatus = httpStatus;
+    this.google = google;
   }
 }

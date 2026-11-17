@@ -241,7 +241,7 @@ export const updateEvent = defineTool({
       required: ["eventId"],
     },
     outputSchema: eventSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   args,
   async run(input, http) {

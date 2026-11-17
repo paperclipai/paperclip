@@ -901,6 +901,8 @@ export type IssueSummary = Pick<
   blockerAttention?: IssueBlockerAttention;
   /** Navigation-only projection. Counts include only readable direct children. */
   parentId?: string | null;
+  /** Viewer participates under the Mine rule, regardless of inbox archive state. Navigation only. */
+  isParticipantForMe?: boolean;
   isUnreadForMe?: boolean;
   subtaskCount?: number;
   unreadSubtaskCount?: number;

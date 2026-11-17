@@ -174,18 +174,18 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         {rail ? <Tooltip><TooltipTrigger asChild>{newTaskButton}</TooltipTrigger><TooltipContent side="right">New task</TooltipContent></Tooltip> : newTaskButton}
         <div className="design-sidebar-primary my-2">
           <div className="group/coordinator-new relative">
-            <SidebarNavItem className={cn("design-sidebar-item", !rail && "pr-16")} to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+            <SidebarNavItem analyticsChrome className={cn("design-sidebar-item", !rail && "pr-16")} to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
             {!rail && agentChatEnabled && <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
               <button type="button" aria-label="All conversations" title="All conversations" onClick={() => setChatHistoryOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><History className="size-4" /></button>
               <button type="button" aria-label="New chat" title="New chat" onClick={() => setChatPickerOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>
             </div>}
           </div>
           <div className="group/coordinator-new relative">
-            <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} className={cn("design-sidebar-item", !rail && "pr-9")} />
+            <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleCheck} className={cn("design-sidebar-item", !rail && "pr-9")} />
             {!rail && <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
           </div>
-          <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
+          <SidebarNavItem analyticsChrome className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
           {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
