@@ -144,15 +144,21 @@ async function hashFile(filePath: string): Promise<string> {
   });
 }
 
+const isVanishedEntry = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+
 async function* walkDirectory(
   root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
 ): AsyncGenerator<[string, SnapshotEntry]> {
   const readEntry = async (nextRelative: string): Promise<[string, SnapshotEntry | null]> => {
     const fullPath = path.join(root, nextRelative);
-    const stats = await fs.lstat(fullPath);
-    if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
-    if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
-    if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+    try {
+      const stats = await fs.lstat(fullPath);
+      if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
+      if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
+      if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+    } catch (error) {
+      if (!isVanishedEntry(error)) throw error;
+    }
     return [nextRelative, null];
   };
   const visitBatch = async function* (paths: string[]): AsyncGenerator<[string, SnapshotEntry]> {
@@ -167,8 +173,13 @@ async function* walkDirectory(
     }
   };
   const current = relative ? path.join(root, relative) : root;
+  const dir = await fs.opendir(current).catch((error: unknown) => {
+    if (relative && isVanishedEntry(error)) return null;
+    throw error;
+  });
+  if (!dir) return;
   let batch: string[] = [];
-  for await (const entry of await fs.opendir(current)) {
+  for await (const entry of dir) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
     if (shouldExcludePath(nextRelative, exclude) || ignored.matches(nextRelative)) continue;
     batch.push(nextRelative);
@@ -308,6 +319,7 @@ export type WorkspaceRestoreFailureCode =
   | "restore_permission_denied"
   | "restore_lock_timeout"
   | "restore_unsafe_archive"
+  | "restore_invalid_metadata"
   | "restore_failed";
 
 /**
@@ -330,6 +342,7 @@ export type WorkspaceRestoreOutcome =
  */
 export function classifyWorkspaceRestoreFailure(error: unknown): WorkspaceRestoreFailureCode {
   const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
+  if (code === "WORKSPACE_RESTORE_INVALID_GIT_METADATA") return "restore_invalid_metadata";
   if (code === "EACCES" || code === "EPERM") return "restore_permission_denied";
   if (code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return "restore_lock_timeout";
   const message = error instanceof Error ? error.message : "";
@@ -361,6 +374,8 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
       return "the restore timed out waiting for the workspace merge lock";
     case "restore_unsafe_archive":
       return "the archive contains an unsafe link or path; workspace repair is required";
+    case "restore_invalid_metadata":
+      return "the restore metadata is invalid; workspace repair is required";
     case "restore_failed":
       return "the restore failed";
   }

@@ -5,6 +5,10 @@ import { issueRoutes } from "../routes/issues.js";
 import { createCompanySearchRateLimiter } from "../services/company-search-rate-limit.js";
 import type { CompanySearchQuery, CompanySearchResponse } from "@paperclipai/shared";
 
+async function unusedExtract(): Promise<never> {
+  throw new Error("Rate limit tests do not call extract");
+}
+
 function createSearchResponse(query: CompanySearchQuery): CompanySearchResponse {
   return {
     query: query.q,
@@ -44,7 +48,7 @@ describe("company search route rate limiting", () => {
       next();
     });
     app.use("/api", issueRoutes({} as never, {} as never, {
-      searchService: { search },
+      searchService: { search, extract: unusedExtract },
       searchRateLimiter: createCompanySearchRateLimiter({
         maxRequests: 1,
         windowMs: 60_000,
@@ -76,7 +80,7 @@ describe("company search route rate limiting", () => {
       next();
     });
     app.use("/api", issueRoutes({} as never, {} as never, {
-      searchService: { search },
+      searchService: { search, extract: unusedExtract },
       searchRateLimiter: createCompanySearchRateLimiter({
         maxRequests: 10,
         windowMs: 60_000,
@@ -104,7 +108,7 @@ describe("company search route rate limiting", () => {
       next();
     });
     app.use("/api", issueRoutes({} as never, {} as never, {
-      searchService: { search },
+      searchService: { search, extract: unusedExtract },
       searchRateLimiter: createCompanySearchRateLimiter({
         maxRequests: 10,
         windowMs: 60_000,

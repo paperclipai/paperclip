@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
+import { installDatabaseWorkSignals, publishDatabaseWorkSettled } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { beginIdleTrackedWork, idleWorkSnapshot, isIdleTaskDrainActive, readTaskDrain, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
@@ -59,6 +59,58 @@ describe("delivery work coordinator", () => {
       expect(s.onError).not.toHaveBeenCalled();
     } finally { clock.mockRestore(); }
   });
+  it("honors a future backlog deadline after failure while preserving the fallback retry", async () => {
+    const s = setup(), t = task();
+    let next: number | null = Date.now() + 1000;
+    t.run.mockRejectedValueOnce(new Error("One item failed"));
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => next }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(next);
+    expect(s.onError).toHaveBeenCalledOnce();
+    next = null;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+  it("dispatches another due item after a worker records scoped failure backoffs", async () => {
+    const s = setup(), t = task(), now = Date.now();
+    t.run.mockRejectedValueOnce(new Error("One scoped item failed"));
+    const nextRunAtOnError = vi.fn(() => now);
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAtOnError }).ready;
+    expect(nextRunAtOnError).toHaveBeenCalledOnce();
+    expect(s.coordinator.nextWakeAt()).toBe(now);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(t.run).toHaveBeenCalledTimes(2);
+    expect(s.coordinator.nextWakeAt()).toBeNull();
+  });
+  it.each(["reconcile", "pending"])("does not consume scoped retry deadlines for a %s failure", async mode => {
+    const s = setup(), t = task(), now = Date.now();
+    if (mode === "reconcile") {
+      s.failCommit();
+      await expect(s.enqueue()).rejects.toThrow("lost commit reply");
+      s.execute.mockRejectedValueOnce(new Error("Database unavailable"));
+    } else t.hasPending.mockRejectedValueOnce(new Error("Pending state unavailable"));
+    const nextRunAtOnError = vi.fn(() => now);
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAtOnError }).ready;
+    expect(nextRunAtOnError).not.toHaveBeenCalled();
+    expect(s.coordinator.nextWakeAt()).toBe(now + 5000);
+    expect(s.onError).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(s.onError).toHaveBeenCalledOnce();
+  });
+  it.each(["overdue", "later", "unreadable", "draining"])("keeps failure backoff for a %s deadline", async mode => {
+    const s = setup(), t = task(), now = Date.now();
+    t.run.mockImplementation(async () => {
+      if (mode === "draining") { s.canRun.mockReturnValue(false); s.canReconcile.mockReturnValue(true); }
+      throw new Error("Unavailable");
+    });
+    await s.coordinator.register(DELIVERY_QUEUES.feedback, { ...t, nextRunAt: () => {
+      if (mode === "unreadable") throw new Error("Deadline unavailable");
+      return mode === "overdue" ? now : now + (mode === "later" ? 60_000 : 1000);
+    } }).ready;
+    expect(s.coordinator.nextWakeAt()).toBe(now + 5000);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(t.run).toHaveBeenCalledOnce();
+  });
   it("schedules maintenance without holding idle intent, and lets new work preempt it", async () => {
     const s = setup(), t = task();
     let next: number | null = Date.now() + 60_000;
@@ -105,7 +157,7 @@ describe("delivery work coordinator", () => {
         expiresAt: current?.expiresAt ?? null, activeRuns: 0, pendingWakes: 0 };
     };
     const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+      fn({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) } as unknown as Db;
     let entered!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
     const checkpoint = async () => {
@@ -282,6 +334,24 @@ describe("delivery work coordinator", () => {
     expect(t.run).toHaveBeenCalledTimes(1);
     expect(idleWorkSnapshot().active).toBe(0);
   });
+  it("keeps admitted owner commands live while dispatch queues stop, then closes every worker", async () => {
+    const s = setup(), dispatch = task(), commands = task();
+    await s.coordinator.register(DELIVERY_QUEUES.queuedRunDispatch, dispatch).ready;
+    await s.coordinator.register(DELIVERY_QUEUES.nativeCancellation, commands).ready;
+    await s.coordinator.stop(new Set([DELIVERY_QUEUES.nativeCancellation]));
+    await s.enqueue(DELIVERY_QUEUES.queuedRunDispatch);
+    await s.enqueue(DELIVERY_QUEUES.nativeCancellation);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(dispatch.run).toHaveBeenCalledTimes(1);
+    expect(commands.run).toHaveBeenCalledTimes(2);
+    expect(() => s.coordinator.register(DELIVERY_QUEUES.feedback, task())).toThrow("stopped");
+    await s.coordinator.stop();
+    await s.enqueue(DELIVERY_QUEUES.nativeCancellation);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(commands.run).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(idleWorkSnapshot().active).toBe(0);
+  });
   it("awaits in-flight work on shutdown and releases the subscription for restart", async () => {
     const s = setup(), t = task();
     let release!: () => void;
@@ -310,5 +380,86 @@ describe("delivery work coordinator", () => {
     expect(s.onError).not.toHaveBeenCalled();
     expect(idleWorkSnapshot().active).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+it("invalidates owner reconciliation synchronously before awaiting an active stop", async () => {
+  const s = setup();
+  let finish!: () => void;
+  const onStop = vi.fn();
+  const worker = s.coordinator.register(DELIVERY_QUEUES.feedback, {
+    ...task(), onStop,
+    run: async () => { await new Promise<void>(resolve => { finish = resolve; }); },
+  });
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  let stopped = false;
+  const stopping = s.coordinator.stop().then(() => { stopped = true; });
+  expect(onStop).toHaveBeenCalledOnce();
+  expect(stopped).toBe(false);
+  finish(); await worker.ready; await stopping;
+  expect(stopped).toBe(true);
+});
+
+describe("settled hints a task cannot apply", () => {
+  function settledFixture(onSettled: (hints?: ReadonlySet<string>) => void) {
+    const s = setup();
+    const t = { ...task(), onSettled: vi.fn(onSettled) };
+    const worker = s.coordinator.register(DELIVERY_QUEUES.feedback, t);
+    return { s, t, worker };
+  }
+  const received = (mock: ReturnType<typeof vi.fn>) => mock.mock.calls.map(([hints]) => hints === undefined ? null : [...hints as ReadonlySet<string>]);
+
+  it("still wakes the task, unscoped, and logs a warning when it rejects a hint", async () => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { s, t, worker } = settledFixture(hints => {
+        if (hints && [...hints].some(hint => !hint.startsWith("company:"))) throw new Error("unknown hint shape");
+      });
+      await worker.ready;
+      t.run.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback, "{\"newShape\":1}");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([["{\"newShape\":1}"], null]);
+      expect(t.run).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(String(warn.mock.calls[0]![0])).toContain(`Delivery settlement could not be applied for ${DELIVERY_QUEUES.feedback}`);
+      expect(s.onError).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it("wakes the task once without retrying when even the unscoped settlement throws", async () => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { s, t, worker } = settledFixture(() => { throw new Error("broken"); });
+      await worker.ready;
+      t.run.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback, "company:1");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([["company:1"], null]);
+      expect(t.run).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledTimes(2);
+      t.onSettled.mockClear(); warn.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([null]);
+      expect(t.run).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(t.run).toHaveBeenCalledTimes(2);
+    } finally { warn.mockRestore(); }
+  });
+
+  it("passes recognised hints through once, without a warning", async () => {
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { s, t, worker } = settledFixture(() => {});
+      await worker.ready;
+      t.run.mockClear();
+      publishDatabaseWorkSettled(s.owner, DELIVERY_QUEUES.feedback, "company:1");
+      await vi.advanceTimersByTimeAsync(1);
+      expect(received(t.onSettled)).toEqual([["company:1"]]);
+      expect(t.run).toHaveBeenCalledOnce();
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
   });
 });

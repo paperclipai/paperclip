@@ -20,9 +20,25 @@ export interface RunnerSelectorOptions {
   connectionConfig?: string;
   githubReviewConfig?: string;
   provisionGitHubRepository?: boolean;
+  antigravityJourneyConfig?: string;
+  antigravityJourneyPreflight?: boolean;
+  antigravityJourneyRecover?: string;
 }
 
 export class RunnerSelectorError extends Error {}
+
+/**
+ * CI passes the selected cell here rather than as `--id`. Every agent can read
+ * another process's argv in /proc, and the cell id names the case under test.
+ */
+export const RUNNER_SELECTED_ID_ENV = "PAPERCLIP_RUNNER_E2E_SELECTED_ID";
+
+/** Adds the environment's selected cell to the arguments and removes it from the environment. */
+export function selectorArgumentsWithEnvironment(args: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  const selected = env[RUNNER_SELECTED_ID_ENV]?.trim();
+  delete env[RUNNER_SELECTED_ID_ENV];
+  return selected ? [...args, "--id", selected] : [...args];
+}
 
 function valueFor(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
@@ -69,6 +85,15 @@ export function parseRunnerSelectors(
       index += 1;
     }
     else if (flag === "--provision-github-repository") options.provisionGitHubRepository = true;
+    else if (flag === "--antigravity-journey-config") {
+      options.antigravityJourneyConfig = valueFor(args, index, flag);
+      index += 1;
+    }
+    else if (flag === "--antigravity-journey-preflight") options.antigravityJourneyPreflight = true;
+    else if (flag === "--antigravity-journey-recover") {
+      options.antigravityJourneyRecover = valueFor(args, index, flag);
+      index += 1;
+    }
     else if (flag === "--max-parallel") {
       const value = valueFor(args, index, flag);
       index += 1;
@@ -183,6 +208,12 @@ export function selectRunnerExecutions(
   const selected = matrix.filter((execution) => {
     if (options.ids.length > 0) return options.ids.includes(execution.id);
     if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
+    const unfilteredList = options.list && options.groups.length + options.suites.length + options.profiles.length
+      + options.environments.length + options.cases.length === 0;
+    const explicitGroup = execution.task.explicitGroup;
+    // Naming any of the task's own groups (for example `slow`) also opts in.
+    if (explicitGroup && !unfilteredList && !options.groups.some(group => group === explicitGroup || execution.task.groups.includes(group))
+      && !options.cases.includes(execution.task.id)) return false;
     if (
       options.all ||
       (options.list &&
@@ -214,7 +245,7 @@ export function selectRunnerExecutions(
 export function buildMatrixJobs(
   executions: readonly MatrixExecution[],
 ): MatrixJob[] {
-  if (executions.some(e => ["provider_connection", "github_review_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
+  if (executions.some(e => ["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
   return executions
     .map((execution) => ({
       executionId: execution.id,

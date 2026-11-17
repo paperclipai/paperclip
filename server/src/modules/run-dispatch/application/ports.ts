@@ -24,6 +24,7 @@ export type EvaluateScheduledRetryGateInput = {
 
 /** Read-only scheduled-retry operations exposed to application use cases. */
 export interface ScheduledRetryReader {
+  nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null>;
   evaluateScheduledRetryGate(input: EvaluateScheduledRetryGateInput): Promise<GateDecision>;
   listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]>;
 }

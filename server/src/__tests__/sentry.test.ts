@@ -46,7 +46,7 @@ async function importFreshSentry() {
  */
 function mockSentryPackage() {
   const init = vi.fn();
-  const captureException = vi.fn(() => "event-id");
+  const captureException = vi.fn((_error: unknown, _hint?: unknown) => "event-id");
   const close = vi.fn(async () => true);
   const httpIntegration = vi.fn((options: unknown) => ({ name: "Http", ...(options as object) }));
   const onUnhandledRejectionIntegration = vi.fn((options: unknown) => ({
@@ -55,6 +55,7 @@ function mockSentryPackage() {
   }));
 
   vi.doMock("@sentry/node", () => ({
+    getClient: () => ({ on: vi.fn() }),
     init,
     captureException,
     close,
@@ -801,7 +802,7 @@ describe.skipIf(!sentryPackage)("captured event shape against the real @sentry/n
 
   it("a server event captured after a console.error call carries no console breadcrumb", async () => {
     const Sentry = sentryPackage!;
-    let captured: Record<string, unknown> | null = null;
+    let captured = null as Record<string, unknown> | null;
     await initRealSentryForTest((event) => {
       captured = event;
     });

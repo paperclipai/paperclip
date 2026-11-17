@@ -134,6 +134,13 @@ choose an active sponsor, and use the restricted guest profile. Guests receive n
 sponsor credentials. Authority is checked again before tool calls and
 publication, so revocation also affects queued or ongoing work.
 
+The username lookup uses the bot's own GitHub App installation with a short-lived,
+metadata-only token. It does not use a personal account or the shared unauthenticated
+IP quota. An active connection with a verified installation is required. GitHub
+supports installation tokens for [Get a user](https://docs.github.com/en/rest/users/users#get-a-user)
+without additional permissions. Lookup errors distinguish unavailable accounts,
+rate limits, and installation authentication or access failures.
+
 Choose automatic events and author filters in **Settings** to control which
 authored PRs and issues start work. Authorized mentions remain available with
 automatic events off and bypass automatic author filters. The shared external-
@@ -169,9 +176,49 @@ permissions. Ordinary discussion does not change a review score. Repeat review
 mentions and pushes continue the existing task; inline replies return to the
 task owning that thread.
 
+A successful native execution can still be resolving its visible response.
+Without a confirmed reply for that run, maintenance waits for its committed
+presentation decision before choosing a completion fallback. It then uses the same saved request to settle the wait,
+publish a genuine missing-response notice, or report a failed turn.
+
+A queued or running follow-up acknowledgement preserves an existing App-owned
+final PR summary. A new validated assessment can replace it through the review
+publication path. When an authorized native turn commits a passive response
+wait with no new comment, maintenance settles that request's acknowledgement
+without replacing the assessment with a generic completion notice. This does
+not count the old summary as a reply from the new run. Missing or failed
+responses still receive their normal fallback; uncertain writes remain held.
+
 Event prompts supplement the agent's instructions. Repository content and PR
 prose are untrusted input and cannot change tool authority or publication policy.
 The execution records the configuration revision and event context used.
+
+## Paperclip task completion
+
+Set the review task's completion rule in the agent's saved instructions or the
+bot's Settings. A review score controls the configured GitHub check separately;
+it does not automatically set the Paperclip task status.
+
+For a review-only assignment, you can use this instruction:
+
+> After a complete assessment of the current PR head is rated 5/5 and its
+> publication is confirmed, finish the Paperclip task with
+> reportedWorkDisposition=done. Include the publication link, reviewed commit,
+> score, coverage limits, and available check evidence. Do not wait for CI,
+> merge, or human approval to complete this review assignment. If CI results
+> are unavailable, say so; do not claim they passed.
+
+The GitHub prompts explain this rule when the configured assignment permits
+completion at 5/5. They retain explicit CI or merge requirements and configured
+below-5 tracking. A queued or uncertain publication, an incomplete assessment,
+or a changed head does not satisfy the example rule. Reuse an eligible confirmed
+assessment instead of publishing it again only to change status.
+
+A finite discussion reply can finish after confirmed publication when no assigned
+work remains. It does not need a new assessment or score. Use a response wait
+only for an authorized reply or later review that the assignment still needs.
+Timed checks require a saved monitor. An open PR or an available continuation
+alone is not a reason to wait. GitHub's merge requirements remain separate.
 
 ## Assessments, checks, and formal reviews
 
@@ -179,6 +226,26 @@ The agent reads through task-bound bot tools, explicitly begins an assessment,
 and submits the reviewed commit, findings, rationale, and coverage. Paperclip
 validates the result and computes the **Paperclip Review** check. The default
 threshold is 5/5; choose 1–5 or report-only as needed.
+
+Finding categories come from the repository's review policy. Both manual and
+automatic review instructions list the configured categories. `begin_review`
+returns `findingCategories` from the assessment's saved policy snapshot; use
+these exact values in `findings[].category`. Metadata also includes
+`reviewPolicy.findingCategories`. The discovery schema describes this dynamic
+constraint rather than imposing a global enum. Unknown categories remain invalid;
+the error lists the accepted values. If no category applies, put the finding in
+the summary. An empty category list permits no structured findings.
+
+`submit_review.summary` contains the review body: the change, findings, and
+verdict. `rationale` adds evidence for the score and remaining risk without
+repeating the summary. Paperclip renders the bot-name/score heading and the
+reviewed-commit, coverage, and task/run footer from the structured fields. Agents
+must not copy these generated sections from an earlier published comment into
+either text field. This contract is included in new bots' tool schemas and in
+the review instructions generated for existing bots. Publication also removes
+leading copied score headings for the current bot, with a plain or Markdown-escaped
+name, or the legacy **Paperclip Review** name. Other review sections and the saved
+assessment remain intact.
 
 | Score | Assessment rubric |
 | --- | --- |
@@ -249,9 +316,15 @@ the receipt.
 
 Receipt recovery compares the complete saved publication request, including long
 text and nested coverage entries. Shortened audit previews do not establish
-request identity. Changed content or a missing durable publication returns a
-conflict without dispatching another write. Exact retries read the current
-receipt; the durable worker owns pending publication retries.
+request identity. Changed content or a missing completed durable publication
+returns a conflict without dispatching another write. Exact retries read the
+current receipt; the durable worker owns pending publication retries.
+
+A timeout during metadata or file reads can occur before publication staging.
+The same request can repeat this preflight with its complete request identity.
+The saved assessment, unique publication key, and provider lease still prevent
+repeat external writes. `begin_review` retries return the run's current review
+result. They do not return a shortened audit preview.
 
 For a call that required human approval, the durable publication keeps that
 verified approval for its exact operation. An exact caller retry only reads the

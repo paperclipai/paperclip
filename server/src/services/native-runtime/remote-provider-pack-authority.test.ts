@@ -93,6 +93,16 @@ it("retains the authenticated daemon identity across controller daemon replaceme
   expect(recovered.runnerArtifact).toEqual(runnerArtifact());
   expect(changedRunner).not.toHaveBeenCalled();
 });
+it("retains the admitted provider pack but binds a newly launched daemon to its current bytes", () => {
+  const { input } = fixture();
+  resolveRemoteProviderPackAuthority(input).verified();
+  const currentRunner = { version: "new", digest: "sha256:" + "d".repeat(64) };
+  const continued = resolveRemoteProviderPackAuthority({ ...input, reattach: false, retainProviderPack: true,
+    current: () => manifest("b"), runnerArtifact: () => currentRunner } as Parameters<typeof resolveRemoteProviderPackAuthority>[0]);
+  expect(continued.manifest).toEqual(manifest("a"));
+  expect(continued.runnerArtifact).toEqual(currentRunner);
+  expect(() => continued.select(manifest("b"))).toThrow("cannot replace");
+});
 it.each([{}, { version: "0.0.0", digest: "not-a-sha256" }])("rejects an invalid saved daemon identity: %j", runnerArtifact => {
   const { input, path } = fixture();
   resolveRemoteProviderPackAuthority(input).verified();
@@ -118,4 +128,15 @@ it("retains the original projectless lease across warm run placeholders but reje
   expect(resolveRemoteProviderPackAuthority({ ...input, binding: next, reattach: true }).manifest).toEqual(manifest("a"));
   const changed = { ...binding, workspaceId: providerPackWorkspaceId("project-workspace", "run-2", "original-lease") };
   expect(() => resolveRemoteProviderPackAuthority({ ...input, binding: changed, reattach: true })).toThrow("does not match this execution");
+});
+
+it("persists the compatible installation selected at launch, then pins it on reattachment", () => {
+  const { input } = fixture();
+  const authority = resolveRemoteProviderPackAuthority(input);
+  const installed = manifest("b");
+  authority.select(installed);
+  authority.verified();
+  const attached = resolveRemoteProviderPackAuthority({ ...input, reattach: true });
+  expect(attached.manifest).toEqual(installed);
+  expect(() => attached.select(manifest("c"))).toThrow("cannot replace an attached pack authority");
 });

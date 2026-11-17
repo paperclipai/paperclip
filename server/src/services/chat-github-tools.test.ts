@@ -17,7 +17,42 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { githubGuestBotConnectionForSession } from "./chat-github-tools.js";
+import { GITHUB_BOT_TOOLS, githubGuestBotConnectionForSession } from "./chat-github-tools.js";
+
+describe("GitHub review tool contract", () => {
+  it("discovers the repository-specific finding category constraint", () => {
+    const submit = GITHUB_BOT_TOOLS.find(tool => tool.name === "submit_review")!;
+    expect(submit.schema).toMatchObject({
+      properties: {
+        findings: {
+          items: {
+            properties: {
+              category: {
+                description: expect.stringContaining("begin_review.findingCategories"),
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(submit.schema).not.toHaveProperty("properties.findings.items.properties.category.enum");
+  });
+  it("tells new bots which review sections Paperclip renders", () => {
+    const submit = GITHUB_BOT_TOOLS.find(tool => tool.name === "submit_review")!;
+    const properties = submit.schema.properties!;
+    expect(properties.summary).toMatchObject({
+      description: expect.stringContaining("Review body only"),
+      maxLength: 24000,
+    });
+    expect(properties.summary).toMatchObject({
+      description: expect.stringContaining("Paperclip adds"),
+    });
+    expect(properties.rationale).toMatchObject({
+      description: expect.stringContaining("Do not repeat the summary"),
+      maxLength: 12000,
+    });
+  });
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("GitHub guest bot connection discovery", () => {

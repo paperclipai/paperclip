@@ -51,8 +51,26 @@ fn assigned_tool_discovery_repairs_invalid_arguments_through_codex_transport() {
             match event.event_type.as_str() {
                 "harness.diagnostic" if event.payload["code"] == "semantic_tool_denied" => {
                     denied += 1;
+                    assert_eq!(dispatched, 0);
+                    assert_eq!(
+                        event.payload["operationId"],
+                        "paperclip_search_assigned_tools"
+                    );
+                    assert_eq!(event.payload["callId"], "assigned-discovery");
+                    assert_eq!(
+                        event.payload["message"],
+                        "provider arguments for paperclip_search_assigned_tools failed JSON Schema validation"
+                    );
                     assert_eq!(event.payload["paperclipExecuted"], false);
+                    let guidance = event.payload["inputSchemaGuidance"]
+                        .as_str()
+                        .expect("denied input retains the safe guidance sent to the provider");
+                    assert!(guidance.contains("/properties/query/type"), "{guidance}");
+                    assert!(guidance.len() <= 512);
+                    assert!(event.payload.get("input").is_none());
+                    assert!(event.payload.get("arguments").is_none());
                     assert!(!event.payload.to_string().contains("PRIVATE_QUERY"));
+                    assert!(!event.payload.to_string().contains("private search"));
                 }
                 "semantic_tool.input" => {
                     dispatched += 1;

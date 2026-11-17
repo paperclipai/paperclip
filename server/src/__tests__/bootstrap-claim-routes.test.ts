@@ -120,7 +120,7 @@ describe("POST /bootstrap/claim", () => {
     expect(claimFirstInstanceAdminMock).not.toHaveBeenCalled();
   });
 
-  it.each([
+  it.each<[Record<string, unknown>, string]>([
     [{ type: "none", source: "none" }, "anonymous caller"],
     [{ type: "agent", source: "agent_key", agentId: "agent-1" }, "agent key"],
     [{ type: "board", source: "board_key", userId: "user-1" }, "board API key"],

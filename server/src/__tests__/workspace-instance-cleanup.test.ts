@@ -39,7 +39,7 @@ function createRecorderDouble() {
   const recorder: WorkspaceOperationRecorder = {
     attachExecutionWorkspaceId: async () => {},
     recordOperation: async (input) => {
-      const result = await input.run();
+      const result = await input.run(async () => {});
       operations.push({
         status: result.status ?? "succeeded",
         metadata: input.metadata ?? null,

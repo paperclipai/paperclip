@@ -1,6 +1,9 @@
+import { groupImageResources } from "./image-resources";
+import { McpAppTurnViews } from "@/components/mcp-app/McpAppTurnViews";
 import { TaskBrowserActivity } from "../task-side-panel/TaskBrowserActivity";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
+import { TaskChatTaskCreatedCard } from "./TaskChatTaskCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -18,18 +21,23 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatSubagentTree } from "./TaskChatSubagentCard";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
-import { TaskMessageScroller } from "./TaskMessageScroller";
+import { TaskMessageScroller, type ScrollingHistory } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
-import { compactAdjacentErrors } from "./adjacent-errors";
+import { compactAdjacentErrors, isRetryableFailureMarker } from "./adjacent-errors";
+import { CoordinatorChatTaskHandoff } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
+import { CoordinatorChatDecisionReceipt } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
+import { CoordinatorChatPendingQuestion } from "@/components/coordinator/CoordinatorChatPendingQuestions";
 
 const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
 interface TaskChatThreadViewProps {
+  scrollingHistory?: ScrollingHistory;
   items: TaskChatItem[];
   /**
    * Content rendered above the first message INSIDE the scroll viewport (the
@@ -101,9 +109,13 @@ function renderItem(
   onOpenBrowser?: (browserId: string) => void,
 ) {
   switch (item.kind) {
+    case "pending_question": return <CoordinatorChatPendingQuestion item={item.question} />;
+    case "task_handoff": return <CoordinatorChatTaskHandoff handoff={item.handoff} animateEntry={item.animateEntry} />;
+    case "decision_receipt": return <CoordinatorChatDecisionReceipt receipt={item.receipt} />;
     case "browser": return <TaskBrowserActivity browser={item.browser} label={item.label} onOpen={onOpenBrowser} />;
     case "project_created": return <TaskChatProjectCreatedCard item={item} />;
     case "skill_created": return <TaskChatSkillCreatedCard item={item} onOpen={onOpenSkill} />;
+    case "task_created": return <TaskChatTaskCreatedCard item={item} />;
     case "message": {
       // Compute the actions once: the bubble renders them for a runless reply
       // (footer = actions + timestamp), while an attached turn hands them to
@@ -148,7 +160,11 @@ function renderItem(
           }
         />
       ) : undefined;
-      return (
+      // MCP Apps views ride with the reply, outside the folded tool history.
+      const appViews = item.author === "agent" && item.sourceRunId
+        ? <McpAppTurnViews runId={item.sourceRunId} notBeforeMs={item.createdAtIso ? Date.parse(item.createdAtIso) : undefined} />
+        : null;
+      const bubble = (
         <TaskChatBubble
           item={item}
           // Hydration and live-to-durable reconciliation may move a logical
@@ -162,7 +178,7 @@ function renderItem(
                 : actions
           }
           queuedAction={renderQueuedAction?.(item)}
-          beforeTurn={item.attachedTurn?.standaloneHeader ? turn : undefined}
+          beforeTurn={item.attachedTurn?.standaloneHeader ? <>{turn}{appViews}</> : undefined}
           attachedTurn={item.attachedTurn?.standaloneHeader ? undefined : turn}
           hideAgentIdentity={Boolean(item.attachedTurn?.standaloneHeader)}
           onTryAgainNoLiveExecutionPath={onTryAgainNoLiveExecutionPath}
@@ -172,6 +188,7 @@ function renderItem(
           attachments={attachments}
         />
       );
+      return appViews && !item.attachedTurn?.standaloneHeader ? <>{appViews}{bubble}</> : bubble;
     }
     case "marker":
       return (
@@ -227,6 +244,8 @@ function renderItem(
       );
     case "brief":
       return renderBrief ? renderBrief() : null;
+    case "subagent_group":
+      return <TaskChatSubagentTree subagents={item.subagents} />;
     case "turn":
       return (
         <TaskChatTurn
@@ -297,6 +316,7 @@ export function taskChatItemSpacingClass(
  * TaskChatItem[] onto the primitives inside the auto-follow scroller.
  */
 export function TaskChatThreadView({
+  scrollingHistory,
   items,
   header,
   onApprovalDecision,
@@ -318,7 +338,8 @@ export function TaskChatThreadView({
   onOpenBrowser,
 }: TaskChatThreadViewProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  const { items: visibleItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
+  const { items: compactedItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
+  const visibleItems = useMemo(() => groupImageResources(compactedItems), [compactedItems]);
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath
       ? [...visibleItems]
@@ -326,8 +347,7 @@ export function TaskChatThreadView({
           .find(
             (item) => {
               const marker = item.kind === "marker" ? item : retryMarkers.get(item.id);
-              return marker?.variant === "interrupted" &&
-                (marker.label === "Run failed" || marker.label === "Usage limit reached");
+              return !!marker && isRetryableFailureMarker(marker);
             },
           )?.id
       : undefined;
@@ -427,7 +447,7 @@ export function TaskChatThreadView({
   if (!scroll) return body;
 
   return (
-    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)}>
+    <TaskMessageScroller contentKey={contentKey ?? taskChatContentKey(items)} scrollingHistory={scrollingHistory}>
       {body}
     </TaskMessageScroller>
   );
@@ -435,7 +455,7 @@ export function TaskChatThreadView({
 
 // Cheap content signature so streaming growth (text lengthening without the
 // item count changing) still advances the auto-follow key. Shared by the
-// desktop scroller above and the mobile window-scroll follow (TaskChatThread).
+// shared message scroller on desktop and mobile (TaskChatThread).
 function signatureOf(it: TaskChatItem): number {
   if (it.kind === "message") return it.text.length + (it.attachedTurn ? 1 : 0);
   if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);

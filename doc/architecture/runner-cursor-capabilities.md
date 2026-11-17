@@ -1,6 +1,23 @@
 # Cursor ACP capability inventory
 
-Current source (2026-10-06): **Cursor profile v14 combines the model-selection correction with mainline ACP resource-not-found handling**.
+## Current profile identity
+
+Cursor runs as **profile 17**. Its `commandDigest` attests the release
+declaration in `cursor-contract.json`: the vendor build, the native patch and
+the admitted mode, question, accounting and model-selection behaviour. It does
+not bind the shared ACPX layer. Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. Launch and recovery
+admission require the exact current profile and digest. Saved inputs with an
+earlier profile version still decode, so recovery can refuse them.
+
+## Profile chronology
+
+Until 2026-10-30, Cursor's release declaration also bound the ACPX patch. The
+dated sections below record earlier profiles; their versions and digests are not
+current.
+
+Historical source (2026-10-06): **Cursor profile v14 combines the model-selection correction with mainline ACP resource-not-found handling**.
 The bundled ACPX runtime forwards unlisted model IDs unchanged, verifies model
 selection responses, and reapplies a selected model when a loaded session reports
 another model. Its 14 package tests exercise startup and reconnect through a real
@@ -292,7 +309,7 @@ This source audit follows pinned native update → ACPX runtime → `canonicalPr
 
 | Native field/interface | Preserved boundary | Current projection / reason for partial use | Follow-up |
 |---|---|---|---|
-| Prompt image blocks | Pinned native initialize advertises image input | Shared `AcpxRuntimeTurnInput` has only `text`; `codex-runtime-adapter.ts` passes that text to ACPX, so no image blocks reach the wrapper from a runner turn | P1: add validated, bounded attachment inputs through the runner/ACPX contract, then prove exact-model behavior; native advertisement alone is not implementation evidence |
+| Prompt image blocks | Pinned native initialize advertises image input | Shared `AcpxRuntimeTurnInput` has only `text`; `acpx-runtime-adapter.ts` passes that text to ACPX, so no image blocks reach the wrapper from a runner turn | P1: add validated, bounded attachment inputs through the runner/ACPX contract, then prove exact-model behavior; native advertisement alone is not implementation evidence |
 | Parent tool `rawInput` | ACPX forwards the body | Canonical tool schema exposes only `inputUpdated`; full native arguments are not displayed | P1: bounded/redacted tool-argument presentation with company and path checks |
 | Parent tool `content[]` diff `path`, `oldText`, `newText` | ACPX forwards structured content; native permission requests also use it for proposed changes | Canonical tool mapper uses `rawOutput`, so completed provider-reported diff blocks have no dedicated output surface; separate workspace evidence is not equivalent | P1: validate physical workspace locations and expose attributed diff artifacts |
 | Parent tool `content[]` images/resource blocks | ACPX forwards blocks and produces a summary | Structured media is unused by canonical tool output; safe registration/location semantics must precede ingestion | P1: validated artifact reference projection with explicit provenance |

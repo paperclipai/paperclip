@@ -7,6 +7,8 @@ const PROVIDER_ONLY_KEYS: ReadonlySet<string> = new Set([
   ...AGENT_OBSERVABILITY_ENV_KEYS,
 ]);
 const IDENTITY_KEYS = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
+// Paperclip's gh and git launchers in the shell fetch the run's GitHub credential with this capability.
+const GITHUB_LAUNCHER_KEYS = ["PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BRIDGE_TOKEN"];
 
 /** Only resolved adapter configuration can opt a service secret into shell access.
  * The launch environment here is Paperclip-built, never ambient process.env.
@@ -24,8 +26,12 @@ export function codexShellEnvironmentKeys(
     .map(([key]) => key));
   return [...new Set([
     "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+    // Certificate-trust names stay inheritable even when the launch environment
+    // does not carry them yet: sandboxes inject the values at execution time.
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS", "DENO_CERT", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
     ...Object.keys(environment).filter(key => ENVIRONMENT_NAME.test(key) && !PROVIDER_ONLY_KEYS.has(key.toUpperCase())
       && (key === "PAPERCLIP_API_KEY" || configuredSecrets.has(key) || !SECRET_NAME.test(key))),
+    ...GITHUB_LAUNCHER_KEYS.filter(key => environment[key]),
     ...(hasAgentIdentity ? IDENTITY_KEYS : []),
   ])].sort();
 }

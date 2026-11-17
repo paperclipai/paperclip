@@ -17,6 +17,7 @@ const mockBuiltInAgentService = vi.hoisted(() => ({
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   getBundle: vi.fn(),
+  getFileDates: vi.fn(),
   readFile: vi.fn(),
   updateBundle: vi.fn(),
   writeFile: vi.fn(),
@@ -30,9 +31,10 @@ const mockInstructionWorkingCopies = vi.hoisted(() => ({ list: vi.fn(), resolve:
 vi.mock("../services/agent-instruction-working-copies.js", () => ({ agentInstructionWorkingCopyService: () => mockInstructionWorkingCopies }));
 
 const mockDownloadAgentFile = vi.hoisted(() => vi.fn());
+const mockRenameAgentFile = vi.hoisted(() => vi.fn());
 vi.mock("../services/agent-file-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/agent-file-store.js")>();
-  return { ...actual, agentFileStore: (...args: Parameters<typeof actual.agentFileStore>) => ({ ...actual.agentFileStore(...args), download: mockDownloadAgentFile }) };
+  return { ...actual, agentFileStore: (...args: Parameters<typeof actual.agentFileStore>) => ({ ...actual.agentFileStore(...args), download: mockDownloadAgentFile, rename: mockRenameAgentFile }) };
 });
 
 const mockInstructionRevisions = vi.hoisted(() => ({ readCurrent: vi.fn(), commit: vi.fn(), restore: vi.fn(), history: vi.fn(), readRevision: vi.fn(), diff: vi.fn(), materializeCurrent: vi.fn() }));
@@ -206,6 +208,7 @@ describe("agent instructions bundle routes", () => {
       ...makeAgent(),
       adapterConfig: patch.adapterConfig ?? {},
     }));
+    mockAgentInstructionsService.getFileDates.mockResolvedValue({ updatedAt: "2026-11-05T12:00:00.000Z" });
     mockAgentInstructionsService.getBundle.mockResolvedValue({
       agentId: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
@@ -579,6 +582,27 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
+  it("renames through the file store with the authenticated actor and source hash", async () => {
+    mockRenameAgentFile.mockResolvedValue(undefined);
+    const res = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file")
+      .send({ path: "AGENTS.md", renameTo: "ROOT.md", content: "Updated", baseHash: "a".repeat(64) }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockRenameAgentFile).toHaveBeenCalledWith({ companyId: "company-1", agentId: "11111111-1111-4111-8111-111111111111",
+      path: "AGENTS.md", renameTo: "ROOT.md", bytes: Buffer.from("Updated"), baseHash: "a".repeat(64) }, expect.objectContaining({ type: "board" }));
+    expect(mockAgentInstructionsService.readFile).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "ROOT.md");
+    expect(mockInstructionRevisions.commit).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("requires a source hash before renaming", async () => {
+    const res = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file")
+      .send({ path: "AGENTS.md", renameTo: "ROOT.md", content: "Updated" }));
+    expect(res.status).toBe(422);
+    expect(mockRenameAgentFile).not.toHaveBeenCalled();
+  });
+
   it("commits entry bytes through the canonical service with the authenticated actor", async () => {
     const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
       .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
@@ -597,6 +621,7 @@ describe("agent instructions bundle routes", () => {
       .get("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?path=AGENTS.md"));
     expect(res.status).toBe(200);
     expect(res.body.content).toBe("committed");
+    expect(res.body.updatedAt).toBe("2026-11-05T12:00:00.000Z");
     expect(res.body.revision.id).toBe("33333333-3333-4333-8333-333333333333");
     expect(mockAgentInstructionsService.readFile).not.toHaveBeenCalled();
   });

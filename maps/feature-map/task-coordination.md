@@ -56,6 +56,21 @@ interfaces with [the paused composer browser suite](../../tests/e2e/paused-compo
 Release rechecks tasks reopened after the pause; another active pause still prevents
 their execution, and uncertain prior executions must be reconciled before waking.
 
+### Plugin task panels
+
+An installed plugin can offer an agent detail tab in the task side panel through
+its optional `taskSidePanel` declaration. Open the view from the task side-panel
+launcher for the running agent, or the assigned agent when idle. The plugin owns
+its label, viewer, and access checks. Missing or disabled plugins add no view.
+A closed panel can be reopened from the launcher.
+
+Implementation: [panel discovery](../../ui/src/hooks/useTaskPluginPanels.ts) and
+[task panel](../../ui/src/components/task-side-panel/TaskSidePanel.tsx).
+Automated: [discovery tests](../../ui/src/hooks/useTaskPluginPanels.test.tsx) and
+[task panel tests](../../ui/src/components/task-side-panel/TaskSidePanel.test.tsx)
+cover availability, task/agent changes, failures, inactivity and dismissal.
+These mocks do not establish a particular plugin's live transport behavior.
+
 ## Gotchas
 
 - Review completion and task completion are different events under some policies.

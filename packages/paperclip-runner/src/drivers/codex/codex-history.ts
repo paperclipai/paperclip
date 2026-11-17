@@ -1,8 +1,12 @@
-import type { CodexAppServerTransport } from "./app-server-transport.js";
+import { isCodexMethodUnavailable, type CodexAppServerTransport } from "./app-server-transport.js";
 import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
 import { record, text } from "./codex-driver-values.js";
 
 type Requester = Pick<CodexAppServerTransport, "request">;
+
+const TURN_STATUSES = ["inProgress", "completed", "failed", "interrupted", "cancelled"];
+
+class CodexPaginatedHistoryUnsupported extends HarnessReconciliationError {}
 
 /** A partial or unsupported provider read is never evidence that work is idle. */
 async function pages(
@@ -23,9 +27,14 @@ async function pages(
         ...(cursor ? { cursor } : {}),
       });
     } catch (error) {
-      throw new HarnessReconciliationError(
-        `codex_history_read_failed: ${method} requires supported paginated history; ${String(error)}`,
-      );
+      if (!isCodexMethodUnavailable(error))
+        throw new HarnessReconciliationError(
+          `codex_history_read_failed: ${method} read failed; ${String(error)}`,
+        );
+      const unsupported = `codex_history_read_failed: ${method} requires supported paginated history; ${String(error)}`;
+      throw page === 0
+        ? new CodexPaginatedHistoryUnsupported(unsupported)
+        : new HarnessReconciliationError(unsupported);
     }
     if (!Array.isArray(response.data))
       throw new HarnessReconciliationError(
@@ -71,31 +80,57 @@ export async function readCodexThreadState(
   return snapshot;
 }
 
-export function readCodexTurnMetadata(
+function turnIdentity(value: Record<string, unknown>): string {
+  if (!TURN_STATUSES.includes(text(value.status))) {
+    throw new HarnessReconciliationError(
+      "codex_history_incomplete: invalid turn status",
+    );
+  }
+  return text(value.id);
+}
+
+async function readCompleteThreadTurns(
+  transport: Requester,
+  threadId: string,
+  method: string,
+  cause: unknown,
+): Promise<Record<string, unknown>[]> {
+  if (!(cause instanceof CodexPaginatedHistoryUnsupported)) throw cause;
+  const snapshot = await transport.request("thread/read", { threadId, includeTurns: true });
+  const thread = record(snapshot.thread);
+  if (text(thread.id) !== threadId)
+    throw new HarnessReconciliationError(
+      "thread/read returned a different driver session",
+    );
+  if (!Array.isArray(thread.turns))
+    throw new HarnessReconciliationError(
+      `codex_history_read_failed: ${method} requires supported paginated history; thread/read omitted turns`,
+    );
+  const turns = thread.turns.map(record);
+  for (const turn of turns) {
+    if (!turnIdentity(turn))
+      throw new HarnessReconciliationError(
+        "codex_history_incomplete: thread/read omitted an identity",
+      );
+  }
+  return turns;
+}
+
+export async function readCodexTurnMetadata(
   transport: Requester,
   threadId: string,
 ): Promise<Record<string, unknown>[]> {
-  return pages(
-    transport,
-    "thread/turns/list",
-    { threadId, sortDirection: "asc", itemsView: "notLoaded" },
-    (value) => {
-      if (
-        ![
-          "inProgress",
-          "completed",
-          "failed",
-          "interrupted",
-          "cancelled",
-        ].includes(text(value.status))
-      ) {
-        throw new HarnessReconciliationError(
-          "codex_history_incomplete: invalid turn status",
-        );
-      }
-      return text(value.id);
-    },
-  );
+  try {
+    return await pages(
+      transport,
+      "thread/turns/list",
+      { threadId, sortDirection: "asc", itemsView: "notLoaded" },
+      turnIdentity,
+    );
+  } catch (error) {
+    const turns = await readCompleteThreadTurns(transport, threadId, "thread/turns/list", error);
+    return turns.map((turn) => ({ ...turn, items: [], itemsView: "notLoaded" }));
+  }
 }
 
 export async function readCodexTurnItems(
@@ -103,17 +138,28 @@ export async function readCodexTurnItems(
   threadId: string,
   turnId: string,
 ): Promise<Record<string, unknown>[]> {
-  const entries = await pages(
-    transport,
-    "thread/items/list",
-    { threadId, turnId, sortDirection: "asc" },
-    (value) => {
-      if (text(value.turnId) !== turnId)
-        throw new HarnessReconciliationError(
-          "thread/items/list returned a different turn",
-        );
-      return text(record(value.item).id);
-    },
-  );
+  let entries: Record<string, unknown>[];
+  try {
+    entries = await pages(
+      transport,
+      "thread/items/list",
+      { threadId, turnId, sortDirection: "asc" },
+      (value) => {
+        if (text(value.turnId) !== turnId)
+          throw new HarnessReconciliationError(
+            "thread/items/list returned a different turn",
+          );
+        return text(record(value.item).id);
+      },
+    );
+  } catch (error) {
+    const turns = await readCompleteThreadTurns(transport, threadId, "thread/items/list", error);
+    const items = turns.find((turn) => text(turn.id) === turnId)?.items;
+    if (!Array.isArray(items))
+      throw new HarnessReconciliationError(
+        "codex_history_incomplete: thread/read omitted the turn's items",
+      );
+    return items.map(record);
+  }
   return entries.map((entry) => record(entry.item));
 }

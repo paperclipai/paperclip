@@ -16,6 +16,7 @@ export interface IssueAssignmentWakeupDeps {
       allowRunCoalescing?: boolean;
       requestedByActorType?: "user" | "agent" | "system";
       requestedByActorId?: string | null;
+      requestedByActorCompanyId?: string;
       contextSnapshot?: Record<string, unknown>;
       durableChatRequest?: DurableChatWakeupRequest;
     },
@@ -30,10 +31,12 @@ export function queueIssueAssignmentWakeup(input: {
   contextSource: string;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorCompanyId?: string;
   taskKey?: string | null;
   /** Latest issue comment that caused this wakeup. Included in both payload
    * and context so the heartbeat can build the exact turn that was requested. */
   wakeCommentId?: string | null;
+  wakeCommentIds?: string[];
   /** Closed, server-derived omission counts for provider attachments on the
    * exact wake comment. These are prompt diagnostics, never authorization. */
   attachmentOmissionReasons?: Record<string, number> | null;
@@ -58,6 +61,7 @@ export function queueIssueAssignmentWakeup(input: {
       },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
+      ...(input.requestedByActorCompanyId ? { requestedByActorCompanyId: input.requestedByActorCompanyId } : {}),
       ...(input.durableChatRequest
         ? { durableChatRequest: input.durableChatRequest }
         : {}),
@@ -66,6 +70,7 @@ export function queueIssueAssignmentWakeup(input: {
         source: input.contextSource,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
+        ...(input.wakeCommentIds?.length ? { wakeCommentIds: input.wakeCommentIds } : {}),
         ...(input.chatConversationId ? { chatConversationId: input.chatConversationId } : {}),
         ...(input.wakeCommentId && input.attachmentOmissionReasons
           ? {

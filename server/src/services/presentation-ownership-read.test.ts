@@ -1,27 +1,36 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { agents, companies, completionContracts, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { eq, type SQL } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { NativeRunCoordinatorStore } from "./native-runtime/native-run-coordinator-store.js";
 import { getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { isExternalChatPresentationContext } from "./heartbeat-run-summary.js";
-import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-runtime/native-run-finalizer.js";
+import { finalizeNativeRun, recoverCommittedNativeChatResponse, repairCommittedNativeChatResponse } from "./native-runtime/native-run-finalizer.js";
+import { nativeResponsePresentationWork } from "./native-runtime/native-response-presentation-work.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PRESENTATION_READ_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read projections", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("presentation-ownership-read-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("presentation-ownership-read-");
+    db = createDb(external ?? database!.connectionString);
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  async function fixture(patch: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
-    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Read fixture", issuePrefix: companyId.slice(0, 8) });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Read agent", adapterType: "codex_local" });
+  async function fixture(patch: Partial<typeof heartbeatRuns.$inferInsert> = {}, identity?: { companyId: string; agentId: string }) {
+    const companyId = identity?.companyId ?? randomUUID(), agentId = identity?.agentId ?? randomUUID(), issueId = randomUUID();
+    if (!identity) {
+      await db.insert(companies).values({ id: companyId, name: "Read fixture", issuePrefix: companyId.slice(0, 8) });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Read agent", adapterType: "codex_local" });
+    }
     await db.insert(issues).values({ id: issueId, companyId, title: "Read task", status: "blocked", assigneeAgentId: agentId });
     const payload = randomBytes(128 * 1024).toString("base64");
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: issueId,
@@ -113,8 +122,8 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
   async function compareRepair(f: Awaited<ReturnType<typeof fixture>>) {
     const baseline = captureReads(true), projected = captureReads();
     const input = { companyId: f.companyId, issueId: f.issueId, runId: f.run.id };
-    expect(await repairCommittedNativeChatResponse(projected.recorded, input))
-      .toBe(await repairCommittedNativeChatResponse(baseline.recorded, input));
+    expect(await recoverCommittedNativeChatResponse(projected.recorded, { ...input, onlyWhenDue: true }))
+      .toBe(await recoverCommittedNativeChatResponse(baseline.recorded, { ...input, onlyWhenDue: true }));
     expect(projected.rows.flat()).toHaveLength(1);
     expect(Buffer.byteLength(JSON.stringify(projected.rows))).toBeLessThan(4096);
     expect(Buffer.byteLength(JSON.stringify(baseline.rows))).toBeGreaterThan(128 * 1024);
@@ -123,7 +132,7 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
   }
 
   it("preserves selected answers without downloading prompts, profiles, or excerpts", async () => {
-    const f = await fixture({ runtimeMode: "native", status: "succeeded", resultJson: {
+    const f = await repairFixture({ resultJson: {
       presentationDecision: { commentId: randomUUID() }, unknownFutureReceipt: { preserved: true } } });
     const row = await compareRepair(f);
     expect(row.resultJson).toEqual(f.run.resultJson);
@@ -132,10 +141,10 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     expect(await repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: other.id, runId: f.run.id })).toBe(false);
   });
 
-  async function unpublishedAcceptedReply() {
+  async function unpublishedAcceptedReply(id?: string, identity?: { companyId: string; agentId: string }) {
     const payload = randomBytes(128 * 1024).toString("base64");
-    const f = await fixture({ runtimeMode: "native", status: "running", finishedAt: null,
-      contextSnapshot: { source: "internal", prompt: payload, paperclipWake: { prompt: payload } } });
+    const f = await fixture({ id, runtimeMode: "native", status: "running", finishedAt: null,
+      contextSnapshot: { source: "internal", prompt: payload, paperclipWake: { prompt: payload } } }, identity);
     const [contract] = await db.insert(completionContracts).values({ companyId: f.companyId, issueId: f.issueId,
       revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
       completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
@@ -167,6 +176,52 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     return { ...f, before, reply };
   }
 
+  it("saves an independent task reply while an earlier task waits for its database lock", async () => {
+    const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
+    const first = await unpublishedAcceptedReply(`00000000-0000-4000-8000-${suffix}`);
+    const second = await unpublishedAcceptedReply(`00000000-0000-4001-8000-${suffix}`, first);
+    let release!: () => void;
+    let locked!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const blocker = db.transaction(async tx => {
+      await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, first.run.id)).for("update");
+      locked(); await hold;
+    });
+    await Promise.race([acquired, blocker]);
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, second.run.id));
+        expect(rows).toHaveLength(1);
+        expect(rows[0].body).toBe(second.reply);
+      }, { timeout: 5000 });
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, first.run.id))).toHaveLength(0);
+    } finally {
+      release(); await blocker; await worker.ready; worker.stop(); await coordinator.stop();
+    }
+    for (const f of [first, second]) {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.run.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].body).toBe(f.reply);
+    }
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  async function repairFixture(patch: Partial<typeof heartbeatRuns.$inferInsert>) {
+
+
+    const f = await unpublishedAcceptedReply();
+    const [run] = await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.run.id)).returning();
+
+
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, run.id));
+    return { ...f, run };
+  }
+
   it("publishes the same accepted reply and decision from equivalent full-row and projected starting states", async () => {
     const outcomes: unknown[] = [];
     for (const fullRows of [true, false]) {
@@ -195,12 +250,59 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     expect(outcomes[1]).toEqual(outcomes[0]);
   });
 
+  it.each(["direct", "worker", "discovery and worker"])("traces %s reply recovery independently and leaves reply content out of spans", async lane => {
+    const f = await unpublishedAcceptedReply();
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    trace.setGlobalTracerProvider(provider);
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    try {
+      if (lane !== "direct") {
+        const worker = nativeResponsePresentationWork(db);
+        if (lane === "discovery and worker") {
+          expect(await worker.load({ companyId: f.companyId, issueId: f.issueId, runId: f.run.id }))
+            .toEqual([expect.objectContaining({ id: f.run.id })]);
+        }
+        expect(await worker.check({ id: f.run.id, companyId: f.companyId,
+          issueId: f.issueId, agentId: f.agentId, dueAt: 0 })).toBeNull();
+      } else {
+        expect(await repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: f.issueId, runId: f.run.id })).toBe(true);
+      }
+      const spans = exporter.getFinishedSpans();
+      const roots = spans.filter(span => span.name === "task.response_presentation");
+      expect(roots).toHaveLength(lane === "discovery and worker" ? 2 : 1);
+      for (const root of roots) {
+        expect(root.parentSpanContext).toBeUndefined();
+        expect(root.attributes).toEqual({ "paperclip.task.run.run_id": createHash("sha256").update(f.run.id).digest("hex").slice(0, 12) });
+      }
+      const root = roots.at(-1)!;
+      for (const name of ["response.transaction", "response.transaction.entry"]) {
+        const child = spans.find(span => span.name === name)!;
+        expect(child).toBeDefined();
+        expect(child.parentSpanContext?.spanId).toBe(root.spanContext().spanId);
+      }
+      if (lane !== "direct") expect(spans.filter(span => span.name === "response.resolve"))
+        .toHaveLength(lane === "discovery and worker" ? 3 : 2);
+      expect(JSON.stringify(spans.map(span => span.attributes))).not.toContain(f.reply);
+      const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.run.id));
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe(f.reply);
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "");
+      expect(await repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: f.issueId, runId: f.run.id })).toBe(false);
+      expect(exporter.getFinishedSpans()).toHaveLength(spans.length);
+    } finally {
+      vi.unstubAllEnvs();
+      await provider.shutdown();
+      trace.disable();
+    }
+  });
+
   it.each([null, [], "scalar", 42, { source: 42, skipIssueComment: "true", paperclipWake: [] },
     { source: "issue.comment.created", externalChatContinuation: true },
     { source: "chat:fixture", skipIssueComment: true, paperclipWake: { externalInteractionContinuation: "true" } },
     { source: "internal", paperclipWake: { externalInteractionContinuation: true } },
   ].map(context => ({ context })))("preserves typed publication flags for $context", async ({ context }) => {
-    const f = await fixture({ runtimeMode: "native", status: "succeeded", contextSnapshot: context as Record<string, unknown> | null });
+    const f = await repairFixture({ contextSnapshot: context as Record<string, unknown> | null });
     const row = await compareRepair(f);
     expect(isExternalChatPresentationContext(row.contextSnapshot)).toBe(isExternalChatPresentationContext(context));
     const original = context && typeof context === "object" && !Array.isArray(context) ? context : {};
@@ -208,7 +310,7 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
   });
 
   it.each([null, ["stdout", { receipt: true }], "scalar", 42].map(result => ({ result })))("preserves non-object result evidence $result", async ({ result }) => {
-    const f = await fixture({ runtimeMode: "native", status: "succeeded", resultJson: result as Record<string, unknown> | null });
+    const f = await repairFixture({ resultJson: result as Record<string, unknown> | null });
     expect((await compareRepair(f)).resultJson).toEqual(result);
   });
 });

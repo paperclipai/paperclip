@@ -76,5 +76,5 @@ describe("ProviderTraceFileSink", () => {
 });
 
 function statMode(value: Awaited<ReturnType<typeof stat>>): number {
-  return value.mode & 0o777;
+  return Number(value.mode) & 0o777;
 }
