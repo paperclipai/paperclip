@@ -203,8 +203,8 @@ function explicitlyRequestsFileOutputBySentence(objective: string): boolean {
           const beforeDestination = prefix.slice(0, destinationMatch?.index ?? 0);
           const namedDestination = /^\s+(?:is|was)\s+(?:(?:currently|now|already)\s+)?(?:named|called|titled)\b/iu.test(suffix);
           const adverb = "(?:(?:actually|really|still|previously|currently|now|already)\\s+)?";
-          const comparison = !namedDestination && /\bas\s+the\s+$/iu.test(prefix)
-            && new RegExp(`^\\s+${adverb}(?:reads|read|is|are|was|were|appears|looks|stands|says|shows|exists)\\b`, "iu").test(suffix);
+          const comparison = !namedDestination && /^(?:files?|documents?)$/iu.test(match[0]) && /\bas\s+the\s+$/iu.test(prefix)
+            && new RegExp(`^\\s+${adverb}(?:reads?(?!\\s+(?:by|from|into)\\b)|is|are|was|were|appears|looks|stands|says|shows|exists)\\b`, "iu").test(suffix);
           if (comparison) return false;
           const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
             || !inputReference.test(beforeDestination));
