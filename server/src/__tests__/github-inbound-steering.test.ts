@@ -172,6 +172,24 @@ describe("GitHub inbound steering", () => {
     expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
   });
 
+  it("retries admission if a legacy run selects native execution before scheduling", async () => {
+    const f = await fixture(), wakeup = heartbeat.wakeup.bind(heartbeat);
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, f.run.id));
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockImplementationOnce(async (agentId, options) => {
+      await db.update(heartbeatRuns).set({ runtimeMode: "native" }).where(eq(heartbeatRuns.id, f.run.id));
+      return wakeup(agentId, options);
+    });
+    try {
+      expect(await f.owner.processInboundWakeup(f.delivery.id)).toBe(false);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id))).toEqual([]);
+      await db.update(chatActions).set({ result: null }).where(eq(chatActions.id, f.action.id));
+      expect(await f.owner.processInboundWakeup(f.delivery.id)).toBe(true);
+      expect(steer).toHaveBeenCalledTimes(1);
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+      expect(receipt).toMatchObject({ status: "coalesced", runId: f.run.id });
+    } finally { schedule.mockRestore(); }
+  });
+
   async function acknowledge(f: Awaited<ReturnType<typeof fixture>>) {
     await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.run.agentId, runId: f.run.id,
       seq: 1, sourceEventId: randomUUID(), eventType: "item.completed", stream: "system", level: "info",
@@ -289,6 +307,34 @@ describe("GitHub inbound steering", () => {
     expect(identity.status).toBe("accepted");
   });
 
+  it("does not consume an edited message with the original acknowledgement when its action is retried", async () => {
+    const f = await fixture();
+    steer.mockImplementationOnce(async () => {
+      await acknowledge(f);
+      await db.update(issueComments).set({ body: "Review the newer edit" }).where(eq(issueComments.id, f.followup.id));
+      return { turnId: "review-turn" };
+    });
+    await f.owner.processInboundWakeup(f.delivery.id);
+    const [original] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+    await db.update(chatActions).set({ status: "processing", result: null,
+      updatedAt: new Date(Date.now() - 60 * 60_000) }).where(eq(chatActions.id, f.action.id));
+    const owner = f.restart();
+    expect(await owner.processInboundWakeup(f.delivery.id), f.errors.join("\n")).toBe(true);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.action.id));
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(receipt.payload?.githubSteering).toEqual(original.payload?.githubSteering);
+    expect(steer).toHaveBeenCalledTimes(1);
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issue.id));
+    const schedule = vi.spyOn(heartbeat, "wakeup").mockResolvedValue(null);
+    try {
+      await resumeDeferredChatWake(db, { companyId: f.companyId, agentId: f.run.agentId,
+        issueId: f.issue.id, requestId: f.action.id, recoverySweep: true });
+      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(schedule.mock.calls[0][1]?.contextSnapshot?.wakeCommentId).toBe(f.followup.id);
+    } finally { schedule.mockRestore(); }
+  });
+
   it("retains a GitHub message with a file for a separate turn", async () => {
     const f = await fixture();
     const [asset] = await db.insert(assets).values({ companyId: f.companyId, provider: "local_disk", objectKey: randomUUID(),
@@ -353,6 +399,30 @@ describe("GitHub inbound steering", () => {
       createdAt: new Date(), updatedAt: new Date() }).returning();
     return { comment, delivery, action };
   }
+
+  it.each(["waiting", "timed_out"])("admits a concurrent update while a prior steer is %s", async state => {
+    const f = await fixture();
+    let release: ((value: { turnId: string }) => void) | undefined;
+    if (state === "waiting") steer.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    else steer.mockRejectedValueOnce(new NativeSessionSteeringError("steering_timeout", "Timed out"));
+    const processing = f.owner.processInboundWakeup(f.delivery.id);
+    if (state === "waiting") await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    else await processing;
+    try {
+      const next = await additionalUpdate(f);
+      expect(await f.owner.processInboundWakeup(next.delivery.id), f.errors.join("\n")).toBe(true);
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.id, next.action.id));
+      expect(action).toMatchObject({ status: "processed" });
+      expect(f.errors).toEqual([]);
+      const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, next.action.id));
+      expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(receipt.payload?.wakeCommentId).toBe(next.comment.id);
+      expect(steer).toHaveBeenCalledTimes(1);
+    } finally {
+      release?.({ turnId: "review-turn" });
+      await processing;
+    }
+  });
 
   it("keeps the latest requester source when an older acknowledgement is recovered", async () => {
     const f = await fixture();

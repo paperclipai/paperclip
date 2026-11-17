@@ -86,7 +86,7 @@ Late acknowledgements and retries use the native acknowledgement receipt to
 avoid sending the same update twice. Other chat providers keep their existing
 delivery behavior.
 
-Each GitHub receipt stays separate until steering acknowledges its exact input.
+Each native GitHub receipt stays separate until steering acknowledges its exact input.
 This prevents ordinary wake coalescing from merging a newer input into an
 uncertain delivery. Steering dispatch does not hold task or conversation locks while it waits for
 the provider. A saved receipt records the run, identity reservation, and exact
@@ -96,6 +96,12 @@ does not consume an edit that the provider did not receive or replace a newer
 requester lineage. An uncertain reservation stays pending while its source run
 can still acknowledge it; recovery rejects it when that run stops without an
 acknowledgement.
+Retries preserve the original steering revision. An edit that was not sent
+keeps ordinary delivery. Overlapping inputs also keep their admitted wakes
+while another steering acknowledgement is pending. After the active review
+ends, unacknowledged inputs retain ordinary delivery. Legacy runs keep their
+existing conversation batching when no native steering receipt is outstanding.
+Admission rechecks that condition under the task and run locks.
 
 ## Chat activity pagination and callback diagnostics
 

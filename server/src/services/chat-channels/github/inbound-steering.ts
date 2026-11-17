@@ -21,8 +21,35 @@ import { notifyGitHubReviewChecks } from "./review-check-work.js";
 type Authorize = ReturnType<typeof createInboundWakeAuthority>["authorizeInboundWorkStart"];
 type Action = typeof chatActions.$inferSelect;
 type SteeringReceipt = { runId: string; identityId: string; commentUpdatedAt: string; commentDigest: string };
-export const githubInboundWakeAdmission = { allowRunCoalescing: false } as const;
 const commentDigest = (body: string) => createHash("sha256").update(body).digest("hex");
+
+async function hasSteeringReceipt(db: Pick<Db, "select">, issue: { companyId: string; id: string }) {
+  const [wake] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+    sql`${agentWakeupRequests.payload} ? 'githubSteering'`,
+  )).limit(1);
+  return Boolean(wake);
+}
+
+export async function githubInboundWakeAdmission(db: Db,
+  issue: Pick<typeof issues.$inferSelect, "companyId" | "id" | "executionRunId">) {
+  const legacyRun = async (executor: Db) => !issue.executionRunId ? false : Boolean(await executor
+    .select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, issue.executionRunId), eq(heartbeatRuns.companyId, issue.companyId),
+      eq(heartbeatRuns.runtimeMode, "legacy"),
+    )).for("no key update").then(rows => rows[0]));
+  const allowRunCoalescing = await legacyRun(db) && !(await hasSteeringReceipt(db, issue));
+  return {
+    options: { allowRunCoalescing },
+    authorize: async (tx: Db, current: Pick<typeof issues.$inferSelect, "executionRunId">) => {
+      if (allowRunCoalescing && (current.executionRunId !== issue.executionRunId ||
+          !(await legacyRun(tx)) || await hasSteeringReceipt(tx, issue))) {
+        throw new Error("github_inbound_admission_changed");
+      }
+    },
+  };
+}
 
 function steeringReceipt(payload: Record<string, unknown> | null): SteeringReceipt | null {
   const value = payload?.githubSteering as Partial<SteeringReceipt> | undefined;
@@ -138,7 +165,7 @@ export async function steerGitHubInboundWake(
   if (!endpoint || await recoverGitHubSteeredWake(db, action, request)) return;
   const candidate = await db.transaction(async tx => {
     const [wake] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.id));
-    if (!wake || wake.status !== "deferred_issue_execution" || wake.runId) return null;
+    if (!wake || wake.status !== "deferred_issue_execution" || wake.runId || wake.payload?.githubSteering) return null;
     assertDurableChatWakeupReceipt(request, wake);
     const context = wake.payload?._paperclipWakeContext as Record<string, unknown> | undefined;
     if (context?.forceFreshSession || wake.payload?.executionWait || !queuedCommentIdsFromWakePayload(wake.payload).includes(request.commentId)) return null;
@@ -180,7 +207,7 @@ export async function steerGitHubInboundWake(
       const current = await authorize(tx, action);
       if (current.issue.executionRunId !== candidate.run.id) return null;
       const [wake] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.id)).for("update");
-      if (!wake || wake.status !== "deferred_issue_execution" || wake.runId) return null;
+      if (!wake || wake.status !== "deferred_issue_execution" || wake.runId || wake.payload?.githubSteering) return null;
       assertDurableChatWakeupReceipt(request, wake);
       if (!queuedCommentIdsFromWakePayload(wake.payload).includes(request.commentId)) return null;
       const [comment] = await tx.select({ updatedAt: issueComments.updatedAt }).from(issueComments).where(eq(issueComments.id, request.commentId));

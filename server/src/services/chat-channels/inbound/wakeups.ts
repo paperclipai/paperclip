@@ -307,6 +307,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
     };
     let request: ReturnType<typeof createDurableChatWakeupRequest> | null =
       null;
+    let githubAdmission: Awaited<ReturnType<typeof githubInboundWakeAdmission>> | undefined;
     const receipt = async () => {
       const row = await db
         .select()
@@ -345,6 +346,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
         requestedAt: claimed.createdAt,
         authorize: async (tx) => {
           const current = await authorizeInboundWorkStart(tx, claimed);
+          await githubAdmission?.authorize(tx, current.issue);
           if (current.delivery.state !== "processed")
             throw new Error("chat_inbound_wakeup_acceptance_not_committed");
         },
@@ -371,6 +373,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       );
       if (context.delivery.state !== "processed")
         throw new Error("chat_inbound_wakeup_acceptance_not_committed");
+      if (context.endpoint.provider === "github") githubAdmission = await githubInboundWakeAdmission(db, context.issue);
       await queueIssueAssignmentWakeup({
         heartbeat: options.heartbeat,
         issue: context.issue,
@@ -382,7 +385,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
         taskKey: context.issue.identifier,
         wakeCommentId: request.commentId,
         chatConversationId: context.conversation.id,
-        ...(context.endpoint.provider === "github" ? githubInboundWakeAdmission : {}),
+        ...githubAdmission?.options,
         attachmentOmissionReasons: claimed.payload.attachmentOmissionReasons as
           | Record<string, number>
           | undefined,
@@ -531,6 +534,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       left.receipt.createdAt.getTime() - right.receipt.createdAt.getTime() || left.receipt.id.localeCompare(right.receipt.id));
     const { receipt: primaryReceipt, action } = batch.at(-1)!;
     const riders = batch.slice(0, -1);
+    const githubAdmission = context.endpoint.provider === "github" ? await githubInboundWakeAdmission(db, context.issue) : undefined;
     const request = createDurableChatWakeupRequest({
       id: action.id, companyId: scope.companyId, agentId: scope.agentId, issueId: scope.issueId,
       commentId: String(action.payload.commentId),
@@ -538,7 +542,8 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       requestedByActorId: String(action.payload.requestedByActorId), requestedAt: action.createdAt,
       resumeDeferred: true,
       authorize: async tx => {
-        await authorizeAction(tx, action);
+        const authorized = await authorizeAction(tx, action);
+        await githubAdmission?.authorize(tx, authorized.issue);
         if (!riders.length) return;
         const current = await tx.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
           .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, scope.companyId),
@@ -562,7 +567,7 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.identifier,
       requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
       wakeCommentId: request.commentId, chatConversationId: context.conversation.id,
-      ...(context.endpoint.provider === "github" ? githubInboundWakeAdmission : {}),
+      ...githubAdmission?.options,
       ...(riders.length ? { wakeCommentIds: batch.map(entry => String(entry.action.payload.commentId)) } : {}),
       attachmentOmissionReasons: action.payload.attachmentOmissionReasons as Record<string, number> | undefined,
       durableChatRequest: request, rethrowOnError: true });
