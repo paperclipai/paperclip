@@ -75,7 +75,7 @@ export interface InstanceExperimentalSettings {
   enableChatConnectors: boolean;
   /** Show GitHub review bot setup and management independently of chat connectors. */
   enableGitHubReviewBots: boolean;
-  /** Allow person-authorized assistant tools and task event delivery. */
+  /** @deprecated Compatibility key only. Assistant connections (MCP) are always enabled. */
   enablePublicMcp: boolean;
   /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
   enableOpenAiDot: boolean;
@@ -146,6 +146,12 @@ export interface InstanceExperimentalSettings {
    * redeploy.
    */
   enableSandboxDuplexBridge: boolean;
+  /**
+   * MCP Tasks: long provider tool calls become durable tasks that survive
+   * timeouts, restarts, and deploys. Default off: the extension is not
+   * declared, so behavior matches a client without it.
+   */
+  enableMcpTasks: boolean;
   /**
    * @deprecated Compatibility-only. Provider WebSocket ingress now follows
    * enableNativeRunner and this value has no runtime effect.

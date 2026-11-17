@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 import type { DurablePrpControlPlane, RunnerProcessHandle, PrpWireConnection, TransportCloseReason } from "../control-plane/durable-prp-control-plane.js";
+import type { RunnerReleaseResumeOutcome } from "../control-plane/runner-execution-driver.js";
 import { createCapabilityRunnerdCodexTransport, readRunnerdArtifactBinding } from "./runnerd-codex-transport.js";
 import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 import { createPrivateHostControlFixture } from "../../test/support/private-host-control.js";
@@ -78,7 +79,7 @@ async function nativeWire(port: number, path: string, closeGate?: Promise<void>)
   });
 }
 
-it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "acpx slow restart", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close", "late wire close", "empty goal snapshot", "early claim", "early claim abandoned", "early claim cancellation", "early claim expired", "early claim stale ticket"] as const)(
+it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cache adoption", "acpx cache adoption", "acpx slow restart", "unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "release admission", "no cleanup callback", "adoption no cleanup callback", "resume no cleanup callback", "deferred turn after close", "late wire close", "empty goal snapshot", "early claim", "early claim abandoned", "early claim cancellation", "early claim expired", "early claim stale ticket", "relaunched same build", "relaunched incompatible build", "relaunched flush retry"] as const)(
   "releases and resumes the native Codex source before attachment (%s)", async mode => {
     const root = await mkdtemp(join(tmpdir(), "runner-release-resume-"));
     const acpx = mode === "acpx cache adoption" || mode === "acpx slow restart";
@@ -121,6 +122,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
     const measuredTurn = new Promise<void>(resolve => { enterMeasuredTurn = resolve; });
     const heldMeasuredTurn = new Promise<void>(resolve => { finishMeasuredTurn = resolve; });
     const sockets = new Set<PrpWireConnection>();
+    const relaunchSettled = vi.fn(async () => { expect(authority!.store.state.identity.runId).toBe(identity.runId); });
     const registration = async (core: DurablePrpControlPlane, source = core.store.state.identity) => {
       if ((mode === "late claim reply" || mode === "held past deadline" || mode === "early claim expired") && claimAccepted) throw new Error("Fixture source authentication started after expiry");
       authority = core;
@@ -158,8 +160,11 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         if (result.status !== "parked") throw new Error("Fixture park receipt unavailable");
         if (mode === "late wire close" && source.runId === identity.runId) expect(authority!.activeRunnerConnectionCount()).toBe(1);
       }),
-      resume: vi.fn(async (source: typeof identity, ticket: string): Promise<"resumed" | "unavailable"> => {
+      resume: vi.fn(async (source: typeof identity, ticket: string): Promise<RunnerReleaseResumeOutcome> => {
         claimTicketDigests.push(digest(ticket));
+        if (mode === "relaunched incompatible build") {
+          return { outcome: "resumed", runner: { version: "0.0.1", digest: `sha256:${"f".repeat(64)}` } };
+        }
         if (mode === "unavailable") {
           expect(handle?.isExitConfirmed?.()).toBe(true);
           return "unavailable";
@@ -174,6 +179,13 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
           if (mode === "expired ticket") throw new Error("Fixture lost claim reply past ticket lifetime");
         }
         if (loseReply) { loseReply = false; throw new Error("Fixture lost claim reply"); }
+        if (mode === "relaunched same build" || mode === "relaunched flush retry") {
+          const { version, digest: runnerDigest } = readRunnerdArtifactBinding(binary);
+          if (mode === "relaunched flush retry" && pair.resume.mock.calls.length === 1) {
+            vi.spyOn(authority!, "flushCheckpoint").mockRejectedValueOnce(new Error("Fixture checkpoint write failed"));
+          }
+          return { outcome: "resumed", runner: { version, digest: runnerDigest }, settled: relaunchSettled };
+        }
         return "resumed";
       }),
     };
@@ -420,12 +432,19 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         releaseClaim();
         await expect(attaching).rejects.toThrow("closed");
         await closing;
-      } else if (mode === "unavailable" || mode === "expired ticket" || mode === "late claim reply" || mode === "resume no cleanup callback" || mode === "early claim expired") {
-        await expect(attaching).rejects.toThrow(mode === "unavailable" ? "reuse_unavailable" : mode === "resume no cleanup callback" ? "released_cleanup_unavailable" : "reconciliation_expired");
+      } else if (mode === "unavailable" || mode === "relaunched incompatible build" || mode === "expired ticket" || mode === "late claim reply" || mode === "resume no cleanup callback" || mode === "early claim expired") {
+        await expect(attaching).rejects.toThrow(mode === "unavailable" || mode === "relaunched incompatible build" ? "reuse_unavailable" : mode === "resume no cleanup callback" ? "released_cleanup_unavailable" : "reconciliation_expired");
         expireClock?.mockRestore(); expireClock = undefined;
         await bundle.transport.close();
       } else await attaching;
       expect(new Set(claimTicketDigests).size).toBe(1);
+      if (mode === "relaunched same build" || mode === "relaunched flush retry") expect(relaunchSettled).toHaveBeenCalledOnce();
+      if (mode === "relaunched incompatible build") {
+        expect(relaunchSettled).not.toHaveBeenCalled();
+        expect(pair.resume).toHaveBeenCalledOnce();
+        expect(authority!.store.state.identity.runId).toBe(identity.runId);
+        return;
+      }
       if (["unavailable", "claim cancellation", "expired ticket", "late claim reply", "held past deadline", "resume no cleanup callback",
         "early claim abandoned", "early claim cancellation", "early claim expired", "early claim stale ticket"].includes(mode)) {
         expect(pair.resume).toHaveBeenCalledOnce();
@@ -436,7 +455,7 @@ it.skipIf(process.platform === "win32").each(["cached", "lost claim reply", "cac
         expect(intervals.size).toBe(0);
         return;
       }
-      expect(pair.resume).toHaveBeenCalledTimes(mode === "lost claim reply" ? 2 : 1);
+      expect(pair.resume).toHaveBeenCalledTimes(mode === "lost claim reply" || mode === "relaunched flush retry" ? 2 : 1);
       if (mode === "cache adoption" || mode === "acpx cache adoption" || mode === "late wire close") {
         expect(routeRuns.filter(runId => runId === identity.runId)).toHaveLength(2);
       }

@@ -53,6 +53,62 @@ describe("TaskObserver", () => {
     expect(observer.done).toBe(true);
   });
 
+  it("does not finish a staging-mix task on the poll that posts its last after-end follow-up", async () => {
+    const previous = { ...process.env };
+    const delay = REST_CONFIRM_MS + 50;
+    Object.assign(process.env, { RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS: `${delay}-${delay}`, RESTART_CHAOS_MIX_FOLLOW_UP_COUNT: "1" });
+    try {
+      let endedAt = 0;
+      const { api, posted } = fakeApi({ "/runs": () => [{ runId: "r1", status: "succeeded", createdAt: new Date(endedAt - 1_000).toISOString(),
+        finishedAt: new Date(endedAt).toISOString() }] });
+      const mixPlan: TaskPlan = { ...plan, workload: "SM", fault: "K0", followUpAfterMs: null,
+        stagingMix: { turnMinutes: 2, rounds: 2, subtasks: 0, followUpAfterMs: 1_000, arriveAtMs: 0, holdMs: 0 } };
+      const observer = new TaskObserver(mixPlan, api, lab, new Timeline(null), ready);
+      await observer.launch();
+      const start = observer.record.createdAt!;
+      endedAt = start;
+      const comments = () => posted.filter(route => route.endsWith("/comments")).length;
+      await observer.poll(start + 100);
+      expect(comments()).toBe(0);
+      await observer.poll(start + 100 + REST_CONFIRM_MS + 1);
+      expect(comments()).toBe(1);
+      expect(observer.done).toBe(false);
+      await observer.poll(start + 200 + REST_CONFIRM_MS + 2);
+      expect(observer.done).toBe(false);
+      await observer.poll(start + 300 + 2 * REST_CONFIRM_MS + 3);
+      expect(observer.done).toBe(true);
+    } finally {
+      for (const key of ["RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT"]) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+    }
+  });
+
+  it("does not finish a staging-mix task whose run ended before its planned follow-up was posted", async () => {
+    let endedAt = 0;
+    const { api, posted } = fakeApi({ "/runs": () => [{ runId: "r1", status: "succeeded", createdAt: new Date(endedAt - 1_000).toISOString(),
+      finishedAt: new Date(endedAt).toISOString() }] });
+    const followUpAfterMs = REST_CONFIRM_MS + 500;
+    const mixPlan: TaskPlan = { ...plan, workload: "SM", fault: "K0", followUpAfterMs: null,
+      stagingMix: { turnMinutes: 2, rounds: 2, subtasks: 0, followUpAfterMs, arriveAtMs: 0, holdMs: 0 } };
+    const observer = new TaskObserver(mixPlan, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    endedAt = start;
+    const comments = () => posted.filter(route => route.endsWith("/comments")).length;
+    await observer.poll(start + 100);
+    await observer.poll(start + 100 + REST_CONFIRM_MS + 1);
+    expect(comments()).toBe(0);
+    expect(observer.done).toBe(false);
+    await observer.poll(start + followUpAfterMs + 200);
+    expect(comments()).toBe(1);
+    expect(observer.record.stagingMix?.followUp).toMatchObject({ duringRun: false });
+    expect(observer.done).toBe(false);
+    await observer.poll(start + followUpAfterMs + 300);
+    await observer.poll(start + followUpAfterMs + 400 + REST_CONFIRM_MS);
+    expect(observer.done).toBe(true);
+  });
+
   it("keeps watching unexplained idle work until the stall limit, then records the stall", async () => {
     const { api } = fakeApi({}, "in_progress");
     const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
@@ -65,6 +121,54 @@ describe("TaskObserver", () => {
     expect(observer.done).toBe(true);
     expect(observer.record.finalStatus).toBe("in_progress");
     expect(observer.record.restAt).toBe(start + 1_000);
+  });
+
+  describe("deadline versus rest confirmation", () => {
+    async function observe(statusAt: (now: number, start: number) => string) {
+      let start = 0;
+      let current = 0;
+      const { api } = fakeApi({ "/api/issues/i1": route => route.endsWith("/runs")
+        ? [{ runId: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }]
+        : { id: "i1", status: statusAt(current, start), interruption: null } });
+      const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+      await observer.launch();
+      start = observer.record.createdAt!;
+      observer.record.deadlineAt = start + 60_000;
+      const poll = (at: number) => { current = at; return observer.poll(at); };
+      return { observer, start, poll };
+    }
+
+    it("confirms a task that began resting just before its deadline instead of timing it out", async () => {
+      const { observer, start, poll } = await observe((now, begin) => now >= begin + 59_000 ? "done" : "in_progress");
+      await poll(start + 58_000);
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(false);
+      expect(observer.record.timedOut).toBe(false);
+      await poll(start + 59_000 + REST_CONFIRM_MS);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(false);
+      expect(observer.record.finalStatus).toBe("done");
+      expect(observer.record.restAt).toBe(start + 59_000);
+    });
+
+    it("times out a task that is still running at its deadline", async () => {
+      const { observer, start, poll } = await observe(() => "in_progress");
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(true);
+      expect(observer.record.finalStatus).toBe("in_progress");
+    });
+
+    it("times out a task that only starts resting after its deadline", async () => {
+      const { observer, start, poll } = await observe((now, begin) => now > begin + 60_000 ? "done" : "in_progress");
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(true);
+      expect(observer.record.restAt).toBeNull();
+    });
   });
 
   it("reports a failed workspace-operation read as a sweep error, not a clean rest", async () => {

@@ -257,7 +257,8 @@ export function validChatCatalogHumanCounts(implementation: Pick<ChatCatalogCase
     && total >= setup + (implementation.queryOutcome === "rejected" ? 0 : 1);
 }
 export function chatCatalogAllowsHumanQuestionAnswer(scenarioId: string): boolean {
-  return ["secrets.personal-secret", "secrets.configure-company-secret"].includes(scenarioId);
+  // tasks.ambiguous-task: the person can answer the clarification by choosing one of the card's saved options.
+  return ["secrets.personal-secret", "secrets.configure-company-secret", "tasks.ambiguous-task"].includes(scenarioId);
 }
 export function chatCatalogHumanHistoryMatches(input: {
   implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome"> & Partial<Pick<ChatCatalogCase, "scenarioId" | "optionalCompanySecretBindingApproval">>;
@@ -282,9 +283,16 @@ export function chatCatalogHumanHistoryMatches(input: {
         && input.human.length + (input.questionAnswer ? 1 : 0) === (input.implementation.expectedHumanMessageCount ?? 1));
 }
 
-export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown; requestedResolverPolicy?: unknown; effectiveResolverPolicy?: unknown }): boolean {
+/**
+ * Whether a person may resolve this card under its resolver policies, mirroring the server's user-actor rule in
+ * evaluateIssueThreadInteractionResolverAudience: `anyone` and `human_only` admit the person, and `not_creator`
+ * admits anyone except the card's creator. Without a resolver (a card still pending) `not_creator` is not accepted.
+ */
+export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown; requestedResolverPolicy?: unknown; effectiveResolverPolicy?: unknown; createdByUserId?: unknown },
+  resolver?: { userId: string }): boolean {
   return [row.resolverPolicy, row.requestedResolverPolicy ?? row.resolverPolicy, row.effectiveResolverPolicy ?? row.resolverPolicy]
-    .every(policy => policy === "anyone" || policy === "human_only");
+    .every(policy => policy === "anyone" || policy === "human_only"
+      || policy === "not_creator" && !!resolver?.userId && row.createdByUserId !== resolver.userId);
 }
 
 export function chatCatalogHasExactDefinitionId(text: string, definitionId: string): boolean {
@@ -305,7 +313,9 @@ export function chatCatalogCompanyEnvironmentNameQuestion(q:{prompt:string;requi
   ||!/^[A-Za-z_][A-Za-z0-9_]{0,119}$/.test(answer)||!validation?.maxLength||validation.maxLength>120||validation.maxLength<answer.length||(validation.minLength??0)>answer.length||(validation.inputType!==undefined&&validation.inputType!=="text"))return false;
  try{return !validation.pattern||new RegExp(validation.pattern).test(answer);}catch{return false;}
 }
-export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string; continuationPolicy: "wake_assignee" | "wake_assignee_on_accept" }; companySecretConfirmation?: { secretId: string; key: string; payloadHash: string; continuationPolicy: "wake_assignee" | "wake_assignee_on_accept" }; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string } }
+export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; personalSecretConfirmation?: { definitionId: string; secretId: string; payloadHash: string; continuationPolicy: "wake_assignee" | "wake_assignee_on_accept" }; companySecretConfirmation?: { secretId: string; key: string; payloadHash: string; continuationPolicy: "wake_assignee" | "wake_assignee_on_accept" }; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" }; companySavedSecretNameAnswer?: { questionId: string; payloadHash: string; value: string; secretId: string };
+  /** A clarification answered by choosing one saved option of the card's single question. */
+  clarificationChoice?: { questionId: string; optionId: string } }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
   companyId?: string; entityId?: string; action?: string; actorType?: string; actorId?: string;
@@ -325,7 +335,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     const secrets=input.companySecrets?.filter(secret=>secret.id===binding.secretId),secret=secrets?.[0],resolvedAt=Date.parse(String(row?.resolvedAt)),createdAt=Date.parse(String(row?.createdAt));
     const audits=input.activity.filter(event=>event.action==="issue.thread_interaction_accepted"&&event.details?.interactionId===b.interactionId),audit=audits[0];
     const saves=input.activity.filter(event=>event.action==="secret.created"&&event.entityId===binding.secretId),save=saves[0];
-    if(b.personalSecretConfirmation||b.companyEnvironmentNameAnswer||b.companySavedSecretNameAnswer||rows.length!==1||!row||row.kind!=="request_confirmation"||row.status!=="accepted"||row.companyId!==input.companyId||row.issueId!==input.issueId||row.sourceRunId!==b.sourceRunId||row.createdByAgentId!==input.agentId||row.createdByUserId||row.addresseeAgentId||(row.addresseeUserId!=null&&row.addresseeUserId!==b.userId)||!row.originCommentIds?.includes(input.canonicalComment.id)||b.userId!==input.canonicalComment.authorUserId||!chatCatalogHumanQuestionPolicies(row)||(row.continuationPolicy!=="wake_assignee"&&row.continuationPolicy!=="wake_assignee_on_accept")||row.continuationPolicy!==binding.continuationPolicy||row.resolvedByUserId!==b.userId||row.resolvedByAgentId||row.result?.outcome!=="accepted"||row.result.resumeFailure||row.result.toolAction||row.result.secretProposal||row.dismissedAt
+    if(b.personalSecretConfirmation||b.companyEnvironmentNameAnswer||b.companySavedSecretNameAnswer||rows.length!==1||!row||row.kind!=="request_confirmation"||row.status!=="accepted"||row.companyId!==input.companyId||row.issueId!==input.issueId||row.sourceRunId!==b.sourceRunId||row.createdByAgentId!==input.agentId||row.createdByUserId||row.addresseeAgentId||(row.addresseeUserId!=null&&row.addresseeUserId!==b.userId)||!row.originCommentIds?.includes(input.canonicalComment.id)||b.userId!==input.canonicalComment.authorUserId||!chatCatalogHumanQuestionPolicies(row,{userId:b.userId})||(row.continuationPolicy!=="wake_assignee"&&row.continuationPolicy!=="wake_assignee_on_accept")||row.continuationPolicy!==binding.continuationPolicy||row.resolvedByUserId!==b.userId||row.resolvedByAgentId||row.result?.outcome!=="accepted"||row.result.resumeFailure||row.result.toolAction||row.result.secretProposal||row.dismissedAt
       ||!row.payload||!requestConfirmationPayloadSchema.safeParse(row.payload).success||row.payload.target||row.payload.toolAction||row.payload.secretProposal||row.payload.connectionAuthorization||row.payload.qualityReview||createHash("sha256").update(JSON.stringify(row.payload)).digest("hex")!==binding.payloadHash
       ||secrets?.length!==1||!secret||secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.createdByUserId!==b.userId||secret.key!==binding.key||!/^[a-zA-Z0-9_.-]{1,120}$/.test(binding.key)||![createdAt,resolvedAt,Date.parse(secret.createdAt)].every(Number.isFinite)||Date.parse(secret.createdAt)<=createdAt||Date.parse(secret.createdAt)>resolvedAt
       ||audits.length!==1||audit?.companyId!==input.companyId||audit.entityId!==input.issueId||audit.actorType!=="user"||audit.actorId!==b.userId||audit.details?.interactionKind!=="request_confirmation"||audit.details.interactionStatus!=="accepted"
@@ -344,7 +354,7 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     if (b.companySecretConfirmation || b.companyEnvironmentNameAnswer || b.companySavedSecretNameAnswer || rows.length !== 1 || !row || row.kind !== "request_confirmation" || row.status !== "accepted"
       || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId || row.createdByAgentId !== input.agentId || row.createdByUserId
       || (row.addresseeUserId != null && row.addresseeUserId !== b.userId) || row.addresseeAgentId || !row.originCommentIds?.includes(input.canonicalComment.id)
-      || b.userId !== input.canonicalComment.authorUserId || !chatCatalogHumanQuestionPolicies(row) || (row.continuationPolicy !== "wake_assignee" && row.continuationPolicy !== "wake_assignee_on_accept") || row.continuationPolicy !== binding.continuationPolicy
+      || b.userId !== input.canonicalComment.authorUserId || !chatCatalogHumanQuestionPolicies(row, { userId: b.userId }) || (row.continuationPolicy !== "wake_assignee" && row.continuationPolicy !== "wake_assignee_on_accept") || row.continuationPolicy !== binding.continuationPolicy
       || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.outcome !== "accepted" || row.result.resumeFailure || row.dismissedAt
       || !row.payload || row.payload.target || row.payload.toolAction || row.payload.secretProposal || row.payload.connectionAuthorization || row.payload.qualityReview
       || !chatCatalogHasExactDefinitionId([row.payload.prompt, row.payload.detailsMarkdown].filter(Boolean).join("\n"), binding.definitionId) || createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") !== binding.payloadHash
@@ -357,15 +367,22 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
       || !Number.isFinite(Date.parse(continuation.startedAt ?? "")) || Date.parse(continuation.startedAt!) < resolvedAt) return;
     return { ...b, continuationRunId: continuation.id, resolvedAt: new Date(resolvedAt).toISOString() };
   }
-  const b = input.expected, rows = input.interactions.filter(row => row.id === b.interactionId), row = rows[0];
+  const b = input.expected, rows = input.interactions.filter(row => row.id === b.interactionId), row = rows[0], choice = b.clarificationChoice;
+  // As the server allows: an unaddressed card may be answered by the person; an addressed one only by its addressee.
+  const addressed = choice ? row?.addresseeUserId == null || row.addresseeUserId === b.userId : row?.addresseeUserId === b.userId;
+  const policies = !!row && chatCatalogHumanQuestionPolicies(row, { userId: b.userId });
   if (rows.length !== 1 || !row || b.userId !== input.canonicalComment.authorUserId
     || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId
-    || row.createdByAgentId !== input.agentId || row.createdByUserId || row.addresseeUserId !== b.userId || row.addresseeAgentId
-    || row.kind !== "ask_user_questions" || row.status !== "answered" || !chatCatalogHumanQuestionPolicies(row)
+    || row.createdByAgentId !== input.agentId || row.createdByUserId || !addressed || row.addresseeAgentId
+    || row.kind !== "ask_user_questions" || row.status !== "answered" || !policies
     || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.answers?.length !== 1) return;
   const source = input.runs.find(run => run.id === b.sourceRunId);
   const environmentName = b.companyEnvironmentNameAnswer, savedName=b.companySavedSecretNameAnswer;
-  if(environmentName&&savedName)return;
+  if((environmentName?1:0)+(savedName?1:0)+(choice?1:0)>1)return;
+  if (choice) {
+    const answer = row.result.answers[0];
+    if (answer?.questionId !== choice.questionId || answer.optionIds.length !== 1 || answer.optionIds[0] !== choice.optionId || answer.otherText) return;
+  }
   if (environmentName) {
     const parsed = askUserQuestionsPayloadSchema.safeParse(row.payload), qs = parsed.success ? parsed.data.questionSet : undefined;
     const q = qs?.questions[0], answer = row.result.answers[0];

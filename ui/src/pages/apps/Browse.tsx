@@ -12,6 +12,9 @@ import {
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
 import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
+import { TailscaleConnectorCard } from "./TailscaleConnector";
+import { useTailscaleConnections } from "@/hooks/useTailscaleConnections";
+import type { TailscaleConnection } from "@/api/tailscale";
 import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useAiConnectionDefaults } from "@/components/ai-connections/useAiConnectionDefaults";
 import { AiDefaultCrown, AiDefaultError, AiDefaultMenuItem } from "@/components/ai-connections/AiConnectionDefault";
@@ -81,6 +84,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -130,6 +134,7 @@ type ConnectorRowModel = {
   applications: ToolApplication[];
   connections: ToolConnection[];
   chatEndpoints: ChatEndpoint[];
+  networkConnections?: TailscaleConnection[];
   aggregatorApp?: AggregatorAppCatalogEntry;
   upstreamApps?: (ComposioAppSnapshot & Partial<Pick<AggregatorAppSnapshot, "provider" | "appSlug" | "appName" | "freshness">>)[];
   upstreamCatalogApp?: AggregatorAppCatalogEntry;
@@ -288,6 +293,7 @@ function rowRank(row: ConnectorRowModel): number {
   if (
     row.chatEndpoints.some((endpoint) => endpoint.status !== "draft") ||
     row.connections.some((connection) => connectionRank(connection) === 1) ||
+    row.networkConnections?.some(connection => connection.status === "connected") ||
     row.upstreamApps?.some((app) => app.status === "connected")
   )
     return 2;
@@ -295,7 +301,7 @@ function rowRank(row: ConnectorRowModel): number {
 }
 
 function isInstalled(row: ConnectorRowModel) {
-  return row.connections.length > 0 || row.chatEndpoints.length > 0 || Boolean(row.upstreamApps?.some(app => app.accounts.length > 0));
+  return row.connections.length > 0 || row.chatEndpoints.length > 0 || Boolean(row.upstreamApps?.some(app => app.accounts.length > 0)) || Boolean(row.networkConnections?.some(connection => connection.status === "connected"));
 }
 
 function connectorAction(
@@ -390,6 +396,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const { pushToast } = useToast();
   const { selectedCompanyId } = useCompany();
   const assistantConnections = useAssistantConnections();
+  const tailscaleConnections = useTailscaleConnections(selectedCompanyId);
   const { userId: viewingUserId, settled: identitySettled } = useAccountIdentity();
   const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
@@ -408,6 +415,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const [aggregatorToConnect, setAggregatorToConnect] = useState<AggregatorAppCatalogEntry | null>(null);
   const [aggregatorToManage, setAggregatorToManage] = useState<{ app: AggregatorAppCatalogEntry; connectionId?: string } | null>(null);
   const [initialAggregatorProvider, setInitialAggregatorProvider] = useState<AggregatorAppCatalogEntry["routes"][number]["provider"]>();
+  const [deleteStoredContent, setDeleteStoredContent] = useState(false);
   const [connectionToRemove, setConnectionToRemove] =
     useState<ConnectionRemovalTarget | null>(null);
 
@@ -533,7 +541,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         if (!target.poolRevision) throw new Error("Open the confirmation again before removing this pool.");
         await aiConnectionPoolsApi.remove(selectedCompanyId!, target.id, target.poolRevision);
       } else {
-        await toolsApi.archiveConnection(target.id);
+        await toolsApi.archiveConnection(target.id, { deleteStoredContent });
       }
     },
     onSuccess: (_connection, target) => {
@@ -558,6 +566,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             : target.remainingConnectionCount > 0
             ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
             : `${target.providerName} is no longer available to agents through this connection. Its saved credentials were deleted.`,
+        ...(deleteStoredContent && !target.pool && target.kind !== "chat" ? { title: "Connection removed. Deleting its saved data." } : {}),
         tone: "success",
       });
       setConnectionToRemove(null);
@@ -571,6 +580,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   });
   async function requestConnectionRemoval(target: ConnectionRemovalTarget) {
     removeConnection.reset();
+    setDeleteStoredContent(false);
     if (!target.pool) { setConnectionToRemove(target); return; }
     try {
       const pool = (await aiConnectionPoolsApi.list(selectedCompanyId!)).find(pool => pool.id === target.id);
@@ -634,6 +644,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ]),
     );
     const rowsBySlug = new Map<string, ConnectorRowModel>();
+    if (tailscaleConnections.canManage) rowsBySlug.set("tailscale", { key: "network:tailscale", slug: "tailscale", name: "Tailscale",
+      description: "Connect your tailnet to use its machines in SSH environments.", brandKey: "tailscale", entry: null,
+      applications: [], connections: [], chatEndpoints: [], networkConnections: tailscaleConnections.data ?? [] });
     for (const entry of gallery) {
       const slug = appDefinitionSlug(entry);
       rowsBySlug.set(slug, {
@@ -899,6 +912,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     chatConnectorsEnabled,
     githubEnabled,
     connectionsQuery.data,
+    tailscaleConnections.data,
+    tailscaleConnections.canManage,
     gallery,
     galleryQuery.data,
     googleWorkspaceConnectorEnabled,
@@ -925,6 +940,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
     return scoped.filter((row) => {
       const text = normalizeConnectionQuery([row.name, row.slug, row.description,
         ...(row.aggregatorApp?.aliases ?? []), ...row.connections.map((connection) => connection.name),
+        ...(row.networkConnections ?? []).map(connection => connection.name),
         ...(row.upstreamApps ?? []).flatMap(app => app.accounts.map(account => account.alias)),
         ...row.chatEndpoints.map((endpoint) => endpoint.assignedAgentName)].join(" "));
       return terms.every((term) => text.includes(term));
@@ -1039,7 +1055,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         <div className="space-y-3" role="list" aria-label="Connector list">
           {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
           {paginatedRows.map((row) => (
-            <ConnectorCard
+            row.networkConnections ? <TailscaleConnectorCard key={row.key} onNavigate={navigate} /> : <ConnectorCard
               renderAccountDetails={renderAccountDetails}
               aiDefaults={aiDefaults}
               key={row.key}
@@ -1113,6 +1129,22 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
                   : "The saved credentials are deleted and agents lose access immediately. Connecting it again later requires a new sign-in or key."}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {connectionToRemove && !connectionToRemove.pool && connectionToRemove.kind !== "chat" ? (
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <Checkbox
+                className="mt-0.5"
+                checked={deleteStoredContent}
+                disabled={removeConnection.isPending}
+                onCheckedChange={(checked) => setDeleteStoredContent(checked === true)}
+              />
+              <span>
+                Also delete data read through this connection
+                <span className="block text-xs text-muted-foreground">
+                  Permanently removes saved tool results and the transcripts of runs that used it. This cannot be undone.
+                </span>
+              </span>
+            </label>
+          ) : null}
           {removeConnection.error ? <p role="alert" className="text-sm text-destructive">
             {describeError(removeConnection.error).body}
           </p> : null}

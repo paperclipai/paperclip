@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { pluginAgentRuntimeState } from "../services/plugin-agent-runtime-state.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
@@ -143,6 +144,7 @@ describeDatabase("skill runtime invalidation", () => {
   it("resolves immutable pinned and latest skill sources and removes unassigned skills", async () => {
     await instanceSettingsService(db).getExperimental();
     await db.update(instanceSettings).set({ experimental: { enableBetaSkills: true } });
+    invalidateInstanceSettingsCache();
     const first = await publish("first version", 1);
     const pinned = await agent([{ key, versionId: first.id }]);
     const latest = await agent();

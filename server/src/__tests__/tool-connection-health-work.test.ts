@@ -301,6 +301,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const body = JSON.parse(String(init.body));
       return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [] } });
     });
+    // One health check is one tools/list; the first check also probes the MCP version once.
+    const listings = () => requests.mock.calls.filter(([, init]) => JSON.parse(String(init.body)).method === "tools/list").length;
     const tools = toolAccessService(db, {
       remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }], remoteHttpRequest: requests,
     });
@@ -313,12 +315,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, row.id));
       expect(stored.healthStatus).toBe("ok"); expect(stored.healthCheckedAt).not.toBeNull();
     }, { timeout: 5000 });
-    expect(requests).toHaveBeenCalledOnce();
+    expect(listings()).toBe(1);
     await tools.updateConnection(row.id, { enabled: false }); await quiet();
     await tools.updateConnection(row.id, { enabled: true });
     const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, row.id));
     await idleAt(stored.healthCheckedAt!.getTime() + 900_000);
-    expect(requests).toHaveBeenCalledOnce();
+    expect(listings()).toBe(1);
     await tools.archiveConnection(row.id, companyId); await quiet();
   });
 

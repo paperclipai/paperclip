@@ -6,7 +6,8 @@ import OversizedSpecReporter from "./oversized-test-files-playwright.mjs";
 import OversizedTestFileReporter, { oversizedAnnotation, oversizedThresholdMs } from "./oversized-test-files.mjs";
 import { assertManifestSource, attributeSpec, collectMergedPrSamples, completeShardSet, e2eShardJob, parseE2eLog, parseRunnerLog,
   runnerInventory, runnerPackageJob, validatePrRun, validatePull } from "./pr-run-durations.mjs";
-import { oversizedFiles, oversizedPlaceholder, parseArgs, parseTimings, renderPrBody, serverLane, updatedDurations } from "./refresh-test-durations.mjs";
+import { generalServerJob, generalServerShardCount, oversizedFiles, oversizedPlaceholder, parseArgs, parseTimings, renderPrBody, serverLane,
+  updatedDurations } from "./refresh-test-durations.mjs";
 import { timingPrefix } from "./test-timing-reporter.mjs";
 
 const esc = "\u001b";
@@ -233,6 +234,49 @@ test("collection skips unmerged, absent, stale-head and incomplete runs, and sam
   assert.match(warnings.join("\n"), /e2e: skipped run 50 for PR #5: Parsed 4 of 9/);
   // PR 3 is not in this checkout and PR 4 never merged: neither is queried.
   assert.ok(!requested.some(endpoint => endpoint.includes(sha("3")) || endpoint.includes(sha("4"))));
+});
+
+test("general server weights come from complete full-width PR shard sets that cover the lane", async () => {
+  assert.equal(generalServerShardCount(), 12);
+  assert.deepEqual(generalServerJob("ci / General tests (server (3/12))", 12), { index: 3, count: 12 });
+  for (const name of ["ci / General tests (server (1/3))", "ci / General tests (chat (1/3))", "ci / Serialized tests (1/9)"]) {
+    assert.equal(generalServerJob(name, 12), null);
+  }
+  const api = "/repos/paperclipai/paperclip";
+  const timing = (file, ms) => `2026-11-13T00:00:00.0000000Z ${timingPrefix}${JSON.stringify({ version: 1, file, durationMs: ms })}`;
+  const files = ["server/src/a.test.ts", "server/src/b.test.ts"];
+  const jobs = (run, ids) => ({ jobs: ids.map((id, index) => ({ id, run_id: run, conclusion: "success",
+    name: `ci / General tests (server (${index + 1}/${ids.length}))` })) });
+  const responses = {
+    [`${api}/pulls?state=closed&base=master&sort=updated&direction=desc&per_page=40`]: [pull(1, sha("1"), sha("a")),
+      pull(2, sha("2"), sha("b")), pull(3, sha("3"), sha("c")), pull(4, sha("4"), sha("d"))],
+    ...Object.fromEntries([1, 2, 3, 4].map(n => [
+      `${api}/actions/workflows/pr.yml/runs?head_sha=${sha(String(n))}&event=pull_request&status=success&per_page=20`,
+      { workflow_runs: [prRun(n * 10, sha(String(n)))] }])),
+    [`${api}/actions/runs/10/jobs?filter=latest&per_page=100&page=1`]: jobs(10, [101, 102]),
+    [`${api}/actions/runs/20/jobs?filter=latest&per_page=100&page=1`]: jobs(20, [201]),
+    [`${api}/actions/runs/30/jobs?filter=latest&per_page=100&page=1`]: jobs(30, [301, 302]),
+    [`${api}/actions/runs/40/jobs?filter=latest&per_page=100&page=1`]: jobs(40, [401, 402]),
+    [`${api}/actions/jobs/101/logs`]: timing(files[0], 1000),
+    [`${api}/actions/jobs/102/logs`]: timing(files[1], 3000),
+    [`${api}/actions/jobs/301/logs`]: timing(files[0], 2000),
+    [`${api}/actions/jobs/302/logs`]: "",
+    [`${api}/actions/jobs/401/logs`]: timing(files[0], 4000),
+    [`${api}/actions/jobs/402/logs`]: timing(files[1], 5000),
+  };
+  const requested = [];
+  const gh = async endpoint => {
+    requested.push(endpoint);
+    assert.ok(endpoint in responses, `unexpected request ${endpoint}`);
+    return responses[endpoint];
+  };
+  const lane = { name: "general", classify: name => generalServerJob(name, 2), parse: parseTimings,
+    inventory: new Set(files), maxRuns: 2, minFiles: 2 };
+  const result = await collectMergedPrSamples({ gh, lanes: [lane], isMerged: () => true, log: () => {} });
+  assert.deepEqual(result.general.sources.map(source => source.run), [40, 10]);
+  assert.deepEqual(result.general.samples.map(sample => Object.fromEntries([...sample].map(([file, value]) => [file, value.ms]))),
+    [{ [files[0]]: 4000, [files[1]]: 5000 }, { [files[0]]: 1000, [files[1]]: 3000 }]);
+  assert.ok(!requested.some(endpoint => endpoint.includes("/jobs/201/")), "a narrower selected run is never downloaded");
 });
 
 test("merged-PR manifests use the shared schema and only reorder placement", () => {

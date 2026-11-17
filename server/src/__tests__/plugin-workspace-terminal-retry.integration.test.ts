@@ -29,10 +29,10 @@ function providerRefusal() {
 
   async function setup() {
     const f = await createPluginWorkspaceFixture(db);
-    const failures = { inspect: false, remove: false, unboundRemove: false, reopenFirst: false };
+    const failures = { prepare: false, inspect: false, remove: false, unboundRemove: false, reopenFirst: false };
     const workers = { ...f.workers, call: async (...args: Parameters<WorkspaceWorkers["call"]>) => {
       const params = args[2] as { agentId: string | null; operation: { kind: string; binding?: unknown } };
-      if (params.operation.kind === "prepare" && params.agentId === null) {
+      if (params.operation.kind === "prepare" && failures.prepare) {
         f.calls.push(params);
         throw providerRefusal();
       }
@@ -123,6 +123,7 @@ function providerRefusal() {
     await expect(preparePluginWorkspace(db, s.workers, s.f.input)).rejects.toThrow("incomplete");
     const [task] = await db.select().from(issues).where(eq(issues.id, s.f.issueId));
     await s.finishTask();
+    s.failures.prepare = true;
     const clock = Date.now();
     await executionWorkspaceService(db, { pluginWorkerManager: s.workers, workspaceReaperCooldownDays: 0, now: () => new Date(clock) })
       .sweepTerminalWorkspaces(100);
@@ -139,6 +140,7 @@ function providerRefusal() {
     const s = await setup();
     const reservation = await s.abandonReservation();
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, s.f.runId));
+    s.failures.prepare = true;
     await expect(inspectPluginWorkspace(db, s.workers, reservation)).rejects.toThrow();
     expect(s.callsFor(reservation.id, "remove")).toHaveLength(0);
     expect(s.callsFor(reservation.id, "prepare")).toHaveLength(2);

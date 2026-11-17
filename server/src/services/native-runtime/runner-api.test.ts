@@ -4,9 +4,14 @@ import {
   runnerApiOperation,
   searchRunnerApi,
 } from "./runner-api-catalog.js";
+import Ajv from "ajv";
+import { updateIssueSchema } from "@paperclipai/shared";
 import {
+  assertRunnerApiDispatchable,
   executeRunnerApi,
   readBoundedResponse,
+  runnerApiCallExample,
+  RUNNER_API_CALL_HEADER,
   runnerApiUrl,
   validateRunnerApiCall,
   type RunnerApiCall,
@@ -76,6 +81,15 @@ describe("capped list pagination", () => {
   it("adds nothing for routes that do not page", async () => {
     const result = await executeRunnerApi({ operationId: projects }, context, io(page({})));
     expect(result).not.toHaveProperty("pagination");
+  });
+});
+
+describe("runner call identity", () => {
+  it.each([[createProject, "call-key-a"], [projects, null]] as const)("sends the call key only with mutations: %s", async (operationId, expected) => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response("{}", { headers: { "content-type": "application/json" } }));
+    await executeRunnerApi({ operationId, ...(operationId === createProject ? { body: { name: "Keyed" } } : {}) }, context,
+      { ...io(fetcher as unknown as typeof fetch), callKey: "call-key-a" });
+    expect(new Headers(fetcher.mock.calls[0]![1]!.headers).get(RUNNER_API_CALL_HEADER)).toBe(expected);
   });
 });
 
@@ -865,6 +879,34 @@ describe("runner API request boundary", () => {
     expect(error?.message).toContain(`Received arguments: ${Object.keys(call).sort().join(", ")}.`);
     expect(error?.message).toContain('Resend with a top-level body argument');
     expect(error?.message).toMatch(/saveResponse never carr(y|ies) request fields/);
+    // The example in the correction is a call that is sent when copied as is.
+    const example = exampleIn(error!.message);
+    expect(example.pathParams).toEqual(call.pathParams);
+    const sent = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+    await expect(executeRunnerApi(example as RunnerApiCall, context, io(sent))).resolves.toMatchObject({ ok: true });
+    expect(sent).toHaveBeenCalledTimes(1);
+  });
+  it("gives a copyable issue update that the issue route accepts", () => {
+    const example = JSON.parse(runnerApiCallExample(runnerApiOperation("PATCH /api/issues/{id}"), { id: "issue-a" }));
+    expect(example).toEqual({ operationId: "PATCH /api/issues/{id}", pathParams: { id: "issue-a" }, body: { title: "<title>" } });
+    expect(updateIssueSchema.safeParse(example.body).success).toBe(true);
+  });
+  it("gives every write that requires a body an example its request schema accepts", () => {
+    const AjvCtor = ((Ajv as unknown as { default?: typeof Ajv }).default ?? Ajv) as unknown as new (options: object) => { validate(schema: unknown, data: unknown): boolean; errorsText(): string };
+    const ajv = new AjvCtor({ strict: false, validateFormats: false, allErrors: true });
+    const rejected: string[] = [];
+    let checked = 0;
+    for (const operation of runnerApiCatalog()) {
+      const schema = operation.requestBody?.content?.["application/json"]?.schema;
+      if (!operation.requestBody?.required || !schema || operation.transport !== "rest") continue;
+      checked++;
+      const example = JSON.parse(runnerApiCallExample(operation, {}));
+      const { input } = validateRunnerApiCall(example, { ...context, workMode: operation.allowedModes[0] ?? "standard" });
+      assertRunnerApiDispatchable(operation, input, example);
+      if (!ajv.validate(jsonSchemaFromOpenApi(schema), example.body)) rejected.push(`${operation.operationId}: ${ajv.errorsText()}`);
+    }
+    expect(checked).toBeGreaterThan(200);
+    expect(rejected).toEqual([]);
   });
   it("still sends writes whose body is present or optional", async () => {
     const request = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
@@ -912,3 +954,32 @@ describe("runner API request boundary", () => {
     ).rejects.toThrow("transfer limit");
   });
 });
+
+/** The JSON call that follows "for example: " in a correction. */
+function exampleIn(message: string): Record<string, unknown> {
+  const start = message.indexOf("{", message.indexOf("for example: "));
+  let depth = 0;
+  for (let index = start; index < message.length; index++) {
+    if (message[index] === "{") depth++;
+    if (message[index] === "}" && --depth === 0) return JSON.parse(message.slice(start, index + 1)) as Record<string, unknown>;
+  }
+  throw new Error("no example in message");
+}
+
+/** OpenAPI 3.0 schema keywords as JSON Schema, so Ajv can check them. */
+function jsonSchemaFromOpenApi(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(jsonSchemaFromOpenApi);
+  if (!value || typeof value !== "object") return value;
+  // Values the model must supply itself (ids, secrets, codes, evidence) appear as
+  // placeholders, so their text constraints are not checked; structure is.
+  // The schemas come from Zod, whose unions take the first match: anyOf, not oneOf.
+  const { nullable, exclusiveMinimum, exclusiveMaximum, minimum, maximum, pattern: _pattern, minLength: _minLength, oneOf, ...rest } = value as Record<string, unknown>;
+  const schema: Record<string, unknown> = Object.fromEntries(Object.entries(rest).map(([key, entry]) => [key, jsonSchemaFromOpenApi(entry)]));
+  if (oneOf) schema.anyOf = jsonSchemaFromOpenApi(oneOf);
+  if (exclusiveMinimum === true) schema.exclusiveMinimum = minimum; else if (minimum !== undefined) schema.minimum = minimum;
+  if (typeof exclusiveMinimum === "number") schema.exclusiveMinimum = exclusiveMinimum;
+  if (exclusiveMaximum === true) schema.exclusiveMaximum = maximum; else if (maximum !== undefined) schema.maximum = maximum;
+  if (typeof exclusiveMaximum === "number") schema.exclusiveMaximum = exclusiveMaximum;
+  if (nullable === true && typeof schema.type === "string") schema.type = [schema.type, "null"];
+  return schema;
+}

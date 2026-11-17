@@ -62,8 +62,10 @@ vi.mock("../components/AttentionQueueRow", () => ({
   ),
 }));
 
+const cardAt = new Date().toISOString();
+
 function card(id: string, audience: AttentionItem["audience"]) {
-  const at = new Date().toISOString();
+  const at = cardAt;
   return { id, sourceKind: "issue_thread_interaction", subject: { id: `${id}-interaction`, kind: "interaction", title: `Card ${id}`, metadata: {} },
     audience, dismissal: null, dismissalKey: `attention:${id}`, changeFingerprint: `${id}.me`, closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null, activityAt: at, createdAt: at, updatedAt: at, inlineResolvable: false, decisionVerbs: [], queues: [], shelf: false,
     severity: "medium", relatedIssue: null, project: null } as unknown as AttentionItem;

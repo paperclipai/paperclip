@@ -20,6 +20,8 @@ import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   isGoogleWorkspaceScopeGrant,
+  googleWorkspaceProfileWithinSubmittedScopes,
+  googleWorkspaceSubmittedScopesIn,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -37,8 +39,8 @@ export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
 export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
-export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot" | "tailscale.tailnet";
+export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack" | "tailscale";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -396,6 +398,7 @@ export function createPaperclipCloudConnector(input: {
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
+    if (profile === "workspace.all") credentials.scopes = googleWorkspaceSubmittedScopesIn(credentials.scopes);
     if (!(profile === "workspace.all" ? isGoogleWorkspaceScopeGrant(credentials.scopes) : sameStringSet(credentials.scopes, definition.scopes))) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
@@ -521,6 +524,9 @@ export function createPaperclipCloudConnector(input: {
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
+      if (!paperclipCloudConnectorConsentAllowed(profile)) {
+        throw new PaperclipCloudConnectorError("This permission set is not offered through Paperclip's Google app", "CONNECTOR_CONFIG_INVALID");
+      }
       const response = await call("session", { ...values, profile });
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
@@ -735,7 +741,8 @@ export function appWithPaperclipCloudConnectorAvailability(
   const enabledProfiles = new Set(profiles);
   const methods = app.methods.filter((method) =>
     !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile)
+      && paperclipCloudConnectorConsentAllowed(method.connectorProfile))
   );
   return {
     ...app,
@@ -746,6 +753,10 @@ export function appWithPaperclipCloudConnectorAvailability(
       platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
     },
   };
+}
+
+export function paperclipCloudConnectorConsentAllowed(profile: string): boolean {
+  return !isGoogleWorkspaceConnectorProfileId(profile) || googleWorkspaceProfileWithinSubmittedScopes(profile);
 }
 
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;
@@ -946,6 +957,7 @@ function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): 
   provider: PaperclipCloudConnectorProvider;
   scopes: readonly string[];
 } {
+  if (profile === "tailscale.tailnet") return { provider: "tailscale", scopes: ["auth_keys:create:once"] };
   if (profile === "slack.manager") return { provider: "slack", scopes: SLACK_MANAGER_SCOPES };
   if (profile === "github.bot") return { provider: "github", scopes: [] };
   if (isAsanaConnectorProfileId(profile)) {
@@ -961,6 +973,7 @@ function isExpectedProviderAuthorizationUrl(
   profile: PaperclipCloudConnectorProfileId,
   url: URL,
 ): boolean {
+  if (profile === "tailscale.tailnet") return url.origin === "https://login.tailscale.com" && url.pathname === "/a/oauth_authorize";
   if (profile === "slack.manager") return url.origin === "https://slack.com" && url.pathname === "/oauth/v2/authorize";
   if (isAsanaConnectorProfileId(profile)) {
     return url.origin === "https://app.asana.com" && url.pathname === "/-/oauth_authorize";
@@ -972,7 +985,7 @@ function isExpectedProviderAuthorizationUrl(
 }
 
 function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {
-  return value === "slack.manager" || isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
+  return value === "tailscale.tailnet" || value === "slack.manager" || isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

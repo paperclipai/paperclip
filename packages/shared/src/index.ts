@@ -331,9 +331,19 @@ export {
   getRecommendedConnectionMethod,
   isConnectableAppSlug,
   isAppStoreVisibleSlug,
+  listPluginAppDefinitions,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
+  setPluginAppDefinitions,
 } from "./app-definitions.js";
+export {
+  connectionSourceSlug,
+  isPluginAppSlug,
+  parsePluginAppSlug,
+  pluginAppDefinition,
+  pluginAppSlug,
+  reviewedToolRisk,
+} from "./plugin-apps.js";
 export { isConnectorFeatureEnabled, nativeConnectorRequiresCustomerOAuthApp } from "./connector-availability.js";
 export { getAppDefinitionForApplicationKey } from "./connector-identity.js";
 export {
@@ -353,7 +363,7 @@ export {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
-export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
+export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema, reviewedToolsSchema } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
 export * from "./types/chat-github.js";
 export * from "./validators/chat-github.js";
@@ -378,6 +388,15 @@ export {
   type McpRemoteHeaderCheck,
   type McpRemoteHeaderRejection,
 } from "./mcp-remote-headers.js";
+export {
+  PAPERCLIP_PEER_MCP_PATH,
+  isSamePaperclipInstance,
+  PAPERCLIP_PEER_INSTRUCTIONS_TEMPLATE_ID,
+  paperclipPeerAgentInstructions,
+  paperclipPeerFromMcpUrl,
+  paperclipPeerInstructionTemplate,
+  type PaperclipPeer,
+} from "./paperclip-peer.js";
 export {
   checkOAuthEndpointUrl,
   isSafeOAuthEndpointUrl,
@@ -1458,6 +1477,9 @@ export type {
   RejectSecretProposalInput,
   ConnectToolAppAuthChallenge,
   ConnectToolAppResult,
+  MachineSignInPublicKey,
+  MachineSignInStatus,
+  MachineSignInSetupResult,
   ToolAppMetadataPreflightAttempt,
   ToolAppMetadataPreflightResult,
   ToolOAuthClientRegistrationSource,
@@ -1539,6 +1561,11 @@ export type {
   ToolConnectionInstallTargetType,
   ToolConnectionRemovalResult,
   ToolConnectionRemovalSummary,
+  ToolConnectionStoredContent,
+  ToolConnectionStoredContentCounts,
+  ToolConnectionContentDeletion,
+  ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionStatus,
   ConnectionAudienceMember,
   ConnectionGrant,
   ConnectionGrantCapabilities,
@@ -1601,6 +1628,8 @@ export type {
   ToolApplication,
   ToolConnection,
   ToolCatalogEntry,
+  ProviderToolIconEntry,
+  ProviderToolIconsResponse,
   ToolRuntimeSlot,
   ToolConnectionHealthCheckResult,
   ToolCatalogRefreshResult,
@@ -1675,6 +1704,8 @@ export type {
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
   AppDefinition,
+  AppPluginSource,
+  AppReviewedTools,
   ConnectionMethodDef,
   FieldDef,
   OAuthRedirectConstraints,
@@ -2300,6 +2331,15 @@ export {
   genericMcpOAuthClientSchema,
   type GenericMcpAuthMode,
   type GenericMcpOAuthClient,
+  MACHINE_SIGN_IN_METHODS,
+  machineSignInMethodSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
+  type MachineSignInMethod,
+  type CreateMachineSignIn,
+  type TestMachineSignIn,
+  type RotateMachineSignIn,
   reconnectToolAppSchema,
   createToolApplicationSchema,
   finishToolAppSchema,
@@ -2419,6 +2459,8 @@ export {
   createBoardApiKeySchema,
   currentUserProfileSchema,
   authSessionSchema,
+  browserTracingConfigSchema,
+  browserAnalyticsConfigSchema,
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
@@ -2444,6 +2486,8 @@ export {
   type CreateBoardApiKey,
   type CurrentUserProfile,
   type AuthSession,
+  type BrowserTracingConfig,
+  type BrowserAnalyticsConfig,
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,
@@ -2850,7 +2894,7 @@ export {
 } from "./runtime-exposure/loopback-bind.js";
 export { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js";
 export type { ExecutionContinuationEnvelope } from "./types/execution-continuation.js";
-export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker, TaskInterruptionPresentation } from "./types/execution-projection.js";
+export type { ExecutionAgentQueue, ExecutionProjection, ExecutionReconciliation, ExecutionBlocker, TaskInterruptionPresentation } from "./types/execution-projection.js";
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
 export * from "./types/voice-sessions.js";
@@ -2960,4 +3004,8 @@ export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
-export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
+export { LINK_PREVIEW_BATCH_LIMIT, type LinkPreviewBatchResult, recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
+export * from "./mcp-apps.js";
+export * from "./tool-call-progress.js";
+export * from "./mcp-skills.js";
+export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";

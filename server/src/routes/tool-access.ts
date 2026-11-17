@@ -1,11 +1,12 @@
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
-import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
+import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { loadPluginAppCatalog } from "../services/plugin-app-catalog.js";
 import { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema } from "@paperclipai/shared";
 import { aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema } from "@paperclipai/shared/aggregator-apps";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, companies, connectionGrants, issues, issueThreadInteractions, toolConnectionInstalls, toolMcpAppViews } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
@@ -23,6 +24,10 @@ import {
   type ToolConnection,
   type ToolConnectionCreateCapabilities,
   connectToolAppSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
+  type MachineSignInStatus,
   configureRailwaySshSchema,
   createConnectionGrantDelegationSchema,
   createToolStdioCommandTemplateSchema,
@@ -65,6 +70,12 @@ import { getActorInfo, assertBoard, assertBoardOrAgent, assertCompanyAccess, ass
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { authorizationService } from "../services/authorization.js";
+import { mcpAppViewsService } from "../services/mcp-app-views.js";
+import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { getRunLogStore } from "../services/run-log-store.js";
+import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
+import { mcpAppToolCallSchema } from "@paperclipai/shared";
 import { RailwayError } from "../services/railway.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
@@ -82,6 +93,7 @@ import {
   startPaperclipCloudConnectorEnrollment,
 } from "../services/paperclip-cloud-connector-enrollment.js";
 import { reconcilePaperclipCloudConnectorEnrollmentStatus } from "../services/paperclip-cloud-connector-status.js";
+import { paperclipCloudEnrollmentPrincipal } from "../services/paperclip-cloud-connector-principal.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
@@ -100,6 +112,21 @@ const ORGANIZATION_GRANT_DENIAL_REASON =
 type Heartbeat = ReturnType<typeof heartbeatService>;
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+/** Activity for machine sign-in carries identifiers only: never a secret, key or token. */
+function machineSignInActivityDetails(status: MachineSignInStatus) {
+  return {
+    method: status.method,
+    issuer: status.issuer,
+    keyId: status.publicKey?.keyId ?? null,
+    pendingKeyId: status.pendingPublicKey?.keyId ?? null,
+    scopeCount: status.scopes.length,
+  };
+}
+
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
   const raw = config?.allowedSpreadsheetIds;
   if (!Array.isArray(raw)) return [];
@@ -205,7 +232,7 @@ function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): st
     const parsed = new URL(returnTo, "http://paperclip.local");
     if (
       parsed.origin !== "http://paperclip.local"
-      || !["/apps/connect", "/apps/chat/connect"].includes(parsed.pathname)
+      || !["/apps/connect", "/apps/chat/connect", "/apps/tailscale"].includes(parsed.pathname)
       || parsed.username
       || parsed.password
     ) return null;
@@ -235,6 +262,8 @@ export function cloudConnectorEnrollmentReturnPath(issuePrefix: string, returnTo
   }
   return `${companyRoot}/apps/connections?cloud_connector=enrolled`;
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function toolAccessRoutes(
   db: Db,
@@ -417,6 +446,31 @@ export function toolAccessRoutes(
     return null;
   }
 
+  // Agents already have this instance's tools built in. Connecting it to itself
+  // only adds a second copy under another name, which is the confusion the
+  // peer-connection naming exists to prevent.
+  function assertNotThisPaperclip(req: Request, link: unknown) {
+    const peer = typeof link === "string" ? paperclipPeerFromMcpUrl(link) : null;
+    if (!peer) return;
+    const requestHost = req.get("host")?.trim();
+    const ownOrigins = [
+      configuredPublicBaseUrl(),
+      options.authPublicBaseUrl,
+      process.env.PAPERCLIP_PUBLIC_URL,
+      trustedBrowserBaseUrl(req),
+      requestLoopbackBaseUrl(req),
+      requestHost ? `${req.protocol}://${requestHost}` : null,
+      // The port this server actually listens on; startup may move off PORT.
+      process.env.PAPERCLIP_LISTEN_PORT ? `http://localhost:${process.env.PAPERCLIP_LISTEN_PORT}` : null,
+    ];
+    if (isSamePaperclipInstance(peer, ownOrigins)) {
+      throw unprocessable(
+        "That address is this Paperclip. Your agents already have its tools, so there is nothing to connect.",
+        { code: "paperclip_self_connection" },
+      );
+    }
+  }
+
   function oauthRedirectUri(req: Request, forInitiation = false) {
     const baseUrl = configuredPublicBaseUrl()
       ?? trustedBrowserBaseUrl(req)
@@ -458,7 +512,7 @@ export function toolAccessRoutes(
   }
 
 function connectorEnrollmentPrincipal(req: Request): string {
-  return req.actor.userId ? `user:${req.actor.userId}` : `source:${req.actor.source ?? "board"}`;
+  return paperclipCloudEnrollmentPrincipal(req.actor);
 }
 
 /**
@@ -518,6 +572,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   const access = accessService(db);
   const managementGuard = connectionManagementGuard(db, "tool");
+  const contentDeletion = createConnectionContentDeletion(db, { runLogStore: getRunLogStore });
 
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
     if (req.actor.type === "agent") {
@@ -861,8 +916,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
         : null;
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
+    const pluginApps = (await loadPluginAppCatalog(db)).definitions;
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
+      // Full definitions of plugin-provided connectors. Like the built-in
+      // definitions the board bundles, they keep methods the gallery entry
+      // hides until (for example) Cloud connector enrollment is active.
+      pluginApps,
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       credentialSources: {
         vercelConnect: {
@@ -879,6 +939,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+      ), ...pluginApps.map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
@@ -938,6 +1000,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           : ORGANIZATION_GRANT_DENIAL_REASON,
       );
     }
+    assertNotThisPaperclip(req, req.body.link);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, connectionRequestActor(req));
       if (result.auth?.kind === "oauth") {
@@ -996,6 +1059,87 @@ function connectorEnrollmentPrincipal(req: Request): string {
     } catch (error) {
       svc.ensureNoDuplicateNameError(error);
     }
+  });
+
+  // Machine sign-in (MCP OAuth client credentials): organization connections
+  // that authenticate as a registered client, with no person signing in.
+  router.post("/companies/:companyId/tools/machine-sign-in", managementGuard("connections:configure", "POST /companies/:companyId/tools/machine-sign-in"), validate(createMachineSignInSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertToolAppMutationAccess(req, companyId);
+    if (!await isToolConnectionManagerQuiet(req, companyId)) throw forbidden(ORGANIZATION_GRANT_DENIAL_REASON);
+    try {
+      const result = await svc.createMachineSignIn(companyId, req.body, connectionRequestActor(req));
+      await logActivity(db, {
+        companyId,
+        ...connectionRequestActor(req),
+        action: "tool_connection.machine_sign_in_created",
+        entityType: "tool_connection",
+        entityId: result.connectionId,
+        details: machineSignInActivityDetails(result.machineSignIn),
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      svc.ensureNoDuplicateNameError(error);
+    }
+  });
+
+  router.get("/tool-connections/:connectionId/machine-sign-in", managementGuard("connections:configure", "GET /tool-connections/:connectionId/machine-sign-in"), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json(await svc.getMachineSignIn(existing.companyId, existing.id));
+  });
+
+  router.post("/tool-connections/:connectionId/machine-sign-in/test", managementGuard("connections:configure", "POST /tool-connections/:connectionId/machine-sign-in/test"), validate(testMachineSignInSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const result = await svc.testMachineSignIn(existing.companyId, existing.id, req.body, connectionRequestActor(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.machine_sign_in_verified",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: {
+        ...machineSignInActivityDetails(await svc.getMachineSignIn(existing.companyId, existing.id)),
+        clientSecretReplaced: Boolean(req.body.clientSecret),
+        catalogEntryCount: result.catalog.length,
+      },
+    });
+    res.json(result);
+  });
+
+  router.post("/tool-connections/:connectionId/machine-sign-in/rotate", managementGuard("connections:configure", "POST /tool-connections/:connectionId/machine-sign-in/rotate"), validate(rotateMachineSignInSchema), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const result = await svc.rotateMachineSignIn(existing.companyId, existing.id, req.body, connectionRequestActor(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: result.completed ? "tool_connection.machine_sign_in_rotated" : "tool_connection.machine_sign_in_rotation_started",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: machineSignInActivityDetails(result.machineSignIn),
+    });
+    res.json(result);
+  });
+
+  router.post("/tool-connections/:connectionId/machine-sign-in/rotate/complete", managementGuard("connections:configure", "POST /tool-connections/:connectionId/machine-sign-in/rotate/complete"), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    const result = await svc.completeMachineSignInRotation(existing.companyId, existing.id, connectionRequestActor(req));
+    await logActivity(db, {
+      companyId: existing.companyId,
+      ...connectionRequestActor(req),
+      action: "tool_connection.machine_sign_in_rotated",
+      entityType: "tool_connection",
+      entityId: existing.id,
+      details: machineSignInActivityDetails(result.machineSignIn),
+    });
+    res.json(result);
   });
 
   router.post(
@@ -2116,6 +2260,54 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(result);
   });
 
+  // An MCP Apps view's tools/call. It runs through the connection test-call
+  // path, so it needs exactly what a test call needs: connection management
+  // (connections:test), connection access, tool permission and test-as-agent
+  // authority for the agent whose call recorded the view, plus task read access.
+  router.post("/issues/:issueId/mcp-app-views/:viewId/tool-calls", async (req, res, next) => {
+    assertBoard(req);
+    const issueId = String(req.params.issueId);
+    const viewId = String(req.params.viewId);
+    if (!UUID_PATTERN.test(issueId) || !UUID_PATTERN.test(viewId)) {
+      res.status(404).json({ error: "View not found" });
+      return;
+    }
+    const [issue] = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)).limit(1);
+    if (!(await getAccessibleResource(req, res, issue, "Task not found"))) return;
+    const readable = await authorizationService(db).decide({ actor: req.actor, action: "issue:read", resource: { type: "issue", companyId: issue.companyId, issueId: issue.id } });
+    const view = readable.allowed ? await mcpAppViewsService(db).get(issue.companyId, viewId) : null;
+    if (!view || view.issueId !== issue.id) {
+      res.status(404).json({ error: "View not found" });
+      return;
+    }
+    res.locals.mcpAppView = view;
+    // The management guard resolves the connection from this parameter.
+    req.params.connectionId = view.connectionId;
+    next();
+  }, managementGuard("connections:test", "POST /issues/:issueId/mcp-app-views/:viewId/tool-calls", { personal: true }), validate(mcpAppToolCallSchema), async (req, res) => {
+    if (!options.toolGateway) {
+      res.status(501).json({ error: "Tool gateway service is not configured" });
+      return;
+    }
+    const view = res.locals.mcpAppView as typeof toolMcpAppViews.$inferSelect;
+    const connection = await getAccessibleResource(req, res, svc.getConnection(view.connectionId), "Tool connection not found");
+    if (!connection) return;
+    await assertBoardAnyToolPermission(req, connection.companyId, ["tools:use", "tools:manage_connections"]);
+    if (!view.agentId) throw forbidden("This view's agent no longer exists");
+    await assertCanTestAsAgent(req, connection.companyId, view.agentId);
+    try {
+      res.json(await options.toolGateway.callMcpAppViewTool({
+        companyId: connection.companyId,
+        userId: connectionRequestUserId(req) ?? "board",
+        view,
+        toolName: req.body.name,
+        arguments: req.body.arguments ?? {},
+      }));
+    } catch (error) {
+      if (!sendToolGatewayError(res, error)) throw error;
+    }
+  });
+
   router.post("/tool-connections/:connectionId/test-calls", managementGuard("connections:test", "POST /tool-connections/:connectionId/test-calls", { personal: true }), validate(toolConnectionTestCallSchema), async (req, res) => {
     assertBoardOrAgent(req);
     if (!options.toolGateway) {
@@ -2216,6 +2408,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     await assertToolConnectionConfigureAccess(req, existing);
     if (aiConnectionRouterPluginKey(existing)) throw badRequest("Remove this connection pool through its revision-checked pool settings.");
     const applicationBefore = await svc.getApplication(existing.applicationId);
+    const deleteStoredContent = req.query.deleteStoredContent === "true";
+    if (deleteStoredContent) assertBoard(req);
     const { connection, removal } = await svc.archiveConnection(
       existing.id,
       existing.companyId,
@@ -2231,7 +2425,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
       action: "tool_connection.archived",
       entityType: "tool_connection",
       entityId: connection.id,
-      details: { transport: connection.transport, ...removal },
+      details: {
+        transport: connection.transport,
+        ...(asRecord(asRecord(existing.config).oauth).grantType === "client_credentials" ? { machineSignIn: true } : {}),
+        ...removal,
+      },
     });
     if (applicationBefore.status !== "archived" && applicationAfter.status === "archived") {
       await logActivity(db, {
@@ -2243,7 +2441,54 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: { type: applicationAfter.type, name: applicationAfter.name, reason: "last_connection_removed" },
       });
     }
-    res.json({ ...connection, removal });
+    const contentDeletion = deleteStoredContent
+      ? await requestStoredContentDeletion(req, connection)
+      : null;
+    res.json({ ...connection, removal, ...(contentDeletion ? { contentDeletion } : {}) });
+  });
+
+  async function requestStoredContentDeletion(req: Request, connection: { id: string; companyId: string }) {
+    const actor = getActorInfo(req);
+    const { deletion, created } = await contentDeletion.request(connection, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
+    if (created) {
+      const { stored } = await contentDeletion.storedContent(connection);
+      await logActivity(db, {
+        companyId: connection.companyId,
+        ...connectionRequestActor(req),
+        action: "tool_connection.content_deletion_requested",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { ...stored },
+      });
+    }
+    return deletion;
+  }
+
+  router.get("/tool-connections/:connectionId/stored-content", managementGuard("connections:configure", "GET /tool-connections/:connectionId/stored-content", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json(await contentDeletion.storedContent(existing));
+  });
+
+  router.post("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "POST /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.status(202).json({ deletion: await requestStoredContentDeletion(req, existing) });
+  });
+
+  router.get("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "GET /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json({ deletion: await contentDeletion.latestDeletion(existing) });
   });
 
   router.post("/tool-connections/:connectionId/health-check", managementGuard("connections:configure", "POST /tool-connections/:connectionId/health-check", { personal: true }), async (req, res) => {
@@ -2303,6 +2548,20 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId, getActorInfo(req)) });
+  });
+
+  // Provider tool icons for the task chat's tool rows. Same gate and
+  // visibility as the connection list: only icons of connections this viewer
+  // can see.
+  router.get("/companies/:companyId/tool-icons", managementGuard("connections:read", "GET /companies/:companyId/tool-icons", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const connections = await svc.listConnections(companyId, connectionRequestUserId(req) ?? undefined);
+    const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
+    const visible = filterVisibleToolConnections(connections, { userId: connectionRequestUserId(req), canManageConnections });
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.json({ icons: await listCompanyProviderToolIcons(db, companyId, visible.map(connection => connection.id)) });
   });
 
   router.get("/tool-connections/:connectionId/activity", managementGuard("connections:audit", "GET /tool-connections/:connectionId/activity", { personal: true }), async (req, res) => {

@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 // The root lockfile. The reporting-lock proof and the `merged` command follow this one only.
 export const LOCKFILE = 'pnpm-lock.yaml';
-// Sandbox providers stay out of the root workspace (see doc/DEVELOPING.md), so they have their own
+// Sandbox providers stay out of the root workspace (see doc/test-infrastructure.md), so they have their own
 // pnpm lockfiles. The refresh workflow regenerates these too, and its LOCKFILES env lists the same
 // paths. Hand-managed pins, such as the Pi and Kimi distributions, are not listed.
 export const PROVIDER_LOCKFILES = [

@@ -65,6 +65,8 @@ function createFakeDb(options: {
   }
   const db = {
     transaction: async (work: (tx: Db) => Promise<unknown>) => work(db),
+    // Session settings such as the grant repair's lock timeout.
+    execute: async () => [],
     insert: (table: unknown) => {
       insertedTables.push(table);
       return writeChain(table);
@@ -229,7 +231,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
     const hold = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
     const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
-      run({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+      run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) } as unknown as Db;
     server.get("/api/health", (_req, res) => res.sendStatus(204));
     server.get("/api/instance/task-drain", async (_req, res) => {
       res.json(await readIdleSleepSafety(emptyDb, () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }),
@@ -279,7 +281,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables.filter((table) => table === companyMemberships)).toHaveLength(3);
   });
 
-  it("coalesces concurrent identical syncs while keeping authority reads and stale-admin purges per request", async () => {
+  it("coalesces concurrent identical syncs and settings reads while keeping membership reads and stale-admin purges per request", async () => {
     let release!: () => void;
     let entered!: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
@@ -294,7 +296,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     const actors = await Promise.all(requests);
     expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
     expect(deletedTables.filter(table => table === instanceUserRoles)).toHaveLength(20);
-    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(1);
     expect(selectWheres.filter(entry => entry.table === companyMemberships && !entry.locked)).toHaveLength(20);
     expect(selectWheres.filter(entry => entry.table === companyMemberships && entry.locked)).toHaveLength(1);
     expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
@@ -590,4 +592,5 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       expect(deletedTables).toContain(instanceUserRoles);
     });
   });
+
 });

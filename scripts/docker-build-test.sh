@@ -36,6 +36,8 @@ echo "==> Verifying key binaries in image"
   set -e
   node --version
   git --version
+  tailscale version
+  tailscaled --version
   gh --version
   rg --version
   python3 --version

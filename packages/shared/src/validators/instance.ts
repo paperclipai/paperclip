@@ -52,7 +52,10 @@ export const instanceExperimentalSettingsSchema = z.object({
   // always enabled; this remains accepted so older stored rows and managed
   // configs continue to load during upgrades.
   enableApps: z.boolean().default(true),
-  enablePublicMcp: z.boolean().default(false),
+  // Deprecated compatibility key. Assistant connections (MCP) graduated from
+  // Experimental and are always enabled; older stored rows, managed configs
+  // and clients may still send it.
+  enablePublicMcp: z.boolean().default(true),
   enableOpenAiDot: z.boolean().default(false),
   enableGrokBot: z.boolean().default(false),
   enableMuse: z.boolean().default(false),
@@ -93,6 +96,9 @@ export const instanceExperimentalSettingsSchema = z.object({
   // off the host keeps the file bridge for every run with no manifest change and
   // no redeploy. The host reads this per run before it selects the transport.
   enableSandboxDuplexBridge: z.boolean().default(false),
+  // MCP Tasks (io.modelcontextprotocol/tasks): durable long provider calls.
+  // Off: Paperclip never declares the extension, so servers never return tasks.
+  enableMcpTasks: z.boolean().default(false),
   // Deprecated compatibility key. Runner ingress follows enableNativeRunner;
   // this remains accepted so older stored rows and managed configs keep loading.
   enableRunnerPreviewIngress: z.boolean().default(false),

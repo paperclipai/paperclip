@@ -181,6 +181,16 @@ refs and the same ownership checks. A personal resolver must not fall back to a
 company credential. Ownership mismatch is `grant_credential_invalid` and tells
 the owner to reconnect.
 
+Dedicated agent connections keep credentials on their agent grant. Background
+catalog and health work may use a single active grant for that connection and
+company. An agent caller must use its own grant. Missing, revoked, or ambiguous
+agent authorizations fail before provider requests; they never fall back to a
+personal, organization, or connection-owned credential. Renaming or pausing the
+connection must preserve the grant and its secret bindings. A later successful
+catalog refresh clears an earlier connection-health error without new consent.
+An agent caller denied for lacking its own grant must not change shared health
+or the catalog, including when that agent has permission to manage the connection.
+
 Existing personal connections with company-scoped invocation credentials require
 their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
 a user-owned credential and updates the grant and declarations while preserving
@@ -765,7 +775,23 @@ This is an opt-in restriction model. Finishing a connection is still limited to
 a board user with connection-configuration access, commits the selected action
 IDs to an auditable profile, and leaves **Ask first** available for any action.
 The open default changes the initial policy; it does not create a route around a
-policy the operator has applied.
+policy the operator has applied. Adding an agent uses the saved action choices.
+An independent approval policy can still require approval for an action marked
+Allowed on the app page. That page manages the app-specific Ask first rules; it
+does not remove independent policies.
+
+The app permission save reconciles the selected targets and actions with their
+saved rows. It retains unchanged bindings, entries, and Ask first policies,
+batches policy changes, and leaves already-disabled rules untouched. Use the
+disposable PostgreSQL benchmark to measure this path:
+
+```sh
+node --import ./server/node_modules/tsx/dist/loader.mjs scripts/benchmark-app-permission-save.ts --baseline-ref=<pre-fix SHA> --output=/tmp/app-permission-save.json
+```
+
+The benchmark uses synthetic data, two warmups, and six samples in alternating
+order. It compares saved values and action decisions. Its timings measure the
+local service, not hosted endpoint latency.
 
 Saving a connection's installation list grants its app profile only to newly
 added targets. Targets that remain installed keep their existing profile
@@ -1513,6 +1539,28 @@ POST /api/tool-connections/:connectionId/catalog/refresh
 POST /api/tool-connections/:connectionId/test-calls
 DELETE /api/tool-connections/:connectionId
 ```
+
+Stored tool-call content endpoints:
+
+```text
+GET /api/tool-connections/:connectionId/stored-content
+POST /api/tool-connections/:connectionId/stored-content/deletion
+GET /api/tool-connections/:connectionId/stored-content/deletion
+DELETE /api/tool-connections/:connectionId?deleteStoredContent=true
+```
+
+Deletion is connector-agnostic. It clears the content of the connection's
+tool-call summaries (including `tool_access_audit_events.details.argumentsSummary`),
+approval previews, approval cards, delivered action results and app views, and
+deletes the whole run transcript (every copy of the run log, run-event content,
+output excerpts and the result text) of every settled run that called the
+connection or received an approved action's result. Row ids, timestamps, status,
+sizes and hashes stay. A step that cannot confirm its deletion fails, and the
+request stays pending and retries; it completes only when every step succeeded.
+A `tool_connection_content_deletions` row is the durable request; the
+`tool-connection-content-deletion` delivery queue resumes it after a restart.
+Runs that are still working are skipped and counted. The user-facing help is
+`docs/guides/board-operator/deleting-connection-data.md`.
 
 Responses may contain secret IDs, version selectors, header names, prefixes,
 scope names, expiry timestamps, and redacted provider metadata. They must not

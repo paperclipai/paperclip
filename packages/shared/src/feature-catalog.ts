@@ -121,11 +121,12 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: true,
   },
   enablePublicMcp: {
-    title: "Assistant connections (MCP)",
-    description: "Let external assistants connect as a person to review work, delegate tasks, add feedback, and follow results.",
+    title: "Assistant connections (compatibility)",
+    description:
+      "Deprecated compatibility key. Assistant connections (MCP) are always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableGitHubReviewBots: {
     title: "GitHub review bots",
@@ -136,14 +137,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   },
   enableOpenAiDot: {
     title: "OpenAI Dot",
-    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL.",
+    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires an authenticated instance with a public HTTPS URL.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },
   enableGrokBot: {
     title: "Grok Bot",
-    description: "Connect an existing Grok Bot as an experimental Paperclip agent. Requires Assistant connections (MCP), Paperclip Runner, and an authenticated public HTTPS instance. Provider spending is not reported.",
+    description: "Connect an existing Grok Bot as an experimental Paperclip agent. Requires Paperclip Runner and an authenticated public HTTPS instance. Provider spending is not reported.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -383,6 +384,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
       "On cloud-managed instances, grant the stack owner instance-admin access to their own dedicated instance. Elevation is computed at the trusted-header auth boundary; no instance admin role rows are created. Inert on self-hosted instances.",
     tier: "managed",
     cloudDefault: true,
+    selfHostedDefault: false,
+  },
+  enableMcpTasks: {
+    title: "Durable app actions (MCP Tasks)",
+    description:
+      "Let connected apps run long actions, such as CI runs or deploys, as tasks that Paperclip keeps track of across timeouts, restarts, and deploys, so the work is never started twice.",
+    tier: "managed",
+    cloudDefault: false,
     selfHostedDefault: false,
   },
   enableSandboxDuplexBridge: {

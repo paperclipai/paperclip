@@ -44,6 +44,10 @@ import {
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
+import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
+import { ProviderToolIconsProvider } from "@/components/ProviderToolIcon";
+import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
+import { ToolCallProgressProvider } from "@/components/task-chat/tool-call-progress";
 import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
@@ -129,6 +133,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -2928,6 +2933,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     },
     [beginSubmission, rejectSubmission, onAdd, pendingComposerInputs, selectedPendingInput, dismissInput, agentMap, takeoverMode],
   );
+  // A message an MCP Apps view proposed, sent only after the viewer clicked
+  // Send, through the same path as a typed message.
+  const sendMcpAppMessage = useCallback(
+    (body: string, clientRequestId: string) => handleThreadAdd(body, undefined, undefined, undefined, clientRequestId),
+    [handleThreadAdd],
+  );
   const optimisticRunnerStartup =
     hasAgentAssignee &&
     !startupBlocked &&
@@ -3361,6 +3372,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   return (
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
+    <McpAppIssueProvider issueId={issueId} sendMessage={composerDisabledReason ? null : sendMcpAppMessage}>
+    <ProviderToolIconsProvider companyId={companyId}>
+    <ToolCallProgressProvider issueId={issueId}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
         <TaskChatPresentationProvider
@@ -3369,6 +3383,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           <div
             className={cn(
               "relative flex min-h-0 flex-1 flex-col",
+              // Customer content: masked in session replay, skipped by autocapture.
+              ANALYTICS_MASK_CLASS,
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
@@ -3534,11 +3550,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                     />
                                   ) : (
                                     <TaskChatShimmerScope items={tailItems}>
+                                      <McpAppTurnViews runId={tailRunId} refreshKey={mcpAppRunRefreshKey(tailItems, tailStatus)} />
                                       <TaskChatLiveTail
                                         items={tailItems}
                                         emptyMessage={
                                           tailStatus === "queued"
-                                            ? "Waiting to start..."
+                                            ? undefined
                                             : (liveRun && liveRun.id === tailRunId
                                                 ? liveRun.currentStatusMessage
                                                 : null) ||
@@ -3707,6 +3724,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </TaskChatPresentationProvider>
       </TaskChatScrollReady.Provider>
     </TaskChatExpansionState.Provider>
+    </ToolCallProgressProvider>
+    </ProviderToolIconsProvider>
+    </McpAppIssueProvider>
     </TaskChatRequestHistoryContext.Provider>
   );
 }

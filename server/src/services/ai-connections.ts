@@ -263,7 +263,7 @@ export function aiConnectionService(db: Db) {
         errorCode: "connection_unavailable", message: "Reconnect or enable this connection to check its account details." };
     }
     // Unsupported methods must not open their credentials just to report this limit.
-    const value = metadata.provider === "anthropic" && metadata.method === "subscription" && !metadata.routing
+    const value = ["anthropic", "openai"].includes(metadata.provider) && metadata.method === "subscription" && !metadata.routing
       ? await credential(row, 0, { actorType: "user", actorId: userId, ...audit, responsibleUserId: userId }) : "";
     return { ...identity, ...await probeAiAccountIdentity(metadata, value) };
   }
@@ -615,11 +615,12 @@ export function aiConnectionService(db: Db) {
     } else {
       value = await secrets.resolveSecretValue(row.connection.companyId, secret.id, "latest", context);
     }
-    // Resolution records lastResolvedAt and can wait behind a rotating writer.
-    // Re-read after that wait instead of handing a run the pre-rotation token.
+    // Wait behind a rotating writer (the share lock), then re-read instead of
+    // handing a run the pre-rotation token. A lock takes no new row version,
+    // so it never aborts a concurrent REPEATABLE READ admission.
     const [latest] = await db.select().from(companySecrets).where(and(
       eq(companySecrets.id, secret.id), eq(companySecrets.companyId, row.connection.companyId),
-    ));
+    )).for("share");
     if (!latest || latest.status !== "active") throw unprocessable("Reconnect this AI account");
     if (latest.latestVersion !== secret.latestVersion) {
       if (retry >= 2) throw unprocessable("AI credentials are changing. Retry this execution.", { code: "ai_connection_busy" });

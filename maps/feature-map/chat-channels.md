@@ -110,7 +110,8 @@ Eyes should appear after authorized task/comment persistence, independently of
 file preparation, subscription and agent startup. Duplicate delivery must keep
 one receipt; the final reply must remove only its source message's eyes. Record
 live mention-to-reaction timing separately from the PostgreSQL fixture tests and
-the `chat.slack.receipt` transport span described in [Observability](../../doc/observability.md).
+the `chat.slack.receipt` transport span in
+[`receipt-timing.ts`](../../server/src/services/chat-channels/slack/receipt-timing.ts).
 
 During a top-level DM run, verify that the bot adds eyes to the source message
 and removes them when the final reply arrives. The pinned Slack SDK encodes a

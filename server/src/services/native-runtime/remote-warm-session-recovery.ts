@@ -5,6 +5,59 @@ import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNat
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { readyPortableTaskSource } from "../plugin-task-ownership.js";
+import { PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS } from "@paperclipai/adapter-utils";
+import { currentControllerBootId } from "../controller-process-identity.js";
+import { currentProcessProbe, proveOwnerGone } from "../owner-proof.js";
+
+export const WARM_OWNER_RECHECK_MS = 5_000;
+const WARM_OWNER_CLOSE_MARGIN_MS = 2 * 60_000;
+
+export async function liveWarmSessionOwnerRetryAt(input: {
+  owner: Pick<typeof nativeRunFinalizations.$inferSelect, "controllerBootId" | "controllerPid" | "controllerHostHash"
+    | "controllerProcessStartedAt" | "updatedAt">;
+  finishedAt: Date | null;
+  idleTimeoutMs: number | null;
+  now?: Date;
+}): Promise<Date | null> {
+  const { owner } = input;
+  const now = input.now ?? new Date();
+  if (!owner.controllerBootId || owner.controllerBootId === currentControllerBootId()) return null;
+  const releasedAt = (input.finishedAt ?? owner.updatedAt).getTime();
+  const closesBy = releasedAt + (input.idleTimeoutMs ?? PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS) + WARM_OWNER_CLOSE_MARGIN_MS;
+  if (closesBy <= now.getTime()) return null;
+  const proof = await proveOwnerGone({
+    kind: "local", scope: "native_warm_session", generation: null, host: null,
+    processSpace: owner.controllerHostHash, processSpaceUnrecorded: owner.controllerHostHash == null,
+    bootId: owner.controllerBootId, pid: owner.controllerPid,
+    processStartedAt: owner.controllerProcessStartedAt?.toISOString() ?? null,
+    touchedAt: owner.updatedAt.toISOString(),
+  }, { ...currentProcessProbe(), readOnly: true });
+  if (proof.verdict !== "alive") return null;
+  return new Date(Math.min(now.getTime() + WARM_OWNER_RECHECK_MS, closesBy));
+}
+
+export async function waitForLiveWarmSessionOwner(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  priorRunId: string;
+  checkpointedAt: () => Promise<Date | null>;
+}): Promise<void> {
+  const { binding } = input.execution;
+  const [owner] = await input.db.select().from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.runId, input.priorRunId), eq(nativeRunFinalizations.companyId, binding.companyId))).limit(1);
+  if (!owner) return;
+  const [prior] = await input.db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, input.priorRunId), eq(heartbeatRuns.companyId, binding.companyId),
+    eq(heartbeatRuns.agentId, binding.agentId))).limit(1);
+  const finishedAt = prior?.finishedAt ?? null;
+  const retryAt = await liveWarmSessionOwnerRetryAt({ owner, finishedAt,
+    idleTimeoutMs: input.execution.session.lifecyclePolicy.idleTimeoutMs ?? null });
+  if (!retryAt || !owner.controllerBootId) return;
+  const checkpointedAt = await input.checkpointedAt();
+  if (checkpointedAt && finishedAt && checkpointedAt >= finishedAt) return;
+  throw new NativeControllerRecoveryWaitingError(retryAt, { runId: input.priorRunId, controllerBootId: owner.controllerBootId });
+}
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -12,6 +65,8 @@ export type RemoteWarmSessionRecovery = {
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
   releasedSource?: DurableRecoveryIdentity;
+  releasedSourceRunner?: { version: string; digest: string };
+  portableSourceTaskId?: string;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };
@@ -103,16 +158,14 @@ export function describeOwnFailedAttachment(recoveryHistory: unknown): string {
   return `runner_state_identity_mismatch: prior_attach_failed: ${typeof cause === "string" && cause ? cause : "unknown"}`;
 }
 
-const SETTLEMENT_DOC = "https://github.com/paperclipai/paperclip/blob/master/doc/execution-semantics.md#session-settlement-after-a-run";
-
-/** Points whoever diagnoses a failed attachment at reviewed docs. The stored
- * failure is already redacted and bounded; other failures produce no pointer. */
+/** Explains a failed attachment to whoever diagnoses it. The stored failure is
+ * already redacted and bounded; other failures produce no explanation. */
 export function describeFailedAttachment(failureMessage: unknown): string | null {
   if (typeof failureMessage !== "string" || !/\brun\.attach (failed|requires)\b/.test(failureMessage)) return null;
   const encoded = /"message":("(?:[^"\\]|\\.)*")/.exec(failureMessage)?.[1];
   let cause = failureMessage;
   try { if (encoded) cause = JSON.parse(encoded) as string; } catch { /* Keep the whole failure. */ }
-  return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread. See ${SETTLEMENT_DOC}`;
+  return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread.`;
 }
 
 type WarmRecoveryRefusal = "identity_incomplete" | "target_not_resumed_sandbox" | "owner_unsettled" | "execution_mismatch"
@@ -128,6 +181,7 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   matchesExecution: (previous: NativeExecutionInput) => boolean;
   loadCheckpoint: (previous: NativeExecutionInput) => PersistedNativeSession | null;
   canReuseProcess: (previous: NativeExecutionInput) => boolean;
+  portableSourceTaskId?: string;
 }): Promise<RemoteWarmSessionRecovery | null> {
   const { binding } = input.execution;
   const { target } = input;
@@ -152,13 +206,15 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   // sandbox (for example after a restart or deploy replaced the controller)
   // holds no Runner to adopt, so live adoption steps aside. Ordinary admission
   // then retires the finished owner or keeps it held with a named reason.
-  if (target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
+  if (!input.portableSourceTaskId && target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
     return null;
   }
   if (target.transport !== "sandbox" || !target.leaseId || !target.environmentId ||
-      !target.providerKey || !target.sandboxLeaseAcquisition || target.sandboxLeaseAcquisition.outcome !== "resumed" ||
+      !target.providerKey || !target.sandboxLeaseAcquisition ||
+      (!input.portableSourceTaskId && target.sandboxLeaseAcquisition.outcome !== "resumed") ||
       identity.runId === binding.runId) return deny("target_not_resumed_sandbox");
   const providerLeaseId = target.sandboxLeaseAcquisition.providerLeaseId;
+  const sourceProviderLeaseId = input.portableSourceTaskId ?? providerLeaseId;
   const [prior] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations })
     .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .where(and(eq(heartbeatRuns.id, identity.runId), eq(heartbeatRuns.companyId, binding.companyId),
@@ -171,7 +227,12 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     throw new NativeControllerRecoveryWaitingError(prior.owner.leaseExpiresAt);
   }
   if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny("owner_unsettled");
-  settledPredecessor = { runId: identity.runId, providerLeaseId };
+  const liveOwnerRetryAt = await liveWarmSessionOwnerRetryAt({ owner: prior.owner, finishedAt: prior.run.finishedAt,
+    idleTimeoutMs: previous.session?.lifecyclePolicy?.idleTimeoutMs ?? null });
+  if (liveOwnerRetryAt) {
+    throw new NativeControllerRecoveryWaitingError(liveOwnerRetryAt, { runId: identity.runId, controllerBootId: prior.owner.controllerBootId });
+  }
+  if (sourceProviderLeaseId === providerLeaseId) settledPredecessor = { runId: identity.runId, providerLeaseId };
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||
       checkpoint.identity.companyId !== binding.companyId || checkpoint.identity.issueId !== binding.issueId ||
@@ -194,15 +255,22 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   const priorLeases = await input.db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, binding.companyId), eq(environmentLeases.heartbeatRunId, identity.runId),
     eq(environmentLeases.issueId, binding.issueId), eq(environmentLeases.environmentId, target.environmentId),
-    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, providerLeaseId),
+    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, sourceProviderLeaseId),
   ));
   if (priorLeases.length !== 1 || priorLeases[0].metadata?.remoteCwd !== target.remoteCwd ||
-      !["released", "expired", "active"].includes(priorLeases[0].status)) return deny("prior_lease_mismatch");
+      !["released", "expired", "active", ...(input.portableSourceTaskId ? ["retained"] : [])].includes(priorLeases[0].status)) {
+    return deny("prior_lease_mismatch");
+  }
   return {
     identity, checkpoint, previousExecution: previous, reuseProcess: input.canReuseProcess(previous),
+    portableSourceTaskId: input.portableSourceTaskId,
     remote: { providerLeaseId, remoteCwd: target.remoteCwd },
     revalidate: async leaseOwner => {
       await assertPriorStopped();
+      if (input.portableSourceTaskId &&
+          (await readyPortableTaskSource(input.db, binding.companyId, target.leaseId!, identity))?.taskId !== input.portableSourceTaskId) {
+        return deny("prior_lease_mismatch");
+      }
       const controller = await currentNativeControllerIdentity();
       const [current] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations, issue: issues, agent: agents, company: companies })
         .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))

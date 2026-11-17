@@ -8,13 +8,13 @@ import { startPersistedQueryCache } from "@/lib/persisted-query-cache";
 import { queryKeys } from "@/lib/queryKeys";
 import { prepareFixtureApi } from "../../support/capability-gaps/api";
 
-interface PreviewArgs { state: LinkPreviewState; mode: "ready" | "loading" | "unavailable" | "failure"; longTitle: boolean }
+interface PreviewArgs { state: LinkPreviewState; mode: "ready" | "loading" | "unavailable" | "failure"; longTitle: boolean; autoLoad?: boolean }
 
-function PreviewExample({ client: restoredClient }: PreviewArgs & { client?: QueryClient }) {
+function PreviewExample({ client: restoredClient, autoLoad = false }: PreviewArgs & { client?: QueryClient }) {
   const [localClient] = useState(() => new QueryClient());
   const client = restoredClient ?? localClient;
   return <QueryClientProvider client={client}>
-    <LinkPreviewProvider companyId="company-storybook" userId="user-board">
+    <LinkPreviewProvider companyId="company-storybook" userId="user-board" autoLoad={autoLoad}>
       <main className="mx-auto flex max-w-3xl flex-col gap-8 p-6">
         <header className="flex flex-col gap-2">
           <h1 className="text-xl font-medium">Pull request links</h1>
@@ -62,6 +62,9 @@ const meta = {
         },
         maxAgeMs: 60_000,
       }),
+    }, {
+      path: "/api/companies/company-storybook/link-previews/cached", method: "GET",
+      read: () => ({ results: {} }),
     }]);
     return fixture.cleanup;
   },
@@ -79,6 +82,10 @@ export const Neutral: Story = {};
 export const ReloadCache: Story = {
   render: args => <PersistedPreviewExample {...args} />,
   parameters: { paperclip: { notes: "Production browser read-cache persistence with fixture account/company identity. Load a PR, then reload this iframe to retain the learned status. Fresh previews reuse their original read time; stale previews refresh only on hover or focus. No live provider authorization is claimed." } },
+};
+export const PageLoad: Story = {
+  args: { autoLoad: true },
+  parameters: { paperclip: { notes: "Production page registry reads a batch of saved status, then resolves missing previews after document load and core queries settle. Duplicate mounted links share one query. Cache/provider responses are fixtures; database behavior has separate integration tests." } },
 };
 export const Open: Story = {};
 export const Merged: Story = { args: { state: "merged" } };
