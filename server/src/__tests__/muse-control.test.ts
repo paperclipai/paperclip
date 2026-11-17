@@ -3176,7 +3176,7 @@ describe("personal Muse control plane",()=>{
     const f=await fixture(),state=(await f.broker.bindingForAgent(f.company.id,f.agent.id))!;
     // A broker instance keeps its configured public origin; use a fresh DB
     // wrapper to exercise the same persisted binding with a bad setup origin.
-    const bad=museRunnerBroker(createDb(externalDatabaseUrl??temporary!.connectionString),{publicOrigin:"http://invalid.example"});
+    const bad=museRunnerBroker(createDb(externalDatabaseUrl??temporary!.connectionString,{maxConnections:4}),{publicOrigin:"http://invalid.example"});
     await expect(bad.createPairing({companyId:f.company.id,agentId:f.agent.id,operatorId:f.operatorId,replaceBindingId:f.binding.id,expectedRevision:state.revision})).rejects.toThrow("HTTPS");
     expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].revokedAt).toBeNull();
   });
