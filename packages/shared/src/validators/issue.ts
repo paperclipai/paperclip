@@ -1269,6 +1269,7 @@ export const connectionIntentPayloadSchema = z
       connectionId: z.string().guid(),
       access: z.union([z.literal("all_agents"), z.object({ agentIds: z.array(z.string().guid()).max(250) }).strict()]),
     }).strict().optional(),
+    savedConnectionId: z.string().guid().optional(),
     savedSetup: z.object({ endpointId: z.string().guid(), connectionId: z.string().guid(), action: z.enum(["enter_credentials", "rotate_credentials", "confirm_identity"]).optional(), credentialRotation: z.object({ previousId: z.string().guid().nullable() }).strict().optional(), credentialEntry: z.object({
       previousGenerations: z.record(z.string().refine(field => ["signingSecret", "webhookSecret", "privateKey", "clientSecret", "projectSecret"].includes(field)), z.string().uuid().nullable()).refine(value => Object.keys(value).length > 0 && Object.keys(value).length <= 5),
       requireAll: z.boolean(),
@@ -1296,6 +1297,7 @@ export const connectionIntentPayloadSchema = z
     phase: connectionIntentPhaseSchema,
   })
   .strict()
+  .refine(value => !value.savedConnectionId || (!value.purpose && !value.accessRequest && !value.savedSetup), "Saved tool drafts require a tool setup card")
   .refine(value => !value.agentSetup || value.purpose === "ai", "Agent setup cards require AI authentication")
   .refine(value => !value.agentSetupOperationId || value.agentSetup === true, "A setup operation requires an agent setup card");
 

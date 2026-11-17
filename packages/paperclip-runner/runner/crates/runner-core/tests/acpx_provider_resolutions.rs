@@ -214,6 +214,24 @@ fn local_validation_preserves_pending_requests_for_a_correct_retry() {
 }
 
 #[test]
+fn forwards_bounded_semantic_feedback_without_internal_payloads() {
+    for wrapped in [false, true] {
+        let mut session = started("resolutions-readable-error");
+        let feedback = json!({"success":false,"contentItems":[{"type":"inputText",
+            "text":"The saved connection is not eligible. Call connections_search and pass its connectionId."}],
+            "diagnostic":"violet-internal-diagnostic-4821"});
+        let result = if wrapped {
+            json!({"ok":false,"callId":"call-1","operationId":"issues.read","error":feedback})
+        } else { feedback };
+        session.deliver_tool_result(&ToolResult {
+            call_id: "call-1".to_owned(), operation_id: "issues.read".to_owned(), result, is_error: true,
+        }).unwrap();
+        assert!(session.state().pending_tool("call-1").is_none());
+        session.shutdown("test complete").unwrap();
+    }
+}
+
+#[test]
 fn redacts_failed_tool_payload_without_losing_correlation_or_retry() {
     let mut session = started("resolutions-error-redaction");
     let mut failed = ToolResult {

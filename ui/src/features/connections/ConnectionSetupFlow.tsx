@@ -577,6 +577,8 @@ export interface ConnectionSetupFlowProps {
   forceNewConnection?: boolean;
   existingConnections?: ConnectionIntentSetupConnection[];
   configuredConnection?: ConnectionIntentSetupConnection;
+  /** Resume this saved draft instead of creating another connection. */
+  resumeConnectionId?: string;
   onUseExisting?: (connectionId: string) => Promise<void>;
   onComplete?: (result: ConnectionSetupCompletion) => void;
   onOAuthDeclined?: () => void;
@@ -604,7 +606,7 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
     }
     return null;
   }, [interactionId, selectedCompanyId, source]);
-  const existingId = props.configuredConnection?.id || searchParams.get("resume") || searchParams.get("reconnect") || draftId;
+  const existingId = props.resumeConnectionId || props.configuredConnection?.id || searchParams.get("resume") || searchParams.get("reconnect") || draftId;
   const requestedDefinition = getConnectableAppDefinition(source ?? "");
   const lookup = Boolean(existingId && (!source || isRemoteMcpConnectorId(source) || isMemoryConnectorId(source) || requestedDefinition?.experimentalFeatureKey));
   const existing = useQuery({ queryKey: ["tools", "connection", existingId], queryFn: () => toolsApi.getConnection(existingId!), enabled: lookup });
@@ -655,6 +657,7 @@ function StandardConnectionSetupFlow({
   forceNewConnection = false,
   existingConnections = [],
   configuredConnection,
+  resumeConnectionId: savedResumeConnectionId,
   onUseExisting,
   onComplete,
   onOAuthDeclined,
@@ -691,7 +694,7 @@ function StandardConnectionSetupFlow({
   const createNewConnection = forceNewConnection || searchParams.get("new") === "1";
   const routeStage = searchParams.get("stage")?.trim() || null;
   const requestedMethodKey = searchParams.get("method")?.trim() || null;
-  const resumeConnectionId = searchParams.get("resume")?.trim() || null;
+  const resumeConnectionId = savedResumeConnectionId || searchParams.get("resume")?.trim() || null;
   const oauthCallbackOutcome = searchParams.get("oauth");
   const oauthCallbackCode = searchParams.get("code");
   const githubInstallationUrl = githubRecoveryUrl(searchParams.get("installation_url"));

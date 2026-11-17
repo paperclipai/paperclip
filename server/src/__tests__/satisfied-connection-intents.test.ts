@@ -63,6 +63,14 @@ describePostgres("already available connection requests", () => {
     return run!;
   }
 
+  it("keeps a saved draft card pending when a different account becomes usable", async () => {
+    const f = await seed();
+    const bound = { ...f.intent, payload: { ...f.intent.payload, savedConnectionId: randomUUID() } };
+    expect(await findSatisfiedToolConnection(db, f.task, bound)).toBeNull();
+    expect(await findSatisfiedToolConnection(db, f.task, { ...bound, payload: { ...bound.payload, savedConnectionId: f.connection.id } }))
+      .toMatchObject({ id: f.connection.id });
+  });
+
   it("wakes governed response recovery only when automatic cleanup retires a connection card", async () => {
     const f = await seed();
     const notified = vi.fn();

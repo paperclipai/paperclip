@@ -43,6 +43,8 @@ export interface ConnectionSearchResultItem {
     purpose?: "tool" | "channel" | "ai";
     /** Company-scoped setup destination for methods with a separate setup flow. */
     setupPath?: string;
+    /** A saved draft for this method, visible to the responsible user. */
+    connectionId?: string;
     management?: {
       allowed: boolean;
       reason: string;

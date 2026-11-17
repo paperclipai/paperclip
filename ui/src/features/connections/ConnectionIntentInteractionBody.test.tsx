@@ -84,6 +84,7 @@ vi.mock("./ConnectionSetupFlow", () => ({
   ConnectionSetupFlow: (props: {
     requestedAgentId?: string;
     requiredAgentId?: string;
+    resumeConnectionId?: string;
     existingConnections?: ToolConnection[];
     onUseExisting?: (id: string) => Promise<void>;
     onComplete?: (completion: { connectionId: string } | { resolvedByCallback: true }) => void;
@@ -93,6 +94,7 @@ vi.mock("./ConnectionSetupFlow", () => ({
     <div data-testid="shared-connection-setup">
       <span data-testid="requested-agent">{props.requestedAgentId}</span>
       <span data-testid="required-agent">{props.requiredAgentId}</span>
+      <span data-testid="resume-connection">{props.resumeConnectionId}</span>
       <span data-testid="existing-count">
         {props.existingConnections?.length ?? 0}
       </span>
@@ -246,6 +248,16 @@ afterEach(async () => {
 });
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
+  it("opens the saved tool draft in the shared setup resume flow", async () => {
+    const interaction = { ...pendingConnectionIntentInteraction, payload: {
+      ...pendingConnectionIntentInteraction.payload, savedConnectionId: "saved-slack-draft",
+    } };
+    renderBody(interaction);
+    await act(() => button("Connect / Use existing")?.click());
+    await waitForAssertion(() => expect(document.querySelector('[data-testid="resume-connection"]')?.textContent).toBe("saved-slack-draft"));
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
   it("opens the saved chat authentication step without another setup form", async () => {
     const interaction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload,
       purpose: "channel" as const, serviceSlug: "slack", serviceName: "Slack", phase: "authorizing" as const,

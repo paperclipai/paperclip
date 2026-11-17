@@ -78,7 +78,7 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   }
   const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
     agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug });
-  if (!connection) return null;
+  if (!connection || (payload.savedConnectionId && connection.id !== payload.savedConnectionId)) return null;
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.
   const access = await createToolGatewayService(db).summarizeConnectionAccessForAgent({

@@ -1196,14 +1196,10 @@ impl AcpxProviderSession {
         let turn_id = self.ensure_active_turn()?.to_owned();
         let resolution = if result.is_error {
             // The durable result remains authoritative for correlation and
-            // retry bookkeeping, but provider-facing failures expose only a
-            // fixed diagnostic. Internal dispatcher payloads must not cross
-            // the sidecar boundary on the separate success-result channel.
-            let message = if is_reserved_terminal_operation(&result.operation_id) {
-                reserved_terminal_feedback(&result.result)
-            } else {
-                "Paperclip semantic operation failed".to_owned()
-            };
+            // retry bookkeeping. Only the bounded, provider-facing text from
+            // a failed tool response crosses this boundary, never its internal
+            // diagnostics or the separate success-result channel.
+            let message = semantic_tool_feedback(result);
             json!({
                 "callId":result.call_id,
                 "turnId":turn_id,
@@ -1538,7 +1534,17 @@ impl AcpxProviderSession {
     }
 }
 
-fn reserved_terminal_feedback(result: &Value) -> String {
+fn semantic_tool_feedback(tool_result: &ToolResult) -> String {
+    let mut result = &tool_result.result;
+    // Ordinary operations bind the response to their call before persistence.
+    // Older receipts and reserved terminal responses use the envelope directly.
+    if result.get("ok").and_then(Value::as_bool) == Some(false)
+        && result.get("callId").and_then(Value::as_str) == Some(tool_result.call_id.as_str())
+        && result.get("operationId").and_then(Value::as_str)
+            == Some(tool_result.operation_id.as_str())
+    {
+        result = result.get("error").unwrap_or(&Value::Null);
+    }
     const MAX_FEEDBACK_CHARS: usize = 2_000;
     if result.get("success").and_then(Value::as_bool) != Some(false) {
         return "Paperclip semantic operation failed".to_owned();

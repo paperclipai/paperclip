@@ -255,6 +255,7 @@ export function ConnectionIntentInteractionBody({
     upstreamServiceName: interaction.payload.upstreamService?.name,
     serviceSlug: interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug,
     configuredConnection: interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined,
+    resumeConnectionId: interaction.payload.savedConnectionId,
     // Tool setup uses the same audience defaults and controls as Apps.
     // Runtime authentication and inboxes still belong to the requesting agent.
     requestedAgentId: interaction.payload.purpose ? setupQuery.data.requestedAgentId : undefined,

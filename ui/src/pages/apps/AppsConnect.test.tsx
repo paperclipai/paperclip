@@ -3208,7 +3208,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true, workspaceServices: { gmail: "read" } });
   });
 
-  it("resumes a hidden provider draft only after matching its company-visible application", async () => {
+  it.each(["page", "card"])("resumes a hidden provider draft from %s only after matching its company-visible application", async host => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
     mockSearch.value = `source=clickup&resume=${connectionId}`;
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
@@ -3232,7 +3232,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     startOAuthMock.mockResolvedValueOnce(oauthStartResponse(connectionId, "clickup", "https://app.clickup.com/api?state=resumed"));
 
-    await render();
+    if (host === "card") mockSearch.value = "";
+    await render(undefined, false, host === "card"
+      ? <ConnectionSetupFlow host="dialog" serviceSlug="clickup" resumeConnectionId={connectionId} interactionId="saved-draft-intent" /> : undefined);
     await vi.waitFor(() => {
       expect(container.textContent).toContain("Finish connecting ClickUp");
     });
@@ -3243,7 +3245,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(connectAppMock).not.toHaveBeenCalled();
-    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true, ...(host === "card" ? { interactionId: "saved-draft-intent" } : {}) });
   });
 
   it("keeps a resumed unauthenticated draft through its finish-time active transition", async () => {

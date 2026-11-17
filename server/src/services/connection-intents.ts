@@ -1,4 +1,5 @@
 import { canActorReadIssuePrivacy } from "./authorization.js";
+import { toolConnectionSetupPath } from "./tool-access/connections/setup-path.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { readAiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
 import { assertAgentConnectionInstallAccess, connectionManagementService } from "./connection-management.js";
@@ -293,6 +294,12 @@ export function connectionIntentService(db: Db) {
     };
   }
 
+  function savedToolDrafts(inventory: Awaited<ReturnType<typeof connectionInventory>>, service: string, userId: string) {
+    return inventory.connections.filter(connection => connection.status === "draft"
+      && connection.connectionPurpose === "tool" && connection.createdByUserId === userId
+      && sourceSlugForConnection(connection, inventory.applicationsById) === service);
+  }
+
   // Reuse host verification's durable lifecycle allocation. This read must not
   // allocate a task route, advance a pool cursor, or replace the agent's pool.
   async function queuedSetupManagedAgent(agent: typeof agents.$inferSelect, client = db) {
@@ -473,10 +480,11 @@ export function connectionIntentService(db: Db) {
     const connection = await access.getConnection(id, companyId);
     if (connection.connectionPurpose === "ai" && purpose !== "ai") throw notFound("AI authentication is not a tool connection");
     const { grants } = await access.listConnectionGrants(id, companyId);
-    if (connection.status === "archived" || !grants.some((grant) => grant.status === "active" && (
+    const ownedDraft = connection.status === "draft" && connection.connectionPurpose === "tool" && connection.createdByUserId === userId;
+    if (connection.status === "archived" || (!ownedDraft && !grants.some((grant) => grant.status === "active" && (
       grant.kind === "organization" || (grant.kind === "user" && grant.subjectUserId === userId)
       || (grant.kind === "agent" && grant.subjectAgentId === agentId)
-    ))) throw notFound("Configured connection was not found");
+    )))) throw notFound("Configured connection was not found");
     const application = await access.getApplication(connection.applicationId, companyId);
     const definition = application.applicationKey != null
       ? getAppDefinitionForApplicationKey(application.applicationKey)
@@ -489,7 +497,7 @@ export function connectionIntentService(db: Db) {
     return {
       slug: service, name: connection.name, description: application.description, searchCapabilities: "",
       branding: { logoUrl: undefined, darkLogoUrl: undefined },
-      available: connection.enabled,
+      available: connection.enabled || ownedDraft,
       methods: [{ key: "configured", label: "Use configured connection", auth:
         connection.authKind === "oauth" ? "oauth" as const : connection.authKind === "none" ? "none" as const : "api_key" as const }],
       source: "configured" as const,
@@ -558,19 +566,24 @@ export function connectionIntentService(db: Db) {
       const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
         responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
+      const drafts = aiOnly ? [] : savedToolDrafts(inventory, service, run.responsibleUserId!);
       const methods = await Promise.all(app.methods.map(async method => {
         const declaredPurpose = definition ? discoveryMethods(definition).find(candidate => candidate.key === method.key)?.purpose : undefined;
         const purpose = declaredPurpose === "channel" ? "chat" : declaredPurpose === "ai" ? "ai" : "tool";
+        const methodDrafts = purpose === "tool" ? drafts.filter(connection =>
+          method.key === "configured" || (connection.config?.connectionMethodKey ?? connection.transportConfig?.connectionMethodKey) === method.key) : [];
+        const draft = methodDrafts.length === 1 ? methodDrafts[0] : undefined;
         const capability = await connectionManagementService(db).capability({ type: "agent", companyId: run.companyId,
           agentId: agent.id, runId: run.id, onBehalfOfUserId: run.responsibleUserId }, "connections:configure", {
-          type: "connection_management", companyId: run.companyId, purpose, provider: service, connectionId: ready?.id,
-          operation: "configure", selfServiceUserId: ready?.createdByUserId ?? (purpose === "ai" ? run.responsibleUserId : null),
+          type: "connection_management", companyId: run.companyId, purpose, provider: service, connectionId: ready?.id ?? draft?.id,
+          operation: "configure", selfServiceUserId: ready?.createdByUserId ?? draft?.createdByUserId ?? (purpose === "ai" ? run.responsibleUserId : null),
         });
         const toolAccess = ready && purpose === "tool" ? await (await import("./tool-gateway.js")).createToolGatewayService(db).summarizeConnectionAccessForAgent({
           companyId: run.companyId, connectionId: ready.id, agentId: agent.id, heartbeatRunId: run.id,
           issueId: issue?.id,
         }) : null;
-        return { ...method, management: { ...capability, canUse: toolAccess ? toolAccess.allowedCount > 0 : Boolean(ready),
+        return { ...method, ...(draft ? { connectionId: draft.id, setupPath: toolConnectionSetupPath(company.prefix, draft, service.startsWith("connection:") ? null : service) } : {}),
+          management: { ...capability, canUse: toolAccess ? toolAccess.allowedCount > 0 : Boolean(ready),
           requiresApproval: Boolean(toolAccess?.askFirstCount), requiresHumanAuthentication: method.auth !== "none" && !ready,
           nextApiOperation: purpose === "chat" ? "POST /api/companies/{companyId}/chat-endpoints"
             : purpose === "ai" ? "POST /api/companies/{companyId}/ai-connections" : "POST /api/companies/{companyId}/tools/apps/connect" } };
@@ -583,7 +596,7 @@ export function connectionIntentService(db: Db) {
         reason: ready ? "Connection is installed and usable by this agent" : denied ? "Ask the responsible user to grant this agent access with connection_request" : !app.available ? "Connection is disabled or unavailable"
           : matching.some((connection) => isToolConnectionAttentionHealth(connection.healthStatus)) ? "Connection needs attention"
           : matching.length ? "Review identity and access for this agent" : "Connect this service to continue",
-        connectionId: ready?.id ?? null,
+        connectionId: ready?.id ?? (drafts.length === 1 ? drafts[0]!.id : null),
       }});
     }
     if (!settings.enableChatConnectors) for (const app of APP_STORE_DEFINITIONS) {
@@ -907,8 +920,12 @@ export function connectionIntentService(db: Db) {
       throw unprocessable(`Connection service ${serviceSlug} is not available`);
     }
     let accessRequest: ConnectionIntentInteraction["payload"]["accessRequest"];
+    let savedDraft: ToolConnection | undefined;
     if (!options.purpose) {
       const inventory = await connectionInventory(context.run.companyId);
+      const drafts = savedToolDrafts(inventory, app.slug, context.run.responsibleUserId!);
+      if (options.connectionId) savedDraft = drafts.find(connection => connection.id === options.connectionId);
+      if (savedDraft && options.toolNames) throw unprocessable("This saved connection needs sign-in before tool access can be granted. Call connection_request with the same connectionId and without toolNames, then request exact tools after authentication.");
       const matching = inventory.connections.filter(connection =>
         sourceSlugForConnection(connection, inventory.applicationsById) === app.slug
         && (!options.connectionId || connection.id === options.connectionId)
@@ -920,7 +937,12 @@ export function connectionIntentService(db: Db) {
           grant.kind === "organization" || grant.subjectUserId === context.run.responsibleUserId
           || (grant.kind === "agent" && grant.subjectAgentId === context.agent.id))) ? connection : null;
       }))).filter((connection): connection is ToolConnection => Boolean(connection));
-      if (options.connectionId && !eligible.length) throw notFound("The saved connection is not eligible for this request");
+      if (options.connectionId && !eligible.length && !savedDraft) throw notFound("The saved connection is not eligible for this request. Call connections_search and pass a connectionId for this service that the responsible user can set up or use.");
+      if (!options.connectionId && !eligible.length && drafts.length) {
+        if (options.toolNames) throw unprocessable("This service needs sign-in before tool access can be granted. Call connection_request without toolNames, using the saved draft connectionId from connections_search.");
+        if (drafts.length > 1) throw unprocessable(`Multiple saved drafts match this service. Call connection_request with the connectionId for the intended method: ${JSON.stringify(drafts.map(connection => ({ connectionId: connection.id, method: connection.config?.connectionMethodKey ?? connection.transportConfig?.connectionMethodKey })))}.`);
+        savedDraft = drafts[0];
+      }
       if (eligible.length === 1) {
         const connection = eligible[0]!;
         const catalog = (await indexedCatalog(connection.id, context.run.companyId)).filter(tool => tool.entryKind === "tool");
@@ -961,7 +983,7 @@ export function connectionIntentService(db: Db) {
       sourceRunId: context.run.id,
       ...(options.agentSetup ? { agentSetup: true as const, agentSetupOperationId: options.agentSetupOperationId } : {}),
     });
-    if (ready && !accessRequest && (!options.connectionId || ready.id === options.connectionId)) {
+    if (ready && !accessRequest && !savedDraft && (!options.connectionId || ready.id === options.connectionId)) {
       return {
         version: 1,
         service: app.slug,
@@ -990,6 +1012,7 @@ export function connectionIntentService(db: Db) {
           version: 1,
           ...(options.agentSetup ? { agentSetup: true as const, agentSetupOperationId: options.agentSetupOperationId } : {}),
           ...(accessRequest ? { accessRequest } : {}),
+          ...(savedDraft ? { savedConnectionId: savedDraft.id } : {}),
           serviceSlug: app.slug,
           ...(options.purpose ? { purpose: options.purpose } : {}),
           serviceName: accessRequest ? app.name : upstreamService ? `${upstreamService.name} through ${app.name}` : app.name,
@@ -1003,7 +1026,7 @@ export function connectionIntentService(db: Db) {
         sourceRunId: context.run.id,
         sourceIdentityContextId: context.run.activeIdentityContextId,
         addresseeUserId: context.run.responsibleUserId!,
-        idempotencyKey: `connection-intent:${context.run.id}:${context.run.responsibleUserId}:${app.slug}${upstreamService ? `:${upstreamService.slug}` : ""}${options.purpose ? `:${options.purpose}` : ""}${options.agentSetup ? `:setup:${options.agentSetupOperationId ?? "legacy"}` : ""}${accessRequest ? `:access:${createHash("sha256").update(JSON.stringify(accessRequest)).digest("hex")}` : ""}`,
+        idempotencyKey: `connection-intent:${context.run.id}:${context.run.responsibleUserId}:${app.slug}${upstreamService ? `:${upstreamService.slug}` : ""}${options.purpose ? `:${options.purpose}` : ""}${options.agentSetup ? `:setup:${options.agentSetupOperationId ?? "legacy"}` : ""}${savedDraft ? `:draft:${savedDraft.id}` : ""}${accessRequest ? `:access:${createHash("sha256").update(JSON.stringify(accessRequest)).digest("hex")}` : ""}`,
       },
     );
     if (interaction.status !== "pending") throw conflict("This connection request has already been resolved. Follow its recorded outcome.");
@@ -1017,7 +1040,7 @@ export function connectionIntentService(db: Db) {
       version: 1,
       service: app.slug,
       state: "needs_user_action",
-      connectionId: null,
+      connectionId: savedDraft?.id ?? null,
       interactionId: interaction.id,
       instruction: `A connection card was sent to the responsible user. Finish independent work, then yield and wait for continuation. Do not repeat this request.`,
     };
@@ -1082,6 +1105,25 @@ export function connectionIntentService(db: Db) {
       };
     }
     const app = await resolveService(payload.serviceSlug, loaded.issue.companyId, loaded.interaction.addresseeUserId!, payload.requestingAgentId, payload.purpose);
+    if (payload.savedConnectionId) {
+      const connection = await access.getConnection(payload.savedConnectionId, loaded.issue.companyId);
+      const application = await access.getApplication(connection.applicationId, loaded.issue.companyId);
+      if (connection.status === "archived" || connection.connectionPurpose !== "tool"
+        || connection.createdByUserId !== loaded.interaction.addresseeUserId
+        || sourceSlugForConnection(connection, new Map([[application.id, application]])) !== app.slug) {
+        throw notFound("Saved connection setup is no longer available to this user. Start a new connection request.");
+      }
+      const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, loaded.issue.companyId));
+      if (!company) throw notFound("Company was not found");
+      const path = toolConnectionSetupPath(company.prefix, connection, app.slug.startsWith("connection:") ? null : app.slug, interactionId);
+      const methodKey = connection.config?.connectionMethodKey ?? connection.transportConfig?.connectionMethodKey;
+      return { version: 1, interaction: loaded.interaction, requestedAgentId: payload.requestingAgentId, existingConnections: [],
+        service: { service: app.slug, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
+          source: app.source, state: "needs_user_action", connectionId: connection.id,
+          methods: app.methods.filter(method => method.key === "configured" || !methodKey || method.key === methodKey)
+            .map(method => ({ ...method, connectionId: connection.id, setupPath: path })) },
+      };
+    }
     if (payload.purpose === "channel") {
       const [saved] = await db.select().from(toolConnections).where(and(
         eq(toolConnections.companyId, loaded.issue.companyId),
@@ -1207,6 +1249,7 @@ export function connectionIntentService(db: Db) {
       options.bypassCurrentMembershipCheck,
     );
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
+    if (payload.savedConnectionId && payload.savedConnectionId !== connectionId) throw conflict("Use the saved connection named in this setup request; resume it instead of creating a replacement.");
     return db.transaction(async (tx) => {
       const [task] = await tx.select().from(issues).where(and(eq(issues.id, loaded.issue.id), eq(issues.companyId, loaded.issue.companyId))).for("update");
       if (!task || task.assigneeAgentId !== payload.requestingAgentId || ["done", "cancelled"].includes(task.status)) throw conflict("Connection request no longer belongs to an active task");
@@ -1552,6 +1595,9 @@ export function connectionIntentService(db: Db) {
       );
       const setupAccess = connectionIntentPayloadSchema.shape.setupAccess.parse(options.setupAccess);
       if (setupAccess) {
+        if (loaded.interaction.payload.savedConnectionId && setupAccess.connectionId !== loaded.interaction.payload.savedConnectionId) {
+          throw conflict("Use the saved connection named in this setup request; resume it instead of creating a replacement.");
+        }
         if (loaded.interaction.payload.purpose || loaded.interaction.payload.accessRequest) {
           throw unprocessable("Only tool connection setup can select a new audience");
         }

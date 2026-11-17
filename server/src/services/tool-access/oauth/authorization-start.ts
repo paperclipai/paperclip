@@ -1,4 +1,5 @@
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
+import { toolConnectionSetupPath } from "../connections/setup-path.js";
 import { vercelConnectHttpError, vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { credentialScope, managedConnectorProfile } from "./client-settings.js";
 import { assertOAuthClientBindingUnchanged, createOAuthClientRegistration } from "./client-registration.js";
@@ -168,6 +169,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
             addresseeUserId: issueThreadInteractions.addresseeUserId,
             kind: issueThreadInteractions.kind,
             status: issueThreadInteractions.status,
+            payload: issueThreadInteractions.payload,
           })
           .from(issueThreadInteractions)
           .where(
@@ -189,6 +191,10 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       throw forbidden(
         "Only the addressed user can authorize this connection request",
       );
+    }
+    const savedConnectionId = asRecord(intentLink?.payload).savedConnectionId;
+    if (savedConnectionId && savedConnectionId !== connection.id) {
+      throw conflict("Use the saved connection named in this setup request; resume it instead of creating a replacement.");
     }
     if (input.actor.managementContext?.actor.type === "agent") {
       // An agent has no browser session. Reuse the saved setup; the addressed
@@ -215,9 +221,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       if (!company) throw notFound("Company not found");
       // A relative app route: the agent links it in chat, where it opens on
       // whichever host the person uses, never the server's own listen address.
-      const destination = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}?${new URLSearchParams({
-        [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
-        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) })}`;
+      const destination = toolConnectionSetupPath(company.prefix, connection, sourceTemplateKey, intentLink?.id);
       return { connectionId: connection.id, provider: sourceTemplateKey ?? "oauth",
         authorizationUrl: destination, expiresAt: null };
     }
