@@ -2122,6 +2122,31 @@ describeEmbeddedPostgres("attention service", () => {
     expect(approvalItems[0]?.inlineResolvable).toBe(true);
   });
 
+  it("sends an instruction-generation approval to its page instead of approving it on the card", async () => {
+    const { companyId } = await seedCompany("ATI");
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "instruction_generation",
+      status: "pending",
+      payload: {
+        title: "Refresh instructions",
+        agentId: randomUUID(),
+        bundle: { files: [{ path: "AGENTS.md", content: "Hidden from the card", baseHash: null }] },
+      },
+      requestedByUserId: "dotta-user",
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const item = feed.items.find((entry) => entry.dedupKey === `approval:${approvalId}`);
+
+    // The card shows only title and summary, so approving the bundle needs the approval page.
+    expect(item?.inlineResolvable).toBe(false);
+    expect(item?.decisionVerbs.map((verb) => verb.id)).toEqual(["review_bundle"]);
+    expect(item?.subject.href).toMatch(new RegExp(`/approvals/${approvalId}$`));
+  });
+
   it("hides snoozed attention rows until snoozedUntil passes, then returns them unconditionally", async () => {
     const { companyId } = await seedCompany("ATS");
     const approvalId = randomUUID();
