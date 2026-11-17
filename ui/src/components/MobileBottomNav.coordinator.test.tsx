@@ -6,8 +6,8 @@ import { expect, it, vi } from "vitest";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { coordinatorAttentionSummaryQueryKey } from "@/lib/coordinator-attention";
 
-vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true }) }));
-vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: true }) }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: "reviewer" }) }));
+vi.mock("@/hooks/useAgentChatEnabled", () => ({ useAgentChatEnabled: () => ({ enabled: true, userId: "reviewer" }) }));
 vi.mock("@/hooks/useCombinedInboxTasksEnabled", () => ({ useCombinedInboxTasksEnabled: () => ({ enabled: false }) }));
 vi.mock("@/hooks/useInboxBadge", () => ({ useInboxBadge: () => ({ inbox: 0 }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
@@ -16,12 +16,12 @@ vi.mock("@/lib/router", () => ({ useLocation: () => ({ pathname: "/chats" }), Na
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 it("uses the canonical outstanding count on the phone as well as the desktop", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
-  const key = coordinatorAttentionSummaryQueryKey("company");
-  client.setQueryData(key, { totalCount: 3, deskBadgeCount: 0 });
+  const key = coordinatorAttentionSummaryQueryKey("company", "reviewer");
+  client.setQueryData(key, { totalCount: 5, deskBadgeCount: 2 });
   const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
   try {
     await act(() => root.render(<QueryClientProvider client={client}><MobileBottomNav visible /></QueryClientProvider>));
-    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("3Inbox");
+    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("2Inbox");
     await act(async () => { client.setQueryData(key, { totalCount: 0, deskBadgeCount: 0 }); await new Promise(resolve => setTimeout(resolve, 1)); });
     expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("Inbox");
   } finally { await act(() => root.unmount()); host.remove(); client.clear(); }

@@ -354,6 +354,14 @@ export async function nativeCompletionFeedback(
     return `Completion report accepted; this task still has unresolved dependencies. Explain the blockers on [this task](${await boardPath(db, run.companyId, `/issues/${issue.identifier ?? issue.id}`)}); do not say the task is done.`;
   }
   const unfinishedWork = !result.completionClaim.objectiveSatisfied || result.completionClaim.remainingWork.some(work => work.blocksCompletion);
+  if (unfinishedWork && result.reportedWorkDisposition === "blocked" &&
+      result.blocker?.owner.kind === "system" && result.blocker.scope === "current_track" &&
+      result.blocker.reasonCode === "budget_exhausted" &&
+      issue.executionRunId === run.id && run.status === "running" &&
+      Object.keys(record(record(record(run.resultJson).startupCancellation).budgetEnforcement)).length === 0 &&
+      !(await issueTreeControlService(db).getActivePauseHoldGate(run.companyId, issue.id))) {
+    throw new Error("Execution budgets are enforced by Paperclip; this active run has no recorded budget stop. Continue the authorized remaining work from its saved evidence. A turn length or self-imposed execution limit is not a task blocker. Do not ask the user to restart or grant more execution. Report a concrete external blocker only when fresh evidence establishes it.");
+  }
   if (result.reportedWorkDisposition === "blocked" && result.blocker?.owner.kind === "system" &&
       result.blocker.scope === "current_track" && result.blocker.reasonCode === "repository_checkout_pending" &&
       unfinishedWork &&

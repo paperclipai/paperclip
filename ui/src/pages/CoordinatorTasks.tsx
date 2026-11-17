@@ -129,7 +129,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     getNextPageParam: (last, _pages, offset) => last.hasNextPage ? offset + pageSize : undefined,
     enabled: !!companyId && !needsAttention,
   });
-  const attention = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!),
+  const attention = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!, userId),
     queryFn: () => attentionApi.taskIndex(companyId!), enabled: !!companyId && needsAttention });
   // Resolve every pending task in bounded index batches, including tasks outside
   // the first list page. Keep full task enrichment out of the collection read.

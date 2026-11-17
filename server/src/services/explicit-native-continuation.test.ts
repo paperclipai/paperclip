@@ -70,6 +70,28 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
+  it.each([
+    { adapterType: "claude_local", running: false, allowed: true },
+    { adapterType: "claude_local", running: true, allowed: false },
+    { adapterType: "process", running: false, allowed: false },
+  ])("admits new user direction after a stopped pool conversation switches to native: $adapterType, running=$running", async ({ adapterType, running, allowed }) => {
+    const f = await seed();
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    const resultJson = { stopReason: "cancelled", cancellation: { source: "operator", expected: true,
+      initiator: { type: "user", id: f.actorId }, reason: "Stopped by user", recordedAt: "2026-09-11T10:00:00Z" } };
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, status: "cancelled",
+      startedAt: new Date("2026-09-11T08:00:00Z"), resultJson,
+      processPid: running ? process.pid : 999999999,
+      runnerProfileJson: { adapterDispatch: { adapterType, configuredAdapterType: "paperclip_runner" } },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const result = await admitExplicitNativeContinuation({ db, ...f });
+    if (allowed) expect(result).toMatchObject({ previousRunId: f.sourceRunId });
+    else expect(result).toBeNull();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(source.resultJson).toEqual(resultJson);
+  });
   async function readAdmission(f: Fixture, full: boolean) {
     const reads: Array<Array<Record<string, unknown>>> = [];
     const recorded = new Proxy(db, { get(target, key) {

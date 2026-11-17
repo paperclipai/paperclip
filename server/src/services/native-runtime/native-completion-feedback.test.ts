@@ -33,6 +33,23 @@ describe("native final-response feedback", () => {
     } }) as { document: { id: string; latestRevisionId: string }; documentHref: string };
     return { companyId, agentId, issueId, runId, saved };
   }
+  it("rejects a worker's invented execution budget while its run can still work", async () => {
+    const value = await fixture();
+    const report: PrpStructuredRunResult = { ...done, reportedWorkDisposition: "blocked",
+      blocker: { owner: { kind: "system", name: "Execution limit" }, scope: "current_track", reasonCode: "budget_exhausted", unblockAction: "Resume the remaining work" },
+      completionClaim: { ...done.completionClaim, objectiveSatisfied: false,
+        remainingWork: [{ description: "Finish the saved document", blocksCompletion: true }] },
+    };
+    await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow("Execution budgets are enforced by Paperclip");
+    // A real external quota or human decision is a different blocker.
+    await expect(nativeCompletionFeedback(db, value.runId, { ...report,
+      blocker: { ...report.blocker!, reasonCode: "provider_quota_exhausted" },
+    })).resolves.toContain("Blocker report accepted");
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: {
+      budgetEnforcement: { companyId: value.companyId, scopeType: "agent", scopeId: value.agentId },
+    } } }).where(eq(heartbeatRuns.id, value.runId));
+    await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
+  });
   async function publishedFileReport(value: Awaited<ReturnType<typeof fixture>>, objective = "Save a document on this task. Export the results as a CSV."): Promise<PrpStructuredRunResult> {
     await db.update(issues).set({ description: objective }).where(eq(issues.id, value.issueId));
     const bytes = Buffer.from("category,total\nverified,3\n");
