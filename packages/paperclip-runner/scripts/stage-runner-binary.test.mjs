@@ -84,6 +84,12 @@ test("release metadata rejects incompatible native, harness and protocol contrac
   }
 });
 
+async function standaloneSleep() {
+  if (process.platform !== "linux") return "/bin/sleep";
+  const multicall = (await readFile("/bin/sleep")).equals(await readFile("/bin/echo"));
+  return multicall ? "/usr/bin/gnusleep" : "/bin/sleep";
+}
+
 async function withOwnedChildren(root, action) {
   const owned = [];
   const start = (command, args, argv0) => {
@@ -112,12 +118,13 @@ async function withOwnedChildren(root, action) {
 test("atomically publishes while the previous executable is running", { skip: process.platform === "win32", timeout: 15_000 }, async () => {
   const root = await mkdtemp(path.join(tmpdir(), "runnerd-stage-test-"));
   const destination = path.join(root, "paperclip-runnerd");
+  const sleep = await standaloneSleep();
   await withOwnedChildren(root, async start => {
-    await stageRunnerBinary("/bin/sleep", destination);
+    await stageRunnerBinary(sleep, destination);
     const previous = await stat(destination);
     const old = start(destination, ["30"], "sleep");
     await old.spawned;
-    await stageRunnerBinary("/bin/sleep", destination);
+    await stageRunnerBinary(sleep, destination);
     const published = await stat(destination);
     assert.notEqual(published.ino, previous.ino);
     assert.equal(published.mode & 0o777, 0o755);
@@ -152,7 +159,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     await mkdir(path.dirname(built), { recursive: true });
     await copyHostFixture("/bin/sh", built);
     const previousBuild = path.join(root, "previous-build");
-    await copyHostFixture("/bin/sleep", previousBuild);
+    await copyHostFixture(await standaloneSleep(), previousBuild);
     await stageRunnerBinary(previousBuild, hostTarget);
     await stageRunnerBinary(built, path.join(binaryRoot, "paperclip-runnerd"));
     const platforms = {}, releaseBytes = new Map();
