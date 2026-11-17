@@ -93,6 +93,8 @@ export type ToolPoliciesResponse = { policies: ToolPolicy[] };
 export type ToolProfilesResponse = { profiles: ToolProfileWithDetails[] };
 export type ToolGalleryResponse = {
   apps: AppDefinition[];
+  /** Full definitions of plugin-provided connectors (gallery entries may hide methods). */
+  pluginApps?: AppDefinition[];
   /** Server-authoritative OAuth callback URI, omitted when this deployment has no supported browser origin. */
   oauthCallbackUrl?: string;
   capabilities: ToolConnectionCreateCapabilities;
@@ -304,7 +306,7 @@ export const toolsApi = {
       // Plugin-provided connectors are known only from the host. Make them
       // resolvable by the same catalog lookups the setup screens use; apps of
       // a plugin that was disabled since the last response drop out here.
-      setPluginAppDefinitions(gallery.apps.filter((app) => app.plugin));
+      setPluginAppDefinitions(gallery.pluginApps ?? gallery.apps.filter((app) => app.plugin));
       return gallery;
     }),
   preflightAppMetadata: (companyId: string, galleryKey: string, methodKey?: string | null) => {

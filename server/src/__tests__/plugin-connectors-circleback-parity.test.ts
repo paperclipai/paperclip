@@ -202,6 +202,10 @@ const support = await getEmbeddedPostgresTestSupport();
     // Rule 1: enabling the plugin adds the namespaced connector type and nothing else.
     const slugs = await f.gallerySlugs();
     expect(slugs).toEqual(expect.arrayContaining(["circleback", PLUGIN_SLUG]));
+    // The board also gets the full definition, as it bundles built-in ones.
+    const gallery = await request(f.app).get(`/api/companies/${f.company.id}/tools/gallery`);
+    expect(gallery.body.pluginApps).toEqual([expect.objectContaining({ slug: PLUGIN_SLUG, plugin: { pluginKey: PLUGIN_KEY, appSlug: "circleback" },
+      methods: pluginCircleback.methods })]);
     expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, f.company.id))).toHaveLength(0);
     expect(await f.gateway.listToolsForSession(f.sessions.a.token)).toEqual(await f.gateway.listToolsForSession(f.sessions.b.token));
 

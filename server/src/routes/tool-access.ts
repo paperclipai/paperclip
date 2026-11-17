@@ -891,8 +891,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
         : null;
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
+    const pluginApps = (await loadPluginAppCatalog(db)).definitions;
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
+      // Full definitions of plugin-provided connectors. Like the built-in
+      // definitions the board bundles, they keep methods the gallery entry
+      // hides until (for example) Cloud connector enrollment is active.
+      pluginApps,
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       credentialSources: {
         vercelConnect: {
@@ -910,7 +915,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
-      ), ...(await loadPluginAppCatalog(db)).definitions.map((app) =>
+      ), ...pluginApps.map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
