@@ -566,6 +566,11 @@ export function pluginLifecycleManager(
       // Perform the uninstall via registry (handles soft/hard delete)
       const result = await registry.uninstall(pluginId, removeData);
 
+      // Connections made from this plugin's connector types stay for audit,
+      // archived, with their grants revoked and owned credentials deleted.
+      const { retirePluginAppConnections } = await import("./plugin-app-catalog.js");
+      await retirePluginAppConnections(db, plugin.pluginKey);
+
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, removeData },
         `plugin lifecycle: ${plugin.status} → uninstalled${removeData ? " (hard delete)" : ""}`,

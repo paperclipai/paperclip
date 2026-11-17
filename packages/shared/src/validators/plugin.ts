@@ -27,30 +27,16 @@ import {
   ISSUE_SURFACE_VISIBILITIES,
 } from "../constants.js";
 import { routineVariableSchema } from "./routine.js";
+import { appDefinitionSchema } from "./app-definition.js";
+import { jsonSchemaSchema } from "./json-schema.js";
 import { externalObjectProviderKeySchema, externalObjectTypeSchema } from "./external-object.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – a permissive validator for JSON Schema objects
 // ---------------------------------------------------------------------------
 
-/**
- * Permissive validator for JSON Schema objects. Accepts any `Record<string, unknown>`
- * that contains at least a `type`, `$ref`, or composition keyword (`oneOf`/`anyOf`/`allOf`).
- * Empty objects are also accepted.
- *
- * Used to validate `instanceConfigSchema` and `parametersSchema` fields in the
- * plugin manifest without fully parsing JSON Schema.
- *
- * @see PLUGIN_SPEC.md §10.1 — Manifest shape
- */
-export const jsonSchemaSchema = z.record(z.string(), z.unknown()).refine(
-  (val) => {
-    // Must have a "type" field if non-empty, or be a valid JSON Schema object
-    if (Object.keys(val).length === 0) return true;
-    return typeof val.type === "string" || val.$ref !== undefined || val.oneOf !== undefined || val.anyOf !== undefined || val.allOf !== undefined;
-  },
-  { message: "Must be a valid JSON Schema object (requires at least a 'type', '$ref', or composition keyword)" },
-);
+/** Validates `instanceConfigSchema` and `parametersSchema` fields (see `json-schema.ts`). */
+export { jsonSchemaSchema };
 
 // ---------------------------------------------------------------------------
 // Manifest sub-type schemas
@@ -836,6 +822,7 @@ export const pluginManifestV1Schema = z.object({
   jobs: z.array(pluginJobDeclarationSchema).optional(),
   webhooks: z.array(pluginWebhookDeclarationSchema).optional(),
   tools: z.array(pluginToolDeclarationSchema).optional(),
+  apps: z.array(appDefinitionSchema).max(50).optional(),
   database: pluginDatabaseDeclarationSchema.optional(),
   apiRoutes: z.array(pluginApiRouteDeclarationSchema).optional(),
   environmentDrivers: z.array(pluginEnvironmentDriverDeclarationSchema).optional(),
@@ -901,6 +888,36 @@ export const pluginManifestV1Schema = z.object({
 
   if (manifest.aiConnectionRouter && !manifest.capabilities.includes("ai.connections.route")) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "ai.connections.route is required for aiConnectionRouter", path: ["capabilities"] });
+  }
+
+  // Connector types require connectors.provide. A plugin app only adds a
+  // connector type to the Connectors catalog; tool access still comes from
+  // a connection and its agent or company install, exactly like built-in apps.
+  if (manifest.apps && manifest.apps.length > 0 && !manifest.capabilities.includes("connectors.provide")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Capability 'connectors.provide' is required when apps are declared", path: ["capabilities"] });
+  }
+  const appSlugs = new Set<string>();
+  for (const [index, app] of (manifest.apps ?? []).entries()) {
+    if (appSlugs.has(app.slug)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate app slug "${app.slug}"`, path: ["apps", index, "slug"] });
+    }
+    appSlugs.add(app.slug);
+    for (const field of ["plugin", "aiConnectionRouter", "experimentalFeatureKey", "availability"] as const) {
+      if (app[field] !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Plugin apps cannot set ${field}; the host derives it`, path: ["apps", index, field] });
+      }
+    }
+    for (const [methodIndex, method] of app.methods.entries()) {
+      // A plugin contributes catalog data only. Transports that need reviewed
+      // host code per provider (REST adapters, chat channels, AI runtimes)
+      // cannot be satisfied by a definition alone.
+      if (method.transport !== "mcp_remote" && method.transport !== "local_stdio") {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Plugin app methods support the mcp_remote and local_stdio transports, not ${method.transport}`, path: ["apps", index, "methods", methodIndex, "transport"] });
+      }
+      if ((method.purpose && method.purpose !== "tool") || method.provider || method.ai) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Plugin app methods provide agent tools only", path: ["apps", index, "methods", methodIndex] });
+      }
+    }
   }
 
   // tools require agent.tools.register (PLUGIN_SPEC.md §11)

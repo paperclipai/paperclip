@@ -38,7 +38,7 @@ import {
   mcpRemoteHeaderNameFromConfigPath,
   mcpRemoteHeaderRejectionMessage,
 } from "../mcp-remote-headers.js";
-import { jsonSchemaSchema } from "./plugin.js";
+import { jsonSchemaSchema } from "./json-schema.js";
 import { objectWithoutDefaults } from "./partial.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);

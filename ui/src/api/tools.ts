@@ -1,5 +1,6 @@
 import type { AggregatorAppsResponse, ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
 import type { ProviderToolIconsResponse } from "@paperclipai/shared";
+import { setPluginAppDefinitions } from "@paperclipai/shared";
 import type { ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
 import type {
   ToolApplication,
@@ -299,7 +300,13 @@ export const toolsApi = {
     api.post<CloudConnectorEnrollmentStatus>("/tools/oauth/cloud-connector/enrollment", { companyId, label, returnTo }),
   // --- Applications ---
   listGallery: (companyId: string) =>
-    api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`),
+    api.get<ToolGalleryResponse>(`/companies/${companyId}/tools/gallery`).then((gallery) => {
+      // Plugin-provided connectors are known only from the host. Make them
+      // resolvable by the same catalog lookups the setup screens use; apps of
+      // a plugin that was disabled since the last response drop out here.
+      setPluginAppDefinitions(gallery.apps.filter((app) => app.plugin));
+      return gallery;
+    }),
   preflightAppMetadata: (companyId: string, galleryKey: string, methodKey?: string | null) => {
     const query = methodKey ? `?methodKey=${encodeURIComponent(methodKey)}` : "";
     return api.get<ToolAppMetadataPreflightResult>(

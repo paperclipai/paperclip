@@ -75,6 +75,8 @@ import {
 } from "./mcp-tasks.js";
 import { logger } from "../middleware/logger.js";
 import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@paperclipai/shared";
+import { connectionSourceSlug } from "@paperclipai/shared";
+import { pluginAppCatalogFor } from "./plugin-app-catalog.js";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -1747,10 +1749,14 @@ export function createToolGatewayService(
       return connectionRow ? [{ catalogEntry, ...connectionRow }] : [];
     });
 
+    // A plugin connector's tools reach agents only while its plugin is ready
+    // and still declares the app. Disabled plugins keep their saved setup.
+    const pluginApps = await pluginAppCatalogFor(db, connectionRows.map(({ connection }) => connection));
     const featureSettings = connectionRows.some(({ application }) => getAppDefinitionForApplicationKey(application.applicationKey)?.experimentalFeatureKey)
       ? await instanceSettingsService(db).getExperimental() : undefined;
     const eligibleRows = rows.filter(
       ({ catalogEntry, connection, application }) =>
+        pluginApps.isAvailable(connectionSourceSlug(connection)) &&
         (!featureSettings || isConnectorFeatureEnabled(getAppDefinitionForApplicationKey(application.applicationKey), featureSettings)) &&
         !isRetiredComposioConnection(connection) &&
         !(nativeProviderCatalogFor(connection) && !nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)) &&
@@ -4882,6 +4888,13 @@ export function createToolGatewayService(
     connection: typeof toolConnections.$inferSelect,
     allowInteraction = true,
   ): Promise<typeof connectionGrants.$inferSelect> {
+    if (!(await pluginAppCatalogFor(db, [connection])).isAvailable(connectionSourceSlug(connection))) {
+      throw new ToolGatewayHttpError(
+        404,
+        "This connector is not available. Its plugin is disabled or no longer provides it.",
+        "connector_unavailable",
+      );
+    }
     const [run] =
       session.runId && !session.identityContextId
         ? await db
