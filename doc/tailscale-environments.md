@@ -74,6 +74,9 @@ agent's engine or permission settings.
 An in-place SSH workspace exists on the SSH computer. Neither engine creates
 that workspace path on the controller. ACP keeps its local relay and state files
 in the controller's state directory and leaves remote project settings in place.
+Existing local Claude settings still contribute to the saved ACP conversation
+identity for upgrade compatibility. SSH startup can read that file when present,
+but does not create or rewrite it.
 
 The SSH account supplies the installed harness; the agent's Paperclip AI account
 supplies authentication unless the remote authentication option is enabled.

@@ -1663,11 +1663,12 @@ function uniqueSorted(values: Array<string | null | undefined>): string[] {
 // denies every non-allowlisted tool and never reaches `canUseTool`), and we
 // widen the SDK's Read sandbox to include the Paperclip state dirs the agent
 // needs to talk to its own control plane.
-async function writePaperclipClaudeSettings(input: {
+async function preparePaperclipClaudeSettings(input: {
   cwd: string;
   stateDir: string;
   agentHome: string;
   companyId: string;
+  persist: boolean;
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1723,7 +1724,7 @@ async function writePaperclipClaudeSettings(input: {
     defaultMode,
   };
   const next: Record<string, unknown> = { ...existing, permissions: nextPermissions };
-  await writeFileAtomically({
+  if (input.persist) await writeFileAtomically({
     target: filePath,
     contents: `${JSON.stringify(next, null, 2)}\n`,
     mode: 0o600,
@@ -2178,7 +2179,7 @@ async function buildRuntime(input: {
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
     claudeSkillsBundleDir = preparedSkills.bundleDir;
-    paperclipClaudeSettings = sshWorkspaceInPlace ? null : await writePaperclipClaudeSettings({
+    paperclipClaudeSettings = await preparePaperclipClaudeSettings({
       cwd,
       stateDir,
       // A run's writable AGENT_HOME moves, but the existing permission root
@@ -2187,8 +2188,9 @@ async function buildRuntime(input: {
       // still receives this run's actual AGENT_HOME.
       agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
+      persist: !sshWorkspaceInPlace,
     });
-    if (paperclipClaudeSettings) skillCommandNotes.push(
+    if (!sshWorkspaceInPlace) skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
