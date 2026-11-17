@@ -91,7 +91,7 @@ this as a setup error and keeps the connection available for retry. See
 
 The connect screen states the sign-in choice in one line, **Paperclip asks the
 server how to sign in.**, with a **Change** link, the same shape as the access
-line below it. **Change** lists five options, each with its fields directly
+line below it. **Change** lists five options (six for organization connections), each with its fields directly
 beneath it when selected:
 
 - **Let Paperclip check** — the default; Paperclip probes and walks you through it.
@@ -101,6 +101,10 @@ beneath it when selected:
   Paperclip first.
 - **Custom headers** — for servers that name their own headers.
 - **No sign-in needed** — the server is open to anyone with the address.
+- **Machine sign-in** — organization connections only. Paperclip signs in as a
+  client you registered with the provider, using a Paperclip key or a client
+  secret, with no person involved. It runs its own setup and test in place of
+  **Check link**. See [Machine sign-in](./MCP-CLIENT-CREDENTIALS.md).
 
 **Done** collapses the list back to a one-line summary of the choice. It stays
 open while the chosen option still needs a value.

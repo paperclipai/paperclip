@@ -88,6 +88,12 @@ import {
   withAccountHomeSecretMutationLock,
 } from "@paperclipai/adapter-codex-local/server";
 
+function latestDate(a: Date | null, b: Date | null): Date | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
 // System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
@@ -641,6 +647,8 @@ type SecretConsumerContext = {
   pluginId?: string | null;
   allowedBindingIds?: string[] | null;
 };
+
+const UNATTRIBUTED_SECRET_READ: SecretConsumerContext = { consumerType: "system", consumerId: "system", actorType: "system" };
 
 type SecretBindingContext = Omit<SecretConsumerContext, "consumerType"> & {
   consumerType: SecretBindingTargetType;
@@ -1365,6 +1373,19 @@ export function secretService(db: Db | DbTransaction) {
     };
   }
 
+  /** Newest successful resolution per secret, read backwards on (secret_id, created_at). */
+  async function lastSuccessfulResolutions(secretIds: string[]): Promise<Map<string, Date>> {
+    if (secretIds.length === 0) return new Map();
+    const rows = await db.execute<{ secret_id: string; used_at: string | Date | null }>(sql`
+      select ids.secret_id, (
+        select e.created_at from ${secretAccessEvents} e
+        where e.secret_id = ids.secret_id and e.outcome = 'success'
+        order by e.created_at desc limit 1
+      ) as used_at
+      from unnest(array[${sql.join(secretIds.map((id) => sql`${id}`), sql`, `)}]::uuid[]) as ids(secret_id)`);
+    return new Map(rows.flatMap((row) => row.used_at ? [[row.secret_id, new Date(row.used_at)] as const] : []));
+  }
+
   async function resolveSecretValueInternal(
     companyId: string,
     secretId: string,
@@ -1428,12 +1449,12 @@ export function secretService(db: Db | DbTransaction) {
       if (isTailscaleNodeState(value) && systemPurpose !== "tailscale_network") {
         throw forbidden("Network node state requires its server-only consumer", { code: "secret_system_only" });
       }
+      // The access event is the usage record; "Last used" is derived from it
+      // in list(). A read must not write the secret row: admission paths
+      // (decisions, fast responses, browser use, prompt-injection checks)
+      // share-lock it under REPEATABLE READ to fence rotation, and a new row
+      // version would abort them with a serialization failure.
       if (!readOnlyEnvironmentInspection) await Promise.all([
-        db
-          .update(companySecrets)
-          .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
-          .where(eq(companySecrets.id, secret.id))
-          .catch(() => undefined),
         recordAccessEvent({
           companyId,
           secretId: secret.id,
@@ -1441,7 +1462,8 @@ export function secretService(db: Db | DbTransaction) {
           secretScope: secret.scope,
           version: resolvedVersion,
           provider: providerId,
-          context: accessContext,
+          // A read without a consumer still counts as "Last used".
+          context: accessContext ?? UNATTRIBUTED_SECRET_READ,
           credentialOwnerUserId: secret.ownerUserId ?? null,
           credentialSubjectType: secret.scope === "user" ? "user" : null,
           credentialSubjectId: secret.ownerUserId ?? null,
@@ -3873,8 +3895,10 @@ export function secretService(db: Db | DbTransaction) {
           .groupBy(companySecretBindings.secretId),
       ]);
       const countsBySecretId = new Map(referenceCounts.map((row) => [row.secretId, row.count]));
+      const lastUsedBySecretId = await lastSuccessfulResolutions(secrets.map((secret) => secret.id));
       return secrets.map((secret) => ({
         ...secret,
+        lastResolvedAt: latestDate(secret.lastResolvedAt, lastUsedBySecretId.get(secret.id) ?? null),
         referenceCount: countsBySecretId.get(secret.id) ?? 0,
       }));
     },

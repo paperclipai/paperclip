@@ -2,7 +2,7 @@ import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePref
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
-import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
   experimentalApiDocs,
@@ -291,6 +291,9 @@ import {
   workspaceFileResourceQuerySchema,
   // Tool access
   connectToolAppSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
   configureRailwaySshSchema,
   createToolApplicationSchema,
   updateToolApplicationSchema,
@@ -1447,6 +1450,7 @@ const browserUseOperations = [
 // MCP Apps views in the task chat. Board only; reads follow task read access.
 const mcpAppsOperations = [
   ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
+  ["get", "/api/issues/{issueId}/tool-call-progress", "Read the latest progress of a task's running app tool calls", undefined],
   ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
   ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
   ["put", "/api/issues/{issueId}/mcp-app-views/{viewId}/model-context", "Store an MCP Apps view's context for the task's next run", mcpAppModelContextUpdateSchema],
@@ -1630,6 +1634,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
 const INSTANCE_ADMIN_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/tailscale-connections",
   "POST /api/companies/{companyId}/tailscale-connections",
+  "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/device-login",
   "GET /api/companies/{companyId}/tailscale-connections/{connectionId}/devices",
   "DELETE /api/companies/{companyId}/tailscale-connections/{connectionId}",
   "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/pairing",
@@ -1637,6 +1642,7 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "GET /api/instance/server-metrics",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
@@ -6482,6 +6488,7 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
+  description: "A retry run's retriedBy says in plain words who started it: a person who pressed Retry (named), or Paperclip's automatic recovery. It is null for a run that is not a retry. Use it rather than inferring the starter from invocationSource or triggerDetail.",
   request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries."), runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue.") }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -9607,8 +9614,20 @@ const tailscaleCompanyParams = z.object({ companyId: z.string().uuid() });
 const tailscaleConnectionParams = tailscaleCompanyParams.extend({ connectionId: z.string().uuid() });
 const tailscaleConnectionResponse = z.object({
   id: z.string().uuid(), companyId: z.string().uuid(), name: z.string(),
-  status: z.enum(["pending", "connecting", "connected", "disconnected"]),
+  status: z.enum(["pending", "authorizing", "connecting", "connected", "disconnected", "expired", "error"]),
 }).strict();
+const tailscaleDeviceLoginResponse = {
+  ...r.ok(z.object({
+    connection: tailscaleConnectionResponse,
+    expiresAt: z.string().datetime().nullable(),
+    authorizationUrl: z.string().url().optional(),
+    needsApproval: z.boolean().optional(),
+  }).strict()),
+  headers: {
+    "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+    "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+  },
+};
 const tailscaleErrors = { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable };
 
 registry.registerPath({
@@ -9621,15 +9640,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
-  summary: "Start Tailscale network authorization",
-  description: "Requires an instance administrator with company access, or local implicit board access. Starts consent for a new connection or replaces consent for connectionId. An instance without a Cloud broker identity first returns an enrollment URL without a connection. Hosted authorization can return a signed Cloud handoff.",
+  summary: "Start Tailscale device sign-in",
+  description: "Requires an instance administrator with company access, or local implicit board access. Starts device sign-in without a Cloud broker or OAuth app. Reuses an unexpired sign-in for connectionId; a connected network must be disconnected before replacement. Pending sign-in is bound to its initiating user and has a fixed ten-minute deadline. The authorization URL is present when sign-in is ready; needsApproval identifies a device waiting for tailnet administrator approval.",
   request: { params: tailscaleCompanyParams, body: jsonBody(z.object({
     name: z.string().trim().min(1).max(100).default("My tailnet"), connectionId: z.string().uuid().optional(),
   }).strict()) },
-  responses: { 201: r.ok(z.object({
-    connection: tailscaleConnectionResponse.optional(), authorizationUrl: z.string().url(), expiresAt: z.string().datetime(),
-    handoff: z.object({ kind: z.literal("paperclip_cloud"), session: z.string().min(16).max(512).regex(/^[A-Za-z0-9_-]+$/) }).strict().optional(),
-  }).strict()), ...tailscaleErrors },
+  responses: { 201: tailscaleDeviceLoginResponse, ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/device-login", tags: ["tailscale"],
+  summary: "Resume Tailscale device sign-in and read its progress",
+  description: "Requires the initiating user to retain instance-admin and company access, or local implicit board access. Resumes the private client for an existing sign-in without extending its deadline. Returns connection metadata, an optional sign-in URL or device approval flag, and expiresAt (null when no sign-in is pending). Does not return credentials or node state.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: tailscaleDeviceLoginResponse, ...tailscaleErrors },
 });
 
 registry.registerPath({
@@ -10368,6 +10392,17 @@ registry.registerPath({
   responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+// ─── Instance server metrics ──────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/server-metrics",
+  tags: ["instance"],
+  summary: "Get this server process's load metrics",
+  description: "Instance admins only: agent credentials and company members receive 403. Returns numbers for the one server process that answers: CPU, event-loop utilization and delay, statements per second, run event lateness and agent API pre-handler p99, missed lease renewals and dedicated database connection use, over about the last minute (windowMs). It returns 404 unless the operator set PAPERCLIP_SERVER_METRICS=true.",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 // ─── LLM text endpoints ───────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -10424,24 +10459,39 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+const linkPreviewResultSchema = z.object({
+  preview: z.object({
+    target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
+    title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
+    author: z.string().nullable(), updatedAt: z.string().nullable(),
+  }).nullable(),
+  maxAgeMs: z.number(),
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/link-preview",
   tags: ["companies"],
   summary: "Read optional link metadata for the current board user",
-  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. It does not change tasks or schedule background work.",
+  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. Each company/viewer can make 600 lookup requests per minute per server process. Excess requests return 429 with Retry-After; cached batch reads remain available. It does not change tasks or schedule background work.",
   request: { params: z.object({ companyId: z.string() }), query: z.object({ url: z.string().max(2048) }) },
   responses: {
-    200: r.ok(z.object({
-      preview: z.object({
-        target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
-        title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
-        author: z.string().nullable(), updatedAt: z.string().nullable(),
-      }).nullable(),
-      maxAgeMs: z.number(),
-    })),
-    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+    200: r.ok(linkPreviewResultSchema),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 429: r.tooManyRequests,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/link-previews/cached",
+  tags: ["companies"],
+  summary: "Read a batch of stored link statuses without contacting providers",
+  description: `Board-only and company/viewer scoped. Reads at most ${LINK_PREVIEW_BATCH_LIMIT} URLs. Canonical links are reused across tasks. Stale records have maxAgeMs zero; absent records are omitted. This is a read-only cache projection.`,
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ url: z.union([z.string().max(2048), z.array(z.string().max(2048)).min(1).max(LINK_PREVIEW_BATCH_LIMIT)]) }),
+  },
+  responses: { 200: r.ok(z.object({ results: z.record(z.string(), linkPreviewResultSchema) })), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -12524,6 +12574,97 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+  query: z.object({ deleteStoredContent: z.enum(["true", "false"]).optional() }),
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content",
+  tags: ["tool-access"],
+  summary: "Count the content Paperclip stored from a connection's tool calls",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Delete the content Paperclip stored from a connection's tool calls",
+  responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Read the status of the latest stored-content deletion for a connection",
+});
+
+const MACHINE_SIGN_IN_ERRORS = {
+  400: r.badRequest,
+  401: r.unauthorized,
+  403: r.forbidden,
+  404: r.notFound,
+  422: r.unprocessable,
+};
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/companies/{companyId}/tools/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Start machine sign-in (OAuth client credentials) for an organization connection",
+  description: "Creates a draft organization connection to a remote MCP server that signs in as a registered client, with no person involved. With method paperclip_key, Paperclip creates a signing key, keeps the private half in the company vault, and returns the public key to register with the provider. Secrets are write-only.",
+  body: createMachineSignInSchema,
+  responses: { 201: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Read a connection's machine sign-in settings (no secret values)",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/test",
+  tags: ["tool-access"],
+  summary: "Test machine sign-in against the provider and server, then turn the connection on",
+  body: testMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate",
+  tags: ["tool-access"],
+  summary: "Replace the machine sign-in key or client secret without downtime",
+  body: rotateMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate/complete",
+  tags: ["tool-access"],
+  summary: "Switch to the new machine sign-in key once the provider accepts it",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
 });
 
 registerCurrentRoute({

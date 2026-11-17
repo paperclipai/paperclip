@@ -504,6 +504,8 @@ const support = await getEmbeddedPostgresTestSupport();
     forgetMcpHttpSessions(connected.connectionId);
     expect(await call("lookup")).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
     expect(legacy.methods()).toEqual(["tools/call", "initialize", "notifications/initialized", "tools/call"]);
+    // The fallback opens the tool call's own session, which can answer form questions (2025-06-18: `{}`).
+    expect(legacy.requests.find((request) => request.method === "initialize")!.body.params.capabilities.elicitation).toEqual({});
     expect(await savedConfig()).toMatchObject({ mcpProtocolVersion: "2025-06-18" });
   });
 

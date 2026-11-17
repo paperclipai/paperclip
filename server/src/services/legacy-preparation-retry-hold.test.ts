@@ -127,6 +127,51 @@ describe("Retry of a legacy preparation that automatic recovery stopped", () => 
     expect(wake).toMatchObject({ status: "coalesced", runId: expect.any(String) });
   });
 
+  it.each(["restore_failed", "held_location", "comment_wake_marker", "all", "attached_after_refusal"] as const)(
+    "starts the person's Retry of a recovered setup failure: %s", async variant => {
+      const f = await seed();
+      const all = variant === "all" || variant === "attached_after_refusal";
+      const workspaceId = randomUUID(), snapshotId = randomUUID();
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+      await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId, sourceIssueId: f.issueId,
+        mode: "isolated_workspace", strategyType: "git_worktree", name: "Remote workspace", providerType: "git_worktree",
+        metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 4, dirty: false, writerRunId: null, snapshotId,
+          location: all || variant === "held_location" ? { environmentId: randomUUID(), leaseId: f.leaseId,
+            providerLeaseId: lease!.providerLeaseId!, remoteCwd: "/fixture" } : null,
+          source: { kind: "git", repoUrl: "https://github.com/paperclipai/paperclip.git",
+            ref: "a".repeat(40), branchMode: "create", branchName: "L-1-change" } },
+        remoteWorkspaceUnchangedBaseline: { schema: "paperclip.remote-workspace-unchanged-baseline.v1", epoch: 4,
+          runId: f.source.id, snapshotId, releasedAt: new Date().toISOString() } } });
+      await db.update(heartbeatRuns).set({
+        runnerProfileJson: { ...f.source.runnerProfileJson,
+          ...(all || variant === "comment_wake_marker" ? { aiConnectionNonAssigneeCommentWake: true } : {}),
+          remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId: f.leaseId,
+            providerLeaseId: lease!.providerLeaseId!, remoteCwd: "/fixture", epoch: 4, state: "saved", snapshotId } },
+        ...(all || variant === "restore_failed" ? { resultJson: { ...f.source.resultJson, workspaceRestoreFailure: "restore_failed",
+          workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.leaseId] } } } : {}),
+      }).where(eq(heartbeatRuns.id, f.source.id));
+      let earlier: string | undefined;
+      if (variant === "attached_after_refusal") {
+        await db.update(environmentLeases).set({ metadata: { pendingCleanupInFlight: false } }).where(eq(environmentLeases.id, f.leaseId));
+        const refused = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: f.actorId,
+          observedRunId: f.source.id, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
+        await heartbeatService(db).resumeTaskRetry(f.companyId, refused.requestId!);
+        const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, refused.requestId!));
+        expect(held).toMatchObject({ status: "deferred_issue_execution",
+          payload: { executionWait: { reason: "previous_execution_unverified" } } });
+        await db.update(environmentLeases).set({ metadata: lease!.metadata }).where(eq(environmentLeases.id, f.leaseId));
+        earlier = refused.requestId!;
+      }
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: f.actorId,
+        observedRunId: f.source.id, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
+      expect(receipt).toMatchObject({ accepted: true });
+      if (earlier) expect(receipt.requestId).toBe(earlier);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId!);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(wake).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+      if (!earlier) expect(wake.payload?.executionWait).toBeUndefined();
+    });
+
   it.each(["foreign_hold", "provider_event", "unstopped_lease", "unsaved_remote_workspace"] as const)(
     "keeps the Retry held when the stopped preparation is not proven: %s", async gate => {
       const f = await seed();

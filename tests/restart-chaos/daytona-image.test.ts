@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RUNNER_REVISION_LABEL, assertControllerMatchesImage, assertProviderPackMismatch, copyImageToDir, extractFromLayers, prepareDaytonaImageArtifacts, normalizeLayerPath, walkTar, type LayerSource } from "./daytona-image.js";
 
 type Entry =
@@ -190,6 +190,21 @@ describe("assertControllerMatchesImage", () => {
   });
   it("names both content IDs and the image revision when they differ", async () => {
     await expect(assertControllerMatchesImage(image, "/unused", "e".repeat(64))).rejects.toThrow(/does not match the Daytona image[\s\S]*d{40}[\s\S]*e{64}/);
+  });
+  it("accepts a mismatch only for the exact image content ID named by the test override", async () => {
+    const previous = process.env.PAPERCLIP_CHAOS_TEST_ACCEPT_IMAGE_CONTENT_ID;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      process.env.PAPERCLIP_CHAOS_TEST_ACCEPT_IMAGE_CONTENT_ID = "f".repeat(64);
+      await expect(assertControllerMatchesImage(image, "/unused", "e".repeat(64))).rejects.toThrow(/does not match the Daytona image/);
+      process.env.PAPERCLIP_CHAOS_TEST_ACCEPT_IMAGE_CONTENT_ID = "c".repeat(64);
+      await expect(assertControllerMatchesImage(image, "/unused", "e".repeat(64))).resolves.toEqual({ localContentId: "e".repeat(64) });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/TEST OVERRIDE[\s\S]*c{64}[\s\S]*e{64}/));
+    } finally {
+      warn.mockRestore();
+      if (previous === undefined) delete process.env.PAPERCLIP_CHAOS_TEST_ACCEPT_IMAGE_CONTENT_ID;
+      else process.env.PAPERCLIP_CHAOS_TEST_ACCEPT_IMAGE_CONTENT_ID = previous;
+    }
   });
 });
 

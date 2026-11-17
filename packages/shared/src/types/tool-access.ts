@@ -113,6 +113,7 @@ export interface ToolRedactedValueSummary {
   sha256?: string | null;
   redactedFields?: string[];
   artifactId?: string | null;
+  contentDeletedAt?: string;
 }
 
 export type VercelConnectPrincipalMode = "app" | "user";
@@ -431,6 +432,40 @@ export interface ToolConnectionRemovalSummary {
 export interface ToolConnectionRemovalResult {
   connection: ToolConnection;
   removal: ToolConnectionRemovalSummary;
+}
+
+export interface ToolConnectionStoredContentCounts {
+  toolCalls: number;
+  approvals: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+}
+
+export interface ToolConnectionContentDeletionCounts {
+  toolCalls: number;
+  approvals: number;
+  auditEvents: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+  itemsInProgress: number;
+}
+
+export type ToolConnectionContentDeletionStatus = "pending" | "completed";
+
+export interface ToolConnectionContentDeletion {
+  id: string;
+  status: ToolConnectionContentDeletionStatus;
+  requestedAt: string;
+  completedAt: string | null;
+  retrying: boolean;
+  counts: ToolConnectionContentDeletionCounts;
+}
+
+export interface ToolConnectionStoredContent {
+  stored: ToolConnectionStoredContentCounts;
+  deletion: ToolConnectionContentDeletion | null;
 }
 
 export type ConnectionTokenScope = string | string[];
@@ -1219,6 +1254,39 @@ export interface ConnectToolAppAuthChallenge {
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
   manualClientRequired?: boolean;
+}
+
+/** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
+export interface MachineSignInPublicKey {
+  keyId: string;
+  algorithm: "RS256" | "ES256";
+  /** PEM (SPKI) for providers that take a certificate-style key. */
+  pem: string;
+  /** JWK for providers that take a JSON key. */
+  jwk: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
+export interface MachineSignInStatus {
+  connectionId: string;
+  method: "paperclip_key" | "client_secret";
+  clientId: string | null;
+  /** The sign-in service this connection's credentials are bound to. */
+  issuer: string | null;
+  tokenUrl: string;
+  scopes: string[];
+  publicKey: MachineSignInPublicKey | null;
+  /** A replacement key waiting to be registered with the provider. */
+  pendingPublicKey: MachineSignInPublicKey | null;
+  hasClientSecret: boolean;
+  lastTokenAt: string | null;
+}
+
+export interface MachineSignInSetupResult {
+  connectionId: string;
+  connection: ToolConnection;
+  machineSignIn: MachineSignInStatus;
 }
 
 export interface ConnectToolAppResult {

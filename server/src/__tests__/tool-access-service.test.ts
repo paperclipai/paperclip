@@ -64,6 +64,7 @@ import {
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  googleWorkspaceProfileWithinSubmittedScopes,
   googleWorkspaceSelectedScopes,
   GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   getAvailableConnectionMethod,
@@ -6013,13 +6014,12 @@ describeEmbeddedPostgres("tool access service", () => {
     const archivePilotGmail = archivePilot.body.apps.find(
       (app: { slug: string }) => app.slug === "gmail",
     );
-    expect(archivePilotGmail.ownershipAvailability.platform_shared).toBe(true);
+    expect(archivePilotGmail.ownershipAvailability.platform_shared).toBe(false);
     expect(
       archivePilotGmail.methods.map((method: { key: string }) => method.key),
     ).toEqual([
       "customer-read-oauth",
       "customer-draft-oauth",
-      "paperclip-archive",
       "customer-archive-oauth",
     ]);
   });
@@ -7977,7 +7977,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(updated.transportConfig).toEqual(updated.config);
   });
 
-  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.flatMap((profile) => [
+  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.filter(googleWorkspaceProfileWithinSubmittedScopes).flatMap((profile) => [
     ["local_trusted", "private", "http://127.0.0.1:3102"] as const,
     ["authenticated", "public", "https://tenant.paperclip.app"] as const,
   ].map(([deploymentMode, deploymentExposure, origin]) => ({ profile, deploymentMode, deploymentExposure, origin }))))(
@@ -8019,7 +8019,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(JSON.stringify(getConnectableAppDefinition(slug))).toBe(definitionBefore);
   });
 
-  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS)("connects advertised Workspace %s with a Cloud-delivered environment identity", async (profile) => {
+  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.filter(googleWorkspaceProfileWithinSubmittedScopes))("connects advertised Workspace %s with a Cloud-delivered environment identity", async (profile) => {
     const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
     const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;
     const company = await createCompany(db);
@@ -8089,6 +8089,59 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(response.status).toBe(422);
     expect(connector.startAuthorization).not.toHaveBeenCalled();
     expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
+  });
+
+  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.filter((profile) => !googleWorkspaceProfileWithinSubmittedScopes(profile)))(
+    "refuses new managed setup for advertised %s, whose scopes were not submitted for verification", async (profile) => {
+      const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
+      const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;
+      const company = await createCompany(db);
+      const userId = "board-user";
+      await grantBoardUser(db, company.id, userId, [], "owner");
+      const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+      const app = createRouteApp(db, boardSessionActor(company.id, "owner", userId), undefined, { paperclipCloudConnector: connector });
+      const gallery = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
+      expect(gallery.body.apps.find((entry: { slug: string }) => entry.slug === slug)?.methods
+        .map((method: { key: string }) => method.key) ?? []).not.toContain(methodKey);
+      const response = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`).send({
+        galleryKey: slug, connectionMethodKey: methodKey, grantKind: "user", name: `Legacy ${slug}`,
+      });
+      expect(response.status).toBe(422);
+      expect(connector.startAuthorization).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    },
+  );
+
+  it("keeps a saved Paperclip-managed Gmail archive connection refreshing but never asks Google to consent again", async () => {
+    const company = await createCompany(db);
+    const userId = `gmail-archive-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, "gmail.draft");
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    mockToolsList([]);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "Gmail archive",
+    }, actor);
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
+    });
+    await service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "archive-claim", actor,
+    });
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    const config = { ...row.config, connectionMethodKey: "paperclip-archive",
+      oauth: { ...(row.config.oauth as Record<string, unknown>), connectorProfile: "gmail.archive" } };
+    await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, row.id));
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, row.id));
+    vi.mocked(connector.startAuthorization).mockClear();
+
+    await service.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: row.id, grantId: grant.id, forceRefresh: true, actor });
+    expect(connector.refresh).toHaveBeenCalledWith(expect.objectContaining({ profile: "gmail.archive" }));
+    await expect(service.startOAuth(company.id, row.id, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
+    })).rejects.toMatchObject({ status: 422, details: { code: "paperclip_cloud_connector_scope_not_offered" } });
+    expect(connector.startAuthorization).not.toHaveBeenCalled();
   });
 
   it("completes brokered Gmail OAuth with a single database connection", async () => {
@@ -8869,6 +8922,52 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(gmail.status).toBe("disabled");
     });
 
+    it.each(["managed", "customer"] as const)("caps a %s callback that also reports an unrequested legacy scope", async (mode) => {
+      const fixture = await connectWorkspace(mode, ["documents.readonly", "gmail.readonly", "chat.messages.readonly", "calendar.readonly"]);
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.status, "active")));
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.map((tool) => tool.upstreamToolName).sort()).toEqual(["docs__read_doc", "gmail__get_message"]);
+    });
+
+    it.each(["managed", "customer"] as const)("keeps a %s grant on its submitted scopes when refresh also reports a legacy scope", async (mode) => {
+      const fixture = await connectWorkspace(mode);
+      const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+      fixture.expireNextCall(["https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly", "https://www.googleapis.com/auth/calendar.readonly"]);
+      await fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} }).catch(() => undefined);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fixture.connected.connectionId));
+      expect(grant.status).toBe("active");
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.map((item) => item.upstreamToolName).sort()).toEqual(["docs__read_doc", "gmail__get_message"]);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+    });
+
+    it.each(["managed", "customer"] as const)("reconnects a %s grant whose refresh reported only legacy scopes", async (mode) => {
+      const fixture = await connectWorkspace(mode);
+      const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+      fixture.expireNextCall(["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/chat.messages.readonly"]);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).rejects.toMatchObject({ reasonCode: "oauth_reauthorization_required" });
+      const [stale] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fixture.connected.connectionId));
+      expect(stale.status).toBe("needs_reauthorization");
+      const redirectUri = mode === "managed" ? "https://paperclip.example/api/tools/oauth/cloud-connector/callback" : "https://paperclip.example/api/tools/oauth/callback";
+      const started = await fixture.service.startOAuth(fixture.company.id, fixture.connected.connectionId, {
+        redirectUri, actor: fixture.actor, workspaceServices: GOOGLE_WORKSPACE_DEFAULT_SELECTION,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      if (mode === "managed") await fixture.service.completePaperclipCloudConnectorCallback({ state, claimId: "reconnect", actor: fixture.actor });
+      else await fixture.service.completeOAuthCallback({ state, code: "reconnect", redirectUri, actor: fixture.actor });
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.status, "active")));
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+    });
+
     it("keeps healthy service tools visible during a partial outage and restores recovered services", async () => {
       const fixture = await connectWorkspace("managed");
       fixture.unavailable.add("gmailmcp.googleapis.com");
@@ -8925,7 +9024,8 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: gmail.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
     });
 
-    it.each((["managed", "customer"] as const).flatMap((mode) => [undefined, [], ["https://www.googleapis.com/auth/gmail.send"]].map((scopes) => ({ mode, scopes }))))(
+    it.each((["managed", "customer"] as const).flatMap((mode) => [undefined, [], ["https://www.googleapis.com/auth/gmail.send"],
+      ["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/chat.messages.readonly"]].map((scopes) => ({ mode, scopes }))))(
       "fails closed on invalid refreshed permissions ($mode, $scopes)", async ({ mode, scopes }) => {
         const fixture = await connectWorkspace(mode);
         const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;

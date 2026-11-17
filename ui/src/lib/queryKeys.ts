@@ -72,6 +72,10 @@ export const queryKeys = {
       ["tools", "connection", connectionId, "installs"] as const,
     connectionGrants: (connectionId: string) =>
       ["tools", "connection", connectionId, "grants"] as const,
+    connectionStoredContent: (connectionId: string) =>
+      ["tools", "connection", connectionId, "stored-content"] as const,
+    connectionStoredContentDeletion: (connectionId: string) =>
+      ["tools", "connection", connectionId, "stored-content", "deletion"] as const,
     catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
     connectionActivity: (connectionId: string) =>
       ["tools", "connection", connectionId, "activity"] as const,
@@ -318,6 +322,7 @@ export const queryKeys = {
     views: (issueId: string) => ["mcp-app-views", issueId] as const,
     detail: (issueId: string, viewId: string) => ["mcp-app-views", issueId, "detail", viewId] as const,
   },
+  toolCallProgress: (issueId: string) => ["tool-call-progress", issueId] as const,
   issues: {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>
       ["issues", id, "recovery-actions", actionId, runId] as const,

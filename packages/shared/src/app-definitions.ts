@@ -91,16 +91,33 @@ export const DEFAULT_OWNERSHIP_AVAILABILITY: Record<ToolConnectionOwnership, boo
   dcr: true,
 };
 
+/**
+ * Connector types contributed by enabled plugins (see `plugin-apps.ts`). The
+ * host replaces the whole set whenever it reads plugin state, and the board UI
+ * replaces it from each gallery response, so a disabled plugin's apps drop out
+ * of every lookup below. Slugs are namespaced, so this set can never shadow a
+ * built-in app.
+ */
+let pluginAppDefinitions = new Map<string, AppDefinition>();
+
+export function setPluginAppDefinitions(definitions: readonly AppDefinition[]): void {
+  pluginAppDefinitions = new Map(definitions.filter((app) => app.plugin).map((app) => [app.slug, app]));
+}
+
+export function listPluginAppDefinitions(): AppDefinition[] {
+  return [...pluginAppDefinitions.values()];
+}
+
 export function getConnectableAppDefinition(slug: string): AppDefinition | null {
-  return CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug) ?? null;
+  return CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug) ?? pluginAppDefinitions.get(slug) ?? null;
 }
 
 export function getAppStoreDefinition(slug: string): AppDefinition | null {
-  return APP_STORE_DEFINITIONS.find((app) => app.slug === slug) ?? null;
+  return APP_STORE_DEFINITIONS.find((app) => app.slug === slug) ?? pluginAppDefinitions.get(slug) ?? null;
 }
 
 export function isAppStoreVisibleSlug(slug: string | null | undefined): boolean {
-  return Boolean(slug && !APP_STORE_HIDDEN_SLUGS.has(slug) && CONNECTABLE_APP_SLUGS.has(slug));
+  return Boolean(slug && ((!APP_STORE_HIDDEN_SLUGS.has(slug) && CONNECTABLE_APP_SLUGS.has(slug)) || pluginAppDefinitions.has(slug)));
 }
 
 function wildcardPatternToRegExp(pattern: string): RegExp {
@@ -215,7 +232,7 @@ export function appSupportsCatalogSetup(app: AppDefinition | null | undefined): 
 }
 
 export function isConnectableAppSlug(slug: string | null | undefined): boolean {
-  return Boolean(slug && CONNECTABLE_APP_SLUGS.has(slug));
+  return Boolean(slug && (CONNECTABLE_APP_SLUGS.has(slug) || pluginAppDefinitions.has(slug)));
 }
 
 export function appSupportsAutomaticOAuth(app: AppDefinition | null | undefined): boolean {

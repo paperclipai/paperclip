@@ -1,0 +1,11 @@
+{
+  "id": "paperclip.test-circleback-parity",
+  "apiVersion": 1,
+  "version": "0.0.1",
+  "displayName": "Circleback parity fixture",
+  "description": "Test-only plugin that provides a copy of the built-in Circleback connector. Never shipped.",
+  "author": "Paperclip tests",
+  "categories": ["connector"],
+  "capabilities": ["connectors.provide"],
+  "entrypoints": { "worker": "worker.js" }
+}

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes, applyPluginSettingsVisibility, buildOpenApiDocument } from "../routes/openapi.js";
@@ -76,6 +76,7 @@ const apiPrefixes: Record<string, string> = {
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
+  "instance-server-metrics.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
@@ -136,6 +137,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
   "GET /api/customer-success/v1/run-authority",
   "POST /api/customer-success/v1/read",
+  "POST /api/customer-success/v1/run-liveness",
   // OAuth discovery and protocol endpoints have their own metadata contract;
   // browser connection-management operations remain documented in the board API.
   // Markdown rendering of the separately documented assistant setup page.
@@ -337,6 +339,15 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("describes cached link results with the lookup shape and shared batch bound", () => {
+    const paths = buildOpenApiSpec().paths;
+    const batch = paths["/api/companies/{companyId}/link-previews/cached"].get;
+    expect(batch.description).toContain(`at most ${LINK_PREVIEW_BATCH_LIMIT} URLs`);
+    const lookupResult = paths["/api/companies/{companyId}/link-preview"].get.responses[200].content["application/json"].schema;
+    expect(batch.responses[200].content["application/json"].schema.properties.results.additionalProperties).toEqual(lookupResult);
+    expect(lookupResult.properties).toHaveProperty("preview");
+    expect(lookupResult.properties).toHaveProperty("maxAgeMs");
+  });
   it("tells agents that unpriced usage in cost reports is unknown cost, not zero", () => {
     const paths = buildOpenApiSpec().paths;
     for (const segment of ["summary", "by-agent", "by-agent-model", "by-project"]) {
@@ -1255,6 +1266,7 @@ describe("openapi routes", () => {
     const { spec } = loadSpecRoutes();
     const base = "/api/companies/{companyId}/tailscale-connections";
     for (const [path, method] of [[base, "get"], [base, "post"], [base + "/{connectionId}", "delete"],
+      [base + "/{connectionId}/device-login", "post"],
       [base + "/{connectionId}/devices", "get"], [base + "/{connectionId}/pairing", "post"], ["/api/tools/oauth/tailscale/callback", "get"]]) {
       const operation = spec.paths[path]?.[method];
       expect(operation).toBeDefined();
@@ -1265,13 +1277,27 @@ describe("openapi routes", () => {
     const connection = spec.paths[base].get.responses["200"].content["application/json"].schema.items;
     expect(Object.keys(connection.properties).sort()).toEqual(["companyId", "id", "name", "status"]);
     expect(connection.additionalProperties).toBe(false);
+    expect(connection.properties.status.enum).toEqual(["pending", "authorizing", "connecting", "connected", "disconnected", "expired", "error"]);
     const start = spec.paths[base].post;
     expect(start.requestBody.content["application/json"].schema).toMatchObject({ additionalProperties: false,
       properties: { name: { minLength: 1, maxLength: 100 }, connectionId: { format: "uuid" } } });
     expect(start.requestBody.content["application/json"].schema.required ?? []).toEqual([]);
     const session = start.responses["201"].content["application/json"].schema;
-    expect(session.required).toEqual(["authorizationUrl", "expiresAt"]);
-    expect(session.properties.handoff.properties.kind).toEqual({ type: "string", enum: ["paperclip_cloud"] });
+    expect(session.required).toEqual(["connection", "expiresAt"]);
+    expect(Object.keys(session.properties).sort()).toEqual(["authorizationUrl", "connection", "expiresAt", "needsApproval"]);
+    expect(session.properties.expiresAt).toMatchObject({ type: "string", format: "date-time", nullable: true });
+    expect(session.properties.authorizationUrl).toMatchObject({ type: "string", format: "uri" });
+    expect(session.properties.needsApproval).toEqual({ type: "boolean" });
+    expect(session.additionalProperties).toBe(false);
+    const progress = spec.paths[base + "/{connectionId}/device-login"].post;
+    expect(progress.responses["200"].content["application/json"].schema).toEqual(session);
+    expect(progress.requestBody).toBeUndefined();
+    for (const response of [start.responses["201"], progress.responses["200"]]) {
+      expect(response.headers).toMatchObject({
+        "Cache-Control": { schema: { enum: ["no-store"] } },
+        "Referrer-Policy": { schema: { enum: ["no-referrer"] } },
+      });
+    }
     const pairing = spec.paths[base + "/{connectionId}/pairing"].post;
     expect(pairing.requestBody.content["application/json"].schema).toMatchObject({ additionalProperties: false, required: ["deviceId"],
       properties: { deviceId: { minLength: 1, maxLength: 256 }, port: { minimum: 1, maximum: 65535 } } });

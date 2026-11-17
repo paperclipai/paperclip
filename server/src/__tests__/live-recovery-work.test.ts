@@ -104,7 +104,7 @@ describe("residual recovery production matrix", () => {
     const admitted = () => !draining && !standby;
     await heartbeat.registerResidualRecoveryWork(coordinator, admitted).ready;
     await heartbeat.registerActiveRunSilenceWork(coordinator, admitted).ready;
-    await heartbeat.registerIssueStateRecoveryWork(coordinator, admitted).ready;
+    await heartbeat.registerIssueStateRecoveryWork(coordinator, admitted, { backstopMs: 0 }).ready;
     await heartbeat.registerDeferredReceiptWork(coordinator, admitted).ready;
     await heartbeat.registerRunDispatchWork(coordinator, admitted).ready;
     await heartbeat.registerScheduledRetryCancellationWork(coordinator, admitted).ready;

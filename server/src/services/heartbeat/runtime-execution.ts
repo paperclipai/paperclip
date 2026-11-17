@@ -1054,7 +1054,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.status, "running"),
             ),
-          ), { companyId: run.companyId });
+          ), { companyId: run.companyId, runId: run.id });
         const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
         await recordWorkspaceFinalize(workspaceFinalizeStatus);
         if (adapterResult.nativeFinalization) {
@@ -1135,7 +1135,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             eq(heartbeatRuns.id, run.id),
             eq(heartbeatRuns.status, "running"),
           ),
-        ), { companyId: run.companyId });
+        ), { companyId: run.companyId, runId: run.id });
     } catch (writeError) {
       if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
       throw writeError;

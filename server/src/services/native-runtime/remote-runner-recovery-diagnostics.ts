@@ -3,7 +3,7 @@ export const REMOTE_RUNNER_RECOVERY_ERROR_CODE = "runner_remote_process_identity
 const stages = ["runner_state", "identity_marker", "process_verification"] as const;
 const reasons = [
   "marker_missing", "marker_unsafe", "marker_read_failed", "marker_invalid",
-  "fingerprint_missing", "process_not_running", "process_identity_changed",
+  "fingerprint_missing", "process_not_running", "process_identity_changed", "process_runner_id_missing",
   "fingerprint_unavailable", "process_generation_changed", "probe_timeout",
   "probe_transport_failed", "probe_failed",
   "state_read_failed", "state_invalid",
@@ -206,6 +206,27 @@ function verifyGeneration() {
     process.exit(46);
   }
 }
+function awaitExitingProcess() {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const until = Date.now() + 1000;
+  while (Date.now() < until) {
+    let state;
+    try {
+      const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+      state = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[0];
+    } catch (error) {
+      if (error.code === "ENOENT") process.exit(45);
+      return;
+    }
+    if (state === "Z" || state === "X" || state === "x") process.exit(45);
+    try { process.kill(Number(pid), 0); }
+    catch (error) {
+      if (error.code === "ESRCH") process.exit(45);
+      return;
+    }
+    Atomics.wait(pause, 0, 0, 50);
+  }
+}
 requireLiveProcess();
 const commandPath = "/proc/" + pid + "/cmdline";
 if (process.platform !== "linux" && !expectedGeneration && !fs.existsSync(commandPath)) process.exit(0);
@@ -219,7 +240,8 @@ catch (error) {
 if (expectedGeneration) verifyGeneration();
 if (!args.includes("--runner-id") || !args.includes(runnerId)) {
   requireLiveProcess();
-  process.exit(44);
+  if (expectedGeneration && args.join("") === "") awaitExitingProcess();
+  process.exit(48);
 }
 ' "$pid" "$expected_runner_id"` + ' "${5:-}"',
 ].join("; ");
@@ -238,6 +260,7 @@ export function remoteRecoveryProbeReason(stage: RemoteRunnerRecoveryDiagnostic[
     if (exitCode === 45) return "process_not_running";
     if (exitCode === 46) return "fingerprint_unavailable";
     if (exitCode === 47) return "process_generation_changed";
+    if (exitCode === 48) return "process_runner_id_missing";
   }
   return "probe_failed";
 }

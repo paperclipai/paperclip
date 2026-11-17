@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { toolConnections, toolInvocations, type Db } from "@paperclipai/db";
-import { getConnectableAppDefinition } from "@paperclipai/shared";
+import { getConnectableAppDefinition, isPluginAppSlug } from "@paperclipai/shared";
 import {
   trackConnectionCreated,
   trackConnectionUpdated,
@@ -50,7 +50,9 @@ export function connectorKeyForConnection(
 ): string {
   const raw = connection.config?.sourceTemplateKey;
   const key = typeof raw === "string" ? raw : null;
-  return key && getConnectableAppDefinition(key) ? key : "custom";
+  // Only built-in connector keys leave the instance; a plugin's connector
+  // names its (possibly private) plugin, so it is reported as custom.
+  return key && !isPluginAppSlug(key) && getConnectableAppDefinition(key) ? key : "custom";
 }
 
 /**

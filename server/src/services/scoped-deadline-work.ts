@@ -26,7 +26,11 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
       admitDueWhileActive?: boolean;
     };
     reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
+    /** What the first pass after registration reconstructs; an unscoped reload by default. */
+    initialHint?: string;
+    backstop?(scope: Scope | undefined): number | null;
     beforePass?(): Promise<void>;
+    beforeChecks?(entries: readonly Entry[]): void;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     /**
@@ -35,7 +39,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
      * the scopes of its own key (and unkeyed scopes), not against every scope.
      */
     scopeKey?: { entry(entry: Entry): string; scope(scope: Scope): string | undefined };
-    load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean }>;
+    load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean; keepUnseen?: boolean }>;
     // Owners may retain pending queue priority while refreshing eligibility.
     mergeEntry?(pending: Entry, loaded: Entry): Entry;
     priority?(entry: Entry): number;
@@ -49,7 +53,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   }
   const ownerRevision = randomUUID();
   let revision = 0, running = false, stopped = false, lastRunFailed = false;
-  const dirty = new Set<string>(["*"]);
+  const dirty = new Set<string>([options.initialHint ?? "*"]);
   const versions = new Map<string, number>();
   const scans = new Map<string, { version: number; seen: Set<string> }>();
   const entries = new Map<string, Entry>();
@@ -67,6 +71,12 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     decodedScopes.set(hint, scope);
     return scope;
   }
+  function backstopAt(hint: string) {
+    if (!options.backstop) return null;
+    try { return options.backstop(decode(hint)); } catch { return null; }
+  }
+  const holdsIdle = (hint: string) => backstopAt(hint) === null;
+  const gate = (hint: string) => Math.max(reconstructAfter.get(hint) ?? 0, backstopAt(hint) ?? 0);
   function forgetDecoded() {
     for (const hint of decodedScopes.keys()) if (!dirty.has(hint) && !scans.has(hint)) decodedScopes.delete(hint);
   }
@@ -92,14 +102,14 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   function dirtyScopes() {
     return [...dirty].filter(hint => hint !== "*" || !scopeFailures.has(hint))
       .filter(hint => !scans.has(hint) || scopeFailures.has(hint))
-      .filter(hint => (reconstructAfter.get(hint) ?? 0) <= Date.now() || scopeFailures.has(hint))
+      .filter(hint => gate(hint) <= Date.now() || scopeFailures.has(hint))
       .map(hint => { try { return decode(hint); } catch { return undefined; } });
   }
   function next() {
     if (!canRun()) return dirty.size > 0 || entries.size > 0 ? Date.now() + 30_000 : null;
     let nextAt: number | null = null;
     const take = (at: number) => { nextAt = nextAt === null ? at : Math.min(nextAt, at); };
-    for (const hint of dirty) take(Math.max(earliest, reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0));
+    for (const hint of dirty) take(Math.max(earliest, gate(hint), scopeFailures.get(hint)?.retryAt ?? 0));
     const unavailable = matcher(dirtyScopes());
     for (const entry of entries.values()) if (!unavailable(entry))
       take(Math.max(earliest, entry.dueAt, failures.get(entry.id)?.retryAt ?? 0));
@@ -119,7 +129,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         for (const [hint, until] of reconstructAfter) {
           if (until <= Date.now()) reconstructAfter.delete(hint);
         }
-        const ready = [...dirty].filter(hint => Math.max(reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
+        const ready = [...dirty].filter(hint => Math.max(gate(hint), scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
         if (ready.length === 0 && ![...entries.values()].some(entry => Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())) return;
         earliest = Date.now() + (options.minimumPassIntervalMs ?? 1000);
         try { await options.beforePass?.(); } catch (error) {
@@ -157,7 +167,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
             const scan = scans.get(hint) ?? { version: versions.get(hint) ?? 0, seen: new Set<string>() };
             scans.set(hint, scan);
             const loaded = await options.load(scope, signal);
-            const result = Array.isArray(loaded) ? { rows: loaded, complete: true } : loaded;
+            const result: { rows: Entry[] | null; complete: boolean; keepUnseen?: boolean } = Array.isArray(loaded)
+              ? { rows: loaded, complete: true } : loaded;
             const progressScopes = [...scans].map(([other, progress]) => ({ progress, scope: decode(other) }));
             for (const entry of result.rows ?? []) {
               const pending = entries.get(entry.id);
@@ -166,7 +177,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
               for (const { progress, scope: other } of progressScopes) if (options.matches(entry, other)) progress.seen.add(entry.id);
             }
             if (!result.complete) { dirty.add(hint); continue; }
-            if (result.rows !== null) for (const entry of entriesIn(scope)) if (options.matches(entry, scope) && !scan.seen.has(entry.id)) {
+            if (result.rows !== null && !result.keepUnseen) for (const entry of entriesIn(scope)) if (options.matches(entry, scope) && !scan.seen.has(entry.id)) {
               entries.delete(entry.id); failures.delete(entry.id);
             }
             scans.delete(hint);
@@ -190,6 +201,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
           .sort((a, b) => (options.priority?.(b) ?? 0) - (options.priority?.(a) ?? 0)
             || a.dueAt - b.dueAt || a.id.localeCompare(b.id));
         const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
+        options.beforeChecks?.(batch.entries);
         // An owner may share more than one resource (for example a task and an
         // endpoint). Merge intersecting keys before dispatch so waiting siblings
         // do not occupy the bounded check slots ahead of independent work.
@@ -325,7 +337,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     },
     // Retain scopes/deadlines for resume without retaining a settled write's
     // idle hold during drain. The coordinator still fences unresolved XIDs.
-    hasPending: async () => canRun() && dirty.size > 0,
+    hasPending: async () => canRun() && [...dirty].some(holdsIdle),
     nextRunAt: next,
     nextRunAtOnError: next,
   });
@@ -337,7 +349,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   return { ...worker,
     reconciliationSnapshot: (): DeadlineReconciliationSnapshot => ({
       revision: `${ownerRevision}:${revision}`,
-      reconciled: !stopped && !running && !lastRunFailed && dirty.size === 0 && scans.size === 0
+      reconciled: !stopped && !running && !lastRunFailed && ![...dirty].some(holdsIdle) && scans.size === 0
         && failures.size === 0 && scopeFailures.size === 0,
     }),
     wake() { revision++; worker.wake(); },

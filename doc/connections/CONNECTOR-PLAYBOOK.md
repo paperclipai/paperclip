@@ -181,6 +181,16 @@ refs and the same ownership checks. A personal resolver must not fall back to a
 company credential. Ownership mismatch is `grant_credential_invalid` and tells
 the owner to reconnect.
 
+Dedicated agent connections keep credentials on their agent grant. Background
+catalog and health work may use a single active grant for that connection and
+company. An agent caller must use its own grant. Missing, revoked, or ambiguous
+agent authorizations fail before provider requests; they never fall back to a
+personal, organization, or connection-owned credential. Renaming or pausing the
+connection must preserve the grant and its secret bindings. A later successful
+catalog refresh clears an earlier connection-health error without new consent.
+An agent caller denied for lacking its own grant must not change shared health
+or the catalog, including when that agent has permission to manage the connection.
+
 Existing personal connections with company-scoped invocation credentials require
 their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
 a user-owned credential and updates the grant and declarations while preserving
@@ -1529,6 +1539,28 @@ POST /api/tool-connections/:connectionId/catalog/refresh
 POST /api/tool-connections/:connectionId/test-calls
 DELETE /api/tool-connections/:connectionId
 ```
+
+Stored tool-call content endpoints:
+
+```text
+GET /api/tool-connections/:connectionId/stored-content
+POST /api/tool-connections/:connectionId/stored-content/deletion
+GET /api/tool-connections/:connectionId/stored-content/deletion
+DELETE /api/tool-connections/:connectionId?deleteStoredContent=true
+```
+
+Deletion is connector-agnostic. It clears the content of the connection's
+tool-call summaries (including `tool_access_audit_events.details.argumentsSummary`),
+approval previews, approval cards, delivered action results and app views, and
+deletes the whole run transcript (every copy of the run log, run-event content,
+output excerpts and the result text) of every settled run that called the
+connection or received an approved action's result. Row ids, timestamps, status,
+sizes and hashes stay. A step that cannot confirm its deletion fails, and the
+request stays pending and retries; it completes only when every step succeeded.
+A `tool_connection_content_deletions` row is the durable request; the
+`tool-connection-content-deletion` delivery queue resumes it after a restart.
+Runs that are still working are skipped and counted. The user-facing help is
+`docs/guides/board-operator/deleting-connection-data.md`.
 
 Responses may contain secret IDs, version selectors, header names, prefixes,
 scope names, expiry timestamps, and redacted provider metadata. They must not

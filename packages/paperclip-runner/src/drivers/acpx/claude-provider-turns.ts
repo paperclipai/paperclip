@@ -136,10 +136,6 @@ export class ClaudeProviderCycles {
     return this;
   }
 
-  undecided(): Promise<boolean> | null {
-    return this.#undecided[0]?.promise ?? null;
-  }
-
   decisionFor(toolCallId: unknown): Promise<boolean> | null {
     const bound = typeof toolCallId === "string" ? this.#toolDecisions.get(toolCallId) : undefined;
     return (bound ?? this.#undecided.at(-1))?.promise ?? null;

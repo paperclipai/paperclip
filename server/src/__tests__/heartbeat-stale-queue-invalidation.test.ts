@@ -901,6 +901,34 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     },
   );
 
+  it("cancels an environment-blocker fresh-session retry whose task is reassigned before adapter dispatch", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({ id: replacementAgentId, companyId, name: "ReplacementCoder", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Environment blocker retry reassigned at final dispatch",
+      status: "in_progress", priority: "medium", assigneeAgentId: agentId });
+    const { runId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "native_environment_blocker",
+      invocationSource: "automation", scheduledRetryReason: "native_environment_blocker",
+      contextExtras: { retryReason: "native_environment_blocker", forceFreshSession: true } });
+    let guarded = false;
+    beforeContinuationDispatchCheck = async ({ runId: guardedRunId }) => {
+      if (guardedRunId !== runId) return;
+      guarded = true;
+      await db.update(issues).set({ assigneeAgentId: replacementAgentId, updatedAt: new Date() }).where(eq(issues.id, issueId));
+    };
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(guarded).toBe(true);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("rejects ownership changes immediately before the final continuation handoff", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
@@ -1753,6 +1781,50 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(promoted.runId).toBeTruthy();
       expect(countExecuteCallsForRun(promoted.runId!)).toBe(1);
     }, { timeout: 10_000 });
+  });
+
+  describe("a queued system recovery run re-checks that its task still needs it when its turn comes", () => {
+    async function queueRecovery(task: Partial<typeof issues.$inferInsert>) {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const [issue] = await db.insert(issues).values({ companyId, title: "Waited behind people's work",
+        status: "in_progress", assigneeAgentId: agentId, ...task }).returning();
+      const queued = await seedQueuedRun({ companyId, agentId, issueId: issue.id,
+        wakeReason: "issue_recovery_action_restored", invocationSource: "automation" });
+      return { companyId, agentId, issueId: issue.id, ...queued };
+    }
+    async function expectDroppedQuietly(runId: string, wakeupRequestId: string) {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({ status: "cancelled", errorCode: "recovery_no_longer_needed",
+        resultJson: expect.objectContaining({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }) });
+      expect(countExecuteCallsForRun(runId)).toBe(0);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)))[0]?.status)
+        .toBe("skipped");
+    }
+
+    it("drops it when the task was reassigned while it waited", async () => {
+      const { issueId, runId, wakeupRequestId } = await queueRecovery({});
+      await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: "responsible-user" }).where(eq(issues.id, issueId));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      await expectDroppedQuietly(runId, wakeupRequestId);
+    });
+
+    it("drops it when a newer run already continued the task", async () => {
+      const { companyId, agentId, issueId, runId, wakeupRequestId } = await queueRecovery({});
+      await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "assignment", triggerDetail: "system",
+        status: "succeeded", createdAt: new Date(Date.now() + 1_000), startedAt: new Date(Date.now() + 1_000),
+        finishedAt: new Date(Date.now() + 2_000), contextSnapshot: { issueId, wakeReason: "issue_commented" } });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      await expectDroppedQuietly(runId, wakeupRequestId);
+    });
+
+    it("starts it when the task still needs it", async () => {
+      const { runId } = await queueRecovery({ status: "todo" });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(countExecuteCallsForRun(runId)).toBe(1);
+    }, 60_000);
   });
 
   it("cancels queued max-turn continuations when another continuation owns the issue lock", async () => {

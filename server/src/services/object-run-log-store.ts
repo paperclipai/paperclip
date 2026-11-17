@@ -2,7 +2,8 @@ import { beginIdleTrackedWork } from "./task-admission.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { StorageProvider } from "../storage/types.js";
 import type { RunLogStore, RunLogHandle, RunLogBeginInput } from "./run-log-store.js";
-import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
+import { createObjectByteJournal, ObjectJournalSourcePrefixProofUnavailableError, acquireObjectJournalUpload, trackObjectJournalWriter,
+  type ObjectJournalIOPriority, type ObjectJournalWriter } from "./object-byte-journal.js";
 import { MAX_RUN_LOG_RECORD_BYTES } from "./run-log-record-limits.js";
 import { notFound } from "../errors.js";
 
@@ -39,6 +40,7 @@ interface WriterState {
   admitting: Set<Promise<unknown>>;
   failure?: unknown;
   signal?: AbortSignal;
+  releaseUploadDemand: () => void;
   sourcePrefixVerified: boolean;
   coverageEligible: boolean;
   admittedSourceCursor: number;
@@ -65,31 +67,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     for (const wake of capacityWaiters) wake();
     capacityWaiters.clear();
   };
-  let activeUploads = 0;
-  const uploadWaiters: Array<() => void> = [];
-  async function acquireUpload(signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    if (activeUploads >= 4)
-      await new Promise<void>((resolve, reject) => {
-        const enter = () => {
-          signal?.removeEventListener("abort", abort);
-          resolve();
-        };
-        const abort = () => {
-          const index = uploadWaiters.indexOf(enter);
-          if (index !== -1) uploadWaiters.splice(index, 1);
-          reject(signal!.reason);
-        };
-        signal?.addEventListener("abort", abort, { once: true });
-        uploadWaiters.push(enter);
-      });
-    else activeUploads++;
-    return () => {
-      const next = uploadWaiters.shift();
-      if (next) next();
-      else activeUploads--;
-    };
-  }
   function journal(logRef: string, readPriority?: ObjectJournalIOPriority) {
     if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(logRef))
       throw new Error("Invalid object log reference");
@@ -123,7 +100,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
     state.flushing = (async () => {
       let release: (() => void) | undefined;
       try {
-        release = await acquireUpload(state.signal);
+        release = await acquireObjectJournalUpload(state.signal);
         state.writer = await state.journal.append(
           state.writer,
           bytes,
@@ -278,6 +255,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         closed: false,
         admitting: new Set(),
         signal: input.signal,
+        releaseUploadDemand: trackObjectJournalWriter(),
         sourcePrefixVerified,
         coverageEligible: true,
         admittedSourceCursor: writer.head.sourceCursor,
@@ -352,6 +330,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         return { bytes: null, sha256: null, compressed: false };
       } finally {
         writers.delete(handle);
+        state.releaseUploadDemand();
       }
     },
     async read(handle, opts = {}) {
@@ -419,6 +398,10 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         content: Buffer.concat(parts).toString("utf8"),
         nextOffset: nextOffset ?? offset + bytes.length,
       };
+    },
+    async remove(handle, signal) {
+      if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
+      await journal(handle.logRef, "background").remove(signal);
     },
     async flushInflightMirrors() {
       await Promise.all([...writers.values()].map(flush));
