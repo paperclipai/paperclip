@@ -157,6 +157,12 @@ describe("reviewed tool risk", () => {
     expect(reviewedToolRisk(review, { name: "ShareFolder", annotations: { readOnlyHint: true } })).toBe("write");
   });
 
+  it("never lowers a destructive review because of a write hint", () => {
+    const strict = { ...review, unlisted: "destructive" as const };
+    expect(reviewedToolRisk(strict, { name: "BrandNewTool", annotations: { readOnlyHint: false } })).toBe("destructive");
+    expect(reviewedToolRisk(strict, { name: "BrandNewTool", annotations: { writeHint: true } })).toBe("destructive");
+  });
+
   it("rejects a tool listed at two risk levels", () => {
     expect(appDefinitionSchema.safeParse({ ...circleback, reviewedTools: { ...review, write: ["SearchMeetings"] } }).success).toBe(false);
   });

@@ -71,11 +71,14 @@ export function reviewedToolRisk(
   review: AppReviewedTools,
   tool: { name: string; annotations?: Record<string, unknown> },
 ): ToolRiskLevel {
+  const reviewed: ToolRiskLevel = review.destructive?.includes(tool.name) ? "destructive"
+    : review.write?.includes(tool.name) ? "write"
+      : review.read?.includes(tool.name) ? "read"
+        : review.unlisted ?? "write";
   const annotations = tool.annotations ?? {};
-  if (annotations.destructiveHint === true || annotations.destructive === true
-    || review.destructive?.includes(tool.name)) return "destructive";
-  if (annotations.readOnlyHint === false || annotations.writeHint === true
-    || review.write?.includes(tool.name)) return "write";
-  if (review.read?.includes(tool.name)) return "read";
-  return review.unlisted ?? "write";
+  const hinted: ToolRiskLevel = annotations.destructiveHint === true || annotations.destructive === true ? "destructive"
+    : annotations.readOnlyHint === false || annotations.writeHint === true ? "write"
+      : "read";
+  const rank = { read: 0, write: 1, destructive: 2 } as Record<string, number>;
+  return (rank[hinted] ?? 0) > (rank[reviewed] ?? 0) ? hinted : reviewed;
 }
