@@ -304,6 +304,16 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(observed?.aborted).toBe(true);
     });
 
+    it("warns that a timed-out draft may already exist", async () => {
+      useTransport("gmail", "paperclip_rest");
+      const f = await connectWorkspace();
+      f.setGmail((url, init) => url.pathname.endsWith("/drafts") ? new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      }) : undefined);
+      await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }, { timeoutMs: 100 }))
+        .rejects.toMatchObject({ status: 504, reasonCode: "tool_timeout", message: expect.stringContaining("may or may not have been made") });
+    });
+
     it("stops discovery and calls while the experimental connector is off", async () => {
       useTransport("gmail", "paperclip_rest");
       const f = await connectWorkspace();

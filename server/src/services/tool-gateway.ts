@@ -7910,6 +7910,11 @@ export function createToolGatewayService(
             ? options.remoteHttpRequest(url, init)
             : guardedRemoteHttpFetch(url, init, { ...remoteHttpFetchOptions(), responseTimeoutMs: ms }),
         });
+        if (signal.aborted && workspaceTarget.write) {
+          throw new ToolGatewayHttpError(504, "The Google action timed out. The change may or may not have been made; check before trying again.", "tool_timeout", {
+            connectionId: connection.id, catalogEntryId: entry.id, execution, failureKind: "invocation_timeout",
+          });
+        }
         if (signal.aborted) throw new DOMException("The Google Workspace call was cancelled.", "AbortError");
         if (!outcome.ok && outcome.authFailure === "insufficient_scope") {
           await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
@@ -8524,7 +8529,8 @@ export function createToolGatewayService(
       if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
         if (mcpSession) forgetMcpHttpSession(mcpSession);
         execution.failureKind = "invocation_timeout";
-        throw new ToolGatewayHttpError(504, "Remote MCP tool call timed out", "tool_timeout", {
+        const timeoutMessage = error instanceof ToolGatewayHttpError && error.reasonCode === "tool_timeout" ? error.message : "Remote MCP tool call timed out";
+        throw new ToolGatewayHttpError(504, timeoutMessage, "tool_timeout", {
           connectionId: connection.id, catalogEntryId: entry.id, execution, failureKind: "invocation_timeout",
         });
       }
