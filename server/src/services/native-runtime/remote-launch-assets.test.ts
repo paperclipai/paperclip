@@ -194,6 +194,23 @@ it.each(["missing", "routing"] as const)("removes stale remote authentication wh
 });
 
 describe("remote launch asset staging", () => {
+  it("transfers a shared repository once and includes its pinned manifest", async () => {
+    const f = fixture();
+    const source = f.input.runtimeContext!.source, target = f.input.runtimeContext!.target;
+    const repository = { ...source.instructions.bundle, digest: "1".repeat(64), manifestDigest: "2".repeat(64), rootPath: join(f.root, "assets", "bundles", "1".repeat(64)) };
+    source.skills = ["one", "two"].map((key, index) => ({ key, runtimeName: key, versionId: key,
+      bundle: { ...source.instructions.bundle, digest: String(index + 3).repeat(64), rootPath: join(f.root, "assets", "bundles", String(index + 3).repeat(64)) },
+      repository: { bundle: repository, entryPath: `skills/${key}/SKILL.md`, policyPath: null } }));
+    target.skills = source.skills.map(skill => ({ ...skill, bundle: { ...skill.bundle, rootPath: `/session/context/bundles/${skill.bundle.digest}` },
+      repository: { ...skill.repository!, bundle: { ...repository, rootPath: `/session/filesystem/codex-home/repositories/${repository.digest}` } } }));
+    await stageRemoteLaunchAssets(f.input);
+    const transfers = f.stageDirectory.mock.calls.map(([asset]) => asset);
+    expect(transfers.filter(asset => asset.sourcePath === repository.rootPath)).toEqual([{
+      sourcePath: repository.rootPath, targetPath: target.skills[0]!.repository!.bundle.rootPath, mode: 0o555,
+    }]);
+    expect(f.stageFile.mock.calls.some(([asset]) => asset.sourcePath.endsWith(`${repository.digest}.json`))).toBe(true);
+    expect(transfers).toHaveLength(4);
+  });
   it("delivers the selected Codex skills to the same discoverable path used by explicit turn input", async () => {
     const f = await filesystemFixture();
     await stageRemoteLaunchAssets(f.input);

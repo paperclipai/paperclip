@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { nativeRuntimeContextReadOnlyRoots } from "../drivers/runtime-context-materializer.js";
 import { parseNativeRuntimeContext, retargetNativeSystemInstructions } from "../contracts/runtime-context.js";
 import { resolve } from "node:path";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
@@ -399,13 +400,7 @@ export function createRunnerProviderLaunch(
                               input.options.environment,
                             ),
                             ...(runtimeContext
-                              ? [
-                                  resolve(codexHome, "skills"),
-                                  runtimeContext.instructions.bundle.rootPath,
-                                  ...runtimeContext.skills.map(
-                                    (skill) => skill.bundle.rootPath,
-                                  ),
-                                ]
+                              ? nativeRuntimeContextReadOnlyRoots(runtimeContext, codexHome)
                               : []),
                           ],
                         }),

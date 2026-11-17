@@ -1,5 +1,6 @@
 import { isOpenRouterUrl, openRouterCodexHeaders } from "./openrouter-attribution.js";
 import { randomUUID } from "node:crypto";
+import { setWindowsRuntimeTreeReadOnly } from "./windows-runtime-permissions.js";
 import { constants } from "node:fs";
 import {
   chmod,
@@ -16,7 +17,8 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
 
-import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
+import { nativeRuntimeContextAssets, type NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
+import { copyVerifiedRuntimeAsset, runtimeAssetManifest, verifyRuntimeAssetTree } from "./runtime-asset-integrity.js";
 
 async function assertSafeTree(root: string, child = ""): Promise<void> {
   const directory = child ? join(root, child) : root;
@@ -132,7 +134,7 @@ async function protectStagedTree(root: string): Promise<void> {
     // Seal directories only after their descendants. Traversal needs execute
     // permission, but provider processes must not be able to rewrite assigned
     // skills after the immutable snapshot has been published.
-    await rootHandle.chmod(0o555);
+    if (process.platform !== "win32") await rootHandle.chmod(0o555);
   } finally {
     await rootHandle.close();
   }
@@ -152,7 +154,7 @@ async function unprotectMaterializedTree(root: string): Promise<void> {
     }
     // Restore directory mutation before descending so every child can be
     // unlinked. Handles plus O_NOFOLLOW keep cleanup inside the sealed tree.
-    await rootHandle.chmod(0o700);
+    if (process.platform !== "win32") await rootHandle.chmod(0o700);
     for (const entry of await readdir(root, { withFileTypes: true })) {
       const child = join(root, entry.name);
       if (entry.isDirectory()) {
@@ -181,6 +183,7 @@ async function unprotectMaterializedTree(root: string): Promise<void> {
 async function removeMaterializedTree(
   skillsHome: string,
   removeTree: (path: string) => Promise<void>,
+  inheritanceRootOnly = false,
 ): Promise<void> {
   const exists = await lstat(skillsHome).then(
     () => true,
@@ -190,7 +193,11 @@ async function removeMaterializedTree(
     },
   );
   if (!exists) return;
-  await unprotectMaterializedTree(skillsHome);
+  if (process.platform === "win32") {
+    await assertSafeTree(skillsHome);
+    await setWindowsRuntimeTreeReadOnly(skillsHome, false, { recursive: !inheritanceRootOnly });
+  }
+  if (process.platform !== "win32" || !inheritanceRootOnly) await unprotectMaterializedTree(skillsHome);
   await removeTree(skillsHome);
 }
 
@@ -202,6 +209,83 @@ export async function releaseMaterializedNativeRuntimeSkills(
     skillsHome,
     (path) => rm(path, { recursive: true, force: true }),
   );
+  await removeMaterializedTree(join(dirname(skillsHome), "repositories"), path => rm(path, { recursive: true, force: true }), true);
+}
+
+/** Recheck retained provider files before a new turn can consume discovery. */
+export async function verifyMaterializedNativeRuntimeSkills(context: NativeRuntimeContextSnapshot, skillsHome: string): Promise<void> {
+  if (!context.skills.some(skill => skill.repository)) return;
+  nativeRuntimeContextAssets(context);
+  const repositories = new Set<string>();
+  for (const skill of context.skills) {
+    await verifyRuntimeAssetTree(safeMaterializationTarget(skillsHome, skill.runtimeName), await runtimeAssetManifest(skill.bundle));
+    if (skill.repository && !repositories.has(skill.repository.bundle.digest)) {
+      repositories.add(skill.repository.bundle.digest);
+      await verifyRuntimeAssetTree(join(dirname(skillsHome), "repositories", skill.repository.bundle.digest), await runtimeAssetManifest(skill.repository.bundle));
+    }
+  }
+}
+
+export function nativeRuntimeContextReadOnlyRoots(context: NativeRuntimeContextSnapshot, providerHome: string): string[] {
+  const assets = context.skills.some(skill => skill.repository) ? nativeRuntimeContextAssets(context)
+    : [context.instructions.bundle, ...context.skills.map(skill => skill.bundle)];
+  return [...new Set([resolve(providerHome, "skills"), ...assets.map(asset => asset.rootPath),
+    ...context.skills.flatMap(skill => skill.repository ? [resolve(providerHome, "repositories", skill.repository.bundle.digest)] : [])])];
+}
+
+async function materializeSharedRuntimeSkills(context: NativeRuntimeContextSnapshot, skillsHome: string,
+  renameTree: (source: string, destination: string) => Promise<void>, removeTree: (path: string) => Promise<void>) {
+  nativeRuntimeContextAssets(context);
+  const parent = dirname(skillsHome), repositoriesHome = join(parent, "repositories");
+  for (const target of [skillsHome, repositoriesHome]) {
+    if (await lstat(target).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; })) {
+      throw new Error("runtime context skills home must be a fresh destination");
+    }
+  }
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const staging = join(parent, `.paperclip-shared-skills-${randomUUID()}`);
+  const skills = join(staging, "skills"), repositories = join(staging, "repositories");
+  await mkdir(skills, { recursive: true, mode: 0o700 });
+  await mkdir(repositories, { mode: 0o700 });
+  let publishedRepositories = false;
+  const sealedRoots: string[] = [];
+  try {
+    const copied = new Set<string>();
+    for (const skill of context.skills) {
+      if (skill.repository && !copied.has(skill.repository.bundle.digest)) {
+        const asset = skill.repository.bundle;
+        const target = join(repositories, asset.digest);
+        await copyVerifiedRuntimeAsset(asset, target);
+        await protectStagedTree(target);
+        copied.add(asset.digest);
+      }
+      if (skill.repository) {
+        const manifest = await runtimeAssetManifest(skill.repository.bundle);
+        if (!manifest.some(file => file.path === skill.repository!.entryPath)
+          || (skill.repository.policyPath !== null && !manifest.some(file => file.path === skill.repository!.policyPath))) {
+          throw new Error("native_runtime_asset_integrity_mismatch: repository entrypoint or policy is missing");
+        }
+      }
+      const target = safeMaterializationTarget(skills, skill.runtimeName);
+      await copyVerifiedRuntimeAsset(skill.bundle, target);
+      await protectStagedTree(target);
+      if (process.platform === "win32") { await setWindowsRuntimeTreeReadOnly(target, true); sealedRoots.push(target); }
+    }
+    if (process.platform === "win32") { await setWindowsRuntimeTreeReadOnly(repositories, true); sealedRoots.push(repositories); }
+    // Discovery is the commit point. No provider is launched with a partial
+    // assignment, and an existing saved home is never moved or replaced.
+    await renameTree(repositories, repositoriesHome);
+    publishedRepositories = true;
+    await renameTree(skills, skillsHome);
+  } catch (error) {
+    if (publishedRepositories) await removeMaterializedTree(repositoriesHome, removeTree, true).catch(() => undefined);
+    throw error;
+  } finally {
+    if (process.platform === "win32") for (const root of sealedRoots) {
+      if (await lstat(root).catch(() => null)) await setWindowsRuntimeTreeReadOnly(root, false, { recursive: false }).catch(() => undefined);
+    }
+    await removeMaterializedTree(staging, removeTree, true).catch(() => undefined);
+  }
 }
 
 export async function materializeNativeRuntimeSkills(
@@ -236,6 +320,7 @@ export async function materializeNativeRuntimeSkills(
         }
       }
     }
+    if (context.skills.some(skill => skill.repository)) return materializeSharedRuntimeSkills(context, skillsHome, renameTree, removeTree);
     for (const skill of context.skills) {
       await assertSafeTree(skill.bundle.rootPath);
     }
@@ -272,6 +357,7 @@ export async function materializeNativeRuntimeSkills(
       });
       await assertSafeTree(target);
       await protectStagedTree(target);
+      if (process.platform === "win32") await setWindowsRuntimeTreeReadOnly(target, true);
     }
 
     // The caller supplies a new isolated home for each provider launch. Never
@@ -288,6 +374,12 @@ export async function materializeNativeRuntimeSkills(
 }
 
 async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
+  const entry = process.platform === "win32"
+    ? await lstat(sourceAuth).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }) : undefined;
+  if (entry !== undefined && (!entry || !entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1)) return null;
   const handle = await open(
     sourceAuth,
     constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
@@ -299,6 +391,9 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) return null;
+    if (entry && (entry.dev !== stat.dev || entry.ino !== stat.ino || stat.nlink !== 1)) {
+      throw new Error("source Codex auth file changed during open");
+    }
     if (stat.size > 1024 * 1024) {
       throw new Error("source Codex auth file exceeds the 1 MiB limit");
     }
@@ -371,6 +466,7 @@ async function writeIsolatedCodexConfig(input: CodexAuthInput, providerConfig: s
 }
 
 type CodexAuthInput = {
+  context?: NativeRuntimeContextSnapshot | null;
   codexHome: string;
   sourceCodexHome?: string | null;
   apiKey?: string | null;
@@ -378,6 +474,7 @@ type CodexAuthInput = {
 };
 
 export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput): Promise<void> {
+  if (input.context) await verifyMaterializedNativeRuntimeSkills(input.context, join(input.codexHome, "skills"));
   const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, providerConfig);

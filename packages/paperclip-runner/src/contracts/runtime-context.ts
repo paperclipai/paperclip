@@ -134,6 +134,16 @@ export function nativeRuntimeContextAssets(context: NativeRuntimeContextSnapshot
   return [...assets.values()];
 }
 
+/** Destination roots are derived transport data; pinned identity stays unchanged. */
+export function mapNativeRuntimeContextAssetRoots(context: NativeRuntimeContextSnapshot,
+  rootPath: (asset: NativeRuntimeAssetReference) => string): NativeRuntimeContextSnapshot {
+  const mapped = new Map(nativeRuntimeContextAssets(context).map(asset => [asset.digest, { ...asset, rootPath: rootPath(asset) }]));
+  const asset = (value: NativeRuntimeAssetReference) => mapped.get(value.digest)!;
+  return { ...context, instructions: { ...context.instructions, bundle: asset(context.instructions.bundle) },
+    skills: context.skills.map(skill => ({ ...skill, bundle: asset(skill.bundle),
+      ...(skill.repository ? { repository: { ...skill.repository, bundle: asset(skill.repository.bundle) } } : {}) })) };
+}
+
 export function parseNativeRuntimeContext(value: unknown): NativeRuntimeContextSnapshot {
   const context = object(value, "input.runtimeContext");
   exact(context, GENERATED_RUNTIME_CONTEXT_FIELDS.runtimeContext, "input.runtimeContext");
@@ -262,9 +272,8 @@ export interface NativeSkillInput {
 /** Select only explicit task references from assigned names, never comments. */
 export function explicitTaskSkillNames(description: string | null, assignedNames: readonly string[]): string[] {
   if (!description) return [];
-  const names = new Set(Array.from(
-    description.matchAll(/(?:^|[\s(`])[$/]([a-zA-Z0-9_-]+)(?=$|[\s)`,.;:!?])/g),
-    (match) => match[1],
-  ));
-  return [...new Set(assignedNames)].filter((name) => names.has(name));
+  return [...new Set(assignedNames)].filter(name => {
+    const literal = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp("(?:^|[\\s(`])[$/]" + literal + "(?=$|[\\s)`,.;:!?])", "u").test(description);
+  });
 }

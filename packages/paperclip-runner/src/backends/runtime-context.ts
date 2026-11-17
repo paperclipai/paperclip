@@ -154,6 +154,6 @@ export function nativeTaskSkillInputs(
     .map((skill) => ({
       type: "skill",
       name: skill.runtimeName,
-      path: resolve(skill.bundle.rootPath, "SKILL.md"),
+      path: skill.repository ? resolve(skill.repository.bundle.rootPath, skill.repository.entryPath) : resolve(skill.bundle.rootPath, "SKILL.md"),
     }));
 }

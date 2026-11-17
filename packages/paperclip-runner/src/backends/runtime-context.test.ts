@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
@@ -404,7 +404,7 @@ describe("explicit task skill selection", () => {
     const description = "Use the `first-task` skill (/first-task) for this onboarding task, including subsequent wakes.";
     for (const _wake of ["opening", "approval", "cold resume"]) {
       expect(nativeTaskSkillInputs(description, context)).toEqual([
-        { type: "skill", name: "first-task", path: "/assigned/content-addressed-bundle/SKILL.md" },
+        { type: "skill", name: "first-task", path: resolve("/assigned/content-addressed-bundle/SKILL.md") },
       ]);
     }
   });
@@ -415,7 +415,7 @@ describe("explicit task skill selection", () => {
   });
   it("supports generic explicit references, deduplicates them, and ignores unassigned skills", () => {
     expect(nativeTaskSkillInputs("$research then /research and /not-assigned", context)).toEqual([
-      { type: "skill", name: "research", path: "/assigned/research/SKILL.md" },
+      { type: "skill", name: "research", path: resolve("/assigned/research/SKILL.md") },
     ]);
     expect(nativeTaskSkillInputs("/first-task", null)).toEqual([]);
   });

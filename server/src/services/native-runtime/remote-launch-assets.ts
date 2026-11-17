@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
 import { lstat, readdir } from "node:fs/promises";
-import { posix, resolve } from "node:path";
+import { dirname, posix, resolve } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
+import { nativeRuntimeContextAssets } from "../../vendor/paperclip-runner/index.js";
 import type { NativeRunTrace } from "./native-run-trace.js";
+import { remoteRuntimeContextIdentity, verifyRemoteSharedSkills } from "./remote-skill-integrity.js";
 
 type StageAsset = {
   sourcePath: string;
@@ -95,6 +97,11 @@ if (fs.lstatSync(skills, { throwIfNoEntry: false })) {
 // mode. Create the private discovery root before their mkdir/extract step.
 fs.mkdirSync(skills, { mode: 0o700 });
 fs.chmodSync(skills, 0o700);
+if (process.argv[3] === "shared") for (const name of ["repositories", "manifests"]) {
+  const tree = path.join(current, name);
+  if (fs.lstatSync(tree, { throwIfNoEntry: false })) { unseal(tree); fs.rmSync(tree, { recursive: true }); }
+  fs.mkdirSync(tree, { mode: 0o700 });
+}
 `;
 
 const prepareRemoteCodexRecoveryHome = `${validateRemoteCodexHome}
@@ -104,6 +111,15 @@ if (process.argv[3] === "remove-auth") fs.rmSync(path.join(current, "auth.json")
 export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise<void> {
   const measure = async (name: string, operation: () => Promise<void>) =>
     input.trace ? input.trace.measure(name, operation) : operation();
+  const verifySharedSkills = async () => {
+    if (!input.isolatedCodexSkills || !input.runtimeContext?.source.skills.some(skill => skill.repository)) return;
+    const home = input.persistenceDirectories.find(directory => directory.name === "codex-home" && directory.location === "filesystem");
+    if (!home?.targetPath) throw new Error("runner_remote_runtime_asset_incompatible");
+    const verified = await input.runner.execute({ command: "node", args: ["-e", verifyRemoteSharedSkills, home.targetPath,
+      input.isolatedCodexSkills.workspaceRoot, posix.join(input.runtimeContext.filesystemRoot, "runtime-context.json"), remoteRuntimeContextIdentity(input.runtimeContext.target)],
+      bypassSession: true, timeoutMs: 120_000 });
+    if (verified.exitCode !== 0 || verified.timedOut) throw new Error("runner_remote_runtime_asset_integrity_mismatch");
+  };
   const materializeLaunchState = () => measure("harness_state.launch_material", async () => {
     for (const directory of input.persistenceDirectories) {
       if (directory.location !== "filesystem") continue;
@@ -140,6 +156,7 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
       timeoutMs: 10_000,
     });
     if (validated.exitCode !== 0 || validated.timedOut) throw new Error("runner_remote_codex_credentials_path_invalid");
+    await verifySharedSkills();
     await materializeLaunchState();
     return;
   }
@@ -147,6 +164,16 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
     const context = input.runtimeContext;
     if (!context) return;
     await measure("stage.asset.runtime_context", async () => {
+      if (context.source.skills.some(skill => skill.repository)) {
+        const targetAssets = new Map(nativeRuntimeContextAssets(context.target).map(asset => [asset.digest, asset]));
+        for (const asset of nativeRuntimeContextAssets(context.source)) {
+          const target = targetAssets.get(asset.digest);
+          if (!target || target.manifestDigest !== asset.manifestDigest) throw new Error("runner_remote_runtime_asset_incompatible");
+          await input.stageDirectory({ sourcePath: asset.rootPath, targetPath: target.rootPath, mode: 0o555 });
+          await input.stageFile({ sourcePath: resolve(dirname(dirname(asset.rootPath)), "manifests", `${asset.digest}.json`),
+            targetPath: posix.join(posix.dirname(posix.dirname(target.rootPath)), "manifests", `${asset.digest}.json`), mode: 0o444 });
+        }
+      } else {
       await input.stageDirectory({
         sourcePath: context.source.instructions.bundle.rootPath,
         targetPath: context.target.instructions.bundle.rootPath,
@@ -158,6 +185,7 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
           targetPath: context.target.skills[index]!.bundle.rootPath,
           mode: 0o555,
         });
+      }
       }
       await input.stageFile({
         sourcePath: resolve(input.root, "runtime-context.json"),
@@ -176,7 +204,8 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
     await measure("stage.asset.codex_skills", async () => {
       const cleared = await input.runner.execute({
         command: "node",
-        args: ["-e", clearRemoteCodexSkills, directory.targetPath!, input.isolatedCodexSkills!.workspaceRoot],
+        args: ["-e", clearRemoteCodexSkills, directory.targetPath!, input.isolatedCodexSkills!.workspaceRoot,
+          ...(input.runtimeContext?.source.skills.some(skill => skill.repository) ? ["shared"] : [])],
         bypassSession: true,
         timeoutMs: 10_000,
       });
@@ -198,6 +227,7 @@ export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise
     await materializeLaunchState();
     await stageRuntimeContext();
   }
+  await verifySharedSkills();
   if (input.caBundleMapping) {
     const mapping = input.caBundleMapping;
     await measure("stage.asset.ca_bundle", () => input.stageFile({ ...mapping, mode: 0o600 }));

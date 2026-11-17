@@ -11,6 +11,19 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 const root = async () => { const directory = await mkdtemp(join(tmpdir(), "dot-bridge-")); roots.push(directory); return directory; };
 const authorize = async () => {};
 describe("Runner workspace bridge", () => {
+  it("reads the original shared skill and its relative sibling while confining reads to that pinned repository", async () => {
+    const repository = await materializeAsset([
+      { path: "skills/one/SKILL.md", content: Buffer.from("Read ../../shared.txt"), mode: 0o444 },
+      { path: "shared.txt", content: Buffer.from("shared pinned bytes"), mode: 0o444 },
+    ]);
+    const bundle = await materializeAsset([{ path: "SKILL.md", content: Buffer.from("discovery wrapper"), mode: 0o444 }]);
+    const context = { skills: [{ key: "one", runtimeName: "one", versionId: "version-1", bundle,
+      repository: { bundle: repository, entryPath: "skills/one/SKILL.md", policyPath: null } }] } as any;
+    expect(await readAssignedSkill(context, { skill: "one" })).toMatchObject({ text: "Read ../../shared.txt" });
+    expect(await readAssignedSkill(context, { skill: "one", path: "../../shared.txt" })).toMatchObject({ text: "shared pinned bytes" });
+    await expect(readAssignedSkill(context, { skill: "one", path: "../../../outside.txt" })).rejects.toThrow();
+    await expect(readAssignedSkill(context, { skill: "one", path: "../missing.txt" })).rejects.toThrow("not_pinned");
+  });
   it("guards new writes, existing content, traversal and symlinks", async () => {
     const directory = await root(), outside = await root();
     const result = await executeWorkspaceTool(directory, "workspace_write", { path: "hello.txt", text: "hello 🌍", expectedSha256: null }, authorize) as any;

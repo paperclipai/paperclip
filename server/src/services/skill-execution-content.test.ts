@@ -36,4 +36,12 @@ describe("admitted repository reads", () => {
     expect(mocks.withIsolatedPackage).not.toHaveBeenCalled();
     expect(mocks.lock).not.toHaveBeenCalled();
   });
+  it("rechecks every assigned entrypoint before sharing one repository read", async () => {
+    vi.clearAllMocks();
+    const second = { ...reference, skillId: "second", versionId: "second-version", entryPath: "skills/two/SKILL.md" };
+    mocks.version.mockResolvedValueOnce(version).mockResolvedValueOnce({ ...version, companySkillId: "second", id: "second-version", repositorySkillPath: "changed/SKILL.md" });
+    await expect(skillExecutionContent({} as Db).withRepositoryVersion(reference, vi.fn(), [second])).rejects.toThrow("repository");
+    expect(mocks.assertSkill).toHaveBeenCalledWith("company", "second");
+    expect(mocks.withIsolatedPackage).not.toHaveBeenCalled();
+  });
 });

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { canonicalNativeRuntimeContextDigest, nativeRuntimeContextAssets, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
+import { canonicalNativeRuntimeContextDigest, mapNativeRuntimeContextAssetRoots, nativeRuntimeContextAssets, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const asset = (name: string) => ({ schema: "paperclip.runtime-asset.v1" as const, digest: hash(name), manifestDigest: hash(name), rootPath: `/assets/${name}`, fileCount: 1, totalBytes: 42 });
@@ -22,6 +22,15 @@ describe("shared skill repository contract", () => {
     expect(nativeRuntimeContextAssets(context).map((entry) => entry.digest)).toEqual([
       asset("instructions").digest, asset("one").digest, asset("repository").digest, asset("two").digest,
     ]);
+  });
+  it("rewrites unique asset roots once without changing pinned membership or digests", () => {
+    const context = fixture(), calls: string[] = [];
+    const mapped = mapNativeRuntimeContextAssetRoots(context, asset => { calls.push(asset.digest); return `/guest/bundles/${asset.digest}`; });
+    expect(calls).toHaveLength(4);
+    expect(mapped.skills[0]!.repository!.bundle.rootPath).toBe(mapped.skills[1]!.repository!.bundle.rootPath);
+    expect(mapped.aggregateDigest).toBe(context.aggregateDigest);
+    expect(parseNativeRuntimeContext(mapped).aggregateDigest).toBe(context.aggregateDigest);
+    expect(context.skills[0]!.repository!.bundle.rootPath).toBe("/assets/repository");
   });
   it.each(["entryPath", "policyPath", "bundle"])("pins repository %s in the canonical digest", (field) => {
     const context = fixture();

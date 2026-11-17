@@ -102,6 +102,7 @@ import type {
 } from "../contracts/native-execution.js";
 import {
   prepareIsolatedCodexHome,
+  nativeRuntimeContextReadOnlyRoots,
   prepareIsolatedCodexRecoveryHome,
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
@@ -7208,13 +7209,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             readOnlyRoots: [
               ...trustedRuntimeReadOnlyRoots(this.options.environment),
               ...(runtimeContext
-                ? [
-                    resolve(codexHome, "skills"),
-                    runtimeContext.instructions.bundle.rootPath,
-                    ...runtimeContext.skills.map(
-                      (skill) => skill.bundle.rootPath,
-                    ),
-                  ]
+                ? nativeRuntimeContextReadOnlyRoots(runtimeContext, codexHome)
                 : []),
             ],
           });
@@ -7400,6 +7395,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (this.#sourceRecoveryIdentity !== null) {
         await prepareIsolatedCodexRecoveryHome({
           ...auth,
+          context: this.options.runnerFilesystemRoot ? undefined : sourceRuntimeContext,
           observability: this.options.observability,
         });
       } else {

@@ -4,7 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { withDirectoryPublicationLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
-import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { nativeRuntimeContextAssets, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { ensureSkillCacheDirectory, skillRunNeedsFilesSql } from "../skill-version-cache.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -52,7 +52,7 @@ async function protectedAssets(db: Db): Promise<Set<string> | null> {
       const input = parseNativeExecutionInput(row.input);
       if (input.binding.runId !== row.id || input.binding.companyId !== row.companyId || input.binding.agentId !== row.agentId) return null;
       if (!("runtimeContext" in input)) return null;
-      for (const asset of [input.runtimeContext.instructions.bundle, ...input.runtimeContext.skills.map(skill => skill.bundle)]) pins.add(asset.digest);
+      for (const asset of nativeRuntimeContextAssets(input.runtimeContext)) pins.add(asset.digest);
     } catch { return null; } // An unfinished/legacy input cannot prove absence.
   }
   return pins;

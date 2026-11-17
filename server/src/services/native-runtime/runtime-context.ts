@@ -1,4 +1,5 @@
-import { skillExecutionContent } from "../skill-execution-content.js";
+import { skillExecutionContent, type SkillRepositoryContentReference } from "../skill-execution-content.js";
+import type { AuthorizationActor } from "../authorization.js";
 import { repositorySkillFrontmatter } from "../skill-repository-package.js";
 import { withRuntimeAssetUse, removeRuntimeAssetTree } from "./runtime-asset-retention.js";
 import { cachedSkillAsset, rememberSkillAsset } from "./skill-asset-cache.js";
@@ -22,6 +23,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
+  NativeRuntimeContextError,
   PAPERCLIP_EXECUTION_PROMPT,
   PAPERCLIP_EXECUTION_PROMPT_REVISION,
   canonicalNativeRuntimeContextDigest,
@@ -263,6 +265,7 @@ export async function rehydratePinnedSkillAssets(
   const delivery = skillExecutionContent(db, { actor });
   const pins = run.contextSnapshot?.skillVersions;
   const skills: NativeRuntimeContextSnapshot["skills"] = [];
+  const sharedEntries: PaperclipSkillEntry[] = [];
   for (const skill of context.skills) {
     if (!skill.versionId) {
       // Newly admitted local assets remain usable during an ordinary rolling
@@ -277,9 +280,20 @@ export async function rehydratePinnedSkillAssets(
       || (pins as Record<string, unknown>)[skill.key] !== skill.versionId)) {
       throw new Error("Skill recovery differs from the admitted version selection");
     }
-    const [version] = await db.select({ skillId: companySkillVersions.companySkillId }).from(companySkillVersions).where(and(
+    const [version] = await db.select({ skillId: companySkillVersions.companySkillId,
+      repositorySnapshotId: companySkillVersions.repositorySnapshotId, repositorySkillPath: companySkillVersions.repositorySkillPath }).from(companySkillVersions).where(and(
       eq(companySkillVersions.companyId, binding.companyId), eq(companySkillVersions.id, skill.versionId)));
     if (!version) throw new Error("Pinned skill version is unavailable for recovery");
+    if (skill.repository) {
+      if (!version.repositorySnapshotId || version.repositorySkillPath !== skill.repository.entryPath) {
+        throw new NativeRuntimeContextError("Recovered shared repository differs from its admitted entrypoint");
+      }
+      sharedEntries.push({ key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId, source: "", sourceStatus: "available",
+        repository: { companyId: binding.companyId, skillId: version.skillId, versionId: skill.versionId,
+          snapshotId: version.repositorySnapshotId, entryPath: version.repositorySkillPath } });
+      skills.push(skill);
+      continue;
+    }
     const bundle = await delivery.withVersion({ companyId: binding.companyId, skillId: version.skillId, versionId: skill.versionId },
       source => materializeSkillAsset(source));
     if (bundle.digest !== skill.bundle.digest || bundle.manifestDigest !== skill.bundle.manifestDigest
@@ -287,6 +301,14 @@ export async function rehydratePinnedSkillAssets(
       throw new Error("Recovered skill projection does not match its admitted digest");
     }
     skills.push({ ...skill, bundle });
+  }
+  if (sharedEntries.length) {
+    const restored = await materializeSelectedSkills({ paperclipSkillSync: { desiredSkills: sharedEntries.map(entry => entry.key) } }, sharedEntries, false,
+      { db, companyId: binding.companyId, actor });
+    const byKey = new Map(restored.map(skill => [skill.key, skill]));
+    const recovered = { ...context, skills: skills.map(skill => byKey.get(skill.key) ?? skill) };
+    if (canonicalNativeRuntimeContextDigest(recovered) !== context.aggregateDigest) throw new NativeRuntimeContextError("Recovered shared repository does not match its admitted digest");
+    return recovered;
   }
   return { ...context, skills };
 }
@@ -322,13 +344,24 @@ export async function prepareRuntimeContextSource(
 }
 
 export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean,
-  authority?: { db: Db; companyId: string }) {
+  authority?: { db: Db; companyId: string; actor?: AuthorizationActor }): Promise<NativeRuntimeContextSnapshot["skills"]> {
   const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
     (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
   );
   const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  const groups = new Map<string, SkillRepositoryContentReference[]>();
+  for (const key of desiredKeys) {
+    const entry = byKey.get(key);
+    if (!entry) throw new Error(`assigned runtime skill is missing from the company library: ${key}`);
+    if (entry.repository) {
+      const reference = entry.repository;
+      if (!authority || reference.companyId !== authority.companyId || reference.versionId !== entry.versionId) throw new Error("runtime skill repository authority mismatch");
+      const identity = `${reference.companyId}:${reference.snapshotId}`;
+      groups.set(identity, [...(groups.get(identity) ?? []), reference]);
+    }
+  }
   const repositories = new Map<string, Promise<{ bundle: NativeRuntimeAssetReference; files: AssetFile[] }>>();
-  return Promise.all(desiredKeys.sort().map(async (key) => {
+  const outcomes = await Promise.allSettled(desiredKeys.sort().map(async (key) => {
     const entry = byKey.get(key);
     if (!entry) throw new Error(`assigned runtime skill is missing from the company library: ${key}`);
     if (entry.sourceStatus === "missing") throw new Error(entry.missingDetail ?? `assigned runtime skill source is missing: ${key}`);
@@ -341,7 +374,7 @@ export async function materializeSelectedSkills(runtimeConfig: Record<string, un
       const flightKey = `${reference.companyId}:${reference.snapshotId}`;
       let preparation = repositories.get(flightKey);
       if (!preparation) {
-        preparation = skillExecutionContent(authority.db).withRepositoryVersion(reference, async (root, manifest) => {
+        preparation = skillExecutionContent(authority.db, { actor: authority.actor }).withRepositoryVersion(reference, async (root, manifest) => {
           const collected = await collectDirectoryFiles(root);
           const expected = new Map(manifest.files.map(file => [file.path, file]));
           if (collected.length !== expected.size) throw new Error("runtime repository manifest mismatch");
@@ -353,7 +386,7 @@ export async function materializeSelectedSkills(runtimeConfig: Record<string, un
             return { ...file, mode: source.executable ? 0o555 : 0o444 };
           });
           return { bundle: await materializeAsset(files), files };
-        });
+        }, groups.get(flightKey)!.filter(selected => selected !== reference));
         repositories.set(flightKey, preparation);
       }
       const repository = await preparation;
@@ -374,6 +407,12 @@ export async function materializeSelectedSkills(runtimeConfig: Record<string, un
     const bundle = await materializeSkillAsset(entry.source);
     return { key: entry.key, runtimeName: safeRelativePath(entry.runtimeName, `runtime name for ${key}`), versionId: entry.versionId ?? entry.currentVersionId ?? null, bundle };
   }));
+  const skills: NativeRuntimeContextSnapshot["skills"] = [];
+  for (const outcome of outcomes) {
+    if (outcome.status === "rejected") throw outcome.reason;
+    skills.push(outcome.value);
+  }
+  return skills;
 }
 
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
@@ -435,12 +474,12 @@ export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pi
   return { assignmentSetId: `sha256:${assignmentDigest}`, digest: assignmentDigest, bindingId: assignment.connections.length ? `native-mcp:${input.runId}` : null };
 }
 
-export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
+export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeAgent; runId: string; skillActor?: AuthorizationActor; runtimeConfig: Record<string, unknown>; runtimeSkillEntries: PaperclipSkillEntry[]; instructionWorkingCopy?: { rootPath: string; entryPath: string; kind?: "agent_files" } }): Promise<NativeRuntimeContextSnapshot> {
   const preconfigured = input.runtimeConfig.homeMode === "preconfigured";
   const emptyMcpDigest = sha256("preconfigured");
   const [instructions, skills, mcp] = await Promise.all([
     measureRunPhase("runtime_context.instructions", () => materializeInstructionBundle(input.db, input.agent, input.instructionWorkingCopy?.kind === "agent_files")),
-    measureRunPhase("runtime_context.skills", () => preconfigured ? [] : materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner", { db: input.db, companyId: input.agent.companyId })),
+    measureRunPhase("runtime_context.skills", () => preconfigured ? [] : materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner", { db: input.db, companyId: input.agent.companyId, actor: input.skillActor })),
     measureRunPhase("runtime_context.mcp", () => preconfigured ? { assignmentSetId: `sha256:${emptyMcpDigest}`, digest: emptyMcpDigest, bindingId: null } : resolveNativeRuntimeMcpSnapshot({ db: input.db, agent: input.agent, runId: input.runId })),
   ]);
   const snapshot = {

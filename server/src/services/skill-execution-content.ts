@@ -18,12 +18,15 @@ export function skillExecutionContent(db: Db, options: { actor?: AuthorizationAc
   const packages = skillPackageStore(options.packageDb ?? db);
   const runtime = skillPackageRuntime(options.packageDb ?? db);
   async function withRepositoryVersion<T>(reference: SkillRepositoryContentReference,
-    consume: (directory: string, manifest: SkillPackageManifest) => Promise<T>): Promise<T> {
-    await skillAccessService(db, options.actor).assertSkill(reference.companyId, reference.skillId);
-    const version = await packages.version(reference.companyId, reference.skillId, reference.versionId);
-    if (!version || version.companyId !== reference.companyId || version.companySkillId !== reference.skillId
-      || version.id !== reference.versionId || version.repositorySnapshotId !== reference.snapshotId
-      || version.repositorySkillPath !== reference.entryPath) throw notFound("Admitted skill repository version not found");
+    consume: (directory: string, manifest: SkillPackageManifest) => Promise<T>, additionalReferences: SkillRepositoryContentReference[] = []): Promise<T> {
+    for (const selected of [reference, ...additionalReferences]) {
+      if (selected.companyId !== reference.companyId || selected.snapshotId !== reference.snapshotId) throw notFound("Admitted skill repository group does not match");
+      await skillAccessService(db, options.actor).assertSkill(selected.companyId, selected.skillId);
+      const version = await packages.version(selected.companyId, selected.skillId, selected.versionId);
+      if (!version || version.companyId !== selected.companyId || version.companySkillId !== selected.skillId
+        || version.id !== selected.versionId || version.repositorySnapshotId !== selected.snapshotId
+        || version.repositorySkillPath !== selected.entryPath) throw notFound("Admitted skill repository version not found");
+    }
     // The storage owner verifies private scratch and retains it through consume.
     // No shared cache path is exposed, so retention/publication cannot delete a
     // reader's source, and filesystem work holds no company advisory transaction.

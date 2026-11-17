@@ -16,9 +16,13 @@ const serviceMocks = vi.hoisted(() => ({
   githubBotConnectionIdsForRun: vi.fn(),
   spekoToolsForSession: vi.fn(),
   withRepositoryVersion: vi.fn(),
+  executionActors: vi.fn(),
 }));
 
-vi.mock("../skill-execution-content.js", () => ({ skillExecutionContent: () => ({ withRepositoryVersion: serviceMocks.withRepositoryVersion }) }));
+vi.mock("../skill-execution-content.js", () => ({ skillExecutionContent: (_db: unknown, options: unknown) => {
+  serviceMocks.executionActors(options);
+  return { withRepositoryVersion: serviceMocks.withRepositoryVersion };
+} }));
 
 vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
 vi.mock("../chat-github-tools.js", () => ({
@@ -45,7 +49,7 @@ import { context as otelContext, trace } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { withRunExecutionTiming } from "../execution-preparation-timing.js";
-import { buildNativeRuntimeContext, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
+import { buildNativeRuntimeContext, rehydratePinnedSkillAssets, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
 let previousPaperclipHome: string | undefined;
@@ -128,9 +132,11 @@ describe("buildNativeRuntimeContext", () => {
     const entries = ["one", "two"].map(name => ({ key: name, runtimeName: `nested/${name}`, versionId: name,
       source: path.join(source, "must-not-read-portable", name), sourceStatus: "available" as const,
       repository: { companyId: "company-1", skillId: name, versionId: name, snapshotId: "same-snapshot", entryPath: `skills/${name}/SKILL.md` } }));
-    const context = await buildNativeRuntimeContext({ db: {} as Db, agent: { id: "agent-1", companyId: "company-1", name: "Coder", adapterType: "paperclip_runner", adapterConfig: {} },
+    const skillActor = { type: "agent", companyId: "company-1", agentId: "agent-1", runId: "run-1", source: "agent_jwt" } as const;
+    const context = await buildNativeRuntimeContext({ db: {} as Db, skillActor, agent: { id: "agent-1", companyId: "company-1", name: "Coder", adapterType: "paperclip_runner", adapterConfig: {} },
       runId: "run-1", runtimeConfig: { paperclipSkillSync: { desiredSkills: ["one", "two"] } }, runtimeSkillEntries: entries });
     expect(serviceMocks.withRepositoryVersion).toHaveBeenCalledTimes(1);
+    expect(serviceMocks.executionActors).toHaveBeenCalledWith({ actor: skillActor });
     expect(context.skills).toHaveLength(2);
     expect(context.skills[0]!.repository!.bundle).toEqual(context.skills[1]!.repository!.bundle);
     expect(context.skills[0]!.repository!.bundle.fileCount).toBe(4);
@@ -138,6 +144,13 @@ describe("buildNativeRuntimeContext", () => {
     expect(await readFile(path.join(context.skills[0]!.bundle.rootPath, "SKILL.md"), "utf8")).toContain("../../../repositories/");
     expect(await readFile(path.join(context.skills[0]!.repository!.bundle.rootPath, "shared.txt"), "utf8")).toBe("pinned shared bytes");
     expect(await lstat(path.join(source, "must-not-read-portable")).catch(() => null)).toBeNull();
+    const saved = JSON.parse(JSON.stringify(context));
+    let versionRead = 0;
+    const recoveryDb = { select: (fields: Record<string, unknown>) => ({ from: () => ({ where: async () => fields.responsibleUserId
+      ? [{ id: "run-1", companyId: "company-1", agentId: "agent-1", responsibleUserId: null, contextSnapshot: { skillVersions: { one: "one", two: "two" } } }]
+      : [{ skillId: entries[versionRead]!.repository.skillId, repositorySnapshotId: "same-snapshot", repositorySkillPath: entries[versionRead++]!.repository.entryPath }] }) }) } as unknown as Db;
+    expect(await rehydratePinnedSkillAssets(recoveryDb, { companyId: "company-1", agentId: "agent-1", runId: "run-1" }, saved)).toEqual(saved);
+    expect(serviceMocks.withRepositoryVersion).toHaveBeenCalledTimes(2);
     const sharedFile = path.join(source, "shared.txt");
     const originalStat = await stat(sharedFile);
     await writeFile(sharedFile, "forged shared bytes");

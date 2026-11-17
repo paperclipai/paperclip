@@ -769,6 +769,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         runId: run.id,
         runtimeConfig,
         runtimeSkillEntries,
+        skillActor: { type: "agent", companyId: agent.companyId, agentId: agent.id, runId: run.id, source: "agent_jwt",
+          onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId },
         instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
       }));
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
