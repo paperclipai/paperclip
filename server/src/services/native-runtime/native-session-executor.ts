@@ -19313,7 +19313,9 @@ export function createRemoteNativeArtifactPreparation(input: {
         const preinstalledRunner = await measureNativeRunnerSpan(
           input.trace,
           "runner.artifact.discover",
-          () => discoverPreinstalledExecutable("paperclip-runnerd"),
+          () => explicitRemoteBinary
+            ? discoverPreinstalledExecutable("paperclip-runnerd").catch(() => null)
+            : discoverPreinstalledExecutable("paperclip-runnerd"),
         );
         if (preinstalledRunner) {
           try {
