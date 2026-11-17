@@ -37,6 +37,8 @@ export const GOOGLE_WORKSPACE_REST_PROBES: Readonly<Record<GoogleWorkspaceRestSe
       request: (now) => freeBusyRequest(["primary"], { start: now, end: now + PROBE_WINDOW_MS }, "UTC"),
     },
   ],
+  docs: [],
+  slides: [],
   sheets: [],
 };
 

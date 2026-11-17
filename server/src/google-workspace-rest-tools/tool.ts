@@ -37,6 +37,8 @@ export function structuredResult(value: Record<string, unknown>): CallToolResult
   return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
 }
 
+export const MAX_RESULT_BYTES = 250_000;
+
 export function serializedResultBytes(result: CallToolResult): number {
   return Buffer.byteLength(JSON.stringify(result), "utf8");
 }
