@@ -34,6 +34,7 @@ import { agentHarnessVerificationService } from "../services/agent-harness-verif
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { MUSE_PUBLIC_ROUTES, MUSE_CLIENT_VERSION, type MuseCredentials } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { museOAuth } from "../services/muse-oauth.js";
 import { createPublicMcpOAuth, hashMcpSecret } from "../services/public-mcp/oauth.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
@@ -78,7 +79,8 @@ describe("personal Muse control plane",()=>{
     await instanceSettingsService(db).updateExperimental({enableNativeRunner:true,enableMuse:true});
   },30000);
   afterAll(async()=>{vi.unstubAllEnvs();await museReceiver(db).stop();if(externalDatabaseUrl)await closeRegisteredClients(externalDatabaseUrl);await temporary?.cleanup();});
-  async function fixture(ready=true) {
+  async function fixture(ready=true,owner=db) {
+    const db=owner;
     const operatorId=randomUUID();await db.insert(authUsers).values({id:operatorId,name:"Muse authorizer",email:operatorId+"@example.test",createdAt:new Date(),updatedAt:new Date()});
     const [company]=await db.insert(companies).values({name:"Muse control",issuePrefix:"MU"+operatorId.replaceAll("-","")}).returning();
     const [agent]=await db.insert(agents).values({companyId:company.id,name:"Muse",role:"engineer",status:"active",adapterType:"paperclip_runner",adapterConfig:{provider:"muse",allowUnmeteredProvider:true,lifecycle:"per_turn"},permissions:{canCreateTasks:true}}).returning();
@@ -1481,7 +1483,8 @@ describe("personal Muse control plane",()=>{
   it.skipIf(!process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_CHECKOUT)("imports above-LOW retained-history pressure through the normal App owner and preserves a lost ACK", () => coupledMuseContactRecovery(false), 120000);
   it.skipIf(!process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_CHECKOUT)("keeps actual five-second Cloud presence tenant-SQL-quiet for90s before and after pressure import with exact ACK recovery", () => coupledMuseContactRecovery(true), 300000);
 
-  async function applyActualManagedContactIdentity() {
+  async function applyActualManagedContactIdentity(owner=db) {
+    const db=owner;
     expect(getCloudRuntimeIdentity()).toBeNull();
     expect(await db.select().from(runtimeInstanceSettings).where(eq(runtimeInstanceSettings.singletonKey,"cloud-runtime-identity/v1"))).toEqual([]);
     const key=generateKeyPairSync("ed25519"),kid="late-contact-source",stackId="late-contact-"+randomUUID(),issued=Math.floor(Date.now()/1000);
@@ -1496,11 +1499,26 @@ describe("personal Muse control plane",()=>{
     return async()=>{await db.delete(runtimeInstanceSettings).where(eq(runtimeInstanceSettings.singletonKey,"cloud-runtime-identity/v1"));resetCloudRuntimeIdentityForTests();};
   }
   it("invalidates an already-paused Muse receiver when the separate company archive commits",async()=>{
-    const f=await fixture(true),other=await fixture(true);
-    await db.update(agents).set({status:"paused"}).where(eq(agents.id,f.agent.id));
-    const reset=await applyActualManagedContactIdentity();
-    let unsubscribe:(()=>void)|undefined;
+    // The production projection covers the complete instance, including unfinished
+    // bindings deliberately retained by earlier cases. Give this case its own
+    // database instead of filtering the real projection or changing their rows.
+    const isolatedUrl=resolveExternalTestDatabaseUrl("PAPERCLIP_MUSE_ARCHIVE_RECEIVER_TEST_DATABASE_URL");
+    if(externalDatabaseUrl&&!isolatedUrl)throw new Error("External Muse archive control requires its own explicit test database");
+    if(isolatedUrl&&externalDatabaseUrl){
+      const selected=new URL(isolatedUrl),shared=new URL(externalDatabaseUrl);
+      if(selected.host===shared.host&&selected.pathname===shared.pathname)throw new Error("Muse archive control database must differ from the shared suite database");
+    }
+    let isolated:Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>|undefined;
+    let owner:ReturnType<typeof createDb>|undefined,reset:(()=>Promise<void>)|undefined;
+    let unsubscribe:(()=>void)|undefined,primary:unknown;
     try{
+      if(isolatedUrl)await applyPendingMigrations(isolatedUrl);
+      else isolated=await startEmbeddedPostgresTestDatabase("muse-archive-receiver-");
+      const db=owner=createDb(isolatedUrl??isolated!.connectionString,{maxConnections:4});
+      await instanceSettingsService(db).updateExperimental({enableNativeRunner:true,enableMuse:true});
+      const f=await fixture(true,db),other=await fixture(true,db);
+      await db.update(agents).set({status:"paused"}).where(eq(agents.id,f.agent.id));
+      reset=await applyActualManagedContactIdentity(db);
       const namespace={stackId:getCloudRuntimeIdentity()!.stackId,instanceId:"archive-muse-producer",origin:oauthOrigin};
       // Establish an ordinary current revision through the existing owner, not a
       // fabricated ACK or receiver row. No mirror/lifecycle worker is running.
@@ -1534,7 +1552,16 @@ describe("personal Muse control plane",()=>{
       // The idempotent already-archived entry does not manufacture another duty.
       await companyService(db).archive(f.company.id);
       expect((await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public")))[0].revision).toBe(current.revision);
-    }finally{unsubscribe?.();await reset();}
+    }catch(error){primary=error;throw error;}
+    finally{
+      const failures:unknown[]=[];
+      for(const close of [async()=>{unsubscribe?.();},async()=>{await reset?.();},async()=>{if(owner)await museReceiver(owner).stop();},
+        async()=>{if(isolatedUrl)await closeRegisteredClients(isolatedUrl,{scope:"database"});else await owner?.$client.end({timeout:1});},
+        async()=>{await isolated?.cleanup();}]){
+        try{await close();}catch(error){failures.push(error);}
+      }
+      if(failures.length)throw new AggregateError([...(primary?[primary]:[]),...failures],"Muse archive fixture original and cleanup failures");
+    }
   },30_000);
   it.each(["paused", "archived", "archive"] as const)("serializes company %s and real Muse pairing without reversing agent and mirror locks",async(mode)=>{
     const f=await fixture(true);
