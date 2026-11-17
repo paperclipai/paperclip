@@ -82,6 +82,7 @@ export function createPostHogDirectTransport(
   const factory = options.factory ?? loadPostHogNode;
   const now = options.now ?? (() => new Date());
   let clientPromise: Promise<PostHogNodeClient> | null = null;
+  let pendingAnnouncement: { startup: WorkspaceStartup; occurredAt: string } | null = null;
 
   const getClient = () => {
     clientPromise ??= factory(config).catch((error) => {
@@ -105,6 +106,40 @@ export function createPostHogDirectTransport(
       sendFeatureFlags: message.sendFeatureFlags,
     });
   };
+
+  // Group properties need PostHog's group analytics add-on. Send them anyway;
+  // the history join relies on the plain event below. Both go straight to
+  // posthog-node: TelemetryClient.track() accepts only generated contract
+  // events, and these are Cloud-only.
+  function captureAnnouncement(
+    client: PostHogNodeClient,
+    { startup, occurredAt }: { startup: WorkspaceStartup; occurredAt: string },
+  ) {
+    client.groupIdentify({
+      groupType: POSTHOG_WORKSPACE_GROUP_TYPE,
+      groupKey: config.stackId,
+      disableGeoip: true,
+      properties: {
+        stack_slug: startup.stackSlug,
+        primary_host: startup.primaryHost,
+        environment: config.environment,
+      },
+    });
+    capture(
+      client,
+      buildWorkspaceStartedEvent(
+        { installHash: startup.installHash, occurredAt },
+        {
+          app: startup.app,
+          schemaVersion: startup.schemaVersion,
+          installId: startup.installId,
+          version: startup.version,
+          ingestedAt: occurredAt,
+        },
+        config,
+      ),
+    );
+  }
 
   return {
     hashesPrivateRefs: false,
@@ -134,6 +169,13 @@ export function createPostHogDirectTransport(
         // was captured yet, so no event can be sent twice.
         return { kind: "network" };
       }
+      // A startup announcement that could not load the client goes out with
+      // the first batch that can, so the history-join event is not lost.
+      if (pendingAnnouncement) {
+        const announcement = pendingAnnouncement;
+        pendingAnnouncement = null;
+        captureAnnouncement(client, announcement);
+      }
       for (const message of messages) capture(client, message);
       try {
         await client.flush();
@@ -147,36 +189,15 @@ export function createPostHogDirectTransport(
     },
 
     async announceWorkspace(startup: WorkspaceStartup): Promise<void> {
-      const occurredAt = now().toISOString();
-      const client = await getClient();
-      // Group properties need PostHog's group analytics add-on. Send them
-      // anyway; the history join relies on the plain event below. Both go
-      // straight to posthog-node: TelemetryClient.track() accepts only
-      // generated contract events, and these are Cloud-only.
-      client.groupIdentify({
-        groupType: POSTHOG_WORKSPACE_GROUP_TYPE,
-        groupKey: config.stackId,
-        disableGeoip: true,
-        properties: {
-          stack_slug: startup.stackSlug,
-          primary_host: startup.primaryHost,
-          environment: config.environment,
-        },
-      });
-      capture(
-        client,
-        buildWorkspaceStartedEvent(
-          { installHash: startup.installHash, occurredAt },
-          {
-            app: startup.app,
-            schemaVersion: startup.schemaVersion,
-            installId: startup.installId,
-            version: startup.version,
-            ingestedAt: occurredAt,
-          },
-          config,
-        ),
-      );
+      const announcement = { startup, occurredAt: now().toISOString() };
+      let client: PostHogNodeClient;
+      try {
+        client = await getClient();
+      } catch (error) {
+        pendingAnnouncement = announcement;
+        throw error;
+      }
+      captureAnnouncement(client, announcement);
       await client.flush();
     },
 
