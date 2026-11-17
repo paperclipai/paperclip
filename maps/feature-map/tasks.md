@@ -46,7 +46,7 @@ Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 
 ### `task-detail`
 
-Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A run with deferred output or a truncated legacy log offers **More run output**. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. **More messages** appears only when earlier comments or runs are omitted and loads that history. An omitted run whose answer is already visible does not count, nor do older comments already pinned into the window. Fresh tasks with no omitted history have no disclosure. A run with deferred output or a truncated legacy log offers **More run output**. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 

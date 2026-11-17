@@ -229,7 +229,7 @@ describe("task navigation prefetch", () => {
         await prefetchIssueDetailForNavigation(client, ref, { issue, history: true });
         expect(issuesApi.chatBootstrap).toHaveBeenCalledWith(issue.companyId, [ref]);
         expect(client.getQueryData(recentIssueActivityQueryKey(ref))).toEqual([{ id: "event-1" }]);
-        expect(client.getQueryData(recentIssueRunWindowQueryKey(ref))).toEqual({ runs: [run("run-2", "failed")], hasEarlierRuns: true });
+        expect(client.getQueryData(recentIssueRunWindowQueryKey(ref))).toEqual({ runs: [run("run-2", "failed")], hasEarlierRuns: true, earlierRun: { runId: "run-1", status: "succeeded" } });
         expect(client.getQueryData(queryKeys.issues.liveRuns(ref))).toEqual([]);
         expect(client.getQueryData([...queryKeys.issues.comments(ref), "recent"])).toEqual(recentComments);
         // The recent-comments read shares the bootstrap; the header keeps its own read.
@@ -263,7 +263,7 @@ describe("task navigation prefetch", () => {
         await prefetchIssueDetailForNavigation(client, ref, { issue, history: true });
         expect(client.getQueryData(recentIssueActivityQueryKey(ref))).toEqual([{ id: "event-1" }]);
         // Same window shape the page builds: the latest run, plus evidence of earlier runs.
-        expect(client.getQueryData(recentIssueRunWindowQueryKey(ref))).toEqual({ runs: [run("run-2", "failed")], hasEarlierRuns: true });
+        expect(client.getQueryData(recentIssueRunWindowQueryKey(ref))).toEqual({ runs: [run("run-2", "failed")], hasEarlierRuns: true, earlierRun: { runId: "run-1", status: "succeeded" } });
         expect(client.getQueryData(queryKeys.issues.interactions(ref))).toEqual([]);
         expect(client.getQueryData(queryKeys.issues.attachments(ref))).toEqual([]);
         expect(client.getQueryData(queryKeys.issues.liveRuns(ref))).toEqual([]);
