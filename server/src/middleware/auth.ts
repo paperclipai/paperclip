@@ -731,6 +731,25 @@ async function resolveCloudTenantActorOnce(
       });
     });
   })();
+  // Handled at once: the decision below attaches its handler only after the
+  // membership read returns.
+  tenantSync.catch(() => {});
+  // A request waits for the sync only when its authority depends on it: a new
+  // user, or a role or status change. When the stored primary membership
+  // already grants exactly this authority, the sync cannot change the actor,
+  // so it finishes in the background. Otherwise one open transaction holding
+  // this user's rows queues every request of the user, static files included,
+  // behind the shared per-user sync.
+  const tenantSyncForRequest = membershipRowsRead.then(
+    (rows) => {
+      const current = rows.some((row) => row.companyId === companyId && row.status === "active"
+        && row.membershipRole === membershipRole);
+      if (!current) return tenantSync;
+      finishCloudTenantSyncInBackground(tenantSync, { userId, stackId });
+      return undefined;
+    },
+    () => tenantSync,
+  );
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company
@@ -768,7 +787,7 @@ async function resolveCloudTenantActorOnce(
   // and the owner-settings read can insert the missing settings row.
   const [purged, synced, membershipsRead, ownerRead] = await Promise.allSettled([
     purge,
-    tenantSync,
+    tenantSyncForRequest,
     additionalMembershipsRead,
     ownerInstanceAdminRead,
   ]);
@@ -797,6 +816,14 @@ async function resolveCloudTenantActorOnce(
     canManageExperimentalSettings: stackRole === "admin",
     source: "cloud_tenant",
   };
+}
+
+function finishCloudTenantSyncInBackground(sync: Promise<void>, context: { userId: string; stackId: string }) {
+  // Idle and drain checks still count the writes until they settle.
+  const finish = beginIdleTrackedWork();
+  sync
+    .catch((err) => logger.warn({ err, ...context }, "Cloud tenant sync failed; the next request retries it"))
+    .finally(finish);
 }
 
 function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {
