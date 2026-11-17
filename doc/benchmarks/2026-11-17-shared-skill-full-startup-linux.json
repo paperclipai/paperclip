@@ -1,0 +1,95 @@
+{
+  "environment": {
+    "os": "Linux in WSL2",
+    "node": "24.22.3",
+    "glibc": "2.41",
+    "filesystem": "native ext4",
+    "provider": "codex_app_server",
+    "model": "gpt-6.1-terra",
+    "codex": "0.160.0",
+    "selectedSkillVersions": 13,
+    "concurrency": "One pilot agent run; concurrent host development checks and Git activity. Not a controlled OS comparison."
+  },
+  "runs": [
+    {
+      "label": "first_start",
+      "status": "succeeded",
+      "createdAt": "2026-11-17T18:06:22.013Z",
+      "finishedAt": "2026-11-17T18:10:10.879Z",
+      "timeToFirstToolMs": 173017,
+      "firstTool": "read_assigned_skill",
+      "totalMs": 228866,
+      "spans": [
+        {
+          "span": "runtime_context.skills",
+          "durationMs": 39694
+        },
+        {
+          "span": "runtime_selection.runtime_context",
+          "durationMs": 39699
+        },
+        {
+          "span": "runner.runtime.stage",
+          "durationMs": 50498,
+          "mode": "bootstrap"
+        },
+        {
+          "span": "runner.session.startup",
+          "durationMs": 62104,
+          "mode": "bootstrap"
+        },
+        {
+          "span": "task.time_to_first_agent_activity",
+          "durationMs": 170555
+        }
+      ]
+    },
+    {
+      "label": "same_session_resume",
+      "status": "succeeded",
+      "createdAt": "2026-11-17T18:11:26.069Z",
+      "finishedAt": "2026-11-17T18:15:31.089Z",
+      "timeToFirstToolMs": 200749,
+      "firstTool": "read_assigned_skill",
+      "totalMs": 245020,
+      "spans": [
+        {
+          "span": "runtime_context.skills",
+          "durationMs": 48815
+        },
+        {
+          "span": "runtime_selection.runtime_context",
+          "durationMs": 48818
+        },
+        {
+          "span": "runner.runtime.stage",
+          "durationMs": 62675,
+          "mode": "resume"
+        },
+        {
+          "span": "runner.session.startup",
+          "durationMs": 97612,
+          "mode": "resume"
+        },
+        {
+          "span": "task.time_to_first_agent_activity",
+          "durationMs": 197628
+        }
+      ]
+    }
+  ],
+  "sameNativeSession": true,
+  "mutation": {
+    "probe": "actual-provider-home-restored-mtime-mutation",
+    "refused": true,
+    "bytes": 1165,
+    "sourceUnchanged": true,
+    "restored": true,
+    "sourceSha256": "3ed000dfa998ce86cd9e9180a6d1db1a76cc9da94b0a851e0bc4e5be0c08d31f"
+  },
+  "qualification": {
+    "sdkSource": "integration a9db65067f plus the five driver fixes in feature f842efc6cc",
+    "reviewFollowupNotInTheseRuns": "3db05f3a81; explicit-skill transport and portable provider gate covered by separate regressions",
+    "coldLabel": "First agent run in the Linux instance; held package archives were already restored. Not an empty-machine or hardware-cold baseline."
+  }
+}

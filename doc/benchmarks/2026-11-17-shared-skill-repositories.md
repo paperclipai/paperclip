@@ -94,3 +94,47 @@ This branch is a draft. The production instance has not been switched to it.
 Physical FAT32 acceptance and a successful native run on this machine's ReFS
 volume remain open. A positive mocked capability test is not physical-volume
 qualification. Required CI and the upstream review are pending.
+
+## Completed Linux pilot and recovery checks
+
+The isolated Linux pilot completed on 2026-11-17 with the same 13 held skill
+versions and model gpt-6.1-terra. The provider was native Codex app-server 0.160.0
+on Node 24.22.3, glibc 2.41 and the WSL instance's native ext4 filesystem.
+The next run reused the same native session. Both runs succeeded.
+
+| Metric | First start | Same-session resume |
+| --- | ---: | ---: |
+| Skill context preparation | 39,694 ms | 48,815 ms |
+| Provider runtime staging | 50,498 ms | 62,675 ms |
+| Runner session startup | 62,104 ms | 97,612 ms |
+| Run creation to first tool | 173,017 ms | 200,749 ms |
+| Run creation to completion | 228,866 ms | 245,020 ms |
+
+The first tool was read_assigned_skill in both runs. These numbers do not show a
+warm speedup. There was one pilot agent run at a time, with concurrent host
+checks and Git activity. The held package archives had already been restored;
+this was the first agent start in the instance, not an empty-machine baseline.
+The source was integration a9db65067f plus the five driver fixes from feature
+f842efc6cc. The later explicit-input and portable-provider-gate fixes in
+3db05f3a81 have separate regression evidence; they were not in these two runs.
+
+Compared with the earlier Windows skill span of 216,319 ms, these Linux skill
+spans are lower. The platform, provider version, load and cache state differ.
+Do not attribute that difference only to this patch. The controlled copied-byte
+comparison above is the stronger evidence for the repository layout change.
+
+After the two runs, a real delivered repository file was changed without changing
+its size or original mtime. The actual warm recovery function rejected it with
+an integrity error before rewriting provider configuration. The authoritative
+source stayed unchanged. The delivered file was then restored. This was a real
+provider-home integrity probe, not another full failed agent run.
+
+The earlier Linux timeouts did not reproduce after the WSL environment recovered:
+all ten final materialization tests passed in 1.72 seconds. The isolated API was
+responsive throughout the two successful runs. This supersedes the earlier
+failed attempt; it does not establish why that attempt stalled.
+
+[Raw sanitized startup results](2026-11-17-shared-skill-full-startup-linux.json).
+Physical Windows FAT32 acceptance and this machine's ReFS MXC qualification are
+still open. The Windows account is not elevated and no FAT volume is attached.
+No filesystem filters were changed and no source data was relocated.
