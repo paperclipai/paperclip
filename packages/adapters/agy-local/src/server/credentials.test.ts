@@ -498,6 +498,42 @@ describe("stageAgyHomeForSync", () => {
     expect(content.modelProvider).toBe("gemini");
     expect(content.customSetting).toBe("abc");
   });
+
+  it("stages the host CLI home's brain/ directory when present", async () => {
+    const fakeHome = makeTmpDir();
+    const dir = path.join(fakeHome, ".gemini", "antigravity-cli");
+    fs.mkdirSync(path.join(dir, "brain", "conv-1"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "brain", "conv-1", "session.json"), JSON.stringify({ turns: 3 }));
+    fs.writeFileSync(path.join(dir, "antigravity-oauth-token"), JSON.stringify({ access_token: "ya29.test" }));
+
+    const staged = await stageAgyHomeForSync({ homedir: fakeHome });
+    tmpDirs.push(staged);
+
+    const stagedSession = path.join(staged, "brain", "conv-1", "session.json");
+    expect(fs.existsSync(stagedSession)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(stagedSession, "utf8"))).toEqual({ turns: 3 });
+  });
+
+  it("stages brain/ from the token's home when the token lives in the alternate home", async () => {
+    const fakeHome = makeTmpDir();
+    const altDir = path.join(fakeHome, ".gemini", "antigravity");
+    fs.mkdirSync(path.join(altDir, "brain", "conv-9"), { recursive: true });
+    fs.writeFileSync(path.join(altDir, "brain", "conv-9", "session.json"), JSON.stringify({ turns: 1 }));
+    fs.writeFileSync(path.join(altDir, "antigravity-oauth-token"), JSON.stringify({ access_token: "ya29.alt" }));
+
+    const staged = await stageAgyHomeForSync({ homedir: fakeHome });
+    tmpDirs.push(staged);
+
+    expect(fs.existsSync(path.join(staged, "brain", "conv-9", "session.json"))).toBe(true);
+  });
+
+  it("does not fail when there is no brain/ directory", async () => {
+    const fakeHome = makeTmpDir();
+    const staged = await stageAgyHomeForSync({ homedir: fakeHome });
+    tmpDirs.push(staged);
+
+    expect(fs.existsSync(path.join(staged, "brain"))).toBe(false);
+  });
 });
 
 describe("copyBackAgyAuth", () => {

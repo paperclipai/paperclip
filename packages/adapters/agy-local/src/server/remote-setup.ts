@@ -16,6 +16,7 @@ import {
 import { refreshPaperclipWorkspaceEnvForExecution } from "@paperclipai/adapter-utils/server-utils";
 import {
   copyBackAgyAuth,
+  resolveAgyCliHomeDir,
   resolveAgyOAuthTokenPath,
   stageAgyHomeForSync,
 } from "./credentials.js";
@@ -55,6 +56,141 @@ export interface PreparedAgyRemoteRun {
   stagedMcpConfigDir: string | null;
   effectiveExecutionCwd: string;
   cleanupSetupFailure: () => Promise<void>;
+}
+
+/**
+ * Quote a value for safe interpolation into a POSIX shell command.
+ * Single quotes stop every expansion ($, backticks, globbing); an embedded
+ * single quote is closed, escaped as a double-quoted quote, and reopened.
+ * Same implementation as the adapter-utils helpers (remote-pid-lock,
+ * command-managed-runtime, git-workspace-sync, sandbox-managed-runtime).
+ */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+export interface RemoteMcpHomeSetupCommandInput {
+  isolatedHomeDir: string;
+  isolatedConfigDir: string;
+  stagedMcpFile: string;
+  targetMcpConfig: string;
+  realGeminiDir: string | null;
+  realConfigDir: string | null;
+}
+
+/**
+ * Build the shell command that configures the isolated per-run MCP home on
+ * a remote target. Pure (no I/O) so the quoting is unit-testable. Every
+ * path is shellQuote'd: JSON.stringify's double quotes still let `$` and
+ * backticks expand, so a remote home containing them would send the MCP
+ * file to the wrong directory or run an injected command. The glob in the
+ * config loop stays outside the quotes so `*` still expands.
+ */
+export function buildRemoteMcpHomeSetupCommand(input: RemoteMcpHomeSetupCommandInput): string {
+  const {
+    isolatedHomeDir,
+    isolatedConfigDir,
+    stagedMcpFile,
+    targetMcpConfig,
+    realGeminiDir,
+    realConfigDir,
+  } = input;
+  return `mkdir -p ${shellQuote(isolatedConfigDir)}; ${realGeminiDir ? `ln -s ${shellQuote(path.posix.join(realGeminiDir, "antigravity-cli"))} ${shellQuote(path.posix.join(isolatedHomeDir, ".gemini", "antigravity-cli"))} 2>/dev/null || true; ln -s ${shellQuote(path.posix.join(realGeminiDir, "antigravity"))} ${shellQuote(path.posix.join(isolatedHomeDir, ".gemini", "antigravity"))} 2>/dev/null || true; ` : ""}${realConfigDir ? `if [ -d ${shellQuote(realConfigDir)} ]; then for e in ${shellQuote(realConfigDir)}/*; do if [ -e "$e" ] && [ "$(basename "$e")" != "mcp_config.json" ]; then ln -s "$e" ${shellQuote(isolatedConfigDir)}/ 2>/dev/null || true; fi; done; fi; ` : ""}cp -a ${shellQuote(stagedMcpFile)} ${shellQuote(targetMcpConfig)}`;
+}
+
+/**
+ * Copy a remote run's Antigravity conversation state (brain/) back to the
+ * host CLI home at teardown. The asset restore context can only read single
+ * files, so a remote `find` first writes a NUL-separated manifest of the
+ * brain/ files; each entry is validated to stay under brain/ before it is
+ * read and written to the host. Best-effort: a missing brain/ dir, a failed
+ * command, or any read/write error only loses the resume (the status quo),
+ * never the run.
+ */
+const AGY_BRAIN_MANIFEST_NAME = ".paperclip-brain-manifest";
+
+const COPY_BACK_AGY_CONVERSATION_LIMITS = {
+  maxFiles: 1000,
+  maxFileBytes: 10 * 1024 * 1024,
+  maxTotalBytes: 50 * 1024 * 1024,
+};
+
+export interface CopyBackAgyConversationStateInput {
+  /** Remote staged CLI home dir (posix path inside the sandbox). */
+  assetDir: string;
+  /** Host CLI home dir the brain/ tree is copied back into. */
+  hostCliHomeDir: string;
+  /** Runs a shell command on the remote target; returns its exit code. */
+  runRemoteCommand: (command: string) => Promise<{ exitCode: number | null }>;
+  /** Reads a single file back from the remote target. */
+  readFile: (remotePath: string) => Promise<Buffer>;
+  log: (line: string) => void | Promise<void>;
+  limits?: Partial<typeof COPY_BACK_AGY_CONVERSATION_LIMITS>;
+}
+
+export async function copyBackAgyConversationState(
+  input: CopyBackAgyConversationStateInput,
+): Promise<void> {
+  const { assetDir, hostCliHomeDir, runRemoteCommand, readFile, log } = input;
+  const limits = { ...COPY_BACK_AGY_CONVERSATION_LIMITS, ...(input.limits ?? {}) };
+  try {
+    const brainRemote = path.posix.join(assetDir, "brain");
+    const manifestRemote = path.posix.join(assetDir, AGY_BRAIN_MANIFEST_NAME);
+    await runRemoteCommand(
+      `if [ -d ${shellQuote(brainRemote)} ]; then (cd ${shellQuote(brainRemote)} && find . -type f -print0 > ${shellQuote(manifestRemote)}); fi`,
+    );
+    let manifest: Buffer;
+    try {
+      manifest = await readFile(manifestRemote);
+    } catch (error) {
+      // No manifest means the remote had no brain/ dir (the `[ -d ]` guard
+      // skipped the find): nothing to copy back.
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return;
+      throw error;
+    }
+    const entries = manifest
+      .toString("utf8")
+      .split("\0")
+      .map((entry) => (entry.startsWith("./") ? entry.slice(2) : entry))
+      .filter((entry) => entry.length > 0);
+    if (entries.length > limits.maxFiles) {
+      await log(
+        `[paperclip] Antigravity conversation copy-back: ${entries.length} brain files, keeping the first ${limits.maxFiles}.`,
+      );
+    }
+    const hostBrainDir = path.join(hostCliHomeDir, "brain");
+    let totalBytes = 0;
+    for (const entry of entries.slice(0, limits.maxFiles)) {
+      // Confine every entry to brain/: no absolute paths, no `..` segments,
+      // and the resolved host path must stay under the host brain dir.
+      if (path.posix.isAbsolute(entry) || entry.split("/").includes("..")) continue;
+      const remotePath = path.posix.join(brainRemote, entry);
+      const hostPath = path.join(hostBrainDir, ...entry.split("/"));
+      if (!hostPath.startsWith(hostBrainDir + path.sep)) continue;
+      let content: Buffer;
+      try {
+        content = await readFile(remotePath);
+      } catch {
+        continue;
+      }
+      if (content.byteLength > limits.maxFileBytes) continue;
+      if (totalBytes + content.byteLength > limits.maxTotalBytes) {
+        await log("[paperclip] Antigravity conversation copy-back: hit the total size limit, stopping.");
+        break;
+      }
+      try {
+        await fs.mkdir(path.dirname(hostPath), { recursive: true });
+        await fs.writeFile(hostPath, content, { mode: 0o600 });
+        totalBytes += content.byteLength;
+      } catch {
+        continue;
+      }
+    }
+  } catch (error) {
+    await log(
+      `[paperclip] Antigravity conversation copy-back failed: ${error instanceof Error ? error.message : String(error)}; the next run will start a fresh conversation.`,
+    );
+  }
 }
 
 /**
@@ -169,6 +305,23 @@ export async function prepareAgyRemoteRun(
               log: (line) => onLog("stdout", `${line}\n`),
               env: process.env,
             });
+            // The staged home also holds the run's conversation state
+            // (brain/); copy it back to the host CLI home so the next run
+            // can resume the same conversation instead of starting fresh.
+            await copyBackAgyConversationState({
+              assetDir,
+              hostCliHomeDir: resolveAgyCliHomeDir(runtimeEnv.HOME || os.homedir(), runtimeEnv),
+              runRemoteCommand: (command) =>
+                runAdapterExecutionTargetShellCommand(runId, executionTarget, command, {
+                  cwd: assetDir,
+                  env,
+                  timeoutSec,
+                  graceSec,
+                  onLog,
+                }),
+              readFile,
+              log: (line) => onLog("stdout", `${line}\n`),
+            });
           },
         },
         ...(stagedMcpConfigDir
@@ -261,7 +414,14 @@ export async function prepareAgyRemoteRun(
       const setupResult = await runAdapterExecutionTargetShellCommand(
         runId,
         executionTarget,
-        `mkdir -p ${JSON.stringify(isolatedConfigDir)}; ${realGeminiDir ? `ln -s ${JSON.stringify(path.posix.join(realGeminiDir, "antigravity-cli"))} ${JSON.stringify(path.posix.join(isolatedHomeDir, ".gemini", "antigravity-cli"))} 2>/dev/null || true; ln -s ${JSON.stringify(path.posix.join(realGeminiDir, "antigravity"))} ${JSON.stringify(path.posix.join(isolatedHomeDir, ".gemini", "antigravity"))} 2>/dev/null || true; ` : ""}${realConfigDir ? `if [ -d ${JSON.stringify(realConfigDir)} ]; then for e in ${JSON.stringify(realConfigDir)}/*; do if [ -e "$e" ] && [ "$(basename "$e")" != "mcp_config.json" ]; then ln -s "$e" ${JSON.stringify(isolatedConfigDir)}/ 2>/dev/null || true; fi; done; fi; ` : ""}cp -a ${JSON.stringify(stagedMcpFile)} ${JSON.stringify(targetMcpConfig)}`,
+        buildRemoteMcpHomeSetupCommand({
+          isolatedHomeDir,
+          isolatedConfigDir,
+          stagedMcpFile,
+          targetMcpConfig,
+          realGeminiDir,
+          realConfigDir,
+        }),
         { cwd: effectiveExecutionCwd, env, timeoutSec, graceSec, onLog },
       );
       if (setupResult.exitCode !== 0) {

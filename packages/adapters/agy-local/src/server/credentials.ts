@@ -324,6 +324,22 @@ export interface StageAgyHomeForSyncOptions {
 }
 
 /**
+ * Resolves the Antigravity CLI home directory: the home holding the OAuth
+ * token when one exists (the CLI authenticates from its own home), else the
+ * home holding settings.json (the env override or ~/.gemini/antigravity-cli).
+ * The staged home, the token, the settings, and brain/ all come from this
+ * one home so the remote run sees a coherent CLI home.
+ */
+export function resolveAgyCliHomeDir(
+  homedir: string = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const tokenPath = resolveAgyOAuthTokenPath(homedir, env);
+  if (tokenPath) return path.dirname(tokenPath);
+  return path.dirname(resolveAgySettingsPath(homedir, env));
+}
+
+/**
  * Stages credentials (antigravity-oauth-token) and configuration (settings.json)
  * into a private temporary directory suitable for syncing into a sandbox execution target.
  */
@@ -393,6 +409,21 @@ export async function stageAgyHomeForSync(
         { mode: 0o600 },
       );
     }
+  }
+
+  // Stage the CLI home's conversation state alongside the credential and
+  // settings: the CLI writes its transcripts under <cli-home>/brain/, and
+  // a remote run whose staged home lacks them cannot resume a saved
+  // --conversation (the restore callback copies them back at teardown).
+  // Best-effort like the other copies: a missing or unreadable brain/
+  // simply means the run starts fresh.
+  try {
+    const brainDir = path.join(resolveAgyCliHomeDir(homedir, env), "brain");
+    if (fs.existsSync(brainDir)) {
+      await fs.promises.cp(brainDir, path.join(stagedDir, "brain"), { recursive: true });
+    }
+  } catch {
+    // Ignore copy failures
   }
 
   return stagedDir;
