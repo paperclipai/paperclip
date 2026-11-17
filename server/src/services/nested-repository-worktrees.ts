@@ -59,6 +59,7 @@ export async function readWorktreePointer(admin: string) {
     }
     if (length > WORKTREE_POINTER_LIMIT) throw new Error("unproven_managed_checkout");
     const pointer = buffer.subarray(0, length).toString("utf8").trim();
+    if (!path.isAbsolute(pointer)) throw new Error("unproven_managed_checkout");
     return pointer && path.resolve(pointer);
   } finally { await handle.close(); }
 }

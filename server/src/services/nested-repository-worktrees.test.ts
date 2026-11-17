@@ -51,4 +51,15 @@ describe("nested repository worktrees on the host file system", () => {
     await removeStaleNestedRegistrations(base, checkout);
     expect(await fs.readdir(path.join(base, ".git", "worktrees")).catch(() => [])).toEqual([]);
   });
+
+  it("retains an unproven relative registration even when it resolves to the missing checkout", async () => {
+    const checkout = path.resolve(`unused-checkout-${path.basename(root)}`);
+    const admin = path.join(base, ".git", "worktrees", "unproven");
+    await fs.mkdir(admin, { recursive: true });
+    const pointer = path.relative(process.cwd(), path.join(checkout, ".git"));
+    expect(path.isAbsolute(pointer)).toBe(false);
+    await fs.writeFile(path.join(admin, "gitdir"), `${pointer}\n`);
+    await removeStaleNestedRegistrations(base, checkout);
+    expect(await fs.readFile(path.join(admin, "gitdir"), "utf8")).toBe(`${pointer}\n`);
+  });
 });
