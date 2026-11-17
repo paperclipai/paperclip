@@ -7,7 +7,7 @@ import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { finishedIdleWake } from "./idle-work-proof.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
-import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueAttentionRetentionWork } from "./retention-work-notifications.js";
@@ -2623,6 +2623,24 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
             and (recovery_finalize.execution_workspace_id is null
               or recovery_finalize.execution_workspace_id = ${workspaceId})
             and recovery_finalize.started_at >= coalesce(latest_blocker_operation.finished_at, latest_blocker_operation.started_at)
+        )
+      )
+      and not (
+        latest_blocker_operation.status in ('succeeded', 'failed', 'skipped')
+        and exists (
+          select 1 from heartbeat_runs settled_owner_run
+          where settled_owner_run.company_id = ${companyId}::uuid
+            and settled_owner_run.id = latest_blocker_operation.heartbeat_run_id
+            and settled_owner_run.status in (${sql.join([...TERMINAL_HEARTBEAT_RUN_STATUSES].map(status => sql`${status}`), sql`, `)})
+        )
+        and exists (
+          select 1 from workspace_operations settled_run_finalize
+          where settled_run_finalize.company_id = ${companyId}::uuid
+            and settled_run_finalize.issue_id = ${issueId}
+            and settled_run_finalize.heartbeat_run_id = latest_blocker_operation.heartbeat_run_id
+            and settled_run_finalize.phase = 'workspace_finalize' and settled_run_finalize.status = 'succeeded'
+            and (settled_run_finalize.execution_workspace_id is null
+              or settled_run_finalize.execution_workspace_id = ${workspaceId})
         )
       )
   )`;
@@ -8026,7 +8044,7 @@ export function issueService(db: Db) {
     }
 
     await notifyIssueAttentionRetentionWork(dbOrTx, { companyId, issueId });
-    await notifyIssueRecovery(dbOrTx, { companyId });
+    await notifyIssueGraphRecovery(dbOrTx, { companyId, issueId });
     await notifyDeferredExecutionEligibility(dbOrTx, { companyId });
     await dbOrTx
       .delete(issueRelations)
@@ -12221,8 +12239,9 @@ export function issueService(db: Db) {
           || patch.hiddenAt !== undefined || patch.conversationAgentId !== undefined || patch.parentId !== undefined
           || patch.executionState !== undefined || patch.executionRunId !== undefined || patch.checkoutRunId !== undefined
           || blockedByIssueIds !== undefined) {
+          // A moved task can unblock its old parent, whose rows do not change.
           await notifyRunDispatch(tx, patch.parentId !== undefined && patch.parentId !== receiptExisting.parentId
-            ? { companyId: receiptExisting.companyId } : { companyId: receiptExisting.companyId, issueId: id });
+            ? { companyId: receiptExisting.companyId, everyTask: true } : { companyId: receiptExisting.companyId, issueId: id });
           await notifyDeferredExecutionEligibility(tx, { companyId: receiptExisting.companyId });
           await notifyActiveRunSilence(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
@@ -12712,7 +12731,8 @@ export function issueService(db: Db) {
           }
           await notifyDecisionTargetIssueRemoval(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
-          await notifyRunDispatch(tx, owner ? { companyId: owner.companyId } : undefined);
+          // A deleted task releases its dependents and parent without changing their rows.
+          await notifyRunDispatch(tx, owner ? { companyId: owner.companyId, everyTask: true } : undefined);
           if (owner) {
             await notifyDeferredExecutionEligibility(tx, owner);
             await notifyActiveRunSilence(tx, { companyId: owner.companyId, issueId: id });
@@ -14641,7 +14661,7 @@ export function issueService(db: Db) {
 
         await assertAgentInteraction(tx, { companyId: existing.companyId, actorAgentId: options?.actorAgentId,
           operation: "edit", issueId: existing.issueId, lock: true });
-        await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyIssueGraphRecovery(tx, { companyId: existing.companyId, issueId: existing.issueId });
         await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
         if (options?.mcpCleanup?.id === existing.id && options.mcpCleanup.companyId === existing.companyId

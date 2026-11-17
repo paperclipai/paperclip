@@ -32,6 +32,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
@@ -1607,6 +1608,10 @@ export async function finalizeNativeRun(input: {
   const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
   let supersedesAssessmentId: string | null = coordinator.assessmentId;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    const savedStop = attempt === 0 ? run.resultJson : await input.db.select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
+      .then(rows => rows[0]?.resultJson ?? run.resultJson);
+    const stopRequested = nativeRunHasStopRequest(savedStop);
     const authoritativeIssue = await input.db
       .select()
       .from(issues)
@@ -1747,6 +1752,7 @@ export async function finalizeNativeRun(input: {
     // issue route decides `status: "done"`. Review runs keep their own path.
     const reviewStage = isConversation(authoritativeIssue) || reviewContext
       ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
+    await cancelStoppedRunContinuation(input.db, { companyId: run.companyId, resultJson: savedStop }, toolCallLoopContinuationKey(run.id));
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
@@ -1761,13 +1767,16 @@ export async function finalizeNativeRun(input: {
       providerModelRejected: providerFailure?.errorCode === "native_provider_model_rejected" && ownsProviderFailureDecision,
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
       providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
+      toolReceiptLimitStopped: terminalState !== "succeeded" && ownsProviderFailureDecision && !reviewContext
+        && !stopRequested && await readPersistedNativeToolReceiptLimitStop(input.db, run, resultRow.turnId),
       failureRetryCount: executionFailureRetryCount(run),
       // Only the task's current owner may turn its own failed continuation
       // into a blocker; the committer rechecks that under the issue lock.
       failedTurnContinuationUsed: terminalState === "failed" && ownsProviderFailureDecision && !reviewContext
         && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
       toolCallLoopContinuation: assessment.reportedDisposition === "yielded"
-        && assessment.continuation?.idempotencyKey === toolCallLoopContinuationKey(run.id),
+        && assessment.continuation?.idempotencyKey === toolCallLoopContinuationKey(run.id)
+        && !stopRequested,
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
@@ -1922,6 +1931,7 @@ export async function finalizeNativeRun(input: {
           : undefined,
         requireProviderFailureOwner: decision.reasonCode?.startsWith("native_provider_overloaded")
           || decision.reasonCode === "native_run_failed_continuation_exhausted"
+          || decision.reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE
           ? { agentId: run.agentId, reviewContext } : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait

@@ -58,6 +58,7 @@ export { issueAccessGrants } from "./issue_access_grants.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
+export { issueRecoveryDeferrals, issueRecoveryFullPasses } from "./issue_recovery_full_passes.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
@@ -289,3 +290,4 @@ export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionPr
 export { budgetEvaluationWork } from "./budget_evaluation_work.js";
 export { tailscaleConnections } from "./tailscale_connections.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";
+export { linkPreviews } from "./link_previews.js";

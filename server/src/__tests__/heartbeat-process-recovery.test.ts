@@ -10536,7 +10536,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(events[0]).toMatchObject({
       eventType: "lifecycle",
       stream: "system",
-      level: "warn",
+      level: "info",
       message: "run interrupted by board comment",
       payload: expect.objectContaining({
         issueId,
@@ -17311,6 +17311,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
   });
+
+  it.each(["queued", "claimed"] as const)(
+    "does not queue a second continuation while the finished run's own status wake (%s) awaits dispatch (Gate C C1 t169)",
+    async (intentStatus) => {
+      const { companyId, agentId, issueId, runId } =
+        await seedStrandedIssueFixture({
+          status: "in_progress",
+          runStatus: "succeeded",
+          livenessState: "advanced",
+        });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        status: intentStatus,
+        claimedAt: intentStatus === "claimed" ? new Date() : null,
+        requestedByActorType: "system",
+        requestedByActorId: "native-status-committer",
+        idempotencyKey: `agent_tool_call_loop:${runId}`,
+        payload: { issueId, taskId: issueId, sourceRunId: runId, continuationCause: "agent_tool_call_loop" },
+      });
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId }).where(eq(heartbeatRuns.id, runId));
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(await selectRecoveryRunsByAgent(agentId)).toHaveLength(1);
+      expect((await selectRecoveryIssueById(issueId))?.status).toBe("in_progress");
+    },
+  );
 
   it("does not replenish exhausted legacy repair from a recent comment", async () => {
     const { companyId, agentId, issueId, runId } =
