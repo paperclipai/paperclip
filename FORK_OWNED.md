@@ -83,6 +83,10 @@ any new fork patch; remove one when the patch is upstreamed.
 - `ui/src/pages/InviteLanding.tsx`
 - `ui/src/components/access/InvitesSection.tsx`
 
+## Slack file reading (TECH-8958)
+
+- `server/src/services/connectors/slack-document.ts`
+
 ## SSO, tenant isolation and company memory
 
 - `server/src/auth/better-auth.ts`
