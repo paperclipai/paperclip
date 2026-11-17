@@ -7,7 +7,7 @@ import {
   setLocalRunnerConfinementDatabase,
 } from "./local-runner-confinement.js";
 import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode } from "./native-session-executor.js";
-import { resetRunnerConfinementAvailability, setRunnerConfinementAvailabilityForTest, spawnRunner } from "@paperclipai/paperclip-runner/testing";
+import { resetRunnerConfinementAvailability, setRunnerConfinementAvailabilityForTest, spawnRunner } from "../../vendor/paperclip-runner/testing.js";
 
 describe("localRunnerConfinementPolicy", () => {
   afterEach(() => {
