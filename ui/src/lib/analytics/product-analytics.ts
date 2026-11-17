@@ -4,7 +4,12 @@
 // signed-in session carries a `browserAnalytics` config, which the server
 // sends only for a cloud-managed instance with a PostHog project token and
 // `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`. Without a config nothing here runs
-// and posthog-js, which loads with a dynamic `import()`, is never fetched.
+// and posthog-js is never fetched.
+//
+// posthog-js is not an npm dependency of the board. It loads as PostHog's
+// browser script (`/static/array.js`) through the same-origin proxy, like the
+// extensions it loads itself (recorder, web vitals). So it is in no bundle
+// chunk, and self-hosted installs, which have no proxy, can never load it.
 // See `ProductAnalyticsGate.tsx` and `server/src/services/cloud-posthog-browser.ts`.
 //
 // To keep cold loads fast, posthog-js loads only after the page settles
@@ -17,7 +22,6 @@
 // Product events that the server already sends (`PAPERCLIP_EVENTS`) must never
 // be captured here; `product-analytics-events.test.ts` enforces that.
 
-import type { CaptureResult, PostHog, PostHogConfig } from "posthog-js";
 import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
 import {
   ANALYTICS_MASK_TEXT_SELECTOR,
@@ -27,10 +31,51 @@ import {
   redactAnalyticsUrl,
 } from "./privacy";
 
-export type ProductAnalyticsClient = Pick<
-  PostHog,
-  "init" | "register" | "identify" | "group" | "reset"
->;
+/** The posthog-js calls this module makes. */
+export interface ProductAnalyticsClient {
+  init(token: string, config: PostHogInitOptions): unknown;
+  register(properties: Record<string, unknown>): void;
+  identify(distinctId: string, personProperties?: Record<string, unknown>): void;
+  group(groupType: string, groupKey: string): void;
+  reset(): void;
+}
+
+/** An event as posthog-js hands it to `before_send`. */
+export type CapturedEvent = {
+  event: string;
+  properties: Record<string, unknown>;
+  timestamp?: Date;
+  [key: string]: unknown;
+};
+
+/** The posthog-js `init` options this module sets (posthog-js `PostHogConfig`). */
+export type PostHogInitOptions = {
+  api_host: string;
+  ui_host?: string;
+  person_profiles: "identified_only";
+  capture_pageview: "history_change";
+  capture_pageleave: boolean;
+  autocapture: boolean;
+  mask_all_text: boolean;
+  mask_all_element_attributes: boolean;
+  capture_performance: { web_vitals: boolean };
+  enable_heatmaps: boolean;
+  disable_session_recording: boolean;
+  session_recording: {
+    maskAllInputs: boolean;
+    maskTextSelector: string;
+    maskTextFn: (text: string, element?: HTMLElement | null) => string;
+    maskAttributeFn: (name: string, value: string, element?: Element | null) => string;
+    blockClass: string;
+  };
+  tracing_headers: string[];
+  mask_personal_data_properties: boolean;
+  before_send: (event: CapturedEvent | null) => CapturedEvent | null;
+  disable_surveys: boolean;
+  disable_product_tours: boolean;
+  disable_web_experiments: boolean;
+  disable_conversations: boolean;
+};
 
 export type ProductAnalyticsUser = {
   id: string;
@@ -39,8 +84,8 @@ export type ProductAnalyticsUser = {
 };
 
 export type ProductAnalyticsOptions = {
-  /** Overridable for tests. Defaults to a dynamic import of posthog-js. */
-  load?: () => Promise<ProductAnalyticsClient>;
+  /** Overridable for tests. Defaults to loading PostHog's script through the proxy. */
+  load?: (config: BrowserAnalyticsConfig) => Promise<ProductAnalyticsClient>;
   /** Calls `start` when posthog-js may load; returns a cancel function. */
   schedule: (start: () => void) => () => void;
 };
@@ -50,9 +95,24 @@ export const PRODUCT_ANALYTICS_LOAD_DEADLINE_MS = 15_000;
 
 const WORKSPACE_GROUP_TYPE = "workspace";
 
-async function loadPostHog(): Promise<ProductAnalyticsClient> {
-  const module = await import("posthog-js");
-  return module.default;
+/** PostHog's browser build, served by the assets host through the proxy. */
+export const POSTHOG_SCRIPT_PATH = "/static/array.js";
+
+type WindowWithPostHog = Window & { posthog?: Partial<ProductAnalyticsClient> };
+
+function loadPostHog(config: BrowserAnalyticsConfig): Promise<ProductAnalyticsClient> {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `${config.apiHost}${POSTHOG_SCRIPT_PATH}`;
+    script.async = true;
+    script.onload = () => {
+      const client = (window as WindowWithPostHog).posthog;
+      if (client && typeof client.init === "function") resolve(client as ProductAnalyticsClient);
+      else reject(new Error("posthog_script_did_not_load"));
+    };
+    script.onerror = () => reject(new Error("posthog_script_did_not_load"));
+    document.head.appendChild(script);
+  });
 }
 
 const GZIP_MAGIC = "\x1f\x8b";
@@ -82,9 +142,9 @@ function redactStrings(value: unknown): unknown {
  * - Redacts secrets in URLs (`$current_url`, `$referrer`, replay meta `href`,
  *   ...): one-time claim and invite tokens and secret query values.
  */
-export function scrubCapturedEvent(event: CaptureResult | null): CaptureResult | null {
+export function scrubCapturedEvent(event: CapturedEvent | null): CapturedEvent | null {
   if (!event) return event;
-  const scrubbed = redactStrings(event) as CaptureResult;
+  const scrubbed = redactStrings(event) as CapturedEvent;
   if (scrubbed.properties) {
     delete scrubbed.properties.title;
     delete scrubbed.properties.$title;
@@ -95,7 +155,7 @@ export function scrubCapturedEvent(event: CaptureResult | null): CaptureResult |
 export function buildPostHogInitOptions(
   config: BrowserAnalyticsConfig,
   apiHostname: string,
-): Partial<PostHogConfig> {
+): PostHogInitOptions {
   return {
     api_host: config.apiHost,
     ...(config.uiHost ? { ui_host: config.uiHost } : {}),
@@ -192,7 +252,7 @@ export function startProductAnalytics(
     cancel?.();
     if (state !== current || current.loading) return;
     current.loading = true;
-    load()
+    load(config)
       .then((client) => {
         if (state !== current) return;
         client.init(config.token, buildPostHogInitOptions(config, window.location.hostname));
@@ -201,7 +261,7 @@ export function startProductAnalytics(
         applyIdentity(client, config);
       })
       .catch(() => {
-        // Analytics must never break the board. A failed chunk load leaves it
+        // Analytics must never break the board. A failed script load leaves it
         // off for this page session.
         if (state === current) current.loading = false;
       });

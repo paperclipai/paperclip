@@ -16,9 +16,11 @@ authenticated `GET /api/auth/get-session` response carries a
 3. `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`.
 
 Otherwise the field is `null`, and the browser loads nothing. When it is set,
-the browser loads `posthog-js` with a dynamic `import()` only after the page
-settles (first paint, page reads finished, browser idle), so cold loads do not
-wait for it.
+the browser loads PostHog's browser script (`/_ph/static/array.js`, through the
+proxy) only after the page settles (first paint, page reads finished, browser
+idle), so cold loads do not wait for it. posthog-js is not an npm dependency
+of the board and is in no bundle chunk; PostHog serves it, as it serves the
+extensions posthog-js loads at run time (recorder, web vitals).
 
 ## Configuration
 

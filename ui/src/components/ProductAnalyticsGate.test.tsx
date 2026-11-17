@@ -8,7 +8,6 @@ import { resetProductAnalyticsForTest } from "@/lib/analytics/product-analytics"
 import { ProductAnalyticsGate } from "./ProductAnalyticsGate";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
-const posthogImported = vi.hoisted(() => vi.fn());
 const posthogMock = vi.hoisted(() => ({
   init: vi.fn(),
   register: vi.fn(),
@@ -21,9 +20,21 @@ vi.mock("@/api/auth", () => ({
   authApi: { getSession: () => getSessionMock() },
 }));
 
-vi.mock("posthog-js", () => {
-  posthogImported();
-  return { default: posthogMock };
+/** PostHog script elements the module adds to the page. */
+function injectedScripts() {
+  return [...document.querySelectorAll("script")].filter((script) => script.src.includes("/static/array.js"));
+}
+
+// jsdom does not fetch scripts: when the module adds PostHog's script, act as
+// the browser would after it loads (the script sets `window.posthog`).
+const appendChild = document.head.appendChild.bind(document.head);
+vi.spyOn(document.head, "appendChild").mockImplementation(<T extends Node>(node: T): T => {
+  const result = appendChild(node);
+  if (node instanceof HTMLScriptElement && node.src.includes("/static/array.js")) {
+    (window as unknown as { posthog: typeof posthogMock }).posthog = posthogMock;
+    queueMicrotask(() => node.onload?.(new Event("load")));
+  }
+  return result;
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -61,6 +72,8 @@ describe("ProductAnalyticsGate", () => {
     vi.useRealTimers();
     container.remove();
     resetProductAnalyticsForTest();
+    for (const script of injectedScripts()) script.remove();
+    delete (window as unknown as { posthog?: unknown }).posthog;
     vi.clearAllMocks();
   });
 
@@ -77,18 +90,18 @@ describe("ProductAnalyticsGate", () => {
     return root;
   }
 
-  it("imports nothing and does nothing when the session has no analytics config (self-hosted)", async () => {
+  it("loads nothing and does nothing when the session has no analytics config (self-hosted)", async () => {
     getSessionMock.mockResolvedValue(session(null));
     const root = await renderGate();
-    expect(posthogImported).not.toHaveBeenCalled();
+    expect(injectedScripts()).toHaveLength(0);
     expect(posthogMock.init).not.toHaveBeenCalled();
     act(() => root.unmount());
   });
 
-  it("imports nothing when signed out", async () => {
+  it("loads nothing when signed out", async () => {
     getSessionMock.mockResolvedValue(null);
     const root = await renderGate();
-    expect(posthogImported).not.toHaveBeenCalled();
+    expect(injectedScripts()).toHaveLength(0);
     act(() => root.unmount());
   });
 
@@ -102,6 +115,8 @@ describe("ProductAnalyticsGate", () => {
       replayEnabled: false,
     }));
     const root = await renderGate();
+    // PostHog's script comes through the same-origin proxy, never from PostHog directly.
+    expect(injectedScripts().map((script) => new URL(script.src).pathname)).toEqual(["/_ph/static/array.js"]);
     expect(posthogMock.init).toHaveBeenCalledWith("phc_test", expect.objectContaining({ disable_session_recording: true }));
     expect(posthogMock.identify).toHaveBeenCalledWith("user-1", { email: "jane@example.com", name: "Jane" });
     expect(posthogMock.group).toHaveBeenCalledWith("workspace", "stack-1");
