@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { NativeSelect } from "@/components/ui/select";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { AppLogo } from "@/pages/apps/AppLogo";
+import { GOOGLE_WORKSPACE_PRIVACY_POLICY_URL, googleWorkspaceDataUseDisclosure } from "./googleWorkspaceDisclosure";
 
 export function GoogleWorkspaceServiceFields({ value, onChange }: {
   value: GoogleWorkspaceServiceSelection;
@@ -77,17 +78,38 @@ export function GoogleWorkspaceServicesDialog(props: DialogProps) {
   return <ServicePicker {...props} initial={props.initial ?? (pendingScopes ? googleWorkspaceSelectionForScopes(pendingScopes) : existing ? googleWorkspaceSelectionForScopes(savedScopes) : undefined)} />;
 }
 
+function DataUseDisclosure({ selection }: { selection: GoogleWorkspaceServiceSelection }) {
+  const { access, use } = googleWorkspaceDataUseDisclosure(selection);
+  return <section aria-label="How Paperclip uses your Google data" className="space-y-3 text-sm">
+    <div className="space-y-1">
+      <h3 className="font-medium">What agents can do</h3>
+      <ul className="list-disc space-y-1 pl-5 text-muted-foreground">{access.map(line => <li key={line}>{line}</li>)}</ul>
+    </div>
+    <div className="space-y-1">
+      <h3 className="font-medium">How your data is used</h3>
+      <ul className="list-disc space-y-1 pl-5 text-muted-foreground">{use.map(line => <li key={line}>{line}</li>)}</ul>
+    </div>
+    <p className="text-muted-foreground">
+      <a href={GOOGLE_WORKSPACE_PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer" className="underline">
+        Read our privacy policy, including how we meet Google's Limited Use requirements<span className="sr-only"> (opens in a new tab)</span>
+      </a>
+    </p>
+  </section>;
+}
+
 function ServicePicker({ onContinue, onCancel, initial = GOOGLE_WORKSPACE_DEFAULT_SELECTION }: DialogProps) {
   const [selection, setSelection] = useState(initial);
   const empty = Object.keys(selection).length === 0;
   return <Dialog open onOpenChange={open => { if (!open) onCancel(selection); }}>
-    <DialogContent className="sm:max-w-3xl">
+    <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl">
       <DialogHeader className="text-left">
         <div className="flex items-center gap-3"><AppLogo name="Google Workspace" brandKey="google" size={40} /><DialogTitle>Connect Google Workspace</DialogTitle></div>
         <DialogDescription className="sr-only">Choose the Google services to connect.</DialogDescription>
       </DialogHeader>
       <GoogleWorkspaceServiceFields value={selection} onChange={setSelection} />
-      {empty && <p role="status" className="text-xs text-muted-foreground">Select at least one service to continue.</p>}
+      {empty
+        ? <p role="status" className="text-xs text-muted-foreground">Select at least one service to continue.</p>
+        : <DataUseDisclosure selection={selection} />}
       <footer className="flex items-center justify-between gap-3 pt-4">
         <Button variant="ghost" onClick={() => onCancel(selection)}>Cancel</Button>
         <Button disabled={empty} onClick={() => onContinue(selection)}>Continue</Button>
