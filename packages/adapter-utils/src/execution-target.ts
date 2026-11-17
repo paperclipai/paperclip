@@ -1035,10 +1035,12 @@ export async function runAdapterExecutionTargetShellCommand(
           stdout?: string;
           stderr?: string;
           signal?: string | null;
+          killed?: boolean;
         };
         const stdout = timedOutError.stdout ?? "";
         const stderr = timedOutError.stderr ?? "";
-        if (typeof timedOutError.code === "number") {
+        const timedOut = timedOutError.killed === true || timedOutError.code === "ETIMEDOUT";
+        if (!timedOut && typeof timedOutError.code === "number") {
           if (stdout) await onLog("stdout", stdout);
           if (stderr) await onLog("stderr", stderr);
           return {
@@ -1051,7 +1053,7 @@ export async function runAdapterExecutionTargetShellCommand(
             startedAt,
           };
         }
-        if (timedOutError.code !== "ETIMEDOUT") {
+        if (!timedOut) {
           throw error;
         }
         if (stdout) await onLog("stdout", stdout);
