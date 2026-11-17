@@ -81,8 +81,8 @@ function reportingDbPins(lock, hashes, db, cli) {
       && db.dependencies?.['drizzle-orm'] === drizzle?.specifier
       && cli.dependencies?.postgres === cliPostgres?.specifier) return;
   const postgresVersion = `3.4.9(patch_hash=${hashes.get('postgres@3.4.9')})`;
-  const serverPostgres = reviewedDependency(lock, 'server', 'postgres');
-  if (!postgres || !drizzle || postgres.version !== postgresVersion || serverPostgres?.version !== postgresVersion
+  const serverDrizzle = reviewedDependency(lock, 'server', 'drizzle-orm');
+  if (!postgres || !drizzle || postgres.version !== postgresVersion || serverDrizzle?.version !== drizzle.version
       || drizzle.version.split('(')[0] !== '0.45.2' || !drizzle.version.includes(`postgres@${postgresVersion}`)) fail();
   for (const [name, pin, entry] of [['postgres', '3.4.9', postgres], ['drizzle-orm', '0.45.2', drizzle]]) {
     if (![pin, `^${pin}`].includes(entry.specifier) || db.dependencies?.[name] !== pin) fail();

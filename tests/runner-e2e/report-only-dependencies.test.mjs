@@ -1,9 +1,11 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, stat, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { parse } from 'yaml';
 import { prepareReportLock } from './prepare-report-lock.mjs';
 import { withReportingDependencies, reportingPnpmArguments } from './report-only-dependencies.mjs';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -24,7 +26,7 @@ async function fixture(run, mutate = async () => {}) {
     await writeFile(path.join(root, 'pnpm-lock.yaml'),
       "  cli:\n    dependencies:\n      tsx:\n        specifier: ^4.23.15\n        version: 4.23.15\n"
       + "  packages/db:\n    dependencies:\n      drizzle-orm:\n        specifier: ^0.45.2\n        version: 0.45.2(postgres@3.4.9(patch_hash=abc123))\n      postgres:\n        specifier: ^3.4.9\n        version: 3.4.9(patch_hash=abc123)\n"
-      + "  server:\n    dependencies:\n      postgres:\n        specifier: 3.4.9\n        version: 3.4.9(patch_hash=abc123)\n", { flag: 'a' });
+      + "  server:\n    dependencies:\n      drizzle-orm:\n        specifier: ^0.45.2\n        version: 0.45.2(postgres@3.4.9(patch_hash=abc123))\n", { flag: 'a' });
     await writeFile(path.join(directory, 'report-lock.patch'), 'authenticated fixture patch\n');
     const lock = await readFile(path.join(root, 'pnpm-lock.yaml')), patch = await readFile(path.join(directory, 'report-lock.patch'));
     await writeFile(path.join(directory, 'report-lock.json'), JSON.stringify({ outputSha256: digest(lock), patchSha256: digest(patch) }));
@@ -168,4 +170,48 @@ test('canonical-aligned other versions leave every reporting manifest unchanged 
   await writeFile(lockPath, lock);
   const policyPath = path.join(root, 'tests/runner-e2e/report-lock.json'), policy = JSON.parse(await readFile(policyPath, 'utf8'));
   policy.outputSha256 = digest(lock); await writeFile(policyPath, JSON.stringify(policy));
+}));
+
+test('Server drizzle peer mismatch refuses before any reporting projection', () => fixture(async root => {
+  await assert.rejects(withReportingDependencies(root, async () => assert.fail('installer entered')));
+}, async root => {
+  const lockPath = path.join(root, 'pnpm-lock.yaml');
+  const lock = (await readFile(lockPath, 'utf8')).replace(
+    '  server:\n    dependencies:\n      drizzle-orm:\n        specifier: ^0.45.2\n        version: 0.45.2(postgres@3.4.9(patch_hash=abc123))',
+    '  server:\n    dependencies:\n      drizzle-orm:\n        specifier: ^0.45.2\n        version: 0.45.2(postgres@3.4.9(patch_hash=different))');
+  await writeFile(lockPath, lock);
+  const policyPath = path.join(root, 'tests/runner-e2e/report-lock.json'), policy = JSON.parse(await readFile(policyPath, 'utf8'));
+  policy.outputSha256 = digest(lock); await writeFile(policyPath, JSON.stringify(policy));
+}));
+test('actual repository canonical reporting profile projects and restores real Source manifests', () => fixture(async root => {
+  const lock = parse(await readFile(path.join(root, 'pnpm-lock.yaml'), 'utf8'));
+  const inventory = Object.fromEntries(Object.entries(lock.patchedDependencies).map(([name, item]) => [name, item.path]));
+  let entered = false;
+  await withReportingDependencies(root, async () => {
+    entered = true;
+    const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+    const workspace = parse(await readFile(path.join(root, 'pnpm-workspace.yaml'), 'utf8'));
+    assert.deepEqual(manifest.pnpm.patchedDependencies, inventory);
+    assert.deepEqual(workspace.patchedDependencies, inventory);
+    for (const directory of ['.', 'packages/db', 'cli']) {
+      const source = JSON.parse(await readFile(path.join(root, directory, 'package.json'), 'utf8'));
+      for (const group of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+        const actual = Object.fromEntries(Object.entries(source[group] ?? {}).map(([name, value]) => [name, workspace.overrides?.[name] ?? value]));
+        const expected = Object.fromEntries(Object.entries(lock.importers[directory][group] ?? {}).map(([name, item]) => [name, item.specifier]));
+        assert.deepEqual(actual, expected, `${directory}:${group}`);
+      }
+    }
+  });
+  assert.equal(entered, true);
+}, async root => {
+  const repository = path.resolve(import.meta.dirname, '../..');
+  for (const file of ['package.json', 'pnpm-workspace.yaml', 'packages/db/package.json', 'cli/package.json']) {
+    await copyFile(path.join(repository, file), path.join(root, file));
+  }
+  // CI may install from an ephemeral resolved overlay. The reporting fixture
+  // authenticates the committed canonical policy/lock, never relabels that overlay.
+  for (const file of ['pnpm-lock.yaml', 'tests/runner-e2e/report-lock.json', 'tests/runner-e2e/report-lock.patch']) {
+    await writeFile(path.join(root, file), execFileSync('git', ['show', `HEAD:${file}`], { cwd: repository }));
+  }
+  await prepareReportLock(root);
 }));
