@@ -33,6 +33,7 @@ const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 const LISTENER_ACCEPT_INTERVAL: Duration = Duration::from_millis(10);
+pub(crate) const LISTENER_CONTROLLER_SILENCE: Duration = Duration::from_secs(90);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -936,6 +937,7 @@ pub(crate) struct AuthenticatedTransport {
     socket: RunnerSocket,
     secure_channel: SecureChannel,
     max_frame_bytes: usize,
+    last_inbound: Instant,
 }
 
 #[derive(Debug)]
@@ -1114,6 +1116,7 @@ impl AuthenticatedTransport {
                 socket,
                 secure_channel,
                 max_frame_bytes: config.max_frame_bytes,
+                last_inbound: Instant::now(),
             };
             // Ticket validation and lease persistence happen before the server
             // emits welcome. Give that durable admission the connection setup
@@ -1189,12 +1192,20 @@ impl AuthenticatedTransport {
         &mut self,
         deadline: Option<Instant>,
     ) -> Result<Option<Value>, DurableRunnerError> {
-        let frame =
-            match receive_plain_optional_until(&mut self.socket, self.max_frame_bytes, deadline)? {
-                Some(frame) => frame,
-                None => return Ok(None),
-            };
+        let frame = match receive_plain_optional_until_observed(
+            &mut self.socket,
+            self.max_frame_bytes,
+            deadline,
+            Some(&mut self.last_inbound),
+        )? {
+            Some(frame) => frame,
+            None => return Ok(None),
+        };
         self.secure_channel.decrypt(&frame, false).map(Some)
+    }
+
+    pub(crate) fn listener_controller_silent_for(&self, silence: Duration) -> bool {
+        matches!(self.socket, RunnerSocket::Listen(_)) && self.last_inbound.elapsed() >= silence
     }
 }
 
@@ -1623,6 +1634,15 @@ fn receive_plain_optional_until(
     max_frame_bytes: usize,
     deadline: Option<Instant>,
 ) -> Result<Option<Value>, DurableRunnerError> {
+    receive_plain_optional_until_observed(socket, max_frame_bytes, deadline, None)
+}
+
+fn receive_plain_optional_until_observed(
+    socket: &mut (impl WebSocketMessages + ?Sized),
+    max_frame_bytes: usize,
+    deadline: Option<Instant>,
+    mut last_inbound: Option<&mut Instant>,
+) -> Result<Option<Value>, DurableRunnerError> {
     loop {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(DurableRunnerError::invalid(
@@ -1634,6 +1654,9 @@ fn receive_plain_optional_until(
             return Err(DurableRunnerError::invalid(
                 "WebSocket authentication message deadline elapsed",
             ));
+        }
+        if let (Ok(_), Some(last_inbound)) = (&message, last_inbound.as_deref_mut()) {
+            *last_inbound = Instant::now();
         }
         match message {
             Ok(Message::Text(text)) => {
@@ -2410,6 +2433,83 @@ mod tests {
     }
 
     #[test]
+    fn listener_reports_a_controller_that_stops_sending_frames() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let path = "/api/runner/v1/connect/run_1".to_owned();
+        let endpoint = RunnerTransportEndpoint::Listen {
+            listener,
+            path: path.clone(),
+        };
+        let config = config(address.port());
+        let state = test_state(&config);
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+        let (connected, peer_connected) = mpsc::channel();
+        let (ping, send_ping) = mpsc::channel::<()>();
+        let (release, held) = mpsc::channel::<()>();
+        let peer_config = config.clone();
+        let peer_state = state.clone();
+        let peer = thread::spawn(move || {
+            let stream = TcpStream::connect(address).unwrap();
+            connected.send(()).unwrap();
+            let (mut socket, _) = client(format!("ws://{address}{path}"), stream).unwrap();
+            let expires = current_unix_ms().unwrap() + 60_000;
+            let mut secure = server_authenticate(
+                &mut socket,
+                &peer_config,
+                &peer_state,
+                ServerCredential {
+                    token: "bootstrap-secret",
+                    kind: "bootstrap",
+                    lease_id: None,
+                    expires_at_unix_ms: expires,
+                    revocation_epoch: 0,
+                },
+            );
+            send_secure(
+                &mut socket,
+                &mut secure,
+                &peer_config,
+                &welcome(
+                    &peer_state,
+                    "connection_1",
+                    Some("lease-secret"),
+                    expires,
+                    0,
+                    vec![],
+                ),
+            );
+            send_ping.recv().unwrap();
+            socket.send(Message::Ping(Vec::new().into())).unwrap();
+            held.recv().unwrap();
+        });
+        peer_connected.recv().unwrap();
+        let (mut transport, _) = AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        )
+        .unwrap()
+        .unwrap();
+        let silence = Duration::from_millis(400);
+        assert!(!transport.listener_controller_silent_for(silence));
+        thread::sleep(Duration::from_millis(300));
+        ping.send(()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        assert!(transport.receive_json().unwrap().is_none());
+        assert!(!transport.listener_controller_silent_for(silence));
+        thread::sleep(silence);
+        assert!(transport.receive_json().unwrap().is_none());
+        assert!(transport.listener_controller_silent_for(silence));
+        release.send(()).unwrap();
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn secure_frames_reject_replay_and_tampering() {
         let key = [7_u8; 32];
         let mut client = SecureChannel::client(&key, b"challenge", b"server", b"client").unwrap();
@@ -2503,6 +2603,7 @@ mod tests {
             transport.socket.read_timeout().unwrap(),
             Some(RUNTIME_READ_TIMEOUT)
         );
+        assert!(!transport.listener_controller_silent_for(Duration::ZERO));
     }
 
     #[test]
