@@ -95,6 +95,13 @@ type Hold = { reason: string; checks: number; checkedAt: string; recheckAt: stri
     expect(s.inspections()).toBe(6);
     await s.sweep();
     expect(s.inspections()).toBe(6);
+
+    s.svc.terminalWorkspaceWorkSettled(new Set(["plugin-workspaces"]), { targeted: true });
+    s.clock += 1;
+    await s.sweep();
+    expect(s.inspections()).toBe(7);
+    await s.sweep();
+    expect(s.inspections()).toBe(7);
     expect(s.removals()).toBe(0);
   });
 

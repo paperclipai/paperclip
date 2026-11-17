@@ -39,7 +39,7 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_PLUGIN_HINT, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
 import {
   clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
   TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
@@ -2309,7 +2309,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const rows = await db.select({ id: issues.id, workspaceId: issues.executionWorkspaceId }).from(issues).where(and(
       inArray(issues.companyId, [...new Set(workspaces.map(workspace => workspace.companyId))]),
       inArray(issues.executionWorkspaceId, workspaces.map(workspace => workspace.id))));
-    for (const row of rows) if (row.workspaceId) linked.set(row.workspaceId, [...(linked.get(row.workspaceId) ?? []), row.id]);
+    for (const row of rows) {
+      if (!row.workspaceId) continue;
+      const ids = linked.get(row.workspaceId);
+      if (ids) ids.push(row.id);
+      else linked.set(row.workspaceId, [row.id]);
+    }
     return linked;
   }
 
@@ -4516,8 +4521,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else for (const [id, skip] of taskDirectoryRowSkips) if (`issue:${skip.issueId}` === hint) taskDirectoryRowSkips.delete(id);
         }
       }
+      // A provider refresh (activation, upgrade, capability change, company
+      // re-enablement) can change how any plugin workspace inspects, and holds
+      // apply only to plugin workspaces, so it ends every hold.
       const resetAt = now().getTime();
-      if (!hints) terminalHoldResetAllAt = resetAt;
+      if (!hints || hints.has(TERMINAL_WORKSPACE_PLUGIN_HINT)) terminalHoldResetAllAt = resetAt;
       for (const hint of hints ?? []) {
         if (!hint.startsWith("workspace:") && !hint.startsWith("issue:")) continue;
         if (terminalHoldResets.size >= TERMINAL_HOLD_RESET_LIMIT) {
