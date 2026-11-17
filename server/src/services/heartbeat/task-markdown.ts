@@ -7,6 +7,7 @@ import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from "../onboarding-chat-prompt.js";
 
 export function buildPaperclipTaskMarkdown(input: {
+  companyPrefix?: string | null;
   onboardingChat?: boolean;
   onboardingGreeting?: boolean;
   issue: {
@@ -92,10 +93,9 @@ export function buildPaperclipTaskMarkdown(input: {
     return [fence + "text", value, fence].join("\n");
   };
   const issue = input.issue;
-  // Chat guidance names company pages as /<prefix>/...; a model can copy that
-  // placeholder verbatim into a link the person clicks. The conversation's own
-  // identifier (COM-1 -> COM) is the company prefix, so hand the agent real paths.
-  const companyPagePrefix = /^(.+)-\d+$/.exec(issue?.identifier ?? "")?.[1] ?? null;
+  // Unnumbered chats get the company's prefix directly. Legacy numbered chats
+  // can fall back to their identifier so guidance always names real page paths.
+  const companyPagePrefix = input.companyPrefix ?? /^(.+)-\d+$/.exec(issue?.identifier ?? "")?.[1] ?? null;
   const companyPages = (text: string) =>
     companyPagePrefix ? text.replaceAll("/<prefix>/", `/${companyPagePrefix}/`) : text;
   const ancestors = (input.ancestors ?? []).slice(0, 6);

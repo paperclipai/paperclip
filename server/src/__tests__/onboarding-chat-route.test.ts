@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, authUsers, companyOnboardingSeeds, goals, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { agents, agentWakeupRequests, authUsers, companies, companyOnboardingSeeds, goals, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { onboardingChatRoutes } from "../routes/onboarding-chat.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -29,6 +29,26 @@ describeEmbeddedPostgres("onboarding chat", () => {
     const path = `/api/companies/${owner.companyId}/chats/${agent.id}/onboarding`;
     return { ...owner, agent, wakeup, app, path };
   }
+
+  it("keeps chats out of the task sequence, including repeated and concurrent onboarding opens", async () => {
+    const { companyId, app, path } = await setup();
+    const opened = await Promise.all([request(app).post(path), request(app).post(path)]);
+    for (const response of opened) {
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ identifier: null, issueNumber: null });
+    }
+    const [colleague] = await ctx.db.insert(agents).values({ companyId, name: "Grace", role: "engineer", status: "idle", adapterType: "process" }).returning();
+    const secondChat = await request(app).post(`/api/companies/${companyId}/chats/${colleague.id}/onboarding`);
+    expect(secondChat.status).toBe(200);
+    expect(secondChat.body).toMatchObject({ identifier: null, issueNumber: null });
+    const [company] = await ctx.db.select().from(companies).where(eq(companies.id, companyId));
+    expect(company.issueCounter).toBe(0);
+    const tasks = await Promise.all(Array.from({ length: 3 }, (_, index) =>
+      issueService(ctx.db).create(companyId, { title: `Accepted task ${index}`, status: "backlog" }),
+    ));
+    expect(tasks.map(task => task.issueNumber).sort()).toEqual([1, 2, 3]);
+    expect(tasks.map(task => task.identifier).sort()).toEqual([1, 2, 3].map(number => `${company.issuePrefix}-${number}`));
+  });
 
   it("opens one owner-bound chat with signup context, zero execution tasks, zero projects, and no early wake", async () => {
     const { companyId, userId, agent, app, path, wakeup } = await setup();
@@ -124,7 +144,7 @@ describeEmbeddedPostgres("onboarding chat", () => {
     const accepted = await interactions.acceptInteraction(chat, proposal.id, {}, { userId });
     expect(accepted.createdIssues).toHaveLength(1);
     const [task] = await issueService(ctx.db).list(companyId);
-    expect(task).toMatchObject({ title: "Draft the editorial plan", parentId: null, assigneeAgentId: agent.id });
+    expect(task).toMatchObject({ title: "Draft the editorial plan", parentId: null, assigneeAgentId: agent.id, issueNumber: 1 });
     expect((await documentService(ctx.db).getIssueDocumentByKey(task.id, "plan"))?.body).toBe(plan);
     await expect(interactions.acceptInteraction(chat, proposal.id, {}, { userId })).rejects.toThrow("already been resolved");
     expect(await issueService(ctx.db).list(companyId)).toHaveLength(1);
