@@ -8,6 +8,7 @@ import type {
 } from "@paperclipai/shared";
 import { Loader2, X } from "lucide-react";
 import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { responsibilityDashboardApi } from "@/api/responsibility-dashboard";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -172,6 +173,7 @@ function VersionsDialog({
     // Opening the list saves changes made by hand first, so read it fresh each time.
     staleTime: 0,
   });
+  const versions = useQueryView(query);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
@@ -179,15 +181,15 @@ function VersionsDialog({
           <DialogTitle>Previous versions</DialogTitle>
           <DialogDescription className="sr-only">Saved versions of your dashboard, newest first.</DialogDescription>
         </DialogHeader>
-        {query.data ? (
+        {versions.kind === "error" ? (
+          <QueryErrorState error={versions.error} size="inline" action="load the versions" onRetry={versions.retry} retrying={versions.isFetching} />
+        ) : versions.data ? (
           <DashboardVersionList
-            list={query.data}
+            list={versions.data}
             agentsById={agentsById}
             restoringId={restore.isPending ? restore.variables ?? null : null}
             onRestore={(versionId) => restore.mutate(versionId)}
           />
-        ) : query.error ? (
-          <p role="alert" className="text-sm text-destructive">Couldn’t load the versions. {describeError(query.error).body}</p>
         ) : (
           <Loader2 aria-label="Loading" className="size-4 animate-spin text-muted-foreground" />
         )}

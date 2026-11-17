@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Agent, CompanyArtifact, ResponsibilityProjectSummary, ResponsibilityRoutineSummary } from "@paperclipai/shared";
 import { FileText, MoreHorizontal, Plus } from "lucide-react";
 import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { routinesApi } from "@/api/routines";
 import { glyphOf, subjectFromCompanyArtifact } from "@/components/artifacts/v1/kinds";
@@ -229,6 +230,7 @@ export function ResponsibilityOneScreenV2({
   const [showAllTasks, setShowAllTasks] = useState(false);
   const [showDoneTasks, setShowDoneTasks] = useState(false);
   const runs = useResponsibilityRuns(responsibility.id);
+  const runsView = useQueryView(runs);
 
   const linkedIds = useMemo(() => ({
     project: new Set(responsibility.projects.map((project) => project.id)),
@@ -490,8 +492,8 @@ export function ResponsibilityOneScreenV2({
           section="runs"
           title={SECTION_TITLE.runs}
           add={runsAdd}
-          empty={!runs.data && runs.error ? (
-            <span role="alert" className="text-destructive">Couldn’t load the runs. {describeError(runs.error).body}</span>
+          empty={runsView.kind === "error" ? (
+            <QueryErrorState error={runsView.error} size="inline" action="load the runs" onRetry={runsView.retry} retrying={runsView.isFetching} />
           ) : !runs.data ? (
             <span role="status">Loading…</span>
           ) : runs.data.runs.length === 0 ? "None yet." : null}
@@ -499,7 +501,7 @@ export function ResponsibilityOneScreenV2({
             <SectionTableNote alert>Couldn’t start the run. {describeError(runNow.error).body}</SectionTableNote>
           ) : null}
         >
-          {runs.data?.runs.map((run) => {
+          {(runsView.kind === "error" ? [] : runs.data?.runs ?? []).map((run) => {
             const stat = runStat(run, now);
             return (
               <SectionTableRow

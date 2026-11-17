@@ -11,6 +11,7 @@ import {
   latestChangeFixture,
 } from "../../../storybook/fixtures/responsibility-dashboard";
 import { DASHBOARD_UNDO_DISMISSED_STORAGE_KEY } from "@/lib/responsibility-dashboard";
+import { ApiError } from "@/api/api-error";
 import { DashboardEditModule } from "./DashboardEditModule";
 
 const api = vi.hoisted(() => ({ state: vi.fn(), start: vi.fn(), versions: vi.fn(), restore: vi.fn(), accept: vi.fn(), decline: vi.fn() }));
@@ -154,5 +155,27 @@ describe("DashboardEditModule", () => {
     await flush();
     expect(api.versions).toHaveBeenCalledWith("company-storybook", "user-storybook");
     expect(api.restore).toHaveBeenCalledExactlyOnceWith("version-2");
+  });
+
+  it("shows a failed refresh of the versions instead of the old list", async () => {
+    api.state.mockResolvedValue(dashboardStateFixture("populated"));
+    api.versions.mockResolvedValueOnce(dashboardVersionsFixture);
+    await render(false);
+    await act(async () => button("Versions").click());
+    await flush();
+    expect(document.querySelectorAll('[role="dialog"] li')).toHaveLength(5);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flush();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    api.versions.mockRejectedValue(new ApiError("Not allowed", 403, { error: "forbidden" }));
+    await act(async () => button("Versions").click());
+    await flush();
+    await flush();
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(dialog.querySelectorAll("li")).toHaveLength(0);
   });
 });

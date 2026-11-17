@@ -4,6 +4,7 @@ import type { LinkResponsibility } from "@paperclipai/shared";
 import { Plus } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { issuesApi } from "@/api/issues";
 import { responsibilitiesApi, type ResponsibilityLinkResult } from "@/api/responsibilities";
 import { routinesApi } from "@/api/routines";
@@ -116,6 +117,14 @@ export function AddExistingWorkPicker({
   const available = useMemo(() => options.filter((option) => !linkedIds.has(option.id)), [options, linkedIds]);
 
   const source = kind === "project" ? projects : kind === "routine" ? routines : tasks;
+  const sourceView = useQueryView<unknown>({
+    data: source.data,
+    error: source.error,
+    status: source.status,
+    fetchStatus: source.fetchStatus,
+    failureReason: source.failureReason,
+    refetch: source.refetch,
+  });
 
   const link = useMutation({
     mutationFn: (id: string) => responsibilitiesApi.link(responsibilityId, linkBody(kind, id)),
@@ -155,12 +164,18 @@ export function AddExistingWorkPicker({
             aria-label={`Search ${NOUN[kind]}s`}
           />
           <CommandList>
-            {source.isPending ? (
+            {sourceView.kind === "error" ? (
+              <div className="px-3 py-4">
+                <QueryErrorState
+                  error={sourceView.error}
+                  size="inline"
+                  action={`load ${NOUN[kind]}s`}
+                  onRetry={sourceView.retry}
+                  retrying={sourceView.isFetching}
+                />
+              </div>
+            ) : !sourceView.data ? (
               <p className="px-3 py-4 text-sm text-muted-foreground" role="status">Loading…</p>
-            ) : !source.data && source.error ? (
-              <p className="px-3 py-4 text-sm text-destructive" role="alert">
-                Couldn’t load {NOUN[kind]}s. {describeError(source.error).body}
-              </p>
             ) : (
               <>
                 <CommandEmpty>

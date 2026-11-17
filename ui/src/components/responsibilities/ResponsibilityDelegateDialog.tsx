@@ -5,6 +5,7 @@ import { CircleCheck } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { SearchableSelect, type SearchableSelectGroup, type SearchableSelectOption } from "@/components/SearchableSelect";
 import { Button } from "@/components/ui/button";
@@ -81,6 +82,7 @@ export function ResponsibilityDelegateDialog({
     queryFn: () => agentsApi.list(companyId),
     enabled: open && !!companyId,
   });
+  const agentsView = useQueryView(agentsQuery);
   const ordered = useMemo(
     () => orderDelegationAgents(agentsQuery.data ?? [], primaryAgentId),
     [agentsQuery.data, primaryAgentId],
@@ -208,10 +210,14 @@ export function ResponsibilityDelegateDialog({
                 triggerAriaLabel="Agent"
                 disablePortal
               />
-              {!agentsQuery.data && agentsQuery.error ? (
-                <p role="alert" className="text-sm text-destructive">
-                  Couldn’t load agents. {describeError(agentsQuery.error).body}
-                </p>
+              {agentsView.kind === "error" ? (
+                <QueryErrorState
+                  error={agentsView.error}
+                  size="inline"
+                  action="load agents"
+                  onRetry={agentsView.retry}
+                  retrying={agentsView.isFetching}
+                />
               ) : null}
             </div>
 
