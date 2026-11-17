@@ -94,7 +94,7 @@ and needs real IDs instead.
 
 | What | PostHog field | Value |
 | --- | --- | --- |
-| Workspace | group `workspace`, key | Stack ID (`PAPERCLIP_CLOUD_STACK_ID`) |
+| Workspace | group `workspace`, key | Raw stack ID (`PAPERCLIP_CLOUD_STACK_ID`), the same key on server and browser |
 | Workspace properties | `$groupidentify` | stack slug, primary host, plan, created_at |
 | Person (browser) | `distinct_id` via `identify()` | Paperclip user ID |
 | Person properties | `$set` | email, name (decided 2026-11-17). Set only on the person profile, never on event properties, so deleting the person removes them |
@@ -118,7 +118,8 @@ for workspaces that existed before the switch.
   the stack as `PAPERCLIP_POSTHOG_LEGACY_DISTINCT_ID`. The key is used on one
   machine, once, and never stored in the fleet, the stack or Paperclip.
 - On a stack that has the variable, the server:
-  1. Sends `$groupidentify` for `workspace:<stackId>` with
+  1. Sends `$groupidentify` for group type `workspace`, key `<stackId>`
+     (the raw stack ID, the same key the browser uses), with
      `legacy_distinct_id`. HogQL can then join pre-switch events to the
      workspace.
   2. Keeps sending events with no acting person under the legacy ID, so
@@ -200,7 +201,9 @@ the collector or directly to PostHog, never both.
 ### Phase 2: browser analytics on Cloud (paperclip repo, one PR)
 
 - Server sends `{ token, apiHost }` to the UI in the existing instance or health
-  bootstrap response, only when the server is Cloud and the token is set. The
+  bootstrap response, only when the server is Cloud, the token is set, and
+  `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`. A token alone leaves browser
+  analytics off (tested). The
   token is never baked in at build time, because the same UI ships in the OSS
   npm package.
 - The UI loads `posthog-js` with dynamic `import()` after first paint, and only
@@ -234,7 +237,9 @@ the collector or directly to PostHog, never both.
 - One-time script: for each live stack, read the install ID, compute the legacy
   ID locally, and set `PAPERCLIP_POSTHOG_LEGACY_DISTINCT_ID` on that stack.
   Record how many stacks were set and how many were skipped.
-- Remove the Cloud ingest URL setting once direct sending is live everywhere.
+- Keep the Cloud ingest URL setting while the `PAPERCLIP_POSTHOG_DIRECT=0`
+  rollback is supported. Rollback relies on it to reach the Cloud path and
+  keep the `cloud` label.
 
 ### Phase 4: rollout
 
@@ -249,8 +254,9 @@ the collector or directly to PostHog, never both.
    release is needed to switch back.
 3. In PostHog, set the project's internal/test filter to exclude
    `environment = staging`.
-4. Optional cleanup: once no `deployment_source = cloud` events reach the
-   collector for 7 days, remove the backend's Cloud ingest path.
+4. Optional cleanup, only after the `PAPERCLIP_POSTHOG_DIRECT=0` rollback is
+   retired: remove the Cloud ingest URL setting and the backend's Cloud
+   ingest path.
 
 ## Success criteria
 
