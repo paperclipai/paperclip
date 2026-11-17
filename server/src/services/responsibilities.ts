@@ -1421,6 +1421,8 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
      * correction of a reading already there). A reading older than the one the
      * row shows, checked under the row lock, only joins the history
      * (`olderReading`), so concurrent reports cannot replace a newer number.
+     * Only a plain reading is compared: a patch that also changes the bar
+     * always takes the reading it supplies.
      */
     async update(
       existing: ResponsibilityRow,
@@ -1487,7 +1489,8 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
           .where(and(eq(responsibilities.id, existing.id), eq(responsibilities.companyId, existing.companyId)))
           .for("update");
         if (!locked) throw notFound("Responsibility not found");
-        const olderReading = patch.metricCurrent !== undefined && patch.metricCurrent !== null
+        const plainReading = Object.entries(patch).every(([key, value]) => key === "metricCurrent" || value === undefined);
+        const olderReading = plainReading && patch.metricCurrent !== undefined && patch.metricCurrent !== null
           && locked.metricCurrent !== null && locked.metricUpdatedAt !== null
           && new Date(locked.metricUpdatedAt).getTime() > readingAt.getTime();
         if (olderReading) {

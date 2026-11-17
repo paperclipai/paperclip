@@ -275,6 +275,15 @@ describeEmbeddedPostgres("responsibility metric sets", () => {
       const readings = await read(seeded.app, seeded.id);
       expect(readings.body.metrics[0].readings.map((reading: { value: number }) => reading.value)).toEqual([9, 4, 13]);
     });
+
+    it("takes the reading a bar change supplies, even behind a reading dated ahead", async () => {
+      const seeded = await seed();
+      await db.update(responsibilities).set({ metricUpdatedAt: new Date(Date.now() + 50_000) }).where(eq(responsibilities.id, seeded.id));
+      const changed = await request(seeded.app).patch(`/api/responsibilities/${seeded.id}`).send({ metricTarget: 30, metricCurrent: 3 });
+      expect(changed.status).toBe(200);
+      const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, seeded.id));
+      expect(row).toMatchObject({ metricTarget: 30, metricCurrent: 3 });
+    });
   });
 
   describe("chosen sets", () => {
