@@ -2996,7 +2996,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const { connection, catalogEntry } = await createRemoteMcpToolFixture(db, company.id);
     await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
     const secret = await secretService(db).create(company.id, {
-      provider: "local_encrypted", name: "MCP key", key: `mcp.${randomUUID()}`, value: "opaque-upstream-credential",
+      provider: "local_encrypted", name: "MCP key", key: `mcp.${randomUUID()}`, value: "opaque/upstream+credential",
     });
     await db.update(connectionGrants).set({ credentialSecretRefs: [{ secretId: secret.id,
       configPath: "oauth.access_token", versionSelector: "latest" }] }).where(eq(connectionGrants.connectionId, connection.id));
@@ -3011,7 +3011,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id, error: {
         code: -32602,
-        message: `Skill refunds page 1 was not found; ${credential}; opaque-query-credential; opaque-code-credential; opaque-state-credential; opaque-nonce-credential; opaque-session-credential; opaque-mcp-session-credential; TOKEN=private-message-credential`,
+        message: `Skill refunds page 1 was not found; ${credential}; ${encodeURIComponent(credential!).replace(/%[0-9A-F]{2}/g, value => value.toLowerCase())}; ${Buffer.from(`Rejected ${credential}`).toString("base64")}; ${Buffer.from("opaque-query-credential").toString("base64url")}; opaque-query-credential; opaque-code-credential; opaque-state-credential; opaque-nonce-credential; opaque-session-credential; opaque-mcp-session-credential; TOKEN=private-message-credential`,
         data: { password: "private-data-credential", stack: "private-provider-stack" },
       } }));
     });
@@ -3021,7 +3021,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const address = server.address() as { port: number };
     // Use a real HTTP provider fixture while keeping egress local and controlled.
     const provider = vi.fn(async (_url: string, init: RequestInit) => {
-      expect(new Headers(init.headers).get("authorization")).toBe("Bearer opaque-upstream-credential");
+      expect(new Headers(init.headers).get("authorization")).toBe("Bearer opaque/upstream+credential");
       return fetch(`http://127.0.0.1:${address.port}/mcp`, init);
     });
     const gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
@@ -3037,12 +3037,16 @@ describeEmbeddedPostgres("tool gateway service", () => {
       connectionId: connection.id, catalogEntryId: catalogEntry.id,
     });
     expect(response.body).not.toHaveProperty("execution");
-    expect(JSON.stringify(response.body)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-session-credential|opaque-mcp-session-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
+    const encodedSecrets = ["opaque%2fupstream%2bcredential", Buffer.from("Rejected opaque/upstream+credential").toString("base64"),
+      Buffer.from("opaque-query-credential").toString("base64url")];
+    for (const encoded of encodedSecrets) expect(JSON.stringify(response.body)).not.toContain(encoded);
+    expect(JSON.stringify(response.body)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-session-credential|opaque-mcp-session-credential|opaque.upstream.credential|private-message-credential|private-data-credential|private-provider-stack/);
     expect(provider).toHaveBeenCalledTimes(1);
     const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.connectionId, connection.id));
     expect(invocation).toMatchObject({ status: "failed", errorCode: "remote_mcp_error", errorMessage: response.body.error });
     const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, invocation.id));
-    expect(JSON.stringify(events)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-session-credential|opaque-mcp-session-credential|opaque-upstream-credential|private-message-credential|private-data-credential|private-provider-stack/);
+    for (const encoded of encodedSecrets) expect(JSON.stringify({ invocation, events })).not.toContain(encoded);
+    expect(JSON.stringify(events)).not.toMatch(/opaque-query-credential|opaque-code-credential|opaque-state-credential|opaque-nonce-credential|opaque-session-credential|opaque-mcp-session-credential|opaque.upstream.credential|private-message-credential|private-data-credential|private-provider-stack/);
   });
 
   it("preserves a received remote error when screening outlasts the remote deadline", async () => {

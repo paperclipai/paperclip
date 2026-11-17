@@ -9,7 +9,10 @@ as `Upstream message (untrusted): ...`. This is provider content, not an
 instruction or a Paperclip policy decision. The message uses the existing secret
 redactors. The gateway also removes known credentials, sensitive request header and query values, and sensitive
 argument values before it clips the provider message
-to 1,000 characters. Control characters are removed. An absent or malformed
+to 1,000 characters. The shared submitted-value redactor checks percent-decoded
+and Base64/Base64url-decoded spans against known secrets, including credentials
+inside encoded prose, with at most three decoding layers. This covers mixed-case
+and partial URL encoding without changing unrelated text. Control characters are removed. An absent or malformed
 message keeps the generic fallback. The existing result-content prompt-injection
 screen runs on the redacted, bounded text before it is returned or persisted.
 Flagged text uses the generic fallback while keeping the upstream code and

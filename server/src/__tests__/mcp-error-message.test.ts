@@ -79,6 +79,20 @@ describe("remote MCP error messages", () => {
     expect(long).toMatch(/\.\.\.$/);
   });
 
+  it("removes decoded credential forms while retaining useful diagnostic text", async () => {
+    const secret = "opaque/value+credential?";
+    const lower = encodeURIComponent(secret).replace(/%[0-9A-F]{2}/g, value => value.toLowerCase());
+    const partial = secret.replace("opaque", "%6fpaque");
+    const wrapped = Buffer.from(`rejected credential ${secret}`).toString("base64");
+    const nested = encodeURIComponent(Buffer.from(secret).toString("base64"));
+    for (const encoded of [lower, `${lower}%ZZ`, partial, wrapped, nested, Buffer.from(secret).toString("base64url")]) {
+      const result = await mcpErrorMessage(fallback, { message: `Invalid schema ${encoded}` }, { Authorization: `Bearer ${secret}` });
+      expect(result).toContain("Invalid schema");
+      expect(result).not.toContain(encoded);
+      expect(result).not.toContain(secret);
+    }
+  });
+
   it("uses existing pattern redaction and removes control characters", async () => {
     const result = await mcpErrorMessage(fallback, {
       message: "Bad arguments\n\u001b[31m TOKEN=some-private-value Authorization: Bearer other-private-value\u202e",
