@@ -20,6 +20,6 @@ async function currentSid(): Promise<string> {
 export async function setWindowsRuntimeTreeReadOnly(root: string, readOnly: boolean): Promise<void> {
   const sid = await currentSid();
   await execute(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "icacls.exe"),
-    readOnly ? [root, "/deny", `*${sid}:(OI)(CI)(WD,AD,WEA,WA)`] : [root, "/remove:d", `*${sid}`, "/T", "/C", "/L"],
-    { windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024 });
+    readOnly ? [root, "/deny", `*${sid}:(OI)(CI)(WD,AD,WEA,WA)`, "/Q"] : [root, "/remove:d", `*${sid}`, "/T", "/C", "/L", "/Q"],
+    { windowsHide: true, timeout: 300_000, maxBuffer: 1024 * 1024 });
 }
