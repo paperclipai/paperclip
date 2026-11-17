@@ -1,5 +1,5 @@
 import { useQueryView } from "@/components/QueryView";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_SERVICE_GROUPS, googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectionForScopes, type GoogleWorkspaceServiceSelection, type ToolConnection } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
@@ -35,6 +35,31 @@ export function GoogleWorkspaceServiceFields({ value, onChange }: {
         }} />
     </div>)}
   </div>;
+}
+
+export function isGoogleWorkspaceConnection(connection: Pick<ToolConnection, "config">): boolean {
+  return connection.config?.sourceTemplateKey === "google-workspace";
+}
+
+/**
+ * Every Google Workspace sign-in must pass through the service picker, so its
+ * data-use disclosure always comes immediately before Google's consent screen.
+ * Other connections start right away with no selection.
+ */
+export function useGoogleWorkspaceServiceGate(): {
+  dialog: ReactNode;
+  run: (connection: ToolConnection, start: (selection?: GoogleWorkspaceServiceSelection) => void) => void;
+} {
+  const [pending, setPending] = useState<{ connection: ToolConnection; start: (selection: GoogleWorkspaceServiceSelection) => void } | null>(null);
+  return {
+    dialog: pending ? <GoogleWorkspaceServicesDialog connection={pending.connection}
+      onCancel={() => setPending(null)}
+      onContinue={selection => { setPending(null); pending.start(selection); }} /> : null,
+    run: (connection, start) => {
+      if (isGoogleWorkspaceConnection(connection)) setPending({ connection, start });
+      else start();
+    },
+  };
 }
 
 type DialogProps = {

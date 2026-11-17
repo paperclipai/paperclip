@@ -1,6 +1,6 @@
 import { AppNotFound, AppReadError } from "./app-detail/AppReadError";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
-import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
+import { aiConnectionRouterPluginKey, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
 import { ConnectionInstructionsSettings } from "@/features/connections/ConnectionInstructions";
 import { HonchoWorkspaceSettings } from "@/features/connections/HonchoWorkspaceSettings";
 import { BrowserUseSettingsPanel } from "./app-detail/BrowserUseSettingsPanel";
@@ -37,6 +37,7 @@ import { accessApi } from "@/api/access";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
+import { useGoogleWorkspaceServiceGate } from "@/features/connections/GoogleWorkspaceServices";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -360,8 +361,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   });
 
   const authorization = useAuthorizationWindow();
+  const workspaceGate = useGoogleWorkspaceServiceGate();
   const startOAuth = useMutation({
-    mutationFn: (input?: { asAgentId?: string }) => toolsApi.startOAuth(connectionId, input),
+    mutationFn: (input?: { asAgentId?: string; workspaceServices?: GoogleWorkspaceServiceSelection }) => toolsApi.startOAuth(connectionId, input),
     onSuccess: async (start) => {
       try {
         await authorization.open(start);
@@ -394,12 +396,13 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
    * there is no path here to start consent on a coworker's behalf.
    */
   const startPersonalAuth = useMutation({
-    mutationFn: () => {
+    mutationFn: (scopes?: string[]) => {
       const subjectUserId = grantsQuery.data?.currentUserId;
       if (!subjectUserId) throw new Error("Sign in again to connect your own account.");
       return toolsApi.startPersonalAuthorization(selectedCompanyId!, connectionId, {
         subjectUserId,
         returnTo: appTabHref(connectionId, "permissions"),
+        ...(scopes ? { scopes } : {}),
       });
     },
     onSuccess: async ({ url, handoff }) => {
@@ -590,6 +593,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   return (
     <div className="max-w-4xl space-y-10 pb-12">
       {authorization.fallback}
+      {workspaceGate.dialog}
       <AppDetailHeader
         appName={appName}
         connection={connection}
@@ -695,9 +699,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                   setAudienceOpenGrantId(null);
                   setAudienceError(null);
                 }}
-                onConnectAsMe={() => { if (onReconnect) onReconnect(connection); else { authorization.reserve(); startPersonalAuth.mutate(); } }}
-                onConnectOrganization={() => { if (onReconnect) onReconnect(connection); else { authorization.reserve(); startOAuth.mutate(); } }}
-                onConnectAgent={(agentId) => { authorization.reserve(); startOAuth.mutate({ asAgentId: agentId }); }}
+                onConnectAsMe={() => { if (onReconnect) onReconnect(connection); else workspaceGate.run(connection, (services) => { authorization.reserve(); startPersonalAuth.mutate(services ? googleWorkspaceSelectedScopes(services) : undefined); }); }}
+                onConnectOrganization={() => { if (onReconnect) onReconnect(connection); else workspaceGate.run(connection, (services) => { authorization.reserve(); startOAuth.mutate(services ? { workspaceServices: services } : undefined); }); }}
+                onConnectAgent={(agentId) => workspaceGate.run(connection, (services) => { authorization.reserve(); startOAuth.mutate({ asAgentId: agentId, ...(services ? { workspaceServices: services } : {}) }); })}
                 onRefreshAccess={() => refreshGitHubAccess.mutate()}
                 refreshAccessPending={refreshGitHubAccess.isPending}
                 onReplaceAudience={(grant, memberUserIds) =>
