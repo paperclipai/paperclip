@@ -207,6 +207,20 @@ describe("runAdapterExecutionTargetShellCommand", () => {
     expect(onLog).toHaveBeenCalledWith("stderr", "partial stderr");
   });
 
+  it("returns a timedOut result for the rejection runSshCommand gives when its timeout kills ssh", async () => {
+    vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("Process exited with code -1"), {
+      code: null,
+      signal: "SIGTERM",
+      killed: true,
+      stdout: "",
+      stderr: "",
+    }));
+
+    const result = await runAdapterExecutionTargetShellCommand("run-2b", sshExecutionTarget(), "sleep 10", { cwd: "/tmp/local", env: {} });
+
+    expect(result).toMatchObject({ exitCode: null, signal: "SIGTERM", timedOut: true });
+  });
+
   it("returns the SSH process exit code for non-zero remote command failures", async () => {
     vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("non-zero exit"), {
       code: 17,
