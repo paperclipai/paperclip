@@ -5693,6 +5693,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         if (!historyExpanded) {
           await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!), exact: true, refetchType: "none" });
         }
+        if (streamlinedUiEnabled && sessionResolved) {
+          recordRecentTask(nextIssue, currentUserId, new Date(comment.createdAt).getTime());
+        }
       }
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
