@@ -8,9 +8,11 @@ It lives in this one folder, `server/src/google-workspace-rest-tools/`, inside
 the server package. It is not a separate npm package, so nothing new is
 published.
 
-This release has three Gmail tools: `get_message`, `search_threads` and
-`create_draft`. There is no send tool, and none may be added. It also has all
-nine allowlisted Calendar tools (see "Calendar tools" below).
+Gmail has all nine allowlisted tools: `get_message`, `get_thread`,
+`search_threads`, `list_threads`, `search_messages`, `get_draft`,
+`list_drafts`, `list_labels` and `create_draft`. Only `create_draft` writes.
+There is no send, trash, delete or label-changing tool, and none may be added.
+It also has all nine allowlisted Calendar tools (see "Calendar tools" below).
 
 ## Why this exists, and why it is temporary
 
@@ -166,25 +168,32 @@ median of 18.2 ms on either transport.
 ## Known differences from Google's MCP tools
 
 - **Descriptions** are our own wording; names, fields, types, enums, required
-  fields and annotations follow Google's reference. Until a tool lands here,
-  descriptions do not mention it: Google's text points to `get_thread` and
-  `list_labels`, ours points to `get_message` and does not name a label tool.
-  A contract test against a recorded `tools/list` from Google's servers is
-  planned once a listing is recorded on the enrolled internal account.
+  fields and annotations follow Google's reference. Descriptions name only
+  tools this folder implements (`allowlist.test.ts` checks this), so
+  `list_labels` points to `list_threads` rather than to Google's label-changing
+  tools. A contract test against a recorded `tools/list` from Google's servers
+  is planned once a listing is recorded on the enrolled internal account.
 - **Result envelope.** Results carry the object both as `structuredContent`
   and as JSON text. Google's exact envelope has not been recorded yet.
 - **`date`** is the UTC calendar date of Gmail's `internalDate`. Google does
   not say which time zone it uses.
 - **`sender` and recipients** are plain addresses parsed from the headers;
   display names are dropped. Bodies are decoded as UTF-8.
+- **Same message everywhere.** `get_message`, `get_thread`, `search_threads`,
+  `list_threads` and `search_messages` all map messages with `toMcpMessage` in
+  `gmail/message.ts`, so one message looks the same from any of them at the
+  same format. `get_draft` and `list_drafts` share `toMcpDraft`.
 - **Large bodies.** Gmail can store a body part separately and return only
-  its `attachmentId`. With `FULL_CONTENT`, `get_message` reads those bytes
-  (`users.messages.attachments.get`) before it answers. The first `text/plain`
-  and first `text/html` body parts are found depth first through nested
-  multiparts. If a body part cannot be read, the call returns a tool error that
-  starts with "Could not read the full body of this message"; it never returns
-  a result without the body. Google's reference does not say what its tool
-  does here.
+  its `attachmentId`. Whenever bodies are returned (`FULL_CONTENT` for
+  `get_message`, `get_thread` and `search_messages`; `DRAFT_VIEW_FULL` for
+  `get_draft` and `list_drafts`), the tool reads those bytes
+  (`users.messages.attachments.get`, 10 at a time) before it answers. The first
+  `text/plain` and first `text/html` body parts are found depth first through
+  nested multiparts. If any body part cannot be read, the whole call returns a
+  tool error that starts with "Could not read the full body of this message";
+  it never returns a result, or a page, with a body missing. One call reads at
+  most 20 such bodies (see "Google requests per call"). Google's reference
+  does not say what its tools do here.
 - **Addresses** come from `gmail/address.ts`, a small single-pass tokenizer
   over RFC 5322 address lists. It tracks quoted strings with escapes, nested
   comments, angle brackets and square-bracket domain literals (so
@@ -196,6 +205,12 @@ median of 18.2 ms on either transport.
 - **`labelIds`** keeps user labels and the system labels Google lists (INBOX,
   SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT, CHAT); category labels
   are dropped.
+- **`label:` in search queries.** Google's `search_threads` reference says its
+  query accepts label IDs, not display names. Gmail search (the `q` parameter
+  that REST passes to Gmail) uses label names, with spaces written as hyphens,
+  as in Gmail's own search operators (`label:friends`). REST parameters named
+  `labelIds` take IDs. Our query descriptions describe the REST behavior, and
+  `allowlist.test.ts` checks that no description says `label:` takes IDs.
 - **`search_threads`** makes one `threads.list` call and then one
   `threads.get` per thread (10 at a time), so a 50-thread page is 51 requests.
   A thread deleted between the two calls is left out. `pageSize` above 50 is
@@ -215,9 +230,92 @@ median of 18.2 ms on either transport.
   are folded onto continuation lines (RFC 5322); non-ASCII subjects and single
   words longer than 900 characters become RFC 2047 encoded-words. Google's
   reference sets no length limits.
+- **`get_thread`** makes one `threads.get` call (`format=full`, or summary
+  headers only for `MINIMAL` and `METADATA_ONLY`), then reads separately stored
+  bodies. Messages keep Gmail's order, oldest first.
+- **`list_drafts`** makes one `drafts.list` call and then one `drafts.get` per
+  draft (10 at a time). A draft deleted between the two calls is left out.
+  The query is passed to Gmail unchanged. `pageSize` above 50 is capped at 50.
+  Google's annotation `idempotentHint: false` is copied as published.
+- **`list_labels`** makes one `labels.list` call. Gmail's REST list has no
+  paging, so `pageSize` (default 100, maximum 500, neither set by Google) and
+  `pageToken` (a position in the list sorted by name, then ID) are applied in
+  this folder. `threadsTotal` and `threadsUnread` are left out: REST returns
+  them only from `labels.get`, one request per label. A label with only one
+  of its two colors set is returned without `color`.
 - **Errors** for Google failures are tool error results with our own short
   messages, not Google's raw error text (except for 400 and 403 messages,
   trimmed to one line).
+
+### Google requests per call
+
+Reads that fan out run at most 10 at a time; the first failure stops new
+requests. The 20 s timeout in `google-http.ts` applies to each request
+attempt, not to the whole call, so a call that fans out can take longer than
+20 s. Every request also stops when the caller's `signal` aborts; a caller
+that needs a bound on the whole call passes a signal with that deadline (the
+gateway passes its call deadline).
+Each read may be retried once by `google-http.ts`, which the counts below do
+not include. "Bodies" are separately stored bodies (at most two per message,
+plain and HTML, and none for most mail). One call reads at most 20 of them
+(`MAX_SEPARATE_BODIES_PER_CALL` in `gmail/message.ts`). When the messages in a
+call need more, the call reads none and returns a tool error that starts with
+"Could not read the full body of every message" and says to ask for fewer
+results or to use `get_message`.
+
+Quota units come from Gmail's published per-method costs
+(<https://developers.google.com/workspace/gmail/api/reference/quota>, recorded
+2026-11-17): `messages.get` and `drafts.get` 20 (60 with `format=full`),
+`threads.get` 40 (120 with `format=full`), `messages.attachments.get` 20,
+`threads.list` 10, `messages.list` and `drafts.list` 5, `labels.list` 1,
+`drafts.create` 10. Gmail allows 6,000 units per user per minute.
+
+| Tool | Requests at the maximum page size | Worst-case quota units |
+| --- | --- | --- |
+| `get_message` | 1 + up to 2 bodies = 3 | 60 + 40 = 100 |
+| `get_thread` | 1 + up to 20 bodies = 21 | 120 + 400 = 520 |
+| `search_threads` | 1 + 50 = 51 | 10 + 50 × 40 = 2,010 |
+| `list_threads` | 1 + 50 = 51 | 2,010 |
+| `search_messages` | 51; with `FULL_CONTENT` 1 + 50 + 20 = 71 | 1,005; with `FULL_CONTENT` 5 + 50 × 60 + 400 = 3,405 |
+| `get_draft` | 1 + up to 2 bodies = 3 | 60 + 40 = 100 |
+| `list_drafts` | 51; with `DRAFT_VIEW_FULL` (the default) 71 | 1,005; with `DRAFT_VIEW_FULL` 3,405 |
+| `list_labels` | 1 | 1 |
+| `create_draft` | 1, or 2 for a reply | 10, or 30 for a reply |
+
+The worst single call (3,405 units) fits inside the 6,000-unit per-user
+minute. At the default page size of 20 the worst is 1,605 units. Concurrency
+does not change the total: the 10 parallel reads only spread one call's fixed
+units over less time. A second maximal call in the same minute can exceed the
+per-user quota; Google then answers 429, which becomes the `rate_limited` tool
+error ("Google is rate limiting requests. Try again shortly."). Gmail's quota
+page states no per-user concurrency limit.
+
+### Not verified against Google's servers
+
+The allowlist in `toolScopes` names `get_draft`, `list_threads` and
+`search_messages`, but Google's published Gmail MCP reference does not list
+them (it lists `create_draft`, `get_message`, `get_thread`, `label_message`,
+`label_thread`, `list_drafts`, `list_labels`, `search_threads`,
+`unlabel_message` and `unlabel_thread`). Their inputs and results are our
+design, built from the documented sibling tools, and may not match what
+Google's servers return if they ever expose tools with these names:
+
+- **`get_draft`**: input `draftId` (required) and `view` (`DraftView` from
+  `list_drafts`); result is one `Draft`, the shape `list_drafts` and
+  `create_draft` return. One `drafts.get`, plus bodies.
+- **`list_threads`**: input `pageSize`, `pageToken`, `includeTrash` and `view`
+  as in `search_threads`, plus `labelIds` (at most 20; a thread must have all
+  of them) instead of `query`; result is `search_threads`'s. Drafts are
+  excluded unless `DRAFT` is among the labels; spam and trash are included
+  when `SPAM` or `TRASH` is among them.
+- **`search_messages`**: input as `search_threads`, with `messageFormat` from
+  `get_message` instead of `view`; result is `{ messages, nextPageToken,
+  resultCountEstimate }` with `get_message`'s `Message`. Unlike `get_message`,
+  the default (and `MESSAGE_FORMAT_UNSPECIFIED`) is `MINIMAL`, so a search does
+  not pull every body. One `messages.list`, then one `messages.get` per message,
+  plus bodies with `FULL_CONTENT`.
+
+A switch back to `google_mcp` would drop these three unless Google adds them.
 
 ## Calendar tools
 
@@ -361,12 +459,6 @@ earliest first; working hours and out-of-office settings are not read.
 
 ## Open questions
 
-- The Gmail allowlist in `toolScopes` names `get_draft`, `list_threads` and
-  `search_messages`, which Google's published Gmail MCP reference does not list
-  (it lists `create_draft`, `get_message`, `get_thread`, `label_message`,
-  `label_thread`, `list_drafts`, `list_labels`, `search_threads`,
-  `unlabel_message` and `unlabel_thread`). Those three have no Google schema to
-  copy, so they would not survive a switch back to `google_mcp`.
 - Whether an OAuth client marked as an AI-powered agent may call the REST APIs.
 - Each Google Cloud project behind a connection needs the REST APIs enabled
   (Gmail now; Drive, Docs, Sheets, Slides and Calendar as their tools land).
