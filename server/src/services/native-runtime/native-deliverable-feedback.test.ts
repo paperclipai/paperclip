@@ -57,6 +57,9 @@ describe("explicit file output requirements", () => {
     "Write report.txt. This is an internal verification file, not a deliverable. Send it as a download link in your response.",
     "Save the results with the totals as a file.",
     "Export the ledger with its hashes as the file named ledger.csv.",
+    "Save the summary of the log as the file is named ledger.csv.",
+    "Save the summary of the log as the file is called ledger.csv.",
+    "Save the summary of the log as the file is currently titled ledger.csv.",
   ])("recognizes an explicit output request: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(true);
   });
@@ -130,6 +133,7 @@ describe("explicit file output requirements", () => {
     "Save this issue's document with key `ledger` (title \"Ledger\"): the full contents of `ledger-c8d89f8d.log` exactly as the file reads, then every line the board asked for.",
     "Write the document with the log exactly as the file currently reads.",
     "Write the summary from the log as the file shows it.",
+    "Save this issue's document exactly as the file reads.",
   ])("does not require a file for a text or source-review request: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(false);
   });
