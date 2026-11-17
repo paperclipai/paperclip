@@ -1264,10 +1264,11 @@ describe("resolveAdditionalProjectWorkspace", () => {
   ): ResolveAdditionalProjectWorkspaceDeps {
     return {
       loadProjectWorkspaceRows: async () => [],
-      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null, notices: [] }),
       ensureManagedProjectWorkspace: async (input) => ({
         cwd: `/managed/${input.projectId}`,
         warning: null,
+        notices: [],
       }),
       directoryHasContents: async () => true,
       ...overrides,
@@ -1280,7 +1281,7 @@ describe("resolveAdditionalProjectWorkspace", () => {
       loadProjectWorkspaceRows: async () => [],
       ensureManagedProjectWorkspace: async (input) => {
         ensureCalls += 1;
-        return { cwd: `/managed/${input.projectId}`, warning: null };
+        return { cwd: `/managed/${input.projectId}`, warning: null, notices: [] };
       },
     });
 
@@ -1295,12 +1296,12 @@ describe("resolveAdditionalProjectWorkspace", () => {
     let ensureCalls = 0;
     const deps = buildDeps({
       loadProjectWorkspaceRows: async () => [workspaceRow({ id: "ws-empty", cwd: null, repoUrl: null })],
-      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null, notices: [] }),
       // directoryHasContents returns true for any path; the row must still be skipped before this runs.
       directoryHasContents: async () => true,
       ensureManagedProjectWorkspace: async (input) => {
         ensureCalls += 1;
-        return { cwd: `/managed/${input.projectId}`, warning: null };
+        return { cwd: `/managed/${input.projectId}`, warning: null, notices: [] };
       },
     });
 
@@ -1317,12 +1318,12 @@ describe("resolveAdditionalProjectWorkspace", () => {
       loadProjectWorkspaceRows: async () => [
         workspaceRow({ id: "ws-empty-dir", cwd: "/checkout/empty", repoUrl: null }),
       ],
-      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null, notices: [] }),
       // The configured directory exists but holds no content, so it is not a realized workspace.
       directoryHasContents: async () => false,
       ensureManagedProjectWorkspace: async (input) => {
         ensureCalls += 1;
-        return { cwd: `/managed/${input.projectId}`, warning: null };
+        return { cwd: `/managed/${input.projectId}`, warning: null, notices: [] };
       },
     });
 
@@ -1339,7 +1340,7 @@ describe("resolveAdditionalProjectWorkspace", () => {
       loadProjectWorkspaceRows: async () => [
         workspaceRow({ id: "ws-1", cwd: "/checkout/a", repoUrl: "https://example.test/a.git", repoRef: "main" }),
       ],
-      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null, notices: [] }),
       directoryHasContents: async (cwd) => cwd === "/checkout/a",
     });
 
@@ -1360,11 +1361,11 @@ describe("resolveAdditionalProjectWorkspace", () => {
       loadProjectWorkspaceRows: async () => [
         workspaceRow({ id: "ws-1", cwd: "/checkout/missing", repoUrl: "https://example.test/a.git", repoRef: "release" }),
       ],
-      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null, notices: [] }),
       directoryHasContents: async () => false,
       ensureManagedProjectWorkspace: async (input) => {
         ensuredRepoUrl = input.repoUrl;
-        return { cwd: `/managed/${input.projectId}`, warning: null };
+        return { cwd: `/managed/${input.projectId}`, warning: null, notices: [] };
       },
     });
 

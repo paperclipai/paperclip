@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { refreshRemoteTrackingBaseRef, type GitRemoteAuthProvider } from "./workspace-runtime.js";
+import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -10,6 +12,15 @@ const GIT_TIMEOUT_MS = 30_000;
 const MARKER_NAME = "paperclip-shared-checkout-refresh";
 
 export const SHARED_CHECKOUT_REFRESH_MIN_INTERVAL_MS = 5 * 60_000;
+export const SHARED_CHECKOUT_FETCH_TIMEOUT_MS = 30_000;
+
+// An agent can write to a shared checkout, so server-side git there must not
+// run its hooks or fsmonitor, and must not see the server's secrets.
+const SAFE_GIT_CONFIG_ARGS = ["-c", "core.fsmonitor=false", "-c", `core.hooksPath=${os.devNull}`];
+
+function gitEnv(): NodeJS.ProcessEnv {
+  return { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0" };
+}
 
 export type SharedCheckoutRefreshStatus =
   | "fast_forwarded" | "up_to_date" | "skipped_recent" | "skipped_off_default_branch"
@@ -26,13 +37,14 @@ type RefreshOptions = {
   resolveGitAuth?: GitRemoteAuthProvider | null;
   now?: () => number;
   minIntervalMs?: number;
+  fetchTimeoutMs?: number;
 };
 
 const inFlight = new Map<string, Promise<SharedCheckoutRefreshResult>>();
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFile("git", ["-C", cwd, ...args], {
-    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+  const { stdout } = await execFile("git", [...SAFE_GIT_CONFIG_ARGS, "-C", cwd, ...args], {
+    env: gitEnv(),
     timeout: GIT_TIMEOUT_MS,
   });
   return stdout.trim();
@@ -50,10 +62,17 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-async function readMarker(markerPath: string): Promise<number | null> {
+type Marker = { at: number; error: string | null };
+
+// The marker is a small JSON; a legacy marker holds only the timestamp.
+async function readMarker(markerPath: string): Promise<Marker | null> {
   try {
-    const value = Number((await fs.readFile(markerPath, "utf8")).trim());
-    return Number.isFinite(value) ? value : null;
+    const text = (await fs.readFile(markerPath, "utf8")).trim();
+    const legacy = Number(text);
+    if (text && Number.isFinite(legacy)) return { at: legacy, error: null };
+    const parsed = JSON.parse(text) as { at?: unknown; error?: unknown };
+    if (typeof parsed.at !== "number" || !Number.isFinite(parsed.at)) return null;
+    return { at: parsed.at, error: typeof parsed.error === "string" ? parsed.error : null };
   } catch {
     return null;
   }
@@ -83,24 +102,32 @@ async function runRefresh(cwd: string, options: RefreshOptions): Promise<SharedC
   const markerPath = gitPath ? path.resolve(cwd, gitPath) : null;
   if (markerPath) {
     const last = await readMarker(markerPath);
-    if (last !== null && now() - last < minIntervalMs) return result("skipped_recent");
+    // A marker from the future (clock change) counts as expired.
+    if (last !== null && last.at <= now() && now() - last.at < minIntervalMs) {
+      return result("skipped_recent", last.error ?? undefined);
+    }
   }
 
   let fetchProblem: string | null = null;
   try {
-    const warnings = await refreshRemoteTrackingBaseRef(cwd, `origin/${defaultBranch}`, options.resolveGitAuth);
+    const warnings = await refreshRemoteTrackingBaseRef(cwd, `origin/${defaultBranch}`, options.resolveGitAuth, {
+      timeoutMs: options.fetchTimeoutMs ?? SHARED_CHECKOUT_FETCH_TIMEOUT_MS,
+      baseEnv: gitEnv(),
+      extraConfigArgs: SAFE_GIT_CONFIG_ARGS,
+    });
     if (warnings.length > 0) fetchProblem = warnings[0] ?? "";
   } catch (error) {
     fetchProblem = error instanceof Error ? error.message : String(error);
   }
-  if (fetchProblem !== null) {
+  const fetchNotice = fetchProblem === null ? null : (() => {
     const detail = oneLine(fetchProblem);
-    return result(
-      "fetch_failed",
-      `Shared checkout ${name} could not be fetched and was left as it was${detail ? `: ${detail}` : "."}`,
-    );
+    return `Shared checkout ${name} could not be fetched and was left as it was${detail ? `: ${detail}` : "."}`;
+  })();
+  // Every attempt is recorded, so a dead remote costs one fetch per interval.
+  if (markerPath) {
+    await fs.writeFile(markerPath, JSON.stringify({ at: now(), error: fetchNotice } satisfies Marker)).catch(() => undefined);
   }
-  if (markerPath) await fs.writeFile(markerPath, String(now())).catch(() => undefined);
+  if (fetchNotice !== null) return result("fetch_failed", fetchNotice);
 
   const dirty = await gitOrNull(cwd, ["status", "--porcelain", "--untracked-files=no"]);
   if (dirty) return result("skipped_dirty", `Shared checkout ${name} has uncommitted changes; it was not updated.`);

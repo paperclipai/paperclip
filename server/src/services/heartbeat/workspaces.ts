@@ -1501,7 +1501,7 @@ export function buildRepositoryWorkspaceNote(input: {
     const name = deriveRepoNameFromRepoUrl(entry.repoUrl) ?? entry.repoUrl;
     lines.push(`- \`${entry.rel}\` — ${name} (${entry.repoUrl})${entry.repoRef ? `, ref ${entry.repoRef}` : ""}`);
   }
-  lines.push("Before you change files in a repository, read its AGENTS.md or CLAUDE.md if it has one; they are not loaded for you.");
+  lines.push("Before you change files in a repository, read its AGENTS.md or CLAUDE.md if it has one; they may not be loaded for you.");
   if (input.sharedCheckout) {
     lines.push("Do not switch the checked-out branch of these shared checkouts. Use `git worktree add` when you need another branch.");
   }

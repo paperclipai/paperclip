@@ -971,6 +971,7 @@ async function executeProcess(input: {
 
 async function runGit(args: string[], cwd: string, opts?: {
   env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
   observe?: (result: Awaited<ReturnType<typeof executeProcess>>) => void;
 }): Promise<string> {
   const proc = await executeProcess({
@@ -978,6 +979,7 @@ async function runGit(args: string[], cwd: string, opts?: {
     args,
     cwd,
     env: opts?.env,
+    timeoutMs: opts?.timeoutMs,
   });
   opts?.observe?.(proc);
   if (proc.code !== 0) {
@@ -1025,18 +1027,30 @@ function parseRemoteTrackingRef(ref: string): { remote: string; branch: string }
   return { remote, branch };
 }
 
+/** Optional hardening for callers that fetch into a checkout an agent can write to. */
+export type RefreshRemoteTrackingOptions = {
+  /** Stops the fetch after this long. Default: no deadline. */
+  timeoutMs?: number;
+  /** Environment for the fetch instead of the server's own; remote auth env is added on top. */
+  baseEnv?: NodeJS.ProcessEnv;
+  /** Extra `git -c` arguments placed before the fetch, after any auth config. */
+  extraConfigArgs?: string[];
+};
+
 export async function refreshRemoteTrackingBaseRef(
   repoRoot: string,
   baseRef: string,
   resolveGitAuth?: GitRemoteAuthProvider | null,
+  options?: RefreshRemoteTrackingOptions,
 ): Promise<string[]> {
-  return (await refreshRemoteTrackingBaseRefWithDiagnostic(repoRoot, baseRef, resolveGitAuth)).warnings;
+  return (await refreshRemoteTrackingBaseRefWithDiagnostic(repoRoot, baseRef, resolveGitAuth, options)).warnings;
 }
 
 async function refreshRemoteTrackingBaseRefWithDiagnostic(
   repoRoot: string,
   baseRef: string,
   resolveGitAuth?: GitRemoteAuthProvider | null,
+  options?: RefreshRemoteTrackingOptions,
 ): Promise<{ warnings: string[]; diagnostic: WorkspaceBaseRefDiagnostic }> {
   const diagnostic: WorkspaceBaseRefDiagnostic = {
     schemaVersion: 1, remoteLookup: "not_attempted", authLookup: "not_requested", fetch: "not_attempted",
@@ -1059,12 +1073,14 @@ async function refreshRemoteTrackingBaseRefWithDiagnostic(
   try {
     await runGit([
       ...(auth?.configArgs ?? []),
+      ...(options?.extraConfigArgs ?? []),
       "fetch",
       "--prune",
       remoteTracking.remote,
       `+refs/heads/${remoteTracking.branch}:refs/remotes/${remoteTracking.remote}/${remoteTracking.branch}`,
     ], repoRoot, {
-      ...(auth ? { env: { ...process.env, ...auth.env } } : {}),
+      ...(auth || options?.baseEnv ? { env: { ...(options?.baseEnv ?? process.env), ...auth?.env } } : {}),
+      ...(options?.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       observe: (proc) => {
         diagnostic.fetch = proc.code === 0 ? "succeeded" : "failed";
         if (proc.code !== null) diagnostic.fetchExitCode = proc.code;

@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, writeFile, readFile, rm, access } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, access, chmod } from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -115,13 +116,68 @@ describe("shared checkout refresh", () => {
     expect(await git(clone, "rev-parse", "HEAD")).toBe(head);
   });
 
-  it("continues with a notice when fetch fails", async () => {
+  it("continues with a notice when fetch fails and throttles the next attempt", async () => {
     const { root, clone, markerPath } = await fixture();
     await git(clone, "remote", "set-url", "origin", path.join(root, "nonexistent"));
     const result = await refreshSharedManagedCheckout(clone, { now: () => 1_000 });
     expect(result.status).toBe("fetch_failed");
     expect(result.notices.length).toBeGreaterThan(0);
-    await expect(access(await markerPath())).rejects.toThrow();
+    await expect(access(await markerPath())).resolves.toBeUndefined();
+    const second = await refreshSharedManagedCheckout(clone, { now: () => 2_000 });
+    expect(second.status).toBe("skipped_recent");
+    expect(second.notices).toEqual(result.notices);
+  });
+
+  it("still accepts a legacy plain-number marker", async () => {
+    const { clone, markerPath } = await fixture();
+    await writeFile(await markerPath(), "1000");
+    const result = await refreshSharedManagedCheckout(clone, { now: () => 2_000 });
+    expect(result.status).toBe("skipped_recent");
+    expect(result.notices).toEqual([]);
+  });
+
+  it("treats a future marker as expired", async () => {
+    const { clone, advanceOrigin, markerPath } = await fixture();
+    await writeFile(await markerPath(), String(10_000_000));
+    await advanceOrigin();
+    const result = await refreshSharedManagedCheckout(clone, { now: () => 1_000 });
+    expect(result.status).toBe("fast_forwarded");
+  });
+
+  it("bounds a hanging fetch with the fetch timeout", async () => {
+    const { clone } = await fixture();
+    const sockets: net.Socket[] = [];
+    const server = net.createServer((socket) => { socket.on("error", () => undefined); sockets.push(socket); });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as net.AddressInfo;
+      await git(clone, "remote", "set-url", "origin", `git://127.0.0.1:${port}/repo.git`);
+      const started = Date.now();
+      const result = await refreshSharedManagedCheckout(clone, { now: () => 1_000, fetchTimeoutMs: 500 });
+      expect(result.status).toBe("fetch_failed");
+      expect(Date.now() - started).toBeLessThan(15_000);
+    } finally {
+      sockets.forEach((socket) => socket.destroy());
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("does not run repository hooks during refresh", async () => {
+    const { root, clone, advanceOrigin } = await fixture();
+    const hooks = path.join(root, "hooks");
+    const sentinel = path.join(root, "hook-ran");
+    await mkdir(hooks);
+    const hook = path.join(hooks, "post-merge");
+    const target = sentinel.split(path.sep).join("/");
+    await writeFile(hook, `#!/bin/sh
+echo ran > "${target}"
+`);
+    await chmod(hook, 0o755);
+    await git(clone, "config", "core.hooksPath", hooks);
+    await advanceOrigin();
+    const result = await refreshSharedManagedCheckout(clone, { now: () => 1_000 });
+    expect(result.status).toBe("fast_forwarded");
+    await expect(access(sentinel)).rejects.toThrow();
   });
 
   it("coalesces concurrent refreshes of one checkout", async () => {
