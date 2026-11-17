@@ -357,16 +357,18 @@ export function CommandPalette() {
         <CommandSeparator />
 
         <CommandGroup heading="Pages">
+          {/* One Dashboard: the Responsibilities home while that experiment is on, the classic one otherwise. */}
           {responsibilitiesEnabled ? (
             <CommandItem onSelect={() => go("/responsibilities")}>
               <Compass className="mr-2 h-4 w-4" />
               Dashboard
             </CommandItem>
-          ) : null}
-          <CommandItem onSelect={() => go("/dashboard")}>
-            <LayoutDashboard className="mr-2 h-4 w-4" />
-            {responsibilitiesEnabled ? "Classic dashboard" : "Dashboard"}
-          </CommandItem>
+          ) : (
+            <CommandItem onSelect={() => go("/dashboard")}>
+              <LayoutDashboard className="mr-2 h-4 w-4" />
+              Dashboard
+            </CommandItem>
+          )}
           <CommandItem onSelect={() => go(combinedInboxTasksEnabled ? "/issues?view=mine" : "/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
             {combinedInboxTasksEnabled ? "My work" : "Inbox"}

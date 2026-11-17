@@ -501,7 +501,7 @@ describe("CommandPalette", () => {
   const pageButtons = () =>
     Array.from(container.querySelectorAll("button")).map((button) => button.textContent?.trim() ?? "");
 
-  it("lists the Responsibilities home as Dashboard, and the old one as Classic dashboard, while that experiment is on", async () => {
+  it("lists the Responsibilities home as the only Dashboard while that experiment is on", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableResponsibilities: true });
     const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
       queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableResponsibilities: true });
@@ -512,9 +512,11 @@ describe("CommandPalette", () => {
     });
 
     await waitForAssertion(() => {
-      expect(pageButtons()).toContain("Classic dashboard");
+      expect(pageButtons()).toContain("Dashboard");
     });
-    expect(pageButtons().indexOf("Dashboard")).toBeLessThan(pageButtons().indexOf("Classic dashboard"));
+    await flush();
+    expect(pageButtons().filter((label) => label === "Dashboard")).toHaveLength(1);
+    expect(pageButtons()).not.toContain("Classic dashboard");
     act(() => {
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Dashboard")!
         .dispatchEvent(new MouseEvent("click", { bubbles: true }));
