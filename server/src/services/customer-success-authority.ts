@@ -54,3 +54,43 @@ export async function customerSuccessRunAuthority(db: Db, bearer: string): Promi
     { accessMode: "read only" },
   );
 }
+
+/**
+ * Cloud run liveness check for inspection authority: is this run of this
+ * agent in this company active right now? It uses the run rules of
+ * `customerSuccessRunAuthority` but needs no agent credential or managed
+ * identity key, because Cloud asks with its own signed question. Read-only;
+ * it creates no actor, session, activity or key.
+ */
+export async function customerSuccessRunLiveness(
+  db: Db,
+  question: { companyId: string; agentId: string; runId: string },
+): Promise<boolean> {
+  return db.transaction(
+    async (tx) => {
+      const [agent] = await tx
+        .select({ status: agents.status })
+        .from(agents)
+        .where(and(eq(agents.id, question.agentId), eq(agents.companyId, question.companyId)));
+      const [run] = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.id, question.runId),
+            eq(heartbeatRuns.agentId, question.agentId),
+            eq(heartbeatRuns.companyId, question.companyId),
+          ),
+        );
+      return Boolean(
+        agent &&
+          ["idle", "running", "active"].includes(agent.status) &&
+          run &&
+          run.status === "running" &&
+          !run.finishedAt &&
+          !agentRunWritesRevoked(run),
+      );
+    },
+    { accessMode: "read only" },
+  );
+}
