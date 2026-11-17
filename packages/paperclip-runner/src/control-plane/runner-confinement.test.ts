@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { opencodeRuntimeSessionDirectoryName } from "../drivers/opencode/opencode-server-driver.js";
 import { spawnRunner, waitForProcess } from "./durable-prp-control-plane.js";
 import {
   RUNNER_CONFINEMENT_UNAVAILABLE,
@@ -12,6 +13,7 @@ import {
   resetRunnerConfinementAvailability,
   runnerConfinementScope,
   runnerConfinementUnavailableReason,
+  setRunnerConfinementAvailabilityForTest,
   seatbeltInvocation,
 } from "./runner-confinement.js";
 
@@ -72,6 +74,23 @@ describe("runnerConfinementScope", () => {
     expect(scope.exposed).toContain(join(stateRoot, "own"));
   });
 
+  it("exposes the OpenCode session directory under the driver's own name", () => {
+    const instance = join(root, "instance");
+    for (const sessionId of ["plain-session", "with/slash:colon", "x".repeat(200), "unicode-é-session"]) {
+      const scope = runnerConfinementScope({ mode: "auto", instanceRoot: instance }, ["--session-id", sessionId], {});
+      expect(scope.exposed).toContain(join(instanceSessionStatePaths(instance).opencode, opencodeRuntimeSessionDirectoryName(sessionId)));
+    }
+  });
+
+  it("exposes a nested provider trace and keeps its hidden parents traversable", () => {
+    const instance = join(root, "instance");
+    const traces = instanceSessionStatePaths(instance).providerTraces;
+    const trace = join(traces, "run", "attempt", "trace.ndjson");
+    const scope = runnerConfinementScope({ mode: "auto", instanceRoot: instance }, [], { PAPERCLIP_PROVIDER_TRACE_PATH: trace });
+    expect(scope.exposedFiles).toEqual([trace]);
+    expect(scope.traversable).toEqual(expect.arrayContaining([join(traces, "run", "attempt"), join(traces, "run"), traces]));
+  });
+
   it("ignores a provider trace outside the instance trace directory", () => {
     const scope = runnerConfinementScope({ mode: "auto", instanceRoot: join(root, "i") }, [], { PAPERCLIP_PROVIDER_TRACE_PATH: "/elsewhere/t.ndjson" });
     expect(scope.exposed).toEqual([]);
@@ -91,6 +110,17 @@ describe("seatbeltInvocation", () => {
     expect(profile).toContain('(deny network-outbound (remote ip "localhost:5432"))');
     expect(invocation.args).toContain(`HIDE0=${hostile}`);
     expect(invocation.args.slice(-2)).toEqual(["/bin/runnerd", "--a"]);
+  });
+});
+
+describe("runnerConfinementUnavailableReason", () => {
+  it.skipIf(process.platform !== "darwin" && process.platform !== "linux")("re-probes after a transient failure but keeps a definitive one", () => {
+    resetRunnerConfinementAvailability();
+    const fresh = runnerConfinementUnavailableReason();
+    setRunnerConfinementAvailabilityForTest(process.platform, "confinement probe failed: timed out", Date.now() - 1);
+    expect(runnerConfinementUnavailableReason()).toBe(fresh);
+    setRunnerConfinementAvailabilityForTest(process.platform, "sandbox-exec is not installed", null);
+    expect(runnerConfinementUnavailableReason()).toBe("sandbox-exec is not installed");
   });
 });
 
@@ -143,6 +173,7 @@ r() { if cat "$2" >/dev/null 2>&1; then echo "$1=readable"; else echo "$1=denied
   if mkdir -p "$state/nested/dir" 2>/dev/null; then echo ownStateMkdirP=allowed; else echo ownStateMkdirP=denied; fi
   if ls "$INSTANCE/runtime/paperclip-runner/durable-sessions" >/dev/null 2>&1; then echo sessionListing=listable; else echo sessionListing=denied; fi
   r ownOpencodeSession "$INSTANCE/runtime/paperclip-runner/opencode/own-session/config.json"
+  if [ -n "$PAPERCLIP_PROVIDER_TRACE_PATH" ]; then if echo frame >> "$PAPERCLIP_PROVIDER_TRACE_PATH" 2>/dev/null; then echo ownNestedTrace=writable; else echo ownNestedTrace=denied; fi; fi
   if [ -n "$DB_PORT" ]; then if nc -z -w 2 127.0.0.1 "$DB_PORT" >/dev/null 2>&1; then echo database=reachable; else echo database=blocked; fi; fi
 } > "$state/probe.txt"
 `;
@@ -191,7 +222,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       runnerVersion: "test",
       runnerDigest: "test",
       opencodeLaunchProfile: OPENCODE_LAUNCH_PROFILE,
-      environment: {},
+      environment: { PAPERCLIP_PROVIDER_TRACE_PATH: join(paths.providerTraces, "run", "attempt", "trace.ndjson") },
       ...(confine ? { confinement: { mode: "required" as const, instanceRoot: instance, companyId: "c", deniedLoopbackPorts: databasePort ? [databasePort] : [] } } : {}),
     });
     const result = await waitForProcess(handle, 30_000);
@@ -220,6 +251,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       otherCompanyFile: "denied",
       sessionRootStat: "allowed",
       ownStateMkdirP: "allowed",
+      ownNestedTrace: "writable",
       ownOpencodeSession: "readable",
     });
   }, 60_000);

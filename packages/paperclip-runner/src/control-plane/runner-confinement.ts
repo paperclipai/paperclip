@@ -180,7 +180,17 @@ export function runnerConfinementScope(policy: RunnerConfinementPolicy, args: re
     if (name) expose(join(root, name));
   }
   const trace = env.PAPERCLIP_PROVIDER_TRACE_PATH?.trim();
-  if (trace && isAbsolute(trace) && dirname(resolve(trace)) === paths.providerTraces) expose(resolve(trace), true);
+  if (trace && isAbsolute(trace)) {
+    const file = resolve(trace);
+    if (within(file, paths.providerTraces) && file !== paths.providerTraces) {
+      expose(file, true);
+      // A nested trace keeps the metadata of each hidden directory above it readable.
+      for (let parent = dirname(dirname(file)); within(parent, paths.providerTraces); parent = dirname(parent)) {
+        if (!scope.traversable.includes(parent)) scope.traversable.push(parent);
+        if (parent === paths.providerTraces) break;
+      }
+    }
+  }
   return scope;
 }
 
@@ -339,7 +349,9 @@ export function landlockInvocation(scope: RunnerConfinementScope, python: string
   };
 }
 
-const availability = new Map<string, string | null>();
+/** A transient probe failure (timeout, no memory, full disk) is retried after this delay. */
+export const RUNNER_CONFINEMENT_PROBE_RETRY_MS = 60_000;
+const availability = new Map<string, { reason: string | null; retryAt: number | null }>();
 
 /**
  * Proves once per process that this host can apply confinement. A server that
@@ -348,8 +360,9 @@ const availability = new Map<string, string | null>();
  */
 export function runnerConfinementUnavailableReason(platform: NodeJS.Platform = process.platform): string | null {
   const cached = availability.get(platform);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined && (cached.retryAt === null || Date.now() < cached.retryAt)) return cached.reason;
   let reason: string | null = null;
+  let transient = false;
   try {
     if (platform === "darwin") {
       if (!existsSync("/usr/bin/sandbox-exec")) reason = "sandbox-exec is not installed";
@@ -376,14 +389,22 @@ export function runnerConfinementUnavailableReason(platform: NodeJS.Platform = p
     }
   } catch (error) {
     reason = `confinement probe failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`;
+    // A probe that ran and exited non-zero is a definitive answer about this host.
+    // Anything else (a timeout, a spawn or disk error) may pass on a later launch.
+    transient = !(typeof (error as { status?: unknown }).status === "number") || (error as { signal?: unknown }).signal != null;
   }
-  availability.set(platform, reason);
+  availability.set(platform, { reason, retryAt: transient ? Date.now() + RUNNER_CONFINEMENT_PROBE_RETRY_MS : null });
   return reason;
 }
 
 /** Test seam: forget probe results. */
 export function resetRunnerConfinementAvailability() {
   availability.clear();
+}
+
+/** Test seam: record a probe result without running the probe. */
+export function setRunnerConfinementAvailabilityForTest(platform: NodeJS.Platform, reason: string | null, retryAt: number | null = null) {
+  availability.set(platform, { reason, retryAt });
 }
 
 /**

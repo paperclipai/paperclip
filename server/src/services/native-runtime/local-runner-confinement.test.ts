@@ -7,6 +7,7 @@ import {
   setLocalRunnerConfinementDatabase,
 } from "./local-runner-confinement.js";
 import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode } from "./native-session-executor.js";
+import { resetRunnerConfinementAvailability, setRunnerConfinementAvailabilityForTest, spawnRunner } from "@paperclipai/paperclip-runner/testing";
 
 describe("localRunnerConfinementPolicy", () => {
   afterEach(() => {
@@ -49,14 +50,45 @@ describe("localRunnerConfinementPolicy", () => {
 });
 
 describe("a required confinement refusal", () => {
-  it("fails the run permanently by name instead of retrying", () => {
-    const error = new Error(`${RUNNER_CONFINEMENT_UNAVAILABLE}: confinement is not supported on win32`);
-    const code = nativeSessionFailureSourceCode(error);
-    expect(code).toBe(RUNNER_CONFINEMENT_UNAVAILABLE);
-    expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
-      phase: "terminal_failure",
-      failureCode: RUNNER_CONFINEMENT_UNAVAILABLE,
-      nextAttemptAt: null,
-    });
+  afterEach(() => resetRunnerConfinementAvailability());
+
+  /** The error a local OpenCode launch throws when confinement is required on a host that cannot provide it. */
+  function requiredLaunchRefusal() {
+    setRunnerConfinementAvailabilityForTest(process.platform, "confinement is not supported on this host");
+    try {
+      spawnRunner({
+        connectUrl: "ws://127.0.0.1:9/unused",
+        stateDirectory: "/nonexistent/runtime/paperclip-runner/durable-sessions/scope/runner",
+        identity: { runnerInstanceId: "r", environmentLeaseId: "l", runId: "run", normalizedSessionId: "s", turnId: "t", itemId: "i" } as Parameters<typeof spawnRunner>[0]["identity"],
+        ticket: "ticket",
+        maxOutboxBytes: 1024,
+        p0ReserveBytes: 128,
+        runnerBinaryPath: "/nonexistent/paperclip-runnerd",
+        runnerVersion: "test",
+        runnerDigest: "test",
+        opencodeLaunchProfile: {
+          command: "/usr/bin/true", commandSha256: "0".repeat(64), proxyScript: "/dev/null", proxyScriptSha256: "0".repeat(64),
+          executable: "/usr/bin/true", executableSha256: "0".repeat(64),
+        },
+        environment: {},
+        confinement: { mode: "required", instanceRoot: "/nonexistent" },
+      });
+    } catch (error) {
+      return error;
+    }
+    throw new Error("the launch did not refuse");
+  }
+
+  it("fails the run permanently by name instead of retrying, also when wrapped", () => {
+    const refusal = requiredLaunchRefusal();
+    for (const error of [refusal, new Error("runner startup failed", { cause: refusal })]) {
+      const code = nativeSessionFailureSourceCode(error);
+      expect(code).toBe(RUNNER_CONFINEMENT_UNAVAILABLE);
+      expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
+        phase: "terminal_failure",
+        failureCode: RUNNER_CONFINEMENT_UNAVAILABLE,
+        nextAttemptAt: null,
+      });
+    }
   });
 });

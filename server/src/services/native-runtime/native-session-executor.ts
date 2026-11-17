@@ -9307,7 +9307,11 @@ export function nativeSessionFailureSourceCode(
   }
   if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes(RUNNER_CONFINEMENT_UNAVAILABLE)) return RUNNER_CONFINEMENT_UNAVAILABLE;
+  // A launch wrapper may keep the refusal only as a cause.
+  for (let cause: unknown = error, depth = 0; cause && depth < 8; cause = (cause as { cause?: unknown }).cause, depth += 1) {
+    if ((cause as { code?: unknown }).code === RUNNER_CONFINEMENT_UNAVAILABLE
+      || (cause instanceof Error ? cause.message : String(cause)).includes(RUNNER_CONFINEMENT_UNAVAILABLE)) return RUNNER_CONFINEMENT_UNAVAILABLE;
+  }
   if (/"code":"controller_sequence_mismatch"/.test(message)) return NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
   if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
     return "runner_task_admission_rejected";
