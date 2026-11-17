@@ -92,6 +92,16 @@ describe("runnerConfinementScope", () => {
     expect(scope.traversable).toEqual(expect.arrayContaining([join(traces, "run", "attempt"), join(traces, "run"), traces]));
   });
 
+  it("keeps the OpenCode runtime directory of a local runnerd launch, including its output-custody wrapper, inside the exposed session", () => {
+    const instance = join(root, "instance");
+    const sessionRoot = join(instanceSessionStatePaths(instance).durableSessions, "scope");
+    // Local launches set no opencodeRuntimeDirectory, so the transport uses `<session root>/opencode`.
+    const outputCustody = join(sessionRoot, "opencode", "output-custody", "identity");
+    const scope = runnerConfinementScope({ mode: "auto", instanceRoot: instance }, ["--state-dir", join(sessionRoot, "runner"), "--session-id", "s"], {});
+    expect(scope.exposed.some((exposed) => outputCustody.startsWith(`${exposed}/`))).toBe(true);
+    expect(scope.hidden.some((hidden) => outputCustody.startsWith(`${hidden}/`))).toBe(true);
+  });
+
   it("ignores a provider trace outside the instance trace directory", () => {
     const scope = runnerConfinementScope({ mode: "auto", instanceRoot: join(root, "i") }, [], { PAPERCLIP_PROVIDER_TRACE_PATH: "/elsewhere/t.ndjson" });
     expect(scope.exposed).toEqual([]);
