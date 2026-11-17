@@ -70,6 +70,22 @@ retain their existing fingerprint. Both paths share the same authorization
 implementation and perform fresh checks on every call. The real PostgreSQL
 controls are in `server/src/__tests__/slack-tool-preparation.test.ts`.
 
+## GitHub updates during an active review
+
+Accepted GitHub messages and automatic PR updates try same-turn steering by
+default after normal wake admission. The active native run must belong to the
+same task, agent, conversation, responsible person, and source trust level.
+Messages with attachments or a fresh-session requirement keep a separate turn.
+The message carries the admitted GitHub review instructions.
+
+The durable wake stays pending until the runner acknowledges steering. An
+acknowledged message joins the active run's input and requester lineage, and
+its wake becomes coalesced. Automatic review records for the new head point to
+that run. A rejected or unavailable steer retains ordinary queued delivery.
+Late acknowledgements and retries use the native acknowledgement receipt to
+avoid sending the same update twice. Other chat providers keep their existing
+delivery behavior.
+
 ## Chat activity pagination and callback diagnostics
 
 The connection Activity tab loads 25 records per page. `GET /api/chat-endpoints/:id/activity?limit=25`

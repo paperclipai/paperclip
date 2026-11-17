@@ -15,6 +15,7 @@ import { forbidden } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { queueIssueAssignmentWakeup } from "../../issue-assignment-wakeup.js";
 import { isGitHubAutomaticDelivery, acknowledgeGitHubWakeup } from "../github/wake-authority.js";
+import { steerGitHubInboundWake } from "../github/inbound-steering.js";
 import { inboundWakeScope, type createInboundWakeAuthority } from "./wakeup-authorization.js";
 import type { createInboundAttachments } from "../inbound-attachments.js";
 import type { IssueAssignmentWakeupDeps } from "../../issue-assignment-wakeup.js";
@@ -348,8 +349,12 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
             throw new Error("chat_inbound_wakeup_acceptance_not_committed");
         },
       });
-      const priorReceipt = await receipt();
+      let priorReceipt = await receipt();
       if (priorReceipt) {
+        if (priorReceipt.status === "deferred_issue_execution") {
+          await steerGitHubInboundWake(db, claimed, request, authorizeInboundWorkStart);
+          priorReceipt = (await receipt())!;
+        }
         await settle(receiptDeclined(priorReceipt) ? "failed" : "processed", {
           code: receiptDeclined(priorReceipt)
             ? `inbound_wakeup_${priorReceipt.status}`
@@ -383,6 +388,8 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
         durableChatRequest: request,
         rethrowOnError: true,
       });
+      if (context.endpoint.provider === "github")
+        await steerGitHubInboundWake(db, claimed, request, authorizeInboundWorkStart);
       const durable = await receipt();
       if (!durable) throw new Error("chat_inbound_wakeup_receipt_missing");
       await settle(receiptDeclined(durable) ? "failed" : "processed", {
