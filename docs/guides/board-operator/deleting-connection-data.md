@@ -32,6 +32,8 @@ You need permission to manage the connection.
 2. Select **Also delete data read through this connection**.
 3. Select **Remove connection**.
 
+For a Google connection that Paperclip set up for you, removing the connection also asks Google to end Paperclip's access to that Google account. The message after removal tells you whether access was ended. If other Paperclip connections still use the same Google account, Google keeps Paperclip's access until you remove those too. If Paperclip could not end access at Google, remove Paperclip from your Google account's [third-party connections](https://myaccount.google.com/connections). Connections that use your own Google OAuth app are removed only in Paperclip.
+
 Deletion starts right away and continues in the background. It finishes even if Paperclip restarts while it runs. If a step fails, for example because file storage is unavailable, Paperclip keeps the request open and tries again until every step succeeds. It reports the deletion as finished only then. The connection's page shows when the data was last deleted.
 
 ## What is deleted

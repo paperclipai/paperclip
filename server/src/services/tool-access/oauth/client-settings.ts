@@ -130,6 +130,15 @@ export async function oauthGalleryEntryForConnection(
 export type ManagedConnectorProfileId =
   GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId;
 
+export function managedConnectorSubject(
+  grant: { kind: string; subjectUserId: string | null; subjectAgentId: string | null },
+  oauth: Record<string, unknown>,
+): string | null {
+  if (grant.kind === "agent" && grant.subjectAgentId) return `agent:${grant.subjectAgentId}`;
+  if (grant.kind === "user" && grant.subjectUserId) return grant.subjectUserId;
+  return typeof oauth.connectorSubjectUserId === "string" ? oauth.connectorSubjectUserId : null;
+}
+
 export function managedConnectorProfile(value: string | undefined): {
   id: ManagedConnectorProfileId;
   provider: "google" | "github" | "asana";

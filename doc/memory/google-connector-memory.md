@@ -271,7 +271,7 @@ nested run answers and migrated log originals.
 | Raw provider traces | Full traffic | No. Admin opt-in, encrypted, expire within 24 hours. |
 | Feedback exports already sent | Run logs the user chose to share | No. Already outside Paperclip. |
 | Optional model check for injection screening | If a company turns it on, the full tool result is sent to an OpenRouter model | Not stored by Paperclip. |
-| Connection removal | Deletes tokens locally | Does not revoke at Google. |
+| Connection removal | Deletes tokens locally | Asks Paperclip Cloud to revoke at Google; it does so only when no other connection could share the grant. Customer-owned clients stay local. |
 
 What "Delete data" keeps: the record that each call happened (time, tool,
 agent, outcome, size, fingerprint), and activity entries with counts only.

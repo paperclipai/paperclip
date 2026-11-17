@@ -130,8 +130,8 @@ instance to the fixed endpoints below. Customer OAuth uses the instance's existi
 `/api/tools/oauth/callback` instead. Register that exact HTTPS or loopback callback
 on the customer-owned client.
 
-Removal is local for managed grants: Google's project-wide revocation can break
-other connections. Before rollout, verify full and partial consent with an enrolled
+Removing a managed connection or grant asks Paperclip Cloud to revoke it (see
+"Removing a managed Google connection" below). Before rollout, verify full and partial consent with an enrolled
 test account, allowed reads/writes, reconnect, refresh and removal. Deterministic
 tests are not real-provider proof. Combining profiles simplifies onboarding, not
 Google's per-scope demonstration, justification or security-assessment obligations.
@@ -228,10 +228,30 @@ owner when the new method supports that owner.
 
 The Paperclip-managed method signs every broker request with one explicit
 profile. The broker binds that profile into sessions, one-time claims, sealed
-token envelopes, and refresh. Per-profile removal is local-only for managed
-Google grants. Google's revocation endpoint can invalidate all grants for the
-same user and managed client, so Paperclip does not call it while removing one
-Workspace profile.
+token envelopes, and refresh.
+
+### Removing a managed Google connection
+
+Removing a Paperclip-managed Google connection, or one of its per-user,
+organization or per-agent grants, sends each removed grant's refresh token to
+Paperclip Cloud's signed `POST /v1/connector/revoke`. Google's revoke ends the
+user's whole grant to the managed client, so the broker revokes at Google only
+when it knows of no other live binding that could share the grant. Its
+`outcome` (`revoked`, `other_connections_remain`, `provider_revocation_failed`,
+`binding_not_known`, `provider_revocation_disabled`, `revocation_in_progress`)
+is kept per grant. The app adds `revocation_not_available` (an older broker's
+409), `broker_unavailable` (timeout or network failure), `broker_error` and
+`credential_unavailable`.
+
+The call is bounded to 5 seconds, runs alongside the local teardown and is never
+retried. Local removal always completes and deletes the secrets as before,
+whatever the broker answers. The removal response and the activity entry carry
+`providerAccess: { provider, result, outcomes }` with codes only. `result` is
+`ended`, `other_connections_remain` or `not_ended`; the removal message tells
+the user which, and for `not_ended` links to
+https://myaccount.google.com/connections.
+
+Connections on a customer-owned Google OAuth client are removed locally only.
 
 | App | Read profile | Write profile |
 | --- | --- | --- |

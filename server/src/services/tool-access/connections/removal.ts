@@ -3,6 +3,8 @@ import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
+import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { actorBinding, connectionActorUserId } from "../actor.js";
 import { stageSlackCloudEnrollmentIntent } from "../../chat-channels/slack/cloud-enrollment.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
@@ -81,10 +83,12 @@ type RemovalDependencies = {
   secrets: ReturnType<typeof secretService>;
   runtimeSupervisor: Pick<ReturnType<typeof createToolRuntimeSupervisor>, "stopSlot">;
   vercelConnect: VercelConnectClient | null;
+  currentCloudConnector: () => PaperclipCloudConnector | null;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
 };
 
-export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow }: RemovalDependencies) {
+export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow }: RemovalDependencies) {
+  const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
   /**
    * Split the secrets a connection points at into the ones it owns outright and
    * the ones another consumer still depends on.
@@ -262,9 +266,12 @@ async function removeConnection(
     const grantRows = await db
       .select({
         id: connectionGrants.id,
+        companyId: connectionGrants.companyId,
+        connectionId: connectionGrants.connectionId,
         status: connectionGrants.status,
         kind: connectionGrants.kind,
         subjectUserId: connectionGrants.subjectUserId,
+        subjectAgentId: connectionGrants.subjectAgentId,
         credentialSecretRefs: connectionGrants.credentialSecretRefs,
         externalCredential: connectionGrants.externalCredential,
       })
@@ -276,6 +283,7 @@ async function removeConnection(
         ),
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
+    const providerAccessPending = await managedGoogleAccess.begin(connection, grantsToRevoke, actor);
     if (grantsToRevoke.length > 0) {
       await db
         .update(connectionGrants)
@@ -644,6 +652,8 @@ async function removeConnection(
         );
     }
 
+    const providerAccess = providerAccessPending ? await providerAccessPending.settled : null;
+
     return {
       connection: toConnection(cleared ?? archived.connection),
       removal: {
@@ -664,6 +674,7 @@ async function removeConnection(
         gatewaySessionsRevoked,
         applicationArchived: archived.applicationArchived,
         externalCredentialCleanup,
+        ...(providerAccess ? { providerAccess } : {}),
       },
     };
   }

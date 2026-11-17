@@ -38,6 +38,7 @@ import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useGoogleWorkspaceServiceGate } from "@/features/connections/GoogleWorkspaceServices";
+import { googleAccessRemovalNotice } from "@/features/connections/googleAccessRemoval";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -323,11 +324,13 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   const agents = agentsQuery.data ?? [];
   const disconnectRemote = useMutation({
     mutationFn: () => toolsApi.archiveConnection(connectionId),
-    onSuccess: () => {
+    onSuccess: (removed) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
+      const googleNotice = googleAccessRemovalNotice(removed.removal.providerAccess);
+      if (googleNotice) pushToast({ title: "Disconnected", body: googleNotice.body, tone: googleNotice.tone, ...(googleNotice.action ? { action: googleNotice.action } : {}) });
       navigate("/apps");
     },
     onError: (error) => pushToast({ title: "Couldn't disconnect", body: describeError(error).body, tone: "error" }),

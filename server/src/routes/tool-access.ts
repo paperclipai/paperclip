@@ -2008,7 +2008,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       action: "tool_connection.grant_revoked",
       entityType: "connection_grant",
       entityId: grant.id,
-      details: { connectionId: connection.id, kind: grant.kind },
+      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}) },
     });
     res.json(grant);
   });
