@@ -3587,9 +3587,8 @@ export function heartbeatService(
           enabled:
             resolvedInstanceSettings.experimental.enableNativeRunner === true,
           museEnabled: resolvedInstanceSettings.experimental.enableMuse === true,
-          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true && resolvedInstanceSettings.experimental.enablePublicMcp === true,
-          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true
-            && resolvedInstanceSettings.experimental.enablePublicMcp === true,
+          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true,
+          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true,
           runtimeConfig: agent.runtimeConfig,
           adapterConfig: agent.adapterConfig,
           agent: {

@@ -12,7 +12,10 @@ Gmail has all nine allowlisted tools: `get_message`, `get_thread`,
 `search_threads`, `list_threads`, `search_messages`, `get_draft`,
 `list_drafts`, `list_labels` and `create_draft`. Only `create_draft` writes.
 There is no send, trash, delete or label-changing tool, and none may be added.
-It also has all nine allowlisted Calendar tools (see "Calendar tools" below).
+It also has all nine allowlisted Calendar tools (see "Calendar tools" below),
+all eight allowlisted Drive tools (see "Drive tools" below), both Docs tools
+and both Slides tools (see "Docs and Slides tools" below), and all six
+allowlisted Sheets tools (see "Sheets tools" below).
 
 ## Why this exists, and why it is temporary
 
@@ -57,8 +60,16 @@ so they can be deleted cleanly when that happens.
   says that the change may or may not have been made. Every method other than
   GET (POST, PATCH, PUT, DELETE) is a write; the only exception is a POST the
   request marks `readOnly` (Calendar's free/busy query). `www.googleapis.com`
-  is allowed only under `/calendar/v3/`, checked after URL normalization.
-- **One tool, one file.** Each tool in `gmail/` and `calendar/` is a set of pure functions
+  is allowed only under the prefixes `GOOGLE_API_PATH_PREFIXES` lists for it
+  (`/calendar/v3/`, `/drive/v3/`, `/upload/drive/v3/`), `docs.googleapis.com`
+  only under `/v1/documents/`, `slides.googleapis.com` only under
+  `/v1/presentations/`, `sheets.googleapis.com` only under `/v4/spreadsheets/`
+  and `gmail.googleapis.com` only under `/gmail/v1/users/me/`; every allowed host
+  must have a prefix list (the type requires it, and `google-http.test.ts`
+  requires an allowed and a rejected path for each). Paths are checked after URL
+  normalization, so `..` and `%2e%2e` segments cannot leave them. Redirects are
+  never followed: requests use `redirect: "manual"` and any 3xx is a tool error.
+- **One tool, one file.** Each tool in `gmail/`, `calendar/`, `drive/`, `docs/`, `slides/` and `sheets/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
 - **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
@@ -76,6 +87,9 @@ so they can be deleted cleanly when that happens.
 | 401 | Throws `GoogleWorkspaceAuthError` (`reason: "unauthenticated"`, JSON-RPC `data: { code: "unauthenticated", httpStatus: 401 }`) |
 | 403 with insufficient scope (`ACCESS_TOKEN_SCOPE_INSUFFICIENT`, `insufficientPermissions`, or `WWW-Authenticate: error="insufficient_scope"`) | Throws `GoogleWorkspaceAuthError` (`reason: "insufficient_scope"`, `data.code: "insufficient_scope"`, the value the gateway already recognizes) |
 | 403 API not enabled (`SERVICE_DISABLED`, `accessNotConfigured`) | Tool error result, without the project number |
+| 403 `exportSizeLimitExceeded` (Drive) | Tool error: the file is over Google's 10 MB export limit |
+| 403 `appNotAuthorizedToFile` (Drive) | Tool error saying `drive.file` covers only files this app created or opened, without the app's project number |
+| Any 3xx redirect | Tool error; the redirect is not followed |
 | Other 403, 404, 400, 429, 5xx, timeout, network failure | Tool error result (`isError: true`) with a short message |
 | Invalid arguments | Tool error result, no request sent |
 | Unknown tool | Throws `McpError` `InvalidParams` |
@@ -140,6 +154,14 @@ plain constant: no environment variable, instance setting or database row.
   | Calendar | one `calendarList.list` entry | `calendar.calendarlist.readonly`, `calendar.readonly` |
   | Calendar | one event of the primary calendar | `calendar.events.readonly`, `calendar.events`, `calendar.readonly` |
   | Calendar | one minute of `freeBusy.query` on the primary calendar | `calendar.events.freebusy` |
+  | Drive | `about.get` with `fields=kind` | `drive.readonly`, `drive.file` |
+
+  Docs and Slides have no probe: every read of either API needs a document or
+  presentation ID, and Google does not document what a made-up ID returns, so
+  a probe could wrongly mark a working grant unavailable.
+
+  Sheets has no probe: every Sheets REST read needs a spreadsheet ID, so a
+  Sheets grant is listed without one.
 
   A grant that allows none of them (for example compose-only Gmail) is listed
   without a probe. An insufficient-scope answer to a probe never makes a
@@ -317,6 +339,12 @@ Google's servers return if they ever expose tools with these names:
 
 A switch back to `google_mcp` would drop these three unless Google adds them.
 
+To check when a live tester exists: record `read_doc` and `read_presentation`
+answers from Google's Docs and Slides MCP servers for a test document and
+deck, and compare their `content` with ours. Google publishes only that
+`content` is an object; our text form and structure are unverified against
+Google's server.
+
 ## Calendar tools
 
 Names, input fields, enums, result shapes and annotations come from Google's
@@ -412,6 +440,13 @@ earliest first; working hours and out-of-office settings are not read.
 
 ### Differences from Google's Calendar MCP tools
 
+- **`update_event` is annotated `destructiveHint: true`** (deliberate). It
+  overwrites fields, can remove attendees and replaces reminders, so
+  approval and confirmation in Paperclip must treat it as destructive.
+  Google's reference marks it non-destructive. It stays `idempotentHint:
+  true`: the same patch applied twice leaves the event the same.
+  `respond_to_event` stays non-destructive (it changes only the user's own
+  response). `allowlist.test.ts` checks the write tools' annotations.
 - **Time zone when none is given.** Google says its server resolves the
   user's time zone. Here it is the target calendar's time zone (the primary
   calendar for `suggest_time`), read from `events.list`, since the user
@@ -457,6 +492,535 @@ earliest first; working hours and out-of-office settings are not read.
   comes from REST `transparency`; `conferenceUrl` from `hangoutLink` or the
   video entry point.
 
+## Drive tools
+
+Names, input fields, result shapes and annotations come from Google's Drive
+MCP reference
+(<https://developers.google.com/workspace/drive/api/reference/mcp>, recorded
+2026-11-17) and the `tools/list` of Google's hosted Drive MCP server on the
+same date, which adds `snippetVerbosity`, `includeRichMetadata`,
+`revisionId`, `pregeneratedId` and `inheritedPermissionsDisabled` to the
+published pages. All calls go to the Drive REST API v3 at
+`https://www.googleapis.com/drive/v3/` (uploads at
+`https://www.googleapis.com/upload/drive/v3/`). The allowlist gives the six
+reads `drive.readonly` and the two writes `drive.file`. Each REST method below
+accepts that scope according to its reference page (recorded 2026-11-17), so
+no broader scope is needed or requested.
+
+| Tool | REST calls | Scope it runs under | Google reference |
+| --- | --- | --- | --- |
+| `search_files` | `files.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list> |
+| `list_recent_files` | `files.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list> |
+| `get_file_metadata` | `files.get` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/get> |
+| `get_file_permissions` | `permissions.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions/list> |
+| `read_file_content` | `files.get`, then `files.export` (Google files) or `files.get` with `alt=media` (text files); with comments, `comments.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>, <https://developers.google.com/workspace/drive/api/reference/rest/v3/comments/list> |
+| `download_file_content` | `files.get`, then `files.export`, `files.get` with `alt=media`, or `revisions.get` with `alt=media` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/revisions/get> |
+| `create_file` | `files.create` (metadata only, or `uploadType=multipart` on the upload path) | `drive.file` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create> |
+| `copy_file` | `files.copy` | `drive.file` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/copy> |
+| (probe) | `about.get` | `drive.readonly` or `drive.file` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/about/get> |
+
+### What `drive.file` allows
+
+`files.copy` accepts only `drive`, `drive.appdata`, `drive.file` and
+`drive.photos.readonly`; `drive.readonly` cannot copy. Google's scope guide
+(<https://developers.google.com/workspace/drive/api/guides/api-specific-auth>)
+says `drive.file` covers files "that you open with an app or that the user
+shares with an app". So with `drive.file`:
+
+- `create_file` creates new files and folders in My Drive, and in folders this
+  app created or was given.
+- `copy_file` copies files this app created or was given. Whether Google also
+  lets it copy a file the same token can only read through `drive.readonly` is
+  not documented and has not been tried against Google (see open questions).
+  When Google refuses, the tool error says that `drive.file` covers only files
+  this app created or opened, and that nothing was created. The same applies
+  to a `parentId` the app cannot use.
+- Neither tool changes, moves, shares, trashes or deletes an existing file, and
+  no tool in this folder does.
+
+### Content
+
+| File | `read_file_content` | `download_file_content` default |
+| --- | --- | --- |
+| Google Doc | `files.export` as `text/markdown` | `text/plain` |
+| Google Sheet | `text/csv` of the first sheet, after a line saying only the first sheet is shown | `text/csv`, first sheet only (the description says so and names the XLSX type for every sheet) |
+| Google Slides | `text/plain` | `text/plain` |
+| Google Drawing | not supported | `image/svg+xml` |
+| Apps Script | not supported | `application/vnd.google-apps.script+json` |
+| Other Google types (folder, form, site, shortcut) | not supported | tool error |
+| `text/*`, JSON, XML, YAML, `+json` and `+xml` types | the stored bytes as UTF-8 | the stored bytes |
+| Anything else (PDF, Office, images, video) | not supported | the stored bytes |
+
+`exportMimeType` picks the export format for Google files and is ignored for
+other files, as in Google's reference. It must be one of the formats Google's
+export table lists for that file type (`EXPORT_FORMATS` in
+`drive/content.ts`, from
+<https://developers.google.com/workspace/drive/api/guides/ref-export-formats>);
+anything else is refused before a request is sent. Every request uses the
+`fileId` the caller passed, never an ID taken from Google's answer. `download_file_content` returns
+`{ id, title, mimeType, content }`: `content` is base64 and `mimeType` is the
+type of the returned bytes (the export format for Google files).
+"Not supported" means `fileContent: ""` with `textFormattingNotSupported:
+true`, the field Google's result has for this case. Text that is not valid
+UTF-8 is also not supported.
+
+**Size cap.** Every Drive read bounds its final serialized result (the whole
+`CallToolResult`, which carries the payload twice: as `structuredContent` and
+as its JSON text) to 250,000 bytes (the folder's shared `MAX_RESULT_BYTES`,
+checked by `boundedStructuredResult`, both in `tool.ts`). That is about 90 KB of file
+bytes for `download_file_content` (base64 adds a third) and about 120 KB of
+plain text for `read_file_content`. Content is also never read past 250,000
+bytes (`MAX_CONTENT_BYTES`), since more could never fit: a stored file whose
+metadata size is larger is refused before any download, and exports and
+revisions are read through `GoogleHttp.download`, which stops at the cap. Both
+limits are far under Google's 10 MB export limit
+(<https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>)
+and the 20 MB `MAX_RESPONSE_BYTES`. A refused result is an error that says
+nothing was returned and how to ask for less (a smaller `pageSize`, no
+`includeRichMetadata` or `includeComments`, another export format, or
+`read_file_content` for a Google file's text). It never returns cut-short
+content. Google's `exportSizeLimitExceeded` answer gives a similar error. `create_file`
+uploads at most 5 MB, the limit for one multipart upload.
+
+**Redirects.** `files.export` and `alt=media` downloads are answered by
+`www.googleapis.com` itself. `google-http.ts` never follows a redirect (it
+sends `redirect: "manual"`, and the gateway's guarded fetch never follows
+one either), so a download Google redirects elsewhere is a tool error, not a
+request to a host outside the allowlist.
+
+### Search
+
+`search_files` takes Google's MCP query language (`title contains 'x' and
+modifiedTime > '...'`). `drive/query.ts` tokenizes and parses it into a tree,
+checks each term and operator against the list Google publishes, and writes a
+new Drive `q` string from the tree. Values are always re-quoted with `'` and
+`\` escaped, so text inside a value can never become an operator; tests cover
+quote, backslash and parenthesis injection. Mapping: `title` → `name`;
+`parentId = 'x'` → `'x' in parents`; `owner = 'x'` → `'x' in owners`; `!=` on
+those → `not ...`; `visibility = 'anyone'` or `'domain'` → both of Drive's
+`...CanFind` and `...WithLink` values; other terms pass through. `creator`,
+`sharedFrom`, `sharedTo`, `followUp`, `folderProperties` and
+`visibility = 'external'` have no Drive `q` equivalent and are refused with an
+error rather than ignored. Unless the query uses `trashed`,
+`and trashed = false` is added, as Google's tool does.
+
+Drive's `name contains` is a prefix match ("HelloWorld" matches `'Hello'`, not
+`'World'`), so `title contains` is too; the query help says so and suggests
+`fullText contains` for a word inside a title. When Google answers
+`incompleteSearch: true` (it could not search every corpus), both list tools
+return `incompleteSearch: true` so an agent does not take a short list as
+proof that a file does not exist. Google's MCP result has no such field.
+
+### Google requests per call
+
+`search_files`, `list_recent_files` and `get_file_metadata`: 1.
+`get_file_permissions`: 1 per 100 permissions, at most 10 (more is an error).
+`download_file_content`: 2 (1 when the stored size is over the cap).
+`read_file_content`: 1 for unsupported types, otherwise 2, plus 1 per 100
+comment threads with `includeComments`, at most 10 (more is an error, never a
+partial list). `create_file` and `copy_file`: 1. Page size for `search_files`
+and `list_recent_files`: default 10, at most 100 (Drive allows 1,000). Reads
+may be retried once by `google-http.ts`. Writes never are, and any failure
+after a write was sent says it may or may not have happened.
+
+### Differences from Google's Drive MCP tools
+
+- **No content snippets.** REST has no generated snippet, so `contentSnippet`
+  is never returned. `excludeContentSnippets` and `snippetVerbosity` are
+  accepted (and still may not both be set) but change nothing.
+- **Rich metadata.** `includeRichMetadata` adds `ownerName`,
+  `lastModifyingUserName`, `lastModifyingUserEmail` and `visibility`.
+  `visibility` comes from the file's `anyone` and `domain` permissions and is
+  absent when Google does not show the user the file's sharing.
+  `lastCommentedTime` is not returned; REST has no such field.
+- **Text, not extraction.** Google's `read_file_content` also reads PDFs,
+  Office files, images and video transcripts. REST can only do that by
+  converting the file into a new Google file, which is a write, so those types
+  return `textFormattingNotSupported: true`.
+- **Spreadsheets** read as CSV of the first sheet only, since Drive's text
+  exports of a spreadsheet hold only the first sheet. Every sheet needs the
+  Sheets API.
+- **Comments** are listed in `unanchoredComments` and never placed in the
+  text, so `contentAnchoredComments` is always empty; REST anchors are opaque.
+- **`revisionId`** works only for files that are not Google files.
+- **`list_recent_files` `orderBy`** maps to Drive's `recency desc`,
+  `modifiedTime desc` and `modifiedByMeTime desc`; other values fall back to
+  recency, as Google documents.
+- **`search_files` `orderBy`** accepts `modifiedTime` and `viewedByMeTime`,
+  with `asc` or `desc`; anything else is an error. Without it, Drive's own
+  order is used, which may differ from Google's relevance order.
+- **Shared drives.** Lists include shared-drive items the user can see
+  (`includeItemsFromAllDrives`), within Drive's default `user` corpus.
+- **`create_file` conversion** uses a fixed table (text, Markdown, HTML, RTF,
+  Word and OpenDocument text to Docs; CSV, TSV, Excel and OpenDocument sheets
+  to Sheets; PowerPoint and OpenDocument presentations to Slides) instead of
+  reading Drive's `importFormats`. Without content, only Docs, Sheets, Slides
+  and folders can be created.
+- **`copy_file`** sends no name or folder unless given, so the copy's default
+  name and folder are the REST defaults. Folders cannot be copied.
+- **`pregeneratedId`** is passed to Drive as the new file's `id`. This folder
+  has no tool that generates IDs.
+
+## Docs and Slides tools
+
+Names and input fields come from Google's MCP references
+(<https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/read_doc>,
+`.../update_doc`,
+<https://developers.google.com/workspace/slides/api/reference/mcp/tools_list/read_presentation>
+and `.../update_presentation`, recorded 2026-11-17). Annotations follow them
+except `destructiveHint` on `update_doc` (see the differences below). Each
+tool makes one REST call; `read_doc` makes a second only when Google refuses
+the first for the user's access (see "Suggestions and comments").
+
+| Tool | REST call | Works with | Google documentation |
+| --- | --- | --- | --- |
+| `read_doc` | `documents.get` with `includeTabsContent=true` and an explicit `suggestionsViewMode` | `documents.readonly` or `documents` | <https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/get> |
+| `update_doc` | `documents.batchUpdate` | `documents` | <https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/batchUpdate> |
+| `read_presentation` | `presentations.get` | `presentations.readonly` or `presentations` | <https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/get> |
+| `update_presentation` | `presentations.batchUpdate` | `presentations` | <https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate> |
+
+### What the read tools return
+
+Google documents both results only as `{ content: object }`, "a JSON
+representation" of the file, and does not say what is inside. Here `content`
+holds:
+
+- `text`: the whole file as Markdown-style text. Docs: every tab (child tabs
+  included, each under `=== Tab: Parent / Child ===` when there is more than
+  one), headings as `#`, list items with their real numbering (`1.`, `a.`,
+  `iv.`, nested formats such as `1.2.`, start numbers, numbering that
+  continues across interrupting paragraphs), tables as `| cells |` with nested
+  tables flattened into one cell, merged table cells placed on the full grid
+  (every row has the table's column count; cells covered by a merge read
+  `(merged left)` or `(merged up)`, never a blank), links as `[text](url)` (heading, bookmark and
+  tab links as `#heading=…`, `#bookmark=…`, `#tab=…`), footnote references as
+  `[^n]` with the footnotes after the body, headers and footers labelled
+  default, first page or even pages, person and date chips, rich links, page
+  and column breaks, and, in the `SUGGESTIONS_INLINE` view only, pending
+  suggestions as `{+inserted+}` and `{-deleted-}`. Slides: each slide as `## Slide n` (marked skipped when it
+  is), title placeholders as `###`, bullets with their own glyph, tables,
+  groups, word art, and each slide's speaker notes under `Speaker notes:`.
+- A structure for edits. Docs: `tabs[]` with every paragraph's and table
+  cell's `startIndex`, `endIndex`, named style and list, plus headers, footers
+  and footnotes by segment ID. A paragraph's `text` is exact: each non-text
+  index (an image, a footnote reference, a chip) is one U+FFFC, so
+  `text.length` equals `endIndex - startIndex`. Slides: `slides[]` with each
+  page element's `objectId`, type, placeholder and raw text, table cells by
+  row and column (Slides tables are placed on the grid by each cell's
+  `location` and spans, since `tableCells` leaves out covered cells), and the
+  speaker notes shape's `objectId`.
+- `revisionId`, which the update tools require.
+- `notes`: what could not be shown as text, with a count, and for Docs always
+  which suggestions view was used.
+- Docs: `suggestionsViewMode`, the view the document was read in.
+- With `commentsIncluded`, a `[Comments]` section (`commentsViewMode` on both
+  APIs).
+
+### Suggestions and comments
+
+`read_doc` always asks for `suggestionsViewMode=SUGGESTIONS_INLINE`, so
+pending suggested edits are shown and the indices are the ones
+`documents.batchUpdate` needs (the Document reference: "When editing a
+document, changes must be based on a document with SUGGESTIONS_INLINE").
+Google answers 403 to that view when the user may not see suggestions; without
+an explicit view a viewer would silently get `PREVIEW_WITHOUT_SUGGESTIONS`.
+On a 403 permission answer the tool reads again with
+`PREVIEW_WITHOUT_SUGGESTIONS` (without comments, which Google returns only
+with inline suggestions). That result says, in `suggestionsViewMode` and
+`notes`, that pending suggestions are not shown and that its indices may not
+be valid for `update_doc`; if comments were asked for, `[Comments]` and
+`notes` say they are not available with the user's access. Any other failure
+(not found, API disabled, a missing Docs permission on the grant) is returned
+as is, without a second read. A document that is readable is never turned
+into an error by these options.
+
+`read_presentation` with `commentsIncluded` asks for
+`commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED`. If Google refuses that with a
+permission error, the tool reads only the presentation's ID to check that the
+presentation itself is readable; if it is, it returns an error saying comments
+are not available with the user's access and that it can be read without
+`commentsIncluded`. If not, Google's own error is returned.
+
+`read_presentation` with `fields` returns Google's resource limited to those
+fields, unchanged, as Google's tool does.
+
+What cannot be represented, and is listed in `notes` when present: pictures
+(shown as `[image: title or alt text]`), drawings, charts, equations (the Docs
+API does not return their content), dropdown values, Slides videos (shown with
+their link), and text that slide masters and layouts put on every slide.
+Formatting other than headings, lists and links (bold, colors, fonts, sizes)
+is not in `text`. Checklist items render as plain list items: the Docs API
+does not say whether a box is ticked.
+
+A result over 250,000 bytes is refused with an error that gives the size and
+returns nothing; it is never cut short. It is the folder's one limit,
+`MAX_RESULT_BYTES` in `tool.ts`, checked by `boundedStructuredResult` (which
+`sizedResult` in `documents-shared.ts` calls) on the final serialized MCP
+result, which carries the content twice (as
+JSON text and as structured content), so the content itself is limited to
+about 125,000 bytes. Paperclip delivers tool results over 500,000 bytes as a
+pointer instead of content; the lower limit keeps every read inline with
+room to spare. To read a
+large presentation in parts, pass `fields`, for example
+`["slides(objectId,pageElements(objectId,shape.text))"]`. `read_doc` has no
+way to read part of a document, since Google's tool has no such input and
+`documents.get` cannot select one tab; a document whose result would be over
+the limit cannot be read through this tool.
+
+### How the update tools work
+
+Google's tools take `documents.batchUpdate` and `presentations.batchUpdate`
+requests as they are, so these do too: the requests are posted unchanged and
+in the caller's order, in one call. Google applies them in order and all or
+none; each request sees the file as changed by those before it. Reordering
+them here would change what dependent requests (insert, then style the
+inserted text) do, so nothing is reordered. The descriptions tell callers to
+order several index-based edits from one read from the highest index to the
+lowest; the tests show that order gives the intended result and the reverse
+does not.
+
+`writeControl.requiredRevisionId` is required (Google makes it optional). It
+is the `revisionId` from the read tool. If the file changed since, Google
+rejects the whole batch and the tool answers that the file is no longer at
+the revision you read, nothing was changed, and to read it again. A rejection
+counts as a conflict when Google's structured `error.status` is
+`FAILED_PRECONDITION` or `ABORTED`, or a reason in `error.details` names a
+revision or an unmet condition; only when neither field says so does the
+message decide ("required revision", "revision ID" or "latest revision").
+Any other 400 returns Google's own message.
+`targetRevisionId` (Docs), which would apply the edit to a newer version, is
+refused. The answer includes the new revision in `writeControl`, also for
+Slides (Google's Slides tool lists only `replies`). A write is never retried;
+a failure after it was sent carries the uncertain-outcome warning.
+
+Each request must name exactly one request kind; at most 500 per call.
+
+The requests can delete or replace content in the one file the call names:
+text (`deleteContentRange`, `deleteText`, `replaceAllText`), tabs
+(`deleteTab`) and slides or page elements (`deleteObject`), as in Google's
+tools. Both update descriptions say so. The tools cannot create, delete, move,
+copy or share files, and there is no tool that can.
+
+#### Allowed request kinds
+
+Each update tool accepts only the request kinds in a closed list:
+`DOCS_REQUEST_KINDS` in `docs/request-kinds.ts` and `SLIDES_REQUEST_KINDS` in
+`slides/request-kinds.ts`, built from Google's REST request references
+(<https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/request>,
+<https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/request>,
+recorded 2026-11-17). A kind is allowed only when it acts within the one file
+being edited. Any kind not on the list, including one Google adds later, is
+refused with an error that names it, and nothing is sent. The same table
+builds the lists in the tool descriptions and drives the tests, and a test
+checks it covers every kind in Google's reference.
+
+Docs: every kind in Google's `documents.batchUpdate` reference and in its
+`update_doc` MCP reference is listed. All are allowed except `insertRichLink`
+(refused); `insertInlineImage` and `replaceImage` are allowed only in the
+restricted form below.
+
+Slides: every kind in Google's `presentations.batchUpdate` reference and in
+its `update_presentation` MCP reference (which adds `importSlides`,
+`createAudio` and `updateAudioProperties`) is listed. All are allowed except
+`createSheetsChart`, `replaceAllShapesWithSheetsChart`, `refreshSheetsChart`,
+`importSlides` and `createAudio` (refused); `createVideo`, `createImage`,
+`replaceImage`, `replaceAllShapesWithImage` and `updatePageProperties` are
+allowed only in the restricted forms below. No other kind can link content
+from another file: linked charts come only from the refused Sheets chart
+kinds, and linked slides only from the refused `importSlides`.
+
+The tests keep Google's full lists and check that each kind is classified
+explicitly; only a kind on neither list falls through to "not a request kind
+this tool accepts".
+
+Refused, because they read another file:
+
+| Tool | Kind | Reason |
+| --- | --- | --- |
+| `update_doc` | `insertRichLink` | A smart chip that points to another file and shows its title. |
+| `update_presentation` | `createSheetsChart`, `replaceAllShapesWithSheetsChart`, `refreshSheetsChart` | Read a chart from a Google Sheets spreadsheet. |
+| `update_presentation` | `importSlides` | Copies slides from another presentation (in Google's MCP tool list, not in REST). |
+| `update_presentation` | `createAudio` | Inserts an audio file from Google Drive (in Google's MCP tool list, not in REST). |
+
+Refused forms of allowed kinds: `createVideo` is accepted only with
+`source: "YOUTUBE"` (a `DRIVE` video is another file). Image kinds
+(`insertInlineImage` and `replaceImage` in Docs; `createImage`, `replaceImage`,
+`replaceAllShapesWithImage` and a `stretchedPictureFill.contentUrl` page
+background in Slides) are allowed with a public image link, since Google
+fetches it without the user's data, but refused when the link is on
+`drive.google.com` or `docs.google.com`, which names another file. Links in
+text styles stay allowed: they only point somewhere and read nothing.
+
+This is a deliberate difference from Google's tools, which accept every
+request kind.
+
+Both update tools are annotated `destructiveHint: true` and
+`idempotentHint: false`, because a batch can delete or overwrite content and
+repeating it repeats the edit. Google marks `update_doc` non-destructive; this
+is a deliberate difference so that approval and confirmation in Paperclip
+match what the tool can do. `allowlist.test.ts` checks all four tools'
+annotations.
+
+### Differences from Google's Docs and Slides MCP tools
+
+- `content` is the text form and structure above, not the raw REST resource
+  (except `read_presentation` with `fields`). Google does not publish the
+  inner format of `content`, and ours has not been compared with an answer
+  from Google's server (see "Not verified against Google's servers").
+- `requiredRevisionId` is required and `targetRevisionId` is refused.
+- `update_doc` is annotated destructive (Google: not destructive).
+- `read_doc` always sets `suggestionsViewMode` and falls back to
+  `PREVIEW_WITHOUT_SUGGESTIONS` for users who may not see suggestions.
+- Both update tools accept only a closed list of request kinds and refuse
+  kinds and forms that read another file (see "Allowed request kinds").
+- At least one request is required.
+- Descriptions are our own wording. The `documentId` description does not
+  name Drive's file ID field.
+
+## Sheets tools
+
+Names, input fields, result shapes and annotations come from Google's Sheets
+MCP reference
+(<https://developers.google.com/workspace/sheets/api/reference/mcp>, recorded
+2026-11-17). All calls go to the Sheets REST API v4 at
+`https://sheets.googleapis.com/v4/spreadsheets/`; `google-http.ts` allows that
+host only under that path, checked after URL normalization. Each tool works
+with exactly the scopes `toolScopes.sheets` allows.
+
+| Tool | REST call | Works with | Google documentation |
+| --- | --- | --- | --- |
+| `get_values` | `spreadsheets.values.get` | `spreadsheets.readonly` or `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/get> |
+| `get_spreadsheet` | `spreadsheets.get` | `spreadsheets.readonly` or `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/get> |
+| `update_values` | `spreadsheets.values.update`, `valueInputOption=RAW` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update> |
+| `update_formulas` | `spreadsheets.values.update`, `valueInputOption=USER_ENTERED` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets.values/update> |
+| `insert_dimension` | `spreadsheets.batchUpdate` with one `insertDimension` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate> |
+| `update_spreadsheet` | `spreadsheets.batchUpdate` | `spreadsheets` | <https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate> |
+
+Every tool makes exactly one Google request. Writes are never retried; a write
+that fails after it was sent carries the usual "may or may not have been
+made" warning.
+
+### Values
+
+- **`get_values` returns formatted values**, as Google Sheets displays them
+  (`valueRenderOption=FORMATTED_VALUE`, `majorDimension=ROWS`, both sent
+  explicitly; these are the REST defaults, and Google's tool exposes no render
+  option). Numbers, currency, percentages and dates come back as the displayed
+  text (`"$1,200.50"`, `"12%"`, `"1/5/2026"`), booleans as `"TRUE"`/`"FALSE"`,
+  errors as their text (`"#DIV/0!"`), and formula cells as their result.
+  Google's answer is returned unchanged: trailing empty rows and columns are
+  left out, so rows can differ in length; an empty range has no `values`
+  field; in a merged area only the top-left cell holds the value. One range per
+  call, as in Google's tool (no `values.batchGet`).
+- **Unformatted values, formulas and several ranges** come from
+  `get_spreadsheet` with `ranges` and `includeGridData`: each cell has
+  `userEnteredValue` (including the formula), `effectiveValue` (dates and
+  times as serial numbers, days since 1899-12-30) and `formattedValue`; merged
+  areas are listed in `merges`. The Spreadsheet resource is returned unchanged
+  under `content`. `fields` takes Google's field-mask syntax, including
+  groups such as `sheets.properties(sheetId,title)`; a mask with any character
+  other than letters, digits, `_ . , ( ) / *`, or with unbalanced parentheses,
+  is refused before sending.
+- **`update_values` writes raw values** (`RAW`): strings are stored as given,
+  so `"=A1"`, `"2026-01-05"` and `"1,000"` stay text. Google's reference does
+  not name the option; RAW is our reading of it, because Google ships a
+  separate `update_formulas` tool. **`update_formulas`** uses `USER_ENTERED`,
+  so a string starting with `=` becomes a formula and other text may be parsed
+  by the spreadsheet's locale. Both take strings, finite numbers, booleans and
+  `null` (skip the cell); `""` clears a cell; anything else is refused before
+  sending.
+- **Ranges** are checked before sending (`sheets/range.ts`): A1 (`A1`,
+  `A1:C10`, `A:C`, `2:5`, `A2:C`, `$A$1`) or R1C1 (`R1C1:R10C3`), with an
+  optional sheet name. A sheet name with anything other than letters, digits
+  and `_` must be in single quotes with apostrophes doubled (`'Q1 Plan'!A1`,
+  `'Bob''s list'!A:A`); an unquoted one is refused with that hint. A bare name
+  is a sheet or named range. Columns are limited to `ZZZ` and rows to
+  10,000,000.
+
+### Bounds
+
+- At most **50,000 cells** per call, read or written (`MAX_CELLS_PER_CALL`).
+  Reads count the cells Google returns (`values` rows, or `rowData` values in
+  grid data); writes count the cells sent (`values`/`formulas`, or the rows of
+  `updateCells` and `appendCells`).
+- A read's whole tool result is at most **250,000 bytes** of UTF-8 JSON
+  (`MAX_RESULT_BYTES`, checked by `boundedStructuredResult` in `tool.ts`). The
+  measure is this folder's own result, which carries the value twice (as
+  `structuredContent` and as JSON text, since MCP clients read either). This
+  is a conservative default, not a measured fit: how a caller wraps and
+  delivers the result, and its byte budget, are the caller's business and are
+  not modeled here. The caller, which knows its own delivery budget, is
+  expected to supply the exact limit in a follow-up that applies one rule to
+  every service in this folder.
+  A write request body is at most 1,000,000 characters.
+- Over a limit, a read returns an error that starts with the size and asks for
+  a narrower range, fewer or narrower `ranges`, or fewer `fields`, to read in
+  smaller pieces; a write sends nothing. Nothing
+  is ever cut short and presented as complete. A Google answer over the 20 MB
+  transport limit gets the same narrowing message.
+- Server-side operations in `update_spreadsheet` (for example `repeatCell`,
+  `sortRange`, `findReplace`, `copyPaste`) are bounded by Google, not here.
+
+### Write results
+
+Write results are Google's REST response under `content`, plus `status`, a
+sentence naming what changed. Google says its result has a `status` field but
+not what it holds.
+
+- `update_values`/`update_formulas`: `Updated 4 cells in 'Q1 Plan'!A1:B2
+  (2 rows × 2 columns) as raw values.`, from Google's `updatedRange` and
+  `updatedCells`.
+- `insert_dimension`: the inserted rows or columns, 1-based (`sheet ID 0,
+  rows 6–8`), and that no values were written.
+- `update_spreadsheet`: each request in order with the range it touched
+  (`1. deleteDimension on sheet ID 0, columns B–C`), and the cells written by
+  `updateCells`/`appendCells`. Where each request type keeps its range (for
+  example `addNamedRange.namedRange.range`) is listed once in
+  `REQUEST_TARGETS`; a test fails if a supported type has no entry.
+
+### `update_spreadsheet` operations
+
+Google's reference lists 74 request types. 64 are accepted, each request must
+have exactly one of them, and anything else is refused before sending. Refused:
+
+- **Comments** (`insertComment`, `addCommentReply`, `updateCommentPost`,
+  `deleteComment`, `deleteCommentReply`): not part of the Sheets REST API.
+- **Data sources** (`addDataSource`, `updateDataSource`, `deleteDataSource`,
+  `refreshDataSource`, `cancelDataSourceRefresh`): they need a BigQuery scope
+  outside the allowlist, and Google's insufficient-scope answer would wrongly
+  ask the user to reconnect.
+
+Google's documented list includes operations that remove content, and they
+are accepted as documented: `deleteSheet`, `deleteDimension`, `deleteRange`,
+`deleteDuplicates`, `deleteTable`, `deleteNamedRange`, `deleteEmbeddedObject`,
+`deleteFilterView`, `deleteConditionalFormatRule`, `deleteProtectedRange`,
+`deleteBanding`, `deleteDeveloperMetadata`, `deleteDimensionGroup` and
+`clearBasicFilter`; `cutPaste`, `findReplace`, `sortRange`, `pasteData`,
+`trimWhitespace` and `randomizeRange` change existing cells. No operation
+deletes or creates a spreadsheet or changes its sharing. Because of these,
+`update_spreadsheet` says `destructiveHint: true`, where Google's reference
+says `false`.
+
+### Differences from Google's Sheets MCP tools
+
+- **`get_spreadsheet` `commentsIncluded: true` is refused.** `spreadsheets.get`
+  cannot return comments (they are in the Drive API, outside the Sheets
+  scopes). `false` or unset works.
+- **`update_spreadsheet` `writeControl` is refused.** Sheets
+  `spreadsheets.batchUpdate` has no required-revision check, so a write cannot
+  be made conditional; any `writeControl` is an error rather than ignored.
+- **`update_spreadsheet` refuses comment and data source requests** (above)
+  and is marked destructive.
+- **`insert_dimension` refuses `DIMENSION_UNSPECIFIED`** (Google says not to
+  use it), `endIndex` not greater than `startIndex`, and `inheritFromBefore`
+  with `startIndex` 0, before sending.
+- **`status`** in write results is our sentence; Google's value is not
+  documented.
+- **Not verified against Google's servers:** whether Google's `get_values`
+  uses formatted values and whether its `update_values` uses `RAW` (both are
+  the closest reading of the reference). A recorded comparison on the
+  enrolled internal account would settle both.
+
 ## Open questions
 
 - Whether an OAuth client marked as an AI-powered agent may call the REST APIs.
@@ -470,6 +1034,10 @@ earliest first; working hours and out-of-office settings are not read.
   users get the `events.list` fallback, which cannot see coworkers who share
   only free/busy. Adding `calendar.events.freebusy` (already one of the 14
   submitted scopes) to the `calendar.write` profile would fix that.
+- Whether `files.copy` with a token that holds `drive.readonly` and
+  `drive.file` can copy a file the app never created or opened. Google's scope
+  pages do not say; one live call on the test account will tell. If it cannot,
+  `copy_file` copies only files this app created or that were opened with it.
 
 ## Removal procedure
 
@@ -490,5 +1058,5 @@ earliest first; working hours and out-of-office settings are not read.
 cd server && npx vitest run src/google-workspace-rest-tools
 ```
 
-Test fixtures in `fixtures/`, `gmail/fixtures/` and `calendar/fixtures/` are synthetic, in the shape
+Test fixtures in `fixtures/` and each service's `fixtures/` folder are synthetic, in the shape
 of Google's REST responses. They contain no real mail, addresses or IDs.

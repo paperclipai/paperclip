@@ -1,5 +1,5 @@
 {
-  "id": "7e487b1f-9906-4ddf-945f-4d12e529b8f3",
+  "id": "82234354-6a19-4132-ae58-f545f798bbb7",
   "prevId": "a8bc890a-cc97-4b54-b426-5687b134a8b0",
   "version": "7",
   "dialect": "postgresql",
@@ -4721,7 +4721,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -5194,7 +5194,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github','antigravity')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','github')"
         }
       },
       "isRLSEnabled": false
@@ -59417,7 +59417,7 @@
         },
         "tool_connections_transport_check": {
           "name": "tool_connections_transport_check",
-          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth')"
+          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'voice', 'runtime_auth', 'plugin')"
         },
         "tool_connections_purpose_check": {
           "name": "tool_connections_purpose_check",
@@ -70107,6 +70107,112 @@
           "value": "\"prompt_injection_invocations\".\"status\" in ('running', 'succeeded', 'failed', 'unknown')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.plugin_connector_legacy_access": {
+      "name": "plugin_connector_legacy_access",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plugin_key": {
+          "name": "plugin_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "plugin_connector_legacy_access_company_plugin_uq": {
+          "name": "plugin_connector_legacy_access_company_plugin_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "plugin_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plugin_connector_legacy_access_company_id_companies_id_fk": {
+          "name": "plugin_connector_legacy_access_company_id_companies_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plugin_connector_legacy_access_connection_id_tool_connections_id_fk": {
+          "name": "plugin_connector_legacy_access_connection_id_tool_connections_id_fk",
+          "tableFrom": "plugin_connector_legacy_access",
+          "tableTo": "tool_connections",
+          "columnsFrom": [
+            "connection_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

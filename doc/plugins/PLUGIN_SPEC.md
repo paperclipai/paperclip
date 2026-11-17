@@ -515,6 +515,21 @@ apps?: AppDefinition[];
   does setup, OAuth, discovery, grants, policies, approvals and audit exactly as
   for a built-in connector. Transports that need provider code in the host
   (REST adapters, chat channels, AI runtimes) are rejected.
+- A method can use `transport: "plugin"`: the plugin worker serves its tools.
+  It declares `tools` (`{ kind: "static", list }` with a `risk` per tool, or
+  `{ kind: "dynamic" }` served by `ctx.connectors.listTools`) and optionally a
+  `settingsSchema` for per-connection settings. Tool names use `[a-z0-9_]`.
+  Authentication is `none` or `api_key`. The gateway keeps every decision
+  (grant, policy, approval, rate limit, audit) and calls the worker's
+  `executeTool` with `runContext.connection` (`id`, `appSlug`, `methodKey`,
+  `grantId`, `settings`, and the call's `credential`). The worker never reads
+  the vault and never sees another connection's credential. A stopped worker
+  is a retryable `plugin_connector_unavailable` error.
+- Legacy top-level `tools` become one implicit connector (slug `default`, named
+  after the plugin, no authentication). Its tools keep their names and
+  handlers. A one-time migration recorded each plugin installed at upgrade
+  time; the host gives each such plugin, per company, one connection installed
+  for the whole company, so existing agents keep exactly their tools.
 - A definition can declare `reviewedTools` (read, write and destructive tool
   names, and the risk for unlisted tools). The host classifies the connector's
   tools from it wherever the definition is installed.

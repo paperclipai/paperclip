@@ -2,6 +2,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import { NavLink } from "@/lib/router";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { ANALYTICS_UNMASK_PROPS } from "@/lib/analytics/privacy";
 import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
@@ -35,6 +36,8 @@ export function useSidebarNavExpanded() {
 interface SidebarNavItemProps {
   to: string;
   label: string;
+  /** The label is fixed product copy, so session replay may show it. */
+  analyticsChrome?: boolean;
   icon?: LucideIcon;
   /**
    * Pre-rendered icon element for rows whose icon isn't a plain Lucide
@@ -72,6 +75,7 @@ interface SidebarNavItemProps {
 export function SidebarNavItem({
   to,
   label,
+  analyticsChrome = false,
   icon: Icon,
   iconNode,
   end,
@@ -119,6 +123,7 @@ export function SidebarNavItem({
       to={to}
       state={SIDEBAR_SCROLL_RESET_STATE}
       end={end}
+      {...(analyticsChrome ? ANALYTICS_UNMASK_PROPS : {})}
       aria-label={railAriaLabel}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>

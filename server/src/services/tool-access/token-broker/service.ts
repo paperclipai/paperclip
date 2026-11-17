@@ -70,6 +70,7 @@ export function createConnectionTokenBroker(db: Db, { now, secrets, policySvc, a
       if (nativeProvider) throw forbidden(`${nativeProvider.name} credentials stay in the governed tool gateway and cannot be exported.`);
       if (restConnectorFor(connection)) throw forbidden("Deployment connection credentials stay in the governed tool gateway and cannot be exported.");
       if (isBrowserUseConnection(connection)) throw forbidden("Browser Use credentials stay in the governed tool gateway and cannot be exported.");
+      if (connection.transport === "plugin") throw forbidden("Plugin connector credentials stay in the governed tool gateway and cannot be exported.");
       if (connection.connectionPurpose === "ai") throw unprocessable("AI credentials are available only through the runtime resolver");
       const application = await getConnectionApplication(connection);
       const brokerEnabled = connectionTokenBrokerEnabled(connection);

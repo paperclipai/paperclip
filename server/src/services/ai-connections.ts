@@ -263,7 +263,7 @@ export function aiConnectionService(db: Db) {
         errorCode: "connection_unavailable", message: "Reconnect or enable this connection to check its account details." };
     }
     // Unsupported methods must not open their credentials just to report this limit.
-    const value = metadata.provider === "anthropic" && metadata.method === "subscription" && !metadata.routing
+    const value = ["anthropic", "openai"].includes(metadata.provider) && metadata.method === "subscription" && !metadata.routing
       ? await credential(row, 0, { actorType: "user", actorId: userId, ...audit, responsibleUserId: userId }) : "";
     return { ...identity, ...await probeAiAccountIdentity(metadata, value) };
   }

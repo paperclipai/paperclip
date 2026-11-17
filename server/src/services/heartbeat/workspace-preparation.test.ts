@@ -590,6 +590,31 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
   });
 
+  it.each(["claude_local", "codex_local"])("reserves remote storage for volume-free %s SSH tasks before acquiring the machine", async adapterType => {
+    const { input, issue, envOrchestrator } = await fixture();
+    configureRemotePersistence();
+    process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
+    input.agent.adapterType = adapterType;
+    await db.update(agents).set({ adapterType }).where(eq(agents.id, input.agent.id));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    input.task.issueRef = { ...issue, projectId: null, projectWorkspaceId: null };
+    input.task.context = { issueId: issue.id };
+    input.policy.useIsolatedTaskDirectory = true;
+    const environment = await environmentService(db).create(input.agent.companyId, { name: `SSH ${adapterType}`, driver: "ssh", status: "active", envVars: {},
+      config: { host: "fixture.invalid", port: 22, username: "fixture", remoteWorkspacePath: "/home/fixture/work", useHostAuth: false } });
+    input.environment.selectedEnvironmentId = environment.id;
+    input.environment.selectedEnvironmentForConfig = environment;
+    const resolveHost = vi.spyOn(input.services, "resolveWorkspaceForRun");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockImplementation(async () => { throw new Error("SSH acquisition admitted"); });
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("SSH acquisition admitted");
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(resolveHost).not.toHaveBeenCalled();
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId));
+    expect(readRemoteWorkspaceAuthority(workspace.metadata)).toMatchObject({ source: { kind: "empty" }, writerRunId: input.run.id });
+    const [bound] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(bound.executionWorkspaceId).toBe(workspace.id);
+  });
+
   it.each([false, true])("configured local folders retain host authority only on durable servers (ephemeral=%s)", async ephemeral => {
     const { input, envOrchestrator } = await fixture();
     input.agent.adapterType = "paperclip_runner";

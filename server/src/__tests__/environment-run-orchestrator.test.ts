@@ -294,8 +294,8 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(runtime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ assertCompanyBinding: true }));
   });
 
-  it("realizes an enrolled remote workspace in place and persists its authoritative remote root", async () => {
-    const environment = { ...makeEnvironment("sandbox"), id: randomUUID() };
+  it.each(["sandbox", "ssh"] as const)("realizes an enrolled %s workspace in place and persists its authoritative remote root", async driver => {
+    const environment = { ...makeEnvironment(driver), id: randomUUID() };
     const lease = makeLease({ id: randomUUID(), environmentId: environment.id, provider: "daytona", providerLeaseId: "sandbox-allocation" });
     const workspace = makePersistedExecutionWorkspace({ id: randomUUID(), providerType: "cloud_sandbox", metadata: {
       remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, source: { kind: "empty" },
@@ -303,7 +303,9 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     } });
     const remoteRoot = `/sandbox/.paperclip-workspaces/${workspace.id}`;
     const savedLease = { ...lease, metadata: { remoteCwd: remoteRoot } };
-    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox", runner: { execute: vi.fn() } };
+    const target = driver === "ssh"
+      ? { kind: "remote", transport: "ssh", remoteCwd: "/sandbox", spec: { remoteCwd: "/sandbox" } }
+      : { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox", runner: { execute: vi.fn() } };
     mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
     mockGetStoredWorkspace.mockResolvedValue({ ...workspace, cwd: remoteRoot });
     mockUpdateLeaseMetadata.mockResolvedValue(savedLease);
@@ -312,7 +314,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     } as never);
     try {
       const runtime = makeMockRuntime();
-      const input = { ...makeRealizeInput({ environment, lease, persistedExecutionWorkspace: workspace }), adapterType: "paperclip_runner" };
+      const input = { ...makeRealizeInput({ environment, lease, persistedExecutionWorkspace: workspace }), adapterType: driver === "ssh" ? "claude_local" : "paperclip_runner" };
       const result = await environmentRunOrchestrator(mockDb, { environmentRuntime: runtime }).realizeForRun(input);
       expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ workspace, target, source: { kind: "empty" } }));
       expect(mockBuildWorkspaceRealizationRequest).not.toHaveBeenCalled();
@@ -320,6 +322,9 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       expect(result.executionTarget).toMatchObject({ remoteCwd: remoteRoot,
         workspaceRealization: { mode: "in_place", authoritativeRoot: remoteRoot, outboundRestorePaths: [] } });
       expect(input.executionWorkspace.cwd).toBe(remoteRoot);
+      if (result.executionTarget?.kind === "remote" && result.executionTarget.transport === "ssh") {
+        expect(result.executionTarget.spec.remoteCwd).toBe(remoteRoot);
+      }
       expect(mockUpdateLeaseMetadata).toHaveBeenCalledWith(lease.id, expect.objectContaining({ remoteCwd: remoteRoot }));
       expect(result.lease.metadata?.remoteCwd).toBe(remoteRoot);
     } finally { prepare.mockRestore(); }

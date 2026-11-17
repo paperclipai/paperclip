@@ -6,7 +6,7 @@ import {
   toolAccessAuditEvents, toolActionRequests, toolInvocations,
 } from "@paperclipai/db";
 import {
-  GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_TOOL_TRANSPORT,
+  GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
   type GoogleWorkspaceService, type GoogleWorkspaceToolTransport,
 } from "@paperclipai/shared";
 import * as restDispatch from "../services/google-workspace-rest-dispatch.js";
@@ -16,6 +16,9 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+
+const gmailCatalog = (write: boolean) => ["docs__read_doc", ...googleWorkspaceServiceToolNames("gmail")
+  .filter((name) => write || name !== "create_draft").map((name) => `gmail__${name}`)].sort();
 
 vi.mock("../services/google-workspace-rest-dispatch.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../services/google-workspace-rest-dispatch.js")>();
@@ -197,14 +200,14 @@ const support = await getEmbeddedPostgresTestSupport();
     it("discovers the REST tools under the same names, filtered by granted scopes, after one profile probe", async () => {
       useTransport("gmail", "paperclip_rest");
       const f = await connectWorkspace();
-      expect(f.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__create_draft", "gmail__get_message", "gmail__search_threads"]);
+      expect(f.catalog.map((entry) => entry.toolName).sort()).toEqual(gmailCatalog(true));
       expect(f.catalog.find((entry) => entry.toolName === "gmail__create_draft")?.riskLevel).toBe("write");
       expect(f.mcpRequests.some((request) => request.startsWith("gmailmcp."))).toBe(false);
       expect(f.mcpRequests).toContain("docsmcp.googleapis.com tools/list");
       expect(f.gmailRequests).toEqual([expect.objectContaining({ method: "GET", path: "/gmail/v1/users/me/profile", authorization: "Bearer workspace-access-1" })]);
 
       const readOnly = await connectWorkspace({ permissions: ["gmail.readonly", "documents.readonly"] });
-      expect(readOnly.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__get_message", "gmail__search_threads"]);
+      expect(readOnly.catalog.map((entry) => entry.toolName).sort()).toEqual(gmailCatalog(false));
     });
 
     it("runs a Gmail read in process with the caller's token, screens it, and audits it", async () => {
@@ -336,7 +339,7 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(f.call("docs__read_doc", { documentId: "doc1" })).resolves.toMatchObject({ status: "completed" });
       f.setGmail(undefined);
       const recovered = await f.service.refreshCatalog(f.connectionId, f.actor);
-      expect(recovered.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__create_draft", "gmail__get_message", "gmail__search_threads"]);
+      expect(recovered.catalog.map((entry) => entry.toolName).sort()).toEqual(gmailCatalog(true));
     });
 
     it("asks for reconnection when Google keeps rejecting the token after a refresh during discovery", async () => {

@@ -1091,6 +1091,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     if (nativeWorkspaceSync || remoteWorkspaceAuthority) {
       const owned = await measureRunPhase("execution.workspace_ownership", () => withNativeWorkspaceFinalizationOwnership({
         db, companyId: run.companyId, runId: run.id,
+        ...(remoteWorkspaceAuthority && nativeRuntimeResolution.kind !== "native" && persistedExecutionWorkspace
+          ? { remoteWorkspaceId: persistedExecutionWorkspace.id } : {}),
       }, completeWorkspace));
       if (!owned.acquired) throw new NativeWorkspaceFinalizationBusyError();
     } else {

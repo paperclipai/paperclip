@@ -90,7 +90,7 @@ describe("durable Dot Runner integration", () => {
   it("requires each persisted prerequisite for pairing and new work without relying on the retired environment flag", async () => {
     const settings = instanceSettingsService(db);
     const broker = dotRunnerBroker(db);
-    for (const key of ["enableOpenAiDot", "enablePublicMcp"] as const) {
+    for (const key of ["enableOpenAiDot"] as const) {
       await settings.updateExperimental({ [key]: false });
       try {
         vi.stubEnv("PAPERCLIP_ENABLE_OPENAI_DOT", "1");
