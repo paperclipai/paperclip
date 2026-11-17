@@ -242,7 +242,7 @@ export function buildPaperclipTaskMarkdown(input: {
       if (input.personTimeZone) {
         lines.push(`The person's time zone is ${input.personTimeZone} (from their browser). Read times and dates they give, such as "nine in the morning" or "today", in that zone, and save schedules such as routine triggers with that timezone; say the zone when you report a schedule.`);
       }
-      if (input.nativeRunner && (input.coordinatorWorkspace || input.onboardingChat)) {
+      if (input.nativeRunner && input.coordinatorWorkspace && !input.onboardingChat) {
         lines.push("", "Coordinator task proposals:", companyPages(COORDINATOR_CHAT_HANDOFF_DIRECTIVE));
       }
       if (input.conferenceRoomEnabled) lines.push("", "Conference Room:", companyPages(CONFERENCE_ROOM_CHAT_DIRECTIVE));
