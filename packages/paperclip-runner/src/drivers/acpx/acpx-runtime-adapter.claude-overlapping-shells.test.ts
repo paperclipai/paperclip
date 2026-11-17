@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { createAcpRuntime } from "acpx/runtime";
 import { expect, it, vi } from "vitest";
 
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
@@ -96,9 +96,9 @@ it("is unknown after a cycle whose first update came after a second shell finish
     mcpServers: [],
     retainFailedAdmissionCleanup: vi.fn(),
   } as AcpxRuntimePortOpenOptions;
-  let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+  let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
   try {
-    port = await openCodexAcpxRuntime(options, {
+    port = await openQualifiedAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
       createRuntime: (created) => {

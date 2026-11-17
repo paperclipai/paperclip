@@ -170,8 +170,6 @@ type ToolAccessServiceOptions = {
   composioAppToolkits?: readonly string[];
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipCloudConnector?: PaperclipCloudConnector | null;
-  /** @deprecated Use paperclipCloudConnector. */
-  paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
 };
@@ -756,12 +754,8 @@ export function toolAccessService(
   const profileService = createToolProfileService(db, now);
   const profileDetails = profileService.getProfile;
   const profileResolver = createToolProfileResolver(db, { assertOptionalAgent, resolveInstalledConnectionsForAgent, toCatalogEntry });
-  const configuredCloudConnector =
-    options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
-  const connectorWasProvided =
-    options.paperclipCloudConnector !== undefined ||
-    options.paperclipIdGmailConnector !== undefined;
-  let cachedCloudConnector = configuredCloudConnector ?? null;
+  const connectorWasProvided = options.paperclipCloudConnector !== undefined;
+  let cachedCloudConnector = options.paperclipCloudConnector ?? null;
   const currentCloudConnector = (): PaperclipCloudConnector | null => {
     if (cachedCloudConnector || connectorWasProvided)
       return cachedCloudConnector;

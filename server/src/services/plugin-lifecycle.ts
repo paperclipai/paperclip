@@ -308,22 +308,8 @@ async function retireConnectorConnectionsFor(db: Db, pluginKey: string): Promise
 
 export function pluginLifecycleManager(
   db: Db,
-  options?: PluginLoader | PluginLifecycleManagerOptions,
+  { loader, workerManager }: PluginLifecycleManagerOptions = {},
 ): PluginLifecycleManager {
-  // Support the legacy signature: pluginLifecycleManager(db, loader)
-  // as well as the new options object form.
-  let loaderArg: PluginLoader | undefined;
-  let workerManager: PluginWorkerManager | undefined;
-
-  if (options && typeof options === "object" && "discoverAll" in options) {
-    // Legacy: second arg is a PluginLoader directly
-    loaderArg = options as PluginLoader;
-  } else if (options && typeof options === "object") {
-    const opts = options as PluginLifecycleManagerOptions;
-    loaderArg = opts.loader;
-    workerManager = opts.workerManager;
-  }
-
   const registry = pluginRegistryService(db);
   const retireConnectorConnections = (pluginKey: string) => retireConnectorConnectionsFor(db, pluginKey);
   /**
@@ -341,7 +327,7 @@ export function pluginLifecycleManager(
       await completeLegacyPluginToolAccess(db, pluginKey);
     })().catch((error) => log.warn({ err: error, pluginId }, "Could not update plugin connectors after activation"));
   }
-  const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
+  const pluginLoaderInstance = loader ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
 

@@ -239,7 +239,7 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected a bound TCP controller");
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
+    setupRunnerPrpWebSocketServer(server);
     const stateRoot = mkdtempSync(resolve(tmpdir(), "paperclip-runner-state-"));
     scratchDirectories.push(stateRoot);
     const coordinator = runnerPrpCoordinator(db, { stateRoot });
