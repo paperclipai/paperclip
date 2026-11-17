@@ -33,7 +33,8 @@ import type { DiscordGatewayOwnership } from "./chat-channels/runtime-types.js";
 import { createInboundAdmission } from "./chat-channels/inbound/admission.js";
 import { createInboundEnvelope } from "./chat-channels/inbound/envelope.js";
 import { sameTeamsThreadIdentity, durableExternalThreadIdentity, canonicalProviderResourceId, nonDirectDestinationAllowed, linearControlCommand, actionThreadMatchesConversation } from "./chat-channels/inbound/surfaces.js";
-import { createChatInboundAuthority } from "./chat-channels/inbound/authorization.js";
+import { createChatInboundAuthority, principalMayDirectAssignedAgent } from "./chat-channels/inbound/authorization.js";
+import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import { createTeamsRoutes } from "./chat-channels/microsoft-teams/routes.js";
 import type { LiveInboundMessage } from "./chat-channels/runtime-types.js";
 import { DELIVERY_PROCESSING_STALE_MS, normalizedDeliveryThreadId, normalizedLifecycleEffect, deliveryReady, pendingInboundWakeupCondition, lifecycleRuntimeFence, normalizedLifecycleWithRuntimeFence } from "./chat-channels/inbound/delivery-ledger.js";
@@ -1734,9 +1735,35 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (endpoint.provider === "speko" && principalResolution.userId === null && !principalResolution.linkedDenied) {
         publicVoiceTaskAllowed = await authorizeSpekoPublicVoiceTask(db, endpoint, principalResolution.principal.externalId, voiceStore.authorizePrincipal);
       }
+      const githubAutomaticContext = githubAutomatic?.context ?? githubIssue?.context;
+      const githubAutomaticAdmissionResult = (endpoint.provider === "github" && githubAutomaticContext)
+        ? await githubAutomaticAdmission(db, endpoint, githubAutomaticContext)
+        : null;
+      const githubAccess = endpoint.provider === "github"
+        ? await githubChatPrincipalAccess(db, endpoint, principalResolution.principal.id)
+        : null;
+      const actingUserId = githubAutomaticContext
+        ? (githubAutomaticAdmissionResult?.responsibleUserId ?? endpoint.sponsorUserId)
+        : githubAccess
+          ? (githubAccess.userId ?? githubAccess.sponsorUserId ?? null)
+          : principalResolution.userId;
+      const mayDirectAssignedAgent = await principalMayDirectAssignedAgent(
+        db,
+        endpoint,
+        actingUserId,
+      );
+      const principalIdentityAllowed = githubAutomaticContext
+        ? (githubAutomaticAdmissionResult?.allowed ?? false)
+        : (principalResolution.userId !== null ||
+          guestSponsorAllowed ||
+          publicVoiceTaskAllowed ||
+          (githubAccess?.allowed ?? false));
       const principalAllowed =
         !principalResolution.linkedDenied &&
-        (principalResolution.userId !== null || guestSponsorAllowed || publicVoiceTaskAllowed);
+        !(githubAccess && !githubAccess.allowed) &&
+        !(githubAutomaticContext && !githubAutomaticAdmissionResult?.allowed) &&
+        mayDirectAssignedAgent &&
+        principalIdentityAllowed;
       // Destination wake policy, Slack channels only. A channel can opt its
       // top-level posts in without a mention (a shared helpdesk channel where
       // every new post is a request) and keep thread follow-ups from waking
@@ -1826,15 +1853,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ? "Connection is not active"
           : !destinationAllowed
             ? "Destination is not enabled in Paperclip"
-            : principalResolution.linkedDenied
+            : principalResolution.linkedDenied || (githubAccess && !githubAccess.allowed)
               ? "Linked Paperclip account is not currently permitted"
-              : !principalAllowed
+              : !principalIdentityAllowed
                 ? endpoint.allowUnlinkedPeople
                   ? "Endpoint sponsor can no longer authorize external guests"
                   : "External identity must be linked to a Paperclip account"
-                : followUpSuppressed
-                  ? "Thread follow-up did not mention the agent (destination requires a mention)"
-                  : "Message did not address the agent or an active task thread";
+                : !mayDirectAssignedAgent
+                  ? "Sender is not authorized to direct this agent"
+                  : followUpSuppressed
+                    ? "Thread follow-up did not mention the agent (destination requires a mention)"
+                    : "Message did not address the agent or an active task thread";
         await db.transaction(async (tx) => {
           await notifyChatDeliveryWork(tx);
           return tx
@@ -2417,8 +2446,21 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           );
         const automaticContext = githubAutomatic?.context ?? githubIssue?.context;
         const automaticAdmission = automaticContext ? await githubAutomaticAdmission(tx, currentEndpoint, automaticContext) : null;
-        if (automaticContext && !automaticAdmission?.allowed) currentPrincipalAuthorization.allowed = false;
-        if (automaticAdmission?.allowed) currentPrincipalAuthorization.userId = automaticAdmission.responsibleUserId ?? null;
+        if (automaticContext) {
+          if (!currentPrincipalAuthorization.identityAllowed || !automaticAdmission?.allowed) {
+            currentPrincipalAuthorization.allowed = false;
+            currentPrincipalAuthorization.linkedDenied = true;
+          } else {
+            const responsibleAllowed = await principalMayDirectAssignedAgent(
+              tx,
+              currentEndpoint,
+              automaticAdmission.responsibleUserId ?? currentEndpoint.sponsorUserId,
+            );
+            currentPrincipalAuthorization.allowed = responsibleAllowed;
+            currentPrincipalAuthorization.linkedDenied = !responsibleAllowed;
+            currentPrincipalAuthorization.userId = automaticAdmission.responsibleUserId ?? null;
+          }
+        }
         const endpointStillAllowed =
           currentEndpoint.status === "verifying" ||
           currentEndpoint.status === "active";

@@ -73,7 +73,7 @@ type MessageLifecycleOptions = {
   ORPHAN_FOLLOW_UP_MAX_ATTEMPTS: number;
   INGRESS_REORDER_WINDOW_MS: Partial<Record<ChatProvider, number>>;
   issuesSvc: ReturnType<typeof issueService>;
-  lockCurrentPrincipalAuthorization: (tx: DbOrTransaction, endpoint: EndpointRow, principalId: string) => Promise<{ allowed: boolean; linkedDenied: boolean; userId?: string | null }>;
+  lockCurrentPrincipalAuthorization: (tx: DbOrTransaction, endpoint: EndpointRow, principalId: string) => Promise<{ allowed: boolean; linkedDenied: boolean; userId?: string | null; identityAllowed?: boolean }>;
   nonDirectDestinationAllowed: (endpoint: EndpointRow, resource: typeof chatEndpointResources.$inferSelect | null | undefined) => boolean;
   redactError: (error: unknown) => string;
   runtimeCallbackEndpoint: (tx: DbTransaction, endpointId: string, context: LifecycleRuntimeFence, statuses: EndpointRow["status"][]) => Promise<EndpointRow | null>;

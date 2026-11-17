@@ -44,6 +44,7 @@ import {
   githubBotRequest,
 } from "./chat-github-client.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
+import { principalMayDirectAssignedAgent } from "./chat-channels/inbound/authorization.js";
 import {
   effectiveGitHubReviewPolicy,
   githubReviewConclusion,
@@ -207,6 +208,13 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       throw forbidden(
         "This run has no active GitHub bot capability for its conversation",
       );
+    const automatic = (source.delivery.normalizedEvent?.githubAutomatic ?? source.delivery.normalizedEvent?.githubIssue) as
+      { context: GitHubAutomaticEventContext } | undefined;
+    const automaticAdmission = automatic
+      ? await githubAutomaticAdmission(db, source.endpoint, automatic.context)
+      : null;
+    if (automatic && !automaticAdmission?.allowed)
+      throw forbidden("Automatic GitHub task authority is no longer available");
     const access = await githubChatPrincipalAccess(
       db,
       source.endpoint,
@@ -214,14 +222,11 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     );
     if (!access?.allowed)
       throw forbidden("The initiating GitHub person is no longer authorized");
-    const automatic = (source.delivery.normalizedEvent.githubAutomatic ?? source.delivery.normalizedEvent.githubIssue) as
-      { context: GitHubAutomaticEventContext } | undefined;
-    if (
-      automatic &&
-      !(await githubAutomaticAdmission(db, source.endpoint, automatic.context))
-        ?.allowed
-    )
-      throw forbidden("Automatic GitHub task authority is no longer available");
+    const actingUserId = automatic
+      ? (automaticAdmission?.responsibleUserId ?? source.endpoint.sponsorUserId)
+      : (access.userId ?? access.sponsorUserId ?? source.endpoint.sponsorUserId);
+    if (!(await principalMayDirectAssignedAgent(db, source.endpoint, actingUserId)))
+      throw forbidden("The initiating GitHub person is not authorized to direct this agent");
     const repositoryId = String(
       source.resource.metadata?.providerRepositoryId ?? "",
     );

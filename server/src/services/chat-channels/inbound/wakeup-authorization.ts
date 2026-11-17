@@ -11,7 +11,7 @@ import { agentWakeupRequests, agents, chatActions, chatConversations, chatDelive
 import { forbidden } from "../../../errors.js";
 import { resolveGitHubWakeAuthority, isGitHubAutomaticDelivery } from "../github/wake-authority.js";
 import { assertSlackWakeMention } from "../slack/wake-authority.js";
-import type { createChatInboundAuthority } from "./authorization.js";
+import { principalMayDirectAssignedAgent, type createChatInboundAuthority } from "./authorization.js";
 import type { createChatMessageLifecycle } from "./lifecycle.js";
 type WakeAuthorityOptions = {
   runtimeCallbackEndpoint: Parameters<typeof createChatMessageLifecycle>[1]["runtimeCallbackEndpoint"];
@@ -163,7 +163,18 @@ export function createInboundWakeAuthority(db: Db, options: WakeAuthorityOptions
     if (endpoint.provider === "github") {
       const automatic = await resolveGitHubWakeAuthority(tx, endpoint, delivery);
       if (automatic.kind === "denied") throw deny();
-      if (automatic.kind === "allowed") authorization.userId = automatic.userId;
+      if (automatic.kind === "allowed") {
+        if (!authorization.identityAllowed) throw deny();
+        const responsibleAllowed = await principalMayDirectAssignedAgent(
+          tx,
+          endpoint,
+          automatic.userId ?? endpoint.sponsorUserId,
+        );
+        if (!responsibleAllowed) throw deny();
+        authorization.allowed = true;
+        authorization.linkedDenied = false;
+        authorization.userId = automatic.userId;
+      }
     }
     if (!(await canActorReadIssuePrivacy(tx, authorization.userId
       ? { type: "board", userId: authorization.userId }

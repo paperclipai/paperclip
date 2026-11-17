@@ -18,6 +18,8 @@ import {
 
 import type { Db } from "@paperclipai/db";
 
+import { authorizationService } from "../../authorization.js";
+
 import {
   authUsers,
   chatConversations,
@@ -47,6 +49,37 @@ type InboundAuthorityOptions = {
   runtimeCallbackEndpoint: (tx: DbTransaction, endpointId: string, context: LifecycleRuntimeFence, statuses: EndpointRow["status"][]) => Promise<EndpointRow | null>;
   fetchImpl?: typeof fetch;
 };
+/**
+ * Whether the acting user (or endpoint sponsor) holds permission to direct/assign
+ * the endpoint's assigned agent. Unsponsored self-hosted endpoints without an
+ * acting user stay open by design.
+ */
+export async function principalMayDirectAssignedAgent(
+  executor: DbOrTransaction,
+  endpoint: { companyId: string; assignedAgentId: string; sponsorUserId?: string | null },
+  userId?: string | null,
+): Promise<boolean> {
+  const actingUserId = userId ?? endpoint.sponsorUserId;
+  // Unsponsored endpoints (e.g. self-hosted local boards without user binding) stay open.
+  if (!actingUserId) return true;
+  const decision = await authorizationService(executor).decide({
+    // Evaluate company-scoped membership grants without instance-admin bypass.
+    actor: { type: "board", userId: actingUserId, source: "session", ignoreInstanceAdmin: true },
+    action: "tasks:assign",
+    resource: {
+      type: "issue",
+      companyId: endpoint.companyId,
+      issueId: null,
+      projectId: null,
+      parentIssueId: null,
+      assigneeAgentId: endpoint.assignedAgentId,
+      assigneeUserId: null,
+    },
+    scope: { assigneeAgentId: endpoint.assignedAgentId },
+  });
+  return decision.allowed;
+}
+
 export function createChatInboundAuthority(db: Db, options: InboundAuthorityOptions) {
   const { voiceStore, runtimeCallbackEndpoint, fetchImpl } = options;
 
@@ -239,19 +272,52 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
     linkedDenied: boolean;
     userId: string | null;
     sponsorUserId?: string | null;
+    identityAllowed: boolean;
   }> {
+    async function gateProviderAuthority(
+      result: {
+        allowed: boolean;
+        linkedDenied: boolean;
+        userId: string | null;
+        sponsorUserId?: string | null;
+      },
+    ): Promise<{
+      allowed: boolean;
+      linkedDenied: boolean;
+      userId: string | null;
+      sponsorUserId?: string | null;
+      identityAllowed: boolean;
+    }> {
+      const identityAllowed = result.allowed;
+      if (!result.allowed) return { ...result, identityAllowed: false };
+      const actor = result.userId ?? result.sponsorUserId ?? endpoint.sponsorUserId;
+      const allowed = await principalMayDirectAssignedAgent(tx, endpoint, actor);
+      if (!allowed) {
+        return { ...result, allowed: false, linkedDenied: true, userId: null, sponsorUserId: null, identityAllowed };
+      }
+      return { ...result, identityAllowed };
+    }
+
     if (endpoint.provider === "speko") {
       const principal = await tx.select({ externalId: chatExternalPrincipals.externalId }).from(chatExternalPrincipals)
         .where(and(eq(chatExternalPrincipals.id, principalId), eq(chatExternalPrincipals.companyId, endpoint.companyId), eq(chatExternalPrincipals.provider, "speko"))).then((rows) => rows[0]);
-      if (!principal) return { allowed: false, linkedDenied: true, userId: null };
-      try { return await voiceStore.authorizePrincipal(tx as import("../../voice/voice-session-store.js").VoiceTransaction, endpoint.companyId, endpoint.id, principal.externalId); }
-      catch (error) {
+      if (!principal) return { allowed: false, linkedDenied: true, userId: null, identityAllowed: false };
+      let voiceAccess;
+      try {
+        voiceAccess = await voiceStore.authorizePrincipal(
+          tx as import("../../voice/voice-session-store.js").VoiceTransaction,
+          endpoint.companyId,
+          endpoint.id,
+          principal.externalId,
+        );
+      } catch (error) {
         if (!(error instanceof HttpError && [403, 404].includes(error.status))) throw error;
-        return { allowed: false, linkedDenied: true, userId: null };
+        return { allowed: false, linkedDenied: true, userId: null, identityAllowed: false };
       }
+      return await gateProviderAuthority(voiceAccess);
     }
     const githubAccess = await githubChatPrincipalAccess(tx, endpoint, principalId);
-    if (githubAccess) return githubAccess;
+    if (githubAccess) return await gateProviderAuthority(githubAccess);
     // Link confirmation already uses this transaction-scoped identity key.
     // Taking it at the final task mutation boundary prevents a newly confirmed
     // identity from racing the authorization snapshot. Row locks below also
@@ -276,7 +342,7 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       .then((rows) => rows[0] ?? null);
     if (link?.status === "linked") {
       if (!link.userId) {
-        return { allowed: false, linkedDenied: true, userId: null };
+        return { allowed: false, linkedDenied: true, userId: null, identityAllowed: false };
       }
       const membership = await tx
         .select({
@@ -293,23 +359,30 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
         )
         .for("update")
         .then((rows) => rows[0] ?? null);
+      // Concurrent permission grant mutations are not serialized (pre-existing product-wide pattern);
+      // membership and link locks serialize link confirmation, revocation, and company departure.
       const allowed =
         membership?.status === "active" &&
         membership.membershipRole !== "viewer";
+      const identityAllowed = allowed;
+      if (allowed && !(await principalMayDirectAssignedAgent(tx, endpoint, link.userId))) {
+        return { allowed: false, linkedDenied: true, userId: null, identityAllowed };
+      }
       return {
         allowed,
         linkedDenied: !allowed,
         userId: allowed ? link.userId : null,
+        identityAllowed,
       };
     }
     if (link?.status === "revoked") {
-      return { allowed: false, linkedDenied: true, userId: null };
+      return { allowed: false, linkedDenied: true, userId: null, identityAllowed: false };
     }
     if (!endpoint.allowUnlinkedPeople) {
-      return { allowed: false, linkedDenied: false, userId: null };
+      return { allowed: false, linkedDenied: false, userId: null, identityAllowed: false };
     }
     if (!endpoint.sponsorUserId) {
-      return { allowed: true, linkedDenied: false, userId: null };
+      return { allowed: true, linkedDenied: false, userId: null, identityAllowed: true };
     }
     const sponsorMembership = await tx
       .select({
@@ -326,12 +399,18 @@ export function createChatInboundAuthority(db: Db, options: InboundAuthorityOpti
       )
       .for("update")
       .then((rows) => rows[0] ?? null);
+    const allowed =
+      sponsorMembership?.status === "active" &&
+      sponsorMembership.membershipRole !== "viewer";
+    const identityAllowed = allowed;
+    if (allowed && !(await principalMayDirectAssignedAgent(tx, endpoint, null))) {
+      return { allowed: false, linkedDenied: true, userId: null, sponsorUserId: null, identityAllowed };
+    }
     return {
-      allowed:
-        sponsorMembership?.status === "active" &&
-        sponsorMembership.membershipRole !== "viewer",
+      allowed,
       linkedDenied: false,
       userId: null,
+      identityAllowed,
     };
   }
 
