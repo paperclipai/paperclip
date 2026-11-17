@@ -6,16 +6,29 @@ import { notFound, unprocessable } from "../errors.js";
 import { skillAccessService } from "./skill-access.js";
 import { skillPackageStore } from "./skill-package-store.js";
 import { skillPackageRuntime } from "./skill-package-runtime.js";
-import { skillPackageManifest, verifySkillPackageDirectory } from "./skill-package-files.js";
+import { skillPackageManifest, verifySkillPackageDirectory, type SkillPackageManifest } from "./skill-package-files.js";
 import { skillFileBytes } from "./skill-snapshot.js";
 import { ensureSkillCacheDirectory, skillVersionCachePaths, touchSkillVersionCache, withSkillVersionCacheLock } from "./skill-version-cache.js";
 import { runVersionSnapshotFlight } from "./skill-version-retention.js";
 
 export type SkillContentReference = { companyId: string; skillId: string; versionId: string };
+export type SkillRepositoryContentReference = SkillContentReference & { snapshotId: string; entryPath: string };
 
 export function skillExecutionContent(db: Db, options: { actor?: AuthorizationActor; packageDb?: Db } = {}) {
   const packages = skillPackageStore(options.packageDb ?? db);
   const runtime = skillPackageRuntime(options.packageDb ?? db);
+  async function withRepositoryVersion<T>(reference: SkillRepositoryContentReference,
+    consume: (directory: string, manifest: SkillPackageManifest) => Promise<T>): Promise<T> {
+    await skillAccessService(db, options.actor).assertSkill(reference.companyId, reference.skillId);
+    const version = await packages.version(reference.companyId, reference.skillId, reference.versionId);
+    if (!version || version.companyId !== reference.companyId || version.companySkillId !== reference.skillId
+      || version.id !== reference.versionId || version.repositorySnapshotId !== reference.snapshotId
+      || version.repositorySkillPath !== reference.entryPath) throw notFound("Admitted skill repository version not found");
+    // The storage owner verifies private scratch and retains it through consume.
+    // No shared cache path is exposed, so retention/publication cannot delete a
+    // reader's source, and filesystem work holds no company advisory transaction.
+    return packages.withIsolatedPackage(reference.companyId, reference.snapshotId, consume);
+  }
   async function withVersion<T>(reference: SkillContentReference, consume: (directory: string) => Promise<T>): Promise<T> {
     await skillAccessService(db, options.actor).assertSkill(reference.companyId, reference.skillId);
     return withReadableVersion(reference, consume);
@@ -51,5 +64,5 @@ export function skillExecutionContent(db: Db, options: { actor?: AuthorizationAc
       return consume(directory);
     });
   }
-  return { withVersion, withReadableVersion };
+  return { withVersion, withReadableVersion, withRepositoryVersion };
 }

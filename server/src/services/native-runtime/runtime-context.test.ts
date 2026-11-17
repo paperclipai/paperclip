@@ -15,7 +15,10 @@ const serviceMocks = vi.hoisted(() => ({
   getEffectiveToolAssignmentsForAgent: vi.fn(),
   githubBotConnectionIdsForRun: vi.fn(),
   spekoToolsForSession: vi.fn(),
+  withRepositoryVersion: vi.fn(),
 }));
+
+vi.mock("../skill-execution-content.js", () => ({ skillExecutionContent: () => ({ withRepositoryVersion: serviceMocks.withRepositoryVersion }) }));
 
 vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
 vi.mock("../chat-github-tools.js", () => ({
@@ -105,6 +108,43 @@ afterEach(async () => {
 });
 
 describe("buildNativeRuntimeContext", () => {
+  it("reads a pinned repository once for two skills without creating portable projections", async () => {
+    const source = await mkdtemp(path.join(tmpdir(), "shared-repository-"));
+    temporaryRoots.push(source);
+    const files = [
+      { path: "skills/one/SKILL.md", content: "---\nname: one\ndescription: One\n---\nRead ../../shared.txt\n", kind: "skill" as const },
+      { path: "skills/two/SKILL.md", content: "---\nname: two\ndescription: Two\n---\nRead ../../shared.txt\n", kind: "skill" as const },
+      { path: "skills/one/agents/openai.yaml", content: "interface:\n  display_name: One\n", kind: "other" as const },
+      { path: "shared.txt", content: "pinned shared bytes", kind: "other" as const },
+    ];
+    for (const file of files) {
+      await mkdir(path.dirname(path.join(source, file.path)), { recursive: true });
+      await writeFile(path.join(source, file.path), file.content);
+    }
+    const { skillPackageManifest } = await import("../skill-package-files.js");
+    const manifest = skillPackageManifest(files);
+    serviceMocks.withRepositoryVersion.mockImplementation(async (_reference, consume) => consume(source, manifest));
+    serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "Instructions" } });
+    const entries = ["one", "two"].map(name => ({ key: name, runtimeName: `nested/${name}`, versionId: name,
+      source: path.join(source, "must-not-read-portable", name), sourceStatus: "available" as const,
+      repository: { companyId: "company-1", skillId: name, versionId: name, snapshotId: "same-snapshot", entryPath: `skills/${name}/SKILL.md` } }));
+    const context = await buildNativeRuntimeContext({ db: {} as Db, agent: { id: "agent-1", companyId: "company-1", name: "Coder", adapterType: "paperclip_runner", adapterConfig: {} },
+      runId: "run-1", runtimeConfig: { paperclipSkillSync: { desiredSkills: ["one", "two"] } }, runtimeSkillEntries: entries });
+    expect(serviceMocks.withRepositoryVersion).toHaveBeenCalledTimes(1);
+    expect(context.skills).toHaveLength(2);
+    expect(context.skills[0]!.repository!.bundle).toEqual(context.skills[1]!.repository!.bundle);
+    expect(context.skills[0]!.repository!.bundle.fileCount).toBe(4);
+    expect(context.skills.map(skill => skill.bundle.fileCount)).toEqual([2, 1]);
+    expect(await readFile(path.join(context.skills[0]!.bundle.rootPath, "SKILL.md"), "utf8")).toContain("../../../repositories/");
+    expect(await readFile(path.join(context.skills[0]!.repository!.bundle.rootPath, "shared.txt"), "utf8")).toBe("pinned shared bytes");
+    expect(await lstat(path.join(source, "must-not-read-portable")).catch(() => null)).toBeNull();
+    const sharedFile = path.join(source, "shared.txt");
+    const originalStat = await stat(sharedFile);
+    await writeFile(sharedFile, "forged shared bytes");
+    await fs.utimes(sharedFile, originalStat.atime, originalStat.mtime);
+    await expect(buildNativeRuntimeContext({ db: {} as Db, agent: { id: "agent-1", companyId: "company-1", name: "Coder", adapterType: "paperclip_runner", adapterConfig: {} },
+      runId: "run-2", runtimeConfig: { paperclipSkillSync: { desiredSkills: ["one", "two"] } }, runtimeSkillEntries: entries })).rejects.toThrow("repository content mismatch");
+  });
   it("uses committed instructions when the disk projection is stale", async () => {
     serviceMocks.exportFiles.mockResolvedValue({
       entryFile: "AGENTS.md",

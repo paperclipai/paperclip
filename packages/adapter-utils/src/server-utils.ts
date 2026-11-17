@@ -288,6 +288,8 @@ export interface PaperclipSkillEntry {
   currentVersionId?: string | null;
   sourceStatus?: "available" | "missing";
   missingDetail?: string | null;
+  /** Exact authorized metadata. Shared consumers must resolve this instead of source. */
+  repository?: { companyId: string; skillId: string; versionId: string; snapshotId: string; entryPath: string };
 }
 
 export interface PaperclipDesiredSkillEntry {

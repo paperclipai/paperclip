@@ -7,7 +7,7 @@ import { verifyFileManifest } from "./file-manifest-cache.js";
 import { skillPackageStorageEnabled, skillPackageStore, skillVersionFileMap, skillVersionUsesWholePackage, skillVersionMetadataColumns, withSkillPackageReadScope, type StoredSkillVersion } from "./skill-package-store.js";
 import { skillPackageRuntime } from "./skill-package-runtime.js";
 import type { SkillPackageFileMapping } from "@paperclipai/db";
-import { ensureSkillCacheDirectory, protectedVersions, withSkillVersionCacheLock } from "./skill-version-cache.js";
+import { ensureSkillCacheDirectory, protectedVersions, skillVersionCachePaths, withSkillVersionCacheLock } from "./skill-version-cache.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { verifyExistingBundledSkillRelease } from "./bundled-skill-release-validation.js";
 import { retainProjectSkillAccess, skillAccessService } from "./skill-access.js";
@@ -402,6 +402,7 @@ export type RuntimeSkillVersionSelection = {
 };
 
 type RuntimeSkillEntryOptions = {
+  repositoryLayout?: "shared";
   selectVersions?: (entries: RuntimeSkillVersionSelection[]) => Promise<Set<string>>;
   materializeMissing?: boolean;
   versionSelections?: Map<string, string | null>;
@@ -6133,14 +6134,23 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     if (!preparedSelection) {
       await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
     }
-    const resolve = async (selected: RuntimeSkillEntryOptions) => {
+    const resolveEntries = async (selected: RuntimeSkillEntryOptions) => {
       // Recheck scope on the full row read: a public-to-project change between
       // the probe and consumption must fail closed.
       const runtimeOptions = preparedSelection ? { ...selected, onlyKeys: requested } : selected;
-      const entries = await listRuntimeSkillEntriesLocked(companyId, runtimeOptions,
+      return listRuntimeSkillEntriesLocked(companyId, runtimeOptions,
         Boolean(preparedSelection && installed.every(skill => skill.accessSourceId === null)));
+    };
+    const resolve = async (selected: RuntimeSkillEntryOptions) => {
+      const entries = await resolveEntries(selected);
       return measureRunPhase("skills.consume", () => consume(entries));
     };
+    if (options.repositoryLayout === "shared") {
+      const entries = await withSkillPackageReadScope(db, () => options.admittedVersionsOnly
+        ? resolveEntries({ ...options, snapshotLatest: false })
+        : withSkillVersionCacheLock(db, companyId, () => resolveEntries(options)));
+      return measureRunPhase("skills.consume", () => consume(entries));
+    }
     // Saved versions only: nothing is published to or pinned in the cache, so
     // a reattaching turn does not queue behind other runs' materialization.
     if (options.admittedVersionsOnly) {
@@ -6229,6 +6239,16 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     const out: PaperclipSkillEntry[] = [];
     for (const { skill, selection, installedResolution } of selected) {
       if (admitted && !admitted.has(selection.key)) continue;
+      if (options.repositoryLayout === "shared" && selection.versionId) {
+        const version = await readVersionMetadata(companyId, skill.id, selection.versionId);
+        if (version?.repositorySnapshotId && version.repositorySkillPath) {
+          out.push({ key: selection.key, runtimeName: selection.runtimeName, versionId: selection.versionId,
+            currentVersionId: selection.currentVersionId, source: skillVersionCachePaths(companyId, skill.id, selection.versionId).directory,
+            sourceStatus: "available", repository: { companyId, skillId: skill.id, versionId: selection.versionId,
+              snapshotId: version.repositorySnapshotId, entryPath: version.repositorySkillPath } });
+          continue;
+        }
+      }
       const sourceResolution = installedResolution ?? await resolveRuntimeSkillSource(companyId, skill, {
         ...options, ...(options.snapshotLatest ? { materializeMissing: false } : {}),
         versionSelections: new Map([[selection.key, selection.versionId]]),

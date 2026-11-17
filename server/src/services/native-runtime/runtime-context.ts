@@ -1,4 +1,5 @@
 import { skillExecutionContent } from "../skill-execution-content.js";
+import { repositorySkillFrontmatter } from "../skill-repository-package.js";
 import { withRuntimeAssetUse, removeRuntimeAssetTree } from "./runtime-asset-retention.js";
 import { cachedSkillAsset, rememberSkillAsset } from "./skill-asset-cache.js";
 import { verifyFileManifest, type FileManifestEntry } from "../file-manifest-cache.js";
@@ -320,15 +321,56 @@ export async function prepareRuntimeContextSource(
   };
 }
 
-export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean) {
+export async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>, entries: PaperclipSkillEntry[], omitLegacy: boolean,
+  authority?: { db: Db; companyId: string }) {
   const desiredKeys = resolvePaperclipDesiredSkillNames(runtimeConfig, entries).filter(
     (key) => !omitLegacy || key !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
   );
   const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  const repositories = new Map<string, Promise<{ bundle: NativeRuntimeAssetReference; files: AssetFile[] }>>();
   return Promise.all(desiredKeys.sort().map(async (key) => {
     const entry = byKey.get(key);
     if (!entry) throw new Error(`assigned runtime skill is missing from the company library: ${key}`);
     if (entry.sourceStatus === "missing") throw new Error(entry.missingDetail ?? `assigned runtime skill source is missing: ${key}`);
+    if (entry.repository) {
+      const reference = entry.repository;
+      if (!authority || reference.companyId !== authority.companyId || reference.versionId !== entry.versionId) {
+        throw new Error("runtime skill repository authority mismatch");
+      }
+      const runtimeName = safeRelativePath(entry.runtimeName, `runtime name for ${key}`);
+      const flightKey = `${reference.companyId}:${reference.snapshotId}`;
+      let preparation = repositories.get(flightKey);
+      if (!preparation) {
+        preparation = skillExecutionContent(authority.db).withRepositoryVersion(reference, async (root, manifest) => {
+          const collected = await collectDirectoryFiles(root);
+          const expected = new Map(manifest.files.map(file => [file.path, file]));
+          if (collected.length !== expected.size) throw new Error("runtime repository manifest mismatch");
+          const files = collected.map(file => {
+            const source = expected.get(file.path);
+            if (!source || file.content.length !== source.size || sha256(file.content) !== source.sha256) {
+              throw new Error("runtime repository content mismatch");
+            }
+            return { ...file, mode: source.executable ? 0o555 : 0o444 };
+          });
+          return { bundle: await materializeAsset(files), files };
+        });
+        repositories.set(flightKey, preparation);
+      }
+      const repository = await preparation;
+      const entryPath = safeRelativePath(reference.entryPath, "repository skill entrypoint");
+      const original = repository.files.find(file => file.path === entryPath);
+      const frontmatter = original && repositorySkillFrontmatter(original.content.toString("utf8"));
+      if (!frontmatter) throw new Error("Repository skill entrypoint has no frontmatter");
+      const repositoryRoot = `${"../".repeat(runtimeName.split("/").length + 1)}repositories/${repository.bundle.digest}`;
+      const target = `${repositoryRoot}/${entryPath}`.split("/").map(encodeURIComponent).join("/");
+      const wrapper = `${frontmatter.trimEnd()}\n\nRead and follow the complete [original skill](${target}). Resolve its authored relative references from the original skill's directory. Repository-root paths are relative to \`${repositoryRoot}/\`.\n`;
+      const policyPath = path.posix.join(path.posix.dirname(entryPath), "agents/openai.yaml");
+      const policy = repository.files.find(file => file.path === policyPath);
+      const bundle = await materializeAsset([{ path: "SKILL.md", content: Buffer.from(wrapper), mode: 0o444 },
+        ...(policy ? [{ path: "agents/openai.yaml", content: policy.content, mode: 0o444 }] : [])]);
+      return { key: entry.key, runtimeName, versionId: reference.versionId, bundle,
+        repository: { bundle: repository.bundle, entryPath, policyPath: policy ? policyPath : null } };
+    }
     const bundle = await materializeSkillAsset(entry.source);
     return { key: entry.key, runtimeName: safeRelativePath(entry.runtimeName, `runtime name for ${key}`), versionId: entry.versionId ?? entry.currentVersionId ?? null, bundle };
   }));
@@ -398,7 +440,7 @@ export async function buildNativeRuntimeContext(input: { db: Db; agent: RuntimeA
   const emptyMcpDigest = sha256("preconfigured");
   const [instructions, skills, mcp] = await Promise.all([
     measureRunPhase("runtime_context.instructions", () => materializeInstructionBundle(input.db, input.agent, input.instructionWorkingCopy?.kind === "agent_files")),
-    measureRunPhase("runtime_context.skills", () => preconfigured ? [] : materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner")),
+    measureRunPhase("runtime_context.skills", () => preconfigured ? [] : materializeSelectedSkills(input.runtimeConfig, input.runtimeSkillEntries, input.agent.adapterType === "paperclip_runner", { db: input.db, companyId: input.agent.companyId })),
     measureRunPhase("runtime_context.mcp", () => preconfigured ? { assignmentSetId: `sha256:${emptyMcpDigest}`, digest: emptyMcpDigest, bindingId: null } : resolveNativeRuntimeMcpSnapshot({ db: input.db, agent: input.agent, runId: input.runId })),
   ]);
   const snapshot = {
