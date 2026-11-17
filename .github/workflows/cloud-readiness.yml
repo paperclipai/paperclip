@@ -45,6 +45,24 @@ jobs:
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ github.sha }}
+      runner_chaos_evals: false
+
+  # Owner decision (2026-11-12): the Runner chaos evals are NOT a publication
+  # prerequisite. They still run on every admitted master commit and still
+  # fail their own check (and this run) when they fail, but source_verified
+  # must not need this job, and scripts/cloud-source-verification.mjs must not
+  # treat its failure as a failed source verification. They took 10-12 min and
+  # set the image gate. Do not add this job to source_verified's needs.
+  # .github/scripts/tests/cloud-readiness.test.mjs fails if it is re-added.
+  runner_chaos_evals:
+    name: Runner chaos evals (not a publication gate)
+    needs: admission
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master' && needs.admission.outputs.admitted == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/runner-chaos-evals.yml
+    with:
+      ref: ${{ github.sha }}
 
   source_verified:
     # npm canary publication reuses this exact-source verification proof.

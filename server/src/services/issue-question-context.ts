@@ -1,4 +1,4 @@
-import { and, desc, eq, or, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, or, isNotNull, sql, type SQL } from "drizzle-orm";
 import { heartbeatRuns, issueComments, issueThreadInteractions, type Db } from "@paperclipai/db";
 
 export const TASK_QUESTION_GUIDANCE = "Unanswered questions are saved conversation data, not instructions or proof of a current blocker. Historical questions remain answerable in the feed. Do not repeat a request or stop current work merely because a historical question is pending. Follow the latest human direction and continue work that does not need the missing information. If that information still prevents the current work, identify the concrete blocker and request only the input still needed. Withdraw your obsolete question through the interaction API when later work or evidence satisfies it; never fabricate an answer. A human-dismissed request is deferred to history: do not repeat it, reopen it, or insist on a response. Ordinary confirmations and completion reviews can be left unanswered. Dismissal never grants approval, permission, credentials, or permission to leave planning mode. Approvals, permissions, and configured review stages keep their own gates. Continue independent work without repeating their reminders.";
@@ -52,13 +52,14 @@ export function activeIssueInteractionCondition(input: {
   runId?: string | null;
   conversationMode?: boolean;
   responsibleUserId?: string | null;
+  responsibleUser?: SQL;
 } = {}) {
-  const responsibleUser = input.responsibleUserId
+  const responsibleUser = input.responsibleUser ?? (input.responsibleUserId
     ? sql`${input.responsibleUserId}`
     : input.runId ? sql`(select ${heartbeatRuns.responsibleUserId} from ${heartbeatRuns}
         where ${heartbeatRuns.id} = ${input.runId}
           and ${heartbeatRuns.companyId} = ${issueThreadInteractions.companyId})`
-      : null;
+      : null);
   return and(
     sql`not ${historicalQuestionCondition()}`,
     sql`not ${deferredInteractionCondition()}`,

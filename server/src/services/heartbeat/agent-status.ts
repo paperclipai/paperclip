@@ -75,6 +75,14 @@ export function settledAgentWorkCondition(liveRunIds: ReadonlySet<string>, now: 
           OR c.receipt ? 'baseline' OR c.receipt->>'cleanupPending' = 'true'))`;
 }
 
+/** The heartbeat a write records when it settles an agent after its runs end
+ * without finalizeAgentStatus: the settlement time, so the changed-rows agent
+ * rule does not re-check the agent's backlog, but never a first heartbeat for
+ * an agent that has none (that stays the first real one). */
+export function settledHeartbeat(now: Date) {
+  return sql`case when ${agents.lastHeartbeatAt} is null then null else ${now.toISOString()}::timestamptz end`;
+}
+
 export function createHeartbeatAgentStatus(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
@@ -94,7 +102,7 @@ export function createHeartbeatAgentStatus(db: Db) {
       const nextStatus = running ? "running" : settledStatus(outcome, options?.keepIdleOnFailure);
       const now = new Date();
       await notifyStrandedAgentStatus(tx, { companyId: existing.companyId, agentId });
-      await notifyAttentionRetentionWork(tx, { companyId: existing.companyId });
+      await notifyAttentionRetentionWork(tx, { companyId: existing.companyId, sourceKind: "agent_error_alert" });
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const [updated] = await tx.update(agents).set({
         status: nextStatus,
@@ -152,9 +160,11 @@ export function createHeartbeatAgentStatus(db: Db) {
             eq(heartbeatRuns.agentId, candidate.id)))
           .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
         const nextStatus = settledStatus(lastRun?.status);
-        await notifyAttentionRetentionWork(tx, { companyId: candidate.companyId });
+        await notifyAttentionRetentionWork(tx, { companyId: candidate.companyId, sourceKind: "agent_error_alert" });
+        // Settling the agent's runs records a heartbeat, as finalizeAgentStatus
+        // does; see the agent rule in recovery/changed-tasks.ts.
         const [agent] = await tx.update(agents).set({ status: nextStatus,
-          errorReason: nextStatus === "error" ? errorReason(lastRun?.error) : null, updatedAt: now,
+          errorReason: nextStatus === "error" ? errorReason(lastRun?.error) : null, lastHeartbeatAt: settledHeartbeat(now), updatedAt: now,
         }).where(and(eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
           eq(agents.status, "running"), eq(agents.lifecycleState, "ready"))).returning();
         await logActivity(tx as unknown as Db, {

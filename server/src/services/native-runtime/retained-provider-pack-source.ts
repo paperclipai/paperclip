@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { link, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, statfs, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, statfs, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { Transform } from "node:stream";
@@ -242,7 +242,6 @@ async function importSource(cache: string, pointer: string, manifest: ProviderPa
       while (parent.includes("/")) { parent = parent.slice(0, parent.lastIndexOf("/")); if (overlay.files.has(parent)) fail(); }
       await verifyFileContents(join(archive.sourceRoot, `${index}.tar.zst`), file, signal);
     }
-    await unlink(join(directory, "transport.tar.gz"));
     signal.throwIfAborted();
     const publication: Published = { ...provenance, entry: basename(directory), receiptSha256: digest(await readStable(root + ".archive.json")), verifiedTarPaths: true };
     await writeFile(temporaryPointer, JSON.stringify(publication), { flag: "wx", mode: 0o600 });

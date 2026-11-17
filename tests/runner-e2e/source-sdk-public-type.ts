@@ -15,6 +15,19 @@ interface PublicSource {
   inputs: SdkPublicInputs; identity: { inputs: number; manifestSha256: string; lockSha256: string; compilerPackageSha256: string; parserPackageSha256: string; parserEntrySha256: string; zodPackageSha256: string; zodEntrySha256: string; zodTypeGraphSha256: string };
 }
 const verified = new WeakSet<PublicSource>();
+const matches = async (file: string, expected: string) => { if (hash(await readFile(file)) !== expected) throw new Error("SDK public source proof unavailable"); };
+export async function verifySdkProofPackages(root: string, inputs: SdkPublicInputs = defaultInputs) {
+  await matches(path.join(root, "node_modules/typescript/package.json"), inputs.compilerPackageSha256);
+  const parserRoot = path.join(root, "node_modules/.pnpm/@babel+parser@7.29.8/node_modules/@babel/parser");
+  await matches(path.join(parserRoot, "package.json"), inputs.parserPackageSha256); await matches(path.join(parserRoot, "lib/index.js"), inputs.parserEntrySha256);
+  const require = createRequire(path.join(root, "packages/shared/package.json")), zodPackage = require.resolve("zod/package.json"), zodEntry = require.resolve("zod");
+  await matches(zodPackage, inputs.zodPackageSha256); await matches(zodEntry, inputs.zodEntrySha256);
+  for (const [relative, expected] of Object.entries(inputs.zodTypeFiles)) {
+    if (!/^[A-Za-z0-9._/-]+$/.test(relative) || relative.split("/").includes("..")) throw new Error("SDK public source proof unavailable");
+    await matches(path.join(path.dirname(zodPackage), relative), expected);
+  }
+  return { parserRoot, require, zodPackage };
+}
 export async function verifySdkPublicSource(root: string, expectations?: SdkPublicInputs): Promise<PublicSource> {
   const supplied = expectations ?? defaultInputs;
   const inputs: SdkPublicInputs = Object.freeze({ ...supplied, inputs: Object.freeze({ ...supplied.inputs }), zodTypeFiles: Object.freeze({ ...supplied.zodTypeFiles }) });
@@ -39,13 +52,8 @@ export async function verifySdkPublicSource(root: string, expectations?: SdkPubl
   for (const directory of ["packages/shared/src", "packages/plugins/sdk/src"]) await collect(directory);
   const expectedSources = Object.keys(inputs.inputs).filter(file => file.startsWith("packages/shared/src/") || file.startsWith("packages/plugins/sdk/src/"));
   if (JSON.stringify(actualSources.sort()) !== JSON.stringify(expectedSources.sort())) throw new Error("SDK public source proof unavailable");
-  const matches = async (file: string, expected: string) => { if (hash(await readFile(file)) !== expected) throw new Error("SDK public source proof unavailable"); };
   await matches(path.join(root, "pnpm-lock.yaml"), inputs.lockSha256);
-  await matches(path.join(root, "node_modules/typescript/package.json"), inputs.compilerPackageSha256);
-  const parserRoot = path.join(root, "node_modules/.pnpm/@babel+parser@7.29.8/node_modules/@babel/parser");
-  await matches(path.join(parserRoot, "package.json"), inputs.parserPackageSha256); await matches(path.join(parserRoot, "lib/index.js"), inputs.parserEntrySha256);
-  const require = createRequire(path.join(root, "packages/shared/package.json")), zodPackage = require.resolve("zod/package.json"), zodEntry = require.resolve("zod");
-  await matches(zodPackage, inputs.zodPackageSha256); await matches(zodEntry, inputs.zodEntrySha256);
+  const { parserRoot, require, zodPackage } = await verifySdkProofPackages(root, inputs);
   const parser = createRequire(path.join(parserRoot, "package.json"))("./lib/index.js");
   const publicTypes = new Map<string, any>();
   for (const [relative, expected] of Object.entries(inputs.zodTypeFiles)) {

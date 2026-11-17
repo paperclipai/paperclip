@@ -1198,6 +1198,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(serialized).not.toContain("runtimeConfig");
   });
 
+  it("returns only the same agent's earlier api receipt when it retries its key as a manual run", async () => {
+    const { companyId, routine, svc, agentId } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+    const boardApi = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "shared-key" }, { userId: "operator" });
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: "operator", action: "routine.run_triggered", entityType: "routine_run", entityId: boardApi.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, boardApi.linkedIssueId!));
+    const agentRun = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "shared-key" }, { agentId });
+    expect(agentRun.id).not.toBe(boardApi.id);
+    const earlier = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "agent-retry" }, { agentId });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId, agentId, action: "routine.run_triggered", entityType: "routine_run", entityId: earlier.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, earlier.linkedIssueId!));
+    const retry = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { agentId });
+    expect(retry.id).toBe(earlier.id);
+    const board = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { userId: "operator" });
+    expect(board.id).not.toBe(earlier.id);
+  });
+
   it("versions responsibility transfers and uses the new person only for future automatic tasks", async () => {
     const { companyId, routine, svc } = await seedFixture();
     const userId = "new-responsible-person";

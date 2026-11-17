@@ -1,3 +1,4 @@
+import { isWaitingToStart } from "../lib/agent-queue-wait";
 import {
   Inbox,
   ListChecks,
@@ -76,7 +77,7 @@ export function Sidebar() {
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveRunCount = liveRuns?.length ?? 0;
+  const liveRunCount = (liveRuns ?? []).filter((run) => !isWaitingToStart(run)).length;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
   const showApps = experimentalSettings?.enableApps === true;
   const showStatusCards = experimentalSettings?.enableStatusCards === true;

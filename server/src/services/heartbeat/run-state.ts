@@ -13,6 +13,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
@@ -2054,6 +2055,18 @@ export function createHeartbeatRunState(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
+      return run ?? null;
+    },
+
+    getQueuedAssignmentRunForIssue: async (input: { companyId: string; agentId: string; issueId: string }) => {
+      const [run] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "queued"),
+        isNull(heartbeatRuns.startedAt),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`,
+        sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_assigned'`,
+      )).orderBy(asc(heartbeatRuns.createdAt)).limit(1);
       return run ?? null;
     },
 

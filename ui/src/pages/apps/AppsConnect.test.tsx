@@ -72,6 +72,7 @@ const POSTHOG = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "posthog"
 const NEON = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "neon")!;
 const SUPERAGENT = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
 const GAUGE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
+const CIRCLEBACK = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "circleback")!;
 const DITTO = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
 const BRAINTRUST = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "braintrust")!;
 const POSTMAN = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "postman")!;
@@ -201,7 +202,10 @@ function stepLabelsOnScreen(): string[] {
  */
 async function openAccessAdvanced() {
   const change = Array.from(document.body.querySelectorAll("button")).find(
-    (b) => b.textContent?.trim() === "Change" && b.getAttribute("aria-expanded") === "false",
+    (b) => b.textContent?.trim() === "Change"
+      && b.getAttribute("aria-expanded") === "false"
+      // A pasted MCP server also states its sign-in with a Change link.
+      && b.dataset.testid !== "generic-mcp-sign-in-toggle",
   );
   if (!change) return;
   await act(async () => {
@@ -2438,6 +2442,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
+  it("connects Circleback with direct browser sign-in and shows the share warning first", async () => {
+    mockParams.appKey = "circleback";
+    listGalleryMock.mockResolvedValueOnce({ apps: [CIRCLEBACK] });
+    await render();
+    // Share and delete advice must be visible before sign-in on the only path.
+    expect(container.textContent).toContain("anyone with the link");
+    expect(container.textContent).toContain("Set share and delete actions to Ask first");
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.textContent).not.toContain("API key");
+    const primary = buttonByText("Continue to Circleback");
+    expect(primary?.disabled).toBe(false);
+    await act(async () => primary!.click());
+    await vi.waitFor(() => expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "circleback",
+      connectionMethodKey: "mcp-oauth",
+    })));
+  });
+
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
     mockParams.appKey = "neon";
     listGalleryMock.mockResolvedValueOnce({ apps: [NEON] });
@@ -4497,9 +4519,22 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     return root;
   }
 
-  async function openAdvanced() {
+  // The sign-in line's own Change link. The access line below it has a
+  // Change control too, so select this one by its test hook.
+  function signInToggle(): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>('[data-testid="generic-mcp-sign-in-toggle"]');
+  }
+
+  async function openSignInOptions() {
     await act(async () => {
-      buttonContaining("Advanced authentication")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      signInToggle()?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+  }
+
+  async function chooseSignIn(title: string) {
+    await act(async () => {
+      radioContaining(title)?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
   }
@@ -4664,7 +4699,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     expect(container.querySelector("#generic-mcp-name")).toBeNull();
   });
 
-  it("opens advanced authentication when the server wants a credential we can't discover", async () => {
+  it("opens the sign-in options when the server wants a credential we can't discover", async () => {
     connectAppMock.mockRejectedValue(apiError(502, "oauth_challenge", "This app needs you to sign in."));
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
@@ -4675,8 +4710,11 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     await flushReact();
 
     expect(container.textContent).toContain("This server wants a credential");
-    // The advanced section is now open, so the fields to fix it are on screen.
+    // The sign-in options are now open, with the probed key field above them,
+    // so the fields to fix it are on screen.
     expect(container.textContent).toContain("Custom headers");
+    expect(container.querySelector("#generic-mcp-key")).toBeTruthy();
+    expect(signInToggle()?.textContent).toBe("Done");
     expect(container.textContent).not.toContain("coming soon");
   });
 
@@ -4719,7 +4757,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
 
     const stepsBeforeHandoff = stepLabelsOnScreen();
-    expect(stepsBeforeHandoff).toEqual(["Pick app", "Add your key"]);
+    expect(stepsBeforeHandoff).toEqual(["Pick app", "Connect"]);
 
     await act(async () => {
       buttonByText("Check link")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -4868,11 +4906,8 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   it("submits custom headers as secret-backed credential values", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
-    await act(async () => {
-      buttonByText("Custom headers")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
+    await openSignInOptions();
+    await chooseSignIn("Custom headers");
 
     const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
       .find((input) => input.getAttribute("aria-label") === "Header name")!;
@@ -4900,11 +4935,8 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   it("blocks a header Paperclip refuses to send before making a request", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
-    await act(async () => {
-      buttonByText("Custom headers")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
+    await openSignInOptions();
+    await chooseSignIn("Custom headers");
 
     const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
       .find((input) => input.getAttribute("aria-label") === "Header name")!;
@@ -4923,9 +4955,12 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
   it("sends preregistered client credentials when the operator supplies them", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
+    await openSignInOptions();
+    await chooseSignIn("Browser sign-in");
+    // The client fields stay behind their own link until the operator asks.
+    expect(container.querySelector("#generic-mcp-client-id")).toBeNull();
     await act(async () => {
-      buttonByText("Browser sign-in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonByText("Use your own client ID")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
@@ -4948,10 +4983,66 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     });
   });
 
+  it("states the chosen sign-in in one line once the operator presses Done", async () => {
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+
+    expect(container.textContent).toContain("Paperclip asks the server how to sign in.");
+    expect(signInToggle()?.textContent).toBe("Change");
+    // Collapsed: the options are not on screen.
+    expect(radioContaining("Custom headers")).toBeUndefined();
+
+    await openSignInOptions();
+    await chooseSignIn("Custom headers");
+    const nameInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
+      .find((input) => input.getAttribute("aria-label") === "Header name")!;
+    await act(async () => setInputValue(nameInput, "X-Api-Key"));
+    await flushReact();
+    const valueInput = Array.from(container.querySelectorAll<HTMLInputElement>("input"))
+      .find((input) => input.getAttribute("aria-label") === "Value for X-Api-Key")!;
+    await act(async () => setInputValue(valueInput, "phx_secret"));
+    await flushReact();
+
+    expect(signInToggle()?.textContent).toBe("Done");
+    await openSignInOptions();
+
+    expect(container.textContent).toContain("Signs in with 1 custom header.");
+    expect(signInToggle()?.textContent).toBe("Change");
+    expect(radioContaining("Custom headers")).toBeUndefined();
+  });
+
+  it("keeps the sign-in options open while a chosen key is still empty", async () => {
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+    await openSignInOptions();
+    await chooseSignIn("Key or token");
+
+    expect(container.querySelector("#generic-mcp-key")).toBeTruthy();
+    expect(signInToggle()?.disabled).toBe(true);
+    expect(buttonByText("Check link")?.disabled).toBe(true);
+
+    // Clicking the disabled toggle must not hide the field that explains why.
+    await openSignInOptions();
+    expect(container.querySelector("#generic-mcp-key")).toBeTruthy();
+
+    await act(async () => setInputValue(container.querySelector<HTMLInputElement>("#generic-mcp-key")!, "sk_test"));
+    await flushReact();
+    expect(signInToggle()?.disabled).toBe(false);
+    expect(buttonByText("Check link")?.disabled).toBe(false);
+  });
+
+  it("labels the server as unverified exactly once on the connect step", async () => {
+    await render();
+    await gotoLinkFrame(container, "https://mcp.example.test/mcp");
+
+    const occurrences = (container.textContent ?? "").split("Unverified server").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
   it("keeps protocol jargon off the consumer path", async () => {
     await render();
     await gotoLinkFrame(container, "https://mcp.example.test/mcp");
-    await openAdvanced();
+    await openSignInOptions();
 
     for (const jargon of ["DCR", "Dynamic Client Registration", "CIMD", "Client ID Metadata", "RFC", "PKCE"]) {
       expect(container.textContent, jargon).not.toContain(jargon);

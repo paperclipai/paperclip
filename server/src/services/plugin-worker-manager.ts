@@ -1,3 +1,4 @@
+import { isPluginWorkspaceReplay } from "./plugin-workspace-replay-context.js";
 import { withPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -1295,9 +1296,13 @@ export function createPluginWorkerHandle(
         const workspaceId = isRecord(source) ? readNonEmptyString(operation.kind === "prepare" ? source.id : source.projectWorkspaceId) : null;
         const projectId = readNonEmptyString(params.projectId);
         if (projectId && workspaceId && (operation.kind === "prepare" || operation.kind === "inspect" || operation.kind === "remove")) {
-          // Only foreground preparation may use a run. Maintenance uses project consent.
-          const runId = operation.kind === "prepare" ? readNonEmptyString(params.runId) : null;
-          const agentId = operation.kind === "prepare" ? readNonEmptyString(params.agentId) : null;
+          const executionWorkspaceId = readNonEmptyString(params.executionWorkspaceId);
+          // Reconciliation preserves the provider's request identity while Git uses project consent.
+          const foreground = operation.kind === "prepare" && !(executionWorkspaceId && isPluginWorkspaceReplay({
+            pluginId, companyId: directCompanyId, projectId, projectWorkspaceId: workspaceId, executionWorkspaceId,
+          }));
+          const runId = foreground ? readNonEmptyString(params.runId) : null;
+          const agentId = foreground ? readNonEmptyString(params.agentId) : null;
           if (Boolean(runId) !== Boolean(agentId)) return { companyId: directCompanyId };
           return { companyId: directCompanyId, projectGit: { projectId, workspaceId, operation: operation.kind,
             ...(runId && agentId ? { runId, agentId } : {}) } };

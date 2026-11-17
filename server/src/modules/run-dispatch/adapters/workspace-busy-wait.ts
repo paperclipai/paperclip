@@ -158,7 +158,7 @@ export async function wakeWorkspaceBusyWaitersInTx(tx: Db, input: {
   );
   const waiters = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(waiting).for("update");
   if (waiters.length === 0) return 0;
-  await notifyScheduledRetryDispatch(tx, { companyId: input.companyId });
+  await notifyScheduledRetryDispatch(tx, { companyId: input.companyId, runId: input.runId });
   const woken = await tx
     .update(heartbeatRuns)
     .set({ scheduledRetryAt: input.now, updatedAt: input.now })

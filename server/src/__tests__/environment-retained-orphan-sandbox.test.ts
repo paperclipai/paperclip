@@ -308,7 +308,7 @@ suite("retained orphan sandbox on the shared ownership path", () => {
    * is the exact row shape releases before this change wrote; it carries no
    * new marker. */
   async function warmLease(runId: string, input: { status?: string; workspaceId: string | null; receipt?: boolean;
-    providerLeaseId?: string; createdAt?: Date }) {
+    providerLeaseId?: string; createdAt?: Date; metadata?: Record<string, unknown> }) {
     const id = randomUUID(), providerLeaseId = input.providerLeaseId ?? `sandbox://fake/${id}`;
     const now = input.createdAt ?? new Date();
     await db.insert(environmentLeases).values({ id, companyId, environmentId, issueId, heartbeatRunId: runId,
@@ -317,7 +317,7 @@ suite("retained orphan sandbox on the shared ownership path", () => {
       createdAt: now, updatedAt: now,
       metadata: { agentId, reuseLease: true, ...(input.receipt === false ? {} : { remoteExecutionTermination: {
         schema: "paperclip.remote-termination.v1", companyId, runId, leaseId: id, provider: "fake", providerLeaseId,
-        state: "stopped", confirmedAt: now.toISOString() } }) } });
+        state: "stopped", confirmedAt: now.toISOString() } }), ...input.metadata } });
     return id;
   }
 
@@ -373,6 +373,13 @@ suite("retained orphan sandbox on the shared ownership path", () => {
       await db.update(issues).set({ executionWorkspaceId: fresh }).where(eq(issues.id, issueId));
       await db.insert(issues).values({ companyId, title: "Sibling on the shared workspace", executionWorkspaceId: shared });
       return [await warmLease(await run("failed"), { workspaceId: shared })];
+    }],
+    ["a replacement kept it because it may hold the only runner session", async () => {
+      const [oldWorkspace, newWorkspace] = [await workspace(), await workspace()];
+      await db.update(issues).set({ executionWorkspaceId: newWorkspace }).where(eq(issues.id, issueId));
+      return [await warmLease(await run("failed"), { workspaceId: oldWorkspace, metadata: {
+        reusableSandboxKeptAfterReplacement: { runId: randomUUID(), replacementLeaseId: randomUUID(), recordedAt: new Date().toISOString() },
+      } })];
     }],
     ["the task still has a run in flight", async () => {
       const [oldWorkspace, newWorkspace] = [await workspace(), await workspace()];

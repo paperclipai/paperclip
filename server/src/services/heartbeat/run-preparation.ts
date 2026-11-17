@@ -1,6 +1,7 @@
 import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
+import { readByEarlierTurnCommentIds } from "../queued-comment-delivery.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubConfiguredInstructionSources } from "../chat-github-review-policy.js";
@@ -2359,6 +2360,11 @@ export async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
   );
+  const readByEarlierTurn = issueId && input.agentId
+    ? await readByEarlierTurnCommentIds(input.db, { companyId: input.companyId, issueId, agentId: input.agentId,
+      commentIds: commentRows.filter(row => !row.deletedAt).map(row => row.id), currentRunId: input.runId ?? null })
+      .catch(() => new Set<string>())
+    : new Set<string>();
   const issueDescription = conversationMode ? null : issueSummary?.description ?? null;
   const issueDescriptionTruncated =
     issueDescription !== null &&
@@ -2427,6 +2433,7 @@ export async function buildPaperclipWakePayload(input: {
       deletedByRunId: deletedAt ? (row.deletedByRunId ?? null) : null,
       sourceTrust: row.sourceTrust ?? null,
       createdAt: row.createdAt.toISOString(),
+      ...(readByEarlierTurn.has(row.id) ? { readByEarlierTurn: true } : {}),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
         : row.authorUserId

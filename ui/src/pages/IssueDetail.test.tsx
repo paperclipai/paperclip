@@ -60,6 +60,8 @@ import type { issuesApi } from "../api/issues";
 // persistence have their own hook tests; keep their readiness explicit here.
 const coordinatorPreference = vi.hoisted(() => ({ enabled: false, loaded: true }));
 const inlineEditorFixture = vi.hoisted(() => ({ real: false }));
+// Reads deferred until the page settles start at once in these tests.
+vi.mock("@/hooks/usePageSettled", () => ({ usePageSettled: () => true, PAGE_SETTLED_MAX_WAIT_MS: 0 }));
 vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => coordinatorPreference,
 }));
@@ -1532,6 +1534,7 @@ describe("IssueDetail", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await act(async () => {
       root.unmount();
     });
@@ -2090,7 +2093,8 @@ describe("IssueDetail", () => {
 
   });
 
-  it.each(["message", "attachment"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
+  it.each(["message", "attachment", "plain HTTP message"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
+    if (kind === "plain HTTP message") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
     mockIssuesApi.markRead.mockClear();
     const agent = createAgent();
     const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
@@ -2108,7 +2112,7 @@ describe("IssueDetail", () => {
       onAdd: (body: string) => Promise<void>;
       onAttachImage: (file: File) => Promise<IssueAttachment>;
     };
-    if (kind === "message") {
+    if (kind !== "attachment") {
       await act(async () => { await props.onAdd("Clarify this goal"); });
       expect(mockIssuesApi.addComment).toHaveBeenCalledWith(canonical.id, "Clarify this goal", undefined, undefined, undefined, expect.any(String));
       expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments(canonical.id) });
@@ -5612,6 +5616,42 @@ describe("IssueDetail", () => {
     expect(props().queuedCommentQueue?.entries.map(entry => entry.comment.id)).toEqual([waiting.id]);
   });
 
+  it("keeps a message the running turn already took out of the queue after the live queue closes", async () => {
+    // Posted while the run was still starting; its first turn took it.
+    const taken = createIssueComment({ id: "first-turn-message", body: "Include the word PINEAPPLE" });
+    const run = {
+      id: "run-native", runtimeMode: "native" as const, status: "running",
+      invocationSource: "issue", triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:01.000Z", finishedAt: null,
+      createdAt: "2026-04-21T00:00:01.000Z", agentId: "agent-1",
+      agentName: "Runner", adapterType: "paperclip_runner", issueId: "issue-1",
+    };
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: run.id }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(run);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([run]);
+    mockIssuesApi.listComments.mockResolvedValue([taken]);
+    // The deferred wake has retired, so the live queue no longer lists it.
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      queueId: null, state: null, targetRunId: null, entries: [],
+    }));
+    mockActivityApi.runsForIssue.mockResolvedValue([{
+      runId: run.id, agentId: "agent-1", adapterType: "paperclip_runner",
+      status: "running", startedAt: run.startedAt, finishedAt: null,
+      createdAt: run.createdAt, wakeCommentIds: null, firstTurnCommentIds: [taken.id],
+      wakeupRequestId: "wake-start", contextIssueId: "issue-1",
+    }]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+      expect(props.queuedCommentQueue?.entries ?? []).toEqual([]);
+      const comment = props.comments.find((comment: IssueComment) => comment.id === taken.id);
+      expect(comment).toMatchObject({ consumedByRunId: run.id });
+      expect(comment?.queueState).toBeUndefined();
+    });
+  });
+
   it("keeps an admitted message pending until its queued run starts", async () => {
     const queued = createIssueComment({ id: "not-started" });
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-queued" }));
@@ -6751,6 +6791,17 @@ describe("IssueDetail", () => {
         delete window.isSecureContext;
       }
     }
+  });
+
+  it.each([false, true])("marks only desktop-width classic chat pages for keyboard viewport sizing (mobile: %s)", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: true });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector('[data-classic-task-shell]') !== null).toBe(!isMobile);
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
   });
 
   it("renders the legacy issue chat thread when the classic task interface flag is on", async () => {

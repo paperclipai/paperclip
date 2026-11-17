@@ -69,6 +69,7 @@ it("keeps historical/source packs without an archive on the existing path", asyn
 it.each(["v1", "v2"])("cancels a real %s archive hash after its first read chunk", async version => {
   const { pack } = version === "v2" ? await layeredFixture() : await fixture();
   const archivePath = version === "v2" ? `${pack}.archives/overlay.tar.zst` : `${pack}.tar.zst`;
+  await fs.utimes(archivePath, new Date(), new Date(Date.now() + 60_000));
   const controller = new AbortController();
   const handle = await fs.open(archivePath, "r");
   const prototype = Object.getPrototypeOf(handle) as typeof handle;
@@ -85,6 +86,25 @@ it.each(["v1", "v2"])("cancels a real %s archive hash after its first read chunk
   } finally { streaming.mockRestore(); }
 });
 
+it("hashes an unchanged verified archive once per server process and again after it changes", async () => {
+  const { pack } = await fixture();
+  const archivePath = `${pack}.tar.zst`;
+  const handle = await fs.open(archivePath, "r");
+  const prototype = Object.getPrototypeOf(handle) as typeof handle;
+  await handle.close();
+  const streaming = vi.spyOn(prototype, "createReadStream");
+  try {
+    await expect(readProviderPackArchive(pack, digest)).resolves.toMatchObject({ sourcePath: archivePath });
+    expect(streaming).not.toHaveBeenCalled();
+    const original = await fs.readFile(archivePath);
+    const corrupted = Buffer.from(original);
+    corrupted[corrupted.length - 1] ^= 0xff;
+    await fs.writeFile(archivePath, corrupted);
+    await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("sha256_mismatch");
+    expect(streaming).toHaveBeenCalledOnce();
+  } finally { streaming.mockRestore(); }
+});
+
 async function layeredFixture() {
   const { root, pack } = await fixture();
   await fs.writeFile(path.join(pack, "bin", "large"), Buffer.alloc(1024 * 1024, 42), { mode: 0o755 });
@@ -93,6 +113,56 @@ async function layeredFixture() {
   if (!("kind" in archive)) throw Error("Expected layered archive");
   return { root, pack, receipt, archive };
 }
+
+it("writes the same archive for the same file every time, with nothing after the frame", async () => {
+  // Ending the compressor while its last chunk was still queued made Node
+  // finish the zstd stream twice, and about half the archives got an empty
+  // frame at their end. An image layer of these archives then never repeated.
+  const emptyFrame = Buffer.from("28b52ffd2000010000", "hex");
+  const seen = new Set<string>();
+  for (let trial = 0; trial < 12; trial += 1) {
+    const { pack } = await fixture();
+    const large = path.join(pack, "bin", "large");
+    await fs.writeFile(large, Buffer.alloc(1024 * 1024, 42), { mode: 0o755 });
+    await fs.utimes(large, 0, 0);
+    const receipt = await createProviderPackLayers(pack);
+    seen.add(receipt.files[0].archive.sha256);
+    for (const name of ["0.tar.zst", "overlay.tar.zst"]) {
+      const bytes = await fs.readFile(path.join(`${pack}.archives`, name));
+      expect(bytes.subarray(-emptyFrame.length).equals(emptyFrame), name).toBe(false);
+    }
+  }
+  expect([...seen]).toHaveLength(1);
+});
+
+it("names the archives of dependency files without regard to the Runner's own large files", async () => {
+  // Archive N holds file N of the receipt. `dist` sorts before `node_modules`,
+  // so in path order one more large file in the Runner's build output renamed
+  // the archive of every dependency file.
+  const large = Buffer.alloc(1024 * 1024, 42);
+  const receiptOf = async (own: string[]) => {
+    const { pack } = await fixture();
+    for (const file of ["node_modules/dependency/tool", "bin/large", ...own]) {
+      await fs.mkdir(path.dirname(path.join(pack, file)), { recursive: true });
+      await fs.writeFile(path.join(pack, file), large, { mode: 0o755 });
+      await fs.utimes(path.join(pack, file), 0, 0);
+    }
+    const receipt = await createProviderPackLayers(pack);
+    const archive = (await readProviderPackArchive(pack, digest))!;
+    if (!("kind" in archive)) throw Error("Expected layered archive");
+    // What a reader pairs: file N of the receipt with N.tar.zst.
+    const paired = await Promise.all(archive.files.map(async (file: { path: string; archive: { sha256: string } }, index: number) =>
+      [file.path, `${index}.tar.zst`, createHash("sha256").update(await fs.readFile(path.join(`${pack}.archives`, `${index}.tar.zst`))).digest("hex") === file.archive.sha256]));
+    return { paths: receipt.files.map((file: { path: string }) => file.path), paired };
+  };
+  const before = await receiptOf(["dist/cli/one.js"]);
+  const after = await receiptOf(["dist/cli/one.js", "dist/a-new-large-file.js", "dist/cli/two.js"]);
+  expect(before.paths).toEqual(["bin/large", "node_modules/dependency/tool", "dist/cli/one.js"]);
+  expect(after.paths).toEqual(["bin/large", "node_modules/dependency/tool", "dist/a-new-large-file.js", "dist/cli/one.js", "dist/cli/two.js"]);
+  // The dependency files keep their archive names, and every pairing a reader makes still holds.
+  expect(after.paired.slice(0, 2)).toEqual(before.paired.slice(0, 2));
+  expect(after.paired.every(([, , matches]) => matches)).toBe(true);
+});
 
 it.skipIf(!tar || !hasZstd)("reuses only byte-matched image files, keeps modes, and never shares writable hardlinks", async () => {
   const { root, pack, archive } = await layeredFixture();
