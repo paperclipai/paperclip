@@ -63,6 +63,19 @@ describe("CompanyHomeRedirect", () => {
   });
 });
 
+describe("when the settings cannot be read", () => {
+  it("shows the failure with Retry instead of redirecting, then redirects once it loads", async () => {
+    experimental.getExperimental.mockRejectedValueOnce(new Error("Server error"));
+    const host = await render(<CompanyHomeRedirect />);
+    expect(host.querySelector('[data-testid="navigate"]')).toBeNull();
+    expect(host.querySelector('[data-query-view="error"]')).not.toBeNull();
+    experimental.getExperimental.mockResolvedValue({ enableResponsibilities: true });
+    const retry = [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("Retry"))!;
+    await act(async () => { retry.click(); await new Promise((done) => setTimeout(done, 1)); });
+    expect(host.querySelector('[data-testid="navigate"]')?.getAttribute("data-to")).toBe("/responsibilities");
+  });
+});
+
 describe("useCompanyHomePath", () => {
   it("falls back to Dashboard for links while loading, marked not loaded", async () => {
     experimental.getExperimental.mockReturnValue(new Promise(() => {}));

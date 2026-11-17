@@ -82,7 +82,9 @@ export function responsibilityDashboardVersionService(db: Db) {
    * The person's dashboard as it is: every responsibility they own that is
    * active, every area one of them is in, and every area a change on this
    * dashboard created that is not archived (an empty one still shows, so it
-   * must be undoable). Three queries at most.
+   * must be undoable), plus any area in `touched` that is not archived: an
+   * existing area a change is about to rename or remove, even when it holds
+   * nothing of this person's. Three queries at most.
    */
   async function captureSnapshot(
     database: DbOrTx,
@@ -90,6 +92,7 @@ export function responsibilityDashboardVersionService(db: Db) {
     ownerUserId: string,
     /** Areas the change being saved created, which no stored version names yet. */
     createdNow: readonly string[] = [],
+    touched: readonly string[] = [],
   ): Promise<ResponsibilityDashboardSnapshot> {
     const [items, created] = await Promise.all([
       database.select({
@@ -112,7 +115,7 @@ export function responsibilityDashboardVersionService(db: Db) {
         )),
     ]);
     const referenced = [...new Set(items.map((item) => item.areaId).filter((value): value is string => value !== null))];
-    const createdIds = [...new Set([...created.map((row) => row.id), ...createdNow])].filter((value) => !referenced.includes(value));
+    const createdIds = [...new Set([...created.map((row) => row.id), ...createdNow, ...touched])].filter((value) => !referenced.includes(value));
     const areas = referenced.length + createdIds.length === 0 ? [] : await database.select({
       id: responsibilityAreas.id,
       title: responsibilityAreas.title,
@@ -200,8 +203,14 @@ export function responsibilityDashboardVersionService(db: Db) {
    * as a `person` version when it differs from the newest one (changes made by
    * hand since), so the version before the next change is what they last saw.
    */
-  async function checkpoint(tx: DashboardTransaction, companyId: string, ownerUserId: string, actorUserId: string | null) {
-    const snapshot = await captureSnapshot(tx, companyId, ownerUserId);
+  async function checkpoint(
+    tx: DashboardTransaction,
+    companyId: string,
+    ownerUserId: string,
+    actorUserId: string | null,
+    touched: readonly string[] = [],
+  ) {
+    const snapshot = await captureSnapshot(tx, companyId, ownerUserId, [], touched);
     const saved = await save(tx, { companyId, ownerUserId, cause: "person", snapshot, actorUserId });
     return { ...saved, snapshot };
   }

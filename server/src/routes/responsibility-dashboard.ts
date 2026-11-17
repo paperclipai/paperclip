@@ -24,6 +24,7 @@ import {
 } from "../services/responsibility-dashboard-versions.js";
 import { responsibilityService } from "../services/responsibilities.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { getReadableIssue } from "./readable-issue.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
 const ISSUE_NOT_FOUND = "Issue not found";
@@ -218,7 +219,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
 
   router.post("/issues/:id/dashboard-changes", validate(createDashboardChangeSetSchema), async (req, res) => {
     await svc.assertEnabled();
-    const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+    const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent in this dashboard conversation can propose changes");
@@ -243,7 +244,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     validate(acceptDashboardChangeSetSchema),
     async (req, res) => {
       await svc.assertEnabled();
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);
@@ -285,7 +286,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     validate(declineDashboardChangeSetSchema),
     async (req, res) => {
       await svc.assertEnabled();
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);

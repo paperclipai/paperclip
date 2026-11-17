@@ -16,7 +16,8 @@ import {
   type RoutineSuggestionResponsibilityFiling,
 } from "../services/routine-suggestions.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { getReadableIssue } from "./readable-issue.js";
 
 const ISSUE_NOT_FOUND = "Issue not found";
 
@@ -84,7 +85,7 @@ export function routineSuggestionRoutes(
   }
 
   router.post("/issues/:id/routine-suggestions", validate(createRoutineSuggestionSchema), async (req, res) => {
-    const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+    const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent that finished the task can offer a routine");
@@ -107,7 +108,7 @@ export function routineSuggestionRoutes(
     "/issues/:id/routine-suggestions/:interactionId/accept",
     validate(acceptRoutineSuggestionSchema),
     async (req, res) => {
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);
@@ -161,7 +162,7 @@ export function routineSuggestionRoutes(
   );
 
   router.post("/issues/:id/repeat-as-routine", validate(createRoutineFromTaskSchema), async (req, res) => {
-    const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+    const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     assertBoard(req);
     assertCompanyAccess(req, issue.companyId);
@@ -232,7 +233,7 @@ export function routineSuggestionRoutes(
     "/issues/:id/routine-suggestions/:interactionId/decline",
     validate(declineRoutineSuggestionSchema),
     async (req, res) => {
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);

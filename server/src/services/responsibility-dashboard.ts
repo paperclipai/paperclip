@@ -636,10 +636,14 @@ export function responsibilityDashboardService(db: Db) {
             });
           }
           await lockDashboard(tx, issue.companyId, ownerUserId);
-          const before = await versions.checkpoint(tx, issue.companyId, ownerUserId, actor.userId);
+          const touched = [...new Set(current.payload.changes
+            .filter((change) => keep.has(change.index))
+            .flatMap((change) => [change.groupAreaId, change.fromAreaId])
+            .filter((areaId): areaId is string => areaId !== null))];
+          const before = await versions.checkpoint(tx, issue.companyId, ownerUserId, actor.userId, touched);
           const source = { source: "dashboard_conversation", issueId: issue.id, interactionId };
           const result = await applyInTx(tx, issue.companyId, current.payload, keep, current.createdByAgentId ?? null, source);
-          const snapshot = await versions.captureSnapshot(tx, issue.companyId, ownerUserId, result.createdAreaIds);
+          const snapshot = await versions.captureSnapshot(tx, issue.companyId, ownerUserId, result.createdAreaIds, touched);
           const after = await versions.save(tx, {
             companyId: issue.companyId,
             ownerUserId,

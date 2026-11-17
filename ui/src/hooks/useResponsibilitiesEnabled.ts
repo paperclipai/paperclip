@@ -16,15 +16,27 @@ function getDetachedClient(): QueryClient {
  * Reads the shared experimental-settings query, so it costs nothing beyond
  * what the shell already loads. `enabled` stays false while the query is in
  * flight (no flash of gated UI); `loaded` lets route gates and the home-path
- * decision wait for the real value instead of redirecting early.
+ * decision wait for the real value instead of redirecting early. When the
+ * settings cannot be read, `loaded` stays false and `error` is set, so a
+ * redirect shows the failure with `retry` instead of guessing the flag is off.
  *
  * Without a QueryClientProvider it resolves to the flag-off default
  * (`{ enabled: false, loaded: true }`), so shared nav components stay
  * mountable in isolation.
  */
-export function useResponsibilitiesEnabled(): { enabled: boolean; loaded: boolean } {
+export interface ResponsibilitiesFlag {
+  enabled: boolean;
+  loaded: boolean;
+  /** The settings read failed and nothing is cached. */
+  error: unknown;
+  retry: () => void;
+}
+
+const noop = () => {};
+
+export function useResponsibilitiesEnabled(): ResponsibilitiesFlag {
   const contextClient = useContext(QueryClientContext);
-  const { data, isFetched } = useQuery(
+  const { data, error, refetch } = useQuery(
     {
       queryKey: queryKeys.instance.experimentalSettings,
       queryFn: () => instanceSettingsApi.getExperimental(),
@@ -32,6 +44,11 @@ export function useResponsibilitiesEnabled(): { enabled: boolean; loaded: boolea
     },
     contextClient ?? getDetachedClient(),
   );
-  if (!contextClient) return { enabled: false, loaded: true };
-  return { enabled: data?.enableResponsibilities === true, loaded: isFetched };
+  if (!contextClient) return { enabled: false, loaded: true, error: null, retry: noop };
+  return {
+    enabled: data?.enableResponsibilities === true,
+    loaded: data !== undefined,
+    error: data === undefined ? error ?? null : null,
+    retry: () => void refetch(),
+  };
 }

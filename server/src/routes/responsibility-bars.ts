@@ -15,6 +15,7 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../s
 import { responsibilityBarService } from "../services/responsibility-bars.js";
 import { responsibilityService } from "../services/responsibilities.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { getReadableIssue } from "./readable-issue.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
 const NOT_FOUND = "Responsibility not found";
@@ -170,7 +171,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
 
   router.post("/issues/:id/bar-proposals", validate(createResponsibilityBarProposalSchema), async (req, res) => {
     await svc.assertEnabled();
-    const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+    const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent in this bar conversation can propose a bar");
@@ -195,7 +196,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
     validate(acceptResponsibilityBarProposalSchema),
     async (req, res) => {
       await svc.assertEnabled();
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);
@@ -269,7 +270,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
     validate(declineResponsibilityBarProposalSchema),
     async (req, res) => {
       await svc.assertEnabled();
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);

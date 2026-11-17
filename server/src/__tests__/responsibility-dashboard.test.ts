@@ -590,6 +590,24 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       expect(await versionsOf(seeded)).toHaveLength(count);
     });
 
+    it("can undo removing an empty area made by hand", async () => {
+      const seeded = await seed({ populated: true });
+      const legal = await request(seeded.app).post(`/api/companies/${seeded.company.id}/responsibility-areas`).send({ title: "Legal" });
+      expect(legal.status).toBe(201);
+      const issueId = (await start(seeded, { mode: "edit" })).body.conversation.issueId as string;
+      const proposed = await propose(seeded, issueId, { changes: [{ op: "remove_area", areaId: legal.body.id, reason: "Nothing is filed there." }] });
+      expect(proposed.status).toBe(201);
+      const applied = await accept(seeded, issueId, proposed.body.id);
+      expect(applied.status).toBe(200);
+      const result = applied.body.interaction.result;
+      expect(result.versionId).not.toBe(result.previousVersionId);
+      expect(result.summary).not.toBe("No changes");
+      expect((await areaRows(seeded)).find((row) => row.id === legal.body.id)).toMatchObject({ status: "archived" });
+      const undo = await request(seeded.app).post(`/api/responsibility-dashboard-versions/${result.previousVersionId}/restore`).send({});
+      expect(undo.status).toBe(200);
+      expect((await areaRows(seeded)).find((row) => row.id === legal.body.id)).toMatchObject({ title: "Legal", status: "active" });
+    });
+
     it("picks up changes made by hand before the next change, and when the list is opened, without duplicates", async () => {
       const seeded = await seed();
       const { issueId } = await createFirstDashboard(seeded);

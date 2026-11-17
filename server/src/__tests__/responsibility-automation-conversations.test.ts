@@ -244,6 +244,24 @@ describeEmbeddedPostgres("automation conversations and standing checks", () => {
       .post(`/api/issues/${seeded.tasks.weekly.id}/automation-conversation`).send({})).status).toBe(403);
   });
 
+  it("hides a private task's conversation from a member who cannot read the task", async () => {
+    const seeded = await seed();
+    const privateId = randomUUID();
+    await db.insert(issues).values({
+      id: privateId, companyId: seeded.company.id, title: "Confidential payroll run", status: "done", priority: "medium",
+      visibility: "private", privacyRootIssueId: privateId, responsibleUserId: "private-owner",
+    });
+    const asOther = createApp(sessionBoardActor(seeded.company.id, OTHER));
+    expect((await request(asOther).get(`/api/issues/${seeded.tasks.weekly.id}/automation-conversation`)).status).toBe(200);
+    const read = await request(asOther).get(`/api/issues/${privateId}/automation-conversation`);
+    expect(read.status).toBe(404);
+    expect(JSON.stringify(read.body)).not.toContain("Confidential payroll run");
+    const start = await request(asOther).post(`/api/issues/${privateId}/automation-conversation`).send({});
+    expect([403, 404]).toContain(start.status);
+    expect(JSON.stringify(start.body)).not.toContain("Confidential payroll run");
+    expect(await db.select().from(issues).where(eq(issues.originId, privateId))).toHaveLength(0);
+  });
+
   it("lets only the conversation's agent propose, validates, keeps one pending, and creates nothing", async () => {
     const seeded = await seed();
     const started = await start(seeded, seeded.tasks.weekly.id, { agentId: seeded.agents.analyst.id });

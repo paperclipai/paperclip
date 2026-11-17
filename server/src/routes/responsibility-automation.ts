@@ -34,6 +34,7 @@ import { automationConversationService } from "../services/responsibility-automa
 import { standingCheckService } from "../services/routine-standing-checks.js";
 import { routineSuggestionService, type RoutineSuggestionResponsibilityFiling } from "../services/routine-suggestions.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { getReadableIssue } from "./readable-issue.js";
 
 const automationQuerySchema = listResponsibilitiesQuerySchema.pick({ ownerUserId: true });
 const ISSUE_NOT_FOUND = "Issue not found";
@@ -155,7 +156,7 @@ export function responsibilityAutomationRoutes(
 
   router.get("/issues/:id/automation-conversation", async (req, res) => {
     await assertResponsibilitiesEnabled();
-    const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+    const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     assertBoard(req);
     assertCompanyAccess(req, issue.companyId);
@@ -164,7 +165,7 @@ export function responsibilityAutomationRoutes(
 
   router.post("/issues/:id/automation-conversation", validate(startAutomationConversationSchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
-    const source = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+    const source = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!source) return;
     assertBoard(req);
     assertCompanyAccess(req, source.companyId);
@@ -233,7 +234,7 @@ export function responsibilityAutomationRoutes(
 
   router.post("/issues/:id/automation-proposals", validate(createAutomationProposalSchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
-    const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+    const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent in this automation conversation can propose an automation");
@@ -258,7 +259,7 @@ export function responsibilityAutomationRoutes(
     validate(acceptAutomationProposalSchema),
     async (req, res) => {
       await assertResponsibilitiesEnabled();
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);
@@ -333,7 +334,7 @@ export function responsibilityAutomationRoutes(
     validate(declineAutomationProposalSchema),
     async (req, res) => {
       await assertResponsibilitiesEnabled();
-      const issue = await getAccessibleResource(req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
+      const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
       assertCompanyAccess(req, issue.companyId);
