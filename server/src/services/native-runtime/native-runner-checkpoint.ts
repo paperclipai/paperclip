@@ -11,7 +11,7 @@ import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } 
 import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-recovery-wait-codes.js";
 import { OWN_PROCESS_START_EVENT_TYPES } from "../native-process-start-events.js";
-import { SAME_RUN_RESUME_DISPOSITION } from "./scheduled-resume-continuation.js";
+import { SAME_RUN_RESUME_DISPOSITION } from "./same-run-resume-disposition.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
