@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   applyPendingMigrations,
@@ -428,6 +428,68 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       const errors = cleanup.flatMap(result => result.status === "rejected" ? [result.reason] : []);
       if (primary || errors.length) throw new AggregateError([...(primary ? [primary] : []), ...errors],
         "Company deletion late activity original and cleanup failures");
+    }
+  }, 30_000);
+
+  it("propagates a different real company foreign key without retrying or losing audit rows", async () => {
+    const companyId = randomUUID(), otherCompanyId = randomUUID();
+    const suffix = randomUUID().replaceAll("-", "");
+    const tableName = `company_delete_guard_${suffix}`, constraintName = `company_delete_fk_${suffix}`;
+    await db.insert(companies).values([
+      { id: companyId, name: "Refused deletion", issuePrefix: `F${companyId.slice(0, 7)}` },
+      { id: otherCompanyId, name: "Untouched company", issuePrefix: `U${otherCompanyId.slice(0, 7)}` },
+    ]);
+    const originalActivity = await logActivity(db, { companyId, actorType: "user", actorId: "board",
+      action: "company.updated", entityType: "company", entityId: companyId });
+    const otherActivity = await logActivity(db, { companyId: otherCompanyId, actorType: "user", actorId: "board",
+      action: "company.updated", entityType: "company", entityId: otherCompanyId });
+    const priorDebug = db.$client.options.debug;
+    const participant = agentLifecycleCompanyDeletion.deleteCompanyData;
+    let parentDeleteStatements = 0, participantCalls = 0, primary: unknown;
+    const observed = vi.spyOn(agentLifecycleCompanyDeletion, "deleteCompanyData").mockImplementation(async (tx, id) => {
+      await participant(tx, id);
+      if (id === companyId) participantCalls++;
+    });
+    try {
+      // This is a real test-owned child, not a replacement constraint or SQL
+      // result. PostgreSQL temporary tables cannot reference a permanent parent.
+      await db.execute(sql`create table ${sql.identifier(tableName)} (
+        company_id uuid not null,
+        constraint ${sql.identifier(constraintName)} foreign key (company_id) references companies(id)
+      )`);
+      await db.execute(sql`insert into ${sql.identifier(tableName)} (company_id) values (${companyId})`);
+      db.$client.options.debug = (connection, query, parameters, types) => {
+        if (/^\s*delete\s+from\s+"companies"\s/i.test(query) && parameters.some(value => value === companyId))
+          parentDeleteStatements++;
+        if (typeof priorDebug === "function") priorDebug(connection, query, parameters, types);
+      };
+      let rejected: unknown;
+      try { await companyService(db).remove(companyId); } catch (error) { rejected = error; }
+      let driver = rejected;
+      const seen = new Set<unknown>();
+      while (driver && typeof driver === "object" && !seen.has(driver)) {
+        seen.add(driver);
+        const failure = driver as { code?: string; cause?: unknown };
+        if (failure.code) break;
+        driver = failure.cause;
+      }
+      expect(driver).toMatchObject({ code: "23503", constraint_name: constraintName });
+      expect(parentDeleteStatements).toBe(1);
+      expect(participantCalls).toBe(1);
+      expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(1);
+      expect(await db.select().from(activityLog).where(eq(activityLog.id, originalActivity.id))).toHaveLength(1);
+      expect(await db.select().from(companies).where(eq(companies.id, otherCompanyId))).toHaveLength(1);
+      expect(await db.select().from(activityLog).where(eq(activityLog.id, otherActivity.id))).toHaveLength(1);
+    } catch (error) { primary = error; }
+    finally {
+      db.$client.options.debug = priorDebug;
+      observed.mockRestore();
+      const cleanup = await Promise.allSettled([
+        db.execute(sql`drop table if exists ${sql.identifier(tableName)}`),
+      ]);
+      const errors = cleanup.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+      if (primary || errors.length) throw new AggregateError([...(primary ? [primary] : []), ...errors],
+        "Company deletion foreign key control original and cleanup failures");
     }
   }, 30_000);
 

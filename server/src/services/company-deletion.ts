@@ -64,6 +64,18 @@ import {
   routines,
 } from "@paperclipai/db";
 
+function isLateCompanyActivityForeignKey(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  while (error && typeof error === "object" && !seen.has(error)) {
+    seen.add(error);
+    const failure = error as { code?: string; constraint_name?: string; constraint?: string; cause?: unknown };
+    if (failure.code === "23503" &&
+      (failure.constraint_name ?? failure.constraint) === "activity_log_company_id_companies_id_fk") return true;
+    error = failure.cause;
+  }
+  return false;
+}
+
 export async function deleteCompany(db: Db, id: string) {
   const tailscaleDeletion = createTailscaleCompanyDeletion();
   const lifecycle = createAgentLifecycle(db);
@@ -158,10 +170,25 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(projects).where(eq(projects.companyId, id));
         await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
         await notifyToolConnectionHealth(tx, id);
-        const rows = await tx
+        // An authorized activity writer can finish after the earlier audit
+        // cleanup: its FK KEY SHARE intentionally remains compatible with our
+        // NO KEY UPDATE fence. Roll back only this final statement, not the
+        // participants above (which may already have performed external cleanup).
+        const removeCompanyRow = () => tx.transaction(nested => nested
           .delete(companies)
           .where(eq(companies.id, id))
-          .returning();
+          .returning());
+        let rows: Awaited<ReturnType<typeof removeCompanyRow>>;
+        try {
+          rows = await removeCompanyRow();
+        } catch (error) {
+          if (!isLateCompanyActivityForeignKey(error)) throw error;
+          // The savepoint has rolled back. READ COMMITTED sees the activity
+          // that committed during deletion. Keep every FK and company boundary;
+          // if another writer wins again, propagate that second real failure.
+          await tx.delete(activityLog).where(eq(activityLog.companyId, id));
+          rows = await removeCompanyRow();
+        }
         return rows[0] ?? null;
       }));
   await tailscaleDeletion.stopNetworks();
