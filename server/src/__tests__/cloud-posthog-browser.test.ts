@@ -10,6 +10,7 @@ import {
 } from "../services/cloud-posthog-browser.js";
 import { resolveCloudPostHogConfig } from "../services/cloud-posthog-config.js";
 import {
+  posthogProxyRoutes,
   posthogUpstreamUrl,
   resolvePostHogProxyMount,
 } from "../routes/posthog-proxy.js";
@@ -180,6 +181,63 @@ describe("PostHog proxy forwarding", () => {
     const res = await request(proxyApp())[method.toLowerCase() as "get"](path);
     expect(res.status).toBe(404);
     expect(seen).toHaveLength(0);
+  });
+
+  it("refuses a declared body over the limit without contacting PostHog", async () => {
+    const app = express();
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256 }));
+    const res = await request(app).post("/_ph/e/").set("Content-Type", "text/plain").send("x".repeat(11));
+    expect(res.status).toBe(413);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("cuts off a streamed body that grows past the limit", async () => {
+    const app = express();
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256 }));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const status = await new Promise<number | string>((resolve) => {
+        const req = http.request({ host: "127.0.0.1", port, path: "/_ph/e/", method: "POST", headers: { "content-type": "text/plain", "transfer-encoding": "chunked" } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", () => resolve("error"));
+        req.write("x".repeat(8));
+        req.write("x".repeat(8));
+        req.end();
+      });
+      expect([413, "error"]).toContain(status);
+      expect(seen.every((entry) => entry.body.length <= 10)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("limits requests in flight from one client", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const slow = http.createServer(async (_req, res) => { await held; res.end("ok"); });
+    await new Promise<void>((resolve) => slow.listen(0, "127.0.0.1", resolve));
+    const app = express();
+    app.use("/_ph", posthogProxyRoutes(`http://127.0.0.1:${(slow.address() as AddressInfo).port}`, { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 256 }));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    try {
+      const first = request(server).get("/_ph/static/array.js").then((res) => res.status);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const second = await request(server).get("/_ph/static/array.js");
+      expect(second.status).toBe(429);
+      release();
+      expect(await first).toBe(200);
+      // The slot frees up once the first request finishes.
+      expect((await request(server).get("/_ph/static/array.js")).status).toBe(200);
+    } finally {
+      release();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => slow.close(() => resolve()));
+    }
   });
 
   it("never forwards the inbound Host header", async () => {

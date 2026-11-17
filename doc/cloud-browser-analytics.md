@@ -58,7 +58,11 @@ The ingest host is `PAPERCLIP_POSTHOG_HOST`. The assets host is derived from it
 answers 404 without contacting PostHog. The proxy streams bodies, builds a new
 header set from an allowlist plus `X-Forwarded-For`, and never forwards the
 inbound Host, Cookie or Authorization headers. It drops `Set-Cookie` from
-responses. It is mounted only when browser analytics is on.
+responses. It refuses bodies over 64 MiB (413) and limits requests in
+flight to 16 per client address and 256 in total (429). It is mounted only when
+browser analytics is on. It does not require a session: posthog-js sends some
+events while a page unloads, and the proxy can only reach the two PostHog hosts
+with the public project token, like PostHog's own ingest endpoint.
 
 ## Identity
 
@@ -68,7 +72,7 @@ responses. It is mounted only when browser analytics is on.
 - Every event carries `deployment_source: "cloud"` and `environment`. Without
   `PAPERCLIP_POSTHOG_ENVIRONMENT`, `environment` is `staging` on a
   `*.staging.paperclip.app` host and `production` otherwise.
-- Sign-out: `reset()`.
+- Sign-out: `reset()`, called by `useSignOut` before it leaves the page.
 - API requests to our own host carry PostHog tracing headers, so server events
   link to the browser session.
 

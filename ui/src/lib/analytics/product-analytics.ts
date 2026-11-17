@@ -275,6 +275,15 @@ export function setProductAnalyticsUser(user: ProductAnalyticsUser | null): void
 }
 
 /**
+ * Forget the signed-in person now. Sign-out calls this before it leaves the
+ * page (Cloud sign-out navigates away while the session query is still
+ * populated), so the next person in this browser never inherits the identity.
+ */
+export function resetProductAnalyticsIdentity(): void {
+  setProductAnalyticsUser(null);
+}
+
+/**
  * Cancel a load that has not started yet. posthog-js cannot be unloaded once
  * it runs, so a running client keeps running; sign-out resets its identity
  * through `setProductAnalyticsUser(null)`.

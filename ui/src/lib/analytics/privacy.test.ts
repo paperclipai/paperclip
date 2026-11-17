@@ -71,6 +71,8 @@ describe("session replay attribute masking", () => {
     expect(maskReplayAttribute("id", "skill-acme-secret-plan", el("t"))).toBe("**********************");
     expect(maskReplayAttribute("for", "skill-acme-secret-plan", el("t"))).toBe("**********************");
     expect(maskReplayAttribute("aria-labelledby", "label-acme", el("t"))).toBe("**********");
+    // Fixed layout IDs that page CSS targets keep their value.
+    expect(maskReplayAttribute("id", "main-content", el("t"))).toBe("main-content");
   });
 
   it("keeps layout attributes and masks labels even on opted-in chrome", () => {

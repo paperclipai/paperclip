@@ -16,7 +16,7 @@
 
 import http from "node:http";
 import https from "node:https";
-import { pipeline } from "node:stream";
+import { pipeline, Transform } from "node:stream";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { Router, type Request, type Response } from "express";
 import { logger } from "../middleware/logger.js";
@@ -28,6 +28,23 @@ import {
 } from "../services/cloud-posthog-browser.js";
 
 const UPSTREAM_TIMEOUT_MS = 30_000;
+
+export type PostHogProxyLimits = {
+  /** Largest request body forwarded (PostHog's own proxy guide uses 64 MiB). */
+  maxBodyBytes: number;
+  /** Requests in flight from one client address. */
+  maxInFlightPerClient: number;
+  /** Requests in flight for the whole proxy. */
+  maxInFlight: number;
+};
+
+export const DEFAULT_POSTHOG_PROXY_LIMITS: PostHogProxyLimits = {
+  maxBodyBytes: 64 * 1024 * 1024,
+  maxInFlightPerClient: 16,
+  maxInFlight: 256,
+};
+
+const BODY_TOO_LARGE = "posthog_proxy_body_too_large";
 
 type PostHogUpstream = "ingest" | "assets";
 
@@ -102,8 +119,10 @@ export function posthogForwardRequestHeaders(
   return forwarded;
 }
 
-export function posthogProxyRoutes(ingestHost: string) {
+export function posthogProxyRoutes(ingestHost: string, limits: PostHogProxyLimits = DEFAULT_POSTHOG_PROXY_LIMITS) {
   const router = Router();
+  let inFlight = 0;
+  const inFlightByClient = new Map<string, number>();
 
   router.use((req: Request, res: Response) => {
     let upstream: URL | null;
@@ -117,6 +136,31 @@ export function posthogProxyRoutes(ingestHost: string) {
       return;
     }
     const target = upstream;
+    let received = 0;
+    let bodyTooLarge = false;
+
+    const declaredLength = Number(req.headers["content-length"] ?? 0);
+    if (Number.isFinite(declaredLength) && declaredLength > limits.maxBodyBytes) {
+      res.status(413).json({ error: "payload_too_large" });
+      return;
+    }
+
+    // Bound the work one browser, or all of them, can put on this process.
+    const client = req.ip ?? "unknown";
+    const clientInFlight = inFlightByClient.get(client) ?? 0;
+    if (inFlight >= limits.maxInFlight || clientInFlight >= limits.maxInFlightPerClient) {
+      res.setHeader("Retry-After", "1");
+      res.status(429).json({ error: "too_many_requests" });
+      return;
+    }
+    inFlight += 1;
+    inFlightByClient.set(client, clientInFlight + 1);
+    res.once("close", () => {
+      inFlight -= 1;
+      const remaining = (inFlightByClient.get(client) ?? 1) - 1;
+      if (remaining > 0) inFlightByClient.set(client, remaining);
+      else inFlightByClient.delete(client);
+    });
 
     const transport = target.protocol === "https:" ? https : http;
     const upstreamReq = transport.request(target, {
@@ -143,7 +187,9 @@ export function posthogProxyRoutes(ingestHost: string) {
     });
     upstreamReq.on("error", (err) => {
       logger.debug({ err, path: target.pathname }, "PostHog proxy request failed");
-      if (!res.headersSent) {
+      if (!res.headersSent && bodyTooLarge) {
+        res.status(413).json({ error: "payload_too_large" });
+      } else if (!res.headersSent) {
         res.status(502).json({ error: "analytics_upstream_unavailable" });
       } else {
         res.destroy();
@@ -154,9 +200,22 @@ export function posthogProxyRoutes(ingestHost: string) {
       if (!res.writableFinished) upstreamReq.destroy();
     });
 
-    // An aborted browser upload destroys the upstream request, whose error
-    // listener above answers or closes the browser response.
-    pipeline(req, upstreamReq, () => {});
+    // A body without (or with a false) Content-Length is counted as it
+    // streams and cut off at the limit.
+    const sizeLimit = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        received += chunk.length;
+        if (received > limits.maxBodyBytes) {
+          bodyTooLarge = true;
+          callback(new Error(BODY_TOO_LARGE));
+        } else {
+          callback(null, chunk);
+        }
+      },
+    });
+    // An aborted or oversized browser upload destroys the upstream request,
+    // whose error listener above answers or closes the browser response.
+    pipeline(req, sizeLimit, upstreamReq, () => {});
   });
 
   return router;

@@ -70,6 +70,9 @@ const LAYOUT_ATTRIBUTES = new Set([
   "data-size", "data-disabled", "data-highlighted", "data-placeholder", ANALYTICS_UNMASK_ATTRIBUTE,
 ]);
 
+/** Fixed IDs that page CSS targets (`#root`, `#main-content`); never customer data. */
+const LAYOUT_IDS = new Set(["root", "main-content", "properties-pane-header-slot"]);
+
 /**
  * Session replay `maskAttributeFn`. Deny by default: only layout attributes,
  * rrweb's own metadata, stylesheets and links outside customer content keep
@@ -82,6 +85,7 @@ export function maskReplayAttribute(name: string, value: string, element?: Eleme
   // rrweb's own serialized metadata (`rr_width`, `_cssText`, ...).
   if (key.startsWith("rr_") || key.startsWith("_")) return value;
   if (LAYOUT_ATTRIBUTES.has(key)) return value;
+  if (key === "id" && LAYOUT_IDS.has(value)) return value;
   // Stylesheets render the page. Every other `href` (download links carry
   // file paths, markdown links carry customer URLs) stays masked.
   if (key === "href" && element?.tagName?.toLowerCase() === "link") return redactAnalyticsUrl(value);
