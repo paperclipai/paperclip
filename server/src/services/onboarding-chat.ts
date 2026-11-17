@@ -54,7 +54,8 @@ export async function startOnboardingGreeting(db: Db, issue: Parameters<typeof o
       .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, agentWakeupRequests.runId))
       .where(and(eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, issue.conversationAgentId),
         eq(agentWakeupRequests.idempotencyKey, key), ne(agentWakeupRequests.status, "skipped"), ne(agentWakeupRequests.status, "failed"),
-        sql`(${heartbeatRuns.status} is null or ${heartbeatRuns.status} not in ('failed', 'cancelled'))`)).limit(1);
+        ne(agentWakeupRequests.status, "timed_out"),
+        sql`(${heartbeatRuns.status} is null or ${heartbeatRuns.status} not in ('failed', 'cancelled', 'timed_out'))`)).limit(1);
     if (receipt) return true;
     const run = await wakeup(issue.conversationAgentId, {
       source: "on_demand", triggerDetail: "manual", reason: ONBOARDING_CHAT_GREETING_REASON,

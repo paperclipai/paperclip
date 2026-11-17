@@ -11,6 +11,8 @@ import { documentService } from "../services/documents.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { ONBOARDING_CHAT_GREETING_REASON } from "../services/onboarding-chat-prompt.js";
 import { prepareConversationTurn, settleConversationTurn } from "../services/agent-conversations.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { describeEmbeddedPostgres, routeApp, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("onboarding chat", () => {
@@ -83,6 +85,40 @@ describeEmbeddedPostgres("onboarding chat", () => {
     expect((await request(app).post(`${path}/greeting`)).body.started).toBe(false);
     expect(wakeup).not.toHaveBeenCalled();
     expect(await ctx.db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
+  });
+
+  it.each(["request", "run"])("retries a timed-out welcome recorded on its %s", async timedOutRecord => {
+    const { companyId, agent, app, path, wakeup } = await setup();
+    await request(app).post(path);
+    await request(app).post(`${path}/greeting`);
+    const [receipt] = await ctx.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agent.id));
+    const [run] = await ctx.db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "timed_out",
+      wakeupRequestId: receipt.id, finishedAt: new Date() }).returning();
+    await ctx.db.update(agentWakeupRequests).set(timedOutRecord === "request" ? { status: "timed_out" } : { runId: run.id })
+      .where(eq(agentWakeupRequests.id, receipt.id));
+    expect((await request(app).post(`${path}/greeting`)).status).toBe(200);
+    expect(wakeup).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["message", "new session"])("skips a queued welcome superseded by a %s before dispatch", async superseding => {
+    const { companyId, agent, userId, app, path } = await setup();
+    const opened = await request(app).post(path);
+    const [receipt] = await ctx.db.insert(agentWakeupRequests).values({ companyId, agentId: agent.id,
+      source: "on_demand", reason: ONBOARDING_CHAT_GREETING_REASON, status: "pending" }).returning();
+    const [run] = await ctx.db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued",
+      wakeupRequestId: receipt.id, contextSnapshot: { issueId: opened.body.id, wakeReason: ONBOARDING_CHAT_GREETING_REASON } }).returning();
+    if (superseding === "message") await issueService(ctx.db).addComment(opened.body.id, "Interview me", { userId });
+    else await ctx.db.update(issues).set({ conversationSessionGeneration: 1 }).where(eq(issues.id, opened.body.id));
+    const deps = createHeartbeatQueueTestDependencies(ctx.db);
+    deps.getAgent.mockResolvedValue(agent);
+    const queue = createHeartbeatQueue(ctx.db, deps);
+    expect(await queue.claimQueuedRun(run)).toBeNull();
+    expect((await ctx.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0])
+      .toMatchObject({ status: "cancelled", startedAt: null, errorCode: "onboarding_welcome_superseded" });
+    expect(deps.setWakeupStatus).toHaveBeenCalledWith(receipt.id, "skipped", expect.anything());
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
   it("admits a real greeting run without a synthetic human message", async () => {
