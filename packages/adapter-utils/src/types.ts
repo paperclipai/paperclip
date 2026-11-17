@@ -207,6 +207,12 @@ export interface AdapterRuntimeMcpServer {
    * allowlist must fail closed to prevent accidental exposure of unauthorized tools.
    */
   allowedTools: readonly string[];
+  /**
+   * Longest time the server may legitimately take to answer one request, from the gateway tool
+   * timeouts. A sandbox bridge relay adds its own margin to this to get the route's give-up deadline.
+   * Unset means the relay default.
+   */
+  requestTimeoutMs?: number;
 }
 
 export interface AdapterRuntimeMcpAccess {

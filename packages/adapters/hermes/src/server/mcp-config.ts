@@ -57,7 +57,18 @@ export interface PrepareHermesMcpHomeOptions {
    * environment. Ignored when runtime memory (`memory`) is present for the run.
    */
   memoryProvider?: HermesMemoryProvider;
+  /**
+   * Sandbox runs: point each server at its bridge relay route (`${PAPERCLIP_API_URL}` plus
+   * {@link hermesMcpRelayPath}) and authenticate with the run's bridge token (`${PAPERCLIP_API_KEY}`).
+   * The server's own token is never written to the home or the pod env; the host injects it per route.
+   */
+  bridgeRelay?: boolean;
   onWarning?: (msg: string) => void;
+}
+
+/** The in-sandbox bridge path that relays to one Hermes MCP server key (TECH-8909). */
+export function hermesMcpRelayPath(serverKey: string): string {
+  return `/paperclip-relay/mcp/${serverKey}`;
 }
 
 export interface PreparedHermesMcpHome {
@@ -886,9 +897,9 @@ export async function prepareHermesMcpHome(
       const tools = Array.from(new Set(server.allowedTools));
 
       mcpServers[serverKey] = {
-        url: server.url,
+        url: options.bridgeRelay ? `\${PAPERCLIP_API_URL}${hermesMcpRelayPath(serverKey)}` : server.url,
         headers: {
-          Authorization: `Bearer \${${envVar}}`,
+          Authorization: options.bridgeRelay ? "Bearer ${PAPERCLIP_API_KEY}" : `Bearer \${${envVar}}`,
         },
         enabled: true,
         skip_preflight: true,
@@ -898,7 +909,7 @@ export async function prepareHermesMcpHome(
           include: tools,
         },
       };
-      envRecord[envVar] = server.token;
+      if (!options.bridgeRelay) envRecord[envVar] = server.token;
     }
 
     // 1. Inherit sanitized host config posture

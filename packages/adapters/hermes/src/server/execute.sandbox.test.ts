@@ -38,6 +38,7 @@ const h = vi.hoisted(() => ({
   hermesStdout: "Pod answer.\n\nsession_id: sess-pod-1\n",
   hermesExit: 0 as number | null,
   stageExit: 0,
+  bridgeInputs: [] as Array<{ hostApiToken?: string; relayRoutes?: Array<{ path: string; upstreamUrl: string; token: string; deadlineMs: number }> }>,
 }));
 
 vi.mock("./router-readiness-remote.js", async (importOriginal) => ({
@@ -88,10 +89,13 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
         restoreWorkspace: h.restoreWorkspace,
       };
     }),
-    startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
+    startAdapterExecutionTargetPaperclipBridge: vi.fn(async (input: (typeof h.bridgeInputs)[number]) => {
+      h.bridgeInputs.push(input);
+      return {
       env: { PAPERCLIP_API_URL: BRIDGE_URL, PAPERCLIP_API_KEY: BRIDGE_TOKEN, PAPERCLIP_API_BRIDGE_MODE: "queue_v1" },
       stop: h.bridgeStop,
-    })),
+    };
+    }),
     runAdapterExecutionTargetProcess: vi.fn(async (_runId: string, _target: unknown, command: string, args: string[], options: ProcessCall["options"]) => {
       h.processCalls.push({ command, args, options });
       const isHermes = command.endsWith("/hermes") || (command === "env" && args.some((a) => a.endsWith("/hermes")));
@@ -168,6 +172,7 @@ beforeEach(async () => {
   h.processCalls.length = 0;
   h.shellCalls.length = 0;
   h.prepareInputs.length = 0;
+  h.bridgeInputs.length = 0;
   for (const key of Object.keys(h.shipped)) delete h.shipped[key];
   h.hermesStdout = "Pod answer.\n\nsession_id: sess-pod-1\n";
   h.hermesExit = 0;
@@ -310,17 +315,32 @@ describe("Hermes execute on a sandbox target (TECH-8174)", () => {
     await expect(fs.stat(localHome)).rejects.toThrow();
   });
 
-  it("drops runtime MCP servers with a warning and ships none of their tokens", async () => {
+  it("relays runtime MCP servers through bridge routes and ships none of their tokens", async () => {
     await execute(ctx({
       extra: {
         runtimeMcp: {
-          getServers: () => [{ name: "Gateway", url: "https://paperclip.example/mcp/gateways/g1", token: MCP_TOKEN, connectionId: "c1", allowedTools: ["t"] }],
+          getServers: () => [
+            { name: "Gateway", url: "https://paperclip.example/mcp/gateways/g1", token: MCP_TOKEN, connectionId: "c1", allowedTools: ["t"], requestTimeoutMs: 60_000 },
+            { name: "Paperclip projects", url: "https://paperclip.example/api/mcp/project-tools", token: RUN_JWT, connectionId: "c2", allowedTools: ["p"] },
+          ],
         },
       } as Partial<AdapterExecutionContext>,
     }));
-    expect(logs.some(([, line]) => line.includes("runtime MCP server(s) are not available in sandbox environments yet"))).toBe(true);
-    expect(JSON.stringify(h.shipped)).not.toContain(MCP_TOKEN);
-    expect(JSON.stringify(hermesCall().options.env)).not.toContain(MCP_TOKEN);
+    const routes = h.bridgeInputs[0]?.relayRoutes ?? [];
+    expect(routes.map((r) => r.path)).toEqual(["/paperclip-relay/mcp/gateway", "/paperclip-relay/mcp/paperclip_projects"]);
+    // The host holds the credentials and the per-route deadlines; the gateway tool ceiling plus margin, else the default.
+    expect(routes.map((r) => r.token)).toEqual([MCP_TOKEN, RUN_JWT]);
+    expect(routes.map((r) => r.deadlineMs)).toEqual([65_000, 30_000]);
+    const shipped = JSON.stringify(h.shipped);
+    expect(shipped).toContain("${PAPERCLIP_API_URL}/paperclip-relay/mcp/gateway");
+    expect(shipped).toContain("Bearer ${PAPERCLIP_API_KEY}");
+    expect(shipped).not.toContain("paperclip.example");
+    const envJson = JSON.stringify(hermesCall().options.env);
+    for (const secret of [MCP_TOKEN, RUN_JWT]) {
+      expect(shipped).not.toContain(secret);
+      expect(envJson).not.toContain(secret);
+      expect(logs.some(([, line]) => line.includes(secret))).toBe(false);
+    }
   });
 
   it("carries a maximum-size system prompt in env (never argv)", async () => {

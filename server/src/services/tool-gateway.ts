@@ -166,7 +166,7 @@ import {
 } from "./tool-access-policy.js";
 import { toolDiscoveryScheduler, ToolDiscoveryBusyError } from "./tool-discovery-scheduler.js";
 import { managedConnectionsMissingInstall, managedInstallCheck } from "./default-mcp-install-gate.js";
-import { agentMayUseConnectionTool, agentReadCeilingForConnection, connectionHealthColumns, defaultToolTimeoutMs, grantHasPersonalOAuthAccessToken, isPersonalDefaultMcpInstance } from "./default-mcp-spec.js";
+import { MAX_TOOL_TIMEOUT_MS, agentMayUseConnectionTool, agentReadCeilingForConnection, connectionHealthColumns, defaultToolTimeoutMs, grantHasPersonalOAuthAccessToken, isPersonalDefaultMcpInstance } from "./default-mcp-spec.js";
 import { commitToolActionReview } from "./tool-action-review.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -798,7 +798,7 @@ function timeoutMs(value: number | undefined, toolOrFallback?: ToolGatewayDescri
   if (!Number.isFinite(value)) return fallback;
   return Math.max(
     1,
-    Math.min(60_000, Math.floor(value ?? fallback)),
+    Math.min(MAX_TOOL_TIMEOUT_MS, Math.floor(value ?? fallback)),
   );
 }
 

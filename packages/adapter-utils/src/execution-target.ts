@@ -38,6 +38,8 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  authorizeSandboxCallbackBridgeRequestWithRoutes,
+  DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST,
   HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
   runSandboxBridgeControlCommand,
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
@@ -50,6 +52,14 @@ import {
   syncSandboxCallbackBridgeEntrypoint,
   type SandboxCallbackBridgeRoutePolicy,
 } from "./sandbox-callback-bridge.js";
+import {
+  createSandboxBridgeRelay,
+  sandboxBridgeRelayRouteRules,
+  sandboxBridgeRelayRoutePolicies,
+  SANDBOX_BRIDGE_RELAY_EXTRA_HEADERS,
+  SANDBOX_BRIDGE_EXTRA_HEADERS_ENV,
+  type SandboxBridgeRelayRoute,
+} from "./sandbox-bridge-relay.js";
 import {
   createHttp2BridgeServer,
   BridgeProcessCapacityError,
@@ -4381,6 +4391,9 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // default is a no-op recorder, so the surface stays inert until the host injects
   // a real recorder.
   duplexObservabilityRecorder?: DuplexObservabilityRecorder | null;
+  // Opt-in relay routes (TECH-8909): fixed in-sandbox paths that the host forwards to fixed Paperclip URLs
+  // with the route's own credential and deadline. Empty by default, so Pi and Claude are unchanged.
+  relayRoutes?: readonly SandboxBridgeRelayRoute[];
 }): Promise<AdapterExecutionTargetPaperclipBridgeHandle | null> {
   if (!adapterExecutionTargetUsesPaperclipBridge(input.target)) {
     return null;
@@ -4431,6 +4444,19 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // :: -> [::1]), so the fallback is always loopback-reachable.
   // input.hostApiUrl stays available as an explicit override seam.
   const hostApiUrl = input.hostApiUrl?.trim() || resolveDefaultPaperclipApiUrl();
+  const relayRoutes = input.relayRoutes ?? [];
+  const relay = relayRoutes.length > 0
+    ? createSandboxBridgeRelay({ routes: relayRoutes, hostApiUrl, runId: input.runId })
+    : null;
+  // Relay routes register their own deadline and lane through the file bridge route policies.
+  const effectiveRoutePolicies: readonly SandboxCallbackBridgeRoutePolicy[] = [
+    ...(input.bridgeRoutePolicies ?? []),
+    ...sandboxBridgeRelayRoutePolicies(relayRoutes),
+  ];
+  const extraHeaders: readonly string[] = relay ? SANDBOX_BRIDGE_RELAY_EXTRA_HEADERS : [];
+  const bridgeRouteAllowlist = relay
+    ? [...HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST, ...sandboxBridgeRelayRouteRules(relayRoutes)]
+    : HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST;
   const shellCommand = adapterExecutionTargetShellCommand(target);
   const runner = adapterExecutionTargetCommandRunner(target);
   const bridgeTimeoutMs =
@@ -4493,6 +4519,13 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     },
   ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> => {
     const method = request.method.trim().toUpperCase() || "GET";
+    if (relay) {
+      const relayed = await relay.handle(request, {
+        signal,
+        readBody: (response) => readBridgeForwardResponseBody(response, maxBodyBytes, options?.reservation),
+      });
+      if (relayed) return relayed;
+    }
     // The per-request debug log prints the method, the path, and the query. The
     // duplex path suppresses it, so no route or query rides a log line there. The
     // file path keeps the existing behavior.
@@ -4677,6 +4710,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         PAPERCLIP_BRIDGE_PORT: String(assignedPort),
         PAPERCLIP_BRIDGE_NONCE: nonce,
         PAPERCLIP_BRIDGE_MAX_BODY_BYTES: String(maxBodyBytes),
+        ...(extraHeaders.length > 0 ? { [SANDBOX_BRIDGE_EXTRA_HEADERS_ENV]: extraHeaders.join(",") } : {}),
       };
       const command = buildDuplexGatewayLaunchArgv({
         shellCommand,
@@ -4812,7 +4846,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           const http2Server = createHttp2BridgeServer({
             bridgeToken,
             forwardRequest: http2ForwardRequest,
-            routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+            routes: bridgeRouteAllowlist,
+            ...(relay ? { headerAllowlist: [...DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST, ...extraHeaders] } : {}),
             // The same resolved limit the launch environment hands the
             // sandbox-side gateway (`PAPERCLIP_BRIDGE_MAX_BODY_BYTES`,
             // below), so the host check and the gateway check enforce one
@@ -4928,8 +4963,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
+      ...(relay
+        ? { authorizeRequest: (request: { method: string; path: string }) => authorizeSandboxCallbackBridgeRequestWithRoutes(request, bridgeRouteAllowlist) }
+        : {}),
       // The worker encodes binary bodies only at the queue boundary.
-      routePolicies: input.bridgeRoutePolicies,
+      routePolicies: effectiveRoutePolicies,
       handleRequest: (request, options) => forwardBridgeRequest(request, options?.signal, {
         reservation: options?.reservation,
         ...(options?.route ? { forwardTimeoutMs: options.route.forwardTimeoutMs } : {}),
@@ -4945,7 +4983,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       timeoutMs: bridgeTimeoutMs,
       maxBodyBytes,
       shellCommand,
-      routePolicies: input.bridgeRoutePolicies,
+      routePolicies: effectiveRoutePolicies,
+      extraHeaders,
     });
   } catch (error) {
     await Promise.allSettled([
@@ -4976,7 +5015,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     },
     runLogTail,
     stop: async () => {
-      if ((input.bridgeRoutePolicies?.length ?? 0) > 0) {
+      if (effectiveRoutePolicies.length > 0) {
         // Drain first. The in-pod gateway stays up while the worker finishes the
         // queued and running route requests, so a relayed call that the agent
         // fired at the end of its last turn still gets its response. Only then

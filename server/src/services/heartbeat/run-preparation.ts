@@ -87,7 +87,7 @@ import {
   type MissingRuntimeBinding,
 } from "../secrets.js";
 import { createToolGatewayService } from "../tool-gateway.js";
-import { installAppliesToAgent } from "../default-mcp-spec.js";
+import { installAppliesToAgent, MAX_TOOL_TIMEOUT_MS } from "../default-mcp-spec.js";
 import { agentInstallsRefused, loadAgentDefaultMcpState } from "../default-mcp-install-gate.js";
 import { toolAccessService } from "../tool-access.js";
 import {
@@ -1281,6 +1281,9 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       token: token.token,
       connectionId: `assignment:${assignmentDigest}`,
       allowedTools,
+      // Any tool behind this gateway may run up to the gateway's per-call ceiling; a sandbox bridge relay
+      // must not give up sooner (TECH-8909).
+      requestTimeoutMs: MAX_TOOL_TIMEOUT_MS,
     },
   ];
 }

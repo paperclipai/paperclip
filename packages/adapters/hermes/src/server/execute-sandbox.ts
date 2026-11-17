@@ -13,8 +13,8 @@
  *    goes through the callback bridge, whose env replaces PAPERCLIP_API_URL / PAPERCLIP_API_KEY.
  *
  * Scope (see docs/hermes-sandbox-execution.md): explicit providers including Ramp Router (stage 2,
- * verified by an in-sandbox registry probe), no memory, no runtime MCP servers (dropped with a
- * warning), sandbox targets only (never SSH).
+ * verified by an in-sandbox registry probe), no memory, runtime MCP servers through bridge relay
+ * routes (host-held credentials), sandbox targets only (never SSH).
  */
 
 import { createHash } from "node:crypto";
@@ -77,7 +77,8 @@ import {
   hasExplicitHermesProviderCredential,
   isHermesProviderCredentialName,
 } from "./isolation.js";
-import { cleanupHermesMcpHome, prepareHermesMcpHome } from "./mcp-config.js";
+import { cleanupHermesMcpHome, hermesMcpRelayPath, prepareHermesMcpHome } from "./mcp-config.js";
+
 import {
   MAX_CONFIG_STRING_LENGTH,
   canSafelyRedactSecret,
@@ -109,6 +110,9 @@ export const HERMES_SANDBOX_ADAPTER_KEY = "hermes";
 export const HERMES_SANDBOX_PROVIDERS: readonly string[] = ["kubernetes"];
 
 
+// A relay gives up only after the server's own tool timeout, so the tool's clean timeout error wins the race.
+const HERMES_MCP_RELAY_DEFAULT_TOOL_TIMEOUT_MS = 25_000;
+const HERMES_MCP_RELAY_DEADLINE_MARGIN_MS = 5_000;
 export const HERMES_SANDBOX_SSH_UNSUPPORTED_MESSAGE =
   "Refusing to start: Hermes runs in sandbox environments only, not over SSH. Select a sandbox or the local environment for this agent.";
 export const HERMES_SANDBOX_RUNTIME_MEMORY_UNSUPPORTED_MESSAGE =
@@ -273,11 +277,15 @@ async function executeHermesInSandbox(
     anthropicRequestTimeoutSec = value;
   }
 
-  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
-  if (runtimeMcpServers.length > 0) {
+  // Runtime MCP servers are Paperclip URLs. Hermes reaches them through bridge relay routes; the host adds
+  // each server's credential, so no MCP token (and not the run JWT) enters the pod.
+  const allRuntimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const mcpRelayAvailable = adapterExecutionTargetUsesPaperclipBridge(target);
+  const runtimeMcpServers = mcpRelayAvailable ? allRuntimeMcpServers : [];
+  if (!mcpRelayAvailable && allRuntimeMcpServers.length > 0) {
     await ctx.onLog(
       "stdout",
-      `[hermes] Warning: ${runtimeMcpServers.length} runtime MCP server(s) are not available in sandbox environments yet; this run continues without them.\n`,
+      `[hermes] Warning: ${allRuntimeMcpServers.length} runtime MCP server(s) need the Paperclip bridge, which this target does not use; this run continues without them.\n`,
     );
   }
 
@@ -421,7 +429,8 @@ async function executeHermesInSandbox(
     // ── Local assets: an isolated HERMES_HOME built in a throwaway host directory ─
     assetHome = await createRunHome({ prefix: "paperclip-hermes-sandbox-" });
     const preparedHome = await prepareHermesMcpHome({
-      servers: [],
+      servers: runtimeMcpServers,
+      bridgeRelay: true,
       config,
       flags: hardeningFlags,
       onWarning: onCleanupWarning,
@@ -529,6 +538,13 @@ async function executeHermesInSandbox(
         timeoutSec,
         hostApiToken: ctx.authToken,
         onLog: ctx.onLog,
+        relayRoutes: runtimeMcpServers.map((server, index) => ({
+          path: hermesMcpRelayPath(preparedHome.serverKeys[index]!),
+          upstreamUrl: server.url,
+          token: server.token,
+          deadlineMs: (server.requestTimeoutMs ?? HERMES_MCP_RELAY_DEFAULT_TOOL_TIMEOUT_MS) + HERMES_MCP_RELAY_DEADLINE_MARGIN_MS,
+          label: server.name,
+        })),
       });
     }
     const bridgeEnv = paperclipBridge?.env ?? {};

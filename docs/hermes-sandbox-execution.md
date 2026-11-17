@@ -37,7 +37,7 @@ The full design review (options, security review, rollout) is the TECH-8174 desi
 | Paperclip runtime memory (`mem0.json` with Postgres credentials) | Pods must never get DB credentials | never |
 | `PAPERCLIP_HERMES_COMMAND_SCAN=required` | Launcher trust is checked on host files | later |
 | Managed AI connections (`managedAiRouting`/`managedAiConnection`) | Connection testing and routing are host-local today | later |
-| Runtime MCP servers | Not refused: dropped with a stdout warning. All are Paperclip URLs, and one uses the run JWT | 4 (bridge routes with host-held credentials, decision D-2) |
+| Runtime MCP servers | Relayed: Hermes gets `${PAPERCLIP_API_URL}/paperclip-relay/mcp/<server>` routes; the host injects each server's credential and applies a per-route deadline (the gateway tool timeout plus 5 s). GET and DELETE on a route answer 405, as the stateless gateway does. Servers without a declared timeout get a 30 s deadline. The server URL interpolates `${PAPERCLIP_API_URL}` (unverified against Hermes until the live run). On the file transport each route is registered as a TECH-8907 route policy (own lane, in-pod deadline 5 s above the relay's); the duplex transport ignores policies and uses the relay deadline alone. No MCP token or run JWT in the pod | 4 (done, decision D-2) |
 
 ## Environment config (ops, not code)
 

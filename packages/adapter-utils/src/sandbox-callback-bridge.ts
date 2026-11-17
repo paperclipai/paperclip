@@ -591,10 +591,12 @@ export function buildSandboxCallbackBridgeEnv(input: {
   maxQueueDepth?: number | null;
   maxBodyBytes?: number | null;
   routePolicies?: readonly SandboxCallbackBridgeRoutePolicy[] | null;
+  extraHeaders?: readonly string[];
 }): Record<string, string> {
   const routeDeadlines = serializeRoutePolicies(input.routePolicies);
   return {
     ...(routeDeadlines ? { PAPERCLIP_BRIDGE_ROUTE_DEADLINES: routeDeadlines } : {}),
+    ...(input.extraHeaders?.length ? { PAPERCLIP_BRIDGE_EXTRA_HEADERS: input.extraHeaders.join(",") } : {}),
     PAPERCLIP_API_BRIDGE_MODE: SANDBOX_CALLBACK_BRIDGE_FILE_MODE,
     PAPERCLIP_BRIDGE_QUEUE_DIR: input.queueDir,
     PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken,
@@ -2091,6 +2093,7 @@ export async function startSandboxCallbackBridgeServer(input: {
   maxBodyBytes?: number | null;
   // Per-route in-pod response deadlines. Empty by default.
   routePolicies?: readonly SandboxCallbackBridgeRoutePolicy[] | null;
+  extraHeaders?: readonly string[];
 }): Promise<StartedSandboxCallbackBridgeServer> {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
   const shellCommand = preferredShellForSandbox(input.shellCommand);
@@ -2117,6 +2120,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxQueueDepth: input.maxQueueDepth,
     maxBodyBytes: input.maxBodyBytes,
     routePolicies: input.routePolicies,
+    extraHeaders: input.extraHeaders,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
   const startResult = await runSandboxBridgeControlCommand(input.runner, {
@@ -2563,7 +2567,10 @@ const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "${DE
 // inbound request to these headers before they forward it. One copy serves both
 // modes. The route allowlist stays on the host: both modes forward a request to
 // the host, and the host enforces the same route allowlist for each.
-const allowedHeaders = new Set(${JSON.stringify([...DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST])});
+// A relay-enabled run adds extra names through PAPERCLIP_BRIDGE_EXTRA_HEADERS (comma separated); it is empty by default.
+const extraAllowedHeaders = String(process.env.PAPERCLIP_BRIDGE_EXTRA_HEADERS || "")
+  .split(",").map((name) => name.trim().toLowerCase()).filter(Boolean);
+const allowedHeaders = new Set(${JSON.stringify([...DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST])}.concat(extraAllowedHeaders));
 
 if (!bridgeToken) {
   throw new Error("PAPERCLIP_BRIDGE_TOKEN is required.");
@@ -2824,7 +2831,8 @@ async function runFileGateway() {
       const multipartAttachment = req.method === "POST"
         && /^\\/api\\/companies\\/[^/]+\\/issues\\/[^/]+\\/attachments$/.test(url.pathname)
         && /^multipart\\/form-data(?:;|$)/i.test(contentType);
-      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType) && !multipartAttachment) {
+      if (req.method && req.method !== "GET" && req.method !== "HEAD" && !/json/i.test(contentType) && !multipartAttachment
+        && !url.pathname.startsWith("/paperclip-relay/")) {
         writeJsonResponse(res, 415, { error: "Bridge only accepts JSON request bodies." });
         return;
       }

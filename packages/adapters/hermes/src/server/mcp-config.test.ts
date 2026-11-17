@@ -9,6 +9,7 @@ import YAML from "yaml";
 import type { AdapterRuntimeMcpServer, AdapterSkillContext } from "@paperclipai/adapter-utils";
 import {
   prepareHermesMcpHome,
+  hermesMcpRelayPath,
   cleanupHermesMcpHome,
   cleanupStaleHermesProfiles,
   copyIsolatedSkills,
@@ -2111,5 +2112,22 @@ print(json.dumps(data))
       );
       expect(output).not.toContain("disabled_toolsets");
     });
+  });
+
+  it("bridgeRelay mode points servers at relay routes and writes no MCP token", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "hermes-relay-"));
+    cleanupDirs.push(root);
+    const prepared = await prepareHermesMcpHome({
+      servers: [{ name: "Gateway", url: "https://paperclip.example/mcp/gateways/g1", token: "tok-RELAY-SENTINEL", connectionId: "c1", allowedTools: ["t"] }],
+      bridgeRelay: true,
+      isolatedFromHost: true,
+      tempDirPrefix: path.join(root, "hermes-"),
+    });
+    const config = await fs.readFile(prepared.configPath, "utf8");
+    const dotenvText = await fs.readFile(prepared.envPath, "utf8");
+    expect(config).toContain(`url: "\${PAPERCLIP_API_URL}${hermesMcpRelayPath(prepared.serverKeys[0]!)}"`);
+    expect(config).toContain('Authorization: "Bearer ${PAPERCLIP_API_KEY}"');
+    expect(`${config}${dotenvText}${JSON.stringify(prepared.env)}`).not.toContain("tok-RELAY-SENTINEL");
+    expect(config).not.toContain("paperclip.example");
   });
 });
