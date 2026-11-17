@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getAppStoreDefinition } from "@paperclipai/shared";
+import { getAppStoreDefinition, googleWorkspaceSelectedScopes } from "@paperclipai/shared";
 import type { AggregatorAppSnapshot, AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
@@ -2114,5 +2114,97 @@ describe("AppDetail", () => {
     const dialogText = document.body.textContent ?? "";
     expect(dialogText).toContain("Who can use this identity");
     expect(dialogText).toContain("Every audience member must be an active company member");
+  });
+  describe("Google Workspace consent always shows the service picker first", () => {
+    const GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly";
+    function workspaceConnection(overrides: Record<string, unknown> = {}) {
+      return connection({
+        name: "Google Workspace", authKind: "oauth", credentialPolicy: "shared",
+        config: { sourceTemplateKey: "google-workspace", connectionMethodKey: "oauth" },
+        ...overrides,
+      });
+    }
+    function bodyButton(label: string) {
+      return Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === label);
+    }
+    async function clickBody(label: string) {
+      await act(async () => { bodyButton(label)?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      await flushReact();
+    }
+    const disclosure = () => document.body.querySelector('[aria-label="How Paperclip uses your Google data"]');
+
+    it("reconnects an expired shared account only after the picker, with the saved services", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ healthStatus: "failed", healthMessage: "Authorization expired (invalid_grant)." }));
+      listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+        grants: [organizationGrant({ providerTenant: { oauth: { requestedScopes: [GMAIL_READ] } } })] });
+
+      await renderAppDetail();
+      await clickBody("Reconnect");
+
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(disclosure()?.textContent).toContain("Gmail: agents can read and search your email.");
+      expect(disclosure()?.textContent).not.toContain("Drive");
+      await clickBody("Continue");
+
+      expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { workspaceServices: { gmail: "read" } });
+      expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
+    });
+
+    it("reconnects a personal account through the picker as the signed-in user", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ credentialPolicy: "per_user", createdByUserId: "user-1", healthStatus: "failed", healthMessage: "Authorization expired (invalid_grant)." }));
+      listConnectionGrantsMock.mockResolvedValue({ connection: { id: "conn-1" }, capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+        grants: [personalGrant({ providerTenant: { oauth: { requestedScopes: [GMAIL_READ] } } })] });
+
+      await renderAppDetail();
+      await clickBody("Reconnect");
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(disclosure()).not.toBeNull();
+      await clickBody("Continue");
+
+      expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { asCurrentUser: true, workspaceServices: { gmail: "read" } });
+    });
+
+    it("cancelling the picker starts no sign-in", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ healthStatus: "failed", healthMessage: "Authorization expired (invalid_grant)." }));
+      await renderAppDetail();
+      await clickBody("Reconnect");
+      await clickBody("Cancel");
+      expect(disclosure()).toBeNull();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(popupAssignMock).not.toHaveBeenCalled();
+    });
+
+    it("connects the organization identity through the picker", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection());
+      await renderAppDetail();
+      await clickBody("Connect organization identity");
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      await act(async () => { document.body.querySelector<HTMLElement>("#workspace-service-gmail")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      await flushReact();
+      expect(disclosure()?.textContent).toContain("Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email.");
+      await clickBody("Continue");
+      expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { workspaceServices: { gmail: "write" } });
+    });
+
+    it("connects a personal identity through the picker with the chosen services", async () => {
+      mockParams.tab = "permissions";
+      getConnectionMock.mockResolvedValue(workspaceConnection({ credentialPolicy: "per_user" }));
+      startPersonalAuthorizationMock.mockResolvedValue({ url: "https://accounts.example.test/authorize" });
+      await renderAppDetail();
+      await clickBody("Connect as me");
+      expect(startPersonalAuthorizationMock).not.toHaveBeenCalled();
+      await act(async () => { document.body.querySelector<HTMLElement>("#workspace-service-calendar")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      await flushReact();
+      await clickBody("Continue");
+      expect(startPersonalAuthorizationMock).toHaveBeenCalledWith("company-1", "conn-1", {
+        subjectUserId: "user-1",
+        returnTo: "/apps/conn-1/permissions",
+        scopes: googleWorkspaceSelectedScopes({ calendar: "write" }),
+      });
+    });
   });
 });

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   PRP_BLOCKER_ALREADY_REPORTED_MESSAGE,
   PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE,
-  PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE,
+  PRP_RESULT_ALREADY_ACCEPTED_MESSAGE,
   prpSemanticResultConflictMessage,
   PRP_BLOCK_RESULT_OUTPUT_SCHEMA,
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -303,7 +303,23 @@ describe("semantic result conflict feedback", () => {
     expect(prpSemanticResultConflictMessage(blocked("system", "tool_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
     expect(prpSemanticResultConflictMessage(blocked("user", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
     expect(prpSemanticResultConflictMessage(blocked("system", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
-    expect(prpSemanticResultConflictMessage({ reportedWorkDisposition: "done" })).toBe(PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE);
     expect(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE).not.toContain("automatically");
+  });
+
+  it.each(["done", "needs_review", "yielded"])("tells a provider that a %s result is final and to end the turn", disposition => {
+    const message = prpSemanticResultConflictMessage({ reportedWorkDisposition: disposition });
+    expect(message).toBe(PRP_RESULT_ALREADY_ACCEPTED_MESSAGE);
+    expect(message).toContain("already accepted");
+    expect(message).toContain("Do not call paperclip_finish or paperclip_block again in this turn");
+    expect(message).toContain("final response");
+    expect(message).toContain("end the turn");
+    expect(prpSemanticResultConflictMessage(null)).toBe(PRP_RESULT_ALREADY_ACCEPTED_MESSAGE);
+  });
+
+  it("tells a provider to stop both report tools after a committed blocker", () => {
+    for (const message of [PRP_BLOCKER_ALREADY_REPORTED_MESSAGE, PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE]) {
+      expect(message).toContain("Do not call paperclip_finish or paperclip_block again in this turn");
+      expect(message).toContain("end the turn");
+    }
   });
 });
