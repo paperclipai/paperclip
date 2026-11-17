@@ -241,14 +241,24 @@ OAuth credential bodies and redirect locations are redacted from HTTP logs.
 | --- | --- |
 | `paperclip_connection` | Person, company, scopes, connection management link |
 | `paperclip_list_agents` | Safe agent summary and availability |
+| `paperclip_list_people` | Active human members: user ID, name and role (no email) |
 | `paperclip_list_projects` | Safe project summary |
 | `paperclip_search_tasks` | Bounded task search with offset pagination |
 | `paperclip_read_task` | Current task plus recent comments/history |
-| `paperclip_create_task` | Assigned task, submitted to existing scheduling |
+| `paperclip_create_task` | Task for an agent, a person or no one; only an agent assignee is scheduled |
 | `paperclip_add_comment` | Human feedback; may wake or queue work |
 | `paperclip_list_deliverables` | Documents, attachments and work-product references |
 | `paperclip_read_document` | Durable document body and current revision |
 | `paperclip_pending_approvals` | Pending approvals and existing decision links |
+
+`paperclip_create_task` takes at most one of `assigneeAgentId` and
+`assigneeUserId`, the same fields as the REST issues API; passing both is a
+validation error. An agent assignee is submitted to normal scheduling and may
+start a run that spends the company's budget. A person (a `userId` from
+`paperclip_list_people`) or no assignee creates a `todo` task without waking any
+agent, so a connection from another Paperclip instance can file work without
+spending the receiving company's budget. A person outside the company is
+rejected by the normal REST assignment check, identically to an unknown user ID.
 
 Every company-scoped call requires its explicit authorized company ID. The
 server emits bounded projections without upstream credentials. Direct connections
