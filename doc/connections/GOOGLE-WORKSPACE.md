@@ -234,21 +234,34 @@ token envelopes, and refresh.
 
 Removing a Paperclip-managed Google connection, or one of its per-user,
 organization or per-agent grants, sends each removed grant's refresh token to
-Paperclip Cloud's signed `POST /v1/connector/revoke`. Google's revoke ends the
-user's whole grant to the managed client, so the broker revokes at Google only
-when it knows of no other live binding that could share the grant. Its
-`outcome` (`revoked`, `other_connections_remain`, `provider_revocation_failed`,
-`binding_not_known`, `provider_revocation_disabled`, `revocation_in_progress`)
-is kept per grant. The app adds `revocation_not_available` (an older broker's
-409), `broker_unavailable` (timeout or network failure), `broker_error` and
-`credential_unavailable`.
+Paperclip Cloud's signed `POST /v1/connector/revoke`, under the subject that
+consented to that grant (`providerTenant.externalId`, which refresh also signs;
+grants saved without it fall back to the subject refresh used before). The
+broker removes its record for that token. It revokes at Google only when it
+knows of no other live binding that could share the grant, because Google's
+revoke ends the user's whole grant to the managed client. Its `outcome` is one
+of `revoked`, `other_connections_remain`, `provider_revocation_failed`,
+`binding_not_known`, `provider_revocation_disabled` or
+`revocation_in_progress`. The app adds `revocation_not_available` (an older
+broker's 409), `broker_unavailable` (timeout, network failure or no usable
+Cloud client), `broker_error`, `credential_unavailable` and
+`unexpected_error`.
 
-The call is bounded to 5 seconds, runs alongside the local teardown and is never
-retried. Local removal always completes and deletes the secrets as before,
-whatever the broker answers. The removal response and the activity entry carry
-`providerAccess: { provider, result, outcomes }` with codes only. `result` is
-`ended`, `other_connections_remain` or `not_ended`; the removal message tells
-the user which, and for `not_ended` links to
+Order: the app reads the tokens, commits the local removal (grants revoked,
+connection archived, secrets deleted), and only then calls the broker with the
+tokens held in memory. A removal that fails locally makes no broker call. The
+calls run one after another so the broker sees each earlier removal, share one
+5-second deadline, and are never retried. Any failure in this step becomes an
+outcome; it never changes the local result.
+
+The removal response and its activity entry carry
+`providerAccess: { provider, result, outcomes }`, codes only. `result` is
+judged per consenting subject: a subject whose access was revoked stays
+`ended` even if another of its grants reports a later outcome. Across
+subjects, all `ended` gives `ended`; otherwise all `ended` or
+`other_connections_remain` gives `other_connections_remain`; anything else,
+including `binding_not_known` (the broker had no record, so Google was not
+called), gives `not_ended`. The removal message links `not_ended` to
 https://myaccount.google.com/connections.
 
 Connections on a customer-owned Google OAuth client are removed locally only.

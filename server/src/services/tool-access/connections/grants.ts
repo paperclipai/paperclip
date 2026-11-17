@@ -507,10 +507,9 @@ replaceConnectionGrantMembers: async (
         .limit(1);
       if (!currentGrant) throw notFound("Connection grant not found");
       let providerRevocation: string = "not_applicable";
-      const providerAccessPending = currentGrant.status === "revoked"
+      const providerAccessRemoval = currentGrant.status === "revoked"
         ? null
-        : await managedGoogleAccess.begin(connection, [currentGrant], actor);
-      const providerAccess = providerAccessPending ? await providerAccessPending.settled : null;
+        : await managedGoogleAccess.prepare(connection, [currentGrant], actor);
       if (
         connection.credentialSource === "vercel_connect" &&
         connection.externalCredential
@@ -534,8 +533,8 @@ replaceConnectionGrantMembers: async (
             providerRevocation = "failed";
           }
         }
-      } else if (providerAccess) {
-        providerRevocation = providerAccess.outcomes[0] ?? "not_applicable";
+      } else if (providerAccessRemoval) {
+        providerRevocation = "managed_google";
       }
       const grant = await db.transaction(async (tx) => {
         await notifyGitHubCredentialChange(tx, connection);
@@ -597,6 +596,8 @@ replaceConnectionGrantMembers: async (
         return updated;
       });
       if (!grant) throw notFound("Connection grant not found");
+      const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
+      if (providerAccess) providerRevocation = providerAccess.outcomes[0] ?? providerRevocation;
       await db.insert(toolAccessAuditEvents).values({
         companyId: connection.companyId,
         connectionId: connection.id,

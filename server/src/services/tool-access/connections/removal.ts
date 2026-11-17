@@ -273,6 +273,7 @@ async function removeConnection(
         subjectUserId: connectionGrants.subjectUserId,
         subjectAgentId: connectionGrants.subjectAgentId,
         credentialSecretRefs: connectionGrants.credentialSecretRefs,
+        providerTenant: connectionGrants.providerTenant,
         externalCredential: connectionGrants.externalCredential,
       })
       .from(connectionGrants)
@@ -283,7 +284,7 @@ async function removeConnection(
         ),
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
-    const providerAccessPending = await managedGoogleAccess.begin(connection, grantsToRevoke, actor);
+    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantsToRevoke, actor);
     if (grantsToRevoke.length > 0) {
       await db
         .update(connectionGrants)
@@ -652,7 +653,7 @@ async function removeConnection(
         );
     }
 
-    const providerAccess = providerAccessPending ? await providerAccessPending.settled : null;
+    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
 
     return {
       connection: toConnection(cleared ?? archived.connection),

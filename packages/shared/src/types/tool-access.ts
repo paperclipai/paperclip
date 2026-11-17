@@ -440,7 +440,8 @@ export type ManagedGoogleRevocationOutcome =
   | "revocation_not_available"
   | "broker_unavailable"
   | "broker_error"
-  | "credential_unavailable";
+  | "credential_unavailable"
+  | "unexpected_error";
 
 export interface ManagedGoogleAccessRemoval {
   provider: "google";

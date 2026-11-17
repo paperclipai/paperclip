@@ -64,9 +64,11 @@ function fakeConnector(companyId: string, userId: string) {
       authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(returnState)}`,
       expiresAt: new Date(Date.now() + 600_000).toISOString(),
     })),
-    claim: vi.fn(async () => credentials),
+    claim: vi.fn(async ({ subject }: { subject: string }) => subject === userId
+      ? credentials
+      : { ...credentials, subject, refreshToken: `${subject}-refresh-do-not-log`, accessToken: `${subject}-access` }),
     refresh: vi.fn(async () => credentials),
-    revoke: vi.fn(async (): Promise<{ outcome?: string }> => ({ outcome: "revoked" })),
+    revoke: vi.fn(async (_values: { subject: string; token: string }): Promise<{ outcome?: string }> => ({ outcome: "revoked" })),
   };
 }
 
@@ -91,6 +93,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await db.delete(toolConnectionContentDeletions);
     await db.delete(toolOauthStates);
     await db.delete(connectionTokenIssuances);
@@ -120,7 +123,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     await tempDb?.cleanup();
   });
 
-  async function connectManagedGmail() {
+  async function connectManagedGmail(grantKind: "user" | "organization" = "user") {
     const [company] = await db.insert(companies).values({
       name: `Google removal ${randomUUID()}`,
       issuePrefix: `GR${randomUUID().slice(0, 6).toUpperCase()}`,
@@ -139,7 +142,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     const actor = { actorType: "user" as const, actorId: userId };
     toolsListFetch();
     const connected = await service.connectGalleryApp(company!.id, {
-      galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "Gmail",
+      galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind, name: "Gmail",
     }, actor);
     const started = await service.startOAuth(company!.id, connected.connectionId, {
       redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
@@ -164,7 +167,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     }));
     app.use(errorHandler);
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
-    return { company: company!, userId, connector, app, connectionId: connected.connectionId, grant: grant! };
+    return { company: company!, userId, connector, app, service, connectionId: connected.connectionId, grant: grant! };
   }
 
   async function liveSecretCount(companyId: string) {
@@ -221,21 +224,95 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(JSON.stringify(logged)).not.toContain(REFRESH_TOKEN);
   });
 
-  it("closes local access without waiting for Paperclip Cloud to answer", async () => {
+  it("ends access at Google only after the local removal is committed", async () => {
     const fixture = await connectManagedGmail();
+    const seen: Array<{ connection?: string; grant?: string; liveSecrets: number }> = [];
     fixture.connector.revoke.mockImplementation(async () => {
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const [row] = await db.select({ status: toolConnections.status }).from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
-        if (row?.status === "archived") return { outcome: "revoked" };
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
-      return { outcome: "provider_revocation_failed" };
+      const [row] = await db.select({ status: toolConnections.status }).from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
+      const [grantRow] = await db.select({ status: connectionGrants.status }).from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+      seen.push({ connection: row?.status, grant: grantRow?.status, liveSecrets: await liveSecretCount(fixture.company.id) });
+      return { outcome: "revoked" };
     });
 
     const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
 
     expect(response.status).toBe(200);
-    expect(response.body.removal.providerAccess.outcomes).toEqual(["revoked"]);
+    expect(seen).toEqual([{ connection: "archived", grant: "revoked", liveSecrets: 0 }]);
+  });
+
+  it("revokes a single grant at Google only after the grant is marked revoked", async () => {
+    const fixture = await connectManagedGmail();
+    const seen: Array<string | undefined> = [];
+    fixture.connector.revoke.mockImplementation(async () => {
+      const [grantRow] = await db.select({ status: connectionGrants.status }).from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+      seen.push(grantRow?.status);
+      return { outcome: "revoked" };
+    });
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    expect(seen).toEqual(["revoked"]);
+  });
+
+  it.each(["connection", "grant"] as const)("makes no broker call when the local %s removal fails", async (path) => {
+    const fixture = await connectManagedGmail();
+    vi.spyOn(db, "transaction").mockRejectedValue(new Error("local removal failed"));
+
+    const response = await request(fixture.app).delete(path === "connection"
+      ? `/api/tool-connections/${fixture.connectionId}`
+      : `/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(500);
+    expect(fixture.connector.revoke).not.toHaveBeenCalled();
+  });
+
+  it.each(["connection", "grant"] as const)("still completes the local %s removal when the Paperclip Cloud client cannot be created", async (path) => {
+    const fixture = await connectManagedGmail();
+    vi.stubEnv("PAPERCLIP_ID_CONNECTOR_INSTANCE_ID", "legacy-instance");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board", userId: fixture.userId, sessionId: `session-${randomUUID()}`, userName: "Owner", userEmail: null,
+        isInstanceAdmin: false, source: "session", companyIds: [fixture.company.id],
+        memberships: [{ companyId: fixture.company.id, membershipRole: "owner", status: "active" }],
+      };
+      next();
+    });
+    app.use("/api", toolAccessRoutes(db, {
+      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      remoteHttpRequest: async (url, init) => fetch(url, init),
+    }));
+    app.use(errorHandler);
+
+    const response = await request(app).delete(path === "connection"
+      ? `/api/tool-connections/${fixture.connectionId}`
+      : `/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    const providerAccess = path === "connection" ? response.body.removal.providerAccess : response.body.providerAccess;
+    expect(providerAccess).toEqual({ provider: "google", result: "not_ended", outcomes: ["broker_unavailable"] });
+    const [grantRow] = await db.select({ status: connectionGrants.status }).from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grantRow!.status).toBe("revoked");
+  });
+
+  it("revokes an organization grant under the user who consented after the connection-wide subject changed", async () => {
+    const fixture = await connectManagedGmail("organization");
+    expect(fixture.grant.kind).toBe("organization");
+    const otherUserId = `google-removal-other-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: fixture.company.id, principalType: "user", principalId: otherUserId, status: "active", membershipRole: "owner",
+    });
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
+    const config = { ...row!.config, oauth: { ...(row!.config.oauth as Record<string, unknown>), connectorSubjectUserId: otherUserId } };
+    await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, fixture.connectionId));
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
+    const sent = fixture.connector.revoke.mock.calls.map(([values]) => [values.subject, values.token]);
+    expect(sent).toEqual([[fixture.userId, REFRESH_TOKEN]]);
   });
 
   it("keeps the delete-stored-data option working alongside the Google outcome", async () => {
