@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueThreadInteractions, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { filterRunMessageInteractionDelivery, hasAutomaticInteractionDeliveryHold, preparedRunInteractionDeliveryDenied, recheckQueuedCommentInteractionDelivery,
   recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "./agent-interaction-delivery.js";
@@ -233,6 +233,21 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
       .toMatchObject({ actorAgentId: f.sender, operation: permission === "canMentionAgents" ? "mention" : "comment", permission });
   });
 
+  it.each(["dismissed", "pending", "other_agent"])("delivers a dismissal wake only for a person's dismissal of the recipient's question (%s)", async mode => {
+    const f = await seed();
+    const [question] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      createdByAgentId: mode === "other_agent" ? f.sender : f.recipient, kind: "ask_user_questions", status: "pending",
+      title: "Codename", payload: { version: 1, questions: [] },
+      ...(mode === "pending" ? {} : { dismissedAt: new Date(), dismissedByUserId: "human" }) }).returning();
+    const receipt = await wake(f, { actorType: "system", actorId: "native-status-committer" });
+    await db.update(agentWakeupRequests).set({ reason: "issue_question_dismissed",
+      payload: { ...receipt.payload as Record<string, unknown>, dismissedInteractionId: question!.id } })
+      .where(eq(agentWakeupRequests.id, receipt.id));
+    await restriction(f.recipient, { canReceiveAssignmentsFromAgents: false });
+    const result = await recheckQueuedRunInteractions(db, await readRun(f.run.id));
+    expect(result.denied).toBe(mode !== "dismissed");
+  });
+
   it("recovers an older automatic retry's initiating agent from its predecessor", async () => {
     const f = await seed(); await wake(f);
     await db.update(heartbeatRuns).set({ status: "failed", errorCode: "controller_lease_lost" }).where(eq(heartbeatRuns.id, f.run.id));
@@ -302,14 +317,12 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
     const f = await seed(); await wake(f);
     await restriction(f.recipient, { canReceiveAssignmentsFromAgents: false });
     const callbacks = createHeartbeatQueueTestDependencies(db);
-    callbacks.setRunStatus.mockImplementation(async (id, status, values) =>
-      (await db.update(heartbeatRuns).set({ ...values, status }).where(eq(heartbeatRuns.id, id)).returning())[0] ?? null);
     callbacks.setWakeupStatus.mockImplementation(async (id, status, values) => {
       if (id) await db.update(agentWakeupRequests).set({ ...values, status }).where(eq(agentWakeupRequests.id, id));
     });
     const queue = createHeartbeatQueue(db, callbacks);
     expect(await queue.claimQueuedRun(await readRun(f.run.id))).toBeNull();
-    expect(callbacks.setRunStatus).toHaveBeenCalledWith(f.run.id, "cancelled", expect.objectContaining({ errorCode: "agent_interaction_delivery_denied" }));
+    expect(callbacks.setRunStatusFromLive).toHaveBeenCalledWith(f.run.id, "cancelled", ["queued"], expect.objectContaining({ errorCode: "agent_interaction_delivery_denied" }));
     expect(callbacks.executeRun).not.toHaveBeenCalled();
     expect((await readRun(f.run.id)).status).toBe("cancelled");
     expect(callbacks.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),

@@ -1,3 +1,5 @@
+import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
+import { settleReattachRun } from "./run-admission.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
@@ -46,9 +48,13 @@ import { cancellationResultJson } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { isWaitingConversation } from "../agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED } from "../native-local-process-stop.js";
+import { trackRunIntake } from "../run-intake-stall-watch.js";
 import {
   hasAcknowledgedNativeReassignmentStopIntent,
+  hasAcknowledgedNativeLifecycleStopIntent,
   hasAcknowledgedNativeStopIntent,
+  hasRecordedUserStopRequest,
+  recordedUserStopRequestSql,
 } from "../acknowledged-native-stop.js";
 import { connectionIntentService } from "../connection-intents.js";
 import {
@@ -56,6 +62,7 @@ import {
   isConversationAdapter,
 } from "../conversation-continuation.js";
 import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { randomUUID } from "node:crypto";
@@ -208,6 +215,7 @@ import type { recoveryService } from "../recovery/index.js";
 import type { companySkillService } from "../company-skills.js";
 import type { budgetService, BudgetServiceHooks } from "../budgets.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
+import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -284,6 +292,9 @@ const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
   WORKSPACE_VALIDATION_FAILURE_CODE,
   ...NON_RETRYABLE_PREFLIGHT_FAILURE_CODES,
 ]);
+
+/** Each attempt waits at most the 1s task-row lock_timeout, so a Stop stays prompt. */
+const LEGACY_TERMINALIZATION_LOCK_ATTEMPTS = 3;
 
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 
@@ -369,6 +380,8 @@ export function decorateHeartbeatRunRuntimeStatus<
 
   return {
     ...run,
+    // Saved runs from earlier releases may promise a storage retry no wait owns.
+    ...("error" in run ? { error: presentStorageFailureMessage(run as { error?: string | null; errorCode?: string | null }) } : {}),
     currentStatusMessage: currentStatus?.message ?? null,
     currentStatusUpdatedAt: currentStatus?.updatedAt ?? null,
     currentToolName: currentStatus?.currentToolName ?? null,
@@ -613,7 +626,7 @@ export async function persistHeartbeatRunProcessMetadata(
   );
   const startedAt = new Date(observedStartedAt ?? meta.startedAt);
   const processStartedAt = Number.isNaN(startedAt.getTime()) ? new Date() : startedAt;
-  return db.transaction(async tx => {
+  return trackRunIntake(runId, "process_identity", PROCESS_IDENTITY_RECORDED, () => db.transaction(async tx => {
     const [binding] = await tx
       .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -642,7 +655,7 @@ export async function persistHeartbeatRunProcessMetadata(
     });
     return tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
-  });
+  }));
 }
 
 type SkillTestHeartbeatCompletion = {
@@ -1111,6 +1124,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       if (previous && isHeartbeatRunTerminalStatus(status))
         await notifyRetainedNativeSessionCleanup(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+      const runIssueId = previous ? previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) : null;
+      if (previous && isHeartbeatRunTerminalStatus(status) && runIssueId) await notifyTerminalWorkspaceWork(tx, `issue:${runIssueId}`);
       await notifyExecutionRunWork(tx, previous ? { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
@@ -1220,7 +1235,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
     failureReport?: RunFailureReportOptions,
     cancellationCondition?: ReturnType<typeof nativeRetryCancellationCommitCondition>,
-    options?: { setupFailure: true },
+    options?: {
+      setupFailure?: true;
+      /**
+       * Write only while no native executor lease on the run is live. Locks the
+       * coordinator row first, the order the owner takes back a lapsed lease in
+       * (`lockNativeExecutionLeaseForReacquire`), so exactly one side wins.
+       */
+      onlyWhileNativeLeaseLapsed?: true;
+    },
   ) {
     // fromStatuses can name a terminal status as its own source (for example,
     // an idempotent "still failed" patch), so the write below is not always a
@@ -1265,15 +1288,21 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus, async writer => {
+    const legacyTerminalization = previousStatus?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status);
+    const write = () => writeRunStatus(status, previousStatus, async writer => {
       if (options?.setupFailure && previousStatus?.runtimeMode === "native" && previousStatus.nativeIssueId) {
         await writer.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
           .where(and(eq(nativeRunFinalizations.runId, runId),
             eq(nativeRunFinalizations.companyId, previousStatus.companyId),
             eq(nativeRunFinalizations.issueId, previousStatus.nativeIssueId)))
           .for("update");
+      } else if (options?.onlyWhileNativeLeaseLapsed && previousStatus) {
+        await writer.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+          .where(and(eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, previousStatus.companyId)))
+          .for("update");
       }
-      return previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
+      return previousStatus && legacyTerminalization
         ? terminalizeLegacyExecution({
             db: writer,
             run: previousStatus,
@@ -1314,6 +1343,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
                 ...(isHeartbeatRunTerminalStatus(status)
                   ? [nativeRunnerOwnershipNotHeldCondition()]
                   : []),
+                ...(options?.onlyWhileNativeLeaseLapsed
+                  ? [sql`not exists (select 1 from ${nativeRunFinalizations}
+                      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+                        and ${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp())`]
+                  : []),
               ),
             )
             .returning()
@@ -1323,6 +1357,12 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
               throw error;
             });
     });
+    // Legacy terminalization takes the task row under a short lock_timeout so
+    // it never queues behind a slow task writer. Losing that race rolls back
+    // the whole transaction, so a bounded fresh attempt is safe.
+    const updated = legacyTerminalization
+      ? await retryTransientLockContention(write, LEGACY_TERMINALIZATION_LOCK_ATTEMPTS)
+      : await write();
 
     if (updated) {
       publishLiveEvent({
@@ -1354,53 +1394,70 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   // released. It never overwrites a status that another path already made
   // terminal.
   async function terminalizeRunOnLeaseRelease(
-    run: typeof heartbeatRuns.$inferSelect,
+    staleRun: typeof heartbeatRuns.$inferSelect,
   ): Promise<typeof heartbeatRuns.$inferSelect> {
-    if (isNativeRunnerOwnershipHeld(run)) return run;
-    if (isHeartbeatRunTerminalStatus(run.status)) return run;
-    if (run.status !== "running" && run.status !== "queued") return run;
+    if (isNativeRunnerOwnershipHeld(staleRun)) return staleRun;
+    if (isHeartbeatRunTerminalStatus(staleRun.status)) return staleRun;
+    if (staleRun.status !== "running" && staleRun.status !== "queued") return staleRun;
+    let run = staleRun;
+    let write: Awaited<ReturnType<typeof setRunStatusFromLive>> | null = null;
+    let terminalStatus: "succeeded" | "cancelled" | "interrupted" = "interrupted";
+    let issueId: string | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const current = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id))
+        .then((rows) => rows[0] ?? null);
+      if (!current) return run;
+      run = current;
+      if (isNativeRunnerOwnershipHeld(run)) return run;
+      if (isHeartbeatRunTerminalStatus(run.status)) return run;
+      if (run.status !== "running" && run.status !== "queued") return run;
 
-    // Choose the terminal status that reflects the true outcome. When the issue
-    // already reached a terminal status, the run reached its goal, so use the
-    // matching terminal run status. Otherwise the teardown cut the run short,
-    // so use "interrupted".
-    const issueId = readNonEmptyString(
-      parseObject(run.contextSnapshot).issueId,
-    );
-    let terminalStatus: "succeeded" | "cancelled" | "interrupted" =
-      "interrupted";
-    if (issueId) {
-      const issueStatus = await db
-        .select({ status: issues.status })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0]?.status ?? null);
-      if (issueStatus === "done") terminalStatus = "succeeded";
-      else if (issueStatus === "cancelled") terminalStatus = "cancelled";
+      // Choose the terminal status that reflects the true outcome. When the issue
+      // already reached a terminal status, the run reached its goal, so use the
+      // matching terminal run status. Otherwise the teardown cut the run short,
+      // so use "interrupted".
+      issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      terminalStatus = "interrupted";
+      if (issueId) {
+        const issueStatus = await db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0]?.status ?? null);
+        if (issueStatus === "done") terminalStatus = "succeeded";
+        else if (issueStatus === "cancelled") terminalStatus = "cancelled";
+      }
+
+      // Teardown can beat the cancellation finalizer. Preserve the acknowledged
+      // user intent instead of reporting an infrastructure interruption.
+      if (hasRecordedUserStopRequest(run) || hasAcknowledgedNativeStopIntent(run) || hasAcknowledgedNativeReassignmentStopIntent(run)
+        || hasAcknowledgedNativeLifecycleStopIntent(run)) terminalStatus = "cancelled";
+
+      // Match both "running" and "queued". A queued run has released its lease but
+      // never reached "running", so a running-only update would miss it and leave
+      // a phantom live run behind.
+      write = await setRunStatusFromLive(
+        run.id,
+        terminalStatus,
+        ["running", "queued"],
+        {
+          finishedAt: run.finishedAt ?? new Date(),
+          error: run.error ?? (terminalStatus === "interrupted"
+            ? `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown` : null),
+          errorCode:
+            run.errorCode ??
+            (terminalStatus === "interrupted"
+              ? "lease_released_before_terminal"
+              : null),
+        },
+        undefined,
+        terminalStatus === "cancelled" ? undefined : not(recordedUserStopRequestSql()),
+      );
+      if (write.updated) break;
+      if (!write.run || isHeartbeatRunTerminalStatus(write.run.status)) break;
     }
-
-    // Teardown can beat the cancellation finalizer. Preserve the acknowledged
-    // user intent instead of reporting an infrastructure interruption.
-    if (hasAcknowledgedNativeStopIntent(run) || hasAcknowledgedNativeReassignmentStopIntent(run)) terminalStatus = "cancelled";
-
+    if (!write) return run;
     const message = `run terminalized on environment lease release: heartbeat_runs.status was still ${run.status} at teardown`;
-    // Match both "running" and "queued". A queued run has released its lease but
-    // never reached "running", so a running-only update would miss it and leave
-    // a phantom live run behind.
-    const write = await setRunStatusFromLive(
-      run.id,
-      terminalStatus,
-      ["running", "queued"],
-      {
-        finishedAt: run.finishedAt ?? new Date(),
-        error: run.error ?? (terminalStatus === "interrupted" ? message : null),
-        errorCode:
-          run.errorCode ??
-          (terminalStatus === "interrupted"
-            ? "lease_released_before_terminal"
-            : null),
-      },
-    );
     if (!write.updated) {
       // Another path already finalized the run. Keep that terminal outcome.
       return write.run ?? run;
@@ -1504,11 +1561,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   ) {
     if (!wakeupRequestId) return;
     await db.transaction(async tx => {
-      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status })
+      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status,
+        runId: agentWakeupRequests.runId, issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'` })
         .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)).for("update");
       if (!current || current.status === "cancelled") return;
       if (current.status !== (patch?.status ?? status) || patch?.payload !== undefined || patch?.runId !== undefined) {
-        await notifyExternalConversationSettlement(tx, { companyId: current.companyId });
+        const runId = patch?.runId ?? current.runId;
+        const issueId = current.issueId && /^[0-9a-f-]{36}$/i.test(current.issueId) ? current.issueId : undefined;
+        await notifyExternalConversationSettlement(tx, issueId || runId
+          ? { companyId: current.companyId, issueId, runId: runId ?? undefined } : { companyId: current.companyId });
       }
       await notifyStrandedAgentStatus(tx, { companyId: current.companyId, agentId: current.agentId });
       await tx.update(agentWakeupRequests)
@@ -2275,7 +2336,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     runId: string,
     meta: { pid: number; processGroupId: number | null; startedAt: string; targetKind: "local" | "remote" },
   ) {
-    return retryTransientRunWrite(() => persistHeartbeatRunProcessMetadata(db, runId, meta));
+    const persisted = await retryTransientRunWrite(() => persistHeartbeatRunProcessMetadata(db, runId, meta));
+    settleReattachRun(runId, "reached");
+    return persisted;
   }
 
   async function clearDetachedRunWarning(runId: string) {
@@ -2550,7 +2613,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         .returning()
         .then((rows) => rows[0]);
 
-      await notifyRunDispatch(tx, { companyId: run.companyId });
+      await notifyRunDispatch(tx, { companyId: run.companyId, issueId });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({

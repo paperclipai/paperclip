@@ -87,12 +87,21 @@ export async function cleanupRemoteWorkspaceAllocation(input: {
   if (!persistence.ready || !persistence.authority) throw new Error(persistence.reason ?? "remote_workspace_saved_state_required");
   const location = persistence.authority.location;
   if (location) {
-    const released = await input.destroyLease({ companyId: workspace.companyId, workspaceId: workspace.id,
-      leaseId: location.leaseId, environmentId: location.environmentId, providerLeaseId: location.providerLeaseId });
-    if (!released || !hasRemoteTerminationReceipt(released)
-      || (released.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state !== "destroyed") {
-      throw new Error("remote_workspace_cleanup_unconfirmed");
+    const destroyed = (lease: Parameters<typeof hasRemoteTerminationReceipt>[0] | null | undefined) => Boolean(lease && hasRemoteTerminationReceipt(lease)
+      && (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state === "destroyed");
+    const [stored] = await input.db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, workspace.companyId), eq(environmentLeases.id, location.leaseId),
+      eq(environmentLeases.environmentId, location.environmentId), eq(environmentLeases.providerLeaseId, location.providerLeaseId),
+    ));
+    if (!destroyed(stored)) {
+      const released = await input.destroyLease({ companyId: workspace.companyId, workspaceId: workspace.id,
+        leaseId: location.leaseId, environmentId: location.environmentId, providerLeaseId: location.providerLeaseId });
+      if (!destroyed(released)) throw new Error("remote_workspace_cleanup_unconfirmed");
     }
+    await input.db.update(executionWorkspaces)
+      .set({ metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{remoteWorkspace,location}', 'null'::jsonb)`, updatedAt: new Date() })
+      .where(and(eq(executionWorkspaces.companyId, workspace.companyId), eq(executionWorkspaces.id, workspace.id),
+        sql`${executionWorkspaces.metadata}->'remoteWorkspace'->'location' = ${JSON.stringify(location)}::jsonb`));
   }
   return { cleaned: true, warnings: [] as string[] };
 }

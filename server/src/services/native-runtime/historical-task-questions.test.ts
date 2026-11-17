@@ -10,6 +10,7 @@ import { readTaskQuestionContext } from "../issue-question-context.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { finalizeNativeRun, pendingNativeGovernance } from "./native-run-finalizer.js";
+import { enqueueOwnQuestionDismissalWake, ownQuestionWaitReleasedByDismissal } from "./own-question-wait.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } from "../../vendor/paperclip-runner/testing.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -209,6 +210,76 @@ describe("historical task questions", () => {
         .toEqual([]);
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
         .toEqual([]);
+    }
+  });
+
+  it.each(["unreported", "unreported-dismissed", "unreported-answered", "verified"])("keeps the agent's own unanswered question open after an unreported turn (%s)", async mode => {
+    const f = await fixture();
+    await message(f);
+    if (mode === "unreported-dismissed") {
+      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
+    }
+    if (mode === "unreported-answered") {
+      await db.update(issueThreadInteractions).set({ status: "answered", resolvedByUserId: "board-user", resolvedAt: new Date(),
+        result: { version: 1, answers: [{ questionId: "configuration", optionIds: ["configured"] }] } })
+        .where(eq(issueThreadInteractions.id, f.question.id));
+    }
+    const contractId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
+    const contractSha256 = "own-question-contract";
+    await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+      revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "low",
+      completionAuthority: "agent_claim_policy", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "standalone-v1", objective: "Verify configuration", criteria: [{ id: "objective", requirement: "Verify configuration" }] },
+      canonicalSha256: contractSha256, createdByActorType: "system", createdByActorId: "test" });
+    await db.update(heartbeatRuns).set({ completionContractId: contractId, completionContractSha256: contractSha256,
+      nativeSessionId: sessionId, runnerInstanceId: runnerId }).where(eq(heartbeatRuns.id, f.runId));
+    const [verified] = await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId,
+      type: "artifact", provider: "test", title: "Configuration verification", status: "completed", reviewState: "approved" }).returning();
+    const workProductRef = `work_product:${verified.id}`;
+    const providerRef = "provider:opencode:agent-message";
+    const result: PrpStructuredRunResult = mode === "verified"
+      ? { ...CONTROL_PLANE_CONFORMANCE_RESULT,
+        completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim,
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [workProductRef] }] },
+        evidence: [{ kind: "work_product", ref: workProductRef }],
+        verification: [{ commandOrCheck: "Configuration verification", status: "passed", artifactRef: workProductRef }] }
+      : { ...CONTROL_PLANE_CONFORMANCE_RESULT,
+        summary: "I will not write the configuration until the answer arrives. Ending turn to await the answer.",
+        completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim, objectiveSatisfied: true, remainingWork: [],
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [providerRef] }] },
+        evidence: [{ ref: providerRef }], verification: [], artifacts: [], attentionRequests: [] };
+    const port = new PaperclipControlPlanePort(db, { ...f, sessionId, completionContractId: contractId,
+      completionContractSha256: contractSha256, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: randomUUID() });
+    await port.openRun({ identity: { ...f, sessionId }, backendKind: "mock", sourceInstanceId: runnerId });
+    await port.completeRun({ result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: randomUUID() });
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded" });
+    const waits = mode === "unreported";
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.status).toBe(waits ? "in_review" : "done");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId)))
+      .toEqual([expect.objectContaining({ toStatus: waits ? "in_review" : "done",
+        ...(waits ? { reasonCode: "own_question_unanswered" } : {}) })]);
+    if (waits) {
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))[0])
+        .toMatchObject({ status: "pending", resolvedAt: null });
+      const scope = { companyId: f.companyId, issueId: f.issueId, interactionId: f.question.id };
+      expect(await ownQuestionWaitReleasedByDismissal(db, scope)).toBeNull();
+      const [second] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+        kind: "ask_user_questions", status: "pending", sourceRunId: f.runId, createdByAgentId: f.agentId,
+        title: "Second question", payload: f.question.payload }).returning();
+      await issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId }, f.question.id, { userId: "board-user" });
+      expect(await ownQuestionWaitReleasedByDismissal(db, scope)).toBeNull();
+      const wakeIds: Array<string | null> = [];
+      const dismissSecond = () => issueThreadInteractionService(db).dismissInteraction({ id: f.issueId, companyId: f.companyId },
+        second!.id, { userId: "board-user" }, async tx => {
+          wakeIds.push(await enqueueOwnQuestionDismissalWake(tx, { ...scope, interactionId: second!.id }));
+        });
+      await dismissSecond();
+      await dismissSecond();
+      expect(await ownQuestionWaitReleasedByDismissal(db, { ...scope, interactionId: second!.id })).toEqual({ agentId: f.agentId });
+      expect(wakeIds).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+        .toEqual([expect.objectContaining({ id: wakeIds[0], agentId: f.agentId, status: "queued", reason: "issue_question_dismissed",
+          requestedByActorId: "native-status-committer", idempotencyKey: `issue_question_dismissed:${second!.id}` })]);
     }
   });
 

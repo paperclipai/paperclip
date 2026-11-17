@@ -105,6 +105,15 @@ describe("gradeConfigTask", () => {
     expect(grade.signature).toBe("CF1/provision_command:message_only_in_run_detail");
   });
 
+  it("passes CF1 when the task interruption names the failed setup command", () => {
+    const parked = snapshot(90_000, { runs: [failedRun("r1", 10_000, "Execution workspace provision command \"bash ./scripts/provision-worktree.sh\" failed")],
+      interruption: { ...generic, setupFailure: "The project's workspace provision command \"bash ./scripts/provision-worktree.sh\" failed with exit code 127" } });
+    const grade = gradeConfigTask(record({}, { brokenSnapshots: [parked], parkedAt: 90_000, parkReason: "interruption",
+      restart: { kind: "K1", faultId: "f00", firedAt: 95_000, readyAt: 120_000, error: null }, afterRestartSnapshots: [parked], afterRestartParked: true,
+      repair: { at: 200_000, action: "clicked Retry", detail: "", error: null }, finalStatus: "done", doneAt: 400_000 }), options);
+    expect(grade.checks.find(check => check.name === "actionable_message")?.verdict).toBe("pass");
+  });
+
   it("passes when the task names the setting, survives the restart and completes after repair", () => {
     const parked = snapshot(90_000, { runs: [failedRun("r1", 10_000, "x")],
       interruption: { ...generic, workspaceFailure: "The project workspace path is not available" } });

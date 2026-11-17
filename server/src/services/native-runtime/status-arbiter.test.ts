@@ -151,6 +151,26 @@ describe("native status authority", () => {
     expect(decision.effects.some((effect) => ["enqueue_continuation", "schedule_retry"].includes(effect.kind))).toBe(false);
   });
 
+  it("lets a reviewer stopped by a tool-call loop continue through its queued review wake instead of a resume recovery", () => {
+    const decision = arbitrate({ priorIssueStatus: "in_review", nativeReviewOutcome: "pending", toolCallLoopContinuation: true });
+    expect(decision).toMatchObject({ statusAction: "preserve", toStatus: "in_review", reasonCode: "native_review_unresolved" });
+    expect(decision.effects).toEqual([{ kind: "release_checkout" }]);
+  });
+
+  it("continues a turn stopped at its tool receipt limit in a fresh session, within its bound", () => {
+    const stopped = arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true });
+    expect(stopped).toMatchObject({ statusAction: "preserve", toStatus: "in_progress", reasonCode: "semantic_tool_turn_receipt_limit" });
+    expect(stopped.effects).toEqual([
+      { kind: "schedule_retry", cause: "semantic_tool_turn_receipt_limit", summary: "Continue the task in a fresh session.", agentId: expect.any(String) },
+      { kind: "release_run_resources" },
+    ]);
+    expect(arbitrate({ terminalState: "failed", toolReceiptLimitStopped: true }).effects)
+      .toEqual([expect.objectContaining({ kind: "schedule_retry", cause: "semantic_tool_turn_receipt_limit" })]);
+    expect(arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true, failureRetryCount: 2 }).reasonCode).toBe("cancellation_run_only");
+    expect(arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true, priorIssueStatus: "blocked" }).reasonCode).toBe("cancellation_run_only");
+    expect(arbitrate({ terminalState: "cancelled" }).reasonCode).toBe("cancellation_run_only");
+  });
+
   it("treats only the authorized Board response_wake as passive and preserves governance", () => {
     const passive = assessment({
       reportedDisposition: "yielded",
@@ -168,8 +188,9 @@ describe("native status authority", () => {
       effects: [],
     });
     expect(arbitrate({ assessment: passive })).toMatchObject({
-      reasonCode: "live_continuation_registered",
-      effects: [expect.objectContaining({ kind: "enqueue_continuation" })],
+      reasonCode: "response_wake_waiting_for_input",
+      toStatus: "in_progress",
+      effects: [],
     });
     expect(
       arbitrate({ assessment: passive, boardResponseWaitOrigin: true }),
@@ -385,13 +406,9 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        reasonCode: "live_continuation_registered",
-        effects: [
-          expect.objectContaining({
-            kind: "enqueue_continuation",
-            continuationKind: "response_wake",
-          }),
-        ],
+        statusAction: "in_progress",
+        reasonCode: "response_wake_waiting_for_input",
+        effects: [],
       }),
     );
     expect(arbitrate({ terminalState: "cancelled" })).toEqual(
@@ -601,7 +618,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v13",
+        policyVersion: "phase6-v14",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",
@@ -740,4 +757,15 @@ describe("native status authority", () => {
     ]);
   });
 
+  it("continues a system environment blocker in a fresh session, bounded, and never for a paused task or chat", () => {
+    const blocked = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+      blocker: { unblockAction: "Retry the run.", boardOwned: false, ownerKind: "system", scope: "task_wide" } });
+    expect(arbitrate({ assessment: blocked, environmentBlocker: true })).toMatchObject({ statusAction: "preserve",
+      reasonCode: "native_environment_blocker", effects: [{ kind: "schedule_retry", cause: "native_environment_blocker", agentId: "agent" }] });
+    expect(arbitrate({ assessment: blocked, environmentBlocker: true, failureRetryCount: 2 })).toMatchObject({ toStatus: "blocked",
+      reasonCode: "native_environment_blocker_exhausted", unblockDescriptor: { owner: "board" } });
+    for (const held of [{ hasActivePauseHold: true }, { isConversation: true }, { environmentBlocker: false }]) {
+      expect(arbitrate({ assessment: blocked, environmentBlocker: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    }
+  });
 });

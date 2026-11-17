@@ -730,7 +730,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         let (mut transport, welcome) = match connection {
             Ok(Some(connection)) => connection,
             Ok(None) => {
-                next_connection_attempt = Instant::now() + config.reconnect_delay;
+                next_connection_attempt =
+                    Instant::now() + endpoint.retry_delay(config.reconnect_delay);
                 continue;
             }
             Err(error) => {
@@ -749,7 +750,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 }
                 next_connection_attempt = Instant::now()
                     + reconnect_delay(
-                        config.reconnect_delay,
+                        endpoint.retry_delay(config.reconnect_delay),
                         connect_deadline.saturating_duration_since(Instant::now()),
                         &mut reconnect_attempt,
                     );
@@ -1055,8 +1056,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     .map(|credential| credential.expires_at_unix_ms),
             );
             next_connection_attempt = Instant::now()
-                + config
-                    .reconnect_delay
+                + endpoint
+                    .retry_delay(config.reconnect_delay)
                     .min(reconnect_deadline.saturating_duration_since(Instant::now()));
             continue;
         }
@@ -1419,8 +1420,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 .map(|credential| credential.expires_at_unix_ms),
         );
         next_connection_attempt = Instant::now()
-            + config
-                .reconnect_delay
+            + endpoint
+                .retry_delay(config.reconnect_delay)
                 .min(reconnect_deadline.saturating_duration_since(Instant::now()));
     }
 }
@@ -1752,13 +1753,18 @@ fn wait_for_terminal_result_ack(
                             "terminal command result acknowledgement payload is required",
                         )
                     })?;
+                // The controller acknowledges the status it received. An
+                // indeterminate journal entry travels as `failed`, so either
+                // spelling names this exact receipt.
+                let status = payload.get("status").and_then(Value::as_str);
                 if payload.get("commandId").and_then(Value::as_str)
                     != Some(result.command_id.as_str())
                     || payload.get("commandType").and_then(Value::as_str)
                         != Some(result.command_type.as_str())
                     || payload.get("controllerSeq").and_then(Value::as_u64)
                         != Some(result.controller_seq)
-                    || payload.get("status").and_then(Value::as_str) != Some(result.status.as_str())
+                    || (status != Some(result.status.as_str())
+                        && status != Some(wire_command_status(result)))
                 {
                     return Err(DurableRunnerError::invalid(
                         "terminal command result acknowledgement changed its durable identity",
@@ -2551,18 +2557,24 @@ fn send_outbox(
     Ok(())
 }
 
+/// "indeterminate" is an internal crash-recovery journal state. On the wire it
+/// is a failed command with the preserved execution_indeterminate reason so the
+/// controller can settle the command and continue replay.
+fn wire_command_status(result: &StoredCommandResult) -> &str {
+    if result.status == "indeterminate" {
+        "failed"
+    } else {
+        result.status.as_str()
+    }
+}
+
 fn command_result_envelope(
     state: &DurableState,
     result: &StoredCommandResult,
     protocol_version: u64,
 ) -> Value {
     let mut payload = json!(result);
-    // "indeterminate" is an internal crash-recovery journal state. On the
-    // wire it is a failed command with the preserved execution_indeterminate
-    // reason so the controller can settle the command and continue replay.
-    if result.status == "indeterminate" {
-        payload["status"] = json!("failed");
-    }
+    payload["status"] = json!(wire_command_status(result));
     json!({
         "protocol": PROTOCOL,
         "version": protocol_version,

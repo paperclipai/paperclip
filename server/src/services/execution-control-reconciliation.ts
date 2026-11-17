@@ -9,6 +9,7 @@ import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { settledHeartbeat } from "./heartbeat/agent-status.js";
 import {
   agents,
   heartbeatRuns,
@@ -22,7 +23,8 @@ import { hasLiveLegacyController } from "./legacy-controller-lease.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
-import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
+import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE,
+  EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { NATIVE_STARTUP_CLEANUP_PENDING, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
 import { releaseAbandonedNativeOwners } from "./native-runtime/native-failed-run-owner-release.js";
@@ -176,6 +178,24 @@ export async function reconcileAbandonedExecutionControl(
             }
             return false;
           }
+          if (coordinator && !coordinator.resultId && run.status === "running") {
+            const nativeOwnerLeaseAt = coordinator.leaseOwner && coordinator.leaseExpiresAt && coordinator.leaseExpiresAt > now
+              ? coordinator.leaseExpiresAt : null;
+            const sameRunResumeScheduled = coordinator.phase === "retryable_failure" && !coordinator.leaseOwner;
+            const nativeSettlementDue = Boolean(coordinator.controlDeadlineAt && coordinator.controlDeadlineAt <= now);
+            if (!nativeSettlementDue && (nativeOwnerLeaseAt || sameRunResumeScheduled)) {
+              await tx.update(heartbeatRuns).set({ executionControlDeadlineAt: null }).where(eq(heartbeatRuns.id, run.id));
+              return false;
+            }
+            if (nativeOwnerLeaseAt) {
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
+              await tx.update(nativeRunFinalizations).set({ controlDeadlineAt: nativeOwnerLeaseAt })
+                .where(eq(nativeRunFinalizations.runId, run.id));
+              await tx.update(heartbeatRuns).set({ executionControlDeadlineAt: run.executionControlDeadlineAt ? nativeOwnerLeaseAt : null })
+                .where(eq(heartbeatRuns.id, run.id));
+              return false;
+            }
+          }
           await tx
             .update(heartbeatRuns)
             .set({ executionControlDeadlineAt: null })
@@ -217,9 +237,8 @@ export async function reconcileAbandonedExecutionControl(
               .where(eq(heartbeatRuns.id, run.id));
             return false;
           }
-          const cause = "execution_finalization_deadline_exceeded";
-          const nextAction =
-            "Inspect the failed run and verify its provider has stopped. Reconcile any uncertain external action before explicitly continuing this task.";
+          const cause = EXECUTION_FINALIZATION_DEADLINE_EXCEEDED;
+          const nextAction = EXECUTION_FINALIZATION_DEADLINE_MESSAGE;
           // The deadline replaces the run's error code. Keep the earlier
           // diagnosis as its root cause, as the native finalizer does.
           const priorFailureCode = coordinator?.failureCode ?? run.errorCode;
@@ -249,7 +268,7 @@ export async function reconcileAbandonedExecutionControl(
           await notifyNativeEnvironmentSettlement(tx, { companyId: run.companyId, runId: run.id });
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, run);
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           const [updatedRun] = await tx
             .update(heartbeatRuns)
             .set({
@@ -274,7 +293,10 @@ export async function reconcileAbandonedExecutionControl(
           }
           await tx
             .update(agents)
-            .set({ status: "idle", updatedAt: now })
+            // A run settling records a heartbeat, as finalizeAgentStatus does, so
+            // the changed-rows agent rule (recovery/changed-tasks.ts) does not
+            // read it as a pause or resume and re-check the agent's whole backlog.
+            .set({ status: "idle", lastHeartbeatAt: settledHeartbeat(now), updatedAt: now })
             .where(
               and(
                 eq(agents.id, run.agentId),

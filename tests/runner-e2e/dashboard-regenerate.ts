@@ -216,6 +216,12 @@ export async function regenerateRunnerDashboard(input: {
       };
     }),
   );
+  const summary = await readFile(path.join(bundle, "summary.md"), "utf8").then(text => text.replace(
+    /^(Feedback across retained attempts:.*?); [0-9]+ distinct items awaiting review;/m, "$1;",
+  )).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
   const dashboard = renderRunnerE2EDashboard({
     title: normalized.presentation?.title ?? "E2E tests",
     generatedAt: normalized.generatedAt,
@@ -223,6 +229,8 @@ export async function regenerateRunnerDashboard(input: {
     catalog: runnerMatrix,
     entries,
     campaign,
+    summaryAvailable: summary !== undefined,
+    summaryText: summary,
     history,
     presentation: normalized.presentation,
   });
@@ -237,12 +245,6 @@ export async function regenerateRunnerDashboard(input: {
       evidenceErrors: normalized.results[index]?.evidenceErrors ?? [],
     })),
   };
-  const summary = await readFile(path.join(bundle, "summary.md"), "utf8").then(text => text.replace(
-    /^(Feedback across retained attempts:.*?); [0-9]+ distinct items awaiting review;/m, "$1;",
-  )).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
   const reviewStatus = /^(?:[0-9]+ distinct feedback items await review\.|Feedback reviewed by (?:human|agent) at ).*$/m;
   const refreshedSummary = summary === undefined ? undefined : reviewStatus.test(summary)
     ? summary.replace(reviewStatus, () => campaignFeedbackReviewText(campaign))

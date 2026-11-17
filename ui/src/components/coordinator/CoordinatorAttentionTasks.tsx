@@ -1,10 +1,9 @@
 import { useQueryView } from "@/components/QueryView";
 import { useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight } from "lucide-react";
-import { attentionApi } from "@/api/attention";
 import { useCompany } from "@/context/CompanyContext";
-import { coordinatorAttentionQueryKey, pendingDecisionTaskIds } from "@/lib/coordinator-attention";
+import { pendingDecisionTaskIds } from "@/lib/coordinator-attention";
+import { useAttentionViewFeed } from "@/hooks/useAttentionViews";
 import { useNavigate } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { StatusIcon } from "@/components/StatusIcon";
@@ -15,8 +14,7 @@ export function CoordinatorAttentionTasks({ toolbar }: { toolbar: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
-  const feed = useQuery({ queryKey: coordinatorAttentionQueryKey(selectedCompanyId!),
-    queryFn: () => attentionApi.list(selectedCompanyId!, { all: true }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
+  const feed = useAttentionViewFeed(selectedCompanyId, "mine");
   const feedView = useQueryView(feed);
   const waiting = ["loading", "reconnecting"].includes(feedView.kind);
   const items = feed.data?.items ?? [];

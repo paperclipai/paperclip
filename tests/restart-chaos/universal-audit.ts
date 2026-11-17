@@ -1,5 +1,5 @@
 /**
- * Run the universal checks U1–U4 over saved wave evidence, to measure false
+ * Run the universal checks U1–U5 over saved wave evidence, to measure false
  * positives before a rule is enforced.
  *
  *   node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts [--json] <results dir> [...]
@@ -29,7 +29,7 @@ function percentiles(values: number[]) {
   return { n: sorted.length, p50: at(0.5), p95: at(0.95), p99: at(0.99), max: sorted[sorted.length - 1] ?? 0 };
 }
 
-const RULES: UniversalId[] = ["U1", "U2", "U3", "U4"];
+const RULES: UniversalId[] = ["U1", "U2", "U3", "U4", "U5"];
 
 export function auditWaves(roots: readonly string[], bounds: UniversalBounds = DEFAULT_UNIVERSAL_BOUNDS): AuditReport {
   const report: AuditReport = { waves: 0, tasks: 0, knownGoodTasks: 0, knownGoodWaves: 0,

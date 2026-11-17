@@ -1,16 +1,23 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
-import { installPreparedQueries } from "./prepared-queries.js";
+import { createPreparedQueryState, installPreparedQueries, preparedQueryStats, type PreparedQueryState, type PreparedQueryStats } from "./prepared-queries.js";
+import { drizzleWithLazyTransactionQueries } from "./lazy-transaction-queries.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
+const PROJECT_ENVIRONMENT_OVERLAP = {
+  dropFile: "0466_drop_project_environment.sql",
+  dropSha256: "07ca1c666c6471fdb9ce7a0a5fb31bf1a074138466fa8daae50b53199b8e0d7c",
+  repairFile: "0467_fair_human_torch.sql",
+  repairSha256: "50ce0eb2567570b098bea1de92fe6a220d139e4ba83438195fbbad1be51e31a1",
+} as const;
 
 function createUtilitySql(url: string) {
   return postgres(url, { max: 1, onnotice: () => {} });
@@ -157,6 +164,13 @@ export interface DatabaseClientOptions {
    * `postgres.js`).
    */
   applicationName?: string;
+  /**
+   * Connection-level `statement_timeout` in milliseconds, sent as a startup
+   * parameter (no extra round trip). For dedicated single-purpose pools only.
+   */
+  statementTimeoutMs?: number;
+  dedicatedConnectionMax?: number;
+  dedicatedConnectionWaitMs?: number;
 }
 
 /**
@@ -225,6 +239,10 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (maxLifetimeSeconds !== undefined) options.maxLifetimeSeconds = maxLifetimeSeconds;
   const applicationName = envNonEmptyString(env, "DATABASE_APPLICATION_NAME");
   if (applicationName !== undefined) options.applicationName = applicationName;
+  const dedicatedConnectionMax = envPositiveInteger(env, "DATABASE_DEDICATED_CONNECTION_MAX");
+  if (dedicatedConnectionMax !== undefined) options.dedicatedConnectionMax = dedicatedConnectionMax;
+  const dedicatedConnectionWaitMs = envPositiveInteger(env, "DATABASE_DEDICATED_CONNECTION_WAIT_MS");
+  if (dedicatedConnectionWaitMs !== undefined) options.dedicatedConnectionWaitMs = dedicatedConnectionWaitMs;
   return options;
 }
 
@@ -250,17 +268,145 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
   if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
   if (options.maxLifetimeSeconds !== undefined) driverOptions.max_lifetime = options.maxLifetimeSeconds;
-  if (options.applicationName !== undefined) {
-    driverOptions.connection = { application_name: options.applicationName };
-  }
+  const connection: Record<string, string> = {};
+  if (options.applicationName !== undefined) connection.application_name = options.applicationName;
+  if (options.statementTimeoutMs !== undefined) connection.statement_timeout = String(options.statementTimeoutMs);
+  if (Object.keys(connection).length) driverOptions.connection = connection;
   return driverOptions;
 }
 
 // A long advisory-lock transaction must not borrow the normal pool that its
 // work needs for progress writes. Keep connection configuration private to the
 // originating Db lifetime; callers receive neither URLs nor credentials.
-const dedicatedDbFactories = new WeakMap<object, () => Db>();
 const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
+
+export const DEDICATED_CONNECTION_IDLE_MAX = 4;
+export const DEFAULT_DEDICATED_CONNECTION_MAX = 24;
+export const DEFAULT_DEDICATED_CONNECTION_WAIT_MS = 30_000;
+
+type DedicatedConnectionWaiter = { grant(): void; timer: ReturnType<typeof setTimeout> };
+type DedicatedConnectionSet = {
+  create(): Db;
+  idle: Db[];
+  ended: WeakSet<Db>;
+  closed: boolean;
+  limit: number;
+  waitMs: number;
+  inUse: number;
+  waiters: DedicatedConnectionWaiter[];
+  stats: DedicatedDbConnectionStats;
+};
+export type DedicatedDbConnectionStats = { limit: number; inUse: number; peakInUse: number; waiting: number;
+  queued: number; overLimit: number; nestedOverLimit: number };
+const dedicatedConnectionSets = new WeakMap<object, DedicatedConnectionSet>();
+type DedicatedConnectionHold = { set: DedicatedConnectionSet; active: boolean };
+const heldDedicatedConnections = new AsyncLocalStorage<readonly DedicatedConnectionHold[]>();
+const openTransactions = new AsyncLocalStorage<{ active: boolean }>();
+
+function dedicatedConnectionSet(create: DedicatedConnectionSet["create"], resolved: DatabaseClientOptions): DedicatedConnectionSet {
+  const limit = resolved.dedicatedConnectionMax ?? DEFAULT_DEDICATED_CONNECTION_MAX;
+  return { create, idle: [], ended: new WeakSet(), closed: false, limit, inUse: 0, waiters: [],
+    waitMs: resolved.dedicatedConnectionWaitMs ?? DEFAULT_DEDICATED_CONNECTION_WAIT_MS,
+    stats: { limit, inUse: 0, peakInUse: 0, waiting: 0, queued: 0, overLimit: 0, nestedOverLimit: 0 } };
+}
+
+function takeDedicatedSlot(set: DedicatedConnectionSet) {
+  set.inUse++;
+  set.stats.inUse = set.inUse;
+  set.stats.peakInUse = Math.max(set.stats.peakInUse, set.inUse);
+}
+
+function releaseDedicatedSlot(set: DedicatedConnectionSet) {
+  set.inUse--;
+  set.stats.inUse = set.inUse;
+  while (set.waiters.length && set.inUse < set.limit) set.waiters.shift()!.grant();
+  set.stats.waiting = set.waiters.length;
+}
+
+function holdsLiveDedicatedOrTransaction(set: DedicatedConnectionSet): boolean {
+  return Boolean(heldDedicatedConnections.getStore()?.some(hold => hold.active && hold.set === set)
+    || openTransactions.getStore()?.active);
+}
+
+async function admitDedicatedConnection(set: DedicatedConnectionSet, nested: boolean): Promise<void> {
+  if (nested || (set.inUse < set.limit && set.waiters.length === 0)) {
+    if (nested && set.inUse >= set.limit) set.stats.nestedOverLimit++;
+    takeDedicatedSlot(set);
+    return;
+  }
+  set.stats.queued++;
+  await new Promise<void>(resolve => {
+    const waiter: DedicatedConnectionWaiter = {
+      grant: () => { clearTimeout(waiter.timer); takeDedicatedSlot(set); resolve(); },
+      timer: setTimeout(() => {
+        const index = set.waiters.indexOf(waiter);
+        if (index < 0) return;
+        set.waiters.splice(index, 1);
+        set.stats.waiting = set.waiters.length;
+        set.stats.overLimit++;
+        takeDedicatedSlot(set);
+        resolve();
+      }, set.waitMs),
+    };
+    set.waiters.push(waiter);
+    set.stats.waiting = set.waiters.length;
+  });
+}
+
+function markOpenTransactions(db: Db) {
+  const transaction = db.transaction.bind(db) as (...args: unknown[]) => Promise<unknown>;
+  db.transaction = ((fn: (tx: unknown) => Promise<unknown>, ...rest: unknown[]) => transaction(async (tx: unknown) => {
+    const open = { active: true };
+    try { return await openTransactions.run(open, () => fn(tx)); }
+    finally { open.active = false; }
+  }, ...rest)) as Db["transaction"];
+}
+
+export const DRIVER_DEFAULT_POOL_MAX_CONNECTIONS = 10;
+export const PRIVATE_POOL_MAX_CONNECTIONS = {
+  liveness: 2, legacyControllerLease: 1, controllerInstanceLease: 1, checkpoint: 3, fileStorage: 2,
+} as const;
+export const DATABASE_LISTENER_CONNECTIONS = 2;
+
+export function databaseConnectionBudget(options: DatabaseClientOptions = {}) {
+  const main = options.maxConnections ?? DRIVER_DEFAULT_POOL_MAX_CONNECTIONS;
+  const privatePools = Object.values(PRIVATE_POOL_MAX_CONNECTIONS).reduce((sum, value) => sum + value, 0);
+  const dedicatedLimit = options.dedicatedConnectionMax ?? DEFAULT_DEDICATED_CONNECTION_MAX;
+  const dedicated = 2 * dedicatedLimit + DEDICATED_CONNECTION_IDLE_MAX;
+  return { main, privatePools, listeners: DATABASE_LISTENER_CONNECTIONS, dedicatedLimit, dedicated,
+    total: main + privatePools + DATABASE_LISTENER_CONNECTIONS + dedicated };
+}
+
+const preparedQueryStates = new WeakMap<object, PreparedQueryState>();
+
+export function preparedStatementStats(db: Db): PreparedQueryStats | null {
+  const state = preparedQueryStates.get(db);
+  return state ? preparedQueryStats(state) : null;
+}
+
+export function dedicatedDbConnectionStats(db: Db): DedicatedDbConnectionStats | null {
+  const set = dedicatedConnectionSets.get(db);
+  return set ? { ...set.stats } : null;
+}
+
+function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) => Promise<void> | void): void {
+  const sql = client.$client;
+  const end = sql.end;
+  sql.end = async (options?: { timeout?: number }) => {
+    await Promise.all([onEnd(options?.timeout), end(options)]);
+  };
+}
+
+async function endDedicatedConnections(clients: Db[], timeoutSeconds: number): Promise<void> {
+  await Promise.all(clients.map(client => client.$client.end({ timeout: timeoutSeconds }).catch(() => undefined)));
+}
+
+export async function closeDedicatedDbConnections(db: Db, timeoutSeconds: number): Promise<void> {
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) return;
+  set.closed = true;
+  await endDedicatedConnections(set.idle.splice(0), timeoutSeconds);
+}
 
 export interface OwnedDatabaseListener {
   listen: Db["$client"]["listen"];
@@ -277,12 +423,39 @@ export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
   };
 }
 
-export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
-  const factory = dedicatedDbFactories.get(db);
-  if (!factory) throw new Error("dedicated_connection_requires_create_db");
-  const dedicated = factory();
-  try { return await action(dedicated); }
-  finally { await dedicated.$client.end({ timeout: 1 }); }
+export type DedicatedDbConnectionOptions = { admitWithoutWaiting?: boolean };
+
+export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>,
+  options: DedicatedDbConnectionOptions = {}): Promise<T> {
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) throw new Error("dedicated_connection_requires_create_db");
+  await admitDedicatedConnection(set, options.admitWithoutWaiting === true || holdsLiveDedicatedOrTransaction(set));
+  const hold: DedicatedConnectionHold = { set, active: true };
+  let dedicated: Db | undefined;
+  let completed = false;
+  try {
+    while (!dedicated && set.idle.length) {
+      const candidate = set.idle.pop()!;
+      if (!set.ended.has(candidate)) dedicated = candidate;
+    }
+    dedicated ??= set.create();
+    const connection = dedicated;
+    const result = await heldDedicatedConnections.run([...(heldDedicatedConnections.getStore() ?? []), hold], () => action(connection));
+    completed = true;
+    return result;
+  } finally {
+    hold.active = false;
+    try {
+      if (dedicated && completed && !set.closed && !set.ended.has(dedicated)
+        && (set.idle.length < DEDICATED_CONNECTION_IDLE_MAX || set.idle.length + set.inUse <= set.limit)) {
+        set.idle.push(dedicated);
+      } else if (dedicated && !set.ended.has(dedicated)) {
+        await dedicated.$client.end({ timeout: 1 });
+      }
+    } finally {
+      releaseDedicatedSlot(set);
+    }
+  }
 }
 
 // postgres.js pipelines a query onto a busy connection when none is idle, so
@@ -291,7 +464,6 @@ export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: D
 // private pool, created on first use and shared for the owner's lifetime.
 const livenessDbFactories = new WeakMap<object, () => Db>();
 const livenessDbs = new WeakMap<object, Db>();
-const LIVENESS_POOL_MAX_CONNECTIONS = 2;
 
 /** The private liveness pool for a `createDb` client; other clients (test
  * doubles, transactions) are returned unchanged. */
@@ -305,17 +477,61 @@ export function livenessDb(db: Db): Db {
   return created;
 }
 
+const controllerLeaseDbFactories = new WeakMap<object, () => Db>();
+const controllerLeaseDbs = new WeakMap<object, Db>();
+
+export function controllerLeaseDb(db: Db): Db {
+  const existing = controllerLeaseDbs.get(db);
+  if (existing) return existing;
+  const factory = controllerLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory();
+  controllerLeaseDbs.set(db, created);
+  return created;
+}
+
+const controllerInstanceLeaseDbFactories = new WeakMap<object, (statementTimeoutMs: number | null) => Db>();
+const controllerInstanceLeaseDbs = new WeakMap<object, Db>();
+
+/** One private connection for the server's controller-instance lease, so its
+ * renewal never waits behind request or worker traffic on the main pool.
+ * `statementTimeoutMs` (first call wins) is a connection-level
+ * `statement_timeout`: the server cancels a slow renewal, so it never holds the
+ * single connection that the next renewal needs, at no extra round trip. */
+export function controllerInstanceLeaseDb(db: Db, options: { statementTimeoutMs?: number | null } = {}): Db {
+  const existing = controllerInstanceLeaseDbs.get(db);
+  if (existing) return existing;
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory(options.statementTimeoutMs ?? null);
+  controllerInstanceLeaseDbs.set(db, created);
+  return created;
+}
+
+/** Replaces the lease connection with one that sends no `statement_timeout`
+ * startup parameter, for a connection pooler that refuses it. */
+export function controllerInstanceLeaseDbWithoutStatementTimeout(db: Db): Db {
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const previous = controllerInstanceLeaseDbs.get(db);
+  const created = factory(null);
+  controllerInstanceLeaseDbs.set(db, created);
+  void previous?.$client.end({ timeout: 0 }).catch(() => undefined);
+  return created;
+}
+
 /** Ends the liveness pool if one was created. The ended pool stays cached, so
  * a late renewal fails like a query on the ended primary pool. */
 export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<void> {
-  await livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+  await Promise.all([livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
+    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
+    controllerInstanceLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
 }
 
 // Control checkpoints must not occupy the request or lease-renewal pools
 // during an aligned burst. Share at most three lazy connections per owner.
 const checkpointDbFactories = new WeakMap<object, () => Db>();
 const checkpointDbs = new WeakMap<object, Db>();
-const CHECKPOINT_POOL_MAX_CONNECTIONS = 3;
 const closedCheckpointOwners = new WeakSet<object>();
 
 /** The bounded controller checkpoint pool; transactions and test doubles keep
@@ -363,31 +579,53 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   return createDbClient(url, resolved);
 }
 
-function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object, dedicatedSet?: DedicatedConnectionSet) {
   const sql = postgres(url, postgresJsOptions(resolved));
-  if (resolved.prepare === true) installPreparedQueries(sql);
+  const preparedState = resolved.prepare === true
+    ? (owner && preparedQueryStates.get(owner)) || createPreparedQueryState()
+    : undefined;
+  if (preparedState) installPreparedQueries(sql, preparedState);
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
   // A disconnect can lose the response after a statement has committed.
   // postgres.js calls that error "write CONNECTION_CLOSED" too, so the
   // message cannot establish that replay is safe. Leave retries to callers
   // that know the complete operation is idempotent.
-  const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
+  const db = installDatabaseWorkSignals(drizzleWithLazyTransactionQueries(sql, schema), owner);
   installDatabaseResponseCapture(db, schema);
-  dedicatedDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
-  }, db));
+  markOpenTransactions(db);
+  if (preparedState) preparedQueryStates.set(db, preparedState);
+  const ownerSet = owner ? dedicatedConnectionSets.get(owner) : undefined;
+  if (dedicatedSet) {
+    trackClientEnd(db, () => { dedicatedSet.ended.add(db); });
+    dedicatedConnectionSets.set(db, dedicatedSet);
+  } else if (ownerSet) {
+    dedicatedConnectionSets.set(db, ownerSet);
+  } else {
+    const set: DedicatedConnectionSet = dedicatedConnectionSet(() => createDbClient(url, {
+      ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+    }, db, set), resolved);
+    dedicatedConnectionSets.set(db, set);
+    trackClientEnd(db, timeoutSeconds => closeDedicatedDbConnections(db, timeoutSeconds ?? 1));
+  }
   ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1,
   }, db));
   livenessDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.liveness, applicationName: "paperclip-controller-lease",
+  }, db));
+  controllerLeaseDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.legacyControllerLease, applicationName: "paperclip-legacy-controller-lease",
+  }, db));
+  controllerInstanceLeaseDbFactories.set(db, statementTimeoutMs => createDbClient(url, {
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.controllerInstanceLease, applicationName: "paperclip-controller-instance-lease",
+    ...(statementTimeoutMs !== null ? { statementTimeoutMs } : {}),
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.checkpoint, applicationName: "paperclip-runner-checkpoint",
   }, db));
   fileStorageDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 2, applicationName: "paperclip-file-storage",
+    ...resolved, maxConnections: PRIVATE_POOL_MAX_CONNECTIONS.fileStorage, applicationName: "paperclip-file-storage",
   }, db));
   return db;
 }
@@ -619,6 +857,17 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0454_lumpy_ronan.sql",
   "0455_pending_budget_cancellation_index.sql",
   "0456_chat_review_lookup_indexes.sql",
+  "0457_native_session_run_index.sql",
+  "0458_chat_admission_issue_index.sql",
+  "0459_environment_lease_backup_scope_index.sql",
+  "0460_workspace_activity_context_index.sql",
+  "0461_created_from_legacy_origin_run_index.sql",
+  "0470_heartbeat_runs_queued_created_index.sql",
+  "0472_runner_api_capture_pending_deletes.sql",
+  "0476_wakeup_request_run_index.sql",
+  "0486_heartbeat_runs_company_finished_index.sql",
+  "0487_heartbeat_runs_settled_process_indexes.sql",
+  "0469_zippy_photon.sql",
 
 
   "0384_funny_adam_warlock.sql",
@@ -701,7 +950,29 @@ async function applyPendingMigrationsManually(
             folderMillisByFileName.get(migrationFile) ?? Date.now(),
           );
         };
-        if (MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS.has(migrationFile)) {
+        if (migrationFile === PROJECT_ENVIRONMENT_OVERLAP.dropFile) {
+          const repairFile = PROJECT_ENVIRONMENT_OVERLAP.repairFile;
+          const repairContent = await readMigrationFileContent(repairFile);
+          const repairHash = createHash("sha256").update(repairContent).digest("hex");
+          const dropIndex = orderedPendingMigrations.indexOf(migrationFile);
+          if (hash !== PROJECT_ENVIRONMENT_OVERLAP.dropSha256
+            || repairHash !== PROJECT_ENVIRONMENT_OVERLAP.repairSha256
+            || orderedPendingMigrations[dropIndex + 1] !== repairFile
+            || await migrationHistoryEntryExists(sql, qualifiedTable, columnNames, repairFile, repairHash)) {
+            throw new Error("Project environment migration pair does not match the qualified overlap repair");
+          }
+          await runInTransaction(sql, async () => {
+            await sql.unsafe('LOCK TABLE "public"."projects" IN ACCESS EXCLUSIVE MODE');
+            await sql.unsafe(`CREATE TEMP TABLE paperclip_project_environment_overlap ON COMMIT DROP AS
+              SELECT id, environment_id FROM "public"."projects" WHERE environment_id IS NOT NULL`);
+            await applyMigration();
+            for (const statement of splitMigrationStatements(repairContent)) await sql.unsafe(statement);
+            await sql.unsafe(`UPDATE "public"."projects" AS project SET environment_id = legacy.environment_id
+              FROM pg_temp.paperclip_project_environment_overlap AS legacy WHERE project.id = legacy.id`);
+            await recordMigrationHistoryEntry(sql, qualifiedTable, columnNames, repairFile, repairHash,
+              folderMillisByFileName.get(repairFile) ?? Date.now());
+          });
+        } else if (MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS.has(migrationFile)) {
           await applyMigration();
         } else {
           await runInTransaction(sql, applyMigration);

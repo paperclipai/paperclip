@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  managedRemoteHomeEnvironment,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
@@ -254,6 +255,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const useSshHostAuth = executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === true;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -377,7 +379,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       config.managedAiConnection ? env : { ...process.env, ...env },
       "XAI_API_KEY",
     );
-    if (isGrokSubscriptionMode) {
+    if (isGrokSubscriptionMode && !useSshHostAuth) {
       const pinManagedHome =
         executionTargetIsRemote ||
         Boolean(config.managedAiConnection) ||
@@ -413,10 +415,11 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       // temp dir and ship THAT as the `home` asset, the same curated-snapshot
       // approach the Codex adapter uses. Subscription mode only: an API-key
       // run authenticates from the environment variable and needs no home.
-      if (isGrokSubscriptionMode) {
+      if (isGrokSubscriptionMode && !useSshHostAuth) {
         stagedGrokHomeDir = await stageGrokHomeForSync(hostGrokHome, { runId });
       }
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+        privateRuntime: Boolean(config.managedAiConnection),
         runId,
         target: executionTarget,
         adapterKey: "grok",
@@ -471,7 +474,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       // Set GROK_HOME after the refresh above, so the refresh cannot overwrite
       // it. The fixed fallback path mirrors `prepareAdapterExecutionTargetRuntime`'s
       // own `home` asset layout, in case `assetDirs.home` is absent.
-      if (isGrokSubscriptionMode) {
+      if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && preparedExecutionTargetRuntime.runtimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(preparedExecutionTargetRuntime.runtimeRootDir));
+      if (isGrokSubscriptionMode && !useSshHostAuth) {
         env.GROK_HOME =
           preparedExecutionTargetRuntime.assetDirs.home ??
           path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "grok", "home");

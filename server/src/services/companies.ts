@@ -127,6 +127,8 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     budgetMonthlyCents: companies.budgetMonthlyCents,
     spentMonthlyCents: companies.spentMonthlyCents,
     defaultResponsibleUserId: companies.defaultResponsibleUserId,
+    defaultDecisionOwnerUserId: companies.defaultDecisionOwnerUserId,
+    budgetOwnerUserId: companies.budgetOwnerUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
     interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
@@ -345,7 +347,8 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           if(willReactivate)await notifyMuseContactVerification(tx,{companyId:id});
-          await notifyRunDispatch(tx, { companyId: id });
+          // A resumed company's tasks become eligible again without any task row changing.
+          await notifyRunDispatch(tx, { companyId: id, everyTask: companyPatch.status === "active" });
           await notifyGitHubCompanyChange(tx, id);
           await notifyDeferredExecutionEligibility(tx, { companyId: id });
           if (companyPatch.status === "active") await promoteDeferredWorkIntents(tx, { companyId: id, trigger: "pause_lifted" });

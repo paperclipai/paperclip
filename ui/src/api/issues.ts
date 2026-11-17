@@ -1,5 +1,7 @@
 import type { SetIssueTitle } from "@paperclipai/shared";
-import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
+import type { RunForIssue } from "./activity";
+import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
 import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type { IssueContextUsage } from "@paperclipai/shared";
@@ -206,6 +208,8 @@ export type IssueListFilters = {
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
+  /** Add the current board user's read state without filtering task membership. */
+  includeReadState?: boolean;
   labelId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -250,6 +254,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
   if (filters?.unreadForUserId)
     params.set("unreadForUserId", filters.unreadForUserId);
+  if (filters?.includeReadState) params.set("includeReadState", "true");
   if (filters?.labelId) params.set("labelId", filters.labelId);
   if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
   if (filters?.executionWorkspaceId)
@@ -289,16 +294,30 @@ export const issuesApi = {
     detachInflightGet(path);
     return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
   },
-  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
+  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions & { navigation?: boolean }): Promise<IssueSummary[]> => {
     if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
     const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
     if (ids.length === 0) return [];
     const params = new URLSearchParams({ ids: ids.join(",") });
+    if (options?.navigation) params.set("navigation", "true");
     const path = `/companies/${companyId}/issues/summaries?${params}`;
     // React Query deduplicates within an account; URL-only HTTP coalescing must
     // never join a request sent with the previous account's cookie.
     detachInflightGet(path);
     return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
+  },
+  /**
+   * The task chat's first-frame reads for up to ten tasks in one request. Each
+   * item's fields have the shape of the matching single-task endpoint;
+   * missing and unreadable tasks are omitted.
+   */
+  chatBootstrap: (companyId: string, issueRefs: readonly string[], options?: RequestOptions) => {
+    const refs = [...new Set(issueRefs.map((ref) => ref.trim()).filter(Boolean))];
+    if (refs.length === 0 || refs.length > ISSUE_CHAT_BOOTSTRAP_MAX_IDS) throw new Error("Chat bootstrap needs one to ten task references");
+    const path = `/companies/${companyId}/issues/chat-bootstrap?${new URLSearchParams({ ids: refs.join(",") })}`;
+    // Never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueChatBootstrap<RunForIssue, LiveRunForIssue, ActiveRunForIssue>>(path, { ...options, cache: "no-store" });
   },
   /** Fetch every page for bounded task-detail relations, not just the default first page. */
   listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
@@ -431,8 +450,9 @@ export const issuesApi = {
     api.post<{ runId: string; resultId: string | null; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
-  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
-    api.post<{ requestId: string | null; accepted: boolean; stale: boolean;
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null; retryAction?: "move_forward" }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; alreadyMovedOn?: boolean;
+      refused?: { reason: string; message: string };
       scheduledRetry?: { outcome: "promoted" | "already_promoted" | "gate_suppressed" | "waiting" | "no_scheduled_retry"; message: string };
       presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
   recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>

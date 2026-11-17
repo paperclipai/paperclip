@@ -4,9 +4,10 @@ import test from "node:test";
 import { ghApi, resetGhApiForTests } from "./gh-api.mjs";
 import OversizedSpecReporter from "./oversized-test-files-playwright.mjs";
 import OversizedTestFileReporter, { oversizedAnnotation, oversizedThresholdMs } from "./oversized-test-files.mjs";
-import { attributeSpec, collectMergedPrSamples, completeShardSet, e2eShardJob, parseE2eLog, parseRunnerLog,
+import { assertManifestSource, attributeSpec, collectMergedPrSamples, completeShardSet, e2eShardJob, parseE2eLog, parseRunnerLog,
   runnerInventory, runnerPackageJob, validatePrRun, validatePull } from "./pr-run-durations.mjs";
-import { oversizedFiles, oversizedPlaceholder, parseArgs, parseTimings, renderPrBody, serverLane, updatedDurations } from "./refresh-test-durations.mjs";
+import { generalServerJob, generalServerShardCount, oversizedFiles, oversizedPlaceholder, parseArgs, parseTimings, renderPrBody, serverLane,
+  updatedDurations } from "./refresh-test-durations.mjs";
 import { timingPrefix } from "./test-timing-reporter.mjs";
 
 const esc = "\u001b";
@@ -41,6 +42,36 @@ test("gh api opts into escape sequences, falls back for older gh, and strips col
   resetGhApiForTests();
   const failing = async () => { throw Object.assign(new Error("HTTP 404"), { stderr: "gh: Not Found (HTTP 404)" }); };
   await assert.rejects(ghApi("/missing", { run: failing }), /HTTP 404/);
+  resetGhApiForTests();
+});
+
+test("gh api allows a large server shard log to finish downloading and never prints a partial log", async () => {
+  resetGhApiForTests();
+  const seen = [];
+  const capture = async (command, args, options) => {
+    seen.push(options);
+    return { stdout: "{}" };
+  };
+  await ghApi("/repos/x/actions/runs/1/jobs", { run: capture });
+  await ghApi("/repos/x/actions/jobs/1/logs", { json: false, run: capture });
+  // A 64 MB shard log took 59 s alone (actions run 43133035381); three at once
+  // overran the old 120 s limit and failed the weekly refresh.
+  assert.equal(seen[0].timeout, 120_000);
+  assert.ok(seen[1].timeout >= 600_000, `log timeout ${seen[1].timeout}`);
+  assert.ok(seen[1].maxBuffer >= 256 * 1024 * 1024, `log buffer ${seen[1].maxBuffer}`);
+
+  resetGhApiForTests();
+  const partial = "x".repeat(10_000);
+  const timedOut = async () => {
+    throw Object.assign(new Error(`Command failed: gh api /logs\n${partial}`),
+      { killed: true, signal: "SIGTERM", stdout: partial, stderr: "" });
+  };
+  await assert.rejects(ghApi("/repos/x/actions/jobs/2/logs", { json: false, run: timedOut }), error => {
+    assert.match(error.message, /\/repos\/x\/actions\/jobs\/2\/logs failed \(killed by SIGTERM\)/);
+    assert.ok(!error.message.includes(partial));
+    assert.equal(error.stdout, undefined);
+    return true;
+  });
   resetGhApiForTests();
 });
 
@@ -193,10 +224,59 @@ test("collection skips unmerged, absent, stale-head and incomplete runs, and sam
   const result = await collectMergedPrSamples({ gh, lanes, isMerged: merge => merge !== sha("c"), log: line => warnings.push(line) });
   assert.deepEqual(result.e2e.sources.map(source => source.run), [21]);
   assert.deepEqual(result.runner.sources, [{ pull: 2, run: 21, attempt: 1, sha: sha("2"), url: "https://example.test/21" }]);
+  // The checked-in manifest test uses this same check, so the format the
+  // collector writes stays accepted even while no manifest carries it yet.
+  for (const source of [...result.e2e.sources, ...result.runner.sources]) assertManifestSource(source);
+  assertManifestSource({ run: 21, attempt: 1, sha: sha("2"), url: "https://example.test/21" });
+  for (const bad of [{ run: 21, attempt: 1, sha: sha("2") }, { pull: 0, run: 21, attempt: 1, sha: sha("2"), url: "u" },
+    { run: 21, pull: 2, attempt: 1, sha: sha("2"), url: "u" }]) assert.throws(() => assertManifestSource(bad));
   assert.deepEqual(Object.fromEntries(result.e2e.samples[0]), { "tests/e2e/alpha.spec.ts": { ms: 15_000, complete: true } });
   assert.match(warnings.join("\n"), /e2e: skipped run 50 for PR #5: Parsed 4 of 9/);
   // PR 3 is not in this checkout and PR 4 never merged: neither is queried.
   assert.ok(!requested.some(endpoint => endpoint.includes(sha("3")) || endpoint.includes(sha("4"))));
+});
+
+test("general server weights come from complete full-width PR shard sets that cover the lane", async () => {
+  assert.equal(generalServerShardCount(), 12);
+  assert.deepEqual(generalServerJob("ci / General tests (server (3/12))", 12), { index: 3, count: 12 });
+  for (const name of ["ci / General tests (server (1/3))", "ci / General tests (chat (1/3))", "ci / Serialized tests (1/9)"]) {
+    assert.equal(generalServerJob(name, 12), null);
+  }
+  const api = "/repos/paperclipai/paperclip";
+  const timing = (file, ms) => `2026-11-13T00:00:00.0000000Z ${timingPrefix}${JSON.stringify({ version: 1, file, durationMs: ms })}`;
+  const files = ["server/src/a.test.ts", "server/src/b.test.ts"];
+  const jobs = (run, ids) => ({ jobs: ids.map((id, index) => ({ id, run_id: run, conclusion: "success",
+    name: `ci / General tests (server (${index + 1}/${ids.length}))` })) });
+  const responses = {
+    [`${api}/pulls?state=closed&base=master&sort=updated&direction=desc&per_page=40`]: [pull(1, sha("1"), sha("a")),
+      pull(2, sha("2"), sha("b")), pull(3, sha("3"), sha("c")), pull(4, sha("4"), sha("d"))],
+    ...Object.fromEntries([1, 2, 3, 4].map(n => [
+      `${api}/actions/workflows/pr.yml/runs?head_sha=${sha(String(n))}&event=pull_request&status=success&per_page=20`,
+      { workflow_runs: [prRun(n * 10, sha(String(n)))] }])),
+    [`${api}/actions/runs/10/jobs?filter=latest&per_page=100&page=1`]: jobs(10, [101, 102]),
+    [`${api}/actions/runs/20/jobs?filter=latest&per_page=100&page=1`]: jobs(20, [201]),
+    [`${api}/actions/runs/30/jobs?filter=latest&per_page=100&page=1`]: jobs(30, [301, 302]),
+    [`${api}/actions/runs/40/jobs?filter=latest&per_page=100&page=1`]: jobs(40, [401, 402]),
+    [`${api}/actions/jobs/101/logs`]: timing(files[0], 1000),
+    [`${api}/actions/jobs/102/logs`]: timing(files[1], 3000),
+    [`${api}/actions/jobs/301/logs`]: timing(files[0], 2000),
+    [`${api}/actions/jobs/302/logs`]: "",
+    [`${api}/actions/jobs/401/logs`]: timing(files[0], 4000),
+    [`${api}/actions/jobs/402/logs`]: timing(files[1], 5000),
+  };
+  const requested = [];
+  const gh = async endpoint => {
+    requested.push(endpoint);
+    assert.ok(endpoint in responses, `unexpected request ${endpoint}`);
+    return responses[endpoint];
+  };
+  const lane = { name: "general", classify: name => generalServerJob(name, 2), parse: parseTimings,
+    inventory: new Set(files), maxRuns: 2, minFiles: 2 };
+  const result = await collectMergedPrSamples({ gh, lanes: [lane], isMerged: () => true, log: () => {} });
+  assert.deepEqual(result.general.sources.map(source => source.run), [40, 10]);
+  assert.deepEqual(result.general.samples.map(sample => Object.fromEntries([...sample].map(([file, value]) => [file, value.ms]))),
+    [{ [files[0]]: 4000, [files[1]]: 5000 }, { [files[0]]: 1000, [files[1]]: 3000 }]);
+  assert.ok(!requested.some(endpoint => endpoint.includes("/jobs/201/")), "a narrower selected run is never downloaded");
 });
 
 test("merged-PR manifests use the shared schema and only reorder placement", () => {

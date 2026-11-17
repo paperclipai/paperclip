@@ -155,7 +155,15 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
   let pending: UsageReceiptEnvelope | undefined;
   let chain = Promise.resolve();
   const capture = async (event: PrpEvent) => {
-    if (event.eventType !== "usage.reported" && event.eventType !== "turn.started" && !terminal.has(event.eventType)) return;
+    // A restore is journaled only for turn-reporting providers with an open
+    // turn, so a rebuilt receiver can close that turn as a lower bound.
+    // Receivers that predate it replay the receipt as an ignored event.
+    if (event.eventType === "session.resumed") {
+      // Never fail delivery for a lifecycle event: an unacknowledged event
+      // would replay without end. Another source's restore is not ours.
+      if (!turnAccounting || event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId
+        || (!turnAccounting.hasOpenTurn() && !accepted.has(event.sourceEventId))) return;
+    } else if (event.eventType !== "usage.reported" && event.eventType !== "turn.started" && !terminal.has(event.eventType)) return;
     if (event.runId !== input.runId || event.sourceInstanceId !== input.runnerInstanceId) throw new Error("native_usage_source_mismatch");
     const payload = event.payload as Record<string, unknown>;
     if (event.eventType === "usage.reported" && await captureLateUsageForOwner(db, input, event, payload)) return;
@@ -163,14 +171,19 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       sourceEventId: event.sourceEventId, turnId: event.turnId, eventType: event.eventType,
       ...(typeof payload.providerTurnId === "string" ? { providerTurnId: payload.providerTurnId } : {}),
       ...(event.eventType === "usage.reported" ? { usage: { runDelta: payload.runDelta, runDeltaComplete: payload.runDeltaAvailable === true, runDeltaBasis: payload.runDeltaBasis,
-        ...(payload.reconciliation && typeof payload.reconciliation === "object" ? { reconciliation: payload.reconciliation } : {}) } } : {}),
+        ...(payload.reconciliation && typeof payload.reconciliation === "object" ? { reconciliation: payload.reconciliation } : {}),
+        ...(typeof payload.providerRequestId === "string" && payload.providerRequestId
+          ? { providerRequestId: payload.providerRequestId.slice(0, 250) } : {}) } } : {}),
       ...(event.eventType === "turn.failed" && payload.error && typeof payload.error === "object"
         && (payload.error as Record<string, unknown>).code === NATIVE_TURN_LOST_ON_RESTORE ? { lostOnRestore: true as const } : {}),
     };
     const previous = accepted.get(event.sourceEventId) ?? (pending?.producerEvent?.sourceEventId === event.sourceEventId ? pending : undefined);
-    // A receipt saved before the marker existed replays without it.
+    // A receipt saved before the marker or the generation ID existed replays without them.
     const { lostOnRestore: _marker, ...unmarked } = fact;
-    const comparable = previous?.producerEvent?.lostOnRestore ? fact : unmarked;
+    const marked = previous?.producerEvent?.lostOnRestore ? fact : unmarked;
+    const { providerRequestId: _requestId, ...unnamedUsage } = marked.usage ?? {};
+    const comparable = marked.usage && previous?.producerEvent?.usage && !Object.hasOwn(previous.producerEvent.usage, "providerRequestId")
+      ? { ...marked, usage: unnamedUsage } : marked;
     if (previous && (previous.sequence !== event.sourceSeq || previous.receivedAt !== event.emittedAt
       || receiptFingerprint(previous.producerEvent) !== receiptFingerprint(comparable))) throw new Error("native_usage_source_conflict");
     if (accepted.has(event.sourceEventId)) return;
@@ -184,6 +197,7 @@ function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sour
       const usage = normalizeNativeUsage(snapshot.usage, { inputIncludesCacheReads: input.provider.kind === "codex" });
       envelope.receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing,
         model: input.provider.model ?? "unknown", usage, usageBasis: "per_run", complete: snapshot.complete && usage !== undefined,
+        ...(typeof snapshot.usage?.providerRequestId === "string" ? { providerRequestId: snapshot.usage.providerRequestId } : {}),
         costUsd: usage ? nativeUsageCostUsd(snapshot.usage, input.provider) ?? null : null,
         costUsdExact: typeof snapshot.usage?.accountingCostUsdExact === "string" ? snapshot.usage.accountingCostUsdExact : undefined,
         costStatus: usage === undefined || snapshot.usage?.accountingCostIncomplete === true ? "unpriced"

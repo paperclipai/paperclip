@@ -108,6 +108,7 @@ export function InboxArchiveButton({
     <button
       type="button"
       data-slot="icon-button"
+      data-task-archive=""
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();

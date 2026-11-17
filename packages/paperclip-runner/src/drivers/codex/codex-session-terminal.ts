@@ -153,6 +153,7 @@ export function mapTerminalTurn(
     turn: Record<string, unknown>,
     fallbackTurnId: string,
     reconciling = false,
+    awaitingProviderTurn = false,
   ): void {
     const turnId = text(turn.id, fallbackTurnId || state.activeTurnId || "");
     const reported = turn;
@@ -214,14 +215,17 @@ export function mapTerminalTurn(
     state.cancelPendingRequests("turn_terminal");
     state.activeTurnId = null;
     state.turnStarted = false;
+    state.awaitingProviderTurn = awaitingProviderTurn && eventType === "turn.completed" && state.result === null;
     const providerFailure = status === "failed" ? readProviderFailure(record(turn.error).providerFailure)
       ?? (state.driverKind === "codex_app_server" ? codexProviderFailure(turn.error, "turn", state.diagnosticEnvironment) : null) : null;
-    const payload = boundedPayload({ status, error: turn.error ?? null });
+    const payload = boundedPayload({ status, error: turn.error ?? null,
+      ...(state.awaitingProviderTurn ? { awaitingProviderTurn: true } : {}) });
     if (providerFailure) {
       payload.status = status;
       payload.error = { ...record(payload.error), providerFailure };
     }
     state.emit(eventType, payload, { turnId });
+    const terminalSourceSeq = state.sourceSequence;
     finalize(state, status);
     if (status === "failed" && isNativeRestartInterruption(turn.error) && state.result === null &&
         (!state.dispositionOnlyRecoveryConsumed || state.dispositionOnlyRecoveryTurnId === turnId)) {
@@ -249,6 +253,7 @@ export function mapTerminalTurn(
       state.terminal = false;
       state.dispositionOnlyRecoveryAvailable = true;
     }
+    if (state.awaitingProviderTurn) state.captureBoundary(terminalSourceSeq);
   }
 
 function replayFingerprint(state: CodexSessionState, value: unknown): string {

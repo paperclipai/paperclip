@@ -13,6 +13,7 @@ import type {
   PaperclipPluginManifestV1,
   PluginStateScopeKind,
   PluginEventType,
+  PluginEntityQuery,
   PluginToolDeclaration,
   PluginLauncherDeclaration,
   Company,
@@ -64,6 +65,7 @@ import type { PluginPerformActionContext } from "./protocol.js";
 
 export type {
   PaperclipPluginManifestV1,
+  PluginEntityQuery,
   PluginJobDeclaration,
   PluginWebhookDeclaration,
   PluginToolDeclaration,
@@ -342,24 +344,6 @@ export interface PluginEntityRecord {
   createdAt: string;
   /** ISO 8601 last-updated timestamp. */
   updatedAt: string;
-}
-
-/**
- * Query parameters for `ctx.entities.list()`.
- */
-export interface PluginEntityQuery {
-  /** Filter by entity type. */
-  entityType?: string;
-  /** Filter by scope kind. */
-  scopeKind?: PluginStateScopeKind;
-  /** Filter by scope ID. */
-  scopeId?: string;
-  /** Filter by external ID. */
-  externalId?: string;
-  /** Maximum number of results to return. */
-  limit?: number;
-  /** Number of results to skip (for pagination). */
-  offset?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -876,6 +860,13 @@ export interface PluginEntitiesClient {
  *
  * @see PLUGIN_SPEC.md §7 — Project Workspaces
  */
+export interface PluginProjectSnapshot {
+  projectId: string;
+  workspaces: PluginWorkspace[];
+  entity: PluginEntityRecord | null;
+  instanceSecrets: Record<string, string>;
+}
+
 export interface PluginProjectsClient {
   /** Transient GitHub credential for a stored repository in the current host-issued
    * lifecycle/workspace invocation. Requires projects.git-credentials. Never persist or log. */
@@ -883,6 +874,10 @@ export interface PluginProjectsClient {
   /** Trusted worker access to this plugin’s native project credentials.
    * Requires projects.instance-secrets; never expose via UI/data handlers. */
   getInstanceSecrets(projectId: string, companyId: string): Promise<Record<string, string>>;
+  /** Read authorized project workspaces, instance secrets and one plugin-owned entity per project.
+   * Missing or changing projects reject the batch. Null means the host does not support this method.
+   * Keep the result in the trusted worker. */
+  readSnapshots(projectIds: string[], companyId: string, entityType: string): Promise<PluginProjectSnapshot[] | null>;
 
   /**
    * List projects visible to the plugin.
