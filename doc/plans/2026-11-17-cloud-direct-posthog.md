@@ -40,7 +40,11 @@ environment switch is set, and the switches must be set in a safe order:
 Production gate (Phase 0 B): the current Terms §8 and Privacy §2 promise
 anonymized telemetry. Even the server-side token (real user IDs) must wait
 for the updated policy and terms to be live. Phase 3 also adds PostHog
-group/person deletion to workspace deletion in `paperclip-cloud`.
+workspace-scoped PostHog cleanup to workspace deletion in `paperclip-cloud`:
+delete that workspace's group and the events tagged with its stack ID. It
+never deletes a person, because one user can belong to several workspaces.
+Person deletion happens only on account deletion, or after a check that no
+other workspace still uses that person.
 
 ## Goal
 
