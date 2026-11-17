@@ -615,6 +615,55 @@ it("retries a replacement whose staging failed before any process launched", asy
   }
 }, 15_000);
 
+// Relaunching on a full sandbox disk retried the same upload for the whole grace.
+it("fails at once when a replacement cannot be staged because the sandbox disk is full", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-replacement-disk-full-"));
+  const diskFull = new Error("sandbox_disk_full: the sandbox disk is full, so the runner cannot be started");
+  const children: ReturnType<typeof spawn>[] = [];
+  const exits: Promise<void>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    if (children.length > 0) return {
+      child: { pid: undefined, exitCode: null, kill: () => false },
+      completion: Promise.reject(diskFull),
+      isExitConfirmed: (): boolean => true,
+    };
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    children.push(child);
+    exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 10_000, runnerProcessLauncher: launch,
+  });
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    const failed = (async () => {
+      for await (const _event of bundle.transport.notifications()) {}
+    })().catch(error => error as Error);
+    children[0]!.kill("SIGKILL");
+    const result = await Promise.race([failed, new Promise(resolve => setTimeout(() => resolve("still retrying"), 4_000))]);
+    expect(result).toMatchObject({ message: expect.stringMatching(/^sandbox_disk_full: /), cause: diskFull });
+    expect(launch).toHaveBeenCalledTimes(2);
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await bundle.transport.detachControllerForRestart!();
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all(exits);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 it("fails instead of relaunching a runner that keeps exiting right after it is restored", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-restore-crash-loop-"));
   const crash = "paperclip-runnerd: redacted display activity exceeds its schema bounds";

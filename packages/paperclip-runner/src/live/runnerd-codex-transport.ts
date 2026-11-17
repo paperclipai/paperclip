@@ -9399,6 +9399,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           );
           return;
         }
+        // The launcher already released everything Paperclip holds on that
+        // disk. The same launch fails the same way for the rest of the grace.
+        if (observationDetail.startsWith("sandbox_disk_full:")) {
+          this.#failTransport(new Error(observationDetail.slice(0, 1_000), { cause: observationError }));
+          return;
+        }
         attempt += 1;
       }
       if (!this.#closed) {
