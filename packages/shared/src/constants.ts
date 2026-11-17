@@ -633,6 +633,7 @@ export const ISSUE_EXECUTION_MONITOR_CLEAR_REASONS = [
   "dispatch_skipped",
   "timeout_exceeded",
   "max_attempts_exhausted",
+  "dispatch_deferred_exhausted",
 ] as const;
 export type IssueExecutionMonitorClearReason = (typeof ISSUE_EXECUTION_MONITOR_CLEAR_REASONS)[number];
 
