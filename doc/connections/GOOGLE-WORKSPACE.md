@@ -16,7 +16,7 @@ Turn the setting on in **Settings → Experimental** to test the built-in connec
 
 The combined connection has one credential grant, capability catalog, policy
 profile, audit trail and reconnect lifecycle. It requests only the selected
-groups' scopes (nine scopes for the default selection), not the legacy full
+groups' scopes (ten scopes for the default selection), not the legacy full
 union. Google's consent screen also lets users decline
 permissions; discovery skips services without grants and excludes unsupported
 actions. The gateway checks actual grant scopes again before each call, including
@@ -299,9 +299,15 @@ Docs, Sheets, and Slides request only their service's read-only scope in the
 read profile and its read/write scope in the write profile. They do not also
 request `drive.readonly` or `drive.file`: those are authorization alternatives,
 not additional requirements. Drive and Workspace Search retain their separate
-Drive permissions. Calendar write requests `calendar.calendarlist.readonly`
-and `calendar.events`; the latter also authorizes `suggest_time`. Calendar read
-retains `calendar.events.freebusy` alongside list/event read-only access.
+Drive permissions. The per-service Calendar write profile requests
+`calendar.calendarlist.readonly` and `calendar.events`; Google's MCP
+`suggest_time` accepts `calendar.events`. Calendar read retains
+`calendar.events.freebusy` alongside list/event read-only access. The combined
+connection's read & write Calendar selection also requests
+`calendar.events.freebusy` (2026-11-17), because Google's REST
+[`freeBusy.query`](https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query)
+does not accept `calendar.events`. The per-service profile keeps its exact
+scope set for the Cloud broker.
 
 References: Google's [Docs read](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/read_doc)
 and [update](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/update_doc),

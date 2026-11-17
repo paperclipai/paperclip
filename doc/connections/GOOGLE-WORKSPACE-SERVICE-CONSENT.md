@@ -18,7 +18,10 @@ consent preview → Production picker**. Storybook callbacks do not grant access
 
 The `workspaceServices` input accepts only nonempty combinations of `gmail`,
 `drive`, and `calendar`, each `read` or `write`. The server derives exact scopes
-from the shared closed registry. Default write access requests nine scopes.
+from the shared closed registry. Default write access requests ten scopes.
+Read & write Calendar adds `calendar.events.freebusy` to the per-service
+`calendar.write` profile's two scopes, so free/busy lookups work over REST.
+Grants made before that change still count as read & write Calendar.
 Drive file creation is limited to app-opened/app-created files; Docs, Sheets,
 and Slides have their respective editor scopes. Gmail uses `gmail.compose`
 for draft creation; Google permits sending under that scope, but Paperclip's
