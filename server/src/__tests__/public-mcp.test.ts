@@ -628,7 +628,10 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
 
   it("creates tasks for a person or no one without starting an agent run, and keeps agent assignment", async () => {
     const f = await fixture();
-    const wake = vi.spyOn(assignmentWakeups, "queueIssueAssignmentWakeup").mockResolvedValue(null);
+    // Keep the real wakeup guard; replace only the heartbeat it would call.
+    const realQueue = assignmentWakeups.queueIssueAssignmentWakeup;
+    const heartbeatWakeup = vi.fn().mockResolvedValue(null);
+    const wake = vi.spyOn(assignmentWakeups, "queueIssueAssignmentWakeup").mockImplementation((input) => realQueue({ ...input, heartbeat: { wakeup: heartbeatWakeup } }));
     try {
       const [agent] = await db.insert(agents).values({ companyId: f.company.id, name: "Researcher", role: "researcher", adapterType: "process", status: "idle" }).returning();
       const colleagueId = randomUUID();
@@ -659,7 +662,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect(await execute(f.tokens.access_token, "paperclip_create_task", unassigned)).toEqual(unassignedResult);
 
       // Neither shape may wake an agent or create a run.
-      expect(wake.mock.calls.every(([input]) => input.issue.assigneeAgentId === null)).toBe(true);
+      expect(heartbeatWakeup).not.toHaveBeenCalled();
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(0);
 
       const toAgent = { ...base, requestId: randomUUID(), title: "Write the report", assigneeAgentId: agent!.id };
@@ -667,7 +670,8 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect(agentResult).toMatchObject({ task: { status: "todo", assigneeAgentId: agent!.id, assigneeUserId: null } });
       expect(agentResult.scheduling).toContain("Submitted to normal Paperclip scheduling");
       expect(await execute(f.tokens.access_token, "paperclip_create_task", toAgent)).toEqual(agentResult);
-      expect(wake.mock.calls.filter(([input]) => input.issue.assigneeAgentId === agent!.id)).toHaveLength(1);
+      expect(heartbeatWakeup).toHaveBeenCalledTimes(1);
+      expect(heartbeatWakeup.mock.calls[0]?.[0]).toBe(agent!.id);
 
       // Both assignees at once is rejected before any receipt or task is written.
       const both = { ...base, requestId: randomUUID(), title: "Ambiguous owner", assigneeAgentId: agent!.id, assigneeUserId: colleagueId };
