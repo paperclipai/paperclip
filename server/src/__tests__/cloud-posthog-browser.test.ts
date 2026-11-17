@@ -312,14 +312,20 @@ describe("posthogVisitorIp", () => {
   });
 
   it.each(["100.64.0.11", "10.1.2.3", "172.20.0.1", "192.168.1.5", "127.0.0.1", "::1", "::ffff:100.64.0.5", "fd00::1"])(
-    "uses the first X-Forwarded-For entry behind private hop %s",
+    "uses the edge-appended X-Forwarded-For entry behind private hop %s",
     (peer) => {
       expect(posthogVisitorIp(peer, { "x-forwarded-for": "203.0.113.7, 100.64.0.2" })).toBe("203.0.113.7");
     },
   );
 
+  it("ignores a client-supplied leftmost entry and uses the address the edge appended", () => {
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 198.51.100.9" })).toBe("198.51.100.9");
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 198.51.100.9, 100.64.0.3" })).toBe("198.51.100.9");
+  });
+
   it("falls back to the peer when X-Forwarded-For is missing or not an IP", () => {
     expect(posthogVisitorIp("100.64.0.11", {})).toBe("100.64.0.11");
     expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "not-an-ip" })).toBe("100.64.0.11");
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "10.0.0.1, 100.64.0.3" })).toBe("100.64.0.11");
   });
 });
