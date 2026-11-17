@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import { GoogleToolError } from "../errors.js";
 import { fakeGoogle, json } from "../fixtures/fake-google.js";
 import { createGoogleHttp } from "../google-http.js";
-import { serializedResultBytes } from "../tool.js";
+import { MAX_RESULT_BYTES, serializedResultBytes } from "../tool.js";
 import { downloadPlan } from "./content.js";
 import { downloadFileContent } from "./download-file-content.js";
-import { MAX_CONTENT_BYTES, MAX_RESULT_BYTES, READ_LESS, type RestFile } from "./file.js";
+import { MAX_CONTENT_BYTES, READ_LESS, type RestFile } from "./file.js";
 import { DOC, DRAWING, FOLDER, FORM, HUGE_PDF, PDF, SHEET, SLIDES, TEXT_FILE } from "./fixtures/drive-rest.js";
 
 const plan = (file: RestFile, exportMimeType?: string, revision?: string) => downloadPlan(file.id!, file, exportMimeType, revision, READ_LESS.download);

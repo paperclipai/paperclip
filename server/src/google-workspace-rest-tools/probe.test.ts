@@ -69,4 +69,14 @@ describe("probeGoogleWorkspaceRestService", () => {
     }
     expect(googleWorkspaceRestProbeFor("drive", [scope("documents")])).toBeNull();
   });
+
+  it.each(["docs", "slides"] as const)("lists %s without a network probe, since every read needs a file ID", async (service) => {
+    const fetch = vi.fn();
+    for (const scopes of [["documents.readonly", "documents"], ["presentations.readonly", "presentations"]]) {
+      expect(googleWorkspaceRestProbeFor(service, scopes.map(scope))).toBeNull();
+      await expect(probeGoogleWorkspaceRestService({ service, accessToken: "t", grantedScopes: scopes.map(scope), fetch }))
+        .resolves.toEqual({ ok: true, probed: false });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });

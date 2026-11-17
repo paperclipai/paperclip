@@ -44,6 +44,8 @@ export const GOOGLE_WORKSPACE_REST_PROBES: Readonly<Record<GoogleWorkspaceRestSe
       request: () => driveProbeRequest(),
     },
   ],
+  docs: [],
+  slides: [],
   sheets: [],
 };
 

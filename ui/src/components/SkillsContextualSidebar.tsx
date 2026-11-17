@@ -36,21 +36,21 @@ export function SkillsContextualSidebar() {
         className={contextualSidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-          <SidebarNavItem
+          <SidebarNavItem analyticsChrome
             to={SKILLS_NAVIGATION_HREFS.installed}
             label="Installed"
             icon={Library}
             active={activeView === "installed"}
             end
           />
-          <SidebarNavItem
+          <SidebarNavItem analyticsChrome
             to={SKILLS_NAVIGATION_HREFS.discover}
             label="Discover"
             icon={Compass}
             active={activeView === "discover"}
             end
           />
-          <SidebarNavItem to={SKILLS_NAVIGATION_HREFS.sources} label="Sources" icon={GithubIcon} active={activeView === "sources"} />
+          <SidebarNavItem analyticsChrome to={SKILLS_NAVIGATION_HREFS.sources} label="Sources" icon={GithubIcon} active={activeView === "sources"} />
         </div>
 
         <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
@@ -67,7 +67,7 @@ export function SkillsContextualSidebar() {
             Skills you create, edit, and test.
           </p>
           <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to={SKILLS_NAVIGATION_HREFS.authored}
               label="My Skills"
               icon={PencilRuler}

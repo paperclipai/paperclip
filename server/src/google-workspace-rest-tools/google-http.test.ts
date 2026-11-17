@@ -31,6 +31,15 @@ const HOST_PATHS: ReadonlyArray<readonly ["allows" | "rejects", string, string]>
   ["rejects", "/v4/other", "sheets.googleapis.com"],
   ["rejects", "/v4/spreadsheets/../other", "sheets.googleapis.com"],
   ["rejects", "/drive/v3/files/f1", "sheets.googleapis.com"],
+  ["allows", "/v1/documents/doc-1", "docs.googleapis.com"],
+  ["allows", "/v1/documents/doc-1:batchUpdate", "docs.googleapis.com"],
+  ["rejects", "/v1/documents", "docs.googleapis.com"],
+  ["rejects", "/v1/documents/../../drive/v3/files", "docs.googleapis.com"],
+  ["rejects", "/v1/documents/doc-1", "www.googleapis.com"],
+  ["allows", "/v1/presentations/deck-1", "slides.googleapis.com"],
+  ["allows", "/v1/presentations/deck-1:batchUpdate", "slides.googleapis.com"],
+  ["rejects", "/v1/presentations", "slides.googleapis.com"],
+  ["rejects", "/v1/documents/doc-1", "slides.googleapis.com"],
 ];
 
 const GET: GoogleRequest = { method: "GET", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/labels" };
@@ -111,6 +120,16 @@ describe("createGoogleHttp", () => {
   ])("maps HTTP %i to %s", async (status, kind) => {
     const error = await failure(client(() => json({ error: { code: status, message: "x" } }, status)).http.send(POST));
     expect(error).toMatchObject({ kind, httpStatus: status });
+  });
+
+  it("keeps Google's structured status and reasons on 400, 409 and 403 errors", async () => {
+    const rejected = await failure(client(() => json({ error: { code: 400, status: "FAILED_PRECONDITION", message: "x", details: [{ reason: "STALE" }] } }, 400)).http.send(POST));
+    expect(rejected).toMatchObject({ kind: "invalid_argument", google: { status: "FAILED_PRECONDITION", reasons: ["STALE"] } });
+    const aborted = await failure(client(() => json({ error: { code: 409, status: "ABORTED" } }, 409)).http.send(POST));
+    expect(aborted).toMatchObject({ google: { status: "ABORTED", reasons: [] } });
+    const denied = await failure(client(() => json({ error: { code: 403, status: "PERMISSION_DENIED", message: "no" } }, 403)).http.send(GET));
+    expect(denied).toMatchObject({ kind: "permission_denied", google: { status: "PERMISSION_DENIED" } });
+    expect(await failure(client(() => json({}, 404)).http.send(GET))).toMatchObject({ google: {} });
   });
 
   it("retries a read once after 503, then succeeds", async () => {
@@ -398,5 +417,16 @@ describe("uploads and Drive error reasons", () => {
     expect(denied).toMatchObject({ kind: "permission_denied" });
     expect((denied as Error).message).not.toContain("123456");
     expect((denied as Error).message).toMatch(/drive\.file/);
+  });
+
+  it.each([
+    ["docs.googleapis.com", "/v1/documents/doc-1", "/v1/documents/doc-1:batchUpdate",
+      ["/v1/documents", "/v1/documents:create", "/v2/documents/x", "/v1/documentsx/y", "/v1/documents/../../drive/v3/files", "/v1/presentations/x", "/upload/v1/documents/x"]],
+    ["slides.googleapis.com", "/v1/presentations/deck-1", "/v1/presentations/deck-1:batchUpdate",
+      ["/v1/presentations", "/v1/presentations:create", "/v1/presentations/../x", "/v1/presentationsx/y", "/v1/documents/x", "/v2/presentations/x"]],
+  ] as const)("allows %s only under its documents path, after path normalization", (host, read, write, rejected) => {
+    expect(googleRequestUrl({ ...GET, host, path: read })).toBe(`https://${host}${read}`);
+    expect(googleRequestUrl({ ...GET, method: "POST", host, path: write })).toBe(`https://${host}${write}`);
+    for (const path of rejected) expect(() => googleRequestUrl({ ...GET, host, path }), path).toThrow(/not allowed/);
   });
 });

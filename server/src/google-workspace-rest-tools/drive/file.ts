@@ -2,13 +2,12 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
-import { boundedStructuredResult, compact } from "../tool.js";
+import { boundedStructuredResult, compact, MAX_RESULT_BYTES } from "../tool.js";
 
 export const DRIVE_HOST = "www.googleapis.com" as const;
 export const DRIVE_BASE = "/drive/v3";
 export const DRIVE_UPLOAD_BASE = "/upload/drive/v3";
 
-export const MAX_RESULT_BYTES = 250_000;
 export const MAX_CONTENT_BYTES = MAX_RESULT_BYTES;
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 export const DEFAULT_PAGE_SIZE = 10;

@@ -2,13 +2,13 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
-import { boundedStructuredResult } from "../tool.js";
+import { boundedStructuredResult, MAX_RESULT_BYTES } from "../tool.js";
 import { checkSheetRange } from "./range.js";
 
 export const SHEETS_HOST = "sheets.googleapis.com" as const;
 export const SHEETS_BASE = "/v4/spreadsheets";
 export const MAX_CELLS_PER_CALL = 50_000;
-export const MAX_RESULT_BYTES = 250_000;
+export { MAX_RESULT_BYTES };
 export const MAX_REQUEST_CHARS = 1_000_000;
 
 const formatCount = (value: number) => value.toLocaleString("en-US");

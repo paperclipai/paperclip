@@ -62,7 +62,7 @@ export async function listIssueNavigationState(
   // MATERIALIZED prevents PostgreSQL from repeating privacy and viewer facts
   // across the task-state and child-count branches of the final union.
   const rows = await db.execute<{
-    kind: string; id: string; unread: boolean; total: number; unread_count: number;
+    kind: string; id: string; unread: boolean; participant: boolean; total: number; unread_count: number;
   }>(sql`
     with navigation_candidates as materialized (
       select ${issues.id}, ${issues.parentId}, ${issues.conversationAgentId}
@@ -71,6 +71,8 @@ export async function listIssueNavigationState(
         and (${issues.id} in (${requested}) or
           (${issues.parentId} in (${requested}) and ${issues.conversationAgentId} is null))
         and ${readCondition}
+    ), navigation_participants as materialized (
+      select c.id from navigation_candidates c where c.id in (select id from ${participation})
     ), possible_unread as materialized (
       -- A conservative set: any unread task must have a newer external
       -- comment, pending request, or withdrawal. The shared rule below still
@@ -95,8 +97,7 @@ export async function listIssueNavigationState(
           and ${activityLog.details}->'receipt'->>'outcome' = 'withdrawn'
           and ${activityLog.createdAt} > coalesce(${issueReadStates.lastReadAt}, to_timestamp(0))
     ), unread_participants as materialized (
-      select possible.id from possible_unread possible
-      where possible.id in (select id from ${participation})
+      select possible.id from possible_unread possible join navigation_participants p on p.id = possible.id
     ), navigation_comments as (
       select ${issueComments.issueId} as id,
         max(${issueComments.createdAt}) filter (where ${issueComments.authorUserId} = ${userId}
@@ -121,17 +122,19 @@ export async function listIssueNavigationState(
       select issues.id, issues.parent_id, issues.conversation_agent_id, coalesce(${unread}, false) as unread
       from navigation_facts as issues
     )
-    select 'task' as kind, c.id, coalesce(s.unread, false) as unread, 0 as total, 0 as unread_count
-      from navigation_candidates c left join navigation_state s on s.id = c.id where c.id in (${requested})
+    select 'task' as kind, c.id, coalesce(s.unread, false) as unread, p.id is not null as participant, 0 as total, 0 as unread_count
+      from navigation_candidates c left join navigation_state s on s.id = c.id
+      left join navigation_participants p on p.id = c.id where c.id in (${requested})
     union all
-    select 'children', c.parent_id, false, count(*)::int, count(*) filter (where s.unread)::int
+    select 'children', c.parent_id, false, false, count(*)::int, count(*) filter (where s.unread)::int
       from navigation_candidates c left join navigation_state s on s.id = c.id
       where c.parent_id in (${requested}) and c.conversation_agent_id is null group by c.parent_id
   `);
-  const tasks = new Map(rows.filter(row => row.kind === "task").map(row => [row.id, row.unread]));
+  const tasks = new Map(rows.filter(row => row.kind === "task").map(row => [row.id, row]));
   const children = new Map(rows.filter(row => row.kind === "children").map(row => [row.id, row]));
   return new Map(ids.map(id => [id, {
-    isUnreadForMe: tasks.get(id) ?? false,
+    isParticipantForMe: tasks.get(id)?.participant ?? false,
+    isUnreadForMe: tasks.get(id)?.unread ?? false,
     subtaskCount: children.get(id)?.total ?? 0,
     unreadSubtaskCount: children.get(id)?.unread_count ?? 0,
   }]));
