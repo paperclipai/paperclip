@@ -1540,6 +1540,28 @@ POST /api/tool-connections/:connectionId/test-calls
 DELETE /api/tool-connections/:connectionId
 ```
 
+Stored tool-call content endpoints:
+
+```text
+GET /api/tool-connections/:connectionId/stored-content
+POST /api/tool-connections/:connectionId/stored-content/deletion
+GET /api/tool-connections/:connectionId/stored-content/deletion
+DELETE /api/tool-connections/:connectionId?deleteStoredContent=true
+```
+
+Deletion is connector-agnostic. It clears the content of the connection's
+tool-call summaries (including `tool_access_audit_events.details.argumentsSummary`),
+approval previews, approval cards, delivered action results and app views, and
+deletes the whole run transcript (every copy of the run log, run-event content,
+output excerpts and the result text) of every settled run that called the
+connection or received an approved action's result. Row ids, timestamps, status,
+sizes and hashes stay. A step that cannot confirm its deletion fails, and the
+request stays pending and retries; it completes only when every step succeeded.
+A `tool_connection_content_deletions` row is the durable request; the
+`tool-connection-content-deletion` delivery queue resumes it after a restart.
+Runs that are still working are skipped and counted. The user-facing help is
+`docs/guides/board-operator/deleting-connection-data.md`.
+
 Responses may contain secret IDs, version selectors, header names, prefixes,
 scope names, expiry timestamps, and redacted provider metadata. They must not
 contain secret values. Logs and activity should identify the operation and

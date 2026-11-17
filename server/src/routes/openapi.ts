@@ -12574,6 +12574,35 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+  query: z.object({ deleteStoredContent: z.enum(["true", "false"]).optional() }),
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content",
+  tags: ["tool-access"],
+  summary: "Count the content Paperclip stored from a connection's tool calls",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Delete the content Paperclip stored from a connection's tool calls",
+  responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Read the status of the latest stored-content deletion for a connection",
 });
 
 const MACHINE_SIGN_IN_ERRORS = {
