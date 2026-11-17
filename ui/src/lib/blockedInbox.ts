@@ -1,3 +1,4 @@
+import { displayText } from "../i18n/display-text";
 import type {
   Issue,
   IssueBlockedInboxAttention,
@@ -249,27 +250,27 @@ export function blockedBadgeTone(rows: readonly BlockedInboxIssueRow[]): Blocked
 }
 
 export function formatStoppedAge(stoppedSinceAt: string | null, now: number = Date.now()): string {
-  if (!stoppedSinceAt) return "stopped";
+  if (!stoppedSinceAt) return displayText("stopped");
   const then = new Date(stoppedSinceAt).getTime();
-  if (!Number.isFinite(then)) return "stopped";
+  if (!Number.isFinite(then)) return displayText("stopped");
   const seconds = Math.max(0, Math.round((now - then) / 1000));
-  if (seconds < 60) return "stopped just now";
+  if (seconds < 60) return displayText("stopped just now");
   if (seconds < 3600) {
     const m = Math.floor(seconds / 60);
-    return `stopped ${m}m`;
+    return displayText("stopped {{v0}}m", { v0: m });
   }
   if (seconds < 86_400) {
     const h = Math.floor(seconds / 3600);
-    return `stopped ${h}h`;
+    return displayText("stopped {{v0}}h", { v0: h });
   }
   if (seconds < 86_400 * 7) {
     const d = Math.floor(seconds / 86_400);
-    return `stopped ${d}d`;
+    return displayText("stopped {{v0}}d", { v0: d });
   }
   if (seconds < 86_400 * 30) {
     const w = Math.floor(seconds / (86_400 * 7));
-    return `stopped ${w}w`;
+    return displayText("stopped {{v0}}w", { v0: w });
   }
   const mo = Math.floor(seconds / (86_400 * 30));
-  return `stopped ${mo}mo`;
+  return displayText("stopped {{v0}}mo", { v0: mo });
 }

@@ -1,3 +1,4 @@
+import { displayText } from "../i18n/display-text";
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
@@ -88,13 +89,13 @@ export function relativeTime(date: Date | string): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
+  if (diffSec < 60) return displayText("just now");
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return displayText("{{v0}}m ago", { v0: diffMin });
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return displayText("{{v0}}h ago", { v0: diffHr });
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
+  if (diffDay < 30) return displayText("{{v0}}d ago", { v0: diffDay });
   return formatDate(date);
 }
 

@@ -4,6 +4,7 @@ import { cn } from "../lib/utils";
 import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { displayText } from "@/i18n/display-text";
 import { resolveTaskStatusPresentation, taskStatusLabel, type TaskStatusPresentationInput } from "../lib/task-status-presentation";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
@@ -20,7 +21,7 @@ interface StatusIconProps extends TaskStatusPresentationInput {
 
 /** Shared accessible/tooltip copy, including waiting and covered-blocker states. */
 export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null, presentationStatus?: string | null): string {
-  return resolveTaskStatusPresentation({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention }).ariaLabel;
+  return displayText(resolveTaskStatusPresentation({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention }).ariaLabel);
 }
 
 /**
@@ -102,7 +103,7 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
           >
             {/* The current row is the task's state: draw it exactly like the trigger. */}
             <StatusIcon {...(s === status ? presentation : { status: s })} size="lg" />
-            {taskStatusLabel(s)}
+            {displayText(taskStatusLabel(s))}
           </Button>
         ))}
       </PopoverContent>

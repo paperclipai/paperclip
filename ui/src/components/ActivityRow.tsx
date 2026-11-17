@@ -6,6 +6,7 @@ import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
+import { displayText } from "@/i18n/display-text";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { useState, type ReactNode } from "react";
@@ -77,7 +78,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
         <div className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
           <div className="flex min-w-0 items-baseline gap-2 @xl:contents">
             <p className="flex h-6 min-w-0 flex-1 items-center gap-1.5">
-              <span className="max-w-1/2 shrink-0 truncate" title={`${actorName} ${verb}`}>
+              <span className="max-w-1/2 shrink-0 truncate" title={`${actorName} ${displayText(verb)}`}>
                 <span>{actorName}</span>{" "}
                 <span className="text-muted-foreground">{verb}</span>
               </span>
