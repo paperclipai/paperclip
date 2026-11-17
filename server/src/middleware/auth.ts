@@ -818,7 +818,13 @@ async function resolveCloudTenantActorOnce(
   };
 }
 
-function finishCloudTenantSyncInBackground(sync: Promise<void>, context: { userId: string; stackId: string }) {
+// Requests of one user share one sync promise. Track and report each shared
+// sync once, so a long-blocked sync does not gain a handler per request.
+const backgroundCloudTenantSyncs = new WeakSet<Promise<void>>();
+
+export function finishCloudTenantSyncInBackground(sync: Promise<void>, context: { userId: string; stackId: string }) {
+  if (backgroundCloudTenantSyncs.has(sync)) return;
+  backgroundCloudTenantSyncs.add(sync);
   // Idle and drain checks still count the writes until they settle.
   const finish = beginIdleTrackedWork();
   sync

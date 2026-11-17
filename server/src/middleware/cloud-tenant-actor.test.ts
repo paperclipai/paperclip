@@ -11,7 +11,8 @@ import {
   instanceUserRoles,
   principalPermissionGrants,
 } from "@paperclipai/db";
-import { actorMiddleware, cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
+import { actorMiddleware, cloudActorHeaderSourceFromHeaders, finishCloudTenantSyncInBackground, resolveCloudTenantActor } from "./auth.js";
+import { logger } from "./logger.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./idle-admission.js";
 import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
@@ -589,5 +590,23 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       expect(actor!.isInstanceAdmin).toBe(false);
       expect(deletedTables).toContain(instanceUserRoles);
     });
+  });
+
+  it("tracks and reports one shared background sync once, however many requests wait on it", async () => {
+    let fail!: (error: Error) => void;
+    const sync = new Promise<void>((_resolve, reject) => { fail = reject; });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    try {
+      const before = idleWorkSnapshot().active;
+      for (let index = 0; index < 50; index += 1) {
+        finishCloudTenantSyncInBackground(sync, { userId: "user-1", stackId: "stack-1" });
+      }
+      expect(idleWorkSnapshot().active).toBe(before + 1);
+      fail(new Error("lock wait ended"));
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(before));
+      expect(warn.mock.calls.filter(call => call[1] === "Cloud tenant sync failed; the next request retries it")).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
