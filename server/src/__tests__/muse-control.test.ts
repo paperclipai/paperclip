@@ -108,6 +108,75 @@ describe("personal Muse control plane",()=>{
     const [binding]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
     return {...f,binding,ticket,oauth,client,verifier,input,authorizationUrl,tokenInput,tokens,subject};
   }
+  it("invalidates an already-paused Muse receiver when the separate company archive commits",async()=>{
+    // The production projection covers the complete instance, including unfinished
+    // bindings deliberately retained by earlier cases. Give this case its own
+    // database when configured. The common-URL-only path runs first, before this
+    // suite creates its intentionally incomplete bindings; its complete global
+    // projection assertions remain unchanged. This fallback uses the normal
+    // fresh, dedicated suite database and does not require CREATE DATABASE.
+    const isolatedUrl=resolveExternalTestDatabaseUrl("PAPERCLIP_MUSE_ARCHIVE_RECEIVER_TEST_DATABASE_URL");
+    const useSharedDatabase=Boolean(externalDatabaseUrl&&!isolatedUrl&&!process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim());
+    if(isolatedUrl&&externalDatabaseUrl){
+      const selected=new URL(isolatedUrl),shared=new URL(externalDatabaseUrl);
+      if(selected.host===shared.host&&selected.pathname===shared.pathname)throw new Error("Muse archive control database must differ from the shared suite database");
+    }
+    const dbForArchive=()=>db;
+    let isolated:Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>|undefined;
+    let owner:ReturnType<typeof createDb>|undefined,reset:(()=>Promise<void>)|undefined;
+    let unsubscribe:(()=>void)|undefined,primary:unknown;
+    try{
+      if(isolatedUrl)await applyPendingMigrations(isolatedUrl);
+      else if(!useSharedDatabase)isolated=await startEmbeddedPostgresTestDatabase("muse-archive-receiver-");
+      const db=owner=useSharedDatabase?dbForArchive():createDb(isolatedUrl??isolated!.connectionString,{maxConnections:4});
+      await instanceSettingsService(db).updateExperimental({enableNativeRunner:true,enableMuse:true});
+      const f=await fixture(true,db),other=await fixture(true,db);
+      await db.update(agents).set({status:"paused"}).where(eq(agents.id,f.agent.id));
+      reset=await applyActualManagedContactIdentity(db);
+      const namespace={stackId:getCloudRuntimeIdentity()!.stackId,instanceId:"archive-muse-producer",origin:oauthOrigin};
+      // Establish an ordinary current revision through the existing owner, not a
+      // fabricated ACK or receiver row. No mirror/lifecycle worker is running.
+      await db.transaction(tx=>museProjectionModule.prepareMuseReceiverAuthorityMutation(tx,{companyId:f.company.id}));
+      const [before]=await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public"));
+      expect(before).toBeDefined();
+      const initial=await museProjectionModule.readMuseReceiverProjection(db,namespace,before.revision,{enabled:true});
+      if(!initial.complete)throw new Error("Archive receiver premise has no complete current projection");
+      expect(initial.records.find(row=>row.bindingId===f.binding.id)?.state).toBe("idle");
+      expect(initial.records.find(row=>row.bindingId===other.binding.id)?.state).toBe("idle");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.company.id))).toEqual([]);
+      const [bindingBefore]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
+      const signals:string[]=[];
+      unsubscribe=subscribeDatabaseWork(db,DELIVERY_QUEUES.mcpClientMirror,event=>signals.push(event));
+      const archived=await companyService(db).archive(f.company.id);
+      expect(archived?.status).toBe("archived");
+      const [savedAgent]=await db.select().from(agents).where(eq(agents.id,f.agent.id));
+      expect(savedAgent.status).toBe("paused");
+      expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0]).toEqual(bindingBefore);
+      const [current]=await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public"));
+      const projection=await museProjectionModule.readMuseReceiverProjection(db,namespace,current.revision,{enabled:true});
+      if(!projection.complete)throw new Error("Committed archive has no complete current projection");
+      expect(projection.records.find(row=>row.bindingId===f.binding.id)?.state).toBe("retired");
+      expect(projection.records.find(row=>row.bindingId===other.binding.id)?.state).toBe("idle");
+      console.info("MUSE_ARCHIVE_MIRROR_PRODUCER_FRONTIER "+JSON.stringify({
+        companyArchived:archived?.status==="archived",agentAlreadyPaused:savedAgent.status==="paused",
+        bindingUnchanged:true,terminalProjection:true,otherReceiverStillIdle:true,
+        beforeRevision:before.revision,afterRevision:current.revision,signals}));
+      expect(current.revision,"Separate archive must invalidate its formerly published receiver").toBeGreaterThan(before.revision);
+      expect(signals).toContain("intent");expect(signals).toContain("settled");
+      // The idempotent already-archived entry does not manufacture another duty.
+      await companyService(db).archive(f.company.id);
+      expect((await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public")))[0].revision).toBe(current.revision);
+    }catch(error){primary=error;throw error;}
+    finally{
+      const failures:unknown[]=[];
+      for(const close of [async()=>{unsubscribe?.();},async()=>{await reset?.();},async()=>{if(owner&&!useSharedDatabase)await museReceiver(owner).stop();},
+        async()=>{if(isolatedUrl)await closeRegisteredClients(isolatedUrl,{scope:"database"});else if(!useSharedDatabase)await owner?.$client.end({timeout:1});},
+        async()=>{await isolated?.cleanup();}]){
+        try{await close();}catch(error){failures.push(error);}
+      }
+      if(failures.length)throw new AggregateError([...(primary?[primary]:[]),...failures],"Muse archive fixture original and cleanup failures");
+    }
+  },30_000);
   it("signals maintenance from real qualification, assignment, and OAuth revocation producers", async () => {
     const events: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, event => events.push(event));
@@ -179,6 +248,7 @@ describe("personal Muse control plane",()=>{
     if(execution.schema!=="paperclip.native-execution-input.v8")throw new Error("Muse JWT fixture is not V8");
     return execution;
   }
+
   it.each([
     { wait: "task", fault: "assignment_expired", replay: false },
     { wait: "task", fault: "grant_revoked", replay: false },
@@ -1498,71 +1568,6 @@ describe("personal Muse control plane",()=>{
     expect(getCloudRuntimeIdentity()?.canonicalOrigin).toBe(oauthOrigin);
     return async()=>{await db.delete(runtimeInstanceSettings).where(eq(runtimeInstanceSettings.singletonKey,"cloud-runtime-identity/v1"));resetCloudRuntimeIdentityForTests();};
   }
-  it("invalidates an already-paused Muse receiver when the separate company archive commits",async()=>{
-    // The production projection covers the complete instance, including unfinished
-    // bindings deliberately retained by earlier cases. Give this case its own
-    // database instead of filtering the real projection or changing their rows.
-    const isolatedUrl=resolveExternalTestDatabaseUrl("PAPERCLIP_MUSE_ARCHIVE_RECEIVER_TEST_DATABASE_URL");
-    if(externalDatabaseUrl&&!isolatedUrl)throw new Error("External Muse archive control requires its own explicit test database");
-    if(isolatedUrl&&externalDatabaseUrl){
-      const selected=new URL(isolatedUrl),shared=new URL(externalDatabaseUrl);
-      if(selected.host===shared.host&&selected.pathname===shared.pathname)throw new Error("Muse archive control database must differ from the shared suite database");
-    }
-    let isolated:Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>|undefined;
-    let owner:ReturnType<typeof createDb>|undefined,reset:(()=>Promise<void>)|undefined;
-    let unsubscribe:(()=>void)|undefined,primary:unknown;
-    try{
-      if(isolatedUrl)await applyPendingMigrations(isolatedUrl);
-      else isolated=await startEmbeddedPostgresTestDatabase("muse-archive-receiver-");
-      const db=owner=createDb(isolatedUrl??isolated!.connectionString,{maxConnections:4});
-      await instanceSettingsService(db).updateExperimental({enableNativeRunner:true,enableMuse:true});
-      const f=await fixture(true,db),other=await fixture(true,db);
-      await db.update(agents).set({status:"paused"}).where(eq(agents.id,f.agent.id));
-      reset=await applyActualManagedContactIdentity(db);
-      const namespace={stackId:getCloudRuntimeIdentity()!.stackId,instanceId:"archive-muse-producer",origin:oauthOrigin};
-      // Establish an ordinary current revision through the existing owner, not a
-      // fabricated ACK or receiver row. No mirror/lifecycle worker is running.
-      await db.transaction(tx=>museProjectionModule.prepareMuseReceiverAuthorityMutation(tx,{companyId:f.company.id}));
-      const [before]=await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public"));
-      expect(before).toBeDefined();
-      const initial=await museProjectionModule.readMuseReceiverProjection(db,namespace,before.revision,{enabled:true});
-      if(!initial.complete)throw new Error("Archive receiver premise has no complete current projection");
-      expect(initial.records.find(row=>row.bindingId===f.binding.id)?.state).toBe("idle");
-      expect(initial.records.find(row=>row.bindingId===other.binding.id)?.state).toBe("idle");
-      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,f.company.id))).toEqual([]);
-      const [bindingBefore]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
-      const signals:string[]=[];
-      unsubscribe=subscribeDatabaseWork(db,DELIVERY_QUEUES.mcpClientMirror,event=>signals.push(event));
-      const archived=await companyService(db).archive(f.company.id);
-      expect(archived?.status).toBe("archived");
-      const [savedAgent]=await db.select().from(agents).where(eq(agents.id,f.agent.id));
-      expect(savedAgent.status).toBe("paused");
-      expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0]).toEqual(bindingBefore);
-      const [current]=await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public"));
-      const projection=await museProjectionModule.readMuseReceiverProjection(db,namespace,current.revision,{enabled:true});
-      if(!projection.complete)throw new Error("Committed archive has no complete current projection");
-      expect(projection.records.find(row=>row.bindingId===f.binding.id)?.state).toBe("retired");
-      expect(projection.records.find(row=>row.bindingId===other.binding.id)?.state).toBe("idle");
-      console.info("MUSE_ARCHIVE_MIRROR_PRODUCER_FRONTIER "+JSON.stringify({
-        companyArchived:archived?.status==="archived",agentAlreadyPaused:savedAgent.status==="paused",
-        bindingUnchanged:true,terminalProjection:true,otherReceiverStillIdle:true,
-        beforeRevision:before.revision,afterRevision:current.revision,signals}));
-      expect(current.revision,"Separate archive must invalidate its formerly published receiver").toBeGreaterThan(before.revision);
-      expect(signals).toContain("intent");expect(signals).toContain("settled");
-      // The idempotent already-archived entry does not manufacture another duty.
-      await companyService(db).archive(f.company.id);
-      expect((await db.select().from(mcpClientMirrorState).where(eq(mcpClientMirrorState.id,"public")))[0].revision).toBe(current.revision);
-    }catch(error){primary=error;throw error;}
-    finally{
-      const failures:unknown[]=[];
-      for(const close of [async()=>{unsubscribe?.();},async()=>{await reset?.();},async()=>{if(owner)await museReceiver(owner).stop();},
-        async()=>{if(isolatedUrl)await closeRegisteredClients(isolatedUrl,{scope:"database"});else await owner?.$client.end({timeout:1});},
-        async()=>{await isolated?.cleanup();}]){
-        try{await close();}catch(error){failures.push(error);}
-      }
-      if(failures.length)throw new AggregateError([...(primary?[primary]:[]),...failures],"Muse archive fixture original and cleanup failures");
-    }
-  },30_000);
   it.each(["paused", "archived", "archive"] as const)("serializes company %s and real Muse pairing without reversing agent and mirror locks",async(mode)=>{
     const f=await fixture(true);
     await db.update(agents).set({lifecycleState:"ready",lifecycleHolds:[],status:"idle"}).where(eq(agents.id,f.agent.id));
