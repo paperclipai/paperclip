@@ -12,7 +12,7 @@ A repeatable operating skill for driving one Terminal-Bench problem to a passing
 
 This skill is **operational + diagnostic**, not engineering. It coordinates issues, artifacts, and approvals around a Terminal-Bench loop. It does not authorize code changes — product fixes require a board confirmation before implementation.
 
-Canonical execution model: read `doc/execution-semantics.md` before starting a loop or moving any loop issue. Every loop issue must rest in a state the doc allows: terminal (`done`/`cancelled`), explicitly live (active run / queued wake), explicitly waiting (`in_review` with participant/interaction/approval), or explicit recovery/blocker (`blocked` with `blockedByIssueIds` and a named owner).
+Every loop issue must rest in an allowed state: terminal (`done`/`cancelled`), explicitly live (active run / queued wake), explicitly waiting (`in_review` with participant/interaction/approval), or explicit recovery/blocker (`blocked` with `blockedByIssueIds` and a named owner).
 
 ## When to use
 
@@ -77,7 +77,7 @@ Wire dependencies with `blockedByIssueIds`, never with prose like "blocked by X"
 
 ### 0. Read the current execution contract
 
-Before opening or advancing a loop, read `doc/execution-semantics.md`. Use that document's terms intact when classifying loop-issue state: live path / waiting path / recovery path; post-run disposition; bounded continuation; productivity review; pause-hold; watchdog. Do not invent a new state.
+Before opening or advancing a loop, use these terms when classifying loop-issue state: live path / waiting path / recovery path; post-run disposition; bounded continuation; productivity review; pause-hold; watchdog. Do not invent a new state.
 
 ### 1. Open or reuse the top-level loop issue
 

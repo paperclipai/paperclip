@@ -1542,6 +1542,11 @@ export type {
   ToolConnectionInstallTargetType,
   ToolConnectionRemovalResult,
   ToolConnectionRemovalSummary,
+  ToolConnectionStoredContent,
+  ToolConnectionStoredContentCounts,
+  ToolConnectionContentDeletion,
+  ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionStatus,
   ConnectionAudienceMember,
   ConnectionGrant,
   ConnectionGrantCapabilities,
@@ -2976,7 +2981,7 @@ export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
-export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
+export { LINK_PREVIEW_BATCH_LIMIT, type LinkPreviewBatchResult, recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
 export * from "./mcp-apps.js";
 export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";

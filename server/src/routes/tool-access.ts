@@ -71,6 +71,8 @@ import { accessService, logActivity, toolAccessPolicyService, toolAccessService,
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
+import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { getRunLogStore } from "../services/run-log-store.js";
 import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
 import { RailwayError } from "../services/railway.js";
@@ -544,6 +546,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   const access = accessService(db);
   const managementGuard = connectionManagementGuard(db, "tool");
+  const contentDeletion = createConnectionContentDeletion(db, { runLogStore: getRunLogStore });
 
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
     if (req.actor.type === "agent") {
@@ -2371,6 +2374,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     await assertToolConnectionConfigureAccess(req, existing);
     if (aiConnectionRouterPluginKey(existing)) throw badRequest("Remove this connection pool through its revision-checked pool settings.");
     const applicationBefore = await svc.getApplication(existing.applicationId);
+    const deleteStoredContent = req.query.deleteStoredContent === "true";
+    if (deleteStoredContent) assertBoard(req);
     const { connection, removal } = await svc.archiveConnection(
       existing.id,
       existing.companyId,
@@ -2402,7 +2407,54 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: { type: applicationAfter.type, name: applicationAfter.name, reason: "last_connection_removed" },
       });
     }
-    res.json({ ...connection, removal });
+    const contentDeletion = deleteStoredContent
+      ? await requestStoredContentDeletion(req, connection)
+      : null;
+    res.json({ ...connection, removal, ...(contentDeletion ? { contentDeletion } : {}) });
+  });
+
+  async function requestStoredContentDeletion(req: Request, connection: { id: string; companyId: string }) {
+    const actor = getActorInfo(req);
+    const { deletion, created } = await contentDeletion.request(connection, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
+    if (created) {
+      const { stored } = await contentDeletion.storedContent(connection);
+      await logActivity(db, {
+        companyId: connection.companyId,
+        ...connectionRequestActor(req),
+        action: "tool_connection.content_deletion_requested",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { ...stored },
+      });
+    }
+    return deletion;
+  }
+
+  router.get("/tool-connections/:connectionId/stored-content", managementGuard("connections:configure", "GET /tool-connections/:connectionId/stored-content", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json(await contentDeletion.storedContent(existing));
+  });
+
+  router.post("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "POST /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.status(202).json({ deletion: await requestStoredContentDeletion(req, existing) });
+  });
+
+  router.get("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "GET /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json({ deletion: await contentDeletion.latestDeletion(existing) });
   });
 
   router.post("/tool-connections/:connectionId/health-check", managementGuard("connections:configure", "POST /tool-connections/:connectionId/health-check", { personal: true }), async (req, res) => {

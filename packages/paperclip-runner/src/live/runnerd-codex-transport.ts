@@ -76,6 +76,7 @@ import { NativeRunnerResumeStateUnavailableError, NativeRunnerSourceReconciliati
 import {
   DurablePrpControlPlane,
   inspectStagedRunAttachment,
+  SemanticToolHandedOffError,
   SemanticToolNotDispatchedError,
   durableRecoveryInternals,
   inspectWarmRunTransition,
@@ -4252,7 +4253,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #releaseEpisode: {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
+    parked?: { version: string; digest: string } | null;
   } | null = null;
+  #relaunchedRunnerArtifact: { version: string; digest: string } | null = null;
   #startupDrainTimedOut = false;
   #controllerDetachedForRestart = false;
   #failure: Error | null = null;
@@ -4979,6 +4982,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       while (!episode.claimed) {
         assertPending();
         let outcome: "resumed" | "unavailable" | undefined;
+        let relaunched: { version: string; digest: string } | undefined;
+        let settled: (() => Promise<void>) | undefined;
         try {
           if (!episode.ticket) {
             episode.ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -4989,7 +4994,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             episode.ticketFlushed = true;
           }
           assertPending();
-          outcome = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          const result = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          outcome = typeof result === "string" ? result : result.outcome;
+          relaunched = typeof result === "string" ? undefined : result.runner;
+          settled = typeof result === "string" ? undefined : result.settled;
         } catch (error) {
           // A generic RPC error cannot prove refusal. Keep this exact pending claim quiet.
           assertPending();
@@ -4999,6 +5007,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         assertPending();
         if (outcome === "unavailable") throw new Error("native_runner_reuse_unavailable");
+        if (relaunched) {
+          try {
+            core.acceptRelaunchedRunner(episode.ticket!, relaunched, episode.parked);
+            this.#relaunchedRunnerArtifact = structuredClone(relaunched);
+            await Promise.race([core.flushCheckpoint(), deadline, closed]);
+            await Promise.race([settled?.(), deadline, closed]);
+          } catch (error) {
+            if (error instanceof Error && error.message === "native_runner_relaunched_build_unaccepted") {
+              throw new Error("native_runner_reuse_unavailable");
+            }
+            assertPending();
+            if (error === expired) throw error;
+            await Promise.race([new Promise(resolve => setTimeout(resolve, 250)), deadline, closed]);
+            continue;
+          }
+        }
         episode.claimed = true;
       }
     } finally {
@@ -5226,7 +5250,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (core.store.state.stagedRunAttachment && this.options.readRunnerState
         && (registration?.connection?.mode === "listen" || registration?.connection?.mode === "external")) {
         const deadline = Math.min(Date.now() + (this.options.runnerReconnectGraceMs ?? 5_000), this.#sourceAttachmentDeadline ?? Infinity);
-        const artifact = this.options.runnerArtifact ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
+        const artifact = this.#relaunchedRunnerArtifact ?? this.options.runnerArtifact
+          ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
         for (;;) {
           this.#assertStartupOpen();
           const physical = await this.options.readRunnerState();
@@ -6518,7 +6543,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },
       semanticInputMode: this.#retainsSourceInputs() || this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
-      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#dispatchSemanticToolInput(call),
       recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         const source = this.#sourceAccountingIdentity();
@@ -6993,7 +7018,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
-    const runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
+    let runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
     this.#durableTurnId = identity.turnId;
     this.#eventIdentity = structuredClone(identity);
     const provider = this.options.provider ?? "codex";
@@ -7079,7 +7104,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },
       semanticInputMode: this.#retainsSourceInputs() || this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
-      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#dispatchSemanticToolInput(call),
       recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         const source = this.#sourceAccountingIdentity();
@@ -7420,8 +7445,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const source = this.options.releaseResume.releasedSource;
       if (!recoveryIdentityMatches(source, core.store.state.identity)) throw new Error("native_runner_released_source_mismatch");
       if (!this.#controlPlaneCheckpoint) throw new Error("native_runner_released_cleanup_unavailable");
-      this.#releaseEpisode = { source: structuredClone(source), confirmed: true };
+      this.#releaseEpisode = { source: structuredClone(source), confirmed: true,
+        parked: this.options.releaseResume.releasedSourceRunner ? structuredClone(this.options.releaseResume.releasedSourceRunner) : null };
       await this.#claimReleasedRunner(this.#authorityRunId() ?? "");
+      runnerArtifact = this.#relaunchedRunnerArtifact ?? runnerArtifact;
     }
     const bootstrapTicket = adoptedRunner
       ? null
@@ -7678,6 +7705,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const outcome = await this.options.recoverSemanticToolInput?.(call);
     return outcome ? this.#bindSemanticToolOutcome(call, outcome) : null;
+  }
+
+  async #dispatchSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]) {
+    try {
+      return await this.#handleSemanticToolInput(call);
+    } catch (error) {
+      if (error instanceof SemanticToolNotDispatchedError && this.#controllerDetachedForRestart) throw new SemanticToolHandedOffError();
+      throw error;
+    }
   }
 
   async #handleSemanticToolInput(

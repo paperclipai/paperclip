@@ -963,6 +963,7 @@ impl AcpxProviderSession {
         let mut next_bridge = self.tool_bridge.clone();
         let mut next_reserved_bridge = self.reserved_tool_bridge.clone();
         let mut reconciled_events = Vec::with_capacity(events.len());
+        let mut retryable_rejections = Vec::new();
         for event in events {
             let mut expose_event = true;
             match &event {
@@ -998,9 +999,19 @@ impl AcpxProviderSession {
                     if let Err(error) =
                         bridge.begin_call(call_id.clone(), operation_id.clone(), input.clone())
                     {
-                        return Err(self.fail_closed(LocalRunnerError::invalid(format!(
-                            "ACPX provider tool authorization failed: {error}"
-                        ))));
+                        if !error.is_retryable() {
+                            return Err(self.fail_closed(LocalRunnerError::invalid(format!(
+                                "ACPX provider tool authorization failed: {error}"
+                            ))));
+                        }
+                        if let Err(error) = next_state.complete_tool(call_id, operation_id) {
+                            return Err(self.fail_closed(error));
+                        }
+                        retryable_rejections.push((
+                            call_id.clone(),
+                            error.safe_provider_message().unwrap_or_default().to_owned(),
+                        ));
+                        expose_event = false;
                     }
                 }
                 AcpxProviderStateEvent::SemanticResult(result) => {
@@ -1125,6 +1136,22 @@ impl AcpxProviderSession {
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
+        if let Some(turn_id) = (!retryable_rejections.is_empty())
+            .then(|| self.state.active_turn_id().map(str::to_owned))
+            .flatten()
+        {
+            for (call_id, message) in retryable_rejections {
+                let response = self
+                    .transport
+                    .request_tool_resolve(json!({
+                        "callId": call_id,
+                        "turnId": turn_id,
+                        "error": {"message": message},
+                    }))
+                    .map_err(|(error, _)| self.fail_closed(error))?;
+                self.verify_resolution(&response, "tool")?;
+            }
+        }
         if let Some(turn_id) = terminal_turn {
             self.offer_provider_turn(&turn_id, terminal_completed, terminal_live);
         }

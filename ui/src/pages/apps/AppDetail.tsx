@@ -1,6 +1,6 @@
 import { AppNotFound, AppReadError } from "./app-detail/AppReadError";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
-import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
+import { aiConnectionRouterPluginKey, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
 import { ConnectionInstructionsSettings } from "@/features/connections/ConnectionInstructions";
 import { HonchoWorkspaceSettings } from "@/features/connections/HonchoWorkspaceSettings";
 import { BrowserUseSettingsPanel } from "./app-detail/BrowserUseSettingsPanel";
@@ -8,7 +8,7 @@ import { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE, isRemoteMcpConne
 import { RemoteMcpManagement } from "@/features/connections/remote-mcp/RemoteMcpManagement";
 import { remoteMcpProviders } from "@/features/connections/remote-mcp/providers";
 import { ManagedAiConnectionDetails } from "@/components/ai-connections/ManagedAiConnectionDetails";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
 import { EmailConnectionInboxes } from "./chat/EmailEndpointSetup";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -37,6 +37,7 @@ import { accessApi } from "@/api/access";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
+import { useGoogleWorkspaceServiceGate } from "@/features/connections/GoogleWorkspaceServices";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,10 +62,12 @@ import { PermissionsPanel } from "./app-detail/PermissionsPanel";
 import { AgentConnectionAccess } from "./app-detail/AgentConnectionAccess";
 import { ConnectedAggregatorApps } from "./app-detail/ConnectedAggregatorApps";
 import { isAppAggregator } from "@paperclipai/shared/aggregator-apps";
+import { useConnectionPermissionSave } from "./app-detail/useConnectionPermissionSave";
 import { actionPermissionMutation } from "./app-detail/action-permissions";
 import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import { AccessRetryBanner } from "./app-detail/AccessRetryBanner";
+import { StoredContentDeletionRow } from "./app-detail/StoredContentDeletion";
 import {
   ReconnectCard,
   DangerZone,
@@ -82,7 +85,7 @@ export { connectionAddress, connectionTransportLabel };
 
 export function AppDetail(props: { renderActions?: (connection: ToolConnection) => ReactNode; renderAgentSettings?: (connection: ToolConnection) => ReactNode; renderConnectionSettings?: (connection: ToolConnection) => ReactNode; onReconnect?: (connection: ToolConnection) => void } = {}) {
   const { connectionId = "" } = useParams<{ connectionId: string }>();
-  const connection = useQuery({ queryKey: queryKeys.tools.connection(connectionId), queryFn: () => toolsApi.getConnection(connectionId), enabled: !!connectionId });
+  const connection = useQuery({ queryKey: queryKeys.tools.connection(connectionId), queryFn: ({ signal }) => toolsApi.getConnection(connectionId, { signal, fresh: true }), enabled: !!connectionId });
   const view = useQueryView(connection);
   if (connection.isPending || view.kind === "reconnecting") return <p role="status">Loading connection…</p>;
   if (view.kind === "error" && view.errorKind === "not_found") return <AppNotFound />;
@@ -115,7 +118,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
 
   const connectionQuery = useQuery({
     queryKey: queryKeys.tools.connection(connectionId),
-    queryFn: () => toolsApi.getConnection(connectionId),
+    queryFn: ({ signal }) => toolsApi.getConnection(connectionId, { signal, fresh: true }),
     enabled: !!connectionId && !!activeTab,
   });
   const applicationsQuery = useQuery({
@@ -125,7 +128,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   });
   const installsQuery = useQuery({
     queryKey: queryKeys.tools.connectionInstalls(connectionId),
-    queryFn: () => toolsApi.getConnectionInstalls(connectionId),
+    queryFn: ({ signal }) => toolsApi.getConnectionInstalls(connectionId, { signal, fresh: true }),
     enabled: !!connectionId && activeTab === "permissions",
   });
   const galleryQuery = useQuery({
@@ -140,12 +143,12 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   });
   const profilesQuery = useQuery({
     queryKey: queryKeys.tools.connectionProfileConfiguration(selectedCompanyId ?? "__none__", connectionId),
-    queryFn: () => toolsApi.listConnectionProfileConfiguration(connectionId),
+    queryFn: ({ signal }) => toolsApi.listConnectionProfileConfiguration(connectionId, { signal, fresh: true }),
     enabled: !!selectedCompanyId && !!connectionId && (activeTab === "review" || activeTab === "permissions"),
   });
   const policiesQuery = useQuery({
     queryKey: queryKeys.tools.policies(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listPolicies(selectedCompanyId!),
+    queryFn: ({ signal }) => toolsApi.listPolicies(selectedCompanyId!, { signal, fresh: true }),
     enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
   });
   const agentsQuery = useQuery({
@@ -276,13 +279,28 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs, appName, connectionId, activeTab]);
 
-  const catalog = catalogQuery.data?.catalog ?? [];
+  const { catalog, active, quarantined, readOnly, canChange } = useMemo(() => {
+    const catalog = catalogQuery.data?.catalog ?? [];
+    const active = catalog.filter(entry => entry.status === "active");
+    return {
+      catalog, active,
+      quarantined: catalog.filter(entry => entry.status === "quarantined"),
+      readOnly: active.filter(entry => entry.isReadOnly),
+      canChange: active.filter(entry => !entry.isReadOnly),
+    };
+  }, [catalogQuery.data]);
+  const { draft: permissionDraft, pending, save: savePermissions } = useConnectionPermissionSave({
+    companyId: selectedCompanyId,
+    connectionId,
+    connection,
+    onError: error => pushToast({ title: "Couldn't save that", body: describeError(error).body, tone: "error" }),
+  });
   const profile = useMemo(
     () => (profilesQuery.data?.profiles ?? []).find((p) => p.profileKey === `app:${connectionId}`),
     [profilesQuery.data, connectionId],
   );
-  const enabledIds = useMemo(() => enabledCatalogIds(profile), [profile]);
-  const askFirstIds = useMemo(
+  const savedEnabledIds = useMemo(() => enabledCatalogIds(profile), [profile]);
+  const savedAskFirstIds = useMemo(
     () => askFirstCatalogIds(policiesQuery.data?.policies ?? [], connectionId),
     [policiesQuery.data, connectionId],
   );
@@ -290,7 +308,10 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     () => installStateFrom(installsQuery.data?.installs ?? connection?.installs),
     [connection?.installs, installsQuery.data?.installs],
   );
-  const access = useMemo(() => accessFrom(connection?.connectionPurpose === "ai" ? undefined : profile, install), [connection?.connectionPurpose, profile, install]);
+  const savedAccess = useMemo(() => accessFrom(connection?.connectionPurpose === "ai" ? undefined : profile, install), [connection?.connectionPurpose, profile, install]);
+  const enabledIds = permissionDraft?.enabled ?? savedEnabledIds;
+  const askFirstIds = permissionDraft?.askFirst ?? savedAskFirstIds;
+  const access = permissionDraft?.access ?? savedAccess;
   const managesRemoteMcpAccess = isRemoteMcpConnectorMethod(connection?.config?.sourceTemplateKey, connection?.config?.connectionMethodKey);
   const agents = agentsQuery.data ?? [];
   const disconnectRemote = useMutation({
@@ -304,43 +325,6 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     },
     onError: (error) => pushToast({ title: "Couldn't disconnect", body: describeError(error).body, tone: "error" }),
   });
-  const [pending, setPending] = useState(false);
-  const persist = useMutation({
-    mutationFn: async (next: {
-      enabled: Set<string>;
-      askFirst: Set<string>;
-      access: AccessDraft;
-      reviewed?: Set<string>;
-    }) => {
-      return connection?.connectionPurpose === "ai"
-      ? toolsApi.putConnectionInstalls(connectionId, next.access.mode === "all" ? [{ targetType: "company", targetId: selectedCompanyId! }] : [...next.access.agentIds].map(targetId => ({ targetType: "agent" as const, targetId })))
-      : toolsApi.finishApp(selectedCompanyId!, connectionId, {
-        enabledCatalogEntryIds: [...next.enabled],
-        askFirstCatalogEntryIds: [...next.askFirst].filter((id) => next.enabled.has(id)),
-        ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
-        access: next.access.mode === "all" ? "all_agents" : { agentIds: [...next.access.agentIds] },
-      });
-    },
-    onMutate: () => setPending(true),
-    onSuccess: () => {
-      void installsQuery.refetch();
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.testAgentAccessesForConnection(connectionId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.catalog(connectionId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.profiles(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.policies(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
-    },
-    onError: (error) =>
-      pushToast({
-        title: "Couldn't save that",
-        body: describeError(error).body,
-        tone: "error",
-      }),
-    onSettled: () => setPending(false),
-  });
-
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const rename = useMutation({
@@ -360,8 +344,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   });
 
   const authorization = useAuthorizationWindow();
+  const workspaceGate = useGoogleWorkspaceServiceGate();
   const startOAuth = useMutation({
-    mutationFn: (input?: { asAgentId?: string }) => toolsApi.startOAuth(connectionId, input),
+    mutationFn: (input?: { asAgentId?: string; workspaceServices?: GoogleWorkspaceServiceSelection }) => toolsApi.startOAuth(connectionId, input),
     onSuccess: async (start) => {
       try {
         await authorization.open(start);
@@ -394,12 +379,13 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
    * there is no path here to start consent on a coworker's behalf.
    */
   const startPersonalAuth = useMutation({
-    mutationFn: () => {
+    mutationFn: (scopes?: string[]) => {
       const subjectUserId = grantsQuery.data?.currentUserId;
       if (!subjectUserId) throw new Error("Sign in again to connect your own account.");
       return toolsApi.startPersonalAuthorization(selectedCompanyId!, connectionId, {
         subjectUserId,
         returnTo: appTabHref(connectionId, "permissions"),
+        ...(scopes ? { scopes } : {}),
       });
     },
     onSuccess: async ({ url, handoff }) => {
@@ -497,18 +483,21 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     },
   });
 
-  const apply = (mutate: {
+  const apply = useCallback((mutate: {
     enabled?: Set<string>;
     askFirst?: Set<string>;
     access?: AccessDraft;
     reviewed?: Set<string>;
   }) =>
-    persist.mutate({
+    savePermissions({
       enabled: mutate.enabled ?? new Set(enabledIds),
       askFirst: mutate.askFirst ?? new Set(askFirstIds),
       access: mutate.access ?? access,
       reviewed: mutate.reviewed,
-    });
+    }), [savePermissions, enabledIds, askFirstIds, access]);
+  const setActionPermission = useCallback((ids: string[], next: "off" | "ask" | "allowed") => {
+    apply(actionPermissionMutation(ids, next, enabledIds, askFirstIds));
+  }, [apply, enabledIds, askFirstIds]);
 
   const reviewQuarantined = (allowedIds: string[]) => {
     const quarantinedIds = new Set(quarantined.map((entry) => entry.id));
@@ -571,10 +560,6 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   const status: StatusInfo = aiGrantRevoked ? { label: "Revoked", tone: "attention" } : statusFor(connection);
   const needsReconnect = connection.requiresReauthorization
     ?? (status.tone === "attention" && connection.healthStatus !== "unknown");
-  const quarantined = catalog.filter((e) => e.status === "quarantined");
-  const active = catalog.filter((e) => e.status === "active");
-  const readOnly = active.filter((e) => e.isReadOnly);
-  const canChange = active.filter((e) => !e.isReadOnly);
   const actionsContent = renderActions?.(connection) ?? (connection.connectionPurpose === "ai" ? <ManagedAiConnectionDetails connection={connection} /> : undefined);
   const actionCount = actionsContent !== undefined ? null : catalogQuery.data ? active.length : null;
   const reviewViews = [catalogView, profilesView, policiesView];
@@ -590,6 +575,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   return (
     <div className="max-w-4xl space-y-10 pb-12">
       {authorization.fallback}
+      {workspaceGate.dialog}
       <AppDetailHeader
         appName={appName}
         connection={connection}
@@ -695,9 +681,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                   setAudienceOpenGrantId(null);
                   setAudienceError(null);
                 }}
-                onConnectAsMe={() => { if (onReconnect) onReconnect(connection); else { authorization.reserve(); startPersonalAuth.mutate(); } }}
-                onConnectOrganization={() => { if (onReconnect) onReconnect(connection); else { authorization.reserve(); startOAuth.mutate(); } }}
-                onConnectAgent={(agentId) => { authorization.reserve(); startOAuth.mutate({ asAgentId: agentId }); }}
+                onConnectAsMe={() => { if (onReconnect) onReconnect(connection); else workspaceGate.run(connection, (services) => { authorization.reserve(); startPersonalAuth.mutate(services ? googleWorkspaceSelectedScopes(services) : undefined); }); }}
+                onConnectOrganization={() => { if (onReconnect) onReconnect(connection); else workspaceGate.run(connection, (services) => { authorization.reserve(); startOAuth.mutate(services ? { workspaceServices: services } : undefined); }); }}
+                onConnectAgent={(agentId) => workspaceGate.run(connection, (services) => { authorization.reserve(); startOAuth.mutate({ asAgentId: agentId, ...(services ? { workspaceServices: services } : {}) }); })}
                 onRefreshAccess={() => refreshGitHubAccess.mutate()}
                 refreshAccessPending={refreshGitHubAccess.isPending}
                 onReplaceAudience={(grant, memberUserIds) =>
@@ -730,7 +716,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 }
                 onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" || connection.connectionPurpose === "tool" ? next : accessIncludingInstalls(next, install) })}
                 onRefreshActions={() => refreshTools.mutate()}
-                onSetActionPermission={(ids, next) => apply(actionPermissionMutation(ids, next, enabledIds, askFirstIds))}
+                onSetActionPermission={setActionPermission}
                 onReviewQuarantined={reviewQuarantined}
               />
               <AgentConnectionAccess
@@ -753,6 +739,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 onManage={() => window.open(remoteMcpProviders[connection.config?.sourceTemplateKey as keyof typeof remoteMcpProviders].dashboardUrl, "_blank", "noopener,noreferrer")}
                 onDisconnect={() => disconnectRemote.mutateAsync()}
               />}
+              {grantsQuery.data?.capabilities.canConfigure === true && connection.connectionPurpose === "tool" && (
+                <section className="border-t border-border">
+                  <StoredContentDeletionRow connectionId={connectionId} appName={appName} />
+                </section>
+              )}
               </>}
             </div>
       )}

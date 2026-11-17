@@ -16,7 +16,7 @@ approval before implementation, perform the investigation and safety analysis
 within that scope. For example, a Terminal-Bench diagnosis child does not override
 the loop's board approval boundary. Keep the next action and its owner explicit.
 
-For issue-tree diagnosis, read the current `doc/execution-semantics.md`, inspect the
+For issue-tree diagnosis, inspect the
 relevant subtree and recent repairs, and classify non-progressing nodes:
 
 - **Genuine wait:** a named human or external dependency must act.

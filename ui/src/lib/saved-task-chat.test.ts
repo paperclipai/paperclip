@@ -222,6 +222,19 @@ describe("saved first chat frame of a recently opened task", () => {
       expect(reloaded.getQueryData(commentsKey("ABC-2"))).toBeDefined();
     });
 
+    it.each([
+      ["a missing plan", [...queryKeys.issues.documents(task(1).id), "plan"]],
+      ["a missing active run", queryKeys.issues.activeRun("ABC-1")],
+      ["missing work products", queryKeys.issues.workProducts("ABC-1")],
+    ])("keeps the task after a 404 for %s, which does not mean the task is gone", async (_name, key) => {
+      const storage = savedPage((client) => { openTask(client, 1); });
+      const { client } = page(storage);
+      await client.fetchQuery({ queryKey: key as readonly unknown[], queryFn: async () => { throw new ApiError("Not found", 404, null); } }).catch(() => {});
+      expect(client.getQueryData(coreKey("ABC-1"))).toBeDefined();
+      expect(client.getQueryData(commentsKey("ABC-1"))).toBeDefined();
+      expect(storage.text()).toContain("comment-1-0");
+    });
+
     it("removes the saved chat when the task record itself is refused", async () => {
       const storage = savedPage((client) => { openTask(client, 1); });
       const { client } = page(storage);

@@ -75,6 +75,7 @@ import {
 } from "./mcp-tasks.js";
 import { logger } from "../middleware/logger.js";
 import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@paperclipai/shared";
+import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
 import { spawn } from "node:child_process";
@@ -1395,7 +1396,7 @@ export function createToolGatewayService(
   } = {},
 ) {
   const injectionPrevention = promptInjectionPreventionService(db, { budgetHooks: options.budgetHooks, provider: options.promptInjectionProvider });
-  function resultClassifier(session: ToolGatewaySession, tool: ToolGatewayDescriptor, toolInvocationId: string | null,
+  function resultClassifier(session: ToolGatewaySession, tool: Pick<ToolGatewayDescriptor, "name" | "providerType">, toolInvocationId: string | null,
     { approvedAction = false, signal: callerSignal }: { approvedAction?: boolean; signal?: AbortSignal } = {}) {
     // Approved actions retain historical run attribution, not that run's lifetime.
     const runSignal = session.runId && !approvedAction
@@ -4797,7 +4798,7 @@ export function createToolGatewayService(
       .limit(1);
     const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/permissions`;
     const idempotencyKey = `connection-authorization:${connection.id}:${userId}`;
-    const payload = {
+    const payload = requestConfirmationPayloadSchema.parse({
       version: 1 as const,
       prompt:
         grantKind === "organization"
@@ -4814,12 +4815,12 @@ export function createToolGatewayService(
           : "This run needs your personal authorization. Paperclip will not use another user's identity.",
       target: {
         type: "custom" as const,
-        key: `connection:${connection.uid}:user:${userId}`,
+        key: `connection-authorization:${createHash("sha256").update(idempotencyKey).digest("hex")}`,
         revisionId: connection.updatedAt.toISOString(),
-        label: `Connect ${connection.name}`,
+        label: `Connect ${connection.name}`.slice(0, 120),
         href,
       },
-    };
+    });
     const [existing] = await db
       .select({ id: issueThreadInteractions.id })
       .from(issueThreadInteractions)
@@ -6240,6 +6241,7 @@ export function createToolGatewayService(
       "resources/list" | "resources/read" | "prompts/list" | "prompts/get";
     params?: Record<string, unknown>;
     callerHeaders?: Record<string, string | string[] | undefined>;
+    signal?: AbortSignal;
   }) {
     const session = await namedGatewaySessionFromBearer({
       gatewayId: input.gatewayId ?? null,
@@ -6319,7 +6321,7 @@ export function createToolGatewayService(
       kind === "resource"
         ? { uri: handle.value }
         : { name: handle.value, arguments: input.params?.arguments ?? {} };
-    const result = asRecord(
+    let result = asRecord(
       await callAssignedConnectionProtocol({
         ...input,
         session,
@@ -6328,6 +6330,19 @@ export function createToolGatewayService(
         params,
       }),
     );
+    if (kind === "resource") {
+      const screened = { name: "paperclip_read_resource",
+        providerType: connection.transport === "local_stdio" ? "mcp_local_stdio" : "mcp_remote_http" } as const;
+      const validation = await validateToolContent({ value: result, direction: "result", sensitiveMode: "redact", promptInjectionMode: "block",
+        classifier: resultClassifier(session, screened, null, { signal: input.signal }) }).catch(async (error: unknown) => {
+        if (!(error instanceof ToolContentValidationError)) throw error;
+        await writeAudit({ session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
+          action: "tool_gateway.call_failed", details: { tool: screened.name, connectionId: connection.id, reasonCode: error.reasonCode,
+            findings: error.findings, promptInjection: error.detectorMetadata } });
+        throw new ToolGatewayHttpError(422, error.message, error.reasonCode, { findings: error.findings });
+      });
+      result = asRecord(validation.value);
+    }
     if (kind === "resource" && Array.isArray(result?.contents)) {
       return {
         ...result,
@@ -11388,6 +11403,7 @@ export function createToolGatewayService(
         "resources/list" | "resources/read" | "prompts/list" | "prompts/get";
       params?: Record<string, unknown>;
       callerHeaders?: Record<string, string | string[] | undefined>;
+      signal?: AbortSignal;
     }): Promise<Record<string, unknown>> {
       return namedGatewayContextProtocol(input);
     },

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 
@@ -128,4 +128,22 @@ export async function remoteExecutionHasStopped(db: Db, companyId: string, runId
 export async function remoteExecutionHasReleased(db: Db, companyId: string, runId: string) {
   const leases = await runRemoteLeases(db, companyId, runId);
   return leases.length > 0 && leases.every(hasRemoteTerminationReceipt);
+}
+
+export async function terminatedRemoteCleanupScope(db: Db, companyId: string, remoteCleanupScope: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(remoteCleanupScope);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2 || typeof parsed[0] !== "string" || typeof parsed[1] !== "string"
+    || parsed[0] === "local") return null;
+  const [provider, providerLeaseId] = parsed as [string, string];
+  const leases = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, companyId),
+    eq(environmentLeases.provider, provider), eq(environmentLeases.providerLeaseId, providerLeaseId)))
+    .orderBy(desc(environmentLeases.createdAt), desc(environmentLeases.id));
+  if (leases.length === 0 || leases.some(lease => !lease.releasedAt)) return null;
+  const newest = await resolveRemoteTerminationLease(db, leases[0]!);
+  return hasRemoteTerminationReceipt(newest) ? newest : null;
 }
