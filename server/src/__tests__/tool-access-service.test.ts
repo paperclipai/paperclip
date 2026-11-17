@@ -17452,6 +17452,55 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(connected)).not.toContain("github-actions-test-token");
   });
 
+  it("replaces a failed managed GitHub draft with PAT credentials on the same connection", async () => {
+    const company = await createCompany(db);
+    const userId = `github-draft-replacement-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const actor = { actorType: "user" as const, actorId: userId };
+    const connector = fakeGitHubConnector(company.id, userId);
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const oauthDraft = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "managed",
+      grantKind: "user",
+      name: "GitHub for draft replacement",
+    }, actor);
+    expect(oauthDraft.connection).toMatchObject({
+      id: oauthDraft.connectionId,
+      status: "draft",
+      enabled: false,
+      authKind: "oauth",
+      config: expect.objectContaining({ connectionMethodKey: "managed" }),
+    });
+
+    mockToolsList([readTool("get_me", "Read the authenticated GitHub identity")]);
+    const pat = "github-pat-draft-replacement";
+    const replaced = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      resumeConnectionId: oauthDraft.connectionId,
+      grantKind: "user",
+      name: "GitHub for draft replacement",
+      credentialValues: { "credentials.authorization": pat },
+    }, actor);
+
+    expect(replaced.connectionId).toBe(oauthDraft.connectionId);
+    expect(replaced.connection).toMatchObject({
+      authKind: "api_key",
+      config: expect.objectContaining({
+        sourceTemplateKey: "github",
+        connectionMethodKey: "mcp-key",
+      }),
+    });
+    expect(replaced.connection.config).not.toHaveProperty("oauth");
+    const { grants } = await service.listConnectionGrants(replaced.connectionId, company.id);
+    const userGrant = grants.find((grant) => grant.kind === "user");
+    expect(userGrant?.credentialSecretRefs).toEqual([
+      expect.objectContaining({ configPath: "credentials.authorization" }),
+    ]);
+    expect(JSON.stringify(replaced)).not.toContain(pat);
+  });
+
   it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

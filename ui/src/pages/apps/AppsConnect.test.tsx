@@ -3468,6 +3468,97 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
   });
 
+  it("replaces a failed GitHub OAuth draft with the selected PAT method", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=github_installation_required`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({
+      applications: [{ id: "app-github", status: "draft", metadata: { sourceTemplateKey: "github" } }],
+    });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: connectionId,
+      applicationId: "app-github",
+      name: "GitHub for board-user",
+      authKind: "oauth",
+      credentialPolicy: "per_user",
+      status: "draft",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+      transportConfig: {},
+    }] });
+
+    await render();
+    await flushReact();
+
+    const usePat = buttonContaining("Personal access token");
+    expect(usePat).toBeTruthy();
+    await act(async () => usePat!.click());
+    await flushReact();
+
+    const keyField = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keyField).toBeTruthy();
+    await act(async () => setInputValue(keyField!, "github-pat-replacement"));
+    await flushReact();
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      resumeConnectionId: connectionId,
+      credentialValues: { "credentials.authorization": "github-pat-replacement" },
+    }));
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed PAT replacement actionable and retries the same GitHub draft", async () => {
+    const connectionId = "22222222-2222-4222-8222-222222222222";
+    mockSearch.value = `source=github&resume=${connectionId}&oauth=failed&code=oauth_callback_failed`;
+    listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
+    listApplicationsMock.mockResolvedValue({
+      applications: [{ id: "app-github", status: "draft", metadata: { sourceTemplateKey: "github" } }],
+    });
+    listConnectionsMock.mockResolvedValue({ connections: [{
+      id: connectionId,
+      applicationId: "app-github",
+      name: "GitHub for board-user",
+      authKind: "oauth",
+      credentialPolicy: "per_user",
+      status: "draft",
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+      transportConfig: {},
+    }] });
+    connectAppMock.mockRejectedValueOnce(new Error("GitHub rejected this token. Check its repository access and try again."));
+
+    await render();
+    await flushReact();
+    await act(async () => buttonContaining("Personal access token")!.click());
+    await flushReact();
+    const keyField = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(async () => setInputValue(keyField, "github-pat-retry"));
+    await flushReact();
+
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "GitHub rejected this token. Check its repository access and try again.",
+    );
+    expect(buttonByText("Connect")?.disabled).toBe(false);
+    expect(keyField.value).toBe("github-pat-retry");
+
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(2);
+    for (const [, input] of connectAppMock.mock.calls) {
+      expect(input).toMatchObject({
+        galleryKey: "github",
+        connectionMethodKey: "mcp-key",
+        resumeConnectionId: connectionId,
+        credentialValues: { "credentials.authorization": "github-pat-retry" },
+      });
+    }
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it("returns a declined OAuth draft to the same one-action resume checkpoint", async () => {
     mockSearch.value = "source=notion&resume=22222222-2222-4222-8222-222222222222&oauth=denied&code=oauth_authorization_denied";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });

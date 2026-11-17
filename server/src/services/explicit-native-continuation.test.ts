@@ -602,6 +602,37 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     }
     await db.delete(environmentLeases).where(eq(environmentLeases.id, lease.id));
   });
+  it("reconciles a stopped native run's orphaned local lease before delivering its interrupted message", async () => {
+    const f = await seed(), queueId = randomUUID();
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted",
+      resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt",
+        interruptedIssueId: f.issueId, interruptedByActorType: "user", interruptedByActorId: "board",
+        queuedCommentInterruptQueueId: queueId },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId,
+      issueId: f.issueId, heartbeatRunId: f.sourceRunId, provider: "local",
+      status: "active", leasePolicy: "ephemeral",
+    }).returning();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() } });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId,
+      agentId: f.agentId, source: "on_demand", reason: "issue_commented",
+      status: "deferred_issue_execution", requestedByActorType: "system",
+      payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [f.commentId] },
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString(),
+          targetRunId: f.sourceRunId } },
+    });
+
+    await heartbeatService(db).resumeQueuedCommentInterrupt(f.companyId, queueId, { retryCleanup: true });
+
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    const [settled] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+    expect(settled.status).not.toBe("active");
+    expect(receipt).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!)))[0])
+      .toMatchObject({ status: "queued", contextSnapshot: { previousRunId: f.sourceRunId } });
+  });
   it.each(["ask_user_questions", "request_confirmation"] as const)("sends a saved native %s response after a fresh click", async kind => {
     const f = await seed(), queueId = randomUUID();
     const [interaction] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,

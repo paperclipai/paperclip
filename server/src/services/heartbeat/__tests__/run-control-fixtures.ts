@@ -56,6 +56,7 @@ export function callbacks(db: Db): TestCallbacks {
     envOrchestrator: { releaseForRun: vi.fn<HeartbeatRunControlDependencies["envOrchestrator"]["releaseForRun"]>(async () => ({ released: [], errors: [] })) },
     enqueueWakeup: lifecycleDependencies.enqueueWakeup,
     startNextQueuedRunForAgent: vi.fn<HeartbeatRunControlDependencies["startNextQueuedRunForAgent"]>(),
+    sweepOrphanedActiveLeases: vi.fn<HeartbeatRunControlDependencies["sweepOrphanedActiveLeases"]>(async () => ({ recovered: 0 })),
     sweepPendingCleanupLeases: vi.fn<HeartbeatRunControlDependencies["sweepPendingCleanupLeases"]>(),
     timerClaimWasFirstHeartbeat: vi.fn<HeartbeatRunControlDependencies["timerClaimWasFirstHeartbeat"]>(() => undefined),
     scheduleBoundedRetry: vi.fn<HeartbeatRunControlDependencies["scheduleBoundedRetry"]>(),

@@ -1546,6 +1546,7 @@ export function heartbeatService(
     activeRunExecutions,
     enqueueWakeup,
     getAgent,
+    sweepOrphanedActiveLeases,
     sweepPendingCleanupLeases,
     getSchedulingSuppression,
     wakeQueue,

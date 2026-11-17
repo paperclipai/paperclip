@@ -4,8 +4,6 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { beginRunPhase, measureRunPhase } from "./execution-preparation-timing.js";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
@@ -22,13 +20,12 @@ import { captureRunIdentity } from "./run-identity.js";
 import { toolAccessService } from "./tool-access.js";
 import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
 import { buildGitAuthInvocation, createGitRemoteAuthProvider } from "./git-credentials.js";
-import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
+import { execRepositoryGit, materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored, RepositoryRefNotFoundError } from "./managed-repository-checkout.js";
 import { requiresAnonymousRepositoryAcquisition, taskRepositoryRunColumns } from "./task-repository-acquisition.js";
 
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 export { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 
-const execFile = promisify(execFileCallback);
 type RepositoryRow = typeof executionWorkspaceRepositories.$inferSelect;
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 const controllerAcquisitionMessage = "New controller repository acquisition requires a trusted task. Existing verified public checkouts remain available.";
@@ -401,7 +398,8 @@ export function executionWorkspaceRepositoryService(db: Db) {
   }
   async function prepareForAdmission(input: { companyId: string; issueId: string; workspaceId: string; cwd: string; agentId: string; runId: string; responsibleUserId: string | null;
     remoteTarget?: AdapterExecutionTarget | null; remoteLease?: EnvironmentLease; assertOwned?: () => Promise<void>;
-    inheritRepositorySelections?: boolean }) {
+    inheritRepositorySelections?: boolean; signal?: AbortSignal }) {
+    input.signal?.throwIfAborted();
     const { acquisitionRestricted, workspace } = await publicationBinding(db, input, false);
     if (input.inheritRepositorySelections) await inheritSelections(input);
     const rows = await list(input.companyId, input.workspaceId);
@@ -559,6 +557,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
           if (!claimed) throw conflict("Repository preparation receipt changed during admission");
         }
         try {
+          input.signal?.throwIfAborted();
           const ownershipPath = path.join(cwd, ".git", "paperclip-workspace-owner.json");
           const readOwnership = () => measureRunPhase("workspace.repository.ownership_read", async () => {
             const handle = await fs.open(ownershipPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK).catch(() => null);
@@ -580,6 +579,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
             await assertCurrentControllerAcquisition(input);
             const result = await measureRunPhase("workspace.repository.materialize", () => materializeManagedProjectWorkspace(cwd, {
               repoUrl: source.repoUrl,
+              signal: input.signal,
               stagingParent,
               repoRef: authorizedPin ?? (row.requestedRef === "HEAD" ? null : row.requestedRef),
               resolveGitAuth: source.catalogRepositoryId ? resolveAuth : async () => anonymous,
@@ -592,20 +592,21 @@ export function executionWorkspaceRepositoryService(db: Db) {
                   if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
                 }
                 const pinnedCommit = await measureRunPhase("workspace.repository.git_commit", async () =>
-                  (await execFile("git", ["-C", cloneCwd, "rev-parse", "HEAD"], { timeout: 30_000 })).stdout.trim());
+                  (await execRepositoryGit("git", ["-C", cloneCwd, "rev-parse", "HEAD"], { timeout: 30_000, signal: input.signal })).stdout.trim());
                 await measureRunPhase("workspace.repository.ownership_write", () => fs.writeFile(path.join(cloneCwd, ".git", "paperclip-workspace-owner.json"), JSON.stringify({ version: 1, repositoryId: row.id, pinnedCommit }), { flag: "wx", mode: 0o600 }));
               },
             }));
             if (result.warning) throw conflict(result.warning);
           }
-          const git = async (...args: string[]) => (await execFile("git", ["-C", cwd, ...args], { timeout: 30_000, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } })).stdout.trim();
+          const git = async (...args: string[]) => (await execRepositoryGit("git", ["-C", cwd, ...args], { timeout: 30_000, signal: input.signal, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } })).stdout.trim();
           const origin = normalizeProjectRepositoryUrl(await measureRunPhase("workspace.repository.git_origin", () => git("remote", "get-url", "origin")));
           if (origin.url.toLowerCase() !== row.repositoryIdentity) throw conflict("Repository checkout belongs to a different origin");
           const ownership = await readOwnership();
           if (!authorizedPin && (ownership?.repositoryId !== row.id || !/^[a-f0-9]{40,64}$/.test(ownership.pinnedCommit))) throw conflict("Repository publication has no valid preparation receipt");
           const pinnedCommit: string = authorizedPin ?? ownership.pinnedCommit;
           if (acquisitionRestricted) await measureRunPhase("workspace.repository.git_commit", () => git("cat-file", "-e", `${pinnedCommit}^{commit}`));
-          const branchName = await measureRunPhase("workspace.repository.git_branch", () => git("symbolic-ref", "--quiet", "--short", "HEAD").catch(() => null));
+          const branchName = await measureRunPhase("workspace.repository.git_branch", () => git("symbolic-ref", "--quiet", "--short", "HEAD").catch(() => { input.signal?.throwIfAborted(); return null; }));
+          input.signal?.throwIfAborted();
           await assertPublicationAllowed(input);
           if (!acquisitionRestricted) {
             await assertCurrentControllerAcquisition(input);
@@ -636,6 +637,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
         } catch (error) {
           const failureCode = error instanceof RepositoryRefNotFoundError ? REPOSITORY_REF_NOT_FOUND : "repository_preparation_failed";
           await measureRunPhase("workspace.repository.state_write", () => db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode, updatedAt: new Date() }).where(eq(executionWorkspaceRepositories.id, row.id)));
+          input.signal?.throwIfAborted();
           throw error;
         }
       });

@@ -93,7 +93,7 @@ describe("buildMonitorSurfaceCopy", () => {
   it("keeps blocked checks paused while a run is active", () => {
     const copy = buildMonitorSurfaceCopy(derived({ state: "overdue", nextCheckAt: NOW.toISOString() }),
       NOW, null, 0, "blocked", true);
-    expect(copy!.bannerTitle).toBe("Automatic checks paused");
+    expect(copy!.bannerTitle).toBe("Monitor did not run — task is blocked");
     expect(copy!.executionWait).toBeUndefined();
     expect(copy!.checkUnavailable).toBe(false);
   });
@@ -335,8 +335,9 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
       <IssueMonitorBanner issue={issue} onCheckNow={onCheckNow} />
       <IssueMonitorComposerStrip issue={issue} onCheckNow={onCheckNow} />
     </>));
-    expect(container.textContent).toContain("Automatic checks paused");
-    expect(container.textContent).not.toMatch(/overdue|next tick|scheduled check/i);
+    expect(container.textContent).toContain("Monitor did not run — task is blocked");
+    expect(container.textContent).toContain("The scheduled check is overdue because automatic checks pause while a task is blocked.");
+    expect(container.textContent).not.toMatch(/next tick/i);
     const buttons = Array.from(container.querySelectorAll("button"));
     expect(buttons.map(button => button.textContent)).toEqual(["Check now", "Check now"]);
     flushSync(() => buttons[1]!.click());
@@ -365,6 +366,7 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
       <IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />
       <IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} />
     </>));
+    expect(container.textContent).toContain("Monitor did not run — task is blocked");
     expect(container.textContent).toContain("Resume this task to continue checking.");
     expect(container.querySelector("button")).toBeNull();
     flushSync(() => root.unmount());
