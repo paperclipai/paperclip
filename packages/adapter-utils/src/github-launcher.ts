@@ -116,6 +116,19 @@ main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_fail
 `;
 }
 
+/**
+ * Per-run GitHub broker capabilities read by the launcher. They are short-lived
+ * and scoped to this run's broker, like PAPERCLIP_API_KEY, so agent shells that
+ * drop names containing "token" must still keep them; without them `gh` and
+ * `git` fail with `capability_missing` (TECH-8423).
+ */
+export const GITHUB_BROKER_SHELL_ENV_KEYS: readonly string[] = ["PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BRIDGE_TOKEN"];
+
+/** True when a Codex shell may inherit this variable despite the default secret-name exclusions. */
+export function isCodexShellAllowedSecretKey(key: string): boolean {
+  return key === "PAPERCLIP_API_KEY" || GITHUB_BROKER_SHELL_ENV_KEYS.includes(key);
+}
+
 /** Override inherited credentials even when adapters merge the host environment later. */
 export function githubBrokerEnvironment(input: Record<string, unknown>, broker: { url: string; token: string }): Record<string, string> {
   const env: Record<string, string> = {};

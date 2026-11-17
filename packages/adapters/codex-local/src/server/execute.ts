@@ -1,5 +1,6 @@
 import { buildAgentChildBaseEnv } from "@paperclipai/adapter-utils/agent-child-env";
 import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
+import { isCodexShellAllowedSecretKey } from "@paperclipai/adapter-utils/github-launcher";
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
@@ -1308,8 +1309,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const shellKeys = [...new Set([
           "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
           // Keep Codex's default secret-name exclusions except for the scoped
-          // Paperclip API token used by the agent skill. Never include host env.
-          ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+          // Paperclip API token used by the agent skill and the run's GitHub
+          // broker tokens used by the gh/git launcher (TECH-8423). Never include host env.
+          ...Object.keys(env).filter(key => isCodexShellAllowedSecretKey(key) || !/key|secret|token/i.test(key)),
           ...identityNames,
         ])];
         args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",

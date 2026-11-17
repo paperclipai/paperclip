@@ -2,6 +2,7 @@ import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/op
 import { prepareAcpxCodexObservabilityHome } from "../codex-observability-home.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS, applyObservabilityEnvironment } from "../agent-observability.js";
 import { isSafeLocaleEnvName } from "../agent-child-env.js";
+import { isCodexShellAllowedSecretKey } from "../github-launcher.js";
 import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import { emitStartupReuse, environmentStartupReuse, summarizeStartupReuse, type StartupReuseReason } from "../startup-reuse.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
@@ -2108,8 +2109,9 @@ async function buildRuntime(input: {
         "PATH", "HOME", "LANG", "TMPDIR", "CODEX_HOME",
         "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
         // Preserve Codex's default secret-name exclusions. The short-lived
-        // Paperclip API token is required by the agent skill's Bash/curl calls.
-        ...Object.keys(env).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
+        // Paperclip API token is required by the agent skill's Bash/curl calls,
+        // and the run's GitHub broker tokens by the gh/git launcher (TECH-8423).
+        ...Object.keys(env).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (isCodexShellAllowedSecretKey(key) || !/key|secret|token/i.test(key))),
       ])] } : {}),
       requestedModel,
       requestedThinkingEffort,
