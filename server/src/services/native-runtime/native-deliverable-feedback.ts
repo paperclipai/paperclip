@@ -201,7 +201,9 @@ function explicitlyRequestsFileOutputBySentence(objective: string): boolean {
             ? /\b(as|into|to|named|called)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*["'`*]*(?:[^\s]*\/)?$/iu
             : /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu).exec(prefix);
           const beforeDestination = prefix.slice(0, destinationMatch?.index ?? 0);
-          const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
+          const comparison = /\bas\s+(?:(?:a|an|the)\s+)*$/iu.test(prefix)
+            && /^\s+(?:(?:currently|now|already)\s+)?(?:reads|is|was|appears|looks|stands|says|shows|exists)\b/iu.test(suffix);
+          const destination = !comparison && destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
             || !inputReference.test(beforeDestination));
           if (json) {
             const directObject = /^\s*(?:(?:a|an|the|my|your|our|their|his|her|its|this|that)\s+(?:(?:new|separate|downloadable|attached)\s+)*([\p{L}\p{N}_-]+\s+)?|(?:(?:new|separate|downloadable|attached)\s+)*)["'`*]*(?:[^\s]*\/)?$/iu.exec(prefix);
