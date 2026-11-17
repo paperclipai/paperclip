@@ -5,8 +5,6 @@ const bridges: RunnerToolBridge[] = [];
 afterEach(async () => { await Promise.all(bridges.splice(0).map(bridge => bridge.close())); });
 
 it("advertises readable continuation fields and rejects malformed waits before dispatch", async () => {
-  // The handler is simulated. This tests the authenticated HTTP tool boundary,
-  // not controller persistence or downstream monitor scheduling.
   const handler = vi.fn(async () => ({ accepted: true }));
   const bridge = await startRunnerToolBridge({ tools: [], handler });
   bridges.push(bridge);

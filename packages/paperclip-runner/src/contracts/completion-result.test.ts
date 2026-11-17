@@ -205,9 +205,6 @@ describe("provider-neutral completion result schema", () => {
   });
 
   it("keeps nested continuation fields visible to code-mode discovery without changing validation", () => {
-    // Codex b271854's renderer returns allOf before sibling properties. Its
-    // conditional-only branch renders as unknown, hiding the required retry key.
-    // Direct if/then preserves the same JSON validation and object rendering.
     const continuation = PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties.continuation;
     expect(continuation).not.toHaveProperty("allOf");
     expect(continuation.type).toEqual(["object", "null"]);

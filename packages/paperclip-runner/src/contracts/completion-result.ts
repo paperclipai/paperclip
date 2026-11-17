@@ -186,10 +186,6 @@ const waitContinuationSchema = {
   allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
 } as const;
 
-// Codex code-mode renders allOf before its sibling properties; an if/then-only
-// branch becomes unknown and hides kind, summary, and idempotencyKey. The single
-// condition is equivalent as direct if/then siblings, which preserves both the
-// object presentation and JSON Schema validation. Keep canonical output intact.
 const { allOf: waitContinuationConditions, ...providerWaitContinuationProperties } = waitContinuationSchema;
 const providerWaitContinuationSchema = {
   ...providerWaitContinuationProperties,
