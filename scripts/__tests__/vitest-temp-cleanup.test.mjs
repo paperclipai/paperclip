@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -141,4 +141,42 @@ test("sandbox runtime tests release the workspace snapshots they prepare", (t) =
   });
   assert.equal(result.status, 0, output);
   assert.deepEqual(residue, [], output);
+});
+
+function runWrapperWithFakeVitest(t, { retainCluster }) {
+  const scratch = realpathSync(mkdtempSync(path.join(os.tmpdir(), "pc-wrapper-root-")));
+  t.after(() => removeTree(scratch));
+  const bin = path.join(scratch, "bin");
+  const marker = path.join(scratch, "tmpdir");
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, "pnpm"), `#!/bin/sh
+printf '%s' "$TMPDIR" > ${JSON.stringify(marker)}
+if [ "$FAKE_RETAIN_CLUSTER" = 1 ]; then
+  mkdir -p "$TMPDIR/paperclip-pg-retained/data"
+  echo 4242 > "$TMPDIR/paperclip-pg-retained/data/postmaster.pid"
+fi
+`);
+  chmodSync(path.join(bin, "pnpm"), 0o755);
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    FAKE_RETAIN_CLUSTER: retainCluster ? "1" : "0" };
+  delete env.PAPERCLIP_CI_TEST_SELECTION;
+  delete env.PAPERCLIP_CI_SELECTION_HASH;
+  delete env.NODE_TEST_CONTEXT;
+  const result = spawnSync(process.execPath, [path.join(root, "scripts/run-vitest-stable.mjs"),
+    "--mode", "general", "--group", "general-workspaces-c"], { cwd: root, env, encoding: "utf8", timeout: 60_000 });
+  const tmpdir = readFileSync(marker, "utf8");
+  const testRoot = path.dirname(tmpdir);
+  t.after(() => removeTree(testRoot));
+  return { result, tmpdir, testRoot, output: `${result.error ?? ""}\n${result.stdout}\n${result.stderr}` };
+}
+
+test("the wrapper keeps a run root that holds a retained Postgres data directory and removes others", (t) => {
+  const retained = runWrapperWithFakeVitest(t, { retainCluster: true });
+  assert.equal(retained.result.status, 0, retained.output);
+  assert.ok(existsSync(path.join(retained.tmpdir, "paperclip-pg-retained/data/postmaster.pid")), retained.output);
+  assert.match(retained.result.stderr, new RegExp(`keeping .*paperclip-pg-retained`), retained.output);
+
+  const normal = runWrapperWithFakeVitest(t, { retainCluster: false });
+  assert.equal(normal.result.status, 0, normal.output);
+  assert.equal(existsSync(normal.testRoot), false, normal.output);
 });
