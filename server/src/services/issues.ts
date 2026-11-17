@@ -31,6 +31,7 @@ import { assertOnboardingFirstTaskCreationAllowed, assertOnboardingFirstTaskDepe
 import { readPersistedConfirmationDecision } from "./confirmation-decision.js";
 import { resolveConnectionIntentContinuationSource, resolveItemVerdictContinuationWake } from "./chat-interaction-continuation.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { readNativeMonitorSource } from "./native-runtime/native-monitor-delivery.js";
 import { readNativeContinuationSource } from "./native-runtime/native-continuation-delivery.js";
@@ -13683,7 +13684,9 @@ export function issueService(db: Db) {
         return options?.authorizationReason ===
           CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON
           ? retryNativeChatReviewPresentation(append)
-          : append();
+          : actor.agentId && actor.runId && !actor.userId
+            ? retryTransientLockContention(append)
+            : append();
       }
       // The query below locks human comments on caller-owned transactions too,
       // sharing the fence with both question creation and Slack settlement.
