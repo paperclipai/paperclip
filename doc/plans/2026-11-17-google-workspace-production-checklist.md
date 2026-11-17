@@ -21,16 +21,10 @@ operator handoff, never here.
 
 ## The scope contract
 
-One connection, three groups, 14 scopes in total across all modes. All have
-the prefix `https://www.googleapis.com/auth/`. Nothing outside this table is
-requested, declared in the Console, or shown in the demo.
-
-| Group | Read only | Read & write | Google category |
-| --- | --- | --- | --- |
-| Gmail | `gmail.readonly` | `gmail.readonly`, `gmail.compose` | Restricted |
-| Drive | `drive.readonly` | `drive.readonly`, `drive.file` | `drive.readonly` restricted |
-| Docs, Sheets, Slides | `documents.readonly`, `spreadsheets.readonly`, `presentations.readonly` | `documents`, `spreadsheets`, `presentations` | Sensitive |
-| Calendar | `calendar.calendarlist.readonly`, `calendar.events.readonly`, `calendar.events.freebusy` | `calendar.calendarlist.readonly`, `calendar.events` | Sensitive |
+One connection, 14 scopes; the table is in the working memory's
+[Scopes](../memory/google-connector-memory.md#scopes) section. The target is
+that nothing outside it is requested, declared in the Console, or shown in the
+demo.
 
 ## 0. Decisions (Dotta)
 
@@ -52,7 +46,7 @@ Decisions and the details behind them are kept in the
 ## 1. Baseline (needs the Google project owner's sign-in)
 
 - [ ] Verification Center: is the case pending, waiting on us, or closed?
-- [ ] Record the scopes declared in the Console and compare with the table above.
+- [ ] Record the scopes declared in the Console and compare with the 14.
 - [ ] Every OAuth client that calls Workspace MCP is marked as an AI-agent
       client; note any that missed the November cutoff and need replacing.
 - [ ] Separate QA project is External and In Production, with user count noted.
@@ -64,16 +58,39 @@ Decisions and the details behind them are kept in the
 
 ## 2. Product and code (see the code-fix plan)
 
-- [ ] Data-use disclosure shown in the picker immediately before Google consent.
+- [x] Data-use disclosure shown in the picker immediately before Google consent
+      (Nov 17, [#21998](https://github.com/paperclipai/paperclip/pull/21998)).
 - [ ] Limited Use statement published and linked from the picker.
-- [ ] Help page: how to disconnect and how to delete stored Google data.
-- [ ] Paperclip-managed Google sign-in can only ever request the 14 scopes.
-- [ ] `gmail.modify` is not reachable through the Paperclip-managed client.
-- [ ] Prompt-injection screening confirmed on every Google tool result.
+- [x] Help page: how to disconnect and how to delete stored Google data
+      (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010):
+      `docs/guides/board-operator/deleting-connection-data.md`).
+- [x] Paperclip-managed Google sign-in can only request the 14 scopes for the
+      unified connection (Nov 17,
+      [#22001](https://github.com/paperclipai/paperclip/pull/22001)). The Cloud
+      broker still accepts more; see the working memory.
+- [x] `gmail.modify` is not reachable through the Paperclip-managed client
+      (Nov 17, [#22001](https://github.com/paperclipai/paperclip/pull/22001)).
+- [x] Prompt-injection screening confirmed on every Google tool result
+      (Nov 17, [#21999](https://github.com/paperclipai/paperclip/pull/21999)).
 - [ ] Disconnecting the last Google connection revokes the grant at Google.
-- [ ] Retention and deletion of Google content in tasks, runs and files audited.
-- [ ] REST-backed tool set for all 36 actions, in its own folder, with the same
-      tool names and shapes as Google's MCP tools.
+- [x] Retention and deletion of Google content in tasks, runs and files audited
+      (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010)
+      store inventory; summary in the working memory's "Where Google content
+      is kept"). Users can now delete it per connection. Content agents wrote
+      into tasks stays, and task or company deletion does not yet run the same
+      cleanup.
+- [x] REST-backed tool set for all 36 actions exists but is not switched on
+      (Nov 17): Gmail 9
+      ([#22000](https://github.com/paperclipai/paperclip/pull/22000),
+      [#22014](https://github.com/paperclipai/paperclip/pull/22014)),
+      Calendar 9 ([#22017](https://github.com/paperclipai/paperclip/pull/22017)),
+      Sheets 6 ([#22027](https://github.com/paperclipai/paperclip/pull/22027)),
+      Docs 2 and Slides 2
+      ([#22029](https://github.com/paperclipai/paperclip/pull/22029)), Drive 8
+      ([#22028](https://github.com/paperclipai/paperclip/pull/22028)). The
+      per-service switch exists
+      ([#22016](https://github.com/paperclipai/paperclip/pull/22016)).
+- [ ] Each service switched to REST after a live test on the staging tester.
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [ ] `googletester.staging.paperclip.app` created and wired to the new Google
@@ -86,12 +103,16 @@ The policy is in the `paperclip-website` repository
 
 - [x] Policy has a Google user data section with the Limited Use statement.
 - [x] Policy states that Google data is not used to train general models.
-- [ ] Policy says Google content is sent to AI model providers to carry out
-      tasks, and names them or the category.
-- [ ] Policy's retention wording matches the product (content read by agents
-      stays in task and run history after disconnect), or the product changes.
-- [ ] Policy says Gmail drafts, not "send".
-- [ ] Policy gives the steps and timeline for deleting data.
+- [x] Policy says Google content is sent to AI model providers to carry out
+      tasks, and names them or the category (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [x] Policy's retention wording matches the product (content read by agents
+      stays in task and run history after disconnect), or the product changes
+      (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [x] Policy says Gmail drafts, not "send" (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [x] Policy gives the steps and timeline for deleting data (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [ ] Legal review of the narrowed no-training wording in [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197) (it now
+      covers only providers Paperclip selects and configures). Not required
+      for Google approval.
 - [ ] Policy's description of the sign-in path matches the current flow.
 - [ ] Model-provider terms and settings checked against that statement.
 - [ ] Data-flow inventory written: Google, broker, server, runner, model
@@ -152,6 +173,9 @@ The policy is in the `paperclip-website` repository
 
 - [ ] Console declaration updated to the 14 scopes.
 - [ ] Point-by-point reply to Google's October 7 message drafted.
+      Note: the ponytail reviewer flagged the summary of Google's reply in the
+      working memory's review history as review correspondence; we kept the
+      summary.
 - [ ] Reviewer login and steps tested by someone who has not seen the app.
 - [ ] Dotta approves sending.
 - [ ] Console update submitted once and reply sent in the existing case.

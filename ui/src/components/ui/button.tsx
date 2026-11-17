@@ -3,6 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { ANALYTICS_UNMASK_PROPS } from "@/lib/analytics/privacy"
 
 const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
@@ -44,12 +45,15 @@ const Button = React.forwardRef<
   React.ComponentProps<"button"> &
     VariantProps<typeof buttonVariants> & {
       asChild?: boolean
+      /** The label is fixed product copy, so session replay may show it. */
+      analyticsChrome?: boolean
     }
 >(function Button({
   className,
   variant = "default",
   size = "default",
   asChild = false,
+  analyticsChrome = false,
   ...props
 }, ref) {
   const Comp = asChild ? Slot.Root : "button"
@@ -58,6 +62,7 @@ const Button = React.forwardRef<
     <Comp
       ref={ref}
       data-slot="button"
+      {...(analyticsChrome ? ANALYTICS_UNMASK_PROPS : {})}
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}

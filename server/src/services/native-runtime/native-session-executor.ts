@@ -215,6 +215,7 @@ import {
   applyNativeSessionGoalControl,
   inspectStagedRunAttachment,
   inspectDurablePrpCheckpointHeader,
+  inspectDurablePrpCheckpointRunner,
   inspectStagedRunAttachmentHeader,
   inspectRetainedRunInstructions,
   inspectWarmRunTransition,
@@ -11239,7 +11240,16 @@ async function executePaperclipNativeSessionAttempt(
           record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
             NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
       }) ?? undefined;
-      if (remoteWarmRecovery) remoteWarmRecovery.releasedSource = releasedSource;
+      if (remoteWarmRecovery) {
+        remoteWarmRecovery.releasedSource = releasedSource;
+        if (releasedSource) {
+          const header = await loadNativeRunnerCheckpointHeader(input.db, remoteWarmRecovery.previousExecution.binding).catch((error: unknown) => {
+            if (error instanceof Error && error.message === "native_runner_checkpoint_retired") return null;
+            throw error;
+          });
+          remoteWarmRecovery.releasedSourceRunner = header ? inspectDurablePrpCheckpointRunner(header) ?? undefined : undefined;
+        }
+      }
     }
   }
   if (input.useRunnerd) {
@@ -16843,9 +16853,11 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
       resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
+      resumeRelaunchedRunnerVersion: description.resumeRelaunchedRunnerVersion,
       launchDigestVersion: description.launchDigestVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
+      releasedSourceRunner: input.remoteWarmRecovery?.releasedSourceRunner,
       sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,
       onResumed: async source => updateReleasedWarmRunner(input.execution, source, input.remoteWarmRecovery?.portableSourceTaskId ?? description.taskId, null),
       onRetired: async source => updateReleasedWarmRunner(input.execution, source, description.taskId, null),

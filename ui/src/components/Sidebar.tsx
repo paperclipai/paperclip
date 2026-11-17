@@ -176,10 +176,10 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               width; a nav row also keeps search reachable from the
               collapsed rail, where the old header icon was dropped entirely.
               Cmd/Ctrl+K remains the keyboard path (command palette). */}
-          <SidebarNavItem to="/search" label="Search" icon={Search} />
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem analyticsChrome to="/search" label="Search" icon={Search} />
+          <SidebarNavItem analyticsChrome to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           {!combinedInboxTasks ? (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to="/inbox"
               label="Inbox"
               icon={Inbox}
@@ -189,9 +189,9 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               alert={inboxBadge.failedRuns > 0}
             />
           ) : null}
-          {agentChatEnabled && !chatRail ? <SidebarNavItem to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" /> : null}
+          {agentChatEnabled && !chatRail ? <SidebarNavItem analyticsChrome to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" /> : null}
           {showDecisions ? (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to="/decisions"
               label="Decisions"
               icon={ListChecks}
@@ -200,10 +200,10 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
             />
           ) : null}
           {showStatusCards ? (
-            <SidebarNavItem to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
+            <SidebarNavItem analyticsChrome to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
           ) : null}
           {conferenceRoomChatEnabled ? (
-            <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
+            <SidebarNavItem analyticsChrome to="/board-chat" label="Conference Room" icon={MessagesSquare} />
           ) : null}
         </div>
 
@@ -212,12 +212,12 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               agents you talk to live in the Chat surface's own secondary rail
               (ChatContextualSidebar), not in the primary nav. */}
           {chatRail ? (
-            <SidebarNavItem to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+            <SidebarNavItem analyticsChrome to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
           ) : null}
           {/* Combined Inbox + Task List: Inbox is a view inside Tasks, so the
               unread/failed-run badge rides on Tasks. */}
           {combinedInboxTasks ? (
-            <SidebarNavItem
+            <SidebarNavItem analyticsChrome
               to="/issues"
               label="Tasks"
               icon={CircleCheck}
@@ -227,21 +227,21 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               alert={inboxBadge.failedRuns > 0}
             />
           ) : (
-            <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} />
+            <SidebarNavItem analyticsChrome to="/issues" label="Tasks" icon={CircleCheck} />
           )}
           {streamlinedUiEnabled ? (
             <>
-              <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+              <SidebarNavItem analyticsChrome to="/projects" label="Projects" icon={FolderOpen} />
               <SidebarStarredProjects />
             </>
           ) : null}
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
+          <SidebarNavItem analyticsChrome to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem analyticsChrome to="/artifacts" label="Artifacts" icon={Package} />
           {showCases ? (
-            <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
+            <SidebarNavItem analyticsChrome to="/cases" label="Cases" icon={Layers} textBadge="beta" />
           ) : null}
           {showGoalsLink ? (
-            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+            <SidebarNavItem analyticsChrome to="/goals" label="Goals" icon={Target} />
           ) : goalsLinkPending ? (
             <div
               data-testid="sidebar-goals-placeholder"
@@ -250,7 +250,7 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
             />
           ) : null}
           {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem analyticsChrome to="/workspaces" label="Workspaces" icon={GitBranch} />
           ) : null}
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
@@ -272,10 +272,10 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
             label="Org"
             collapsible={{ open: organizationOpen, onOpenChange: setOrganizationOpen }}
           >
-            <SidebarNavItem to="/agents" label="Agents" icon={Users} />
-            <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-            <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
-            <SidebarNavItem to="/activity" label="Audit" icon={History} />
+            <SidebarNavItem analyticsChrome to="/agents" label="Agents" icon={Users} />
+            <SidebarNavItem analyticsChrome to="/skills" label="Skills" icon={Boxes} />
+            <SidebarNavItem analyticsChrome to="/apps" label="Connectors" icon={Unplug} />
+            <SidebarNavItem analyticsChrome to="/activity" label="Audit" icon={History} />
           </SidebarSection>
         ) : null}
 
@@ -291,13 +291,13 @@ function ClassicSidebar({ children }: { children?: ReactNode }) {
               label="Organization"
               collapsible={{ open: organizationOpen, onOpenChange: setOrganizationOpen }}
             >
-              <SidebarNavItem to="/org" label="Org" icon={Network} />
-              <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
-              <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
-              <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-              <SidebarNavItem to="/activity" label="Activity" icon={History} />
-              <SidebarNavItem to="/activity/commentary" label="Commentary" icon={History} />
-              <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+              <SidebarNavItem analyticsChrome to="/org" label="Org" icon={Network} />
+              <SidebarNavItem analyticsChrome to="/apps" label="Connectors" icon={Unplug} />
+              <SidebarNavItem analyticsChrome to="/timeline" label="Timeline" icon={GanttChartSquare} />
+              <SidebarNavItem analyticsChrome to="/costs" label="Costs" icon={DollarSign} />
+              <SidebarNavItem analyticsChrome to="/activity" label="Activity" icon={History} />
+              <SidebarNavItem analyticsChrome to="/activity/commentary" label="Commentary" icon={History} />
+              <SidebarNavItem analyticsChrome to="/company/settings" label="Settings" icon={Settings} />
             </SidebarSection>
           </>
         )}

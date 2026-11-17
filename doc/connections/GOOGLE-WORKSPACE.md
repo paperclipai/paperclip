@@ -16,7 +16,7 @@ Turn the setting on in **Settings → Experimental** to test the built-in connec
 
 The combined connection has one credential grant, capability catalog, policy
 profile, audit trail and reconnect lifecycle. It requests only the selected
-groups' scopes (nine scopes for the default selection), not the legacy full
+groups' scopes (ten scopes for the default selection), not the legacy full
 union. Google's consent screen also lets users decline
 permissions; discovery skips services without grants and excludes unsupported
 actions. The gateway checks actual grant scopes again before each call, including
@@ -63,6 +63,28 @@ endpoints remain separate. Paperclip namespaces actions by service and routes th
 to a closed endpoint registry using the combined grant. It does not create child
 connections or send provider tokens through Paperclip ID.
 
+Each service has a tool transport, set in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`
+(`packages/shared/src/google-workspace-connectors.ts`). `google_mcp` sends calls
+to Google's hosted MCP server for that service. `paperclip_rest` runs Paperclip's
+own tools over Google's REST APIs, in the server process
+(`server/src/google-workspace-rest-tools/`), with the same tool names, inputs
+and results. Every service is on `google_mcp` today. A service can move to
+`paperclip_rest` only when Paperclip implements every tool on its allowlist; a
+test enforces that. On either transport, the same grant scope checks, approvals,
+audit, token refresh and reconnection, prompt-injection screening, cancellation
+and experimental-feature gate apply. On `paperclip_rest`, discovery and health
+checks prove the token with one cheap REST read per service that the granted
+scopes allow (for example, Gmail reads the account profile) instead of Google's
+`tools/list`. A grant that allows no such read is listed without one, and a
+failed check makes only that service unavailable. See the
+folder's `README.md` for how to switch a service and how to remove the REST
+tools.
+
+Google results are untrusted content. The prompt-injection guard checks them
+before an agent receives them; see
+[Google Workspace content](../prompt-injection-prevention.md#google-workspace-content)
+for what it covers and what it does not.
+
 The catalog reuses the existing reviewed Google mark (`google-people.svg`),
 registered under its own `google-workspace` brand identity. No new artwork is
 downloaded or substituted for a product logo.
@@ -75,11 +97,26 @@ client pair; that client's Cloud project must have every applicable MCP API and
 preview enrollment. Do not remove legacy enabled profiles while their grants are
 in use. This code change does not enable the broker profile or deploy any stack.
 
-The signed request and envelope authentication bind the exact selected request;
-the legacy 21-scope profile remains supported for old clients. The encrypted
-credential payload preserves Google's actual nonempty
-subset. Missing scope evidence and scopes outside that reviewed union fail closed
-on authorization and refresh. Individual legacy profiles retain exact matching.
+The signed request and envelope authentication bind the exact selected request.
+Refresh binds the 14 scopes submitted for Google verification
+(`GOOGLE_WORKSPACE_SUBMITTED_SCOPES`), which the broker accepts as a subset of
+its registry. The encrypted credential payload preserves Google's actual
+nonempty subset. An authorization request with any scope outside the 14 is
+rejected. Callback and refresh use one contract on both managed and
+customer-owned OAuth: Paperclip caps Google's reported scopes to the 14 and to
+the saved request, and continues. A scope outside the 14 (for example a former
+Chat, Contacts, Directory, profile or `calendar.readonly` grant) is ignored and
+never enables an action. Only missing scope evidence or an empty result needs
+reconnecting, and reconnecting with a new service choice always works.
+Individual legacy profiles retain exact matching.
+
+Paperclip's own Google client never starts consent for a profile outside the
+14: `gmail.archive` (`gmail.modify`), `chat.read`, `chat.write`, `people.read`
+and `workspace-search.read`. Their Apps methods are no longer offered for new
+setup even when the broker advertises them, and reconnecting a saved connection
+on one of them is refused. Saved connections keep resolving their method,
+refreshing and running. Customer-owned OAuth methods for those services are
+unchanged.
 For the new `google/workspace.all` profile only, HKDF info is SHA-256(AAD) to
 remain below Node's 1024-byte limit. AES-GCM still authenticates the complete AAD;
 legacy envelope key derivation is unchanged.
@@ -262,9 +299,15 @@ Docs, Sheets, and Slides request only their service's read-only scope in the
 read profile and its read/write scope in the write profile. They do not also
 request `drive.readonly` or `drive.file`: those are authorization alternatives,
 not additional requirements. Drive and Workspace Search retain their separate
-Drive permissions. Calendar write requests `calendar.calendarlist.readonly`
-and `calendar.events`; the latter also authorizes `suggest_time`. Calendar read
-retains `calendar.events.freebusy` alongside list/event read-only access.
+Drive permissions. The per-service Calendar write profile requests
+`calendar.calendarlist.readonly` and `calendar.events`; Google's MCP
+`suggest_time` accepts `calendar.events`. Calendar read retains
+`calendar.events.freebusy` alongside list/event read-only access. The combined
+connection's read & write Calendar selection also requests
+`calendar.events.freebusy` (2026-11-17), because Google's REST
+[`freeBusy.query`](https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query)
+does not accept `calendar.events`. The per-service profile keeps its exact
+scope set for the Cloud broker.
 
 References: Google's [Docs read](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/read_doc)
 and [update](https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/update_doc),

@@ -128,6 +128,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
   "POST /api/instance/connector-events/wake",
   "POST /api/instance/ephemeral-enrollment/prepare",
+  "GET /api/instance/ephemeral-enrollment/eligibility",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -137,6 +138,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
   "GET /api/customer-success/v1/run-authority",
   "POST /api/customer-success/v1/read",
+  "POST /api/customer-success/v1/run-liveness",
   // OAuth discovery and protocol endpoints have their own metadata contract;
   // browser connection-management operations remain documented in the board API.
   // Markdown rendering of the separately documented assistant setup page.

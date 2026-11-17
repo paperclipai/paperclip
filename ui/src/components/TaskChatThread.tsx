@@ -133,6 +133,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -3382,6 +3383,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           <div
             className={cn(
               "relative flex min-h-0 flex-1 flex-col",
+              // Customer content: masked in session replay, skipped by autocapture.
+              ANALYTICS_MASK_CLASS,
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
