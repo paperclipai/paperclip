@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { unprocessable } from "../errors.js";
+import { runAdapterExecutionTargetShellCommand, type AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 export const MAX_INSTRUCTION_BYTES = 1024 * 1024;
 export function instructionPath(value: string): string {
@@ -189,4 +190,18 @@ export function instructionGitExcludeFailureReason(result: {
   if (result.exitCode === 127) return "node_unavailable";
   if (result.signal && /^SIG[A-Z0-9]{1,10}$/.test(result.signal)) return `signal_${result.signal.toLowerCase()}`;
   return Number.isSafeInteger(result.exitCode) ? `exit_${result.exitCode}` : "unknown";
+}
+
+const REMOTE_GIT_EXCLUDE_ATTEMPTS = 3;
+
+export async function excludeRuntimeFromRemoteGit(runId: string, target: Exclude<AdapterExecutionTarget, { kind: "local" }>, failure: string) {
+  const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
+  for (let attempt = 1; ; attempt++) {
+    const result = await runAdapterExecutionTargetShellCommand(runId, target,
+      `node -e ${quote(instructionGitExcludeProgram)} ${quote(target.remoteCwd)}`, { cwd: target.remoteCwd, env: {}, timeoutSec: 30 });
+    if (result.exitCode === 0 && !result.timedOut) return;
+    if (!result.timedOut || attempt === REMOTE_GIT_EXCLUDE_ATTEMPTS) {
+      throw new Error(`${failure} (reason=${instructionGitExcludeFailureReason(result)})`);
+    }
+  }
 }
