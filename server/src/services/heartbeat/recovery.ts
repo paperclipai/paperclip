@@ -3086,6 +3086,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       logger.warn({ err: error }, "failed to retry captured instruction revisions");
     });
 
+    // Run process group ids resolved alongside the states, so removals can be
+    // gated on real liveness instead of the terminal status alone.
+    const sweepProcessGroupIds = new Map<string, number | null>();
     await sweepOrphanedRunScratch({
       resolveRunStates: async (runIds) => {
         // Markers are untrusted: only well-formed UUIDs reach the query.
@@ -3093,11 +3096,22 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         const validIds = runIds.filter((id) => uuid.test(id));
         // A run absent from this database may belong to another instance sharing the temp root.
         const states = new Map<string, RunScratchSweepRunState>(runIds.map((id) => [id, "unknown"]));
+        sweepProcessGroupIds.clear();
+        for (const id of runIds) sweepProcessGroupIds.set(id, null);
         if (validIds.length === 0) return states;
-        const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, processGroupId: heartbeatRuns.processGroupId })
           .from(heartbeatRuns).where(inArray(heartbeatRuns.id, validIds));
-        for (const row of rows) states.set(row.id, isHeartbeatRunTerminalStatus(row.status) ? "terminal" : "active");
+        for (const row of rows) {
+          states.set(row.id, isHeartbeatRunTerminalStatus(row.status) ? "terminal" : "active");
+          sweepProcessGroupIds.set(row.id, row.processGroupId ?? null);
+        }
         return states;
+      },
+      // A terminal run's directories are removed only after its process group
+      // (detached descendants included) has actually exited.
+      isRunProcessGroupAlive: (runId) => {
+        const processGroupId = sweepProcessGroupIds.get(runId);
+        return processGroupId != null ? isProcessGroupAlive(processGroupId) : undefined;
       },
     }).then((swept) => {
       if (swept.removed.length > 0) logger.info({ removed: swept.removed.length, truncated: swept.truncated }, "swept orphaned run scratch directories");

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import path from "node:path";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
@@ -90,6 +91,25 @@ export function bindRetainedAiCredentialHome(home: string, scope: RetainedAiClea
   const bound = { ...scope };
   homes.set(home, bound);
   return () => { if (homes.get(home) === bound) homes.delete(home); };
+}
+
+/**
+ * True while a pending credential write-back still owns a home at or under
+ * `dir`: every removal entrance (direct cleanup and the orphan sweep) must
+ * keep the directory until the retained cleanup retires the home, or the only
+ * copy of a rotated credential is lost.
+ */
+export function retainedAiCredentialCleanupHomeInside(dir: string): boolean {
+  const root = path.resolve(dir);
+  const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+  for (const entries of retained.values()) {
+    for (const entry of entries) {
+      if (!entry.home) continue;
+      const home = path.resolve(entry.home);
+      if (home === root || home.startsWith(prefix)) return true;
+    }
+  }
+  return false;
 }
 export async function reconcileRetainedAiCleanupForHome(home: string): Promise<void> {
   const scope = homes.get(home);

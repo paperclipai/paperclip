@@ -363,6 +363,34 @@ describe("managed AI connections", () => {
     }
   });
 
+  it("defers managed AI home removal while the run process group is alive", async () => {
+    const owner = "scratch-home-gate-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active" });
+    await create(owner, owner);
+    const runScratchDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-run-scratch-gate-"));
+    let processGroupAlive = true;
+    try {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, managedHomeParent: runScratchDir, config: {} });
+      runtime.setHomeRemovalGate(() => !processGroupAlive);
+      const home = runtime.home!;
+      try {
+        await runtime.cleanup();
+        // The write-back completed but detached descendants may still hold the
+        // home: removal is deferred, not failed.
+        expect(runtime.homeRemoved()).toBe(false);
+        await expect(access(home)).resolves.toBeUndefined();
+      } finally {
+        processGroupAlive = false;
+        await runtime.cleanup();
+      }
+      expect(runtime.homeRemoved()).toBe(true);
+      await expect(access(home)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readdir(runScratchDir)).toEqual([]);
+    } finally {
+      await rm(runScratchDir, { recursive: true, force: true });
+    }
+  });
+
   it("uses a vaulted Copilot token with GitHub attribution and refuses revoked or foreign grants", async () => {
     const owner = "copilot-owner";
     const token = "github_pat_fixture_copilot";

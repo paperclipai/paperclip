@@ -5,7 +5,7 @@ import type { ManagedAiCredentialWritebackBinding } from "./managed-ai-credentia
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
-import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -30,6 +30,7 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { removeRunTempTree } from "./run-scratch.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -416,8 +417,22 @@ export async function prepareManagedAiRuntime(
     let ownsGoogleRecovery = false;
     let removalOnly = false;
     let deferredWriteback: { cause: unknown } | undefined;
+    // Set by run executions: the physical home removal waits until the run's
+    // process group has exited, so detached descendants still holding the home
+    // never lose their files. When the gate defers, the run scratch cleanup or
+    // the orphan sweep retries the removal after the group is gone.
+    let homeRemovalGate: (() => Promise<boolean> | boolean) | undefined;
     const removeHome = async () => {
-      if (home) await rm(home, { recursive: true, force: true });
+      if (home) {
+        const removalAllowed = await Promise.resolve(homeRemovalGate?.() ?? true).catch(() => true);
+        if (!removalAllowed) return;
+        // Contained removal: no symlink following, no crossing mount points.
+        const removal = await removeRunTempTree(home).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return { complete: true } as const;
+          throw error;
+        });
+        if (!removal.complete) return;
+      }
       homeRemoved = true;
       releaseCredentialHome?.();
     };
@@ -602,10 +617,11 @@ export async function prepareManagedAiRuntime(
       identity,
       home,
       homeRemoved: () => homeRemoved,
+      setHomeRemovalGate: (gate: () => Promise<boolean> | boolean) => { homeRemovalGate = gate; },
       cleanup: cleanupRuntime,
     };
   } catch (error) {
-    if (home) await rm(home, { recursive: true, force: true });
+    if (home) await removeRunTempTree(home).catch(() => undefined);
     releaseCredentialHome?.();
     throw error;
   }

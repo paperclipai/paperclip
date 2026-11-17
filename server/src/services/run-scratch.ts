@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { retainedAiCredentialCleanupHomeInside } from "./retained-ai-credential-cleanup.js";
 
 export const HEARTBEAT_RUN_SCRATCH_MARKER = ".paperclip-run-scratch.json";
 export const RUN_TEMP_ROOT_DIRNAME = ".pctmp";
@@ -33,7 +34,7 @@ export interface HeartbeatRunScratchEnvResult {
 
 export type HeartbeatRunScratchCleanupResult =
   | { removed: true; dir: string }
-  | { removed: false; dir: string; reason: "missing" | "unmarked" | "owner_mismatch" | "process_group_alive" | "symlink" | "mount_point_present" };
+  | { removed: false; dir: string; reason: "missing" | "unmarked" | "owner_mismatch" | "process_group_alive" | "ai_home_retained" | "symlink" | "mount_point_present" };
 
 const TEMP_ENV_KEYS = ["TMPDIR", "TEMP", "TMP"] as const;
 const ISSUE_SEGMENT_MAX_CHARS = 32;
@@ -185,9 +186,10 @@ export function buildHeartbeatRunScratchEnv(
 
 type LstatFn = (p: string) => Promise<{ isDirectory: () => boolean; isSymbolicLink: () => boolean; dev: number }>;
 
-async function removeEntriesWithinDevice(dir: string, rootDevice: number, lstat: LstatFn): Promise<boolean> {
+async function removeEntriesWithinDevice(dir: string, rootDevice: number, lstat: LstatFn, skipTopNames?: Set<string>): Promise<boolean> {
   let complete = true;
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    if (skipTopNames?.has(entry.name)) continue;
     const entryPath = path.join(dir, entry.name);
     let stats;
     try {
@@ -249,6 +251,40 @@ export async function removeRunTempTree(
   return { complete: true };
 }
 
+/**
+ * Remove a marked run scratch directory while keeping the ownership marker —
+ * and its retry evidence — until every other entry is gone. An interrupted
+ * removal (mount point, concurrent writer) leaves a still-marked directory a
+ * later retry can act on, instead of an unrecoverable unmarked orphan.
+ */
+async function removeMarkedRunScratchDir(
+  dir: string,
+  marker: HeartbeatRunScratchMetadata,
+  lstat?: LstatFn,
+): Promise<{ complete: boolean }> {
+  const statFn: LstatFn = lstat ?? ((p: string) => fs.lstat(p));
+  const rootStat = await statFn(dir);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return { complete: false };
+  const complete = await removeEntriesWithinDevice(dir, rootStat.dev, statFn, new Set([HEARTBEAT_RUN_SCRATCH_MARKER]));
+  if (!complete) return { complete: false };
+  const markerPath = path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER);
+  await fs.unlink(markerPath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  });
+  try {
+    await fs.rmdir(dir);
+    return { complete: true };
+  } catch (error) {
+    // A concurrent writer can repopulate the emptied directory: restore the
+    // ownership evidence so a later retry can still prove ownership.
+    await fs.writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOTEMPTY") return { complete: false };
+    if (code === "ENOENT") return { complete: true };
+    throw error;
+  }
+}
+
 export async function cleanupHeartbeatRunScratch(input: {
   scratch: HeartbeatRunScratch;
   processGroupId?: number | null;
@@ -281,9 +317,15 @@ export async function cleanupHeartbeatRunScratch(input: {
   if (input.isProcessGroupAlive?.(input.processGroupId) === true) {
     return { removed: false, dir, reason: "process_group_alive" };
   }
+  // A retained managed AI home inside this directory still holds a credential
+  // the run could not write back; the directory survives until the retained
+  // cleanup retires the home.
+  if (retainedAiCredentialCleanupHomeInside(dir)) {
+    return { removed: false, dir, reason: "ai_home_retained" };
+  }
 
   await input.beforeRemove?.();
-  const removal = await removeRunTempTree(dir, input.lstat ? { lstat: input.lstat } : undefined);
+  const removal = await removeMarkedRunScratchDir(dir, input.scratch.metadata, input.lstat);
   if (!removal.complete) return { removed: false, dir, reason: "mount_point_present" };
   return { removed: true, dir };
 }
@@ -315,11 +357,19 @@ const sweepCursors = new Map<string, number>();
  * Safety: only real (non-symlink) directories directly under a root owned by
  * this runner — the per-run temp root, or the OS temp root with the historical
  * `paperclip-run-` prefix — with a valid regular-file marker, are considered.
- * Active runs and unmarked directories are always kept. Work per sweep is
- * bounded.
+ * Active runs and unmarked directories are always kept. A terminal run is
+ * only removed after its process group is proven exited (`isRunProcessGroupAlive`)
+ * and no retained credential home still depends on the directory. Work per
+ * sweep is bounded.
  */
 export async function sweepOrphanedRunScratch(input: {
   resolveRunStates: (runIds: string[]) => Promise<Map<string, RunScratchSweepRunState>>;
+  /**
+   * Answers whether the owning run's process group is still alive. `true`
+   * keeps the directory even for a terminal run; `false` or `undefined`
+   * (no group id known to the caller) allows removal.
+   */
+  isRunProcessGroupAlive?: (runId: string) => boolean | undefined;
   /** Restrict the sweep to one run's directories (used when that run ends). */
   runId?: string;
   /** Overrides the legacy OS temp root (tests). */
@@ -403,7 +453,8 @@ export async function sweepOrphanedRunScratch(input: {
   const states = await input.resolveRunStates([...new Set(candidates.map((c) => c.marker.runId))]);
   for (const { dir, marker } of candidates) {
     const state = states.get(marker.runId) ?? "active";
-    const removable = state === "terminal";
+    const removable = state === "terminal" && input.isRunProcessGroupAlive?.(marker.runId) !== true &&
+      !retainedAiCredentialCleanupHomeInside(dir);
     if (!removable || result.removed.length >= maxRemove) {
       if (removable) result.truncated = true;
       result.kept += 1;
@@ -416,7 +467,7 @@ export async function sweepOrphanedRunScratch(input: {
         result.kept += 1;
         continue;
       }
-      const removal = await removeRunTempTree(dir);
+      const removal = await removeMarkedRunScratchDir(dir, marker);
       if (!removal.complete) {
         result.kept += 1;
         continue;

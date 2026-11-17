@@ -2940,7 +2940,17 @@ export function heartbeatService(
         environment: workspaceSelection,
         services: { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral },
         onFailureSecretsResolved: (readSecrets) => { readFailureReportSecrets = () => [...readSecrets(), ...identityRedactor.values]; },
-        onManagedAiRuntimeAcquired: (runtime) => { managedAiRuntime = runtime; },
+        onManagedAiRuntimeAcquired: (runtime) => {
+          managedAiRuntime = runtime;
+          // The managed AI home now lives inside the per-run scratch directory:
+          // its physical removal must wait until the run's process group (including
+          // detached descendants) has exited. The scratch cleanup and the orphan
+          // sweep retry the removal once the group is gone.
+          runtime.setHomeRemovalGate(async () => {
+            const current = await getRun(run.id).catch(() => null);
+            return !isProcessGroupAlive(current?.processGroupId ?? null);
+          });
+        },
         onIdentityRedactorPrepared: (redactor) => { identityRedactor = redactor; },
       }));
       if (!executionConfiguration.prepared) return;
@@ -4231,18 +4241,8 @@ export function heartbeatService(
         ) {
           const scratchForCleanup = runScratch;
           // A retained managed AI home still holds a credential this run could
-          // not write back. Its per-run directory must survive until the
-          // retained cleanup retires the home itself.
-          if (managedAiRuntime && !managedAiRuntime.homeRemoved()) {
-            caseHandoffCleanupSettled = false;
-            await appendRunEvent(latestRun, {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: "run scratch cleanup skipped: ai_home_retained",
-              payload: { removed: false, dir: scratchForCleanup.dir, reason: "ai_home_retained" },
-            }).catch(() => undefined);
-          } else {
+          // not write back: the cleanup itself reports `ai_home_retained` and
+          // keeps the directory until the retained cleanup retires the home.
           let scratchCleanup: Awaited<
             ReturnType<typeof cleanupHeartbeatRunScratch>
           > | null = null;
@@ -4303,15 +4303,20 @@ export function heartbeatService(
             });
             // Earlier process attempts of this run (before a restart) left their
             // own scratch directories; the run is terminal, so remove them too.
+            // The sweep re-verifies the process group and retained homes before
+            // every removal.
             if (scratchCleanup.removed) {
               await sweepOrphanedRunScratch({
                 runId: run.id,
                 resolveRunStates: async (ids) => new Map(ids.map((id) => [id, "terminal" as const])),
+                isRunProcessGroupAlive: () => {
+                  const processGroupId = latestRun?.processGroupId;
+                  return processGroupId != null ? isProcessGroupAlive(processGroupId) : false;
+                },
               }).catch((sweepError) => {
                 logger.warn({ err: sweepError, runId: run.id }, "failed to sweep earlier run scratch attempts");
               });
             }
-          }
           }
         }
         if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&

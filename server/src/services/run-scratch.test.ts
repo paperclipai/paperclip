@@ -18,6 +18,11 @@ import {
   type HeartbeatRunScratch,
   type RunScratchSweepRunState,
 } from "./run-scratch.js";
+import {
+  bindRetainedAiCredentialHome,
+  reconcileRetainedAiCleanup,
+  retainAiCredentialCleanup,
+} from "./retained-ai-credential-cleanup.js";
 
 const cleanupDirs = new Set<string>();
 
@@ -306,6 +311,59 @@ describe("run scratch tree removal safety", () => {
     expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "mount_point_present" });
     await expect(fs.stat(path.join(scratch.dir, "mountpoint"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
   });
+
+  it("keeps the ownership marker while removal is blocked, and completes the removal on retry", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("cccc1111"), root }));
+    await fs.mkdir(path.join(scratch.dir, "mountpoint"));
+    await fs.writeFile(path.join(scratch.dir, "mountpoint", "inside.txt"), "y");
+    let mounted = true;
+    const realLstat = (p: string) => fs.lstat(p);
+    const lstat = async (p: string) => {
+      const stats = await realLstat(p);
+      return mounted && p === path.join(scratch.dir, "mountpoint")
+        ? { dev: stats.dev + 1, isDirectory: () => stats.isDirectory(), isSymbolicLink: () => stats.isSymbolicLink() }
+        : stats;
+    };
+
+    const first = await cleanupHeartbeatRunScratch({ scratch, lstat: lstat as typeof realLstat, runTempRootOverride: root });
+
+    // The interrupted removal must leave the ownership marker in place, or the
+    // directory becomes an unmarked orphan no later sweep can act on.
+    expect(first).toEqual({ removed: false, dir: scratch.dir, reason: "mount_point_present" });
+    await expect(fs.stat(scratch.markerPath)).resolves.toMatchObject({ isFile: expect.any(Function) });
+    await expect(fs.readFile(scratch.markerPath, "utf8")).resolves.toContain(scratch.metadata.runId);
+
+    mounted = false;
+    const second = await cleanupHeartbeatRunScratch({ scratch, lstat: lstat as typeof realLstat, runTempRootOverride: root });
+
+    expect(second).toEqual({ removed: true, dir: scratch.dir });
+    await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the scratch directory while a retained credential home is pending write-back", async () => {
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: runId("dddd2222"),
+    }));
+    const providerHome = path.join(scratch.dir, "paperclip-ai-company-1-grant", "provider");
+    await fs.mkdir(providerHome, { recursive: true });
+    await fs.writeFile(path.join(providerHome, "auth.json"), "fixture-credential");
+    const scope = { companyId: "company-1", accountKey: "grant-dddd2222" };
+    const release = bindRetainedAiCredentialHome(providerHome, scope);
+    retainAiCredentialCleanup({ scope, home: providerHome, cleanup: async () => {} });
+    try {
+      const result = await cleanupHeartbeatRunScratch({ scratch });
+
+      expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "ai_home_retained" });
+      await expect(fs.readFile(path.join(providerHome, "auth.json"), "utf8")).resolves.toBe("fixture-credential");
+    } finally {
+      await reconcileRetainedAiCleanup(scope).catch(() => undefined);
+      release();
+    }
+  });
 });
 
 describe("orphaned run scratch sweep", () => {
@@ -414,6 +472,63 @@ describe("orphaned run scratch sweep", () => {
     expect(result.removed).toHaveLength(2);
     expect(result.truncated).toBe(true);
     expect((await Promise.all(dirs.map(exists))).filter(Boolean)).toHaveLength(1);
+  });
+
+  it("keeps a terminal run's directories while its process group is still alive", async () => {
+    const root = await makeRoot();
+    const dir = await leave(root, "run-done");
+
+    const alive = await sweepLegacy(root, {
+      resolveRunStates: states({ "run-done": "terminal" }),
+      isRunProcessGroupAlive: () => true,
+    });
+
+    expect(alive.removed).toEqual([]);
+    expect(await exists(dir)).toBe(true);
+
+    const exited = await sweepLegacy(root, {
+      resolveRunStates: states({ "run-done": "terminal" }),
+      isRunProcessGroupAlive: () => false,
+    });
+
+    expect(exited.removed).toEqual([dir]);
+    expect(await exists(dir)).toBe(false);
+  });
+
+  it("keeps a terminal run's directory while a retained credential home is pending, then removes it after reconciliation", async () => {
+    const root = await makeRoot();
+    const dir = await leave(root, "run-done");
+    const providerHome = path.join(dir, "paperclip-ai-c-grant", "provider");
+    await fs.mkdir(providerHome, { recursive: true });
+    await fs.writeFile(path.join(providerHome, "auth.json"), "fixture-credential");
+    const scope = { companyId: "c", accountKey: "grant-run-done" };
+    const release = bindRetainedAiCredentialHome(providerHome, scope);
+    let writeBacks = 0;
+    retainAiCredentialCleanup({ scope, home: providerHome, cleanup: async () => { writeBacks += 1; } });
+    try {
+      const pending = await sweepLegacy(root, {
+        resolveRunStates: states({ "run-done": "terminal" }),
+      });
+
+      expect(pending.removed).toEqual([]);
+      expect(await exists(path.join(providerHome, "auth.json"))).toBe(true);
+      expect(await exists(dir)).toBe(true);
+
+      // The save becomes available: reconciliation completes the write-back and
+      // retires the home, so the next sweep can remove the directory.
+      await reconcileRetainedAiCleanup(scope);
+      expect(writeBacks).toBe(1);
+
+      const swept = await sweepLegacy(root, {
+        resolveRunStates: states({ "run-done": "terminal" }),
+      });
+
+      expect(swept.removed).toEqual([dir]);
+      expect(await exists(dir)).toBe(false);
+    } finally {
+      await reconcileRetainedAiCleanup(scope).catch(() => undefined);
+      release();
+    }
   });
 });
 
