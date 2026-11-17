@@ -591,6 +591,24 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(updated.agent?.runtimeConfig.aiConnection).toBeUndefined();
   });
 
+  it("uses the Antigravity default model when reconfiguring summarizer to agy_local without a config", async () => {
+    const companyId = await seedCompany();
+
+    const initial = await builtInAgentService(db).ensure(companyId, "summarizer");
+    expect(initial.agent?.adapterType).toBe("paperclip_runner");
+    expect(initial.agent?.adapterConfig).toMatchObject({ model: "claude-haiku-4-5" });
+
+    const updated = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+    });
+
+    expect(updated.agent?.adapterType).toBe("agy_local");
+    expect(updated.agent?.adapterConfig).toMatchObject({
+      model: DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL,
+      dangerouslySkipPermissions: false,
+    });
+  });
+
   it("keeps a router-mode AI connection binding when reconfiguring the summarizer", async () => {
     const companyId = await seedCompany();
 

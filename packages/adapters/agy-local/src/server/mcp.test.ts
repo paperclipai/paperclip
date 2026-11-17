@@ -621,4 +621,58 @@ describe("prepareAgyLocalRunMcpHome", () => {
     expect(exists).toBe(false);
     await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
   });
+
+  it("links the rest of the real home through so local settings survive", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-mcp-home-"));
+    // A home-based setting the agent's commands rely on.
+    await fs.writeFile(path.join(tempHome, ".gitconfig"), "[user]\n\tname = Test\n");
+    const cliHome = path.join(tempHome, ".gemini", "antigravity-cli");
+    await fs.mkdir(cliHome, { recursive: true });
+
+    await writePaperclipAgyMcpConfig({
+      homedir: tempHome,
+      servers: [
+        {
+          name: "Paperclip connections",
+          url: "https://api.paperclip.test/mcp/connections",
+          token: "other-run-token",
+          connectionId: "conn-other",
+        },
+      ],
+    });
+
+    const prepared = await prepareAgyLocalRunMcpHome({
+      homedir: tempHome,
+      env: { HOME: tempHome },
+      servers: [
+        {
+          name: "Paperclip projects",
+          url: "https://api.paperclip.test/mcp/projects",
+          token: "this-run-token",
+          connectionId: "conn-2",
+        },
+      ],
+      runId: "run-local-2",
+    });
+
+    try {
+      // The per-run HOME keeps the local settings the run otherwise uses:
+      // ~/.gitconfig stays readable so git commits keep working.
+      const gitconfig = await fs.readFile(path.join(prepared.homeDir, ".gitconfig"), "utf8");
+      expect(gitconfig).toContain("name = Test");
+
+      // The MCP config itself is still the private per-run one.
+      const content = JSON.parse(await fs.readFile(prepared.configPath, "utf8"));
+      expect(content.mcpServers["Paperclip projects"]).toEqual({
+        url: "https://api.paperclip.test/mcp/projects",
+        headers: { Authorization: "Bearer this-run-token" },
+      });
+    } finally {
+      await prepared.cleanup();
+    }
+
+    const exists = await fs.stat(prepared.homeDir).then(() => true).catch(() => false);
+    expect(exists).toBe(false);
+    await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+  });
 });

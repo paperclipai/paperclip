@@ -353,7 +353,6 @@ export async function stageAgyHomeForSync(
   }
 
   const settingsPath = resolveAgySettingsPath(homedir, env);
-  let settingsCopied = false;
   try {
     if (fs.existsSync(settingsPath)) {
       const content = await fs.promises.readFile(settingsPath, "utf8");
@@ -362,20 +361,35 @@ export async function stageAgyHomeForSync(
         content,
         { mode: 0o600 },
       );
-      settingsCopied = true;
     }
   } catch {
     // Fall through to API key check
   }
 
-  if (!settingsCopied) {
-    const hasApiKey = Boolean(
-      env.GEMINI_API_KEY || env.AGY_API_KEY || env.ANTIGRAVITY_API_KEY,
-    );
-    if (hasApiKey) {
+  // A run with an effective API key must use it even when the host has
+  // settings (e.g. OAuth/subscription): apply the API-provider setting to
+  // the staged copy, preserving the host's other settings. Otherwise the
+  // CLI would use the copied subscription or fail for missing OAuth
+  // instead of the selected key. Remote runs never call
+  // ensureAgyApiKeySettings, so this staging step is the only place the
+  // provider setting gets applied for them.
+  if (resolveAgyApiKey(env)) {
+    const stagedSettingsPath = path.join(stagedDir, "settings.json");
+    let stagedSettings: Record<string, unknown> = {};
+    try {
+      const raw = await fs.promises.readFile(stagedSettingsPath, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        stagedSettings = parsed;
+      }
+    } catch {
+      // Missing or invalid JSON; start fresh
+    }
+    if (stagedSettings.modelProvider !== "gemini") {
+      stagedSettings.modelProvider = "gemini";
       await fs.promises.writeFile(
-        path.join(stagedDir, "settings.json"),
-        JSON.stringify({ modelProvider: "gemini" }, null, 2) + "\n",
+        stagedSettingsPath,
+        JSON.stringify(stagedSettings, null, 2) + "\n",
         { mode: 0o600 },
       );
     }

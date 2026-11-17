@@ -476,6 +476,28 @@ describe("stageAgyHomeForSync", () => {
     const content = JSON.parse(fs.readFileSync(stagedSettings, "utf8"));
     expect(content.customSetting).toBe("abc");
   });
+
+  it("applies modelProvider gemini to copied settings when an API key is in env", async () => {
+    const fakeHome = makeTmpDir();
+    const dir = path.join(fakeHome, ".gemini", "antigravity-cli");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "settings.json"),
+      JSON.stringify({ customSetting: "abc", modelProvider: "oauth" }),
+    );
+
+    const staged = await stageAgyHomeForSync({
+      homedir: fakeHome,
+      env: { GEMINI_API_KEY: "test-gemini-key" } as NodeJS.ProcessEnv,
+    });
+    tmpDirs.push(staged);
+
+    const stagedSettings = path.join(staged, "settings.json");
+    expect(fs.existsSync(stagedSettings)).toBe(true);
+    const content = JSON.parse(fs.readFileSync(stagedSettings, "utf8"));
+    expect(content.modelProvider).toBe("gemini");
+    expect(content.customSetting).toBe("abc");
+  });
 });
 
 describe("copyBackAgyAuth", () => {

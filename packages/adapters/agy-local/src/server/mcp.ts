@@ -558,6 +558,22 @@ export async function prepareAgyLocalRunMcpHome(
         .catch(() => undefined);
     }
 
+    // Link the rest of the real home through (e.g. ~/.gitconfig) so the
+    // agent's commands keep the local settings they otherwise use. Only
+    // .gemini is staged specially: the per-run MCP config must stay
+    // private so concurrent runs cannot swap each other's bearer tokens.
+    const realHomeEntries = await fs.readdir(realHome).catch(() => [] as string[]);
+    for (const entryName of realHomeEntries) {
+      if (entryName === ".gemini") continue;
+      await fs
+        .symlink(
+          path.join(realHome, entryName),
+          path.join(homeDir, entryName),
+          process.platform === "win32" ? "junction" : undefined,
+        )
+        .catch(() => undefined);
+    }
+
     const servers: Record<string, AgyMcpServerConfig> = { ...userServers };
     const existingNames = new Set(Object.keys(servers));
     const injectedServerNames: string[] = [];

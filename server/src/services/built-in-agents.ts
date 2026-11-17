@@ -1795,7 +1795,15 @@ export function builtInAgentService(db: Db) {
         && (resolvedInput.adapterType !== undefined || resolvedInput.adapterConfig !== undefined || resolvedInput.runner !== undefined)
       ) {
         const adapterType = resolvedInput.adapterType ?? existing.adapterType;
-        const adapterConfig = resolvedInput.adapterConfig ?? existing.adapterConfig;
+        // A reconfigure that switches adapter types without a config must
+        // save the new adapter's defaults, not the previous adapter's
+        // config: validation already checks the new default (see
+        // assertKnownBuiltInAgentModel), and saving the old config would
+        // leave e.g. a Claude model under agy_local, marked configured
+        // although the model is not in the new adapter's catalog.
+        const adapterConfig = resolvedInput.adapterConfig ?? (resolvedInput.adapterType !== undefined && resolvedInput.adapterType !== existing.adapterType
+          ? defaultAdapterConfigFor(definition, adapterType)
+          : existing.adapterConfig);
         assertAdapterAllowed(definition, adapterType, adapterConfig);
         const selectedHarness = agentHarnessType(adapterType, adapterConfig);
         const sameQualifiedHarness = Boolean(paperclipRunnerProfileForHarness(selectedHarness))
