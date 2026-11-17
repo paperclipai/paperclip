@@ -294,6 +294,19 @@ removal clears the record, and a reopen, which raises the lifecycle generation,
 discards it. Other wakes, including provider upgrades, wait for the next attempt
 time. Core keeps the record through workspace metadata updates.
 
+When a successful terminal cleanup inspection keeps the workspace, Core records
+`metadata.terminalInspectionHold` and does not send `inspect` again while the
+hold applies. A workspace kept for local data (dirty or untracked files, or
+local-only data) is held until something changes it. A clean workspace that is
+neither merged nor recoverable is checked again after 1 hour, then on an
+interval that doubles up to 24 hours, because the remote can change without
+touching the workspace. Any of these ends a hold early: a change notice that
+names the workspace or a task in its tree, a new lifecycle generation, a write
+to the workspace row (for example a new binding or status), a task in its tree
+finishing again, or new delivery evidence. A new inspected HEAD restarts the
+interval. Only a kept workspace is held. An inspection that finds the workspace
+removable proceeds to removal as before and clears any hold.
+
 The optional `prepared.destinationRef` records the resolved delivery branch as
 `refs/heads/<branch>`, up to 266 characters including the prefix. Providers should
 return null when preparation cannot establish an unambiguous branch destination
