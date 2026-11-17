@@ -91,15 +91,20 @@ export function buildMonitorSurfaceCopy(
 
   if (derived.source === "monitor" && areAutomaticMonitorChecksPaused({ status: issueStatus })) {
     const canCheckNow = canCheckIssueMonitorNow({ status: issueStatus }, derived.serviceName);
-    const hint = canCheckNow
-      ? "This task is blocked. You can ask the agent to check now."
-      : "Resume this task to continue checking.";
+    const missedBlockedCheck = issueStatus === "blocked" && ["due-now", "overdue"].includes(derived.state);
+    const hint = missedBlockedCheck
+      ? canCheckNow
+        ? "The scheduled check is overdue because automatic checks pause while a task is blocked. Check now or unblock the task."
+        : "The scheduled check is overdue because automatic checks pause while a task is blocked. Resume this task to continue checking."
+      : canCheckNow
+        ? "This task is blocked. You can ask the agent to check now."
+        : "Resume this task to continue checking.";
     return {
-      bannerTitle: "Automatic checks paused",
-      stripTitle: "Automatic checks paused",
+      bannerTitle: missedBlockedCheck ? "Monitor did not run — task is blocked" : "Automatic checks paused",
+      stripTitle: missedBlockedCheck ? "Monitor did not run" : "Automatic checks paused",
       bannerMeta: [hint],
       stripMeta: [hint],
-      tone: "info",
+      tone: missedBlockedCheck ? "warning" : "info",
       automaticChecksPaused: true,
       checkUnavailable: !canCheckNow,
     };

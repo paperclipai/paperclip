@@ -49,6 +49,31 @@ describe("durable task Retry admission", () => {
       contextSnapshot: { issueId }, finishedAt: new Date() });
     return { db, companyId, issueId, actorId: "board", observedRunId: runId, idempotencyKey: randomUUID() };
   }
+  it("reconciles the stopped source run's orphaned local lease before dispatching Retry", async () => {
+    const input = await seed();
+    const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "native",
+      nativeIssueId: input.issueId, status: "cancelled", errorCode: "operator_interrupted",
+      processPid: 999999999, finishedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: input.companyId,
+      issueId: input.issueId, heartbeatRunId: source.id, provider: "local",
+      status: "active", leasePolicy: "ephemeral",
+    }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId: input.companyId,
+      sourceIssueId: input.issueId, kind: "active_run_watchdog",
+      cause: "native_continuation_requires_reconciliation", fingerprint: source.id,
+      status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+      evidence: { runId: source.id, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    });
+    await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() } });
+    const receipt = await requestTaskRetry(input);
+
+    await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+
+    const [settled] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+    expect(settled.status).not.toBe("active");
+  });
   it.each(["valid", "wrong_run", "wrong_actor", "wrong_source", "wrong_generation", "unadmitted", "missing_authorization"])(
     "dispatches a preparation Retry with no recovery-action row only from its exact admitted receipt: %s", async state => {
       const input = await seed();

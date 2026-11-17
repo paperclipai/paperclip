@@ -206,6 +206,7 @@ export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof 
   envOrchestrator: Pick<ReturnType<typeof environmentRunOrchestrator>, "releaseForRun">;
   enqueueWakeup: ReturnType<typeof createHeartbeatQueue>["enqueueWakeup"];
   startNextQueuedRunForAgent: ReturnType<typeof createHeartbeatQueue>["startNextQueuedRunForAgent"];
+  sweepOrphanedActiveLeases: ReturnType<typeof createHeartbeatRecovery>["sweepOrphanedActiveLeases"];
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   timerClaimWasFirstHeartbeat: ReturnType<typeof createHeartbeatRetries>["timerClaimWasFirstHeartbeat"];
   scheduleBoundedRetry: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetry"];
@@ -363,6 +364,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     activeRunExecutions,
     enqueueWakeup,
     getAgent,
+    sweepOrphanedActiveLeases,
     sweepPendingCleanupLeases,
     getSchedulingSuppression,
     wakeQueue,
@@ -794,6 +796,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     return resumeSavedComments(companyId, queueId, true, opts);
   }
 
+  async function reconcileOrphanedActiveRunLeases(companyId: string, runId: string) {
+    const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
+      eq(environmentLeases.status, "active"),
+    ));
+    for (const lease of leases) await sweepOrphanedActiveLeases({ companyId, leaseId: lease.id, backoffMs: 0 });
+  }
+
   async function resumeSavedComments(companyId: string, queueId: string, interrupted = false, opts?: { retryCleanup?: boolean }) {
     const [wake] = await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.id, queueId), eq(agentWakeupRequests.companyId, companyId),
@@ -857,13 +867,21 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           inArray(heartbeatRuns.status, ["running", "queued", "scheduled_retry"]),
         )).limit(1);
         if (successor) return null;
-        const blocker = await getExecutionBlocker(tx as unknown as Db, companyId, issueId);
-        const run = blocker?.runId ? await tx.select().from(heartbeatRuns).where(and(
-          eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, blocker.runId),
-          eq(heartbeatRuns.agentId, wake.agentId), eq(heartbeatRuns.runtimeMode, "legacy"),
+        const interruptTargetRunId = readNonEmptyString(parseObject(current.payload?.queuedCommentInterrupt).targetRunId);
+        const [interruptedRun] = await tx.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, wake.agentId),
+          interruptTargetRunId ? eq(heartbeatRuns.id, interruptTargetRunId) : undefined,
+          sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId' = ${queueId}`,
           inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
-        )).then(rows => rows[0]) : null;
+        )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+        const blocker = interruptedRun ? null : await getExecutionBlocker(tx as unknown as Db, companyId, issueId);
+        const run = interruptedRun ?? (blocker?.runId ? await tx.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, blocker.runId),
+          eq(heartbeatRuns.agentId, wake.agentId),
+          inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        )).then(rows => rows[0]) : null);
         if (!run || activeRunExecutions.has(run.id) || adapterExecutionControls.has(run.id)) return null;
         // Older ephemeral leases recorded successful cleanup without a provider
         // receipt. Re-verify them through the recorded teardown path; a timestamp
@@ -890,9 +908,12 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         }
         return run;
       });
-      if (sourceRun) await sweepPendingCleanupLeases({ explicitRetry: {
-        companyId, runId: sourceRun.id, actorId, reason: "queued_comment_interrupt",
-      } });
+      if (sourceRun) {
+        await reconcileOrphanedActiveRunLeases(companyId, sourceRun.id);
+        await sweepPendingCleanupLeases({ explicitRetry: {
+          companyId, runId: sourceRun.id, actorId, reason: "queued_comment_interrupt",
+        } });
+      }
     }
     const deliveryPayload = response ? { ...payload } : withQueuedCommentIdsInWakePayload(payload, commentIds);
     delete deliveryPayload.queuedCommentInterrupt;
@@ -928,6 +949,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         intent.actorId !== wake.requestedByActorId) return;
     const issueId = readNonEmptyString(wake.payload?.issueId);
     if (!issueId) return;
+    const [sourceRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, intent.sourceRunId), eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.agentId, wake.agentId),
+      inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
+      or(eq(heartbeatRuns.nativeIssueId, issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+    )).limit(1);
+    if (sourceRun && !activeRunExecutions.has(sourceRun.id) && !adapterExecutionControls.has(sourceRun.id))
+      await reconcileOrphanedActiveRunLeases(companyId, sourceRun.id);
     await enqueueWakeup(wake.agentId, { source: "on_demand", triggerDetail: "manual", reason: "task_retry",
       requestedByActorType: "user", requestedByActorId: intent.actorId, taskRetryRequestId: wake.id,
       payload: { issueId }, contextSnapshot: { issueId, triggeredBy: "board", actorId: intent.actorId,
