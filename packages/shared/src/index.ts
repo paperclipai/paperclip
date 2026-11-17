@@ -331,9 +331,19 @@ export {
   getRecommendedConnectionMethod,
   isConnectableAppSlug,
   isAppStoreVisibleSlug,
+  listPluginAppDefinitions,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
+  setPluginAppDefinitions,
 } from "./app-definitions.js";
+export {
+  connectionSourceSlug,
+  isPluginAppSlug,
+  parsePluginAppSlug,
+  pluginAppDefinition,
+  pluginAppSlug,
+  reviewedToolRisk,
+} from "./plugin-apps.js";
 export { isConnectorFeatureEnabled, nativeConnectorRequiresCustomerOAuthApp } from "./connector-availability.js";
 export { getAppDefinitionForApplicationKey } from "./connector-identity.js";
 export {
@@ -353,7 +363,7 @@ export {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
-export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
+export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema, reviewedToolsSchema } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
 export * from "./types/chat-github.js";
 export * from "./validators/chat-github.js";
@@ -1685,6 +1695,8 @@ export type {
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
   AppDefinition,
+  AppPluginSource,
+  AppReviewedTools,
   ConnectionMethodDef,
   FieldDef,
   OAuthRedirectConstraints,

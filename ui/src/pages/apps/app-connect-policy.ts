@@ -5,6 +5,7 @@ import {
   getAvailableConnectionMethods,
   getAppStoreDefinition,
   getConnectableAppDefinition,
+  isPluginAppSlug,
   type AppDefinition,
 } from "@paperclipai/shared";
 
@@ -74,6 +75,10 @@ export function canEnterAppsConnect(
   // before rendering the pool wizard; unknown/uninstalled routers show its
   // actionable unavailable state rather than bouncing back to the catalog.
   if (/^ai-router-(?:[a-f0-9]{2})+$/.test(source)) return true;
+  // Plugin-provided connectors are resolved the same way: AppsConnect loads
+  // the host gallery first and shows an unavailable state for a disabled
+  // plugin instead of bouncing back to the catalog.
+  if (isPluginAppSlug(source)) return true;
   const entry = getAppStoreDefinition(source);
   const channelEnabled = source === "github-code-review-bot" ? githubReviewBotsEnabled : chatConnectorsEnabled;
   if (
