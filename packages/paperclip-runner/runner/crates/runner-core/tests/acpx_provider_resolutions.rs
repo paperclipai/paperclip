@@ -222,10 +222,17 @@ fn forwards_bounded_semantic_feedback_without_internal_payloads() {
             "diagnostic":"violet-internal-diagnostic-4821"});
         let result = if wrapped {
             json!({"ok":false,"callId":"call-1","operationId":"issues.read","error":feedback})
-        } else { feedback };
-        session.deliver_tool_result(&ToolResult {
-            call_id: "call-1".to_owned(), operation_id: "issues.read".to_owned(), result, is_error: true,
-        }).unwrap();
+        } else {
+            feedback
+        };
+        session
+            .deliver_tool_result(&ToolResult {
+                call_id: "call-1".to_owned(),
+                operation_id: "issues.read".to_owned(),
+                result,
+                is_error: true,
+            })
+            .unwrap();
         assert!(session.state().pending_tool("call-1").is_none());
         session.shutdown("test complete").unwrap();
     }

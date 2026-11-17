@@ -1309,6 +1309,17 @@ function StandardConnectionSetupFlow({
     && resumeConnection?.status === "active"
     ? resumeConnection.id
     : null;
+  const resumeEndpoint = resumeConnection?.config?.url ?? resumeConnection?.transportConfig?.url
+    ?? resumeConnection?.transportConfig?.serverUrl ?? resumeConnection?.config?.serverUrl;
+  const genericResumeMatches = Boolean(!requestedAppKey && resumeConnection && resumeApplication
+    && resumeConnection.applicationId === resumeApplication.id
+    && resumeConnection.companyId === selectedCompanyId && resumeApplication.companyId === selectedCompanyId
+    && resumeConnection.transport === "mcp_remote"
+    && typeof resumeEndpoint === "string" && /^https?:\/\//i.test(resumeEndpoint)
+    && !getConnectableAppDefinition(appConnectionSourceSlug(resumeConnection) ?? "")
+    && !getConnectableAppDefinition(appApplicationSourceSlug(resumeApplication) ?? "")
+    && (resumeConnection.status === "draft" || (resumeConnection.status === "active"
+      && resumeConnection.id === (completedResumeConnectionId ?? completedRouteResumeConnectionId))));
   const resumeSourceMatches = requestedAppKey
     ? retainedResumeMatches({
       requestedAppKey,
@@ -1316,7 +1327,7 @@ function StandardConnectionSetupFlow({
       resumeApplication,
       completedResumeConnectionId: completedResumeConnectionId ?? completedRouteResumeConnectionId,
     })
-    : false;
+    : genericResumeMatches;
   const identityConnection = resumeConnection ?? reconnectConnection;
   useEffect(() => {
     workspaceSelectionRef.current = null;
@@ -1555,7 +1566,7 @@ function StandardConnectionSetupFlow({
         );
         result = await toolsApi.connectApp(selectedCompanyId!, {
           ...genericPayload,
-          ...(reconnectConnectionId ? { reconnectConnectionId } : {}),
+          ...(resumeConnectionId ? { resumeConnectionId } : reconnectConnectionId ? { reconnectConnectionId } : {}),
           // Zapier issues a credential-bearing URL, so its branded setup keeps
           // the compact pasted-URL step. It is still a curated app, though: the
           // gallery identity must reach the server or Browse can only see a
@@ -1869,6 +1880,17 @@ function StandardConnectionSetupFlow({
   }, [resumeConnectionId]);
 
   useEffect(() => {
+    if (!genericResumeMatches || !resumeConnection || hydratedResumeConnectionIdRef.current === resumeConnection.id) return;
+    if (typeof resumeEndpoint !== "string") return;
+    setLinkUrl(resumeEndpoint);
+    setLinkName(resumeConnection.name);
+    setLinkAuthMode(resumeConnection.authKind === "oauth" ? "oauth" : "auto");
+    setStep("key");
+    hydratedResumeConnectionIdRef.current = resumeConnection.id;
+    setHydratedResumeConnectionId(resumeConnection.id);
+  }, [genericResumeMatches, resumeConnection, resumeEndpoint]);
+
+  useEffect(() => {
     const savedConnection = resumeConnection ?? reconnectConnection;
     if (
       !savedConnection
@@ -2140,7 +2162,7 @@ function StandardConnectionSetupFlow({
   if (resumeConnectionId && (
     !connectionsQuery.isFetchedAfterMount
     || galleryQuery.isLoading
-    || !entry
+    || (!entry && !genericResumeMatches)
     || hydratedResumeConnectionId !== resumeConnection?.id
   )) {
     return (
@@ -2846,7 +2868,7 @@ function StandardConnectionSetupFlow({
             setLinkGuidance(null);
             connectApp();
           }}
-          machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId
+          machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId && !resumeConnectionId
             ? { companyId: selectedCompanyId, applicationId: prefill.applicationId, onConnected: acceptMachineSignInResult }
             : null}
         />

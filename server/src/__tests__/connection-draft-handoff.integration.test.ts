@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { toolConnections, toolCatalogEntries, connectionGrants, principalPermissionGrants, companySecrets, userSecretDefinitions } from "@paperclipai/db";
+import { toolConnections, toolApplications, toolCatalogEntries, connectionGrants, principalPermissionGrants, companySecrets, userSecretDefinitions } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { accessService } from "../services/access.js";
 import { connectionIntentService } from "../services/connection-intents.js";
@@ -114,6 +114,22 @@ describe("saved tool connection authentication handoff", () => {
       .resolves.toMatchObject({ status: "accepted" });
     const effective = await toolAccessService(server.db).getEffectiveToolAssignmentsForAgent(f.companyId, f.agentId);
     expect(effective.allowedTools.map(tool => tool.toolName)).toEqual(["slack_read"]);
+  });
+
+  it("discovers and binds a custom MCP draft without a catalog provider", async () => {
+    const f = await fixture();
+    const saved = await f.draft("Archive");
+    await server.db.update(toolApplications).set({ applicationKey: `app-gallery:link:${saved.connectionId}`, metadata: {}, name: "Archive" })
+      .where(eq(toolApplications.id, saved.connection.applicationId));
+    await server.db.update(toolConnections).set({ config: { url: "https://archive.example.test/mcp" }, transportConfig: {} })
+      .where(eq(toolConnections.id, saved.connectionId));
+    const service = `connection:${saved.connectionId}`;
+    const found = await f.call("connections_search", { query: "Archive" }) as { results: unknown[] };
+    expect(found.results).toContainEqual(expect.objectContaining({ service, connectionId: saved.connectionId, state: "needs_user_action" }));
+    const result = await f.call("connection_request", { service, connectionId: saved.connectionId }) as { interactionId: string };
+    const setup = await f.request(`/connection-intents/${result.interactionId}/setup-options`, undefined, true);
+    expect(setup).toMatchObject({ status: 200, body: { interaction: { payload: { savedConnectionId: saved.connectionId } },
+      service: { connectionId: saved.connectionId, methods: [expect.objectContaining({ key: "configured", setupPath: expect.stringContaining(`resume=${saved.connectionId}`) })] } } });
   });
 
   it("returns actionable errors for draft tool grants, ambiguous drafts, and unavailable IDs", async () => {
