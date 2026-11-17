@@ -186,6 +186,16 @@ const waitContinuationSchema = {
   allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
 } as const;
 
+// Codex code-mode renders allOf before its sibling properties; an if/then-only
+// branch becomes unknown and hides kind, summary, and idempotencyKey. The single
+// condition is equivalent as direct if/then siblings, which preserves both the
+// object presentation and JSON Schema validation. Keep canonical output intact.
+const { allOf: waitContinuationConditions, ...providerWaitContinuationProperties } = waitContinuationSchema;
+const providerWaitContinuationSchema = {
+  ...providerWaitContinuationProperties,
+  ...waitContinuationConditions[0],
+} as const;
+
 const commonResultProperties = {
   schema: { type: "string", const: "paperclip.run_result.v1" },
   summary: {
@@ -391,7 +401,7 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
     // tool calls. Give non-yielding results an explicit absence value instead
     // of forcing callers to invent a response-wake continuation.
     continuation: {
-      ...waitContinuationSchema,
+      ...providerWaitContinuationSchema,
       type: ["object", "null"],
       description:
         "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",
