@@ -134,6 +134,11 @@ describe("explicit file output requirements", () => {
     "Write the document with the log exactly as the file currently reads.",
     "Write the summary from the log as the file shows it.",
     "Save this issue's document exactly as the file reads.",
+    "Save this issue's document exactly as the files are.",
+    "Save this issue's document exactly as the file that reads.",
+    "Save this issue's document exactly as the file actually reads.",
+    "Save this issue's document exactly as the file really reads.",
+    "Save this issue's document exactly as the file read.",
   ])("does not require a file for a text or source-review request: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(false);
   });

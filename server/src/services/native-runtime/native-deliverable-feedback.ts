@@ -203,7 +203,7 @@ function explicitlyRequestsFileOutputBySentence(objective: string): boolean {
           const beforeDestination = prefix.slice(0, destinationMatch?.index ?? 0);
           const namedDestination = /^\s+(?:is|was)\s+(?:(?:currently|now|already)\s+)?(?:named|called|titled)\b/iu.test(suffix);
           const comparison = !namedDestination && /\bas\s+(?:(?:a|an|the)\s+)*$/iu.test(prefix)
-            && /^\s+(?:(?:currently|now|already)\s+)?(?:reads|is|was|appears|looks|stands|says|shows|exists)\b/iu.test(suffix);
+            && /^\s+(?:that\s+)?(?:(?:actually|really|still|previously|currently|now|already)\s+)?(?:reads|read|is|are|was|were|appears|looks|stands|says|shows|exists)\b/iu.test(suffix);
           if (comparison) return false;
           const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
             || !inputReference.test(beforeDestination));
