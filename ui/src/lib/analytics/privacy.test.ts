@@ -67,6 +67,10 @@ describe("session replay attribute masking", () => {
     expect(maskReplayAttribute("src", "/api/attachments/1", el("i"))).toBe("******************");
     expect(maskReplayAttribute("alt", "Quarterly plan", el("i"))).toBe("********* ****");
     expect(maskReplayAttribute("data-anything", "secret", el("t"))).toBe("******");
+    // Element references often embed names or slugs (for example a skill slug).
+    expect(maskReplayAttribute("id", "skill-acme-secret-plan", el("t"))).toBe("**********************");
+    expect(maskReplayAttribute("for", "skill-acme-secret-plan", el("t"))).toBe("**********************");
+    expect(maskReplayAttribute("aria-labelledby", "label-acme", el("t"))).toBe("**********");
   });
 
   it("keeps layout attributes and masks labels even on opted-in chrome", () => {

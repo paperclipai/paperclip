@@ -83,8 +83,8 @@ Masking is deny by default. A surface that nobody marked stays masked.
 - Replay also masks attribute values (`maskReplayAttribute`): only layout
   attributes (`class`, `style`, `role`, `data-state`, SVG geometry and similar),
   rrweb metadata and stylesheet links keep their values. `title`,
-  `aria-label`, `alt`, `placeholder`, `src`, `href` and `data-*` values are
-  always masked, even on unmasked chrome, so images record as empty boxes and
+  `aria-label`, `alt`, `placeholder`, `src`, `href`, `data-*` values and
+  element references (`id`, `for`, `aria-labelledby`) are always masked, even on unmasked chrome, so images record as empty boxes and
   link targets (for example download links with file paths) never leave.
 - `ANALYTICS_MASK_CLASS` keeps customer content masked even inside unmasked
   chrome: rendered markdown (task bodies, comments, chat messages, documents),

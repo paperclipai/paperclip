@@ -55,17 +55,17 @@ export function maskReplayText(text: string, element?: HTMLElement | null): stri
 
 /**
  * Attributes that only describe layout, state or structure. Every other
- * attribute (title, alt, aria-label, placeholder, value, src, data-* and so
- * on) can carry customer text, so replay masks it.
+ * attribute (title, alt, aria-label, placeholder, value, src, href, data-*,
+ * and element references such as id, for and aria-labelledby, which often
+ * embed names or slugs) can carry customer text, so replay masks it.
  */
 const LAYOUT_ATTRIBUTES = new Set([
-  "class", "id", "style", "type", "role", "tabindex", "disabled", "checked", "selected", "hidden",
-  "open", "dir", "lang", "rel", "target", "for", "colspan", "rowspan", "width", "height",
+  "class", "style", "type", "role", "tabindex", "disabled", "checked", "selected", "hidden",
+  "open", "dir", "lang", "rel", "target", "colspan", "rowspan", "width", "height",
   "viewbox", "xmlns", "d", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
   "x", "y", "x1", "x2", "y1", "y2", "cx", "cy", "r", "rx", "ry", "points", "transform", "opacity",
   "aria-hidden", "aria-expanded", "aria-selected", "aria-checked", "aria-current", "aria-disabled",
-  "aria-orientation", "aria-haspopup", "aria-controls", "aria-labelledby", "aria-describedby",
-  "aria-modal", "aria-pressed", "aria-invalid", "aria-live", "aria-busy",
+  "aria-orientation", "aria-haspopup", "aria-modal", "aria-pressed", "aria-invalid", "aria-live", "aria-busy",
   "data-slot", "data-state", "data-side", "data-align", "data-orientation", "data-variant",
   "data-size", "data-disabled", "data-highlighted", "data-placeholder", ANALYTICS_UNMASK_ATTRIBUTE,
 ]);
