@@ -13,6 +13,7 @@ describe("isSandboxProviderSupportedForAdapter", () => {
       "local",
       "ssh",
       "sandbox",
+      "plugin",
     ]);
   });
 
@@ -97,5 +98,19 @@ describe("getEnvironmentCapabilities reusable leases default", () => {
 
     // The built-in fake provider presents as false.
     expect(capabilities.sandboxProviders.fake.supportsReusableLeases).toBe(false);
+  });
+});
+
+
+describe("environment login PTY support", () => {
+  it("uses the declared driver of the selected environment", async () => {
+    const { environmentSupportsLoginPty } = await import("./environment-support.js");
+    const capabilities = { ...getEnvironmentCapabilities(["codex_local"]), loginPtyDrivers: { "fixture:computer": { supportsLoginPty: true } } };
+    expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "fixture", driverKey: "computer" } }, capabilities)).toBe(true);
+    expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "other", driverKey: "computer" } }, capabilities)).toBe(false);
+    expect(environmentSupportsLoginPty({ driver: "local", config: {} }, capabilities)).toBe(false);
+    expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "fixture", driverKey: "computer" } }, capabilities, "grok_local")).toBe(false);
+    expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "fixture", driverKey: "computer" } }, capabilities, "codex_local")).toBe(false);
+    expect(environmentSupportsLoginPty({ driver: "plugin", config: { pluginKey: "fixture", driverKey: "computer" } }, { ...capabilities, loginPtyDrivers: { "fixture:computer": { supportsLoginPty: true, supportsCodexLogin: true } } }, "codex_local")).toBe(true);
   });
 });

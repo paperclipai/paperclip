@@ -33,7 +33,7 @@ if (!embeddedSupport.supported) {
 
 describeEmbedded("Paperclip semantic mock/production conformance", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let mock: CapabilityMockSemanticConformanceAdapter | null = null;
+  let mock: Awaited<ReturnType<typeof CapabilityMockSemanticConformanceAdapter.create>> | null = null;
 
   const base = CAPABILITY_SEMANTIC_CONFORMANCE_IDS;
   const ids: PaperclipSemanticConformanceIds = {

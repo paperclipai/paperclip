@@ -1,0 +1,201 @@
+import { Fragment, useId, useState, type ReactNode } from "react";
+import type { Issue } from "@paperclipai/shared";
+import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
+import { buildIssueTree } from "../lib/issue-tree";
+import { issueFilterLabel } from "../lib/issue-filters";
+import { paperclipHumanAvatarUrl } from "../lib/issue-chat-human-author";
+import { defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
+import { sortIssues } from "../lib/issue-sort";
+import { timeAgo } from "../lib/timeAgo";
+import { IssueRow, type IssueRowDensity } from "./IssueRow";
+import { IssueGroupHeader } from "./IssueGroupHeader";
+import { TaskListColumnHeader, TaskListColumnSettings, TaskListViewport } from "./TaskListColumns";
+import { TaskRowGroup } from "./TaskRowGroup";
+import { Badge } from "./ui/badge";
+import { Button } from "./ui/button";
+import { useTaskRowBudget } from "../hooks/useTaskRowBudget";
+import { AgentAvatar, type AvatarAgent } from "./AgentAvatar";
+import { deriveInitials } from "./Identity";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
+import { useTaskListColumnPreferences } from "../hooks/useTaskListColumnPreferences";
+import { usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
+import { CHAT_BOOTSTRAP_PRELOAD_LIMIT } from "../lib/issue-chat-bootstrap";
+import type { TaskCollectionPreferenceLocation } from "../lib/task-collection-preferences";
+
+export type TaskListItem = {
+  issue: Issue;
+  unread?: boolean;
+  createdBy?: string | null;
+  assignee?: string | null;
+  assigneeAgent?: AvatarAgent | null;
+  assigneeUserAvatarUrl?: string | null;
+};
+
+export type TaskListGrouping = "none" | "status" | "project";
+
+/** Keep matching subtasks in their hierarchy without pulling in unrelated siblings. */
+export function includeTaskListAncestors(items: readonly TaskListItem[], matches: readonly TaskListItem[]): TaskListItem[] {
+  const byId = new Map(items.map(item => [item.issue.id, item]));
+  const included = new Set<string>();
+  for (const match of matches) {
+    let item: TaskListItem | undefined = match;
+    while (item && !included.has(item.issue.id)) {
+      included.add(item.issue.id);
+      item = item.issue.parentId ? byId.get(item.issue.parentId) : undefined;
+    }
+  }
+  return items.filter(item => included.has(item.issue.id));
+}
+
+/**
+ * The route refs of the first `limit` rendered rows. Rows that are not
+ * rendered are skipped; no row after the last one returned is read.
+ */
+export function topRenderedTaskRefs(rows: Iterable<Pick<Issue, "id" | "identifier">>, rendered: ReadonlySet<string>, limit: number) {
+  const refs: string[] = [];
+  if (limit <= 0) return refs;
+  for (const issue of rows) {
+    if (!rendered.has(issue.id)) continue;
+    refs.push(issue.identifier ?? issue.id);
+    if (refs.length >= limit) break;
+  }
+  return refs;
+}
+
+/** Preloads the chats of a list's top rows. A component, so lists without it need no query client. */
+function TaskChatPreload({ companyId, refs }: { companyId: string; refs: readonly string[] }) {
+  usePreloadTaskChats(companyId, refs, true);
+  return null;
+}
+
+/** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId }: {
+  items: readonly TaskListItem[];
+  allItems?: readonly TaskListItem[];
+  initialColumns?: readonly TaskListColumnId[];
+  density?: IssueRowDensity;
+  collapsedIds?: ReadonlySet<string>;
+  onCollapsedIdsChange?: (ids: ReadonlySet<string>) => void;
+  groupBy?: TaskListGrouping;
+  emptyState?: ReactNode;
+  issueLinkState?: unknown;
+  /** Company/person/view/filter identity; membership changes do not reset it. */
+  collectionKey?: string;
+  preferenceLocation?: TaskCollectionPreferenceLocation;
+  sort?: TaskListOrder;
+  onSortChange?: (sort: TaskListSort | undefined) => void;
+  /** Preload the chat of the top rows for this company. Only a page's main task list sets this. */
+  preloadCompanyId?: string | null;
+}) {
+  const localKey = useId();
+  const { columns, order: columnOrder, setColumns, setOrder: setColumnOrder } = useTaskListColumnPreferences(preferenceLocation, initialColumns);
+  const [localSort, setLocalSort] = useState<TaskListSort>();
+  const sort = controlledSort ?? (onSortChange ? undefined : localSort);
+  const setSort = (next: TaskListSort | undefined) => {
+    setLocalSort(next);
+    onSortChange?.(next);
+  };
+  const [localCollapsed, setLocalCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const collapsed = collapsedIds ?? localCollapsed;
+  const setCollapsed = onCollapsedIdsChange ?? setLocalCollapsed;
+  const byId = new Map(allItems.map(item => [item.issue.id, item]));
+  const visibleById = new Map(items.map(item => [item.issue.id, item]));
+  const ordered = sortIssues(items.map(item => item.issue), taskListOrderToIssueSort(sort ?? defaultTaskListSort), issue => {
+    const item = byId.get(issue.id)!;
+    const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
+    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null };
+  });
+  const { roots, childMap } = buildIssueTree(ordered);
+  const rowIds: string[] = [];
+  const collectRows = (issue: Issue) => {
+    rowIds.push(issue.id);
+    if (!collapsed.has(issue.id)) for (const child of childMap.get(issue.id) ?? []) collectRows(child);
+  };
+  roots.forEach(collectRows);
+  const { limit, hasMore, sentinel, loadMore } = useTaskRowBudget(rowIds, JSON.stringify([collectionKey ?? localKey, sort ?? defaultTaskListSort, groupBy]));
+  const renderedIds = new Set(rowIds.slice(0, limit));
+  const updateColumns = (next: readonly TaskListColumnId[]) => {
+    setColumns(next);
+    if (sort && isTaskListColumnSort(sort) && !next.includes(sort.column)) setSort(undefined);
+  };
+  const renderBranch = (issue: Issue, depth: number): ReactNode => {
+    if (!renderedIds.has(issue.id)) return null;
+    const item = visibleById.get(issue.id)!;
+    const children = childMap.get(issue.id) ?? [];
+    const expanded = !collapsed.has(issue.id);
+    const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
+    const branch = issue.currentExecutionWorkspace?.branchName;
+    const assigneeName = item.assignee ?? (issue.assigneeAgentId ? "Unknown agent" : issue.assigneeUserId ? "User" : "Unassigned");
+    const assigneeUserAvatarUrl = paperclipHumanAvatarUrl(item.assigneeUserAvatarUrl);
+    return (
+      <Fragment key={issue.id}>
+        <IssueRow
+          issue={issue} presentation="task" appearance="refreshed" density={density} issueLinkState={issueLinkState}
+          unreadState={item.unread ? "visible" : "hidden"}
+          treeGuides={depth} chevronInGuide={depth > 0 && children.length > 0}
+          leadingControl={children.length ? (
+            <Button variant="ghost" size="icon-xs" className="task-row-disclosure" aria-label={`${expanded ? "Collapse" : "Expand"} ${issue.title}`} aria-expanded={expanded} onClick={() => {
+              const next = new Set(collapsed);
+              if (next.has(issue.id)) next.delete(issue.id); else next.add(issue.id);
+              setCollapsed(next);
+            }}>{expanded ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden />}</Button>
+          ) : undefined}
+          columnValues={{
+            createdBy: item.createdBy,
+            assignee: assigneeName,
+            assigneeAvatar: issue.assigneeAgentId ? (
+              <AgentAvatar agent={item.assigneeAgent ?? { id: issue.assigneeAgentId, name: assigneeName }} size={20} />
+            ) : issue.assigneeUserId ? (
+              <Avatar size="xs" aria-hidden="true">
+                {assigneeUserAvatarUrl ? <AvatarImage src={assigneeUserAvatarUrl} alt="" /> : null}
+                <AvatarFallback>{deriveInitials(assigneeName)}</AvatarFallback>
+              </Avatar>
+            ) : null,
+            project: issue.project?.name,
+            parentTask: parent ? <span><span className="font-mono">{parent.identifier}</span> {parent.title}</span> : undefined,
+            tags: issue.labels?.length ? <span className="inline-flex items-center gap-1">{issue.labels.map(label => <Badge key={label.id} variant="secondary" className="shrink-0 px-1.5 py-0">{label.name}</Badge>)}</span> : undefined,
+            worktree: branch ? <span className="inline-flex items-center gap-1.5"><GitBranch className="size-3 shrink-0" aria-hidden />{branch}</span> : undefined,
+            lastUpdated: timeAgo(issue.updatedAt),
+          }}
+        />
+        {expanded ? children.map(child => renderBranch(child, depth + 1)) : null}
+      </Fragment>
+    );
+  };
+  const groups = new Map<string, Issue[]>();
+  for (const root of roots) {
+    const label = groupBy === "status" ? issueFilterLabel(root.status) : groupBy === "project" ? root.project?.name ?? "No project" : "";
+    groups.set(label, [...(groups.get(label) ?? []), root]);
+  }
+  // The top rendered rows, in display order. The walk is lazy: it stops after
+  // the preload limit, whatever the size of the list.
+  function* displayedRows(): Generator<Issue> {
+    function* branch(issue: Issue): Generator<Issue> {
+      yield issue;
+      if (!collapsed.has(issue.id)) for (const child of childMap.get(issue.id) ?? []) yield* branch(child);
+    }
+    for (const groupRoots of groups.values()) for (const root of groupRoots) yield* branch(root);
+  }
+  const preloadRefs = preloadCompanyId ? topRenderedTaskRefs(displayedRows(), renderedIds, CHAT_BOOTSTRAP_PRELOAD_LIMIT) : [];
+  return (
+    <TaskListViewport visibleColumns={columns} columnOrder={columnOrder} controls={<TaskListColumnSettings visibleColumns={columns} onVisibleColumnsChange={updateColumns} onColumnOrderChange={setColumnOrder} onResetDefaults={() => setSort(undefined)} />}>
+      <TaskListColumnHeader sort={sort && isTaskListColumnSort(sort) ? sort : undefined} onSortChange={setSort} onColumnOrderChange={setColumnOrder} />
+      {items.length === 0 ? emptyState : (
+        <div aria-label={`${density} task list`}>
+          {[...groups].map(([label, groupRoots]) => groupRoots.some(issue => renderedIds.has(issue.id)) ? (
+            <Fragment key={label}>
+              {label ? <IssueGroupHeader label={label} className="task-list-group-heading" trailing={<span className="text-xs text-muted-foreground">{groupRoots.length}</span>} /> : null}
+              {groupRoots.filter(issue => renderedIds.has(issue.id)).map(issue => <TaskRowGroup key={issue.id} role="rowgroup" aria-label={`${issue.title} task group`}
+                data-density={density} className={childMap.get(issue.id)?.length ? undefined : "task-row-deferred"}>{renderBranch(issue, 0)}</TaskRowGroup>)}
+            </Fragment>
+          ) : null)}
+        </div>
+      )}
+      {hasMore ? <div ref={sentinel} className="flex items-center gap-3 py-2 text-sm text-muted-foreground">
+        <span>Rendering {Math.min(limit, rowIds.length)} of {rowIds.length} tasks</span>
+        <Button variant="outline" size="sm" onClick={loadMore}>Show more tasks</Button>
+      </div> : null}
+      {preloadCompanyId && preloadRefs.length ? <TaskChatPreload companyId={preloadCompanyId} refs={preloadRefs} /> : null}
+    </TaskListViewport>
+  );
+}

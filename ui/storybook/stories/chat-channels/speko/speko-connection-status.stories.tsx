@@ -1,0 +1,10 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { StatusBadge } from "@/components/StatusBadge";
+import { voiceStoryLifecycle } from "../../../support/speko/voiceStoryLifecycle";
+const meta: Meta<typeof StatusBadge> = { ...voiceStoryLifecycle, id: "connections-speko-connection-status", title: "Apps, channels, and extensions/External chat and email/Speko/Connection status", component: StatusBadge, args: { className: "text-foreground" }, parameters: { layout: "padded", paperclip: {"capabilities": ["chat-channels/lifecycle"], "status": "current", "implementation": "production", "boundary": "fixtures", "notes": "Production status badges for fixture connection states. No real endpoint lifecycle transitions."} } };
+export default meta;
+type Story = StoryObj<typeof meta>;
+export const Attention: Story = { args: { status: "attention" } };
+export const Revoked: Story = { args: { status: "revoked" } };
+export const Removed: Story = { args: { status: "archived" } };
+export const Paused: Story = { args: { status: "paused" } };

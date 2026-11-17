@@ -13,6 +13,28 @@ import { describe, expect, it } from "vitest";
 import { safeAcpxLocations } from "./acpx-sidecar-locations.js";
 
 describe("ACPX sidecar locations", () => {
+  it("drops a path that breaks a line, so the runner never emits a target the controller rejects", () => {
+    const workspace = mkdtempSync(join(tmpdir(), "paperclip-acpx-locations-"));
+    try {
+      expect(
+        safeAcpxLocations(
+          [
+            { path: 'packages/shared/src/slug.ts\n<parameter name="content">export const a = 1;' },
+            { path: "src/a.ts\rsrc/b.ts" },
+            { path: "src/a.ts\u2028tail" },
+            { path: "src/a.ts\u2029tail" },
+            { path: "src/ok.ts" },
+          ],
+          workspace,
+          "edit",
+          "Write",
+        ).map((location) => location.path),
+      ).toEqual(["src/ok.ts"]);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(sep === "/")(
     "preserves valid host-relative display names without admitting escape",
     () => {

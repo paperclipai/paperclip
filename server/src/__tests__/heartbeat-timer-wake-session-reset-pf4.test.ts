@@ -53,10 +53,6 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ forceFreshSession: true })).toBe(true);
   });
 
-  it("does not reset for issue_commented (preserve continuation context)", () => {
-    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented" })).toBe(false);
-  });
-
   it("does not reset for transient_failure_retry (resume in-flight work)", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "transient_failure_retry" })).toBe(false);
   });

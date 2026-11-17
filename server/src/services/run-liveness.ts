@@ -1,3 +1,4 @@
+import { isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@paperclipai/shared";
 
 export type RunLivenessActionability =
@@ -37,6 +38,8 @@ export interface RunLivenessClassificationInput {
   errorCode?: string | null;
   continuationAttempt?: number | null;
   evidence?: Partial<RunLivenessEvidenceInput> | null;
+  /** Set by the controller only after creating a durable connection card. */
+  authenticationRepairRequested?: boolean;
 }
 
 export interface RunLivenessClassification {
@@ -318,6 +321,10 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (input.runStatus === "interrupted") {
     return output("needs_followup", input.errorCode ? `Run interrupted (${input.errorCode})` : "Run interrupted");
+  }
+
+  if (input.runStatus === "failed" && input.authenticationRepairRequested && isAiAuthenticationRepairable(input)) {
+    return output("blocked", "Waiting for provider authentication repair", "Complete the connection request to continue this task");
   }
 
   if (input.runStatus !== "succeeded") {

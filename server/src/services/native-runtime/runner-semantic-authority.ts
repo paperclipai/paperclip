@@ -1,4 +1,14 @@
+import { fastResponseHistoryBody } from "@paperclipai/shared";
+import { readTaskQuestionContext } from "../issue-question-context.js";
+import { isConversation } from "../agent-conversations.js";
+import {
+  isLowTrustQuarantined,
+  resolveActorSourceTrustForIssue,
+  sanitizeQuarantinedCommentForHigherTrust,
+} from "../source-trust.js";
 import { and, desc, eq, isNull } from "drizzle-orm";
+import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGuidance } from "../queued-comment-delivery.js";
+import { logger } from "../../middleware/logger.js";
 
 import type { Db } from "@paperclipai/db";
 import {
@@ -124,6 +134,9 @@ export class PaperclipRunnerSemanticAuthority {
                   title: context.agent.title,
                   capabilities: context.agent.capabilities,
                 },
+                taskQuestionContext: await readTaskQuestionContext(this.#db, {
+                  ...this.#binding, conversationMode: isConversation(context.issue),
+                }),
                 activeTask: {
                   id: context.issue.id,
                   identifier: context.issue.identifier,
@@ -150,9 +163,12 @@ export class PaperclipRunnerSemanticAuthority {
               .select({
                 id: issueComments.id,
                 body: issueComments.body,
+                origin: issueComments.origin,
+                sourceTrust: issueComments.sourceTrust,
                 authorAgentId: issueComments.authorAgentId,
                 authorUserId: issueComments.authorUserId,
                 createdAt: issueComments.createdAt,
+                updatedAt: issueComments.updatedAt,
               })
               .from(issueComments)
               .where(
@@ -164,8 +180,24 @@ export class PaperclipRunnerSemanticAuthority {
               )
               .orderBy(desc(issueComments.createdAt))
               .limit(boundedLimit(input.limit));
+            const readerSourceTrust = await resolveActorSourceTrustForIssue({
+              db: this.#db,
+              issue: context.issue,
+              actor: { actorType: "agent", actorId: context.agent.id, agentId: context.agent.id, runId: context.run.id },
+            });
+            await recordTaskHistoryRead(this.#db, { companyId: this.#binding.companyId, agentId: this.#binding.agentId,
+              runId: this.#binding.runId, comments: rows }).catch(error =>
+              logger.warn({ err: error, runId: this.#binding.runId }, "could not record the task history a run read"));
+            const comments = rows.reverse().map(({ updatedAt: _updatedAt, ...row }) => {
+              const comment = isLowTrustQuarantined(readerSourceTrust)
+                ? row
+                : sanitizeQuarantinedCommentForHigherTrust(row);
+              return { ...comment, body: fastResponseHistoryBody(comment) };
+            });
+            const arrived = await commentsArrivedDuringRun(this.#db, { companyId: this.#binding.companyId,
+              runId: this.#binding.runId, agentId: this.#binding.agentId, comments: rows }).catch(() => [] as string[]);
             return {
-              value: jsonValue({ comments: rows.reverse() }),
+              value: jsonValue({ comments, ...taskHistoryHandlingGuidance(arrived) }),
               references: [{ kind: "task", id: context.issue.id }],
             };
           }

@@ -1,0 +1,44 @@
+{
+  "schema": "paperclip.cursor.instructions-proof.v1",
+  "providerCalls": 0,
+  "qualification": "offline-only",
+  "profileDigest": "sha256:b1440d559ebc4eef5c7a582f1c81fc153270cfbafa1731a8ee76d83713bdf61b",
+  "materialization": [
+    {
+      "version": "2026.09.26-dd393fe",
+      "patchVersion": "paperclip-cursor-instructions-v2",
+      "platform": "darwin",
+      "architecture": "arm64",
+      "archiveSha256": "538827d96a779bab854a865c8e42859e8e87db34b5f69770261b90fc8cfff191",
+      "closureSha256": "912a37edb67fd7737809c24049dce2db20b1330f98b15a6e43809f0e0943cb6c"
+    },
+    {
+      "version": "2026.09.26-dd393fe",
+      "patchVersion": "paperclip-cursor-instructions-v2",
+      "platform": "darwin",
+      "architecture": "x64",
+      "archiveSha256": "ed1771c44cbf0f8059c67cac0d939e6a60eb730bd066d7dc4cbb14de314cfb6e",
+      "closureSha256": "322f54c7bd533b202a311ce8e2c8916bfe0202790ef8a40fbb36bb89cbd506cb"
+    },
+    {
+      "version": "2026.09.26-dd393fe",
+      "patchVersion": "paperclip-cursor-instructions-v2",
+      "platform": "linux",
+      "architecture": "x64",
+      "archiveSha256": "8085fd120f5c71f4eae7fea26a043718e5644e3071e4fab3220a0e58c51f9593",
+      "closureSha256": "a375fc771dfe86b9b24532f95956ec4b02c5f4f24d80f5db06565160eb3b672c"
+    }
+  ],
+  "checks": {
+    "actualSdkNewAndLoadAdmission": true,
+    "actualRuntimeAutomaticReloadAfterProviderDeath": true,
+    "missingAndMismatchedReloadAcknowledgementRejectBeforePrompt": true,
+    "trustedSandboxRefreshAndAmbientOverrideExclusion": true,
+    "terminalDiagnosticsAndRichExtensionsPreserved": true
+  },
+  "limits": [
+    "Native source methods use explicit dependency doubles at RequestContext constructor; model semantics are unqualified.",
+    "No rebuilt provider pack or daemon, authenticated inference, billing mutation, or live promotion.",
+    "Pinned vendor archive identities are unchanged."
+  ]
+}

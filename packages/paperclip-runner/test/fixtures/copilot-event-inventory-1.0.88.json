@@ -1,0 +1,3312 @@
+{
+  "schema": "paperclip.copilot-capability-inventory/v1",
+  "harnessVersion": "1.0.88",
+  "source": "Exact darwin-arm64 distribution embedded schemas/session-events.schema.json and app.js; no live model inference",
+  "sourceSchemaSha256": "d8cb713c05d5278a68dde5c5d4482574f836e922ae13aa06f82474c209a7c6e9",
+  "events": [
+    {
+      "event": "agent.interrupted",
+      "fields": [
+        "activity",
+        "apiEndpoint",
+        "cancelPhase",
+        "elapsedMs",
+        "interruptedAgentCount",
+        "model",
+        "outputTtftMs",
+        "reasoningEffort",
+        "safeToolNames",
+        "toolCallIds",
+        "toolNames",
+        "transport",
+        "turn"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "activity": "unused_native_passthrough_not_subscribed",
+        "apiEndpoint": "unused_native_passthrough_not_subscribed",
+        "cancelPhase": "unused_native_passthrough_not_subscribed",
+        "elapsedMs": "unused_native_passthrough_not_subscribed",
+        "interruptedAgentCount": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "outputTtftMs": "unused_native_passthrough_not_subscribed",
+        "reasoningEffort": "unused_native_passthrough_not_subscribed",
+        "safeToolNames": "unused_native_passthrough_not_subscribed",
+        "toolCallIds": "unused_native_passthrough_not_subscribed",
+        "toolNames": "unused_native_passthrough_not_subscribed",
+        "transport": "unused_native_passthrough_not_subscribed",
+        "turn": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.fusion_phase_activity",
+      "fields": [
+        "activity",
+        "conversationScope",
+        "fusionId",
+        "pattern",
+        "phaseId",
+        "phaseKind",
+        "role",
+        "toolCallId",
+        "totalResponseSizeBytes"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "activity": "unused_native_passthrough_not_subscribed",
+        "conversationScope": "unused_native_passthrough_not_subscribed",
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "pattern": "unused_native_passthrough_not_subscribed",
+        "phaseId": "unused_native_passthrough_not_subscribed",
+        "phaseKind": "unused_native_passthrough_not_subscribed",
+        "role": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed",
+        "totalResponseSizeBytes": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.fusion_phase_completed",
+      "fields": [
+        "content",
+        "conversationScope",
+        "durationMs",
+        "fusionId",
+        "model",
+        "phaseId",
+        "phaseKind",
+        "projectionMessage",
+        "projectionMode",
+        "role",
+        "stagedTerminal",
+        "status",
+        "usage",
+        "verdict"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "content": "unused_native_passthrough_not_subscribed",
+        "conversationScope": "unused_native_passthrough_not_subscribed",
+        "durationMs": "unused_native_passthrough_not_subscribed",
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "phaseId": "unused_native_passthrough_not_subscribed",
+        "phaseKind": "unused_native_passthrough_not_subscribed",
+        "projectionMessage": "unused_native_passthrough_not_subscribed",
+        "projectionMode": "unused_native_passthrough_not_subscribed",
+        "role": "unused_native_passthrough_not_subscribed",
+        "stagedTerminal": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed",
+        "usage": "unused_native_passthrough_not_subscribed",
+        "verdict": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.fusion_phase_failed",
+      "fields": [
+        "conversationScope",
+        "degradedToPhaseId",
+        "durationMs",
+        "errorMessage",
+        "fusionId",
+        "model",
+        "phaseId",
+        "phaseKind",
+        "reason",
+        "role",
+        "status",
+        "usage"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "conversationScope": "unused_native_passthrough_not_subscribed",
+        "degradedToPhaseId": "unused_native_passthrough_not_subscribed",
+        "durationMs": "unused_native_passthrough_not_subscribed",
+        "errorMessage": "unused_native_passthrough_not_subscribed",
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "phaseId": "unused_native_passthrough_not_subscribed",
+        "phaseKind": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed",
+        "role": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed",
+        "usage": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.fusion_phase_started",
+      "fields": [
+        "conversationScope",
+        "fusionId",
+        "model",
+        "pattern",
+        "phaseId",
+        "phaseKind",
+        "role"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "conversationScope": "unused_native_passthrough_not_subscribed",
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "pattern": "unused_native_passthrough_not_subscribed",
+        "phaseId": "unused_native_passthrough_not_subscribed",
+        "phaseKind": "unused_native_passthrough_not_subscribed",
+        "role": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.idle",
+      "fields": [
+        "aborted"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "aborted": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.intent",
+      "fields": [
+        "intent"
+      ],
+      "standardAcp": "agent_thought_chunk",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "intent": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.message",
+      "fields": [
+        "apiCallId",
+        "chunkCount",
+        "chunkIndex",
+        "citations",
+        "clientRequestId",
+        "content",
+        "encryptedContent",
+        "fusion",
+        "interactionId",
+        "messageId",
+        "model",
+        "originatingMessageId",
+        "outputTokens",
+        "parentToolCallId",
+        "phase",
+        "reasoningBlocks",
+        "reasoningOpaque",
+        "reasoningText",
+        "reasoningWireField",
+        "requestId",
+        "rte",
+        "serverTools",
+        "serviceRequestId",
+        "toolRequests",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "apiCallId": "unused_native_passthrough_not_subscribed",
+        "chunkCount": "unused_native_passthrough_not_subscribed",
+        "chunkIndex": "unused_native_passthrough_not_subscribed",
+        "citations": "unused_native_passthrough_not_subscribed",
+        "clientRequestId": "unused_native_passthrough_not_subscribed",
+        "content": "unused_native_passthrough_not_subscribed",
+        "encryptedContent": "unused_native_passthrough_not_subscribed",
+        "fusion": "unused_native_passthrough_not_subscribed",
+        "interactionId": "unused_native_passthrough_not_subscribed",
+        "messageId": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "originatingMessageId": "unused_native_passthrough_not_subscribed",
+        "outputTokens": "unused_native_passthrough_not_subscribed",
+        "parentToolCallId": "unused_native_passthrough_not_subscribed",
+        "phase": "unused_native_passthrough_not_subscribed",
+        "reasoningBlocks": "unused_native_passthrough_not_subscribed",
+        "reasoningOpaque": "unused_native_passthrough_not_subscribed",
+        "reasoningText": "unused_native_passthrough_not_subscribed",
+        "reasoningWireField": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "rte": "unused_native_passthrough_not_subscribed",
+        "serverTools": "unused_native_passthrough_not_subscribed",
+        "serviceRequestId": "unused_native_passthrough_not_subscribed",
+        "toolRequests": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.message_delta",
+      "fields": [
+        "deltaContent",
+        "messageId",
+        "parentToolCallId"
+      ],
+      "standardAcp": "agent_message_chunk",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "deltaContent": "standard_projection_field_retention_not_individually_qualified",
+        "messageId": "standard_projection_field_retention_not_individually_qualified",
+        "parentToolCallId": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.message_start",
+      "fields": [
+        "messageId",
+        "phase"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "messageId": "unused_native_passthrough_not_subscribed",
+        "phase": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.reasoning",
+      "fields": [
+        "content",
+        "reasoningId",
+        "rte"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "content": "unused_native_passthrough_not_subscribed",
+        "reasoningId": "unused_native_passthrough_not_subscribed",
+        "rte": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.reasoning_delta",
+      "fields": [
+        "deltaContent",
+        "reasoningId"
+      ],
+      "standardAcp": "agent_thought_chunk",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "deltaContent": "standard_projection_field_retention_not_individually_qualified",
+        "reasoningId": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.server_tool_progress",
+      "fields": [
+        "kind",
+        "outputIndex",
+        "status"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "kind": "unused_native_passthrough_not_subscribed",
+        "outputIndex": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.streaming_delta",
+      "fields": [
+        "totalResponseSizeBytes"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "totalResponseSizeBytes": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.tool_call_delta",
+      "fields": [
+        "inputDelta",
+        "toolCallId",
+        "toolName",
+        "toolType"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "inputDelta": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed",
+        "toolName": "unused_native_passthrough_not_subscribed",
+        "toolType": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.turn_end",
+      "fields": [
+        "model",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "model": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.turn_retry",
+      "fields": [
+        "model",
+        "reason",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "model": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.turn_start",
+      "fields": [
+        "interactionId",
+        "model",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "interactionId": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "assistant.usage",
+      "fields": [
+        "acceptedPredictionTokens",
+        "apiCallId",
+        "apiEndpoint",
+        "availableToolCount",
+        "cacheDetailsReported",
+        "cacheExpiresAt",
+        "cacheReadTokens",
+        "cacheTtlSeconds",
+        "cacheWriteTokens",
+        "contentFilterTriggered",
+        "copilotUsage",
+        "cost",
+        "duration",
+        "finishReason",
+        "frontierSource",
+        "fusion",
+        "initiator",
+        "inputTokens",
+        "interTokenLatencyMs",
+        "interactionType",
+        "isAuto",
+        "isByok",
+        "maxOutputTokens",
+        "maxPromptTokens",
+        "model",
+        "numToolCalls",
+        "outputTokens",
+        "outputTtftMs",
+        "parentToolCallId",
+        "providerCallId",
+        "quotaSnapshots",
+        "reasoningEffort",
+        "reasoningSummary",
+        "reasoningTokens",
+        "rejectedPredictionTokens",
+        "rte",
+        "serviceRequestId",
+        "thinkingDroppedBlocks",
+        "thinkingDroppedReasons",
+        "timeToFirstTokenMs",
+        "toolCounts",
+        "toolTokenCount",
+        "transport"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "acceptedPredictionTokens": "projected",
+        "apiCallId": "projected",
+        "apiEndpoint": "projected",
+        "availableToolCount": "projected",
+        "cacheDetailsReported": "projected",
+        "cacheExpiresAt": "unused_declared_field",
+        "cacheReadTokens": "projected",
+        "cacheTtlSeconds": "projected",
+        "cacheWriteTokens": "projected",
+        "contentFilterTriggered": "projected",
+        "copilotUsage": "only_totalNanoAiu_projected_nested_remainder_unused",
+        "cost": "renamed_model_multiplier_not_usd",
+        "duration": "projected",
+        "finishReason": "projected",
+        "frontierSource": "unused_declared_field",
+        "fusion": "unused_declared_field",
+        "initiator": "projected",
+        "inputTokens": "projected",
+        "interTokenLatencyMs": "projected",
+        "interactionType": "projected",
+        "isAuto": "projected",
+        "isByok": "projected",
+        "maxOutputTokens": "projected",
+        "maxPromptTokens": "projected",
+        "model": "projected",
+        "numToolCalls": "projected",
+        "outputTokens": "projected",
+        "outputTtftMs": "projected",
+        "parentToolCallId": "projected",
+        "providerCallId": "unused_declared_field",
+        "quotaSnapshots": "unused_declared_field",
+        "reasoningEffort": "projected",
+        "reasoningSummary": "unused_declared_field",
+        "reasoningTokens": "projected",
+        "rejectedPredictionTokens": "projected",
+        "rte": "unused_declared_field",
+        "serviceRequestId": "unused_declared_field",
+        "thinkingDroppedBlocks": "projected",
+        "thinkingDroppedReasons": "unused_declared_field",
+        "timeToFirstTokenMs": "projected",
+        "toolCounts": "unused_declared_field",
+        "toolTokenCount": "projected",
+        "transport": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "auto_mode_switch.completed",
+      "fields": [
+        "requestId",
+        "response"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "response": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "auto_mode_switch.requested",
+      "fields": [
+        "errorCode",
+        "requestId",
+        "retryAfterSeconds"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "errorCode": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "retryAfterSeconds": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "capabilities.changed",
+      "fields": [
+        "ui"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "ui": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "command.completed",
+      "fields": [
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "command.execute",
+      "fields": [
+        "args",
+        "command",
+        "commandName",
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "args": "unused_native_passthrough_not_subscribed",
+        "command": "unused_native_passthrough_not_subscribed",
+        "commandName": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "command.queued",
+      "fields": [
+        "command",
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "command": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "commands.changed",
+      "fields": [
+        "commands"
+      ],
+      "standardAcp": "available_commands_update",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "commands": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "elicitation.completed",
+      "fields": [
+        "action",
+        "content",
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "action": "unused_native_passthrough_not_subscribed",
+        "content": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "elicitation.requested",
+      "fields": [
+        "elicitationSource",
+        "message",
+        "mode",
+        "requestId",
+        "requestedSchema",
+        "toolCallId",
+        "url"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "elicitationSource": "unused_declared_field",
+        "message": "unused_declared_field",
+        "mode": "unused_declared_field",
+        "requestId": "projected",
+        "requestedSchema": "unused_declared_field",
+        "toolCallId": "projected",
+        "url": "unused_declared_field"
+      },
+      "gapReason": "No qualified ACP responder; must prove no blocking request or implement responder before qualification.",
+      "followUpPriority": "P0"
+    },
+    {
+      "event": "exit_plan_mode.completed",
+      "fields": [
+        "approved",
+        "autoApproveEdits",
+        "feedback",
+        "requestId",
+        "selectedAction"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "approved": "unused_native_passthrough_not_subscribed",
+        "autoApproveEdits": "unused_native_passthrough_not_subscribed",
+        "feedback": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "selectedAction": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "exit_plan_mode.requested",
+      "fields": [
+        "actions",
+        "model",
+        "planContent",
+        "recommendedAction",
+        "requestId",
+        "summary"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "actions": "unused_declared_field",
+        "model": "unused_declared_field",
+        "planContent": "unused_declared_field",
+        "recommendedAction": "unused_declared_field",
+        "requestId": "projected",
+        "summary": "unused_declared_field"
+      },
+      "gapReason": "No qualified ACP responder; must prove no blocking request or implement responder before qualification.",
+      "followUpPriority": "P0"
+    },
+    {
+      "event": "external_tool.completed",
+      "fields": [
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "external_tool.requested",
+      "fields": [
+        "arguments",
+        "providerId",
+        "requestId",
+        "sessionId",
+        "toolCallId",
+        "toolName",
+        "traceparent",
+        "tracestate",
+        "workingDirectory"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "arguments": "unused_native_passthrough_not_subscribed",
+        "providerId": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "sessionId": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed",
+        "toolName": "unused_native_passthrough_not_subscribed",
+        "traceparent": "unused_native_passthrough_not_subscribed",
+        "tracestate": "unused_native_passthrough_not_subscribed",
+        "workingDirectory": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No qualified ACP responder; must prove no blocking request or implement responder before qualification.",
+      "followUpPriority": "P0"
+    },
+    {
+      "event": "factory.run_settled",
+      "fields": [
+        "consumedNanoAiu",
+        "consumedSubagents",
+        "elapsedMs",
+        "failureType",
+        "runId",
+        "status"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "consumedNanoAiu": "unused_native_passthrough_not_subscribed",
+        "consumedSubagents": "unused_native_passthrough_not_subscribed",
+        "elapsedMs": "unused_native_passthrough_not_subscribed",
+        "failureType": "unused_native_passthrough_not_subscribed",
+        "runId": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "factory.run_started",
+      "fields": [
+        "attempt",
+        "factoryName",
+        "runId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "attempt": "unused_native_passthrough_not_subscribed",
+        "factoryName": "unused_native_passthrough_not_subscribed",
+        "runId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "factory.run_updated",
+      "fields": [
+        "revision",
+        "runId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "revision": "unused_native_passthrough_not_subscribed",
+        "runId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "hook.end",
+      "fields": [
+        "error",
+        "hookInvocationId",
+        "hookType",
+        "output",
+        "parentToolCallId",
+        "success"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "error": "unused_native_passthrough_not_subscribed",
+        "hookInvocationId": "unused_native_passthrough_not_subscribed",
+        "hookType": "unused_native_passthrough_not_subscribed",
+        "output": "unused_native_passthrough_not_subscribed",
+        "parentToolCallId": "unused_native_passthrough_not_subscribed",
+        "success": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Ambient hooks/extensions excluded; preserve runner-owned attribution separately.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "hook.progress",
+      "fields": [
+        "message",
+        "temporary"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "message": "unused_native_passthrough_not_subscribed",
+        "temporary": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Ambient hooks/extensions excluded; preserve runner-owned attribution separately.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "hook.start",
+      "fields": [
+        "hookInvocationId",
+        "hookType",
+        "input",
+        "parentToolCallId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "hookInvocationId": "unused_native_passthrough_not_subscribed",
+        "hookType": "unused_native_passthrough_not_subscribed",
+        "input": "unused_native_passthrough_not_subscribed",
+        "parentToolCallId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Ambient hooks/extensions excluded; preserve runner-owned attribution separately.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "mcp.headers_refresh_completed",
+      "fields": [
+        "outcome",
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "outcome": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "mcp.headers_refresh_required",
+      "fields": [
+        "reason",
+        "requestId",
+        "serverName",
+        "serverUrl"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "reason": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "serverName": "unused_native_passthrough_not_subscribed",
+        "serverUrl": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "mcp.oauth_completed",
+      "fields": [
+        "outcome",
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "outcome": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "mcp.oauth_required",
+      "fields": [
+        "httpResponse",
+        "reason",
+        "requestId",
+        "resourceMetadata",
+        "serverName",
+        "serverUrl",
+        "staticClientConfig",
+        "wwwAuthenticateParams"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "httpResponse": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "resourceMetadata": "unused_native_passthrough_not_subscribed",
+        "serverName": "unused_native_passthrough_not_subscribed",
+        "serverUrl": "unused_native_passthrough_not_subscribed",
+        "staticClientConfig": "unused_native_passthrough_not_subscribed",
+        "wwwAuthenticateParams": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "mcp.prompts.list_changed",
+      "fields": [
+        "serverName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "serverName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "mcp.resources.list_changed",
+      "fields": [
+        "serverName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "serverName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "mcp.tools.list_changed",
+      "fields": [
+        "serverName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "serverName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "mcp_app.tool_call_complete",
+      "fields": [
+        "arguments",
+        "durationMs",
+        "error",
+        "result",
+        "serverName",
+        "success",
+        "toolMeta",
+        "toolName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "arguments": "unused_native_passthrough_not_subscribed",
+        "durationMs": "unused_native_passthrough_not_subscribed",
+        "error": "unused_native_passthrough_not_subscribed",
+        "result": "unused_native_passthrough_not_subscribed",
+        "serverName": "unused_native_passthrough_not_subscribed",
+        "success": "unused_native_passthrough_not_subscribed",
+        "toolMeta": "unused_native_passthrough_not_subscribed",
+        "toolName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "model.call_failure",
+      "fields": [
+        "apiCallId",
+        "apiEndpoint",
+        "badRequestKind",
+        "durationMs",
+        "errorCode",
+        "errorMessage",
+        "errorType",
+        "failureKind",
+        "fusion",
+        "initiator",
+        "interactionType",
+        "isAuto",
+        "isByok",
+        "maxOutputTokens",
+        "maxPromptTokens",
+        "model",
+        "providerCallId",
+        "quotaSnapshots",
+        "reasoningEffort",
+        "requestFingerprint",
+        "rte",
+        "serviceRequestId",
+        "source",
+        "statusCode",
+        "transport"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "apiCallId": "unused_native_passthrough_not_subscribed",
+        "apiEndpoint": "unused_native_passthrough_not_subscribed",
+        "badRequestKind": "unused_native_passthrough_not_subscribed",
+        "durationMs": "unused_native_passthrough_not_subscribed",
+        "errorCode": "unused_native_passthrough_not_subscribed",
+        "errorMessage": "unused_native_passthrough_not_subscribed",
+        "errorType": "unused_native_passthrough_not_subscribed",
+        "failureKind": "unused_native_passthrough_not_subscribed",
+        "fusion": "unused_native_passthrough_not_subscribed",
+        "initiator": "unused_native_passthrough_not_subscribed",
+        "interactionType": "unused_native_passthrough_not_subscribed",
+        "isAuto": "unused_native_passthrough_not_subscribed",
+        "isByok": "unused_native_passthrough_not_subscribed",
+        "maxOutputTokens": "unused_native_passthrough_not_subscribed",
+        "maxPromptTokens": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "providerCallId": "unused_native_passthrough_not_subscribed",
+        "quotaSnapshots": "unused_native_passthrough_not_subscribed",
+        "reasoningEffort": "unused_native_passthrough_not_subscribed",
+        "requestFingerprint": "unused_native_passthrough_not_subscribed",
+        "rte": "unused_native_passthrough_not_subscribed",
+        "serviceRequestId": "unused_native_passthrough_not_subscribed",
+        "source": "unused_native_passthrough_not_subscribed",
+        "statusCode": "unused_native_passthrough_not_subscribed",
+        "transport": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "model.call_finished",
+      "fields": [
+        "containsBuiltInFileEditRequest",
+        "dispatchDurationMs",
+        "editClassifierVersion",
+        "interactionId",
+        "outcome",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "containsBuiltInFileEditRequest": "unused_native_passthrough_not_subscribed",
+        "dispatchDurationMs": "unused_native_passthrough_not_subscribed",
+        "editClassifierVersion": "unused_native_passthrough_not_subscribed",
+        "interactionId": "unused_native_passthrough_not_subscribed",
+        "outcome": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "model.call_start",
+      "fields": [
+        "fusion",
+        "model",
+        "previousResponseId",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "fusion": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "previousResponseId": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "pending_messages.modified",
+      "fields": [],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {},
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.assentDetected",
+      "fields": [
+        "requestId",
+        "turnIndex"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "turnIndex": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.carriedForward",
+      "fields": [
+        "decisionSource",
+        "recordId",
+        "requestId",
+        "toolCallId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "decisionSource": "unused_native_passthrough_not_subscribed",
+        "recordId": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.completed",
+      "fields": [
+        "blocker",
+        "decisionSource",
+        "recoveryEpisodeId",
+        "requestId",
+        "result",
+        "toolCallId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "blocker": "unused_native_passthrough_not_subscribed",
+        "decisionSource": "unused_native_passthrough_not_subscribed",
+        "recoveryEpisodeId": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "result": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.contextualAuthorization",
+      "fields": [
+        "polarity",
+        "recordId",
+        "requestId",
+        "spanEnd",
+        "spanStart",
+        "turnIndex"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "polarity": "unused_native_passthrough_not_subscribed",
+        "recordId": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "spanEnd": "unused_native_passthrough_not_subscribed",
+        "spanStart": "unused_native_passthrough_not_subscribed",
+        "turnIndex": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.messageAuthorization",
+      "fields": [
+        "actionClass",
+        "polarity",
+        "recordId",
+        "spanEnd",
+        "spanStart",
+        "targetMembers",
+        "task",
+        "turnIndex",
+        "world"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "actionClass": "unused_native_passthrough_not_subscribed",
+        "polarity": "unused_native_passthrough_not_subscribed",
+        "recordId": "unused_native_passthrough_not_subscribed",
+        "spanEnd": "unused_native_passthrough_not_subscribed",
+        "spanStart": "unused_native_passthrough_not_subscribed",
+        "targetMembers": "unused_native_passthrough_not_subscribed",
+        "task": "unused_native_passthrough_not_subscribed",
+        "turnIndex": "unused_native_passthrough_not_subscribed",
+        "world": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.messageAuthorizationDegraded",
+      "fields": [
+        "turnIndex"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "turnIndex": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.messageAuthorizationRead",
+      "fields": [
+        "activatesExtraction",
+        "turnIndex"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "activatesExtraction": "unused_native_passthrough_not_subscribed",
+        "turnIndex": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "permission.requested",
+      "fields": [
+        "agentMode",
+        "permissionMode",
+        "permissionRequest",
+        "promptRequest",
+        "recoveryEpisodeId",
+        "requestId",
+        "resolvedByHook",
+        "riskAssessment"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "agentMode": "unused_native_passthrough_not_subscribed",
+        "permissionMode": "unused_native_passthrough_not_subscribed",
+        "permissionRequest": "unused_native_passthrough_not_subscribed",
+        "promptRequest": "unused_native_passthrough_not_subscribed",
+        "recoveryEpisodeId": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "resolvedByHook": "unused_native_passthrough_not_subscribed",
+        "riskAssessment": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "sampling.completed",
+      "fields": [
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "sampling.requested",
+      "fields": [
+        "mcpRequestId",
+        "requestId",
+        "serverName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "mcpRequestId": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "serverName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No qualified ACP responder; must prove no blocking request or implement responder before qualification.",
+      "followUpPriority": "P0"
+    },
+    {
+      "event": "sandbox.decision",
+      "fields": [],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {},
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.auto_mode_resolved",
+      "fields": [
+        "availableModels",
+        "candidateModels",
+        "categoryScores",
+        "chosenModel",
+        "chosenShortfall",
+        "confidence",
+        "endToEndLatencyMs",
+        "fallback",
+        "fallbackReason",
+        "hasImage",
+        "predictedLabel",
+        "reasoningBucket",
+        "routerLatencyMs",
+        "routingMethod",
+        "stickyOverride"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "availableModels": "unused_native_passthrough_not_subscribed",
+        "candidateModels": "unused_native_passthrough_not_subscribed",
+        "categoryScores": "unused_native_passthrough_not_subscribed",
+        "chosenModel": "unused_native_passthrough_not_subscribed",
+        "chosenShortfall": "unused_native_passthrough_not_subscribed",
+        "confidence": "unused_native_passthrough_not_subscribed",
+        "endToEndLatencyMs": "unused_native_passthrough_not_subscribed",
+        "fallback": "unused_native_passthrough_not_subscribed",
+        "fallbackReason": "unused_native_passthrough_not_subscribed",
+        "hasImage": "unused_native_passthrough_not_subscribed",
+        "predictedLabel": "unused_native_passthrough_not_subscribed",
+        "reasoningBucket": "unused_native_passthrough_not_subscribed",
+        "routerLatencyMs": "unused_native_passthrough_not_subscribed",
+        "routingMethod": "unused_native_passthrough_not_subscribed",
+        "stickyOverride": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.auto_tier_recommendation",
+      "fields": [
+        "recommendedAutoTier"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "recommendedAutoTier": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.auto_tier_switch_failed",
+      "fields": [
+        "effectiveAutoTier",
+        "reason",
+        "requestedAutoTier"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "effectiveAutoTier": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed",
+        "requestedAutoTier": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.autopilot_objective_changed",
+      "fields": [
+        "id",
+        "operation",
+        "status"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "id": "unused_native_passthrough_not_subscribed",
+        "operation": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.background_tasks_changed",
+      "fields": [],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {},
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.binary_asset",
+      "fields": [
+        "assetId",
+        "byteLength",
+        "data",
+        "description",
+        "metadata",
+        "mimeType",
+        "type"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "assetId": "projected",
+        "byteLength": "projected",
+        "data": "digest_verified_bytes_omitted_pending_artifact_upload",
+        "description": "projected",
+        "metadata": "unused_declared_field",
+        "mimeType": "projected",
+        "type": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.canvas.closed",
+      "fields": [
+        "canvasId",
+        "extensionId",
+        "instanceId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "canvasId": "unused_native_passthrough_not_subscribed",
+        "extensionId": "unused_native_passthrough_not_subscribed",
+        "instanceId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.canvas.opened",
+      "fields": [
+        "canvasId",
+        "extensionId",
+        "extensionName",
+        "icon",
+        "input",
+        "instanceId",
+        "status",
+        "title",
+        "url"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "canvasId": "unused_native_passthrough_not_subscribed",
+        "extensionId": "unused_native_passthrough_not_subscribed",
+        "extensionName": "unused_native_passthrough_not_subscribed",
+        "icon": "unused_native_passthrough_not_subscribed",
+        "input": "unused_native_passthrough_not_subscribed",
+        "instanceId": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed",
+        "title": "unused_native_passthrough_not_subscribed",
+        "url": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.canvas.recorded",
+      "fields": [
+        "canvasId",
+        "extensionId",
+        "input",
+        "instanceId",
+        "title"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "canvasId": "unused_native_passthrough_not_subscribed",
+        "extensionId": "unused_native_passthrough_not_subscribed",
+        "input": "unused_native_passthrough_not_subscribed",
+        "instanceId": "unused_native_passthrough_not_subscribed",
+        "title": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.canvas.registry_changed",
+      "fields": [
+        "canvases"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "canvases": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.canvas.removed",
+      "fields": [
+        "canvasId",
+        "extensionId",
+        "instanceId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "canvasId": "unused_native_passthrough_not_subscribed",
+        "extensionId": "unused_native_passthrough_not_subscribed",
+        "instanceId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.canvas.unavailable",
+      "fields": [
+        "canvasId",
+        "extensionId",
+        "instanceId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "canvasId": "unused_native_passthrough_not_subscribed",
+        "extensionId": "unused_native_passthrough_not_subscribed",
+        "instanceId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.compaction_complete",
+      "fields": [
+        "activeFactorySummary",
+        "behaviorModelId",
+        "checkpointNumber",
+        "checkpointPath",
+        "compactionTokensUsed",
+        "conversationTokens",
+        "customInstructions",
+        "error",
+        "messagesRemoved",
+        "postCompactionTokens",
+        "preCompactionMessagesLength",
+        "preCompactionTokens",
+        "requestId",
+        "responsesReasoning",
+        "serviceRequestId",
+        "statusCode",
+        "success",
+        "summaryContent",
+        "systemTokens",
+        "tokenLimit",
+        "tokensRemoved",
+        "toolDefinitionsTokens",
+        "trigger"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "activeFactorySummary": "unused_declared_field",
+        "behaviorModelId": "projected",
+        "checkpointNumber": "projected",
+        "checkpointPath": "unused_declared_field",
+        "compactionTokensUsed": "projected",
+        "conversationTokens": "projected",
+        "customInstructions": "unused_declared_field",
+        "error": "projected",
+        "messagesRemoved": "projected",
+        "postCompactionTokens": "projected",
+        "preCompactionMessagesLength": "projected",
+        "preCompactionTokens": "projected",
+        "requestId": "unused_declared_field",
+        "responsesReasoning": "unused_declared_field",
+        "serviceRequestId": "unused_declared_field",
+        "statusCode": "projected",
+        "success": "projected",
+        "summaryContent": "unused_declared_field",
+        "systemTokens": "projected",
+        "tokenLimit": "projected",
+        "tokensRemoved": "projected",
+        "toolDefinitionsTokens": "projected",
+        "trigger": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.compaction_start",
+      "fields": [
+        "conversationTokens",
+        "currentTokens",
+        "model",
+        "systemTokens",
+        "tokenLimit",
+        "toolDefinitionsTokens",
+        "trigger"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "conversationTokens": "projected",
+        "currentTokens": "projected",
+        "model": "projected",
+        "systemTokens": "projected",
+        "tokenLimit": "projected",
+        "toolDefinitionsTokens": "projected",
+        "trigger": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.completion_receipt",
+      "fields": [
+        "attempt",
+        "eventRange",
+        "failedToolCount",
+        "finalTool",
+        "schemaVersion",
+        "sourceEventId",
+        "stopReason",
+        "successfulToolCount"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "attempt": "projected",
+        "eventRange": "projected",
+        "failedToolCount": "projected",
+        "finalTool": "unused_declared_field",
+        "schemaVersion": "projected",
+        "sourceEventId": "projected",
+        "stopReason": "projected",
+        "successfulToolCount": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.context_changed",
+      "fields": [
+        "baseCommit",
+        "branch",
+        "cwd",
+        "gitRoot",
+        "headCommit",
+        "hostType",
+        "pendingGitContext",
+        "repository",
+        "repositoryHost"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "baseCommit": "projected",
+        "branch": "projected",
+        "cwd": "projected",
+        "gitRoot": "unused_declared_field",
+        "headCommit": "projected",
+        "hostType": "projected",
+        "pendingGitContext": "unused_declared_field",
+        "repository": "unused_declared_field",
+        "repositoryHost": "unused_declared_field"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.context_cleared",
+      "fields": [
+        "initialMessage",
+        "messagesCleared"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "initialMessage": "unused_native_passthrough_not_subscribed",
+        "messagesCleared": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.custom_agents_updated",
+      "fields": [
+        "agents",
+        "errors",
+        "warnings"
+      ],
+      "standardAcp": "config_option_update",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "agents": "standard_projection_field_retention_not_individually_qualified",
+        "errors": "standard_projection_field_retention_not_individually_qualified",
+        "warnings": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.custom_notification",
+      "fields": [
+        "name",
+        "payload",
+        "source",
+        "subject",
+        "version"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "name": "unused_native_passthrough_not_subscribed",
+        "payload": "unused_native_passthrough_not_subscribed",
+        "source": "unused_native_passthrough_not_subscribed",
+        "subject": "unused_native_passthrough_not_subscribed",
+        "version": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.error",
+      "fields": [
+        "eligibleForAutoSwitch",
+        "errorCode",
+        "errorType",
+        "message",
+        "providerCallId",
+        "remediation",
+        "serviceRequestId",
+        "stack",
+        "statusCode",
+        "url"
+      ],
+      "standardAcp": "agent_message_chunk",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "eligibleForAutoSwitch": "standard_projection_field_retention_not_individually_qualified",
+        "errorCode": "standard_projection_field_retention_not_individually_qualified",
+        "errorType": "standard_projection_field_retention_not_individually_qualified",
+        "message": "standard_projection_field_retention_not_individually_qualified",
+        "providerCallId": "standard_projection_field_retention_not_individually_qualified",
+        "remediation": "standard_projection_field_retention_not_individually_qualified",
+        "serviceRequestId": "standard_projection_field_retention_not_individually_qualified",
+        "stack": "standard_projection_field_retention_not_individually_qualified",
+        "statusCode": "standard_projection_field_retention_not_individually_qualified",
+        "url": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.extensions.attachments_pushed",
+      "fields": [
+        "attachments"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "attachments": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Ambient hooks/extensions excluded; preserve runner-owned attribution separately.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.extensions_loaded",
+      "fields": [
+        "extensions"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "extensions": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Ambient hooks/extensions excluded; preserve runner-owned attribution separately.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.fusion_commit_started",
+      "fields": [
+        "commitId",
+        "fusionId",
+        "kind",
+        "sourceModel",
+        "sourcePhaseId",
+        "toolCallId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "commitId": "unused_native_passthrough_not_subscribed",
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "kind": "unused_native_passthrough_not_subscribed",
+        "sourceModel": "unused_native_passthrough_not_subscribed",
+        "sourcePhaseId": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.fusion_completed",
+      "fields": [
+        "cacheWriteTokens",
+        "cachedTokens",
+        "commitId",
+        "degradedReason",
+        "durationMs",
+        "finalSourceModel",
+        "finalSourcePhaseId",
+        "followUpModel",
+        "fusionId",
+        "inputTokens",
+        "outcome",
+        "outputTokens",
+        "pattern",
+        "phaseCount",
+        "requestCount",
+        "syntheticModel",
+        "totalNanoAiu",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "cacheWriteTokens": "unused_native_passthrough_not_subscribed",
+        "cachedTokens": "unused_native_passthrough_not_subscribed",
+        "commitId": "unused_native_passthrough_not_subscribed",
+        "degradedReason": "unused_native_passthrough_not_subscribed",
+        "durationMs": "unused_native_passthrough_not_subscribed",
+        "finalSourceModel": "unused_native_passthrough_not_subscribed",
+        "finalSourcePhaseId": "unused_native_passthrough_not_subscribed",
+        "followUpModel": "unused_native_passthrough_not_subscribed",
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "inputTokens": "unused_native_passthrough_not_subscribed",
+        "outcome": "unused_native_passthrough_not_subscribed",
+        "outputTokens": "unused_native_passthrough_not_subscribed",
+        "pattern": "unused_native_passthrough_not_subscribed",
+        "phaseCount": "unused_native_passthrough_not_subscribed",
+        "requestCount": "unused_native_passthrough_not_subscribed",
+        "syntheticModel": "unused_native_passthrough_not_subscribed",
+        "totalNanoAiu": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.fusion_handoff",
+      "fields": [
+        "fusionId",
+        "message",
+        "sourcePhaseId",
+        "targetModel",
+        "targetPhaseId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "message": "unused_native_passthrough_not_subscribed",
+        "sourcePhaseId": "unused_native_passthrough_not_subscribed",
+        "targetModel": "unused_native_passthrough_not_subscribed",
+        "targetPhaseId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.fusion_resolved",
+      "fields": [
+        "contractVersion",
+        "fallbackModel",
+        "followUp",
+        "followUpModel",
+        "fusionId",
+        "modelUniverseVersion",
+        "pattern",
+        "phasePlan",
+        "planVersion",
+        "policy",
+        "policyVersion",
+        "primaryModel",
+        "routeSource",
+        "routingLatencyMs",
+        "ruleId",
+        "ruleIndex",
+        "ruleName",
+        "scores",
+        "secondaryModel",
+        "syntheticModel",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "contractVersion": "unused_native_passthrough_not_subscribed",
+        "fallbackModel": "unused_native_passthrough_not_subscribed",
+        "followUp": "unused_native_passthrough_not_subscribed",
+        "followUpModel": "unused_native_passthrough_not_subscribed",
+        "fusionId": "unused_native_passthrough_not_subscribed",
+        "modelUniverseVersion": "unused_native_passthrough_not_subscribed",
+        "pattern": "unused_native_passthrough_not_subscribed",
+        "phasePlan": "unused_native_passthrough_not_subscribed",
+        "planVersion": "unused_native_passthrough_not_subscribed",
+        "policy": "unused_native_passthrough_not_subscribed",
+        "policyVersion": "unused_native_passthrough_not_subscribed",
+        "primaryModel": "unused_native_passthrough_not_subscribed",
+        "routeSource": "unused_native_passthrough_not_subscribed",
+        "routingLatencyMs": "unused_native_passthrough_not_subscribed",
+        "ruleId": "unused_native_passthrough_not_subscribed",
+        "ruleIndex": "unused_native_passthrough_not_subscribed",
+        "ruleName": "unused_native_passthrough_not_subscribed",
+        "scores": "unused_native_passthrough_not_subscribed",
+        "secondaryModel": "unused_native_passthrough_not_subscribed",
+        "syntheticModel": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.fusion_route_failed",
+      "fields": [
+        "attemptId",
+        "errorMessage",
+        "fallbackModel",
+        "policy",
+        "reason",
+        "routingLatencyMs",
+        "syntheticModel"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "attemptId": "unused_native_passthrough_not_subscribed",
+        "errorMessage": "unused_native_passthrough_not_subscribed",
+        "fallbackModel": "unused_native_passthrough_not_subscribed",
+        "policy": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed",
+        "routingLatencyMs": "unused_native_passthrough_not_subscribed",
+        "syntheticModel": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.fusion_route_started",
+      "fields": [
+        "attemptId",
+        "policy",
+        "syntheticModel",
+        "turnKind"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "attemptId": "unused_native_passthrough_not_subscribed",
+        "policy": "unused_native_passthrough_not_subscribed",
+        "syntheticModel": "unused_native_passthrough_not_subscribed",
+        "turnKind": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.handoff",
+      "fields": [
+        "context",
+        "handoffTime",
+        "host",
+        "remoteSessionId",
+        "repository",
+        "sourceType",
+        "summary"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "context": "unused_native_passthrough_not_subscribed",
+        "handoffTime": "unused_native_passthrough_not_subscribed",
+        "host": "unused_native_passthrough_not_subscribed",
+        "remoteSessionId": "unused_native_passthrough_not_subscribed",
+        "repository": "unused_native_passthrough_not_subscribed",
+        "sourceType": "unused_native_passthrough_not_subscribed",
+        "summary": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.idle",
+      "fields": [
+        "aborted",
+        "mode"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "aborted": "projected",
+        "mode": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.indexed_search",
+      "fields": [],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {},
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.info",
+      "fields": [
+        "infoType",
+        "message",
+        "tip",
+        "url"
+      ],
+      "standardAcp": "agent_message_chunk",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "infoType": "standard_projection_field_retention_not_individually_qualified",
+        "message": "standard_projection_field_retention_not_individually_qualified",
+        "tip": "standard_projection_field_retention_not_individually_qualified",
+        "url": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.managed_settings_enforced",
+      "fields": [
+        "action",
+        "escalation",
+        "failClosed",
+        "message",
+        "setting"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "action": "unused_native_passthrough_not_subscribed",
+        "escalation": "unused_native_passthrough_not_subscribed",
+        "failClosed": "unused_native_passthrough_not_subscribed",
+        "message": "unused_native_passthrough_not_subscribed",
+        "setting": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.managed_settings_resolved",
+      "fields": [
+        "bypassPermissionsDisabled",
+        "clientManaged",
+        "deviceManaged",
+        "failClosed",
+        "managedKeys",
+        "permissionsAllowIntersected",
+        "policyHelperManaged",
+        "sandboxEnabledByUndeterminedPolicy",
+        "serverManaged",
+        "settings",
+        "source"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "bypassPermissionsDisabled": "unused_native_passthrough_not_subscribed",
+        "clientManaged": "unused_native_passthrough_not_subscribed",
+        "deviceManaged": "unused_native_passthrough_not_subscribed",
+        "failClosed": "unused_native_passthrough_not_subscribed",
+        "managedKeys": "unused_native_passthrough_not_subscribed",
+        "permissionsAllowIntersected": "unused_native_passthrough_not_subscribed",
+        "policyHelperManaged": "unused_native_passthrough_not_subscribed",
+        "sandboxEnabledByUndeterminedPolicy": "unused_native_passthrough_not_subscribed",
+        "serverManaged": "unused_native_passthrough_not_subscribed",
+        "settings": "unused_native_passthrough_not_subscribed",
+        "source": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.mcp_server_needs_reconnect",
+      "fields": [
+        "serverName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "serverName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.mcp_server_removed",
+      "fields": [
+        "serverName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "serverName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.mcp_server_status_changed",
+      "fields": [
+        "error",
+        "serverName",
+        "status"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "error": "unused_native_passthrough_not_subscribed",
+        "serverName": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.mcp_servers_loaded",
+      "fields": [
+        "servers"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "servers": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Only runner-owned MCP admitted; do not normalize ambient auth/headers as authority. Add sanitized bridge diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.memory_changed",
+      "fields": [],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {},
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.mode_changed",
+      "fields": [
+        "newMode",
+        "previousMode"
+      ],
+      "standardAcp": "current_mode_update",
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "newMode": "projected",
+        "previousMode": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.mode_notice_delivered",
+      "fields": [
+        "content",
+        "mode"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "content": "unused_native_passthrough_not_subscribed",
+        "mode": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.model_change",
+      "fields": [
+        "autoTier",
+        "cause",
+        "contextTier",
+        "newModel",
+        "previousAutoTier",
+        "previousModel",
+        "previousReasoningEffort",
+        "previousReasoningSummary",
+        "previousVerbosity",
+        "reasoningEffort",
+        "reasoningSummary",
+        "source",
+        "verbosity"
+      ],
+      "standardAcp": "config_option_update",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "autoTier": "standard_projection_field_retention_not_individually_qualified",
+        "cause": "standard_projection_field_retention_not_individually_qualified",
+        "contextTier": "standard_projection_field_retention_not_individually_qualified",
+        "newModel": "standard_projection_field_retention_not_individually_qualified",
+        "previousAutoTier": "standard_projection_field_retention_not_individually_qualified",
+        "previousModel": "standard_projection_field_retention_not_individually_qualified",
+        "previousReasoningEffort": "standard_projection_field_retention_not_individually_qualified",
+        "previousReasoningSummary": "standard_projection_field_retention_not_individually_qualified",
+        "previousVerbosity": "standard_projection_field_retention_not_individually_qualified",
+        "reasoningEffort": "standard_projection_field_retention_not_individually_qualified",
+        "reasoningSummary": "standard_projection_field_retention_not_individually_qualified",
+        "source": "standard_projection_field_retention_not_individually_qualified",
+        "verbosity": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.model_deselected",
+      "fields": [
+        "previousModel",
+        "reason"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "previousModel": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.permission_recovery",
+      "fields": [
+        "attempts",
+        "episodeId",
+        "maxAttempts",
+        "onBlocked",
+        "reason",
+        "status"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "attempts": "unused_native_passthrough_not_subscribed",
+        "episodeId": "unused_native_passthrough_not_subscribed",
+        "maxAttempts": "unused_native_passthrough_not_subscribed",
+        "onBlocked": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed",
+        "status": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.permissions_changed",
+      "fields": [
+        "assistedApprovalModel",
+        "mode",
+        "previousMode"
+      ],
+      "standardAcp": "config_option_update",
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "assistedApprovalModel": "projected",
+        "mode": "projected",
+        "previousMode": "projected"
+      },
+      "gapReason": "Standard permission callback owns authorization; native notices cannot grant authority. Add sanitized diagnostics.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.plan_changed",
+      "fields": [
+        "operation"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "operation": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.remote_steerable_changed",
+      "fields": [
+        "remoteSteerable"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "remoteSteerable": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.resume",
+      "fields": [
+        "alreadyInUse",
+        "autoTier",
+        "context",
+        "contextTier",
+        "continuePendingWork",
+        "eventCount",
+        "eventsFileSizeBytes",
+        "reasoningEffort",
+        "reasoningSummary",
+        "remoteSteerable",
+        "resumeTime",
+        "selectedModel",
+        "sessionLimits",
+        "sessionWasActive",
+        "verbosity"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "alreadyInUse": "unused_native_passthrough_not_subscribed",
+        "autoTier": "unused_native_passthrough_not_subscribed",
+        "context": "unused_native_passthrough_not_subscribed",
+        "contextTier": "unused_native_passthrough_not_subscribed",
+        "continuePendingWork": "unused_native_passthrough_not_subscribed",
+        "eventCount": "unused_native_passthrough_not_subscribed",
+        "eventsFileSizeBytes": "unused_native_passthrough_not_subscribed",
+        "reasoningEffort": "unused_native_passthrough_not_subscribed",
+        "reasoningSummary": "unused_native_passthrough_not_subscribed",
+        "remoteSteerable": "unused_native_passthrough_not_subscribed",
+        "resumeTime": "unused_native_passthrough_not_subscribed",
+        "selectedModel": "unused_native_passthrough_not_subscribed",
+        "sessionLimits": "unused_native_passthrough_not_subscribed",
+        "sessionWasActive": "unused_native_passthrough_not_subscribed",
+        "verbosity": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.schedule_cancelled",
+      "fields": [
+        "id"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "id": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.schedule_created",
+      "fields": [
+        "at",
+        "cron",
+        "displayPrompt",
+        "id",
+        "intervalMs",
+        "origin",
+        "prompt",
+        "recurring",
+        "selfPaced",
+        "tz"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "at": "unused_native_passthrough_not_subscribed",
+        "cron": "unused_native_passthrough_not_subscribed",
+        "displayPrompt": "unused_native_passthrough_not_subscribed",
+        "id": "unused_native_passthrough_not_subscribed",
+        "intervalMs": "unused_native_passthrough_not_subscribed",
+        "origin": "unused_native_passthrough_not_subscribed",
+        "prompt": "unused_native_passthrough_not_subscribed",
+        "recurring": "unused_native_passthrough_not_subscribed",
+        "selfPaced": "unused_native_passthrough_not_subscribed",
+        "tz": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.schedule_rearmed",
+      "fields": [
+        "id",
+        "nextRunAt"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "id": "unused_native_passthrough_not_subscribed",
+        "nextRunAt": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.session_limits_changed",
+      "fields": [
+        "sessionLimits"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "sessionLimits": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.shutdown",
+      "fields": [
+        "agentMetrics",
+        "codeChanges",
+        "conversationTokens",
+        "currentModel",
+        "currentTokens",
+        "errorReason",
+        "eventsFileSizeBytes",
+        "modelMetrics",
+        "sessionStartTime",
+        "shutdownType",
+        "systemTokens",
+        "tokenDetails",
+        "toolDefinitionsTokens",
+        "totalApiDurationMs",
+        "totalNanoAiu",
+        "totalPremiumRequests"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "agentMetrics": "unused_native_passthrough_not_subscribed",
+        "codeChanges": "unused_native_passthrough_not_subscribed",
+        "conversationTokens": "unused_native_passthrough_not_subscribed",
+        "currentModel": "unused_native_passthrough_not_subscribed",
+        "currentTokens": "unused_native_passthrough_not_subscribed",
+        "errorReason": "unused_native_passthrough_not_subscribed",
+        "eventsFileSizeBytes": "unused_native_passthrough_not_subscribed",
+        "modelMetrics": "unused_native_passthrough_not_subscribed",
+        "sessionStartTime": "unused_native_passthrough_not_subscribed",
+        "shutdownType": "unused_native_passthrough_not_subscribed",
+        "systemTokens": "unused_native_passthrough_not_subscribed",
+        "tokenDetails": "unused_native_passthrough_not_subscribed",
+        "toolDefinitionsTokens": "unused_native_passthrough_not_subscribed",
+        "totalApiDurationMs": "unused_native_passthrough_not_subscribed",
+        "totalNanoAiu": "unused_native_passthrough_not_subscribed",
+        "totalPremiumRequests": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.skills_loaded",
+      "fields": [
+        "skills"
+      ],
+      "standardAcp": "available_commands_update",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "skills": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.snapshot_rewind",
+      "fields": [
+        "eventsRemoved",
+        "upToEventId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "eventsRemoved": "unused_native_passthrough_not_subscribed",
+        "upToEventId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.start",
+      "fields": [
+        "alreadyInUse",
+        "autoTier",
+        "context",
+        "contextTier",
+        "copilotVersion",
+        "detachedFromSpawningParentSessionId",
+        "githubMcpToolConfig",
+        "producer",
+        "reasoningEffort",
+        "reasoningSummary",
+        "remoteSteerable",
+        "selectedModel",
+        "sessionId",
+        "sessionLimits",
+        "startTime",
+        "verbosity",
+        "version"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "alreadyInUse": "unused_native_passthrough_not_subscribed",
+        "autoTier": "unused_native_passthrough_not_subscribed",
+        "context": "unused_native_passthrough_not_subscribed",
+        "contextTier": "unused_native_passthrough_not_subscribed",
+        "copilotVersion": "unused_native_passthrough_not_subscribed",
+        "detachedFromSpawningParentSessionId": "unused_native_passthrough_not_subscribed",
+        "githubMcpToolConfig": "unused_native_passthrough_not_subscribed",
+        "producer": "unused_native_passthrough_not_subscribed",
+        "reasoningEffort": "unused_native_passthrough_not_subscribed",
+        "reasoningSummary": "unused_native_passthrough_not_subscribed",
+        "remoteSteerable": "unused_native_passthrough_not_subscribed",
+        "selectedModel": "unused_native_passthrough_not_subscribed",
+        "sessionId": "unused_native_passthrough_not_subscribed",
+        "sessionLimits": "unused_native_passthrough_not_subscribed",
+        "startTime": "unused_native_passthrough_not_subscribed",
+        "verbosity": "unused_native_passthrough_not_subscribed",
+        "version": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.task_complete",
+      "fields": [
+        "blocker",
+        "objectiveId",
+        "outcome",
+        "reason",
+        "success",
+        "summary"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "blocker": "unused_native_passthrough_not_subscribed",
+        "objectiveId": "unused_native_passthrough_not_subscribed",
+        "outcome": "unused_native_passthrough_not_subscribed",
+        "reason": "unused_native_passthrough_not_subscribed",
+        "success": "unused_native_passthrough_not_subscribed",
+        "summary": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.title_changed",
+      "fields": [
+        "title"
+      ],
+      "standardAcp": "session_info_update",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "title": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.todos_changed",
+      "fields": [],
+      "standardAcp": "plan",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {},
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.tools_updated",
+      "fields": [
+        "model"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "model": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.truncation",
+      "fields": [
+        "messagesRemovedDuringTruncation",
+        "performedBy",
+        "postTruncationMessagesLength",
+        "postTruncationTokensInMessages",
+        "preTruncationMessagesLength",
+        "preTruncationTokensInMessages",
+        "tokenLimit",
+        "tokensRemovedDuringTruncation"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "messagesRemovedDuringTruncation": "unused_native_passthrough_not_subscribed",
+        "performedBy": "unused_native_passthrough_not_subscribed",
+        "postTruncationMessagesLength": "unused_native_passthrough_not_subscribed",
+        "postTruncationTokensInMessages": "unused_native_passthrough_not_subscribed",
+        "preTruncationMessagesLength": "unused_native_passthrough_not_subscribed",
+        "preTruncationTokensInMessages": "unused_native_passthrough_not_subscribed",
+        "tokenLimit": "unused_native_passthrough_not_subscribed",
+        "tokensRemovedDuringTruncation": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.usage_checkpoint",
+      "fields": [
+        "modelCacheState",
+        "promptCacheBreakState",
+        "totalNanoAiu",
+        "totalPremiumRequests"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "modelCacheState": "unused_declared_field",
+        "promptCacheBreakState": "unused_declared_field",
+        "totalNanoAiu": "projected",
+        "totalPremiumRequests": "unused_declared_field"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.usage_info",
+      "fields": [
+        "conversationTokens",
+        "currentTokens",
+        "isInitial",
+        "messagesLength",
+        "systemTokens",
+        "tokenLimit",
+        "toolDefinitionsTokens"
+      ],
+      "standardAcp": "usage_update",
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "conversationTokens": "projected",
+        "currentTokens": "projected",
+        "isInitial": "projected",
+        "messagesLength": "projected",
+        "systemTokens": "projected",
+        "tokenLimit": "projected",
+        "toolDefinitionsTokens": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session.warning",
+      "fields": [
+        "message",
+        "remediation",
+        "url",
+        "warningType"
+      ],
+      "standardAcp": "agent_message_chunk",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "message": "standard_projection_field_retention_not_individually_qualified",
+        "remediation": "standard_projection_field_retention_not_individually_qualified",
+        "url": "standard_projection_field_retention_not_individually_qualified",
+        "warningType": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session.workspace_file_changed",
+      "fields": [
+        "operation",
+        "path"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "operation": "projected",
+        "path": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "session_limits_exhausted.completed",
+      "fields": [
+        "requestId",
+        "response"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "response": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "session_limits_exhausted.requested",
+      "fields": [
+        "maxAiCredits",
+        "requestId",
+        "usedAiCredits"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "maxAiCredits": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "usedAiCredits": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No qualified ACP responder; must prove no blocking request or implement responder before qualification.",
+      "followUpPriority": "P0"
+    },
+    {
+      "event": "skill.context_delivered",
+      "fields": [
+        "content",
+        "interactionId",
+        "source"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "blocked_by_provider",
+      "fieldCoverage": {
+        "content": "provider_blocks_passthrough",
+        "interactionId": "provider_blocks_passthrough",
+        "source": "provider_blocks_passthrough"
+      },
+      "gapReason": "Pinned provider explicitly blocks these event types.",
+      "followUpPriority": "upstream"
+    },
+    {
+      "event": "skill.context_delivered_ref",
+      "fields": [
+        "contentId",
+        "interactionId",
+        "prefix",
+        "source",
+        "suffix"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "blocked_by_provider",
+      "fieldCoverage": {
+        "contentId": "provider_blocks_passthrough",
+        "interactionId": "provider_blocks_passthrough",
+        "prefix": "provider_blocks_passthrough",
+        "source": "provider_blocks_passthrough",
+        "suffix": "provider_blocks_passthrough"
+      },
+      "gapReason": "Pinned provider explicitly blocks these event types.",
+      "followUpPriority": "upstream"
+    },
+    {
+      "event": "skill.invoked",
+      "fields": [
+        "allowedTools",
+        "content",
+        "description",
+        "disableModelInvocation",
+        "invokedAtTurn",
+        "model",
+        "name",
+        "path",
+        "pluginName",
+        "pluginVersion",
+        "source",
+        "trigger"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "allowedTools": "unused_native_passthrough_not_subscribed",
+        "content": "unused_native_passthrough_not_subscribed",
+        "description": "unused_native_passthrough_not_subscribed",
+        "disableModelInvocation": "unused_native_passthrough_not_subscribed",
+        "invokedAtTurn": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "name": "unused_native_passthrough_not_subscribed",
+        "path": "unused_native_passthrough_not_subscribed",
+        "pluginName": "unused_native_passthrough_not_subscribed",
+        "pluginVersion": "unused_native_passthrough_not_subscribed",
+        "source": "unused_native_passthrough_not_subscribed",
+        "trigger": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Ambient hooks/extensions excluded; preserve runner-owned attribution separately.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "skill.invoked_ref",
+      "fields": [
+        "allowedTools",
+        "contentId",
+        "contentLength",
+        "description",
+        "disableModelInvocation",
+        "invokedAtTurn",
+        "model",
+        "name",
+        "path",
+        "pluginName",
+        "pluginVersion",
+        "source",
+        "trigger"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "allowedTools": "unused_native_passthrough_not_subscribed",
+        "contentId": "unused_native_passthrough_not_subscribed",
+        "contentLength": "unused_native_passthrough_not_subscribed",
+        "description": "unused_native_passthrough_not_subscribed",
+        "disableModelInvocation": "unused_native_passthrough_not_subscribed",
+        "invokedAtTurn": "unused_native_passthrough_not_subscribed",
+        "model": "unused_native_passthrough_not_subscribed",
+        "name": "unused_native_passthrough_not_subscribed",
+        "path": "unused_native_passthrough_not_subscribed",
+        "pluginName": "unused_native_passthrough_not_subscribed",
+        "pluginVersion": "unused_native_passthrough_not_subscribed",
+        "source": "unused_native_passthrough_not_subscribed",
+        "trigger": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "Ambient hooks/extensions excluded; preserve runner-owned attribution separately.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "subagent.completed",
+      "fields": [
+        "agentDisplayName",
+        "agentName",
+        "cancelled",
+        "configuredModelMatchesActual",
+        "configuredModelPreference",
+        "durationMs",
+        "explicitModelMatchesPreference",
+        "explicitModelOverride",
+        "firstDispatchedModel",
+        "model",
+        "modelOverrideReason",
+        "modelSelectionSource",
+        "toolCallId",
+        "totalTokens",
+        "totalToolCalls"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "agentDisplayName": "projected",
+        "agentName": "projected",
+        "cancelled": "projected",
+        "configuredModelMatchesActual": "projected",
+        "configuredModelPreference": "projected",
+        "durationMs": "projected",
+        "explicitModelMatchesPreference": "projected",
+        "explicitModelOverride": "projected",
+        "firstDispatchedModel": "projected",
+        "model": "projected",
+        "modelOverrideReason": "projected",
+        "modelSelectionSource": "projected",
+        "toolCallId": "projected",
+        "totalTokens": "projected",
+        "totalToolCalls": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "subagent.configured",
+      "fields": [
+        "contextTier",
+        "model",
+        "multiTurn",
+        "reasoningEffort"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "contextTier": "projected",
+        "model": "projected",
+        "multiTurn": "projected",
+        "reasoningEffort": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "subagent.deselected",
+      "fields": [],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {},
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "subagent.failed",
+      "fields": [
+        "agentDisplayName",
+        "agentName",
+        "configuredModelMatchesActual",
+        "configuredModelPreference",
+        "durationMs",
+        "error",
+        "explicitModelMatchesPreference",
+        "explicitModelOverride",
+        "firstDispatchedModel",
+        "model",
+        "modelOverrideReason",
+        "modelSelectionSource",
+        "toolCallId",
+        "totalTokens",
+        "totalToolCalls"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "agentDisplayName": "projected",
+        "agentName": "projected",
+        "configuredModelMatchesActual": "projected",
+        "configuredModelPreference": "projected",
+        "durationMs": "projected",
+        "error": "projected",
+        "explicitModelMatchesPreference": "projected",
+        "explicitModelOverride": "projected",
+        "firstDispatchedModel": "projected",
+        "model": "projected",
+        "modelOverrideReason": "projected",
+        "modelSelectionSource": "projected",
+        "toolCallId": "projected",
+        "totalTokens": "projected",
+        "totalToolCalls": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "subagent.selected",
+      "fields": [
+        "agentDisplayName",
+        "agentName",
+        "tools"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "agentDisplayName": "unused_native_passthrough_not_subscribed",
+        "agentName": "unused_native_passthrough_not_subscribed",
+        "tools": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "subagent.started",
+      "fields": [
+        "agentDescription",
+        "agentDisplayName",
+        "agentName",
+        "agentType",
+        "executionMode",
+        "factoryRunId",
+        "model",
+        "modelSelectionSource",
+        "parentId",
+        "resumable",
+        "taskModelSource",
+        "toolCallId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "agentDescription": "projected",
+        "agentDisplayName": "projected",
+        "agentName": "projected",
+        "agentType": "projected",
+        "executionMode": "projected",
+        "factoryRunId": "projected",
+        "model": "projected",
+        "modelSelectionSource": "projected",
+        "parentId": "projected",
+        "resumable": "projected",
+        "taskModelSource": "projected",
+        "toolCallId": "projected"
+      },
+      "gapReason": "Only bounded typed metadata projected. Private bodies/nested diagnostics or provider-only resources require an explicit safe contract; see capability report.",
+      "followUpPriority": "P1"
+    },
+    {
+      "event": "system.message",
+      "fields": [
+        "content",
+        "contentBlocks",
+        "interactionId",
+        "metadata",
+        "name",
+        "role"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "content": "unused_native_passthrough_not_subscribed",
+        "contentBlocks": "unused_native_passthrough_not_subscribed",
+        "interactionId": "unused_native_passthrough_not_subscribed",
+        "metadata": "unused_native_passthrough_not_subscribed",
+        "name": "unused_native_passthrough_not_subscribed",
+        "role": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "system.notification",
+      "fields": [
+        "content",
+        "kind",
+        "responsesReasoning"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "content": "unused_native_passthrough_not_subscribed",
+        "kind": "unused_native_passthrough_not_subscribed",
+        "responsesReasoning": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "tool.execution_complete",
+      "fields": [
+        "error",
+        "fusion",
+        "interactionId",
+        "isUserRequested",
+        "mcpMeta",
+        "model",
+        "parentToolCallId",
+        "result",
+        "rte",
+        "sandboxed",
+        "shellExecution",
+        "success",
+        "toolCallId",
+        "toolDescription",
+        "toolTelemetry",
+        "turnId"
+      ],
+      "standardAcp": "tool_call_update",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "error": "standard_projection_field_retention_not_individually_qualified",
+        "fusion": "standard_projection_field_retention_not_individually_qualified",
+        "interactionId": "standard_projection_field_retention_not_individually_qualified",
+        "isUserRequested": "standard_projection_field_retention_not_individually_qualified",
+        "mcpMeta": "standard_projection_field_retention_not_individually_qualified",
+        "model": "standard_projection_field_retention_not_individually_qualified",
+        "parentToolCallId": "standard_projection_field_retention_not_individually_qualified",
+        "result": "standard_projection_field_retention_not_individually_qualified",
+        "rte": "standard_projection_field_retention_not_individually_qualified",
+        "sandboxed": "standard_projection_field_retention_not_individually_qualified",
+        "shellExecution": "standard_projection_field_retention_not_individually_qualified",
+        "success": "standard_projection_field_retention_not_individually_qualified",
+        "toolCallId": "standard_projection_field_retention_not_individually_qualified",
+        "toolDescription": "standard_projection_field_retention_not_individually_qualified",
+        "toolTelemetry": "standard_projection_field_retention_not_individually_qualified",
+        "turnId": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "tool.execution_partial_result",
+      "fields": [
+        "partialOutput",
+        "toolCallId"
+      ],
+      "standardAcp": "tool_call_update",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "partialOutput": "standard_projection_field_retention_not_individually_qualified",
+        "toolCallId": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "tool.execution_progress",
+      "fields": [
+        "progressMessage",
+        "toolCallId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "progressMessage": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "tool.execution_start",
+      "fields": [
+        "arguments",
+        "displayVerbatim",
+        "fusion",
+        "mcpConfigServerName",
+        "mcpConfigSource",
+        "mcpServerName",
+        "mcpToolName",
+        "mcpTransport",
+        "model",
+        "parentToolCallId",
+        "rte",
+        "shellToolInfo",
+        "toolCallId",
+        "toolDescription",
+        "toolName",
+        "toolTitle",
+        "turnId"
+      ],
+      "standardAcp": "tool_call",
+      "paperclipDisposition": "standard_acp_projection",
+      "fieldCoverage": {
+        "arguments": "standard_projection_field_retention_not_individually_qualified",
+        "displayVerbatim": "standard_projection_field_retention_not_individually_qualified",
+        "fusion": "standard_projection_field_retention_not_individually_qualified",
+        "mcpConfigServerName": "standard_projection_field_retention_not_individually_qualified",
+        "mcpConfigSource": "standard_projection_field_retention_not_individually_qualified",
+        "mcpServerName": "standard_projection_field_retention_not_individually_qualified",
+        "mcpToolName": "standard_projection_field_retention_not_individually_qualified",
+        "mcpTransport": "standard_projection_field_retention_not_individually_qualified",
+        "model": "standard_projection_field_retention_not_individually_qualified",
+        "parentToolCallId": "standard_projection_field_retention_not_individually_qualified",
+        "rte": "standard_projection_field_retention_not_individually_qualified",
+        "shellToolInfo": "standard_projection_field_retention_not_individually_qualified",
+        "toolCallId": "standard_projection_field_retention_not_individually_qualified",
+        "toolDescription": "standard_projection_field_retention_not_individually_qualified",
+        "toolName": "standard_projection_field_retention_not_individually_qualified",
+        "toolTitle": "standard_projection_field_retention_not_individually_qualified",
+        "turnId": "standard_projection_field_retention_not_individually_qualified"
+      },
+      "gapReason": "Primary content travels standard ACP. Native extra field retention requires direct field-by-field normalization qualification.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "tool.user_requested",
+      "fields": [
+        "arguments",
+        "toolCallId",
+        "toolName"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "arguments": "unused_native_passthrough_not_subscribed",
+        "toolCallId": "unused_native_passthrough_not_subscribed",
+        "toolName": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "tool_search.activated",
+      "fields": [
+        "strategy",
+        "toolNames"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "strategy": "unused_native_passthrough_not_subscribed",
+        "toolNames": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "ui.ephemeral_query",
+      "fields": [
+        "answer",
+        "chunk",
+        "error",
+        "phase",
+        "requestId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "answer": "unused_native_passthrough_not_subscribed",
+        "chunk": "unused_native_passthrough_not_subscribed",
+        "error": "unused_native_passthrough_not_subscribed",
+        "phase": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "user.message",
+      "fields": [
+        "agentMode",
+        "attachments",
+        "content",
+        "delivery",
+        "interactionId",
+        "isAutopilotContinuation",
+        "messageId",
+        "nativeDocumentPathFallbackPaths",
+        "parentAgentTaskId",
+        "responsesReasoning",
+        "source",
+        "supportedNativeDocumentMimeTypes",
+        "transformedContent",
+        "turnId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "agentMode": "unused_native_passthrough_not_subscribed",
+        "attachments": "unused_native_passthrough_not_subscribed",
+        "content": "unused_native_passthrough_not_subscribed",
+        "delivery": "unused_native_passthrough_not_subscribed",
+        "interactionId": "unused_native_passthrough_not_subscribed",
+        "isAutopilotContinuation": "unused_native_passthrough_not_subscribed",
+        "messageId": "unused_native_passthrough_not_subscribed",
+        "nativeDocumentPathFallbackPaths": "unused_native_passthrough_not_subscribed",
+        "parentAgentTaskId": "unused_native_passthrough_not_subscribed",
+        "responsesReasoning": "unused_native_passthrough_not_subscribed",
+        "source": "unused_native_passthrough_not_subscribed",
+        "supportedNativeDocumentMimeTypes": "unused_native_passthrough_not_subscribed",
+        "transformedContent": "unused_native_passthrough_not_subscribed",
+        "turnId": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "user_input.completed",
+      "fields": [
+        "answer",
+        "requestId",
+        "wasFreeform"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "native_passthrough_not_subscribed",
+      "fieldCoverage": {
+        "answer": "unused_native_passthrough_not_subscribed",
+        "requestId": "unused_native_passthrough_not_subscribed",
+        "wasFreeform": "unused_native_passthrough_not_subscribed"
+      },
+      "gapReason": "No admitted typed native control/resource surface, or standard ACP already transports primary output; investigate useful metadata before subscription.",
+      "followUpPriority": "P2"
+    },
+    {
+      "event": "user_input.requested",
+      "fields": [
+        "allowFreeform",
+        "choices",
+        "question",
+        "requestId",
+        "toolCallId"
+      ],
+      "standardAcp": null,
+      "paperclipDisposition": "subscribed_and_projected",
+      "fieldCoverage": {
+        "allowFreeform": "unused_declared_field",
+        "choices": "unused_declared_field",
+        "question": "unused_declared_field",
+        "requestId": "projected",
+        "toolCallId": "projected"
+      },
+      "gapReason": "No qualified ACP responder; must prove no blocking request or implement responder before qualification.",
+      "followUpPriority": "P0"
+    }
+  ]
+}

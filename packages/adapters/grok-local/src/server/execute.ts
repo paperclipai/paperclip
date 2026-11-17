@@ -1,3 +1,4 @@
+import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
@@ -5,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  managedRemoteHomeEnvironment,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
@@ -35,8 +37,8 @@ import {
   readPaperclipIssueWorkModeFromContext,
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  hydrateFreshSessionHandoff,
+  selectPaperclipPromptSections,
   selectInitialCommunicationGuidance,
   isPaperclipRecoveryWakePayload,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -46,7 +48,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
-import { grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -246,12 +248,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 }
 
 async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const useSshHostAuth = executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === true;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -309,7 +313,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
   const executeTurn = async (): Promise<AdapterExecutionResult> => {
     const envConfig = parseObject(config.env);
     const env: Record<string, string> = {
-      ...buildPaperclipEnv(agent),
+      ...buildPaperclipEnv(agent, ctx.agentIdentity),
       ...buildRuntimeToolsEnv(ctx.runtimeTools),
     };
     env.PAPERCLIP_RUN_ID = runId;
@@ -375,7 +379,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       config.managedAiConnection ? env : { ...process.env, ...env },
       "XAI_API_KEY",
     );
-    if (isGrokSubscriptionMode) {
+    if (isGrokSubscriptionMode && !useSshHostAuth) {
       const pinManagedHome =
         executionTargetIsRemote ||
         Boolean(config.managedAiConnection) ||
@@ -411,10 +415,11 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       // temp dir and ship THAT as the `home` asset, the same curated-snapshot
       // approach the Codex adapter uses. Subscription mode only: an API-key
       // run authenticates from the environment variable and needs no home.
-      if (isGrokSubscriptionMode) {
+      if (isGrokSubscriptionMode && !useSshHostAuth) {
         stagedGrokHomeDir = await stageGrokHomeForSync(hostGrokHome, { runId });
       }
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+        privateRuntime: Boolean(config.managedAiConnection),
         runId,
         target: executionTarget,
         adapterKey: "grok",
@@ -469,7 +474,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       // Set GROK_HOME after the refresh above, so the refresh cannot overwrite
       // it. The fixed fallback path mirrors `prepareAdapterExecutionTargetRuntime`'s
       // own `home` asset layout, in case `assetDirs.home` is absent.
-      if (isGrokSubscriptionMode) {
+      if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && preparedExecutionTargetRuntime.runtimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(preparedExecutionTargetRuntime.runtimeRootDir));
+      if (isGrokSubscriptionMode && !useSshHostAuth) {
         env.GROK_HOME =
           preparedExecutionTargetRuntime.assetDirs.home ??
           path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "grok", "home");
@@ -499,12 +505,17 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const missingManagedSession = !executionTargetIsRemote && Boolean(config.managedAiConnection) &&
+      Boolean(runtimeSessionId) && !await grokHomeHasSession(asString(env.GROK_HOME, ""), runtimeSessionId);
     const canResumeSession =
       runtimeSessionId.length > 0 &&
+      !missingManagedSession &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
-    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
+    if (missingManagedSession) {
+      await onLog("stdout", "[paperclip] Selected Grok session history is unavailable. Starting a fresh session with the task handoff instead of remote subscription recovery.\n");
+    } else if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
         `[paperclip] Grok session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
@@ -540,37 +551,9 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const taskContextNote = context.conversationMode === true
-      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId), includeCommunicationGuidance: false })
-      : "";
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-      conversationMode: context.conversationMode === true,
-      resumedSession: Boolean(sessionId),
-      suppressIssueDescription: taskContextNote.length > 0,
-    });
-    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
-    const basePrompt = joinPromptSections([
-      wakePrompt,
-      taskContextNote,
-      sessionHandoffNote,
-      paperclipEnvNote,
-      apiAccessNote,
-      renderedPrompt,
-    ]);
-    const promptMetrics = {
-      promptChars: basePrompt.length,
-      wakePromptChars: wakePrompt.length,
-      taskContextChars: taskContextNote.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-      heartbeatPromptChars: renderedPrompt.length,
-    };
 
     const buildArgs = (resumeSessionId: string | null, prompt: string) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
@@ -593,11 +576,37 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     };
 
     const runAttempt = async (resumeSessionId: string | null) => {
+    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       ctx.signal?.throwIfAborted();
+      const attemptSections = selectPaperclipPromptSections(context, {
+        resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
+      });
+      const attemptWakePrompt = attemptSections.wakePrompt;
+      const attemptRenderedPrompt = Boolean(resumeSessionId) && attemptWakePrompt.length > 0
+        || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const attemptBasePrompt = joinPromptSections([
+        attemptWakePrompt,
+        attemptSections.taskContextNote,
+        sessionHandoffNote,
+        paperclipEnvNote,
+        apiAccessNote,
+        attemptRenderedPrompt,
+      ]);
       const prompt = joinPromptSections([
         selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
-        basePrompt,
+        attemptBasePrompt,
       ]);
+      const promptMetrics = {
+        promptChars: prompt.length,
+        wakePromptChars: attemptWakePrompt.length,
+        taskContextChars: attemptSections.taskContextNote.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+        heartbeatPromptChars: attemptRenderedPrompt.length,
+      };
       const args = buildArgs(resumeSessionId, prompt);
       if (onMeta) {
         await onMeta({
@@ -616,6 +625,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       }
 
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env,
         timeoutSec,
@@ -652,7 +662,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         stderrLine ||
         `Grok exited with code ${attempt.proc.exitCode ?? -1}`;
 
-      const canFallbackToRuntimeSession = !isRetry;
+      const canFallbackToRuntimeSession = !isRetry && !missingManagedSession;
       const resolvedSessionId = attempt.parsed.sessionId
         ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
       const resolvedSessionParams = resolvedSessionId
@@ -721,11 +731,37 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       return toResult(retry, true, true);
     }
 
-    return toResult(initial);
+    return toResult(initial, missingManagedSession);
   };
 
   try {
-    return await withWorkspaceRestore(executeTurn, async () => { await restoreRemoteWorkspace?.(); });
+    return await withWorkspaceRestore(
+      async () => {
+        let result: AdapterExecutionResult;
+        let collectionFailed = false;
+        const collectionFailureMessage = "Instruction collection failed after provider stop. No instruction save is claimed.";
+        try {
+          result = await executeTurn();
+        } finally {
+          try {
+            await providerStop.collectBeforeRestore();
+          } catch {
+            collectionFailed = true;
+            await onLog("stderr", `[paperclip] ${collectionFailureMessage}\n`).catch(() => undefined);
+          }
+        }
+        if (!collectionFailed) return result;
+        const providerFailed = result.timedOut || result.signal || result.errorCode
+          || (result.exitCode !== null && result.exitCode !== 0);
+        return {
+          ...result,
+          ...(!providerFailed ? { errorCode: "instruction_collection_failed" } : {}),
+          errorMessage: [result.errorMessage, collectionFailureMessage].filter(Boolean).join(" "),
+          resultJson: { ...result.resultJson, instructionCollectionFailure: "collection_failed" },
+        };
+      },
+      async () => { await restoreRemoteWorkspace?.(); },
+    );
   } finally {
     // Cleanup runs after settlement on both success and failure.
     if (stagedGrokHomeDir) {

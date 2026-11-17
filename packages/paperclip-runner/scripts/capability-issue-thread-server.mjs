@@ -39,10 +39,7 @@ const MAX_MESSAGE_BYTES = 8 * 1024;
  * chatty provider cannot turn one turn into unbounded socket writes.
  */
 const MAX_TURN_STREAM_FRAMES = 600;
-const ACPX_QUALIFIED_MODELS = Object.freeze({
-  claude: "claude-sonnet-5",
-  codex: "gpt-5.6-sol",
-});
+const ACPX_AGENTS = new Set(["claude", "codex"]);
 
 /**
  * Per-browser session capability (track 7U).
@@ -225,11 +222,11 @@ function harnessConfiguration(source, fallbackModel) {
   }
   const acpxAgent = source.acpxAgent === undefined ? "codex" : String(source.acpxAgent).trim();
   if (provider === "acpx") {
-    if (!(acpxAgent in ACPX_QUALIFIED_MODELS)) {
+    if (!ACPX_AGENTS.has(acpxAgent)) {
       throw new RouteError(400, "invalid_acpx_agent", "ACPX agent must be claude or codex.");
     }
-    if (model !== ACPX_QUALIFIED_MODELS[acpxAgent]) {
-      throw new RouteError(400, "invalid_model", `The qualified ACPX ${acpxAgent} profile requires exact model ${ACPX_QUALIFIED_MODELS[acpxAgent]}.`);
+    if (!model) {
+      throw new RouteError(400, "invalid_model", "ACPX requires an explicit model.");
     }
   }
   const requestedManagedProfileId = source.managedProfileId === undefined || source.managedProfileId === null

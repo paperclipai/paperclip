@@ -1,7 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { activityLog, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { authUsers, companyMemberships, activityLog, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
@@ -27,6 +30,54 @@ describe("runner backlog task creation", () => {
     const binding = { companyId, agentId, issueId, runId, enqueueWakeup };
     return { companyId, agentId, issueId, runId, binding, enqueueWakeup, authority: new PaperclipRunnerToolAuthority(db, binding) };
   }
+
+  it("never repeats a completed or uncertain workspace mutation and fences replay", async () => {
+    const f = await fixture(false);
+    const root = await mkdtemp(join(tmpdir(), "dot-workspace-receipt-"));
+    await db.update(agents).set({ adapterConfig: { provider: "openai_dot", dotWorkspaceAccess: true } }).where(eq(agents.id, f.agentId));
+    const authority = new PaperclipRunnerToolAuthority(db, { ...f.binding, workspaceRoot: root, workspaceBridge: true });
+    try {
+      const call = { tool: "workspace_write", callId: "write-once", arguments: { path: "report.txt", text: "first", expectedSha256: null } };
+      const receipt = await authority.execute(call);
+      await writeFile(join(root, "report.txt"), "later edit");
+      expect(await authority.execute(call)).toEqual(receipt);
+      expect(await readFile(join(root, "report.txt"), "utf8")).toBe("later edit");
+      await expect(authority.execute({ ...call, arguments: { ...call.arguments, text: "changed" } })).rejects.toThrow("reused");
+
+      const uncertain = { tool: "workspace_write", callId: "lost-after-reservation", arguments: { path: "uncertain.txt", text: "must not run", expectedSha256: null } };
+      const key = createHash("sha256").update(uncertain.callId).digest("hex");
+      const digest = createHash("sha256").update(JSON.stringify({ arguments: { expectedSha256: null, path: uncertain.arguments.path, text: uncertain.arguments.text }, tool: uncertain.tool })).digest("hex");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(heartbeatRuns).set({ resultJson: { ...run!.resultJson, bridgeToolReceipts: { ...((run!.resultJson as any)?.bridgeToolReceipts ?? {}), [key]: { digest, tool: uncertain.tool, state: "pending" } } } }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await authority.execute(uncertain)).toMatchObject({ outcome: "unknown" });
+      await expect(readFile(join(root, "uncertain.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await db.update(agents).set({ adapterConfig: { provider: "openai_dot", dotWorkspaceAccess: false } }).where(eq(agents.id, f.agentId));
+      await expect(authority.execute(call)).rejects.toThrow("disabled");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("creates and reassigns human tasks with company membership and retry checks", async () => {
+    const f = await fixture(false), userId = randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Owner", email: userId + "@test.example", createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
+    const call = { tool: "create_task", callId: "hello-owner", arguments: { idempotencyKey: "hello-owner", title: "hello", assigneeUserId: userId } };
+    const receipt = await f.authority.execute(call) as { task: { id: string } };
+    expect(receipt).toMatchObject({ scheduledWakeIds: [], task: { assigneeActorId: null, assigneeUserId: userId } });
+    expect(await f.authority.execute(call)).toEqual(receipt);
+    expect(f.enqueueWakeup).not.toHaveBeenCalled();
+    expect(await f.authority.execute({ tool: "list_people", callId: "people", arguments: {} })).toMatchObject([{ id: userId, name: "Owner", role: "owner" }]);
+    await expect(f.authority.execute({ ...call, arguments: { ...call.arguments, idempotencyKey: "foreign", assigneeUserId: "foreign-person" } })).rejects.toThrow();
+    await expect(f.authority.execute({ ...call, arguments: { ...call.arguments, assigneeActorId: f.agentId } })).rejects.toThrow("Choose one");
+    const [human] = await db.select().from(issues).where(eq(issues.id, receipt.task.id));
+    const reassign = { tool: "reassign_task", callId: "back-to-agent", arguments: { taskId: human!.id, assigneeActorId: f.agentId,
+      expectedAssigneeActorId: null, expectedAssigneeUserId: userId, expectedStatusVersion: human!.statusVersion, reason: "Agent will help", idempotencyKey: "back-to-agent" } };
+    await f.authority.execute(reassign);
+    const [assigned] = await db.select().from(issues).where(eq(issues.id, human!.id));
+    expect(assigned).toMatchObject({ assigneeAgentId: f.agentId, assigneeUserId: null });
+    await f.authority.execute({ tool: "reassign_task", callId: "back-to-person", arguments: { taskId: human!.id, assigneeActorId: null, assigneeUserId: userId,
+      expectedAssigneeActorId: f.agentId, expectedStatusVersion: assigned!.statusVersion, reason: "Owner takes over", idempotencyKey: "back-to-person" } });
+    expect((await db.select().from(issues).where(eq(issues.id, human!.id)))[0]).toMatchObject({ assigneeAgentId: null, assigneeUserId: userId });
+  });
 
   it.each([false, true])("persists the plan without waking an assigned backlog task (conversation=%s)", async conversation => {
     const f = await fixture(conversation);

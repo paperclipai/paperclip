@@ -37,6 +37,8 @@ const EXTRA_SETTLE_MS: Record<string, number> = {
 // waiting. The affected element is masked (solid overlay in both baseline and
 // comparison) so the rest of the story still snapshot-verifies.
 const MASKED_SELECTORS: Record<string, string> = {
+  "agents-codex-runner-creation--experimental-native-harnesses":
+    '[role="dialog"] [data-slot="agent-avatar"]',
   // DocumentAnnotationLayer's ::highlight range over "two selectors" ends 1-2
   // characters short on ~half of renders (anchor offsets race). Mask only the
   // paragraph that carries that highlight.
@@ -51,11 +53,16 @@ async function renderStory(page: Page, storyId: string, theme: (typeof THEMES)[n
   await page.addInitScript(`{
     const fixedNow = ${FIXED_TIME.getTime()};
     const RealDate = Date;
+    // Speko play functions exercise quiet-period gates. Keep a fixed calendar
+    // origin while advancing elapsed time, so settling those gates is real.
+    const advanceDate = ${storyId.startsWith("connections-speko-")};
+    const began = performance.now();
+    const stableNow = () => fixedNow + (advanceDate ? Math.floor(performance.now() - began) : 0);
     class FixedDate extends RealDate {
       constructor(...args) {
-        if (args.length === 0) { super(fixedNow); } else { super(...args); }
+        if (args.length === 0) { super(stableNow()); } else { super(...args); }
       }
-      static now() { return fixedNow; }
+      static now() { return stableNow(); }
     }
     FixedDate.parse = RealDate.parse;
     FixedDate.UTC = RealDate.UTC;
@@ -77,6 +84,22 @@ async function renderStory(page: Page, storyId: string, theme: (typeof THEMES)[n
   });
   const errored = await page.locator(".sb-show-errordisplay").count();
   expect(errored, `story ${storyId} threw during render`).toBe(0);
+  const codexCreation = storyId.startsWith("agents-codex-runner-creation--");
+  const codexSettings = /^agents-configuration-refresh--(?:codex-runtime|runner-runtime|codex-(?:legacy|native)-)/.test(storyId);
+  if (codexCreation || codexSettings) {
+    await page.waitForFunction(id => {
+      const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: { storyRenders?: Array<{ id: string; phase: string }> } }).__STORYBOOK_PREVIEW__;
+      return preview?.storyRenders?.some(render => render.id === id && render.phase === "finished");
+    }, storyId);
+    const expected = storyId.endsWith("--experimental-native-harnesses") ? page.getByRole("button", { name: "Experimental harness", exact: true })
+      : storyId.endsWith("--task-ready") ? page.getByRole("heading", { name: /is ready/ })
+      : page.getByRole("button", { name: codexCreation || storyId.endsWith("--codex-legacy-advanced") ? "Runner" : "Harness", exact: true });
+    await expect(expected).toBeVisible();
+  }
+  if (storyId.startsWith("connections-speko-")) {
+    await page.waitForFunction((id) => document.body.dataset.spekoStoryReady === id, storyId);
+    expect(await page.locator("body").getAttribute("data-speko-story-error")).toBeNull();
+  }
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   const settleMs = EXTRA_SETTLE_MS[storyId];
   if (settleMs) await page.waitForTimeout(settleMs);
@@ -86,7 +109,7 @@ for (const entry of entries) {
   for (const theme of THEMES) {
     test(`${entry.id} [${theme}]`, async ({ page }) => {
       await renderStory(page, entry.id, theme);
-      const maskSelector = MASKED_SELECTORS[entry.id];
+      const maskSelector = MASKED_SELECTORS[entry.id] ?? (entry.id.startsWith("agents-codex-runner-creation--") ? 'header [data-slot="agent-avatar"]' : undefined);
       await expect(page).toHaveScreenshot(`${entry.id}--${theme}.png`, {
         fullPage: true,
         mask: maskSelector ? [page.locator(maskSelector)] : undefined,

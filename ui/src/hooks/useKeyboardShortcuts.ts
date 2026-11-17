@@ -7,7 +7,6 @@ import {
 } from "../lib/keyboardShortcuts";
 
 interface ShortcutHandlers {
-  enabled?: boolean;
   onNewIssue?: () => void;
   onSearch?: () => void;
   onToggleSidebar?: () => void;
@@ -17,7 +16,6 @@ interface ShortcutHandlers {
 }
 
 export function useKeyboardShortcuts({
-  enabled = true,
   onNewIssue,
   onSearch,
   onToggleSidebar,
@@ -26,8 +24,6 @@ export function useKeyboardShortcuts({
   onGoToInbox,
 }: ShortcutHandlers) {
   useEffect(() => {
-    if (!enabled) return;
-
     // g → i chord state. IssueDetail runs its own capture-phase handler with
     // extra chords (g c, g f) and stops propagation when it handles one, so
     // this bubble-phase chord only fires outside the issue detail page.
@@ -94,12 +90,14 @@ export function useKeyboardShortcuts({
         return;
       }
 
+      // Don't fire shortcuts over a modal dialog. The dialog owns the
+      // keyboard until it closes (Escape or its own controls).
+      if (hasBlockingShortcutDialog()) {
+        return;
+      }
+
       // / → Page search when available, otherwise quick search
       if (e.key === "/" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        if (hasBlockingShortcutDialog()) {
-          return;
-        }
-
         e.preventDefault();
         if (!focusPageSearchShortcutTarget()) {
           onSearch?.();
@@ -147,5 +145,5 @@ export function useKeyboardShortcuts({
       document.removeEventListener("focusin", handleFocusIn, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [enabled, onNewIssue, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts, onGoToInbox]);
+  }, [onNewIssue, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts, onGoToInbox]);
 }

@@ -1,0 +1,244 @@
+{
+  "audit": {
+    "file": "ui/src/components/Sidebar.test.tsx",
+    "base": "c39262305b6b48a5decd564af8369083cd972b33",
+    "originalSha256": "9b463dd219ff0c4ef3a76f853feb29514e740102cf8f838a6bef981682d43f78",
+    "candidateSha256": "5b9033240feffd2c58165893f7c8a3037982711826415da8a52f330a05000eba",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "registeredInvocationsRemoved": 4,
+    "providerRootRendersRemoved": 4,
+    "newHelpers": 0,
+    "netTestLinesRemoved": 40,
+    "migrations": [
+      {
+        "retired": "does not flash the Workspaces link while experimental settings are loading",
+        "keeper": "keeps the simplified navigation while experimental settings are loading",
+        "setupAstEqual": true,
+        "unmountAstEqual": true,
+        "guards": [
+          "expect(container.textContent).not.toContain(\"Workspaces\");"
+        ],
+        "registeredInvocationsRemoved": 1
+      },
+      {
+        "retired": "reserves the Goals nav slot while experimental settings are loading",
+        "keeper": "keeps the simplified navigation while experimental settings are loading",
+        "setupAstEqual": true,
+        "unmountAstEqual": true,
+        "guards": [
+          "expect([...container.querySelectorAll(\"nav a\")].map((a) => a.textContent?.trim())).not.toContain(\"Goals\");",
+          "expect(container.querySelector('[data-testid=\"sidebar-goals-placeholder\"]')).not.toBeNull();"
+        ],
+        "registeredInvocationsRemoved": 1
+      },
+      {
+        "retired": "does not flash the Conference Room item while experimental settings are loading (PAP-137)",
+        "keeper": "keeps the simplified navigation while experimental settings are loading",
+        "setupAstEqual": true,
+        "unmountAstEqual": true,
+        "guards": [
+          "expect(container.textContent).not.toContain(\"Conference Room\");"
+        ],
+        "registeredInvocationsRemoved": 1
+      },
+      {
+        "retired": "does not flash the Pipelines nav item while experimental settings are loading",
+        "keeper": "keeps the simplified navigation while experimental settings are loading",
+        "setupAstEqual": true,
+        "unmountAstEqual": true,
+        "guards": [
+          "expect(container.textContent).not.toContain(\"Pipelines\");"
+        ],
+        "registeredInvocationsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "31de795f5ffc44365740f1788b497fe117c236778ce05d0a95cc2472c014ce71",
+  "mutationVerifierSha256": "3783a894b558341f2a8ef0eddf7f774fb6ee46833161feca5def1279d7d4b887",
+  "runs": [
+    {
+      "kind": "baseline",
+      "jsonSha256": "38374087c2e9c98935c9b0e6e563c827127b21750f9797d3536271591bf793a5",
+      "logSha256": "361d260b375e5252086dac55605788a1a54421715d38ddc00700442562e707eb",
+      "total": 35,
+      "passed": 35,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "kind": "candidate",
+      "jsonSha256": "ce7c9e0fd848df8baf87a6d60c00190fae11eacbdd01991ca0e22388a1205780",
+      "logSha256": "a7bc412cee1de9d731c66a69dac53e69fa195807951091fefd1298c9b120ef86",
+      "total": 31,
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "workspaces",
+      "owner": "ui/src/components/Sidebar.tsx",
+      "sourceSha256": "2baa44740b00babc7fc5a02c2d28d8b5ed2bc478ad8840200f2689f073a1c9bd",
+      "title": "keeps the simplified navigation while experimental settings are loading",
+      "mutation": {
+        "before": "const showWorkspacesLink = !chatRail && experimentalSettings?.enableIsolatedWorkspaces === true;",
+        "after": "const showWorkspacesLink = experimentalSettings === undefined || (!chatRail && experimentalSettings?.enableIsolatedWorkspaces === true);"
+      },
+      "intendedGuard": "expect(container.textContent).not.toContain(\"Workspaces\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "0925c954fb40aeadf79dea76a015a9dcb637e2db9995b62e05094c86e0343f51",
+        "logSha256": "04c617da040c5b2f26885b6268951335b4c048f4deeed0fc2ec5ee511992b23a",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "adb925244eaeb8a6b3206f425c5e10775ec7f3cda791a965e739c55264cb4626",
+        "logSha256": "6cf3b4b626a80e4443325c75f7fe1887f12425322f142d93b69c476fcda9e8f3",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'Company menuNew TaskSearchDashboardIn\u2026' not to contain 'Workspaces'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/Sidebar.test.tsx:270:39\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "goals",
+      "owner": "ui/src/components/Sidebar.tsx",
+      "sourceSha256": "2baa44740b00babc7fc5a02c2d28d8b5ed2bc478ad8840200f2689f073a1c9bd",
+      "title": "keeps the simplified navigation while experimental settings are loading",
+      "mutation": {
+        "before": "const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;",
+        "after": "const showGoalsLink = experimentalSettings === undefined || experimentalSettings?.enableGoalsSidebarLink === true;"
+      },
+      "intendedGuard": "expect([...container.querySelectorAll(\"nav a\")].map((a) => a.textContent?.trim())).not.toContain(\"Goals\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "c65540e311c4131bb3b367088e8b3a2d175eb55577bcd434dd0128b4169374e9",
+        "logSha256": "87f3efaff20b56dfe4943004415205e0f1e1d06733230ccf8cd9dc27162cbebb",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "512f85c2e3ec85a0c09364a4872484e237f3771a7628911b569602b8987a98eb",
+        "logSha256": "d58f1e168ce951a214c10f9b2a690b061fc98113b3645ce1504129606a247620",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected [ 'Search', 'Dashboard', \u2026(10) ] to not include 'Goals'\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2077:15)\n    at Proxy.<anonymous> (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/Sidebar.test.tsx:271:92\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "conference",
+      "owner": "ui/src/components/Sidebar.tsx",
+      "sourceSha256": "2baa44740b00babc7fc5a02c2d28d8b5ed2bc478ad8840200f2689f073a1c9bd",
+      "title": "keeps the simplified navigation while experimental settings are loading",
+      "mutation": {
+        "before": "const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;",
+        "after": "const conferenceRoomChatEnabled = experimentalSettings === undefined || experimentalSettings?.enableConferenceRoomChat === true;"
+      },
+      "intendedGuard": "expect(container.textContent).not.toContain(\"Conference Room\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "0637b1e10ca0d6d18e82baf74113b71d5217c879f7c26ce16fc2aab888c942ec",
+        "logSha256": "88ba4df5eab5e9e6b90f43104c534d9ec4cdfeb32770a1d66a301c47dd9381d5",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "0867024b3b2a6995608c8eefaafe9bc4d59000dee742c987d6d3948e89352ddd",
+        "logSha256": "c03a4143999fc21ff93cd6e945113cb76c140c34483515a26f4321eb84b25d24",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'Company menuNew TaskSearchDashboardIn\u2026' not to contain 'Conference Room'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/Sidebar.test.tsx:273:39\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "pipelines",
+      "owner": "ui/src/components/Sidebar.tsx",
+      "sourceSha256": "2baa44740b00babc7fc5a02c2d28d8b5ed2bc478ad8840200f2689f073a1c9bd",
+      "title": "keeps the simplified navigation while experimental settings are loading",
+      "mutation": {
+        "before": "const showPipelines = experimentalSettings?.enablePipelines === true;",
+        "after": "const showPipelines = experimentalSettings === undefined || experimentalSettings?.enablePipelines === true;"
+      },
+      "intendedGuard": "expect(container.textContent).not.toContain(\"Pipelines\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "290be9d7e8547a1842c594f0ba83c443e812ebaf7cebbb5ecf1a17f155d07cbc",
+        "logSha256": "5d56516d7a59c85d3c4926780e6ec3c1b60467fcd9818160cc0014da29adb6c5",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "5922637d763e6dbe8091839eef6f6d1336c22c32caaf922671058471fb8834ee",
+        "logSha256": "bf37d6a6eddb8da880fd0fff2680369b11cd9784d81d0f1d36fc7129ea3be981",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'Company menuNew TaskSearchDashboardIn\u2026' not to contain 'Pipelines'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/Sidebar.test.tsx:274:39\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "goals-placeholder",
+      "owner": "ui/src/components/Sidebar.tsx",
+      "sourceSha256": "2baa44740b00babc7fc5a02c2d28d8b5ed2bc478ad8840200f2689f073a1c9bd",
+      "title": "keeps the simplified navigation while experimental settings are loading",
+      "mutation": {
+        "before": "const goalsLinkPending = experimentalSettings === undefined;",
+        "after": "const goalsLinkPending = false;"
+      },
+      "intendedGuard": "expect(container.querySelector('[data-testid=\"sidebar-goals-placeholder\"]')).not.toBeNull()",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "db75c234ed61cab71950d8e371a17496f3faa6e378f8fb4c8f5ba2eda2ff657a",
+        "logSha256": "79549245a36c31565101c45b74edbc22a9ebeffbe8b6206e3ba8530c3f03d454",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "af191c72c1f19e45e061cd3b4af054e4abe41087e48cf7b882b78f5698805621",
+        "logSha256": "528addefacd70920cd7fd16fbc15cb6be237fdc21379d6e61722ee847648aa3f",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected null not to be null\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/Sidebar.test.tsx:272:86\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0
+}

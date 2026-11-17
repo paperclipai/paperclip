@@ -1,39 +1,67 @@
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AgentIcon } from "@/components/AgentIconPicker";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 
 export interface AgentChatPickerProps {
   agents: Agent[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSelect: (agent: Agent) => void;
+  onSelect: (agent: Agent, signal?: AbortSignal) => void | Promise<void>;
   loading?: boolean;
   error?: Error | null;
   onRetry?: () => void;
+  existingChatAgentIds?: readonly string[];
+  unreadMessageCounts?: ReadonlyMap<string, number>;
+  renderAgentIcon?: (agent: Agent) => ReactNode;
+  trigger?: ReactNode;
 }
 
-export function AgentChatPicker({ open, onOpenChange, ...props }: AgentChatPickerProps) {
+export function AgentChatPicker({ open, onOpenChange, trigger, ...props }: AgentChatPickerProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
       <DialogContent aria-describedby={undefined} className="gap-0 overflow-hidden p-0 sm:max-w-md">
         <div className="px-4 pt-4 pb-3">
           <DialogTitle>Chat with an agent</DialogTitle>
+          {props.existingChatAgentIds && <p className="mt-2 text-sm text-muted-foreground">One conversation per agent. Pick up where you left off.</p>}
         </div>
         {/* The dialog unmounts its content on close, so each search starts empty. */}
-        <AgentChatPickerResults {...props} onSelect={(agent) => {
-          onOpenChange(false);
-          props.onSelect(agent);
-        }} />
+        <AgentChatPickerResults key={String(open)} {...props} onComplete={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   );
 }
 
-function AgentChatPickerResults({ agents, onSelect, loading, error, onRetry }: Omit<AgentChatPickerProps, "open" | "onOpenChange">) {
+function AgentChatPickerResults({ agents, onSelect, onComplete, loading, error, onRetry, existingChatAgentIds, unreadMessageCounts, renderAgentIcon }: Omit<AgentChatPickerProps, "open" | "onOpenChange"> & { onComplete: () => void }) {
+  const existingIds = useMemo(() => new Set(existingChatAgentIds), [existingChatAgentIds]);
+  const mounted = useRef(false);
+  const selection = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; selection.current?.abort(); };
+  }, []);
   const [search, setSearch] = useState("");
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
+  async function selectAgent(agent: Agent) {
+    if (openingId) return;
+    setOpeningId(agent.id);
+    setSelectionError(null);
+    const request = new AbortController();
+    selection.current = request;
+    try {
+      await onSelect(agent, request.signal);
+      if (mounted.current) onComplete();
+    } catch (error) {
+      setSelectionError(error instanceof Error ? error.message : "Couldn’t open chat. Try again.");
+    } finally {
+      setOpeningId(null);
+    }
+  }
   return (
     <Command>
       <CommandInput
@@ -42,6 +70,8 @@ function AgentChatPickerResults({ agents, onSelect, loading, error, onRetry }: O
         value={search}
         onValueChange={setSearch}
       />
+      {selectionError && <p role="alert" className="px-4 py-3 text-sm text-destructive">{selectionError}</p>}
+      {openingId && <p role="status" className="sr-only">Opening conversation…</p>}
       {error ? (
         <div role="alert" className="flex flex-col items-start gap-2 p-4 text-sm">
           <p>Couldn’t load agents. Try again.</p>
@@ -61,24 +91,30 @@ function AgentChatPickerResults({ agents, onSelect, loading, error, onRetry }: O
             </div>
           </CommandEmpty>
           <CommandGroup>
-            {agents.map((agent) => (
-              <CommandItem
-                key={agent.id}
-                value={agent.id}
-                keywords={[agent.name, agent.title ?? "", agent.role]}
-                onSelect={() => onSelect(agent)}
-                className="gap-3 px-3 py-3"
-              >
-                <AgentIcon icon={agent.icon} className="size-4 shrink-0" />
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="truncate font-medium">{agent.name}</span>
-                  <span className="truncate text-xs text-muted-foreground">{agent.title ?? agent.role}</span>
-                </span>
-                {agent.status === "paused" && <span className="text-xs text-(--status-agent-paused)">Paused</span>}
-                {agent.status === "terminated" && <span className="text-xs text-muted-foreground">Terminated</span>}
-                {agent.status === "pending_approval" && <span className="text-xs text-muted-foreground">Awaiting approval</span>}
-              </CommandItem>
-            ))}
+            {agents.map((agent) => {
+              const unreadCount = unreadMessageCounts?.get(agent.id) ?? 0;
+              return (
+                <CommandItem
+                  key={agent.id}
+                  value={agent.id}
+                  keywords={[agent.name, agent.title ?? "", agent.role]}
+                  onSelect={() => { void selectAgent(agent); }}
+                  disabled={openingId !== null}
+                  className="gap-3 px-3 py-3"
+                >
+                  {renderAgentIcon ? renderAgentIcon(agent) : <AgentAvatar agent={agent} size={32} />}
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate font-medium">{agent.name}</span>
+                    <span className="truncate text-xs text-muted-foreground">{agent.title ?? agent.role}</span>
+                  </span>
+                  {unreadCount > 0 && <Badge variant="ghost" aria-label={`${unreadCount} unread ${unreadCount === 1 ? "message" : "messages"} from ${agent.name}`} className="shrink-0 bg-primary font-mono tabular-nums text-primary-foreground">{unreadCount}</Badge>}
+                  {existingChatAgentIds && <span className="shrink-0 text-xs text-muted-foreground">{existingIds.has(agent.id) ? "Open chat" : "New chat"}</span>}
+                  {agent.status === "paused" && <span className="text-xs text-(--status-agent-paused)">Paused</span>}
+                  {agent.status === "terminated" && <span className="text-xs text-muted-foreground">Terminated</span>}
+                  {agent.status === "pending_approval" && <span className="text-xs text-muted-foreground">Awaiting approval</span>}
+                </CommandItem>
+              );
+            })}
           </CommandGroup>
         </CommandList>
       )}

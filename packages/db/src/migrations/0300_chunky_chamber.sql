@@ -1,0 +1,3 @@
+-- Older JavaScript worktree backups may omit CHECK constraints.
+ALTER TABLE "resource_lifecycle_events" DROP CONSTRAINT IF EXISTS "resource_lifecycle_events_action_check";--> statement-breakpoint
+ALTER TABLE "resource_lifecycle_events" ADD CONSTRAINT "resource_lifecycle_events_action_check" CHECK ("resource_lifecycle_events"."action" = 'create' OR ("resource_lifecycle_events"."resource_type" = 'project' AND "resource_lifecycle_events"."action" = 'update') OR ("resource_lifecycle_events"."resource_type" = 'agent' AND "resource_lifecycle_events"."action" IN ('pause', 'resume', 'terminate')));

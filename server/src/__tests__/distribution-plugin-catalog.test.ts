@@ -29,6 +29,19 @@ describe("image-owned plugin catalogs", () => {
     expect(installs.map(({ key }) => key)).toEqual(["daytona", "acme.widget"]);
     expect(installs[1]?.localPath).toBe(localPath);
   });
+  it("accepts only bounded and distinct provider API key names as worker credentials", () => {
+    const { root, entry, save } = fixture();
+    save([{ ...entry, workerCredentialEnv: ["EXAMPLE_API_KEY", "SECOND_API_KEY"] }]);
+    expect(readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)[0]?.workerCredentialEnv)
+      .toEqual(["EXAMPLE_API_KEY", "SECOND_API_KEY"]);
+    for (const invalid of [
+      [], ["NODE_OPTIONS"], ["DATABASE_URL"], ["example_API_KEY"], ["EXAMPLE_API_KEY=value"],
+      ["EXAMPLE_API_KEY", "EXAMPLE_API_KEY"], Array.from({ length: 17 }, (_, i) => `EXAMPLE_${i}_API_KEY`),
+    ]) {
+      save([{ ...entry, workerCredentialEnv: invalid }]);
+      expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow(/workerCredentialEnv/);
+    }
+  });
   it("rejects tampered bundle bytes before importing manifest code", () => {
     const { root, localPath } = fixture();
     writeFileSync(path.join(localPath, "dist", "manifest.js"), "throw new Error('must never execute');");
