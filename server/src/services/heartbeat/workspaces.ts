@@ -1457,6 +1457,49 @@ export function buildRunWorkspaceHints(
   ];
 }
 
+/**
+ * Tells the agent where each repository of a multi-repository project sits in its working directory and
+ * that their instruction files are not loaded for it. Paths are relative to `cwd` with forward slashes, so
+ * the note reads the same on every platform. Workspaces outside `cwd` are left out: the agent cannot be
+ * told a path it should not rely on.
+ */
+export function buildRepositoryWorkspaceNote(input: {
+  cwd: string;
+  anchorRepoUrl: string | null;
+  anchorRepoRef: string | null;
+  hints: Array<Record<string, unknown>>;
+  sharedCheckout: boolean;
+}): string | null {
+  const entries: Array<{ rel: string; repoUrl: string; repoRef: string | null }> = [];
+  const seen = new Set<string>();
+  const add = (rel: string, repoUrl: string, repoRef: string | null) => {
+    if (seen.has(rel)) return;
+    seen.add(rel);
+    entries.push({ rel, repoUrl, repoRef });
+  };
+  if (input.anchorRepoUrl) add(".", input.anchorRepoUrl, input.anchorRepoRef);
+  for (const hint of input.hints) {
+    if (typeof hint.cwd !== "string" || !hint.cwd) continue;
+    const relative = path.relative(input.cwd, hint.cwd);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    const rel = relative === "" ? "." : relative.split(path.sep).join("/");
+    const repoUrl = typeof hint.repoUrl === "string" && hint.repoUrl ? hint.repoUrl : null;
+    if (!repoUrl) continue;
+    add(rel, repoUrl, typeof hint.repoRef === "string" && hint.repoRef ? hint.repoRef : null);
+  }
+  if (entries.length === 0) return null;
+  const lines = ["Repositories in this workspace (paths relative to your working directory):"];
+  for (const entry of entries) {
+    const name = deriveRepoNameFromRepoUrl(entry.repoUrl) ?? entry.repoUrl;
+    lines.push(`- \`${entry.rel}\` — ${name} (${entry.repoUrl})${entry.repoRef ? `, ref ${entry.repoRef}` : ""}`);
+  }
+  lines.push("Before you change files in a repository, read its AGENTS.md or CLAUDE.md if it has one; they are not loaded for you.");
+  if (input.sharedCheckout) {
+    lines.push("Do not switch the checked-out branch of these shared checkouts. Use `git worktree add` when you need another branch.");
+  }
+  return lines.join("\n");
+}
+
 type ProjectWorkspaceCandidate = {
   id: string;
 };

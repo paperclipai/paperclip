@@ -944,5 +944,9 @@ suite("task project repository provisioning", () => {
       expect(await readFile(path.join(hint!.cwd, "README.md"), "utf8")).toBe(`repository ${index}`);
       expect(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: hint!.cwd, encoding: "utf8" }).trim()).toBe(await realpath(hint!.cwd));
     }
+    if (count === 2) {
+      expect(input.context.paperclipTaskMarkdown).toContain("Repositories in this workspace");
+      expect(input.context.paperclipTaskMarkdown).toContain("`.paperclip-repositories/");
+    }
   }, 25_000);
 });

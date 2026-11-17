@@ -11,6 +11,7 @@ import {
 } from "../heartbeat.js";
 import { resolveDefaultAgentWorkspaceDir } from "../../home-paths.js";
 import {
+  buildRepositoryWorkspaceNote,
   createHeartbeatWorkspaceResolver,
   ensureManagedProjectWorkspace,
   WorkspaceValidationFailure,
@@ -248,5 +249,55 @@ describe("heartbeat workspace module", () => {
     const result = await legacyEnsureManagedProjectWorkspace(input);
     expect(resolveGitAuth).toHaveBeenCalledTimes(2);
     expect(await fs.readFile(path.join(result.cwd, "README.md"), "utf8")).toBe("retry succeeded\n");
+  });
+});
+
+describe("buildRepositoryWorkspaceNote", () => {
+  const nested = {
+    workspaceId: "w2",
+    cwd: "/w/proj/app/.paperclip-repositories/lib-1a2b",
+    repoUrl: "https://github.com/acme/lib.git",
+    repoRef: "main",
+  };
+  const base = {
+    cwd: "/w/proj/app",
+    anchorRepoUrl: "https://github.com/acme/app.git",
+    anchorRepoRef: null,
+    hints: [nested],
+    sharedCheckout: true,
+  };
+
+  it("lists the anchor and nested repositories by relative path", () => {
+    const note = buildRepositoryWorkspaceNote(base)!;
+    expect(note).toContain("- `.` — app (https://github.com/acme/app.git)");
+    expect(note).toContain("- `.paperclip-repositories/lib-1a2b` — lib (https://github.com/acme/lib.git), ref main");
+    expect(note).toContain("read its AGENTS.md or CLAUDE.md");
+    expect(note).toContain("Do not switch the checked-out branch");
+  });
+
+  it("omits the branch rule for an isolated workspace", () => {
+    const note = buildRepositoryWorkspaceNote({ ...base, sharedCheckout: false })!;
+    expect(note).not.toContain("Do not switch");
+  });
+
+  it("omits workspaces outside the working directory", () => {
+    const note = buildRepositoryWorkspaceNote({
+      ...base,
+      hints: [nested, { workspaceId: "w3", cwd: "/elsewhere/x", repoUrl: "https://github.com/acme/x.git", repoRef: null }],
+    })!;
+    expect(note).not.toContain("elsewhere");
+    expect(note).not.toContain("..");
+  });
+
+  it("does not repeat the anchor when a hint points at the working directory", () => {
+    const note = buildRepositoryWorkspaceNote({
+      ...base,
+      hints: [{ workspaceId: "w1", cwd: "/w/proj/app", repoUrl: "https://github.com/acme/app.git", repoRef: null }],
+    })!;
+    expect(note.split("- `.`").length - 1).toBe(1);
+  });
+
+  it("returns null without any repository", () => {
+    expect(buildRepositoryWorkspaceNote({ ...base, anchorRepoUrl: null, hints: [] })).toBeNull();
   });
 });
