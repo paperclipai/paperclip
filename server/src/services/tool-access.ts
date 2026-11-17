@@ -88,7 +88,7 @@ import { loadPluginAppCatalog, pluginAppCatalogFor } from "./plugin-app-catalog.
 
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 
-import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
+import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
@@ -1571,7 +1571,20 @@ export function toolAccessService(
     };
   }
 
+  /** Origin and path of a pasted MCP address; query strings may carry credentials and are ignored. */
+  function linkEndpoint(value: unknown): string | null {
+    if (typeof value !== "string" || !value.trim()) return null;
+    try {
+      const url = new URL(value.trim());
+      return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+      return null;
+    }
+  }
+
   function defaultLinkName(link: string): string {
+    const peer = paperclipPeerFromMcpUrl(link);
+    if (peer) return peer.name;
     try {
       const url = new URL(link);
       const host = url.host.replace(/^www\./, "");
@@ -1775,16 +1788,36 @@ export function toolAccessService(
         : null;
       const requestedSource =
         galleryEntry?.slug ?? (input.link ? "link" : null);
+      // A pasted address names its own server. Default names can repeat
+      // across hosts (two `acme Paperclip`s), so a removed link connection is
+      // revived only for the same endpoint; otherwise the new server would
+      // inherit another server's identity, instructions and tool prefix.
+      const sameLinkEndpoint = async (applicationId: string) => {
+        const requested = linkEndpoint(input.link);
+        if (!requested) return false;
+        const retained = await db
+          .select({ config: toolConnections.config })
+          .from(toolConnections)
+          .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.applicationId, applicationId)));
+        return retained.some((row) => linkEndpoint(asRecord(row.config).url) === requested);
+      };
       if (
         recoverableApplication &&
         requestedSource &&
-        recoverableSource === requestedSource
+        recoverableSource === requestedSource &&
+        (requestedSource !== "link" || await sameLinkEndpoint(recoverableApplication.id))
       ) {
         existingApplication = recoverableApplication;
       }
     }
 
     await assertConnectorConnectionSetupEnabled(requestedResumeConnection ?? {}, existingApplication?.applicationKey);
+    // Another Paperclip reached by address: tell agents those tools act on a
+    // different instance. Derived from the typed address, never from the server.
+    const paperclipPeer = galleryEntry ? null : paperclipPeerFromMcpUrl(input.link);
+    const newConnectionAgentInstructions = paperclipPeer
+      ? paperclipPeerAgentInstructions(paperclipPeer)
+      : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions);
     const requestedName =
       input.name ??
       existingApplication?.name ??
@@ -1819,6 +1852,14 @@ export function toolAccessService(
       input.reconnectConnectionId && requestedResumeConnection?.status !== "draft"
       && requestedResumeConnection?.config.sourceTemplateKey === galleryEntry?.slug,
     ));
+    if (galleryEntry && input.link && paperclipPeerFromMcpUrl(input.link)) {
+      // Another Paperclip needs its own name, instructions and tool prefix,
+      // which only the "Connect your own MCP server" path sets up.
+      throw badRequest(
+        `That is a Paperclip address. Connect it with "Connect your own MCP server" instead of ${galleryEntry.name}.`,
+        { code: "paperclip_peer_requires_generic_connection" },
+      );
+    }
     if (galleryEntry && input.link) {
       const acceptsProviderGeneratedUrl =
         method?.transport === "mcp_remote" &&
@@ -2214,7 +2255,20 @@ export function toolAccessService(
               }
             : {}),
         }
-      : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
+      : {
+          ...baseConfig,
+          quarantineNewEntries: false,
+          unverifiedServer: true,
+          // Peer tool prefix, fixed when the identity is created. A retained
+          // identity keeps whatever it had, so tool names that saved rules and
+          // approvals refer to never change on reconnect or rename.
+          ...(() => {
+            const namespace = retainedConnection
+              ? asRecord(retainedConnection.config).paperclipPeerToolNamespace
+              : paperclipPeer?.toolNamespace;
+            return typeof namespace === "string" ? { paperclipPeerToolNamespace: namespace } : {};
+          })(),
+        };
     if (method && isPaperclipCloudConnectorStrategy(method.oauthStrategy)) {
       const connectorProfile = method.connectorProfile;
       const profile = managedConnectorProfile(connectorProfile);
@@ -2575,7 +2629,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
@@ -2612,7 +2666,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
