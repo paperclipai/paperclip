@@ -460,6 +460,28 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     } else {
         None
     };
+    let host_control = if args.iter().any(|arg| arg == "--acpx-park-relaunch") {
+        #[cfg(unix)]
+        {
+            Some(
+                host_control
+                    .ok_or_else(|| {
+                        LocalRunnerError::invalid(
+                            "ACPX park relaunch requires private host control",
+                        )
+                    })?
+                    .with_acpx_park_relaunch(),
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX park relaunch requires private host control",
+            ));
+        }
+    } else {
+        host_control
+    };
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
         .ok_or_else(|| {

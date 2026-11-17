@@ -1,6 +1,7 @@
 import { providerTurnStartBefore, providerTurnToolCallSourceSeq } from "./provider-turn-tool-order.js";
 import type { RunnerAttachmentDownloadGrant } from "../contracts/harness-driver.js";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
+import { isSandboxDiskFullFailure } from "../contracts/sandbox-disk-full.js";
 import { confirmAntigravityProbeNativeRetirement } from "../drivers/acpx/antigravity-probe-retirement.js";
 import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../drivers/acpx/grok-web-search.js";
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
@@ -9397,6 +9398,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               { cause: observationError },
             ),
           );
+          return;
+        }
+        // The launcher already released everything Paperclip holds on that
+        // disk. The same launch fails the same way for the rest of the grace.
+        if (isSandboxDiskFullFailure(observationError)) {
+          this.#failTransport(new Error(observationDetail.slice(0, 1_000), { cause: observationError }));
           return;
         }
         attempt += 1;

@@ -194,7 +194,7 @@ function fakeGoogleWorkspaceConnector(
     })),
     claim: vi.fn(async () => credentials),
     refresh: vi.fn(async () => credentials),
-    revoke: vi.fn(async () => undefined),
+    revoke: vi.fn(async () => ({})),
   } satisfies Partial<PaperclipCloudConnector> as unknown as PaperclipCloudConnector;
 }
 
@@ -233,7 +233,7 @@ function fakeGitHubConnector(
     })),
     claim: vi.fn(async () => credentials),
     refresh: vi.fn(async () => credentials),
-    revoke: vi.fn(async () => undefined),
+    revoke: vi.fn(async () => ({})),
     setWebhookBinding: vi.fn(async () => undefined),
     leaseEvents: vi.fn(async () => null),
     acknowledgeEvents: vi.fn(async () => 0),
@@ -8264,7 +8264,10 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(
         service.revokeConnectionGrant(connected.connectionId, grant!.id, actor),
       ).resolves.toMatchObject({ status: "revoked" });
-      expect(connector.revoke).not.toHaveBeenCalled();
+      expect(connector.revoke).toHaveBeenCalledTimes(1);
+      expect(connector.revoke).toHaveBeenCalledWith(expect.objectContaining({
+        subject: userId, profile: "gmail.draft", token: "gmail-refresh-token",
+      }));
     } finally {
       if (deadline) clearTimeout(deadline);
       await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
@@ -14399,7 +14402,7 @@ describeEmbeddedPostgres("tool access service", () => {
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
       })),
       claim: vi.fn(async () => credentials), refresh: vi.fn(async () => credentials),
-      revoke: vi.fn(async () => undefined),
+      revoke: vi.fn(async () => ({})),
     } satisfies Partial<PaperclipCloudConnector> as unknown as PaperclipCloudConnector;
     const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
     const custom = await service.connectGalleryApp(company.id, {

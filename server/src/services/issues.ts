@@ -13698,9 +13698,6 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
-      if (issue.conversationAgentId && actor.userId && !(await instanceSettingsService(dbOrTx).getExperimental()).enableAgentChat) {
-        throw unprocessable("Agent Chat is disabled in Experimental settings");
-      }
       await assertAgentInteraction(dbOrTx, {
         companyId: issue.companyId, actorAgentId: actor.agentId, operation: "comment",
         issueId, texts: [body], lock: true,
