@@ -14,6 +14,7 @@ import { githubChatApi } from "@/api/githubChat";
 import { projectsApi } from "@/api/projects";
 import { toolsApi } from "@/api/tools";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const fixture = vi.hoisted(() => ({
   agents: [] as any[],
@@ -684,6 +685,7 @@ describe("GitHub App wizard", () => {
     await render("resume=draft-1");
     expect((container.querySelector("#github-owner-type") as HTMLSelectElement).value).toBe("organization:saved-org");
     expect(container.textContent).toContain("Could not load some connected GitHub accounts");
+    expect(replayLeaks("saved-org", container.querySelector("#github-owner-type")!)).toEqual({ rendered: true, recorded: false });
     await click("Save & exit");
     expect(githubChatApi.saveDraft).toHaveBeenCalledWith("draft-1", {
       name: "Saved App", ownerType: "organization", ownerLogin: "saved-org",

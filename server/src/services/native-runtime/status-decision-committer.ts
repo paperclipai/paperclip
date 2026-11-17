@@ -87,7 +87,8 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { materializeNativeProviderCapacityRetry, materializeNativeToolReceiptLimitContinuation } from "./native-provider-capacity-retry.js";
+import { materializeNativeEnvironmentBlockerRetry, materializeNativeProviderCapacityRetry, materializeNativeToolReceiptLimitContinuation } from "./native-provider-capacity-retry.js";
+import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE } from "./native-environment-blocker.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-provider-failure.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE } from "./native-tool-receipt-limit.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -909,9 +910,11 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "schedule_retry") {
     failAt("continuation_materialization", input.failpoint);
-    if (effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE || effect.cause === NATIVE_TOOL_RECEIPT_LIMIT_CODE) {
-      const materialize = effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE
-        ? materializeNativeProviderCapacityRetry : materializeNativeToolReceiptLimitContinuation;
+    if (effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE || effect.cause === NATIVE_TOOL_RECEIPT_LIMIT_CODE
+        || effect.cause === NATIVE_ENVIRONMENT_BLOCKER_CODE) {
+      const materialize = effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE ? materializeNativeProviderCapacityRetry
+        : effect.cause === NATIVE_ENVIRONMENT_BLOCKER_CODE ? materializeNativeEnvironmentBlockerRetry
+          : materializeNativeToolReceiptLimitContinuation;
       const retryId = await materialize({
         tx: input.tx as unknown as Db, companyId: input.companyId,
         issueId: input.issue.id, runId: input.runId, agentId: effect.agentId,
@@ -1716,7 +1719,8 @@ export async function commitNativeStatusDecision(input: {
     throw new Error("native_model_rejection_owner_required");
   }
   if ((reasonCode.startsWith("native_provider_overloaded") || reasonCode === "native_run_failed_continuation_exhausted"
-      || reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE) && !input.requireProviderFailureOwner) {
+      || reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE || reasonCode === NATIVE_ENVIRONMENT_BLOCKER_CODE
+      || reasonCode === NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE) && !input.requireProviderFailureOwner) {
     throw new Error("native_provider_failure_owner_required");
   }
   const publications: ActivityPublication[] = [];

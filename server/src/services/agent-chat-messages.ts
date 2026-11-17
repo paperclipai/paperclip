@@ -2,11 +2,10 @@ import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { agentApiKeys, agents, companies, companyMemberships, heartbeatRuns, issueComments, issues, nativeRunResults, type Db } from "@paperclipai/db";
 import { agentApiKeyScopeSchema, isUuidLike, sendChatMessageSchema, type AgentApiKeyScope } from "@paperclipai/shared";
-import { badRequest, conflict, forbidden, notFound, tooManyRequests } from "../errors.js";
+import { badRequest, conflict, forbidden, tooManyRequests } from "../errors.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { authorizationService, canActorReadIssuePrivacy, type AuthorizationActor } from "./authorization.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import { issueTreeControlService } from "./issue-tree-control.js";
 import { resolveActorSourceTrustForIssue } from "./source-trust.js";
@@ -78,7 +77,6 @@ export async function sendAgentChatMessage(
     };
     const [initialContext] = await contextQuery();
     const context = validateContext(initialContext);
-    if (!(await instanceSettingsService(tx).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const userId = context.run.responsibleUserId;
     if (!userId) throw forbidden("This task has no responsible human to receive the message");
     if (actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== userId) throw forbidden("The authenticated responsible human no longer matches this run");
@@ -144,7 +142,6 @@ export async function sendAgentChatMessage(
       eq(nativeRunResults.companyId, actor.companyId), eq(nativeRunResults.runId, actor.runId), eq(nativeRunResults.schemaStatus, "accepted"),
     )).limit(1);
     if (finished) throw forbidden("Send the message before finishing the run");
-    if (!(await instanceSettingsService(tx).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     await authorize(source.id, "issue:read");
     if (!conversation) return null;
     await authorize(conversation.id, "issue:comment");

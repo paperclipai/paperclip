@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import { Check, ChevronRight, Loader2 } from "lucide-react";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /** The account-reuse rows shared by connection setup and agent bindings. */
 export function ConnectionChoiceList({ choices, selectedId, pendingId, disabled, onSelect }: {
@@ -21,7 +23,7 @@ export function ConnectionChoiceList({ choices, selectedId, pendingId, disabled,
     >
       {choice.icon && <span aria-hidden="true" className="shrink-0">{choice.icon}</span>}
       <span className="min-w-0 flex-1">
-        <span className="block font-medium text-foreground">{choice.name}</span>
+        <span className={cn("block font-medium text-foreground", ANALYTICS_MASK_CLASS)}>{choice.name}</span>
         <span className="mt-1 block text-xs text-muted-foreground">{choice.description}</span>
       </span>
       {pendingId === choice.id ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
