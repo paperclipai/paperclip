@@ -189,11 +189,9 @@ Each needs its own check before we claim support.
    issuer and connection subject. It fails for a different connection's
    subject and for another company's issuer.
 
-## Decisions for Dotta
+## Decisions (made 2026-11-17)
 
-1. **Issuer per company (recommended) or per instance.** Permanent once
-   shipped.
-2. **A new table through the normal release migration (recommended), versus a
-   key derived from the master key with no schema change.** The derived key
-   is rejected above because the master key alone would be enough to sign as
+1. **One issuer per company**, at `https://<instance>/oidc/companies/<companyId>`.
+2. **A new table through the normal release migration**, not a key derived
+   from the master key. A derived key would let the master key alone sign as
    production.

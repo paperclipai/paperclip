@@ -73,12 +73,6 @@ function publicJwkFor(row: Pick<KeyRow, "publicJwk" | "keyId">) {
   };
 }
 
-function isPublished(row: KeyRow, now: Date): boolean {
-  if (row.status === "active" || row.status === "next") return true;
-  return row.status === "retiring"
-    && now.getTime() - row.statusChangedAt.getTime() < WORKLOAD_IDENTITY_RETIRING_GRACE_MS;
-}
-
 /** Only each company's current signing key is held decrypted; a rotated-out key is dropped. */
 const signingKeyCache = new Map<string, { keyId: string; privateKey: KeyObject }>();
 
@@ -148,7 +142,7 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
   }
 
   /** Published keys only, filtered in SQL so reads stay bounded however many rotations happened. */
-  async function keysFor(companyId: string): Promise<KeyRow[]> {
+  async function publishedKeyRows(companyId: string): Promise<KeyRow[]> {
     const graceStart = new Date(now().getTime() - WORKLOAD_IDENTITY_RETIRING_GRACE_MS);
     return db.select().from(companyWorkloadIdentityKeys).where(and(
       eq(companyWorkloadIdentityKeys.companyId, companyId),
@@ -184,6 +178,8 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
       const at = now();
       await settleRetiring(tx, companyId, at);
       const result = await work(tx, at);
+      // A repeated "begin" while a rotation is pending changes nothing, so it is not logged.
+      if (result.created === false) return { result, publication: null };
       const { publication } = await persistActivity(tx, {
         companyId, ...actor,
         action: `workload_identity.rotation_${step}`,
@@ -192,7 +188,7 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
       });
       return { result, publication };
     });
-    publishActivity(publication);
+    if (publication) publishActivity(publication);
     if (step !== "begin") signingKeyCache.delete(companyId);
     return result;
   }
@@ -208,16 +204,14 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
 
     /** Public key set, or null when the company has never created a key (callers answer 404). */
     async publicKeySet(companyId: string): Promise<{ keys: ReturnType<typeof publicJwkFor>[] } | null> {
-      const at = now();
-      const keys = (await keysFor(companyId)).filter((row) => isPublished(row, at)).map(publicJwkFor);
+      const keys = (await publishedKeyRows(companyId)).map(publicJwkFor);
       return keys.length > 0 ? { keys } : null;
     },
 
     /** OIDC discovery document, or null when the issuer isn't usable here or the company has no key. */
     async discoveryDocument(companyId: string, origin = workloadIdentityIssuerOrigin()) {
       if (!origin.available) return null;
-      const at = now();
-      if (!(await keysFor(companyId)).some((row) => isPublished(row, at))) return null;
+      if ((await publishedKeyRows(companyId)).length === 0) return null;
       const issuer = workloadIdentityIssuer(origin.origin, companyId);
       return {
         issuer,
@@ -297,11 +291,10 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
       };
     },
 
-    /** Board view: issuer and key states, with no private material. */
+    /** Board view: issuer and the published keys with their states, with no private material. */
     async describe(companyId: string, origin = workloadIdentityIssuerOrigin()) {
       await assertCompany(companyId);
-      const at = now();
-      const rows = await keysFor(companyId);
+      const rows = await publishedKeyRows(companyId);
       return {
         issuer: origin.available ? workloadIdentityIssuer(origin.origin, companyId) : null,
         unavailableReason: origin.available ? null : origin.reason,
@@ -310,7 +303,6 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
           .map((row) => ({
             keyId: row.keyId,
             status: row.status,
-            published: isPublished(row, at),
             createdAt: row.createdAt.toISOString(),
             statusChangedAt: row.statusChangedAt.toISOString(),
           })),

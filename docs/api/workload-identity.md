@@ -35,12 +35,13 @@ These require board access to the company. Agent credentials are rejected.
 
 | Method | Path | Result |
 |--------|------|--------|
-| GET | `/api/companies/{companyId}/workload-identity` | Issuer (or why it is unavailable) and key states |
+| GET | `/api/companies/{companyId}/workload-identity` | Issuer (or why it is unavailable) and the published keys with their states |
 | POST | `/api/companies/{companyId}/workload-identity/rotation` | Rotation step result and new state |
 
 The rotation body is `{ "step": "begin" | "complete" | "emergency" }`:
 
-- `begin` publishes a `next` key next to the active one. It answers `409`
+- `begin` publishes a `next` key next to the active one. Repeating it while a
+  rotation is pending changes nothing and writes no log entry. It answers `409`
   (`workload_identity_no_key`) when the company has no key yet.
 - `complete` makes the `next` key sign once it has been published for 24 hours,
   and keeps the old key published for another 24 hours. Before that it

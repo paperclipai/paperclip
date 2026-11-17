@@ -21,6 +21,9 @@ import { generateClientKeyPair } from "../services/tool-access/oauth/client-cred
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { createApp } from "../app.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { createStorageService } from "../storage/service.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { workloadIdentityPublicRoutes, workloadIdentityRoutes } from "../routes/workload-identity.js";
 import {
@@ -271,7 +274,39 @@ describe("company workload identity issuer", () => {
     await service().ensureActiveKey(companyId);
     await service().beginRotation(companyId, actor);
     expect(await entries()).toHaveLength(1);
+    expect((await service().beginRotation(companyId, actor)).created).toBe(false);
+    expect(await entries()).toHaveLength(1);
   });
+
+  it("answers the public paths anonymously in the assembled app", async () => {
+    const companyId = await company();
+    await service().ensureActiveKey(companyId);
+    const app = await createApp(db, {
+      uiMode: "none", serverPort: 0, bindHost: "127.0.0.1", allowedHostnames: ["127.0.0.1"],
+      deploymentMode: "authenticated", deploymentExposure: "private", authReady: true, companyDeletionEnabled: false,
+      managedPluginAutoInstall: [], storageService: createStorageService(createLocalDiskStorageProvider(join(directory, "storage"))),
+      decisionServiceOptions: { wakeOriginAgent: async () => null },
+    });
+    await app.locals.bundledPluginsStartup;
+    const server = app.listen(0, "127.0.0.1");
+    try {
+      await new Promise<void>((resolve) => server.once("listening", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("No HTTP test address");
+      const base = `http://127.0.0.1:${address.port}/oidc/companies/${companyId}`;
+      const discovery = await fetch(`${base}/.well-known/openid-configuration`);
+      expect(discovery.status).toBe(200);
+      expect((await discovery.json()).issuer).toBe(base.replace(`http://127.0.0.1:${address.port}`, ORIGIN));
+      const jwks = await fetch(`${base}/jwks.json`);
+      expect(jwks.status).toBe(200);
+      expect((await jwks.json()).keys).toHaveLength(1);
+      expect((await fetch(`http://127.0.0.1:${address.port}/api/companies/${companyId}/workload-identity`)).status)
+        .not.toBe(200);
+    } finally {
+      await app.locals.paperclipShutdown?.();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  }, 120_000);
 
   it("limits status and rotation to the board and logs each rotation", async () => {
     const companyId = await company();
