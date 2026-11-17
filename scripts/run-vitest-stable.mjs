@@ -411,7 +411,28 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
+function findRetainedPostgresDir(directory) {
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  if (entries.some((entry) => entry.isFile() && entry.name === "postmaster.pid")) return directory;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findRetainedPostgresDir(path.join(directory, entry.name));
+    if (found) return found;
+  }
+  return null;
+}
+
 function removeTestRoot(testRoot) {
+  const retained = findRetainedPostgresDir(testRoot);
+  if (retained) {
+    console.warn(`[test:run] keeping ${testRoot}: it contains a retained PostgreSQL data directory at ${retained}`);
+    return;
+  }
   const makeWritable = (directory) => {
     chmodSync(directory, 0o700);
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
