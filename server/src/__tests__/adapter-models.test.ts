@@ -21,6 +21,8 @@ describe("adapter model listing", () => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     delete process.env.PAPERCLIP_CODEX_PROVIDERS;
+    delete process.env.ROUTER_KEY;
+    delete process.env.GATEWAY_URL;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
@@ -296,6 +298,85 @@ describe("adapter model listing", () => {
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(models).toEqual(codexFallbackModels);
+  });
+
+  it("discovers codex models with the provider env_key instead of OPENAI_API_KEY", async () => {
+    process.env.ROUTER_KEY = "sk-router";
+    process.env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify({
+      providers: {
+        custom: {
+          name: "Custom gateway",
+          base_url: "https://gateway.example.com/v1",
+          env_key: "ROUTER_KEY",
+          wire_api: "responses",
+        },
+      },
+      model_provider: "custom",
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "router-model" }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://gateway.example.com/v1/models");
+    expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({
+      headers: { Authorization: "Bearer sk-router" },
+    });
+    expect(models.some((model) => model.id === "router-model")).toBe(true);
+  });
+
+  it("does not send OPENAI_API_KEY when the selected provider uses a different env_key", async () => {
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify({
+      providers: {
+        custom: {
+          name: "Custom gateway",
+          base_url: "https://gateway.example.com/v1",
+          env_key: "ROUTER_KEY",
+          wire_api: "responses",
+        },
+      },
+      model_provider: "custom",
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(models).toEqual(codexFallbackModels);
+  });
+
+  it("expands {env:VAR} placeholders in PAPERCLIP_CODEX_PROVIDERS base_url", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.GATEWAY_URL = "https://gateway.example.com/v1";
+    process.env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify({
+      providers: {
+        custom: {
+          name: "Custom gateway",
+          base_url: "{env:GATEWAY_URL}",
+          env_key: "OPENAI_API_KEY",
+          wire_api: "responses",
+        },
+      },
+      model_provider: "custom",
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "expanded-gateway-model" }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("codex_local");
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://gateway.example.com/v1/models");
+    expect(models.some((model) => model.id === "expanded-gateway-model")).toBe(true);
   });
 
   it("keeps the curated Codex list when refreshing with an OpenAI key", async () => {

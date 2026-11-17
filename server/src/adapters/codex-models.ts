@@ -7,6 +7,11 @@ const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_MODELS_TIMEOUT_MS = 5000;
 const OPENAI_MODELS_CACHE_TTL_MS = 60_000;
 
+type CodexDiscoveryTarget = {
+  baseUrl: string;
+  apiKey: string | null;
+};
+
 let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null =
   null;
 
@@ -33,6 +38,18 @@ function mergedWithFallback(models: AdapterModel[]): AdapterModel[] {
   ]).sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true, sensitivity: "base" }));
 }
 
+/** Match Codex runtime: expand `{env:VAR}` from process.env; leave unresolved intact. */
+function expandEnvPlaceholders(value: string): string {
+  return value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) => {
+    const resolved = process.env[name];
+    return resolved !== undefined && resolved.length > 0 ? resolved : match;
+  });
+}
+
+function normalizeBaseUrl(raw: string): string {
+  return expandEnvPlaceholders(raw.trim()).replace(/\/+$/, "");
+}
+
 function resolveOpenAiApiKey(): string | null {
   const envKey = process.env.OPENAI_API_KEY?.trim();
   if (envKey) return envKey;
@@ -43,15 +60,41 @@ function resolveOpenAiApiKey(): string | null {
   return configKey && configKey.length > 0 ? configKey : null;
 }
 
-/** Prefer OPENAI_BASE_URL; else active PAPERCLIP_CODEX_PROVIDERS base_url; else OpenAI. */
-function resolveOpenAiBaseUrl(): string {
-  const envUrl = process.env.OPENAI_BASE_URL?.trim();
-  if (envUrl) return envUrl.replace(/\/+$/, "");
+function resolveNamedApiKey(envKeyName: string): string | null {
+  const expandedName = expandEnvPlaceholders(envKeyName).trim();
+  if (!expandedName) return null;
+  const value = process.env[expandedName]?.trim();
+  return value && value.length > 0 ? value : null;
+}
 
-  const fromProviders = resolveBaseUrlFromCodexProviders();
+/**
+ * Resolve discovery base URL + credentials together so custom gateways use the
+ * same account Codex would at runtime (`env_key` + expanded `base_url`).
+ *
+ * Prefer OPENAI_BASE_URL (+ OPENAI_API_KEY); else selected PAPERCLIP_CODEX_PROVIDERS
+ * entry; else default OpenAI.
+ */
+function resolveCodexDiscoveryTarget(): CodexDiscoveryTarget {
+  const envUrl = process.env.OPENAI_BASE_URL?.trim();
+  if (envUrl) {
+    return {
+      baseUrl: normalizeBaseUrl(envUrl),
+      apiKey: resolveOpenAiApiKey(),
+    };
+  }
+
+  const fromProviders = resolveTargetFromCodexProviders();
   if (fromProviders) return fromProviders;
 
-  return DEFAULT_OPENAI_BASE_URL;
+  return {
+    baseUrl: DEFAULT_OPENAI_BASE_URL,
+    apiKey: resolveOpenAiApiKey(),
+  };
+}
+
+/** Prefer OPENAI_BASE_URL; else active PAPERCLIP_CODEX_PROVIDERS base_url; else OpenAI. */
+function resolveOpenAiBaseUrl(): string {
+  return resolveCodexDiscoveryTarget().baseUrl;
 }
 
 /**
@@ -63,7 +106,7 @@ export function hasCustomCodexModelsBaseUrl(): boolean {
   return resolveOpenAiBaseUrl() !== DEFAULT_OPENAI_BASE_URL;
 }
 
-function resolveBaseUrlFromCodexProviders(): string | null {
+function resolveTargetFromCodexProviders(): CodexDiscoveryTarget | null {
   const raw = process.env.PAPERCLIP_CODEX_PROVIDERS?.trim();
   if (!raw) return null;
   try {
@@ -81,9 +124,20 @@ function resolveBaseUrlFromCodexProviders(): string | null {
     if (!selected) return null;
     const entry = providers[selected];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-    const baseUrl = (entry as { base_url?: unknown }).base_url;
-    if (typeof baseUrl !== "string" || baseUrl.trim().length === 0) return null;
-    return baseUrl.trim().replace(/\/+$/, "");
+    const provider = entry as { base_url?: unknown; env_key?: unknown };
+    const baseUrlRaw = provider.base_url;
+    if (typeof baseUrlRaw !== "string" || baseUrlRaw.trim().length === 0) return null;
+
+    const envKeyRaw = provider.env_key;
+    const apiKey =
+      typeof envKeyRaw === "string" && envKeyRaw.trim().length > 0
+        ? resolveNamedApiKey(envKeyRaw)
+        : resolveOpenAiApiKey();
+
+    return {
+      baseUrl: normalizeBaseUrl(baseUrlRaw),
+      apiKey,
+    };
   } catch {
     return null;
   }
@@ -120,12 +174,11 @@ async function fetchOpenAiModels(apiKey: string, baseUrl: string): Promise<Adapt
 
 async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
   const forceRefresh = options?.forceRefresh === true;
-  const apiKey = resolveOpenAiApiKey();
+  const { baseUrl, apiKey } = resolveCodexDiscoveryTarget();
   const fallback = dedupeModels(codexFallbackModels);
   if (!apiKey) return fallback;
 
   const now = Date.now();
-  const baseUrl = resolveOpenAiBaseUrl();
   const keyFingerprint = fingerprint(apiKey);
   if (
     !forceRefresh &&
