@@ -1,4 +1,4 @@
-import { supportsPaperclipRunnerPreconfiguredHome } from "../native-runtime/provider-profile.js";
+import { resolvePaperclipRunnerProviderProfile, supportsPaperclipRunnerPreconfiguredHome } from "../native-runtime/provider-profile.js";
 import { sharedSkillRepositoryLayout } from "../native-runtime/shared-skill-compatibility.js";
 import { agentHarnessType } from "@paperclipai/shared";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
@@ -331,7 +331,8 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         repositoryLayout: sharedSkillRepositoryLayout({
           native: agent.adapterType === "paperclip_runner" && resolvedInstanceSettings.experimental.enableNativeRunner === true
             && (!run.runtimeModeResolvedAt || run.runtimeMode === "native"),
-          backend: agentHarnessType(agent.adapterType, effectiveResolvedConfig) === "codex_local" ? "codex_app_server" : null,
+          backend: !persistedNativeExecutionInput && agent.adapterType === "paperclip_runner"
+            ? resolvePaperclipRunnerProviderProfile(effectiveResolvedConfig, { companyId: agent.companyId }).backend : null,
           environmentDriver: selectedEnvironmentForConfig?.driver, homeMode: sourceWorkspaceConfig.homeMode,
           enabled: process.env.PAPERCLIP_SHARED_SKILL_REPOSITORIES_ENABLED !== "false", persistedExecution: persistedNativeExecutionInput,
         }),
