@@ -187,6 +187,10 @@ export function isGoogleWorkspaceToolGranted(name: string, scopes: readonly stri
   return Boolean(target && target.requiredScopes.every((alternatives) => alternatives.some((scope) => scopes.includes(scope))));
 }
 
+export function googleWorkspaceSubmittedScopesIn(scopes: readonly string[]): string[] {
+  return [...new Set(scopes.filter((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope)))];
+}
+
 export function isGoogleWorkspaceScopeGrant(scopes: readonly string[]): boolean {
   return scopes.length > 0 && scopes.every((scope) => GOOGLE_WORKSPACE_SUBMITTED_SCOPES.includes(scope));
 }

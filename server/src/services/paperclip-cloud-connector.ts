@@ -21,6 +21,7 @@ import {
   isGoogleWorkspaceConnectorProfileId,
   isGoogleWorkspaceScopeGrant,
   googleWorkspaceProfileWithinSubmittedScopes,
+  googleWorkspaceSubmittedScopesIn,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -397,6 +398,7 @@ export function createPaperclipCloudConnector(input: {
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
+    if (profile === "workspace.all") credentials.scopes = googleWorkspaceSubmittedScopesIn(credentials.scopes);
     if (!(profile === "workspace.all" ? isGoogleWorkspaceScopeGrant(credentials.scopes) : sameStringSet(credentials.scopes, definition.scopes))) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }

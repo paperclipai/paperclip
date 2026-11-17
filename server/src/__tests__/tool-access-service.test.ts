@@ -8922,6 +8922,52 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(gmail.status).toBe("disabled");
     });
 
+    it.each(["managed", "customer"] as const)("caps a %s callback that also reports an unrequested legacy scope", async (mode) => {
+      const fixture = await connectWorkspace(mode, ["documents.readonly", "gmail.readonly", "chat.messages.readonly", "calendar.readonly"]);
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.status, "active")));
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.map((tool) => tool.upstreamToolName).sort()).toEqual(["docs__read_doc", "gmail__get_message"]);
+    });
+
+    it.each(["managed", "customer"] as const)("keeps a %s grant on its submitted scopes when refresh also reports a legacy scope", async (mode) => {
+      const fixture = await connectWorkspace(mode);
+      const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+      fixture.expireNextCall(["https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly", "https://www.googleapis.com/auth/calendar.readonly"]);
+      await fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} }).catch(() => undefined);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fixture.connected.connectionId));
+      expect(grant.status).toBe("active");
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.map((item) => item.upstreamToolName).sort()).toEqual(["docs__read_doc", "gmail__get_message"]);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+    });
+
+    it.each(["managed", "customer"] as const)("reconnects a %s grant whose refresh reported only legacy scopes", async (mode) => {
+      const fixture = await connectWorkspace(mode);
+      const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+      fixture.expireNextCall(["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/chat.messages.readonly"]);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).rejects.toMatchObject({ reasonCode: "oauth_reauthorization_required" });
+      const [stale] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fixture.connected.connectionId));
+      expect(stale.status).toBe("needs_reauthorization");
+      const redirectUri = mode === "managed" ? "https://paperclip.example/api/tools/oauth/cloud-connector/callback" : "https://paperclip.example/api/tools/oauth/callback";
+      const started = await fixture.service.startOAuth(fixture.company.id, fixture.connected.connectionId, {
+        redirectUri, actor: fixture.actor, workspaceServices: GOOGLE_WORKSPACE_DEFAULT_SELECTION,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      if (mode === "managed") await fixture.service.completePaperclipCloudConnectorCallback({ state, claimId: "reconnect", actor: fixture.actor });
+      else await fixture.service.completeOAuthCallback({ state, code: "reconnect", redirectUri, actor: fixture.actor });
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.status, "active")));
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+    });
+
     it("keeps healthy service tools visible during a partial outage and restores recovered services", async () => {
       const fixture = await connectWorkspace("managed");
       fixture.unavailable.add("gmailmcp.googleapis.com");
@@ -8979,8 +9025,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
 
     it.each((["managed", "customer"] as const).flatMap((mode) => [undefined, [], ["https://www.googleapis.com/auth/gmail.send"],
-      ["https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/chat.messages.readonly"],
-      ["https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/calendar.readonly"]].map((scopes) => ({ mode, scopes }))))(
+      ["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/chat.messages.readonly"]].map((scopes) => ({ mode, scopes }))))(
       "fails closed on invalid refreshed permissions ($mode, $scopes)", async ({ mode, scopes }) => {
         const fixture = await connectWorkspace(mode);
         const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;

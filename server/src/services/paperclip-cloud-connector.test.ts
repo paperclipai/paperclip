@@ -80,7 +80,7 @@ describe("Paperclip Cloud connector", () => {
     await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" })).resolves.toEqual(credentials);
     sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
     await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" })).resolves.toEqual(credentials);
-    for (const invalid of [[], [...scopes, "https://www.googleapis.com/auth/gmail.send"]]) {
+    for (const invalid of [[], ["https://www.googleapis.com/auth/gmail.send"]]) {
       credentials.scopes = invalid;
       sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "workspace.all");
       await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" })).rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED" });
@@ -270,7 +270,7 @@ describe("Paperclip Cloud connector", () => {
     },
   );
 
-  it("binds unified Workspace refresh to the submitted scopes and rejects any other refreshed permission", async () => {
+  it("binds unified Workspace refresh to the submitted scopes and caps reported permissions to them", async () => {
     const keys = config();
     const credentials = { v: 1, accessToken: "test-access", refreshToken: "test-refresh", tokenType: "Bearer",
       accessTokenExpiresAt: null, refreshTokenExpiresAt: null, scopes: ["https://www.googleapis.com/auth/documents"], subject, companyId, instanceId,
@@ -285,13 +285,17 @@ describe("Paperclip Cloud connector", () => {
     const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
     await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" })).resolves.toEqual(credentials);
     expect([...signedScopes[0] as string[]].sort()).toEqual([...GOOGLE_WORKSPACE_SUBMITTED_SCOPES].sort());
-    for (const legacy of ["calendar.readonly", "chat.messages.readonly", "userinfo.profile"]) {
+    for (const legacy of ["calendar.readonly", "chat.messages.readonly", "userinfo.profile", "gmail.send"]) {
       credentials.scopes = ["https://www.googleapis.com/auth/documents", `https://www.googleapis.com/auth/${legacy}`];
       sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
       await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" }))
-        .rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED" });
+        .resolves.toMatchObject({ scopes: ["https://www.googleapis.com/auth/documents"] });
       sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "workspace.all");
       await expect(connector.claim({ subject, companyId, profile: "workspace.all", claimId: "test-claim", redemptionId: "test-state" }))
+        .resolves.toMatchObject({ scopes: ["https://www.googleapis.com/auth/documents"] });
+      credentials.scopes = [`https://www.googleapis.com/auth/${legacy}`];
+      sealed = seal(credentials, keys.sealPublicKey, "access", keys.config, "workspace.all");
+      await expect(connector.refresh({ subject, companyId, profile: "workspace.all", refreshToken: "test-refresh" }))
         .rejects.toMatchObject({ code: "REAUTHORIZATION_REQUIRED" });
     }
   });

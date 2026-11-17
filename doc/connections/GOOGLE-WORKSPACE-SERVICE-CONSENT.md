@@ -26,8 +26,9 @@ closed tool allowlist still excludes sending.
 
 Every selectable combination stays inside the 14 scopes submitted for Google
 verification, kept as an explicit list in `GOOGLE_WORKSPACE_SUBMITTED_SCOPES`.
-The server rejects a request, callback grant or refresh that carries any other
-scope, on both the managed and the customer-owned path.
+The server rejects an authorization request that carries any other scope. On
+callback and refresh it ignores any other scope Google reports, on both the
+managed and the customer-owned path.
 
 Both customer OAuth and managed Cloud OAuth bind the request to durable OAuth
 state. The broker must support nonempty `workspace.all` scope subsets, preserve

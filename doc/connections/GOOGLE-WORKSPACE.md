@@ -79,11 +79,14 @@ The signed request and envelope authentication bind the exact selected request.
 Refresh binds the 14 scopes submitted for Google verification
 (`GOOGLE_WORKSPACE_SUBMITTED_SCOPES`), which the broker accepts as a subset of
 its registry. The encrypted credential payload preserves Google's actual
-nonempty subset. Missing scope evidence and any scope outside the 14 fail closed
-on authorization, callback and refresh, for both managed and customer-owned
-OAuth. A saved grant that reports one of the former Chat, Contacts, Directory,
-profile or `calendar.readonly` scopes needs reconnecting. Individual legacy
-profiles retain exact matching.
+nonempty subset. An authorization request with any scope outside the 14 is
+rejected. Callback and refresh use one contract on both managed and
+customer-owned OAuth: Paperclip caps Google's reported scopes to the 14 and to
+the saved request, and continues. A scope outside the 14 (for example a former
+Chat, Contacts, Directory, profile or `calendar.readonly` grant) is ignored and
+never enables an action. Only missing scope evidence or an empty result needs
+reconnecting, and reconnecting with a new service choice always works.
+Individual legacy profiles retain exact matching.
 
 Paperclip's own Google client never starts consent for a profile outside the
 14: `gmail.archive` (`gmail.modify`), `chat.read`, `chat.write`, `people.read`
