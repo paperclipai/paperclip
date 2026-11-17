@@ -12,7 +12,8 @@ Gmail has all nine allowlisted tools: `get_message`, `get_thread`,
 `search_threads`, `list_threads`, `search_messages`, `get_draft`,
 `list_drafts`, `list_labels` and `create_draft`. Only `create_draft` writes.
 There is no send, trash, delete or label-changing tool, and none may be added.
-It also has all nine allowlisted Calendar tools (see "Calendar tools" below).
+It also has all nine allowlisted Calendar tools (see "Calendar tools" below),
+and both Docs tools and both Slides tools (see "Docs and Slides tools" below).
 
 ## Why this exists, and why it is temporary
 
@@ -57,8 +58,10 @@ so they can be deleted cleanly when that happens.
   says that the change may or may not have been made. Every method other than
   GET (POST, PATCH, PUT, DELETE) is a write; the only exception is a POST the
   request marks `readOnly` (Calendar's free/busy query). `www.googleapis.com`
-  is allowed only under `/calendar/v3/`, checked after URL normalization.
-- **One tool, one file.** Each tool in `gmail/` and `calendar/` is a set of pure functions
+  is allowed only under `/calendar/v3/`, `docs.googleapis.com` only under
+  `/v1/documents/` and `slides.googleapis.com` only under
+  `/v1/presentations/`, checked after URL normalization.
+- **One tool, one file.** Each tool in `gmail/`, `calendar/`, `docs/` and `slides/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
 - **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
@@ -140,6 +143,10 @@ plain constant: no environment variable, instance setting or database row.
   | Calendar | one `calendarList.list` entry | `calendar.calendarlist.readonly`, `calendar.readonly` |
   | Calendar | one event of the primary calendar | `calendar.events.readonly`, `calendar.events`, `calendar.readonly` |
   | Calendar | one minute of `freeBusy.query` on the primary calendar | `calendar.events.freebusy` |
+
+  Docs and Slides have no probe: every read of either API needs a document or
+  presentation ID, and Google does not document what a made-up ID returns, so
+  a probe could wrongly mark a working grant unavailable.
 
   A grant that allows none of them (for example compose-only Gmail) is listed
   without a probe. An insufficient-scope answer to a probe never makes a
@@ -457,6 +464,106 @@ earliest first; working hours and out-of-office settings are not read.
   comes from REST `transparency`; `conferenceUrl` from `hangoutLink` or the
   video entry point.
 
+## Docs and Slides tools
+
+Names, input fields and annotations come from Google's MCP references
+(<https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/read_doc>,
+`.../update_doc`,
+<https://developers.google.com/workspace/slides/api/reference/mcp/tools_list/read_presentation>
+and `.../update_presentation`, recorded 2026-11-17). Each tool makes exactly
+one REST call.
+
+| Tool | REST call | Works with | Google documentation |
+| --- | --- | --- | --- |
+| `read_doc` | `documents.get` with `includeTabsContent=true` | `documents.readonly` or `documents` | <https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/get> |
+| `update_doc` | `documents.batchUpdate` | `documents` | <https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/batchUpdate> |
+| `read_presentation` | `presentations.get` | `presentations.readonly` or `presentations` | <https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/get> |
+| `update_presentation` | `presentations.batchUpdate` | `presentations` | <https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate> |
+
+### What the read tools return
+
+Google documents both results only as `{ content: object }`, "a JSON
+representation" of the file, and does not say what is inside. Here `content`
+holds:
+
+- `text`: the whole file as Markdown-style text. Docs: every tab (child tabs
+  included, each under `=== Tab: Parent / Child ===` when there is more than
+  one), headings as `#`, list items with their real numbering (`1.`, `a.`,
+  `iv.`, nested formats such as `1.2.`, start numbers, numbering that
+  continues across interrupting paragraphs), tables as `| cells |` with nested
+  tables flattened into one cell, links as `[text](url)` (heading, bookmark and
+  tab links as `#heading=…`, `#bookmark=…`, `#tab=…`), footnote references as
+  `[^n]` with the footnotes after the body, headers and footers labelled
+  default, first page or even pages, person and date chips, rich links, page
+  and column breaks, and unaccepted suggestions as `{+inserted+}` and
+  `{-deleted-}`. Slides: each slide as `## Slide n` (marked skipped when it
+  is), title placeholders as `###`, bullets with their own glyph, tables,
+  groups, word art, and each slide's speaker notes under `Speaker notes:`.
+- A structure for edits. Docs: `tabs[]` with every paragraph's and table
+  cell's `startIndex`, `endIndex`, named style and list, plus headers, footers
+  and footnotes by segment ID. A paragraph's `text` is exact: each non-text
+  index (an image, a footnote reference, a chip) is one U+FFFC, so
+  `text.length` equals `endIndex - startIndex`. Slides: `slides[]` with each
+  page element's `objectId`, type, placeholder and raw text, table cells by
+  row and column, and the speaker notes shape's `objectId`.
+- `revisionId`, which the update tools require.
+- `notes`, present when something could not be shown as text, with a count.
+- With `commentsIncluded`, a `[Comments]` section (`commentsViewMode` on both
+  APIs).
+
+`read_presentation` with `fields` returns Google's resource limited to those
+fields, unchanged, as Google's tool does.
+
+What cannot be represented, and is listed in `notes` when present: pictures
+(shown as `[image: title or alt text]`), drawings, charts, equations (the Docs
+API does not return their content), dropdown values, Slides videos (shown with
+their link), and text that slide masters and layouts put on every slide.
+Formatting other than headings, lists and links (bold, colors, fonts, sizes)
+is not in `text`. Checklist items render as plain list items: the Docs API
+does not say whether a box is ticked.
+
+A result over 1 MB (the gateway's limit for an MCP response) is refused with
+an error that says so and returns nothing; it is never cut short.
+`read_presentation` suggests `fields` to read less.
+
+### How the update tools work
+
+Google's tools take `documents.batchUpdate` and `presentations.batchUpdate`
+requests as they are, so these do too: the requests are posted unchanged and
+in the caller's order, in one call. Google applies them in order and all or
+none; each request sees the file as changed by those before it. Reordering
+them here would change what dependent requests (insert, then style the
+inserted text) do, so nothing is reordered. The descriptions tell callers to
+order several index-based edits from one read from the highest index to the
+lowest; the tests show that order gives the intended result and the reverse
+does not.
+
+`writeControl.requiredRevisionId` is required (Google makes it optional). It
+is the `revisionId` from the read tool. If the file changed since, Google
+rejects the whole batch with 400 and the tool answers that the file is no
+longer at the revision you read, nothing was changed, and to read it again.
+`targetRevisionId` (Docs), which would apply the edit to a newer version, is
+refused. The answer includes the new revision in `writeControl`, also for
+Slides (Google's Slides tool lists only `replies`). A write is never retried;
+a failure after it was sent carries the uncertain-outcome warning.
+
+Each request must name exactly one request kind; at most 500 per call.
+Google validates everything else. These tools edit existing files only: there
+is no create, copy, delete, share or permission tool. Requests inside a batch
+can still delete content, tabs (`deleteTab`) or slides (`deleteObject`), as
+in Google's tools; `update_presentation` is marked destructive as Google
+marks it.
+
+### Differences from Google's Docs and Slides MCP tools
+
+- `content` is the text form and structure above, not the raw REST resource
+  (except `read_presentation` with `fields`). Google's inner format is not
+  published.
+- `requiredRevisionId` is required and `targetRevisionId` is refused.
+- At least one request is required.
+- Descriptions are our own wording. The `documentId` description does not
+  name Drive's file ID field, since the Drive tool is not in this folder.
+
 ## Open questions
 
 - Whether an OAuth client marked as an AI-powered agent may call the REST APIs.
@@ -490,5 +597,5 @@ earliest first; working hours and out-of-office settings are not read.
 cd server && npx vitest run src/google-workspace-rest-tools
 ```
 
-Test fixtures in `fixtures/`, `gmail/fixtures/` and `calendar/fixtures/` are synthetic, in the shape
+Test fixtures in `fixtures/` and each service's `fixtures/` folder are synthetic, in the shape
 of Google's REST responses. They contain no real mail, addresses or IDs.

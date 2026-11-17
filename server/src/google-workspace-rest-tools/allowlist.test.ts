@@ -75,4 +75,18 @@ describe("tool allowlist", () => {
     expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", "unlisted_tool"))).toBeNull();
     expect(listGoogleWorkspaceRestTools("calendar").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
   });
+
+  it.each([
+    ["docs", ["read_doc", "update_doc"], ["update_doc"]],
+    ["slides", ["read_presentation", "update_presentation"], ["update_presentation"]],
+  ] as const)("implements every allowlisted %s tool (2 of 2), writing only through its update tool", (service, allowlisted, writes) => {
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName(service, name)), name).not.toBeNull();
+    expect(listGoogleWorkspaceRestTools(service).map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+    expect(listGoogleWorkspaceRestTools(service).filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name)).toEqual(writes);
+  });
+
+  it("adds no create, delete, share or permission tool for Docs or Slides", () => {
+    const names = (["docs", "slides"] as const).flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
+    expect(names.filter((name) => /create|delete|share|permission|copy|trash/i.test(name))).toEqual([]);
+  });
 });
