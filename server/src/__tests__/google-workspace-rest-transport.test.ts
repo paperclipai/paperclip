@@ -108,10 +108,13 @@ const support = await getEmbeddedPostgresTestSupport();
     let mcpCallOverride: ((init: RequestInit) => Promise<Response> | undefined) | undefined;
     const remoteHttpRequest = vi.fn(async (href: string, init: RequestInit) => {
       const url = new URL(href);
-      if (url.hostname === "gmail.googleapis.com") {
+      if (url.hostname === "gmail.googleapis.com" || url.hostname === "www.googleapis.com") {
         gmailRequests.push({ method: init.method ?? "GET", path: url.pathname, authorization: new Headers(init.headers).get("authorization"), signal: init.signal ?? null });
         const overridden = await gmailOverride?.(url, init);
         if (overridden) return overridden;
+        if (url.pathname === "/calendar/v3/users/me/calendarList") return Response.json({ items: [{ id: "primary" }] });
+        if (url.pathname === "/calendar/v3/calendars/primary/events") return Response.json({ items: [] });
+        if (url.pathname === "/calendar/v3/freeBusy") return Response.json({ calendars: { primary: { busy: [] } } });
         if (url.pathname === "/gmail/v1/users/me/profile") return Response.json({ emailAddress: "owner@example.test", messagesTotal: 1 });
         if (url.pathname === "/gmail/v1/users/me/messages/msg1") return Response.json(gmailMessage(messageBody));
         if (url.pathname === "/gmail/v1/users/me/drafts" && init.method === "POST") return Response.json({ id: "draft1", message: { id: "msg2", threadId: "thread2" } });
@@ -376,5 +379,49 @@ const support = await getEmbeddedPostgresTestSupport();
     const [action] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id));
     const approved = await f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: action!.id, actor: { userId: f.actor.actorId } });
     expect(JSON.stringify(approved)).toContain("may or may not have been made");
+  });
+  describe("probing only with what the grant allows", () => {
+    const calendarTools = (catalog: Array<{ toolName: string }>) => catalog.map((entry) => entry.toolName).filter((name) => name.startsWith("calendar__")).sort();
+    const restPaths = (f: Awaited<ReturnType<typeof connectWorkspace>>) => f.gmailRequests.map((request) => request.path);
+
+    it.each([
+      [["calendar.events"], "/calendar/v3/calendars/primary/events",
+        ["calendar__create_event", "calendar__delete_event", "calendar__get_event", "calendar__list_events", "calendar__respond_to_event", "calendar__search_events", "calendar__suggest_time", "calendar__update_event"]],
+      [["calendar.events.readonly"], "/calendar/v3/calendars/primary/events",
+        ["calendar__get_event", "calendar__list_events", "calendar__search_events"]],
+      [["calendar.calendarlist.readonly"], "/calendar/v3/users/me/calendarList", ["calendar__list_calendars"]],
+      [["calendar.events.freebusy"], "/calendar/v3/freeBusy", ["calendar__suggest_time"]],
+    ])("lists Calendar tools for %j consent after a probe that consent allows", async (permissions, probePath, expected) => {
+      useTransport("calendar", "paperclip_rest");
+      const f = await connectWorkspace({ permissions: [...permissions, "documents.readonly"] });
+      expect(calendarTools(f.catalog)).toEqual(expected);
+      expect(restPaths(f)).toEqual([probePath]);
+    });
+
+    it("lists a compose-only Gmail grant without a probe", async () => {
+      useTransport("gmail", "paperclip_rest");
+      const f = await connectWorkspace({ permissions: ["gmail.compose", "documents.readonly"] });
+      expect(f.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__create_draft"]);
+      expect(f.gmailRequests).toEqual([]);
+    });
+
+    it("keeps a service whose probe answers with insufficient scope", async () => {
+      useTransport("calendar", "paperclip_rest");
+      const f = await connectWorkspace({ permissions: ["calendar.calendarlist.readonly", "calendar.events", "documents.readonly"] });
+      f.setGmail((url) => url.pathname.startsWith("/calendar/") ? Response.json({ error: { code: 403, errors: [{ reason: "insufficientPermissions" }] } }, { status: 403 }) : undefined);
+      const refreshed = await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect(refreshed.connection.healthMessage ?? "").not.toContain("calendar");
+      expect(calendarTools(refreshed.catalog)).toContain("calendar__list_calendars");
+      expect(calendarTools(refreshed.catalog)).toContain("calendar__list_events");
+    });
+
+    it("drops nothing but asks for reconnection when Google rejects a revoked Calendar token", async () => {
+      useTransport("calendar", "paperclip_rest");
+      const f = await connectWorkspace({ permissions: ["calendar.events", "documents.readonly"] });
+      f.setGmail((url) => url.pathname.startsWith("/calendar/") ? Response.json({ error: { code: 401, status: "UNAUTHENTICATED" } }, { status: 401 }) : undefined);
+      await expect(f.service.refreshCatalog(f.connectionId, f.actor)).rejects.toMatchObject({ details: { code: "oauth_reauthorization_required" } });
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, f.connectionId));
+      expect(grant!.status).toBe("needs_reauthorization");
+    });
   });
 });

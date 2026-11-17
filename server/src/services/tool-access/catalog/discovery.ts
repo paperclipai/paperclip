@@ -118,14 +118,15 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     connection: typeof toolConnections.$inferSelect,
     service: GoogleWorkspaceService,
     credentialHeaders: Record<string, string>,
+    grantedScopes: readonly string[],
     actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
     const fetch = (url: string, init: RequestInit) => requestRemoteHttpEndpoint(new URL(url), init);
-    let probe = await probeGoogleWorkspaceRest({ service, credentialHeaders, fetch });
+    let probe = await probeGoogleWorkspaceRest({ service, credentialHeaders, grantedScopes, fetch });
     if (!probe.ok && probe.authFailure === "unauthenticated"
       && connection.authKind === "oauth" && connection.credentialSource === "paperclip_vault") {
       const refreshed = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor, { forceRefresh: true })) };
-      probe = await probeGoogleWorkspaceRest({ service, credentialHeaders: refreshed, fetch });
+      probe = await probeGoogleWorkspaceRest({ service, credentialHeaders: refreshed, grantedScopes, fetch });
       if (!probe.ok && probe.authFailure === "unauthenticated" && isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)) {
         const grant = await vaultGrantForConnection(connection, actor);
         if (grant) {
@@ -133,9 +134,6 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
             .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId)));
         }
       }
-    }
-    if (!probe.ok && probe.authFailure === "insufficient_scope") {
-      throw unprocessable(INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, { code: "oauth_insufficient_scope", connectionId: connection.id });
     }
     if (!probe.ok && probe.authFailure === "unauthenticated") {
       throw unprocessable("Google did not accept this connection's sign-in. Reconnect Google Workspace.", { code: "oauth_reauthorization_required" });
@@ -168,7 +166,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       const catalogs = await Promise.allSettled(services.map(async (service) => {
         const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[GOOGLE_WORKSPACE_SERVICES[service]];
         const tools = GOOGLE_WORKSPACE_TOOL_TRANSPORT[service] === "paperclip_rest"
-          ? await googleWorkspaceRestTools(connection, service, headers, actor)
+          ? await googleWorkspaceRestTools(connection, service, headers, scopes, actor)
           : await remoteTools(connection, headers, actor, profile.serverUrl, [], listOptions);
         return tools.map((tool) => ({ ...tool, name: googleWorkspaceToolName(service, tool.name) }))
           .filter((tool) => isGoogleWorkspaceToolGranted(tool.name, scopes));

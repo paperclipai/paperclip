@@ -124,12 +124,24 @@ plain constant: no environment variable, instance setting or database row.
   `Google Workspace REST`.
 - **Discovery and health.** The Google branch of `remoteTools()` in
   `server/src/services/tool-access/catalog/discovery.ts`. For a
-  `paperclip_rest` service it runs this folder's probe with the caller's token
-  (`probeGoogleWorkspaceRestService`; Gmail reads `users.getProfile`, Calendar
-  reads one `calendarList.list` entry), then
-  lists this folder's tools under the same `service__tool` names, filtered by
-  the granted scopes. The probe replaces Google's `tools/list` as the proof
-  that the token works. A 401 refreshes the token and probes once more; a
+  `paperclip_rest` service it runs this folder's probe
+  (`probeGoogleWorkspaceRestService`) with the caller's token and granted
+  scopes, then lists this folder's tools under the same `service__tool` names,
+  filtered by the granted scopes. The probe replaces Google's `tools/list` as
+  the proof that the token works. `GOOGLE_WORKSPACE_REST_PROBES` in `probe.ts`
+  gives each service an ordered list of cheap reads, each with the scopes that
+  allow it, and the probe uses the first one the grant allows:
+
+  | Service | Read | Allowed by |
+  | --- | --- | --- |
+  | Gmail | `users.getProfile` | `gmail.readonly` |
+  | Calendar | one `calendarList.list` entry | `calendar.calendarlist.readonly`, `calendar.readonly` |
+  | Calendar | one event of the primary calendar | `calendar.events.readonly`, `calendar.events`, `calendar.readonly` |
+  | Calendar | one minute of `freeBusy.query` on the primary calendar | `calendar.events.freebusy` |
+
+  A grant that allows none of them (for example compose-only Gmail) is listed
+  without a probe. An insufficient-scope answer to a probe never makes a
+  service unavailable. A 401 refreshes the token and probes once more; a
   second 401 on a managed grant marks it `needs_reauthorization`, as the MCP
   path does. Any other probe failure makes that one service unavailable while
   the others stay usable. Health checks use the same branch.
@@ -143,7 +155,7 @@ median of 18.2 ms on either transport.
 ### Flipping a service
 
 1. Implement every tool in that service's allowlist (`toolScopes` in the
-   shared file) in this folder, plus a probe in `probe.ts` and the service's
+   shared file) in this folder, plus its probe reads and their scopes in `probe.ts` and the service's
    API host in `google-http.ts`.
 2. Set the service to `paperclip_rest` in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`.
 

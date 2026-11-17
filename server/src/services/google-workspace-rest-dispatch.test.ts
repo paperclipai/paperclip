@@ -64,7 +64,8 @@ describe("callGoogleWorkspaceRest", () => {
 describe("probeGoogleWorkspaceRest", () => {
   it("reports a token problem separately from an unavailable service", async () => {
     const probe = (status: number, body: unknown) => probeGoogleWorkspaceRest({
-      service: "gmail", credentialHeaders: { Authorization: "Bearer t" }, fetch: vi.fn(async () => Response.json(body, { status })),
+      service: "gmail", credentialHeaders: { Authorization: "Bearer t" }, grantedScopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      fetch: vi.fn(async () => Response.json(body, { status })),
     });
     await expect(probe(200, { emailAddress: "a@example.test" })).resolves.toEqual({ ok: true });
     await expect(probe(401, {})).resolves.toMatchObject({ ok: false, authFailure: "unauthenticated" });

@@ -31,7 +31,7 @@ export type GoogleWorkspaceRestCallOutcome =
 
 export type GoogleWorkspaceRestProbeOutcome =
   | { ok: true }
-  | { ok: false; authFailure: GoogleWorkspaceRestAuthFailure | null; message: string };
+  | { ok: false; authFailure: "unauthenticated" | null; message: string };
 
 export function googleWorkspaceRestAuditEndpoint(service: GoogleWorkspaceService): string {
   return `paperclip-rest:google-workspace/${service}`;
@@ -60,17 +60,22 @@ export async function callGoogleWorkspaceRest(
   }
 }
 
-export async function probeGoogleWorkspaceRest(input: GoogleWorkspaceRestContext): Promise<GoogleWorkspaceRestProbeOutcome> {
+export async function probeGoogleWorkspaceRest(
+  input: GoogleWorkspaceRestContext & { grantedScopes: readonly string[] },
+): Promise<GoogleWorkspaceRestProbeOutcome> {
   try {
     const probe = await probeGoogleWorkspaceRestService({
       service: restService(input.service),
       accessToken: bearerToken(input.credentialHeaders),
+      grantedScopes: input.grantedScopes,
       fetch: input.fetch,
       signal: input.signal,
     });
-    return probe.ok ? probe : { ok: false, authFailure: null, message: probe.message };
+    return probe.ok ? { ok: true } : { ok: false, authFailure: null, message: probe.message };
   } catch (error) {
-    if (error instanceof GoogleWorkspaceAuthError) return { ok: false, authFailure: error.reason, message: error.message };
+    if (error instanceof GoogleWorkspaceAuthError && error.reason === "unauthenticated") {
+      return { ok: false, authFailure: "unauthenticated", message: error.message };
+    }
     throw error;
   }
 }
