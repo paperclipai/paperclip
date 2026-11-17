@@ -81,6 +81,13 @@ import { nativeCaseHandoffResult } from "./native-case-handoff.js";
 import { assertExternalNativeRunAuthority } from "./external-native-authority.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
 import {
+  createRemoteRunnerDiskReserve,
+  isSandboxDiskFullError,
+  remoteRunnerDiskReservePath,
+  remoteStagingFailure,
+  sandboxDiskFullFailure,
+} from "./remote-runner-disk-reserve.js";
+import {
   NATIVE_CONTINUITY_STATE_ENTRIES, NATIVE_SESSION_ROOT_HELD_ENTRIES, describeUnexpectedNativeSessionRootEntries,
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
@@ -14675,7 +14682,7 @@ export async function stageRemoteRunnerFile(input: {
     bypassSession: true,
   });
   if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_staging_failed");
+    throw remoteStagingFailure("runner_remote_staging_failed", result);
   }
 }
 
@@ -14795,7 +14802,7 @@ export async function stageRemoteRunnerDirectory(input: {
     bypassSession: true,
   });
   if (result.exitCode !== 0 || result.timedOut) {
-    throw new Error("runner_remote_directory_staging_failed");
+    throw remoteStagingFailure("runner_remote_directory_staging_failed", result);
   }
 }
 
@@ -15941,67 +15948,6 @@ async function injectRunnerBindConflictForTest(runner: CommandManagedRuntimeRunn
   await onLog?.("stderr", `[paperclip-runner] test bind fault ${armed ? "armed" : "failed"} on port ${port}\n`).catch(() => undefined);
 }
 
-// The agent can fill a managed sandbox's disk. runnerd then cannot write its
-// state and exits, and its relaunch cannot upload its launch files. Paperclip
-// holds this much disk in each managed sandbox and releases it to relaunch the
-// runner, so the agent's turn continues and its tools report the full disk.
-export const REMOTE_RUNNER_DISK_RESERVE_BYTES = 256 * 1024 * 1024;
-// The reserve is taken only while this much more is free, so it never takes
-// space from an agent that is already close to the limit.
-const REMOTE_RUNNER_DISK_RESERVE_MINIMUM_FREE_BYTES = 2 * 1024 * 1024 * 1024;
-export const SANDBOX_DISK_FULL_CODE = "sandbox_disk_full";
-
-const REMOTE_RUNNER_DISK_RESERVE_HOLD_SCRIPT = [
-  'set -u; reserve=$1; bytes=$2; minimum_free_kib=$3; [ -f "$reserve" ] && exit 0',
-  'directory=$(dirname -- "$reserve"); mkdir -p -- "$directory" || exit 1',
-  `free_kib=$(df -Pk -- "$directory" | awk 'NR == 2 { print $4 }')`,
-  '[ -n "$free_kib" ] && [ "$free_kib" -ge "$minimum_free_kib" ] || exit 0',
-  'partial="$reserve.partial"; rm -f -- "$partial"',
-  'fallocate -l "$bytes" "$partial" 2>/dev/null || dd if=/dev/zero of="$partial" bs=65536 count=$((bytes / 65536)) 2>/dev/null || { rm -f -- "$partial"; exit 1; }',
-  'mv -f -- "$partial" "$reserve"',
-].join("\n");
-
-// rm needs no free space. Prints `released` only when a reserve was held.
-const REMOTE_RUNNER_DISK_RESERVE_RELEASE_SCRIPT =
-  'rm -f -- "$1.partial"; if [ -f "$1" ]; then rm -f -- "$1" && echo released; fi';
-
-export async function holdRemoteRunnerDiskReserve(
-  runner: Pick<CommandManagedRuntimeRunner, "execute">,
-  reservePath: string,
-  options: { bytes?: number; minimumFreeBytes?: number } = {},
-): Promise<void> {
-  const bytes = options.bytes ?? REMOTE_RUNNER_DISK_RESERVE_BYTES;
-  const minimumFreeBytes = options.minimumFreeBytes ?? REMOTE_RUNNER_DISK_RESERVE_MINIMUM_FREE_BYTES;
-  await runner.execute({
-    command: "sh",
-    args: ["-c", REMOTE_RUNNER_DISK_RESERVE_HOLD_SCRIPT, "paperclip-runner-disk-reserve-hold", reservePath,
-      String(bytes), String(Math.ceil((minimumFreeBytes + bytes) / 1024))],
-    bypassSession: true,
-    timeoutMs: 30_000,
-  });
-}
-
-/** True when a held reserve was removed. */
-export async function releaseRemoteRunnerDiskReserve(
-  runner: Pick<CommandManagedRuntimeRunner, "execute">,
-  reservePath: string,
-): Promise<boolean> {
-  const result = await runner.execute({
-    command: "sh",
-    args: ["-c", REMOTE_RUNNER_DISK_RESERVE_RELEASE_SCRIPT, "paperclip-runner-disk-reserve-release", reservePath],
-    bypassSession: true,
-    timeoutMs: 10_000,
-  }).catch(() => null);
-  return result?.exitCode === 0 && !result.timedOut && result.stdout.includes("released");
-}
-
-function isSandboxDiskFullError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const { code, message } = error as { code?: unknown; message?: unknown };
-  if (code === "ENOSPC" || code === "EDQUOT") return true;
-  return typeof message === "string" && /no space left on device|disk quota exceeded|\bENOSPC\b|\bEDQUOT\b/i.test(message);
-}
-
 export function createRemoteRunnerProcessLauncher(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
@@ -16024,6 +15970,7 @@ export function createRemoteRunnerProcessLauncher(input: {
   onRunnerProcessSpawned?: () => void;
 }): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
   const runner = input.runner;
+  const reserve = input.diskReservePath ? createRemoteRunnerDiskReserve(runner, input.diskReservePath) : null;
   let launches = 0;
   return (spec) => {
     // Every later launch replaces a runner that was lost, possibly to a full disk.
@@ -16100,29 +16047,29 @@ export function createRemoteRunnerProcessLauncher(input: {
       };
     };
     const completion = (async () => {
+      if (relaunch) await reserve?.release();
       if (input.ensureArtifact) {
         const stage = () => input.trace
           ? input.trace.measure("runner.runtime.stage", () => input.ensureArtifact!(spec),
             { parentName: "runner.session.startup" })
           : input.ensureArtifact!(spec);
-        let reserveReleased = false;
-        const releaseReserve = async () => {
-          if (!input.diskReservePath || reserveReleased) return false;
-          reserveReleased = true;
-          return releaseRemoteRunnerDiskReserve(runner, input.diskReservePath);
-        };
-        if (relaunch) await releaseReserve();
+        let restaged = false;
         for (;;) {
           try {
             await stage();
             break;
           } catch (error) {
             if (!isSandboxDiskFullError(error)) throw error;
-            if (await releaseReserve()) continue;
+            const released = reserve && !restaged ? await reserve.release() : "not_held";
+            if (released === "released") {
+              restaged = true;
+              continue;
+            }
+            // The reserve may still be held, so recovery may try again.
+            if (released === "failed") throw error;
             // Nothing Paperclip owns is left to free, and no runner is
             // running to free space, so retrying cannot succeed.
-            throw new Error(`${SANDBOX_DISK_FULL_CODE}: the sandbox disk is full, so the runner cannot be started`,
-              { cause: error });
+            throw sandboxDiskFullFailure(error);
           }
         }
       }
@@ -16245,9 +16192,7 @@ export function createRemoteRunnerProcessLauncher(input: {
       });
       // Off the startup path. A relaunch leaves the reserve released, so one
       // run cannot take space back from an agent that already filled the disk.
-      if (!relaunch && input.diskReservePath) {
-        void holdRemoteRunnerDiskReserve(runner, input.diskReservePath).catch(() => undefined);
-      }
+      if (!relaunch) reserve?.hold();
 
       let supervisionUnknownSince: number | null = null;
       while (true) {
@@ -16587,6 +16532,7 @@ async function prepareRemoteExternalRunner({ input, target, runner, root, identi
   const launch = createRemoteRunnerProcessLauncher({ target, runner, remoteBinary,
     processIdentityPath: posix.join(runnerStateDirectory, "runner-process.identity"), stateDirectory: runnerStateDirectory,
     diagnosticsDirectory: posix.join(remoteRoot, "diagnostics"), runnerInstanceId: input.runnerInstanceId,
+    diskReservePath: remoteRunnerDiskReservePath(target),
     requireProcessStartFingerprint: true,
     onSpawn: async meta => { await input.onSpawn?.(meta); identityReady(); },
     onLog: input.onLog, trace: input.trace, onRunnerProcessSpawned: () => spawned() });
@@ -18483,10 +18429,7 @@ async function createRunnerdBackendWithinSessionClaim(
           stateDirectory: remoteStateDirectory,
           diagnosticsDirectory: posix.join(remoteSessionRoot!, "diagnostics"),
           runnerInstanceId: input.runnerInstanceId,
-          // Under .paperclip-runtime, which workspace saves and Git exclude.
-          ...(remoteTarget.transport === "sandbox" && remoteRuntimeRoot
-            ? { diskReservePath: posix.join(remoteRuntimeRoot, "disk-reserve") }
-            : {}),
+          diskReservePath: remoteRunnerDiskReservePath(remoteTarget),
           ensureArtifact: spec => {
             const sourceRun = spec.nativeRunner && spec.nativeRunner.identity.runId !== input.execution.binding.runId;
             const isolatedCodex = input.execution.provider.kind === "codex"

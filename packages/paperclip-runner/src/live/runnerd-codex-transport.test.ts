@@ -22,6 +22,7 @@ import { PRP_PROTOCOL_VERSION } from "../protocol/replay-contract.js";
 import { redactCapabilityEvidenceData } from "./evidence-redaction.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import { parsePaperclipQuestionSet } from "../contracts/question-set.js";
+import { SANDBOX_DISK_FULL_FAILURE_CODE } from "../contracts/sandbox-disk-full.js";
 import {
   ACPX_CREDENTIAL_BINDING_ENV,
   createAcpxCredentialBinding,
@@ -618,7 +619,8 @@ it("retries a replacement whose staging failed before any process launched", asy
 // Relaunching on a full sandbox disk retried the same upload for the whole grace.
 it("fails at once when a replacement cannot be staged because the sandbox disk is full", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-replacement-disk-full-"));
-  const diskFull = new Error("sandbox_disk_full: the sandbox disk is full, so the runner cannot be started");
+  const diskFull = Object.assign(new Error("sandbox_disk_full: the sandbox disk is full, so the runner cannot be started"),
+    { code: SANDBOX_DISK_FULL_FAILURE_CODE });
   const children: ReturnType<typeof spawn>[] = [];
   const exits: Promise<void>[] = [];
   const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
