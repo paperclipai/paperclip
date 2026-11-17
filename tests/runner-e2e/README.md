@@ -778,7 +778,16 @@ other manifest mismatch. This installs the canonical **unpatched reporting graph
 not the patched Photon product runtime. Never allocate a Photon client or produce
 a product installed-artifact proof from that reporting checkout.
 
-Both original manifest byte streams are restored before reporting or SDK evidence
+The exact DB pins `drizzle-orm: 0.45.2` and `postgres: 3.4.9` may also use
+the reviewed same-base ranges during reporting install, after authenticating
+the canonical exact resolutions including the PostgreSQL patch suffix. The
+unused product CLI direct `postgres: 3.4.9` declaration may be omitted only
+when absent from the reviewed CLI importer; reporting uses its `tsx` tool,
+not the product CLI. The same locked patched PostgreSQL remains owned by DB
+and Server. No other range, version, patch or dependency is projected; all
+unknown drift still fails closed.
+
+All four original manifest byte streams are restored before reporting or SDK evidence
 checks, including after an installer error. The default `prepareReportLock` API,
 product installs, reviewed SDK reference, registry and trusted managed lock are
 unchanged. The separate `--reporting-preflight` mode runs only the fixed offline,

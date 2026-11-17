@@ -25,7 +25,7 @@ function block(text, name) {
   return { lines, start, end, body: lines.slice(start, end).filter(line => line && !line.trimStart().startsWith('#')) };
 }
 function put(map, key, value) { if (map.has(key)) fail(); map.set(key, value); }
-function patchInventory(lock) {
+function patchInventory(lock, hashes) {
   const lines = block(lock, 'patchedDependencies').body, entries = new Map();
   for (let i = 0; i < lines.length; i += 3) {
     const key = /^  (.+):$/.exec(lines[i] ?? ''), digest = /^    hash: ([a-z0-9]+)$/.exec(lines[i + 1] ?? ''), file = /^    path: (.+)$/.exec(lines[i + 2] ?? '');
@@ -33,6 +33,7 @@ function patchInventory(lock) {
     const name = scalar(key[1]), filePath = scalar(file[1]);
     if (!/^patches\/[A-Za-z0-9@_.+-]+\.patch$/.test(filePath)) fail();
     put(entries, name, filePath);
+    hashes.set(name, digest[1]);
   }
   if (!entries.size) fail();
   return entries;
@@ -47,13 +48,56 @@ function configurationExtras(entries, reviewed) {
   }
   return remove.sort();
 }
+// Read only named entries from the authenticated canonical importer inventory.
+// This does not reconstruct importers, resolve versions, or admit unknown drift.
+function reviewedDependency(lock, importer, name) {
+  const lines = block(lock, 'importers').body;
+  const starts = lines.flatMap((line, i) => line === `  ${importer}:` ? [i] : []);
+  if (starts.length !== 1) fail();
+  let end = starts[0] + 1;
+  while (end < lines.length && !/^  \S/.test(lines[end])) end++;
+  const body = lines.slice(starts[0] + 1, end);
+  const group = body.indexOf('    dependencies:');
+  if (group < 0) fail();
+  let groupEnd = group + 1;
+  while (groupEnd < body.length && !/^    \S/.test(body[groupEnd])) groupEnd++;
+  const entries = body.slice(group + 1, groupEnd);
+  const matches = entries.flatMap((line, i) => {
+    const match = /^      (.+):$/.exec(line);
+    return match && scalar(match[1]) === name ? [i] : [];
+  });
+  if (matches.length === 0) return null;
+  if (matches.length !== 1) fail();
+  const i = matches[0], specifier = /^        specifier: (.+)$/.exec(entries[i + 1] ?? ''), version = /^        version: (.+)$/.exec(entries[i + 2] ?? '');
+  if (!specifier || !version) fail();
+  return { specifier: scalar(specifier[1]), version: scalar(version[1]) };
+}
+function reportingDbPins(lock, hashes, db, cli) {
+  const postgresVersion = `3.4.9(patch_hash=${hashes.get('postgres@3.4.9')})`;
+  const postgres = reviewedDependency(lock, 'packages/db', 'postgres');
+  const drizzle = reviewedDependency(lock, 'packages/db', 'drizzle-orm');
+  const serverPostgres = reviewedDependency(lock, 'server', 'postgres');
+  if (!postgres || !drizzle || postgres.version !== postgresVersion || serverPostgres?.version !== postgresVersion
+      || drizzle.version.split('(')[0] !== '0.45.2' || !drizzle.version.includes(`postgres@${postgresVersion}`)) fail();
+  for (const [name, pin, entry] of [['postgres', '3.4.9', postgres], ['drizzle-orm', '0.45.2', drizzle]]) {
+    if (![pin, `^${pin}`].includes(entry.specifier) || db.dependencies?.[name] !== pin) fail();
+    db.dependencies[name] = entry.specifier;
+  }
+  const cliPostgres = reviewedDependency(lock, 'cli', 'postgres');
+  if (cliPostgres === null) {
+    // The reporting tools use cli/node_modules/tsx, never the product CLI.
+    // The same canonical patched postgres remains owned by DB and Server.
+    if (cli.dependencies?.postgres !== '3.4.9') fail();
+    delete cli.dependencies.postgres;
+  } else if (cliPostgres.specifier !== '3.4.9' || cliPostgres.version !== postgresVersion || cli.dependencies?.postgres !== '3.4.9') fail();
+}
 async function installWithReviewedPatches(root, install, ownership) {
   const policy = JSON.parse(await readFile(path.join(root, 'tests/runner-e2e/report-lock.json'), 'utf8'));
   if (![policy.outputSha256, policy.patchSha256].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))) fail();
   const lock = await readFile(path.join(root, 'pnpm-lock.yaml'));
   const patch = await readFile(path.join(root, 'tests/runner-e2e/report-lock.patch'));
   if (hash(lock) !== policy.outputSha256 || hash(patch) !== policy.patchSha256) fail();
-  const reviewed = patchInventory(lock.toString('utf8'));
+  const hashes = new Map(), reviewed = patchInventory(lock.toString('utf8'), hashes);
   const packagePath = path.join(root, 'package.json'), workspacePath = path.join(root, 'pnpm-workspace.yaml');
   const packageBytes = await readFile(packagePath, 'utf8'), manifest = JSON.parse(packageBytes);
   const rootEntries = new Map(Object.entries(manifest.pnpm?.patchedDependencies ?? {}));
@@ -66,23 +110,32 @@ async function installWithReviewedPatches(root, install, ownership) {
     const name = scalar(match[1]); put(workspaceEntries, name, scalar(match[2])); lineNames.set(i, name);
   }
   if (JSON.stringify(configurationExtras(workspaceEntries, reviewed)) !== JSON.stringify(remove)) fail();
-  await writeFile(path.join(ownership, 'package.json.before'), packageBytes, { flag: 'wx', mode: 0o600 });
-  await writeFile(path.join(ownership, 'pnpm-workspace.yaml.before'), workspace, { flag: 'wx', mode: 0o600 });
-  // Restore exact Source bytes before report/evidence code runs, even on failure.
-  // No product installer or reviewed SDK reference calls this reporting-only owner.
+  const dbPath = path.join(root, 'packages/db/package.json'), cliPath = path.join(root, 'cli/package.json');
+  const dbBytes = await readFile(dbPath, 'utf8'), cliBytes = await readFile(cliPath, 'utf8');
+  const db = JSON.parse(dbBytes), cli = JSON.parse(cliBytes);
+  reportingDbPins(lock.toString('utf8'), hashes, db, cli);
+  const originals = new Map([[packagePath, packageBytes], [workspacePath, workspace], [dbPath, dbBytes], [cliPath, cliBytes]]);
+  const writes = new Map();
+  if (remove.length) {
+    for (const name of remove) delete manifest.pnpm.patchedDependencies[name];
+    writes.set(packagePath, JSON.stringify(manifest, null, 2) + '\n');
+    writes.set(workspacePath, section.lines.filter((_, i) => !remove.includes(lineNames.get(i))).join('\n'));
+  }
+  for (const [file, value] of [[dbPath, db], [cliPath, cli]]) {
+    if (JSON.stringify(value) !== JSON.stringify(JSON.parse(originals.get(file)))) writes.set(file, JSON.stringify(value, null, 2) + '\n');
+  }
+  // All whitelist/canonical-resolution validation precedes every config write.
+  for (const [file, bytes] of originals) {
+    const name = path.relative(root, file).split(path.sep).join('__') + '.before';
+    await writeFile(path.join(ownership, name), bytes, { flag: 'wx', mode: 0o600 });
+  }
   let result, primary, failed = false;
   try {
-    if (remove.length) {
-      for (const name of remove) delete manifest.pnpm.patchedDependencies[name];
-      const nextWorkspace = section.lines.filter((_, i) => !remove.includes(lineNames.get(i))).join('\n');
-      await writeFile(packagePath, JSON.stringify(manifest, null, 2) + '\n');
-      await writeFile(workspacePath, nextWorkspace);
-    }
+    for (const [file, bytes] of writes) await writeFile(file, bytes);
     result = await install();
   } catch (error) { primary = error; failed = true; }
-  const cleanup = remove.length ? await Promise.allSettled([
-    writeFile(packagePath, packageBytes), writeFile(workspacePath, workspace),
-  ]) : [];
+  // Restore all four Source files, even if an earlier write/restore failed.
+  const cleanup = writes.size ? await Promise.allSettled([...originals].map(([file, bytes]) => writeFile(file, bytes))) : [];
   const errors = cleanup.filter(item => item.status === 'rejected').map(item => item.reason);
   if (errors.length) {
     const error = new AggregateError(failed ? [primary, ...errors] : errors, 'Reporting install or exact Source restoration failed');
