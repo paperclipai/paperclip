@@ -1,7 +1,5 @@
 import { isIP } from "node:net";
 
-// Shared classification of private, reserved and public IP addresses.
-
 export function parseIpv4Address(address: string) {
   const parts = address.split(".");
   if (parts.length !== 4) return null;

@@ -105,19 +105,6 @@ export function posthogUpstreamUrl(ingestHost: string, method: string, requestUr
   return new URL(`${origin}${path}${query}`);
 }
 
-/**
- * The visitor's IP for analytics location and per-visitor limits. Behind a
- * platform proxy without `TRUST_PROXY` (Paperclip Cloud on Railway), `req.ip`
- * is the proxy's private hop, so every visitor shares one address and PostHog
- * cannot resolve a location. When the socket peer is private, walk
- * `X-Forwarded-For` from the right and use the first public entry: that is the
- * address the platform edge appended, not a value the client supplied (a
- * client can only prepend entries to the left of it).
- *
- * This is local to the proxy on purpose: setting `TRUST_PROXY` on Cloud would
- * change `req.ip` for every route (rate limits, auth logs), which is a separate
- * decision from fixing analytics location.
- */
 export function posthogVisitorIp(peerIp: string | undefined, headers: IncomingHttpHeaders): string | undefined {
   if (peerIp && isPublicIpAddress(peerIp)) return peerIp;
   const raw = headers["x-forwarded-for"];
