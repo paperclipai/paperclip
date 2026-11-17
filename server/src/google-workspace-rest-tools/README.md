@@ -572,6 +572,13 @@ those → `not ...`; `visibility = 'anyone'` or `'domain'` → both of Drive's
 error rather than ignored. Unless the query uses `trashed`,
 `and trashed = false` is added, as Google's tool does.
 
+Drive's `name contains` is a prefix match ("HelloWorld" matches `'Hello'`, not
+`'World'`), so `title contains` is too; the query help says so and suggests
+`fullText contains` for a word inside a title. When Google answers
+`incompleteSearch: true` (it could not search every corpus), both list tools
+return `incompleteSearch: true` so an agent does not take a short list as
+proof that a file does not exist. Google's MCP result has no such field.
+
 ### Google requests per call
 
 `search_files`, `list_recent_files` and `get_file_metadata`: 1.

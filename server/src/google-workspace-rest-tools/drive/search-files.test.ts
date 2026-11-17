@@ -48,6 +48,7 @@ describe("search_files request", () => {
 
   it("asks for owner names, last modifier and sharing only with includeRichMetadata", () => {
     expect(String(searchFilesRequest({}).query?.fields)).not.toContain("lastModifyingUser");
+    expect(String(searchFilesRequest({}).query?.fields)).toMatch(/^nextPageToken,incompleteSearch,files\(/);
     const rich = String(searchFilesRequest({ includeRichMetadata: true }).query?.fields);
     expect(rich).toContain("lastModifyingUser(displayName,emailAddress)");
     expect(rich).toContain("permissions(type,allowFileDiscovery)");
@@ -106,5 +107,15 @@ describe("search_files tool", () => {
     const { fetch } = fakeGoogle(() => json({}));
     const result = await searchFiles.call({ query: "starred = true" }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(result.structuredContent).toEqual({ files: [] });
+  });
+
+  it.each([
+    [{ files: [DOC], incompleteSearch: true }, true],
+    [{ files: [DOC], incompleteSearch: false }, undefined],
+    [{ files: [DOC] }, undefined],
+  ])("%#: says when Google's search was incomplete", async (answer, expected) => {
+    const { fetch } = fakeGoogle(() => json(answer));
+    const result = await searchFiles.call({ query: "fullText contains 'plan'" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect((result.structuredContent as { incompleteSearch?: boolean }).incompleteSearch).toBe(expected);
   });
 });

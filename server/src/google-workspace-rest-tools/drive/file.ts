@@ -69,7 +69,7 @@ export function fileFields(rich = false): string {
 }
 
 export function listFields(rich = false): string {
-  return `nextPageToken,files(${fileFields(rich)})`;
+  return `nextPageToken,incompleteSearch,files(${fileFields(rich)})`;
 }
 
 export function getFileRequest(id: string, fields: string): GoogleRequest {
@@ -145,6 +145,7 @@ export const fileListSchema = {
   properties: {
     files: { type: "array", items: fileSchema, description: "The files." },
     nextPageToken: str("Pass as pageToken to get the next page. Absent on the last page."),
+    incompleteSearch: { type: "boolean", description: "True when Google could not search every place the user's files are, so matching files may be missing. Absent otherwise. Narrow the query or treat a missing file as not found yet, not as absent." },
   },
   required: ["files"] as string[],
 } as const;
@@ -164,7 +165,11 @@ export const richMetadataInput = {
 };
 
 export function listResult(list: RestFileList, rich = false): Record<string, unknown> {
-  return compact({ files: (list.files ?? []).map((file) => toMcpFile(file, rich)), nextPageToken: list.nextPageToken || undefined });
+  return compact({
+    files: (list.files ?? []).map((file) => toMcpFile(file, rich)),
+    nextPageToken: list.nextPageToken || undefined,
+    incompleteSearch: list.incompleteSearch === true ? true : undefined,
+  });
 }
 
 export function boundedResult(result: CallToolResult): CallToolResult {
