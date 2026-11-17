@@ -76,8 +76,11 @@ import {
 } from "./mcp-tasks.js";
 import { logger } from "../middleware/logger.js";
 import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@paperclipai/shared";
-import { connectionSourceSlug } from "@paperclipai/shared";
+import { connectionSourceSlug, pluginAppSlug } from "@paperclipai/shared";
 import { pluginAppCatalogFor } from "./plugin-app-catalog.js";
+import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
+import { inferToolRisk } from "./tool-risk-inference.js";
+import { executePluginConnectionTool as executePluginConnectionWorkerTool, pluginCatalogEntryCurrent, pluginConnectionIdentity, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "./plugin-connector-runtime.js";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -126,6 +129,7 @@ import {
   toolCallEvents,
   toolCatalogEntries,
   toolConnections,
+  toolConnectionInstalls,
   toolGatewayRateLimitCounters,
   toolGatewaySessions,
   toolInvocations,
@@ -386,6 +390,7 @@ export type ToolGatewayProviderType =
   | "mcp_local_stdio"
   | "paperclip_self"
   | "paperclip_plugin"
+  | "paperclip_plugin_connection"
   | "paperclip_virtual"
   | "paperclip_github_chat"
   | "paperclip_slack_chat"
@@ -397,7 +402,7 @@ export interface ConnectedMcpGatewayMetadata {
   applicationDisplayName: string;
   connectionId: string;
   catalogEntryId: string;
-  transport: "mcp_remote" | "local_stdio" | "rest_api";
+  transport: "mcp_remote" | "local_stdio" | "rest_api" | "plugin";
   gatewayToolName: string;
   upstreamToolName: string;
   catalogName: string;
@@ -1035,24 +1040,6 @@ function summarizeResult(result: unknown): Record<string, unknown> {
   };
 }
 
-function inferToolRisk(toolName: string): ToolGatewayDescriptor["risk"] {
-  const lower = toolName.toLowerCase();
-  if (
-    /\b(delete|destroy|remove|drop|truncate|wipe|purge)\b|(^|[:._-])(delete|destroy|remove|drop|truncate|wipe|purge)([:._-]|$)/.test(
-      lower,
-    )
-  ) {
-    return "destructive";
-  }
-  if (
-    /\b(create|update|write|edit|patch|post|send|publish|merge|commit|apply)\b|(^|[:._-])(create|update|write|edit|patch|post|send|publish|merge|commit|apply)([:._-]|$)/.test(
-      lower,
-    )
-  ) {
-    return "write";
-  }
-  return "read";
-}
 
 function riskFromCatalogEntry(
   entry: Pick<
@@ -1117,7 +1104,7 @@ export function connectionToolNamespace(input: {
   const namespaceSource = typeof peerNamespace === "string" && peerNamespace
     ? peerNamespace
     : input.applicationKey ?? input.connectionName ?? input.applicationName;
-  return `${input.transport === "rest_api" ? "app" : "mcp"}.${slugSegment(namespaceSource, "mcp")}-${shortStableId(input.connectionId)}`;
+  return `${input.transport === "rest_api" || input.transport === "plugin" ? "app" : "mcp"}.${slugSegment(namespaceSource, "mcp")}-${shortStableId(input.connectionId)}`;
 }
 
 function toolRequiresFormalApproval(tool: ToolGatewayDescriptor): boolean {
@@ -1535,9 +1522,73 @@ export function createToolGatewayService(
       delegatedGatewayIssuer: issuerId,
     } };
   }
+  /**
+   * The implicit connector of a legacy plugin tool, when it is installed for
+   * this agent: its connection and the catalog entry for this tool.
+   */
+  async function legacyPluginToolBinding(companyId: string, agentId: string, toolName: string) {
+    const separator = toolName.indexOf(":");
+    if (separator <= 0) return null;
+    const [row] = await db
+      .select({ connectionId: toolConnections.id, applicationId: toolConnections.applicationId, catalogEntryId: toolCatalogEntries.id })
+      .from(toolConnections)
+      .innerJoin(toolConnectionInstalls, and(
+        eq(toolConnectionInstalls.companyId, toolConnections.companyId),
+        eq(toolConnectionInstalls.connectionId, toolConnections.id),
+      ))
+      .innerJoin(toolCatalogEntries, and(
+        eq(toolCatalogEntries.connectionId, toolConnections.id),
+        eq(toolCatalogEntries.toolName, toolName.slice(separator + 1)),
+      ))
+      .where(and(
+        eq(toolConnections.companyId, companyId),
+        eq(toolConnections.transport, "plugin"),
+        eq(toolConnections.status, "active"),
+        eq(toolConnections.enabled, true),
+        sql`${toolConnections.config}->>'legacyPluginTools' = 'true'`,
+        sql`${toolConnections.config}->>'sourceTemplateKey' = ${pluginAppSlug(toolName.slice(0, separator), "default")}`,
+        or(
+          and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, companyId)),
+          and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, agentId)),
+        ),
+      ))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * A legacy plugin tool keeps today's access decision (its name, grants and
+   * policies), and the action rules saved on its implicit connector can only
+   * restrict it further: Off hides it and Ask first requires approval. The
+   * connector check uses a name no existing rule can match, so it never
+   * grants anything a legacy rule did not.
+   */
+  async function decideWithLegacyPluginRules(
+    input: ToolAccessDecisionInput,
+    decisionOptions: Parameters<typeof decideGatewayPolicy>[1] = {},
+  ): Promise<ToolAccessDecision> {
+    const decision = await decideGatewayPolicy(input, decisionOptions);
+    const agentId = input.actor.agentId;
+    if (decision.decision !== "allow" || input.request.providerType !== "paperclip_plugin" || !agentId) return decision;
+    const binding = await legacyPluginToolBinding(input.companyId, agentId, input.request.toolName);
+    if (!binding) return decision;
+    const restricted = await decideGatewayPolicy({
+      ...input,
+      consumeRateLimit: false,
+      request: {
+        ...input.request,
+        toolName: `legacy-plugin-tool:${binding.catalogEntryId}`,
+        applicationId: binding.applicationId,
+        connectionId: binding.connectionId,
+        catalogEntryId: binding.catalogEntryId,
+      },
+    }, { ...decisionOptions, cache: undefined });
+    return restricted.decision === "allow" ? decision : restricted;
+  }
+
   const policyService = {
     ...basePolicyService,
-    decide: decideGatewayPolicy,
+    decide: decideWithLegacyPluginRules,
     admitInvocation(input: ToolAccessDecisionInput, invocationId: string, claim?: ToolApprovalClaim) {
       return basePolicyService.admitInvocation(input, invocationId, claim, (policy, admissionInput, transaction) =>
         decideGatewayPolicy(admissionInput, { admittedInvocationId: invocationId, requiredGatewayAction: "tools/call" }, policy, transaction));
@@ -1687,10 +1738,62 @@ export function createToolGatewayService(
     return [...BUILTIN_TOOLS, ...pluginTools()];
   }
 
+  /**
+   * Plugins whose legacy top-level tools this agent may use: a connection of
+   * the plugin's implicit connector is active and installed for this agent or
+   * for the whole company. Existing installations got such a connection once
+   * (see `plugin-connector-legacy-access.ts`); new installs start with none.
+   */
+  async function legacyPluginToolKeys(companyId: string, agentId: string | null | undefined): Promise<Set<string>> {
+    if (!agentId) return new Set();
+    const rows = await db
+      .select({ config: toolConnections.config })
+      .from(toolConnections)
+      .innerJoin(toolConnectionInstalls, and(
+        eq(toolConnectionInstalls.companyId, toolConnections.companyId),
+        eq(toolConnectionInstalls.connectionId, toolConnections.id),
+      ))
+      .where(and(
+        eq(toolConnections.companyId, companyId),
+        eq(toolConnections.transport, "plugin"),
+        eq(toolConnections.status, "active"),
+        eq(toolConnections.enabled, true),
+        sql`${toolConnections.config}->>'legacyPluginTools' = 'true'`,
+        or(
+          and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, companyId)),
+          and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, agentId)),
+        ),
+      ));
+    const keys = new Set<string>();
+    for (const row of rows) {
+      const identity = pluginConnectionIdentity({ transport: "plugin", config: row.config });
+      if (identity?.legacyTools) keys.add(identity.pluginKey);
+    }
+    return keys;
+  }
+
+  /**
+   * The plugin key of a legacy plugin tool, from its namespaced name
+   * (`<pluginKey>:<tool>`). Descriptors carry the plugin's database id in
+   * `pluginId`, so the name is the stable key shared with connections.
+   */
+  function legacyToolPluginKey(tool: { name: string }): string | null {
+    const separator = tool.name.indexOf(":");
+    return separator > 0 ? tool.name.slice(0, separator) : null;
+  }
+
+  /** Built-in tools plus the legacy plugin tools this agent may use. */
+  async function toolsForAgent(companyId: string, agentId: string | null | undefined): Promise<ToolGatewayDescriptor[]> {
+    const plugin = pluginTools();
+    if (plugin.length === 0) return [...BUILTIN_TOOLS];
+    const allowed = await legacyPluginToolKeys(companyId, agentId);
+    return [...BUILTIN_TOOLS, ...plugin.filter((tool) => allowed.has(legacyToolPluginKey(tool) ?? ""))];
+  }
+
   function connectedMcpConnectionFilter(companyId: string) {
     return and(
       eq(toolConnections.companyId, companyId),
-      inArray(toolConnections.transport, ["mcp_remote", "local_stdio", "rest_api"]),
+      inArray(toolConnections.transport, ["mcp_remote", "local_stdio", "rest_api", "plugin"]),
       eq(toolConnections.status, "active"),
       eq(toolConnections.enabled, true),
       // A personal connection has no company-level credential to probe. A
@@ -1698,12 +1801,16 @@ export function createToolGatewayService(
       // while the responsible user's grant is valid. Keep its cached active
       // catalog discoverable; execution resolves and validates that user's
       // grant, and a successful call restores the shared health indicator.
+      // A plugin connection's health mostly reflects its worker, which the
+      // host restarts on its own; each call checks the worker and fails
+      // retryably while it is down, so a stale error must not hide the tools.
       or(
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
         eq(toolConnections.credentialPolicy, "per_user"),
+        eq(toolConnections.transport, "plugin"),
       ),
       eq(toolApplications.companyId, companyId),
-      inArray(toolApplications.type, ["mcp_http", "mcp_stdio", "rest_api"]),
+      inArray(toolApplications.type, ["mcp_http", "mcp_stdio", "rest_api", "paperclip_plugin"]),
       eq(toolApplications.status, "active"),
     );
   }
@@ -1794,7 +1901,13 @@ export function createToolGatewayService(
         (connection.transport === "mcp_remote" &&
           application.type === "mcp_http") ||
         (connection.transport === "local_stdio" &&
-          application.type === "mcp_stdio")),
+          application.type === "mcp_stdio") ||
+        // Legacy top-level plugin tools keep their original names and are
+        // listed by the plugin tool path, gated by this connection's installs.
+        (connection.transport === "plugin" &&
+          application.type === "paperclip_plugin" &&
+          !pluginConnectionIdentity(connection)?.legacyTools &&
+          pluginCatalogEntryCurrent(connection, catalogEntry))),
     );
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
@@ -1817,7 +1930,7 @@ export function createToolGatewayService(
       ({ catalogEntry, connection, application }, index) => {
         if (
           connection.transport !== "mcp_remote" &&
-          connection.transport !== "local_stdio" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection) && !restConnectorFor(connection)
+          connection.transport !== "local_stdio" && connection.transport !== "plugin" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection) && !restConnectorFor(connection)
         ) {
           throw new Error(
             `Non-MCP connection ${connection.id} cannot be exposed through the MCP gateway`,
@@ -1877,7 +1990,7 @@ export function createToolGatewayService(
           parametersSchema: inputSchema,
           pluginId: `mcp:${applicationKey ?? application.id}`,
           providerType:
-            connection.transport === "rest_api" ? "provider_rest" : connection.transport === "local_stdio"
+            connection.transport === "plugin" ? "paperclip_plugin_connection" : connection.transport === "rest_api" ? "provider_rest" : connection.transport === "local_stdio"
               ? "mcp_local_stdio"
               : "mcp_remote_http",
           risk,
@@ -3236,7 +3349,7 @@ export function createToolGatewayService(
     const hasOnDemandTargets = connectedTools.some(isOnDemandRemoteTool);
     const virtualTools = hasOnDemandTargets ? VIRTUAL_TOOLS : [];
     const githubBotTools = await githubBotToolsForSession(db, session);
-    const tool = [...allTools(), ...connectedTools, ...virtualTools, ...githubBotTools, ...await slackToolsForSession(db, session), ...await spekoToolsForSession(db, session)]
+    const tool = [...await toolsForAgent(session.companyId, session.agentId), ...connectedTools, ...virtualTools, ...githubBotTools, ...await slackToolsForSession(db, session), ...await spekoToolsForSession(db, session)]
       .filter(
         (candidate) =>
           session.agentId ||
@@ -3489,7 +3602,7 @@ export function createToolGatewayService(
     const connectionTools = await connectionToolsForContext(session);
     const onDemandTargets = connectionTools.filter(isOnDemandRemoteTool);
     const tools = [
-      ...allTools(),
+      ...await toolsForAgent(session.companyId, session.agentId),
       ...connectionTools.filter((tool) => !isOnDemandRemoteTool(tool)),
     ].filter(
       (tool) =>
@@ -4910,6 +5023,66 @@ export function createToolGatewayService(
       addresseeUserId: userId,
       payload,
     });
+  }
+
+  /**
+   * Run a plugin connector tool in its plugin's worker. The gateway already
+   * decided policy and recorded the invocation; here it resolves the grant
+   * and credential for this one call. The run context comes only from the
+   * session, never from tool arguments.
+   */
+  async function executePluginConnectionTool(
+    session: ToolGatewaySession,
+    tool: ToolGatewayDescriptor,
+    parameters: unknown,
+  ) {
+    const [connection] = await db.select().from(toolConnections).where(and(
+      eq(toolConnections.companyId, session.companyId),
+      eq(toolConnections.id, tool.connectionId ?? ""),
+    ));
+    const identity = connection ? pluginConnectionIdentity(connection) : null;
+    if (!connection || !identity || !tool.upstreamToolName) {
+      throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found", { tool: tool.name });
+    }
+    const grant = await resolveConnectionGrant(session, connection);
+    let credential: { kind: "api_key"; value: string } | undefined;
+    if (connection.authKind === "api_key") {
+      const ref = grant.credentialSecretRefs.find((candidate) => candidate.configPath.startsWith("credentials."));
+      if (!ref) throw new ToolGatewayHttpError(409, "Reconnect this connection to add its credential.", "grant_credential_missing");
+      credential = { kind: "api_key", value: await resolveGrantSecretValue(session, connection, grant, ref) };
+    }
+    let result: Awaited<ReturnType<typeof executePluginConnectionWorkerTool>>;
+    try {
+      result = await executePluginConnectionWorkerTool(db, {
+        pluginKey: identity.pluginKey,
+        appSlug: identity.appSlug,
+        toolName: tool.upstreamToolName,
+        parameters,
+        runContext: {
+          agentId: session.agentId ?? "",
+          runId: session.runId ?? "",
+          companyId: session.companyId,
+          projectId: session.projectId ?? "",
+          connection: {
+            id: connection.id,
+            appSlug: identity.appSlug,
+            methodKey: identity.methodKey,
+            grantId: grant.id,
+            settings: identity.settings,
+            ...(credential ? { credential } : {}),
+          },
+        },
+      });
+    } catch (error) {
+      const unavailable = findPluginWorkerUnavailableError(error);
+      if (unavailable) {
+        throw new ToolGatewayHttpError(503, unavailable.message, PLUGIN_CONNECTOR_UNAVAILABLE_CODE, { retryable: true });
+      }
+      throw error;
+    }
+    // A worker error is returned, not thrown: callers screen and redact the
+    // result (error text included) before reporting it.
+    return result;
   }
 
   async function resolveConnectionGrant(
@@ -6419,7 +6592,10 @@ export function createToolGatewayService(
       return { endpointId: authority.endpoint.id, userId: authority.userId, revision: authority.revision, identityContextId: authority.identityContextId };
     }
     if (
-      (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") ||
+      (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest"
+        // A plugin connector's settings and credential are part of what was
+        // reviewed: a change requires a new review, like a remote connection.
+        && tool.providerType !== "paperclip_plugin_connection") ||
       !tool.connectionId ||
       !tool.catalogEntryId
     ) {
@@ -9724,7 +9900,10 @@ export function createToolGatewayService(
                 args.timeoutMs === undefined,
                 args.invocationId,
               )
-            : null;
+            : args.tool.providerType === "paperclip_plugin_connection"
+              // Test calls run plugin connector tools through the same worker path.
+              ? { result: await runWithTimeout(executePluginConnectionTool(args.session, args.tool, args.parameters), executionTimeoutMs) } as unknown as Awaited<ReturnType<typeof executeLocalStdioTool>>
+              : null;
       if (!connectedMcpExecution) {
         throw new ToolGatewayHttpError(
           404,
@@ -10606,6 +10785,8 @@ export function createToolGatewayService(
             : null;
       const result = connectedMcpExecution
         ? connectedMcpExecution.result
+        : tool.providerType === "paperclip_plugin_connection"
+          ? await runWithTimeout(executePluginConnectionTool(session, tool, parameters), executionTimeoutMs)
         : tool.providerType !== "paperclip_plugin"
           ? await runWithTimeout(
               executeBuiltinTool(session, tool, parameters, invocation.id),
@@ -11592,7 +11773,8 @@ export function createToolGatewayService(
       agentId: string;
     }): Promise<AgentToolDescriptor[]> {
       await assertAgentInCompany(input.companyId, input.agentId);
-      const decisions = await decideToolsForListing(pluginTools(), (tool) =>
+      const allowed = await legacyPluginToolKeys(input.companyId, input.agentId);
+      const decisions = await decideToolsForListing(pluginTools().filter((tool) => allowed.has(legacyToolPluginKey(tool) ?? "")), (tool) =>
         policyInputForAgentTool({
           companyId: input.companyId,
           agentId: input.agentId,
@@ -13584,6 +13766,8 @@ export function createToolGatewayService(
               : null;
         const result = recoveredGitHubPublication ?? (connectedMcpExecution
           ? connectedMcpExecution.result
+          : tool.providerType === "paperclip_plugin_connection"
+            ? await runWithTimeout(executePluginConnectionTool(session, tool, effectiveParameters), executionTimeoutMs)
           : tool.providerType === "paperclip_plugin"
             ? await runWithTimeout(
                 pluginToolDispatcher!.executeTool(
@@ -13610,7 +13794,7 @@ export function createToolGatewayService(
           promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocationId, { approvedAction: Boolean(input.approvedActionRequestId), signal: input.signal }),
         });
         const completedAt = new Date();
-        const validatedMcpResult = connectedMcpExecution
+        const validatedMcpResult = connectedMcpExecution || tool.providerType === "paperclip_plugin_connection"
           ? asRecord(resultValidation.value)
           : null;
         if (validatedMcpResult?.error) {
@@ -13914,7 +14098,8 @@ export function createToolGatewayService(
 
       const tool = findStaticTool(input.tool);
 
-      if (tool.providerType !== "paperclip_plugin") {
+      if (tool.providerType !== "paperclip_plugin"
+        || !(await legacyPluginToolKeys(input.runContext.companyId, input.runContext.agentId)).has(legacyToolPluginKey(tool) ?? "")) {
         throw new ToolGatewayHttpError(
           404,
           `Tool "${input.tool}" is not a plugin tool`,

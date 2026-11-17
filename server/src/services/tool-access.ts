@@ -85,6 +85,7 @@ import { stableHash } from "./tool-catalog-hash.js";
 import { NATIVE_PROVIDER_SLUGS, nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { connectorToolPolicy } from "./connectors/tool-policy.js";
 import { loadPluginAppCatalog, pluginAppCatalogFor } from "./plugin-app-catalog.js";
+import { validateInstanceConfig } from "./plugin-config-validator.js";
 
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 
@@ -111,7 +112,7 @@ import { and, asc, desc, eq, inArray, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionGrantMembers, connectionGrants, companyMemberships, principalPermissionGrants, userSecretDefinitions, plugins, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolStdioCommandTemplates, toolCallEvents, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { AppDefinition, ConnectionGrantKind, CreateToolApplication, CreateToolConnection, ConnectToolApp, ConnectToolAppResult, CreateToolStdioCommandTemplate, FinishToolApp, FinishToolAppResult, CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, DeploymentExposure, DeploymentMode, ImportMcpJson, McpConnectionCredentialRef, McpJsonImportPreview, ToolApplication, ToolCatalogEntry, ToolCatalogRefreshResult, ToolConnection, ToolConnectionInstall, ToolConnectionHealthCheckResult, ToolConnectionAuthKind, ToolConnectionCredentialPolicy, ToolConnectionCredentialSource, ToolConnectionTransport, ToolAppMetadataPreflightResult, ToolExampleInstallResult, ToolExampleSmokeCheck, ToolExampleSmokeResult, ToolExampleSummary, ToolProfileBinding, ToolProfileEntry, ToolPolicyDecision, ToolStdioCommandTemplate, UpdateToolApplication, UpdateToolConnection, VercelConnectCredentialReference } from "@paperclipai/shared";
-import { connectionSourceSlug, isPluginAppSlug, parsePluginAppSlug, getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { connectionSourceSlug, isPluginAppSlug, parsePluginAppSlug, getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp, type ConnectionMethodDef } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -1677,6 +1678,19 @@ export function toolAccessService(
     return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
   }
 
+  /** Per-connection settings of a plugin-served method, validated by its schema. */
+  function pluginConnectionSettings(method: ConnectionMethodDef, settings: Record<string, unknown>): Record<string, unknown> {
+    if (!method.settingsSchema) {
+      if (Object.keys(settings).length > 0) throw badRequest("This connector has no settings");
+      return {};
+    }
+    const result = validateInstanceConfig(settings, method.settingsSchema);
+    if (!result.valid) {
+      throw unprocessable("Check this connection's settings", { code: "plugin_connection_settings_invalid", errors: result.errors });
+    }
+    return settings;
+  }
+
   async function connectGalleryApp(
     companyId: string,
     input: ConnectToolApp,
@@ -1925,7 +1939,8 @@ export function toolAccessService(
     const transport = method?.transport ?? "mcp_remote";
     const applicationType = transport === "rest_api" ? "rest_api"
       : transport === "mcp_remote" ? "mcp_http"
-        : transport === "local_stdio" ? "mcp_stdio" : null;
+        : transport === "local_stdio" ? "mcp_stdio"
+          : transport === "plugin" ? "paperclip_plugin" : null;
     if ((retainedConnection && retainedConnection.transport !== transport)
       || (existingApplication && applicationType && existingApplication.type !== applicationType)) {
       if (requestedResumeConnection || input.applicationId) {
@@ -2207,8 +2222,9 @@ export function toolAccessService(
       transport === "mcp_remote" && input.link
         ? splitRemoteUrlCredential(input.link)
         : null;
-    const baseConfig =
-      (transport === "mcp_remote" || transport === "rest_api")
+    const baseConfig = transport === "plugin" && method
+      ? { settings: pluginConnectionSettings(method, input.settings ?? asRecord(asRecord(retainedConnection?.config).settings)) }
+      : (transport === "mcp_remote" || transport === "rest_api")
         ? {
             url:
               (remoteMcpConnector ? remoteUrlCredential?.publicUrl : undefined) ??
@@ -2241,6 +2257,7 @@ export function toolAccessService(
             mcpPreserveAccess: Boolean(retainedConnection && (retainedConnection.status === "active" || asRecord(retainedConnection.config).mcpPreserveAccess === true)),
           } : {}),
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
+          ...(galleryEntry.plugin?.legacyTools ? { legacyPluginTools: true } : {}),
           // Telem.AI attributes each search to the Paperclip company, agent,
           // run and issue, so its catalog connection forwards those context
           // headers by default (the gateway still drops empty values). A
@@ -2569,7 +2586,7 @@ export function toolAccessService(
                 applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
                 name: applicationName,
                 description: safeApplicationDescription,
-                type: transport === "rest_api" && (["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") || Boolean(restConnectorFor({ transport, config }))) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+                type: transport === "plugin" ? "paperclip_plugin" : transport === "rest_api" && (["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") || Boolean(restConnectorFor({ transport, config }))) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
                 status: "draft",
                 metadata: galleryEntry
                   ? {
