@@ -18,7 +18,22 @@ import {
 export const MAX_RANGES = 100;
 export const MAX_FIELDS = 100;
 
-const fieldPath = z.string().regex(/^[A-Za-z0-9_.()*/]{1,300}$/, "must be a field path such as sheets.properties.title");
+export const MAX_FIELD_MASK_LENGTH = 1_000;
+const FIELD_MASK_HINT = "must be a field mask such as sheets.properties.title or sheets.properties(sheetId,title), using only letters, digits, _ . , ( ) / and *";
+
+export function isBalancedFieldMask(mask: string): boolean {
+  let depth = 0;
+  for (const character of mask) {
+    if (character === "(") depth += 1;
+    if (character === ")") depth -= 1;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
+const fieldPath = z.string()
+  .regex(new RegExp(`^[A-Za-z0-9_.,()*/]{1,${MAX_FIELD_MASK_LENGTH}}$`), FIELD_MASK_HINT)
+  .refine(isBalancedFieldMask, FIELD_MASK_HINT);
 
 const args = z.object({
   spreadsheetId,
@@ -80,7 +95,7 @@ export const getSpreadsheet = defineTool({
         fields: {
           type: "array",
           items: { type: "string" },
-          description: "Optional. Field masks naming the parts of the Spreadsheet resource to return, as paths in its JSON, for example sheets.properties.sheetId and sheets.properties.title. Default: everything except cell data.",
+          description: "Optional. Field masks naming the parts of the Spreadsheet resource to return, as paths in its JSON, for example sheets.properties.sheetId and sheets.properties.title, or grouped as sheets.properties(sheetId,title). Default: everything except cell data.",
         },
         ranges: {
           type: "array",

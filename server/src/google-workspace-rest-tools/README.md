@@ -502,7 +502,10 @@ made" warning.
   `userEnteredValue` (including the formula), `effectiveValue` (dates and
   times as serial numbers, days since 1899-12-30) and `formattedValue`; merged
   areas are listed in `merges`. The Spreadsheet resource is returned unchanged
-  under `content`.
+  under `content`. `fields` takes Google's field-mask syntax, including
+  groups such as `sheets.properties(sheetId,title)`; a mask with any character
+  other than letters, digits, `_ . , ( ) / *`, or with unbalanced parentheses,
+  is refused before sending.
 - **`update_values` writes raw values** (`RAW`): strings are stored as given,
   so `"=A1"`, `"2026-01-05"` and `"1,000"` stay text. Google's reference does
   not name the option; RAW is our reading of it, because Google ships a
@@ -548,7 +551,9 @@ not what it holds.
   rows 6–8`), and that no values were written.
 - `update_spreadsheet`: each request in order with the range it touched
   (`1. deleteDimension on sheet ID 0, columns B–C`), and the cells written by
-  `updateCells`/`appendCells`.
+  `updateCells`/`appendCells`. Where each request type keeps its range (for
+  example `addNamedRange.namedRange.range`) is listed once in
+  `REQUEST_TARGETS`; a test fails if a supported type has no entry.
 
 ### `update_spreadsheet` operations
 

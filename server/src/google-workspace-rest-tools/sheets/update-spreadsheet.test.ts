@@ -6,6 +6,7 @@ import {
   COMMENT_REQUESTS,
   DATA_SOURCE_REQUESTS,
   describeRequest,
+  REQUEST_TARGETS,
   SUPPORTED_REQUESTS,
   updateSpreadsheet,
   updateSpreadsheetRequest,
@@ -76,14 +77,46 @@ describe("update_spreadsheet status", () => {
     [{ moveDimension: { source: { sheetId: 0, dimension: "ROWS", startIndex: 1, endIndex: 2 }, destinationIndex: 7 } }, "1. moveDimension on sheet ID 0, row 2 to 0-based index 7"],
     [{ pasteData: { coordinate: { sheetId: 0, rowIndex: 0, columnIndex: 0 }, data: "a,b", delimiter: "," } }, "1. pasteData on sheet ID 0, rows 1 onward, columns A onward"],
     [{ autoResizeDimensions: { dimensions: { sheetId: 0, dimension: "ROWS", startIndex: 0, endIndex: 10 } } }, "1. autoResizeDimensions on sheet ID 0, rows 1–10"],
-    [{ updateSpreadsheetProperties: { properties: { title: "Budget" }, fields: "title" } }, "1. updateSpreadsheetProperties"],
   ])("%j", (request, description) => {
+    expect(describeRequest(request, 0)).toBe(description);
+  });
+
+  it("has a target entry for every supported request type, and none for anything else", () => {
+    expect(Object.keys(REQUEST_TARGETS).sort()).toEqual([...SUPPORTED_REQUESTS].sort());
+    for (const kind of SUPPORTED_REQUESTS) expect(REQUEST_TARGETS[kind].length, kind).toBeGreaterThan(0);
+  });
+
+  it.each([
+    [{ addNamedRange: { namedRange: { name: "Totals", range: grid } } }, "1. addNamedRange on sheet ID 0, rows 1–2, columns A–C"],
+    [{ updateNamedRange: { namedRange: { namedRangeId: "nr1", range: grid }, fields: "range" } }, "1. updateNamedRange on namedRangeId nr1 and sheet ID 0, rows 1–2, columns A–C"],
+    [{ deleteNamedRange: { namedRangeId: "nr1" } }, "1. deleteNamedRange on namedRangeId nr1"],
+    [{ addProtectedRange: { protectedRange: { range: grid, description: "Locked" } } }, "1. addProtectedRange on sheet ID 0, rows 1–2, columns A–C"],
+    [{ updateProtectedRange: { protectedRange: { protectedRangeId: 4, warningOnly: true }, fields: "warningOnly" } }, "1. updateProtectedRange on protectedRangeId 4"],
+    [{ addConditionalFormatRule: { rule: { ranges: [grid, { ...grid, sheetId: 2 }] }, index: 0 } }, "1. addConditionalFormatRule on sheet ID 0, rows 1–2, columns A–C and sheet ID 2, rows 1–2, columns A–C"],
+    [{ deleteConditionalFormatRule: { sheetId: 1, index: 3 } }, "1. deleteConditionalFormatRule on sheet ID 1 and rule index 3"],
+    [{ findReplace: { find: "a", replacement: "b", allSheets: true } }, "1. findReplace on all sheets"],
+    [{ findReplace: { find: "a", replacement: "b", sheetId: 6 } }, "1. findReplace on sheet ID 6"],
+    [{ addFilterView: { filter: { title: "Open", range: grid } } }, "1. addFilterView on sheet ID 0, rows 1–2, columns A–C"],
+    [{ setBasicFilter: { filter: { range: grid } } }, "1. setBasicFilter on sheet ID 0, rows 1–2, columns A–C"],
+    [{ addBanding: { bandedRange: { range: grid } } }, "1. addBanding on sheet ID 0, rows 1–2, columns A–C"],
+    [{ updateDimensionGroup: { dimensionGroup: { range: { sheetId: 0, dimension: "ROWS", startIndex: 0, endIndex: 4 } }, fields: "collapsed" } }, "1. updateDimensionGroup on sheet ID 0, rows 1–4"],
+    [{ addChart: { chart: { position: { overlayPosition: { anchorCell: { sheetId: 3, rowIndex: 1, columnIndex: 1 } } } } } }, "1. addChart on sheet ID 3, rows 2 onward, columns B onward"],
+    [{ addTable: { table: { name: "T", range: grid } } }, "1. addTable on sheet ID 0, rows 1–2, columns A–C"],
+    [{ deleteTable: { tableId: "t1" } }, "1. deleteTable on tableId t1"],
+    [{ autoFill: { sourceAndDestination: { source: grid, dimension: "ROWS", fillLength: 3 } } }, "1. autoFill on sheet ID 0, rows 1–2, columns A–C"],
+    [{ createDeveloperMetadata: { developerMetadata: { metadataKey: "k", location: { sheetId: 2 } } } }, "1. createDeveloperMetadata on sheet ID 2"],
+    [{ createDeveloperMetadata: { developerMetadata: { metadataKey: "k", location: { spreadsheet: true } } } }, "1. createDeveloperMetadata on the spreadsheet"],
+    [{ deleteDeveloperMetadata: { dataFilter: {} } }, "1. deleteDeveloperMetadata on matching developer metadata"],
+    [{ updateSpreadsheetProperties: { properties: { title: "Budget" }, fields: "title" } }, "1. updateSpreadsheetProperties on the spreadsheet's properties"],
+    [{ addSheet: { properties: { title: "Notes" } } }, "1. addSheet on title Notes"],
+    [{ appendDimension: { sheetId: 0, dimension: "ROWS", length: 5 } }, "1. appendDimension on sheet ID 0"],
+  ])("names the nested range of %j", (request, description) => {
     expect(describeRequest(request, 0)).toBe(description);
   });
 
   it("lists every request", () => {
     expect(updateSpreadsheetStatus([{ deleteSheet: { sheetId: 9 } }, { addSheet: { properties: { title: "New" } } }]))
-      .toBe("Applied 2 requests: 1. deleteSheet on sheet ID 9; 2. addSheet.");
+      .toBe("Applied 2 requests: 1. deleteSheet on sheet ID 9; 2. addSheet on title New.");
   });
 });
 

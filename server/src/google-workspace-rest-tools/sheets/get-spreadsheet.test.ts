@@ -18,6 +18,46 @@ describe("get_spreadsheet request", () => {
     expect(getSpreadsheetRequest(input)).toEqual({ method: "GET", host: "sheets.googleapis.com", path: `/v4/spreadsheets/${SPREADSHEET_ID}`, query });
   });
 
+  it.each([
+    "sheets.properties.title",
+    "sheets.properties(sheetId,title)",
+    "sheets(properties(sheetId,title),merges)",
+    "spreadsheetId,properties.title",
+    "sheets/properties/title",
+    "sheets.data.rowData.values(formattedValue,effectiveValue)",
+    "*",
+    "sheets.properties.*",
+  ])("accepts the field mask %s and sends it unchanged", async (mask) => {
+    const { fetch, calls } = fakeGoogle(() => json(SPREADSHEET_METADATA));
+    const result = await getSpreadsheet.call({ spreadsheetId: SPREADSHEET_ID, fields: [mask, "spreadsheetId"] }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.isError).toBeFalsy();
+    expect(calls[0]!.url.searchParams.get("fields")).toBe(`${mask},spreadsheetId`);
+    expect([...calls[0]!.url.searchParams.keys()].sort()).toEqual(["fields", "includeGridData"]);
+  });
+
+  it.each([
+    "sheets.properties.title&key=x",
+    "sheets.properties.title=x",
+    "sheets.properties%2Ctitle",
+    "sheets.properties.title\nx",
+    "sheets. properties",
+    " sheets",
+    "sheets\tproperties",
+    "sheets.properties(sheetId,title",
+    "sheets.properties)sheetId(",
+    "sheets#x",
+    "sheets?x",
+    "sheets;x",
+    "",
+    "x".repeat(1_001),
+  ])("refuses the field mask %j without sending", async (mask) => {
+    const { fetch, calls } = fakeGoogle(() => json({}));
+    const result = await getSpreadsheet.call({ spreadsheetId: SPREADSHEET_ID, fields: [mask] }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/field mask/);
+    expect(calls).toHaveLength(0);
+  });
+
   it("sends each range as its own ranges parameter", async () => {
     const { fetch, calls } = fakeGoogle(() => json(SPREADSHEET_METADATA));
     await getSpreadsheet.call({ spreadsheetId: SPREADSHEET_ID, ranges: ["Sheet1!A1:B2", "'Q1 Plan'!C:C"] }, createGoogleHttp({ accessToken: "t", fetch }));
@@ -49,7 +89,6 @@ describe("get_spreadsheet tool", () => {
   it.each([
     [{ spreadsheetId: SPREADSHEET_ID, commentsIncluded: true }, /Comments are not available/],
     [{ spreadsheetId: SPREADSHEET_ID, ranges: ["Q1 Plan!A1"] }, /must be quoted/],
-    [{ spreadsheetId: SPREADSHEET_ID, fields: ["sheets.properties.title&key=x"] }, /field path/],
     [{ spreadsheetId: SPREADSHEET_ID, ranges: Array.from({ length: 101 }, () => "A1") }, /ranges/],
     [{ spreadsheetId: "a/b" }, /spreadsheet ID/],
   ])("refuses %j without sending", async (args, message) => {

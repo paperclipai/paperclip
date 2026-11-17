@@ -77,24 +77,109 @@ function describeArea(value: Record<string, unknown>): string {
   return describeGridRange(value as GridRange);
 }
 
-function target(body: Record<string, unknown>): string | undefined {
-  if (isObject(body.source) && isObject(body.destination)) return `${describeArea(body.source)} to ${describeArea(body.destination)}`;
-  if (isObject(body.source) && typeof body.destinationIndex === "number") return `${describeArea(body.source)} to 0-based index ${body.destinationIndex}`;
-  for (const key of ["range", "source", "dimensions", "start", "coordinate"]) {
-    const value = body[key];
-    if (isObject(value)) return describeArea(value);
+type SupportedRequest = (typeof SUPPORTED_REQUESTS)[number];
+
+export const REQUEST_TARGETS: Readonly<Record<SupportedRequest, readonly string[]>> = {
+  updateSpreadsheetProperties: ["=the spreadsheet's properties"],
+  updateSheetProperties: ["properties.sheetId"],
+  updateDimensionProperties: ["range", "dataSourceSheetRange"],
+  updateNamedRange: ["namedRange.namedRangeId", "namedRange.range"],
+  repeatCell: ["range"],
+  addNamedRange: ["namedRange.range"],
+  deleteNamedRange: ["namedRangeId"],
+  addSheet: ["properties.title", "properties.sheetId"],
+  deleteSheet: ["sheetId"],
+  autoFill: ["range", "sourceAndDestination.source"],
+  cutPaste: ["source", "destination"],
+  copyPaste: ["source", "destination"],
+  mergeCells: ["range"],
+  unmergeCells: ["range"],
+  updateBorders: ["range"],
+  updateCells: ["range", "start"],
+  addFilterView: ["filter.range"],
+  appendCells: ["sheetId", "tableId"],
+  clearBasicFilter: ["sheetId"],
+  deleteDimension: ["range"],
+  deleteEmbeddedObject: ["objectId"],
+  deleteFilterView: ["filterId"],
+  duplicateFilterView: ["filterId"],
+  duplicateSheet: ["sourceSheetId"],
+  findReplace: ["range", "sheetId", "allSheets"],
+  insertDimension: ["range"],
+  insertRange: ["range"],
+  moveDimension: ["source", "destinationIndex"],
+  updateEmbeddedObjectPosition: ["objectId", "newPosition.overlayPosition.anchorCell", "newPosition.sheetId"],
+  pasteData: ["coordinate"],
+  textToColumns: ["source"],
+  updateFilterView: ["filter.filterViewId", "filter.range"],
+  deleteRange: ["range"],
+  appendDimension: ["sheetId"],
+  addConditionalFormatRule: ["rule.ranges"],
+  updateConditionalFormatRule: ["sheetId", "index", "rule.ranges"],
+  deleteConditionalFormatRule: ["sheetId", "index"],
+  sortRange: ["range"],
+  setDataValidation: ["range"],
+  setBasicFilter: ["filter.range", "filter.tableId"],
+  addProtectedRange: ["protectedRange.range", "protectedRange.namedRangeId", "protectedRange.tableId"],
+  updateProtectedRange: ["protectedRange.protectedRangeId", "protectedRange.range"],
+  deleteProtectedRange: ["protectedRangeId"],
+  autoResizeDimensions: ["dimensions", "dataSourceSheetDimensions"],
+  addChart: ["chart.position.sheetId", "chart.position.overlayPosition.anchorCell"],
+  updateChartSpec: ["chartId"],
+  updateBanding: ["bandedRange.bandedRangeId", "bandedRange.range"],
+  addBanding: ["bandedRange.range"],
+  deleteBanding: ["bandedRangeId"],
+  createDeveloperMetadata: ["developerMetadata.location.dimensionRange", "developerMetadata.location.sheetId", "developerMetadata.location.spreadsheet"],
+  updateDeveloperMetadata: ["=matching developer metadata"],
+  deleteDeveloperMetadata: ["=matching developer metadata"],
+  randomizeRange: ["range"],
+  addDimensionGroup: ["range"],
+  deleteDimensionGroup: ["range"],
+  updateDimensionGroup: ["dimensionGroup.range"],
+  trimWhitespace: ["range"],
+  deleteDuplicates: ["range"],
+  updateEmbeddedObjectBorder: ["objectId"],
+  addSlicer: ["slicer.spec.dataRange", "slicer.position.sheetId", "slicer.position.overlayPosition.anchorCell"],
+  updateSlicerSpec: ["slicerId"],
+  addTable: ["table.range"],
+  updateTable: ["table.tableId", "table.range"],
+  deleteTable: ["tableId"],
+};
+
+const PAIRED = new Set<string>(["cutPaste", "copyPaste", "moveDimension"]);
+const NUMBER_LABELS: Record<string, string> = { sheetId: "sheet ID", sourceSheetId: "sheet ID", destinationIndex: "0-based index", index: "rule index" };
+const FLAG_LABELS: Record<string, string> = { allSheets: "all sheets", spreadsheet: "the spreadsheet" };
+
+function valueAt(body: Record<string, unknown>, path: string): unknown {
+  return path.split(".").reduce<unknown>((value, key) => (isObject(value) ? value[key] : undefined), body);
+}
+
+function describeValue(key: string, value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    const parts = value.filter(isObject).map(describeArea);
+    return parts.length ? parts.join(" and ") : undefined;
   }
-  if (typeof body.sheetId === "number") return `sheet ID ${body.sheetId}`;
-  if (typeof body.sourceSheetId === "number") return `sheet ID ${body.sourceSheetId}`;
-  const properties = body.properties;
-  if (isObject(properties) && typeof properties.sheetId === "number") return `sheet ID ${properties.sheetId}`;
+  if (isObject(value)) return describeArea(value);
+  if (value === true) return FLAG_LABELS[key];
+  if (typeof value === "number" || (typeof value === "string" && value.length > 0)) return `${NUMBER_LABELS[key] ?? key} ${value}`;
   return undefined;
+}
+
+function target(kind: string, body: Record<string, unknown>): string | undefined {
+  const locators = REQUEST_TARGETS[kind as SupportedRequest] ?? [];
+  const parts = locators.flatMap((locator) => {
+    if (locator.startsWith("=")) return [locator.slice(1)];
+    const description = describeValue(locator.split(".").pop()!, valueAt(body, locator));
+    return description ? [description] : [];
+  });
+  if (parts.length === 0) return undefined;
+  return parts.join(PAIRED.has(kind) ? " to " : " and ");
 }
 
 export function describeRequest(request: SheetsRequest, position: number): string {
   const kind = Object.keys(request)[0]!;
   const body = request[kind] as Record<string, unknown>;
-  const where = target(body);
+  const where = target(kind, body);
   const cells = writtenCells(kind, body);
   const written = cells > 0 ? ` (${cells.toLocaleString("en-US")} ${cells === 1 ? "cell" : "cells"} written)` : "";
   return `${position + 1}. ${kind}${where ? ` on ${where}` : ""}${written}`;
