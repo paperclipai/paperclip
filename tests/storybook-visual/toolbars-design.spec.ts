@@ -159,10 +159,10 @@ test("routines toolbar updates search, sort, group and creation intent", async (
   const preview = await openToolbars(page, "routines");
   await preview.getByRole("textbox", { name: "Search routines", exact: true }).fill("review");
   await expect(preview.locator("output")).toContainText("Search: review");
-  await preview.getByRole("button", { name: "Sort", exact: true }).click();
+  await preview.getByRole("button", { name: "Sort routines", exact: true }).click();
   await page.getByRole("button", { name: "Title", exact: true }).click();
   await expect(preview.locator("output")).toContainText("Sort: title · Direction: asc");
-  await preview.getByRole("button", { name: "Group", exact: true }).click();
+  await preview.getByRole("button", { name: "Group routines", exact: true }).click();
   await page.getByRole("button", { name: "Agent", exact: true }).click();
   await expect(preview.locator("output")).toContainText("Group: assignee");
   await expect(preview.getByRole("button", { name: "New folder" })).toHaveCount(0);

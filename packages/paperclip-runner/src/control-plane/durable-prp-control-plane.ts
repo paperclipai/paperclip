@@ -47,6 +47,7 @@ import {
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
 import { crashPoint } from "../crash-point.js";
+import { runnerVersionCanResume } from "../contracts/runner-version.js";
 
 const protocol = "paperclip.runner";
 export const RUNNER_PRP_PROTOCOL_MIN = 1;
@@ -526,6 +527,15 @@ export function captureLegacyDurablePrpCheckpoint(contents: string, expected: {
     throw new Error("native_runner_checkpoint_artifact_unproven");
   }
   return decodeDurablePrpCheckpoint(captureCheckpoint(value, artifact.runnerVersion, artifact.runnerDigest).records);
+}
+
+export function inspectDurablePrpCheckpointRunner(contents: string): { version: string; digest: string } | null {
+  try {
+    const header = parseCheckpointHeader(contents);
+    return { version: header.runnerVersion, digest: header.runnerDigest };
+  } catch {
+    return null;
+  }
 }
 
 function parseCheckpointHeader(contents: string): Record<string, unknown> & {
@@ -2849,6 +2859,32 @@ export class DurablePrpControlPlane {
       captureCheckpoint(this.#store.state, this.#expectedRunnerVersion, this.#expectedRunnerDigest).records,
       this.#identity,
     );
+  }
+
+  acceptRelaunchedRunner(
+    bootstrapTicket: string,
+    runner: { version: string; digest: string },
+    parked: { version: string; digest: string } | null = { version: this.#expectedRunnerVersion, digest: this.#expectedRunnerDigest },
+  ): void {
+    this.#store.assertWritable();
+    const expected = runner.version === this.#expectedRunnerVersion && runner.digest === this.#expectedRunnerDigest;
+    if (!stableIdPattern.test(runner.version) || !runnerDigestPattern.test(runner.digest)
+      || (parked === null ? !expected : !runnerVersionCanResume(runner.version, parked.version))) {
+      throw new Error("native_runner_relaunched_build_unaccepted");
+    }
+    if (expected) return;
+    const credentialId = credentialMaterial(bootstrapTicket).credentialId;
+    const ticket = this.#store.state.tickets[credentialId];
+    if (this.activeRunnerConnectionCount() !== 0 || !ticket || ticket.usedAt !== null
+      || canonicalJson(ticket.identity) !== canonicalJson(this.#identity)
+      || ticket.runnerVersion !== this.#expectedRunnerVersion || ticket.runnerDigest !== this.#expectedRunnerDigest) {
+      throw new Error("native_runner_relaunched_build_unaccepted");
+    }
+    const candidate = structuredClone(this.#store.state);
+    candidate.tickets[credentialId] = { ...ticket, runnerVersion: runner.version, runnerDigest: runner.digest };
+    this.#store.commit(candidate);
+    this.#expectedRunnerVersion = runner.version;
+    this.#expectedRunnerDigest = runner.digest;
   }
 
   issueBootstrapTicket(ttlMs = 5_000): string {

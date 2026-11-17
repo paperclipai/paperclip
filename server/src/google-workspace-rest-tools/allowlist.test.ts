@@ -68,4 +68,11 @@ describe("tool allowlist", () => {
     const writes = listGoogleWorkspaceRestTools("gmail").filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name);
     expect(writes).toEqual(["create_draft"]);
   });
+
+  it("implements every allowlisted Calendar tool (9 of 9)", () => {
+    const allowlisted = ["list_calendars", "get_event", "list_events", "search_events", "suggest_time", "create_event", "update_event", "delete_event", "respond_to_event"];
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", name)), name).not.toBeNull();
+    expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", "unlisted_tool"))).toBeNull();
+    expect(listGoogleWorkspaceRestTools("calendar").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+  });
 });

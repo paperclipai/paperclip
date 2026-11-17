@@ -70,6 +70,7 @@ export type {
   ProviderTurnWaitOptions,
   ReplayControlPlaneEventsInput,
   RunnerExecutionDriver,
+  RunnerReleaseResumeOutcome,
   RunnerLaunchPreparer,
   DurableRecoveryIdentity,
   DurablePrpCheckpoint,
@@ -98,6 +99,7 @@ export const safeErrorCauseCode = runner.safeErrorCauseCode;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
+export const inspectDurablePrpCheckpointRunner = runner.inspectDurablePrpCheckpointRunner;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
 export const inspectUnauthenticatedBootstrapCheckpoint = runner.inspectUnauthenticatedBootstrapCheckpoint;
 export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;
