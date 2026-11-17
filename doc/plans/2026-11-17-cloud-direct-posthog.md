@@ -17,7 +17,7 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 | Phase 0 C: PostHog entitlements | coordinator | done: session replay available pay-as-you-go ($0 now); Group analytics add-on NOT enabled (needs Dotta; not blocking: events carry `stack_id`, and the history join uses link events, not group properties); product analytics projected $1,186 this period from 40.1M events, almost all OSS | PostHog billing page, 2026-11-17 |
 | Phase 1: server direct sender | subagent | in progress | |
 | Phase 2: browser analytics | subagent | in progress | |
-| Phase 3a: workspace-delete cleanup (paperclip-cloud) | subagent | merged b4ddeff; inert until `CLOUD_HARNESS_POSTHOG_PERSONAL_API_KEY_SECRET_REF` is set (scopes group:read, group:write, data_deletion:write; no person scopes). Limits: PostHog has no per-group delete (properties are cleared instead); event deletion uses the alpha Data Deletion API, which PostHog must enable for 483530, needs approval per request, max 5 active; no durable retry (2 in-process retries + audit record) | https://github.com/paperclipai/paperclip-cloud/pull/1603 |
+| Phase 3a: workspace-delete cleanup (paperclip-cloud) | coordinator | REVERTED by Dotta's decision (no automatic deletion): https://github.com/paperclipai/paperclip-cloud/pull/1604. It never ran. Original notes: merged b4ddeff; inert until `CLOUD_HARNESS_POSTHOG_PERSONAL_API_KEY_SECRET_REF` is set (scopes group:read, group:write, data_deletion:write; no person scopes). Limits: PostHog has no per-group delete (properties are cleared instead); event deletion uses the alpha Data Deletion API, which PostHog must enable for 483530, needs approval per request, max 5 active; no durable retry (2 in-process retries + audit record) | https://github.com/paperclipai/paperclip-cloud/pull/1603 |
 | Phase 3b: legacy link backfill script (telemetry-backend) | subagent | merged 9c9aaae (operator script, not deployed); run after Phase 1 is live on staging | https://github.com/paperclipai/telemetry-backend/pull/148 |
 | Phase 4: staging rollout + verification | coordinator | pending | |
 
@@ -41,12 +41,15 @@ environment switch is set, and the switches must be set in a safe order:
 
 Production gate (Phase 0 B): the current Terms §8 and Privacy §2 promise
 anonymized telemetry. Even the server-side token (real user IDs) must wait
-for the updated policy and terms to be live. Phase 3 also adds PostHog
-workspace-scoped PostHog cleanup to workspace deletion in `paperclip-cloud`:
-delete that workspace's group and the events tagged with its stack ID. It
-never deletes a person, because one user can belong to several workspaces.
-Person deletion happens only on account deletion, or after a check that no
-other workspace still uses that person.
+for the updated policy and terms to be live.
+
+### No automatic deletion (Dotta, 2026-11-17)
+
+PostHog data is never deleted automatically: not on workspace deletion, not
+on account deletion, and never for existing history. Deletion happens only
+explicitly and separately, when someone decides to run it for a specific
+request. The automatic workspace-delete cleanup (paperclip-cloud#1603) was
+reverted (paperclip-cloud#1604); it never ran.
 
 ## Goal
 
@@ -252,19 +255,14 @@ the collector or directly to PostHog, never both.
   `PAPERCLIP_EVENTS`, to keep one sender per event.
 - Per-workspace switch to turn off session replay, or all browser analytics,
   for customers whose contracts forbid recording.
-- Account deletion: a dedicated control-plane deletion job, with a narrowly
-  scoped PostHog key, deletes the person together with their events and
-  session recordings. Cloud has no self-serve account deletion today, so it
-  starts as an operator runbook command used for deletion requests. Verify it
-  with a test account before production. Production waits on it.
+- Deletion requests: handled explicitly and separately by a person, for that
+  specific request. Nothing in the product deletes PostHog data
+  automatically.
 - Masking and autocapture defaults never capture input values. Secret and
   credential fields are always excluded (`ph-no-capture`).
 
-### Phase 3: workspace cleanup and legacy link backfill (paperclip-cloud PR + telemetry-backend PR)
+### Phase 3: legacy link backfill (telemetry-backend PR)
 
-- paperclip-cloud: workspace deletion deletes that workspace's PostHog group
-  and the events tagged with its stack ID. It never deletes a person. It is
-  inert until a PostHog personal API key is configured in the control plane.
 - telemetry-backend: the legacy link backfill script described above, with a
   dry-run mode and a count of workspaces matched and skipped.
 - Fleet env vars are set by the coordinator during Phase 4 with fleet
@@ -320,7 +318,7 @@ the collector or directly to PostHog, never both.
 | Real IDs leak into the OSS path | Direct-path-only code branch; tests that self-hosted output stays hashed |
 | Install IDs weren't stable on Cloud | History joins through `cloud.workspace_legacy_link` events; new events use the stack ID, which is stable |
 | Customer content or pasted secrets show up in replays or autocapture | Mask all inputs and content areas by default; exclude credential fields; review sample replays before production |
-| A deletion request leaves PII behind | Email and name only on person profiles; account deletion deletes the PostHog person |
+| A deletion request leaves PII behind | Email and name only on person profiles; deletion requests are handled explicitly by a person |
 | An enterprise customer forbids recording | Per-workspace replay and analytics switch |
 | Tracing headers spoofed by a client | Used only to link to a session, never to authorize; acting user comes from the authenticated request, not the header |
 | Ad blockers drop browser events | First-party reverse proxy |
