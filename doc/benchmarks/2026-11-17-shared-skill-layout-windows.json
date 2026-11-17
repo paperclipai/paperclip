@@ -1,0 +1,152 @@
+{
+  "schema": "paperclip.shared-skill-layout-benchmark.v1",
+  "sourceRevision": "a9db65067f4f132a9a44d3d6d068a26c9f9e44e5",
+  "benchmarkScriptSha256": "849886c0e39451da35c906be398159fbed63cd5ba39cf34004aa2f41abc1acbe",
+  "platform": "win32",
+  "arch": "x64",
+  "node": "v26.12.1",
+  "fileCount": 128,
+  "repetitions": 3,
+  "repository": {
+    "files": 132,
+    "bytes": 2097512,
+    "digest": "a3a8284e2d96cd7c7ed1bd5e3ad8a57d61bc3da6a1f03f01d2a9b3289a15eea3"
+  },
+  "fixtureSetupMs": 809.1012,
+  "scope": "Provider staging and shared warm byte verification; excludes DB preparation, model latency, and OS cache eviction. Portable historical path checks are unchanged.",
+  "restoredMtimeMutationRejected": true,
+  "samples": [
+    {
+      "selected": 2,
+      "repeat": 0,
+      "layout": "portable",
+      "stagingMs": 2146.9114,
+      "warmVerificationMs": null,
+      "files": 266,
+      "bytes": 4195204,
+      "payloadCopies": 2,
+      "cleanupMs": 1585.3916
+    },
+    {
+      "selected": 2,
+      "repeat": 0,
+      "layout": "shared",
+      "stagingMs": 2919.8026999999993,
+      "warmVerificationMs": 1854.1715000000004,
+      "files": 134,
+      "bytes": 2097752,
+      "payloadCopies": 1,
+      "cleanupMs": 1328.948699999999
+    },
+    {
+      "selected": 2,
+      "repeat": 1,
+      "layout": "shared",
+      "stagingMs": 8899.076500000001,
+      "warmVerificationMs": 1129.5511000000006,
+      "files": 134,
+      "bytes": 2097752,
+      "payloadCopies": 1,
+      "cleanupMs": 315.36269999999786
+    },
+    {
+      "selected": 2,
+      "repeat": 1,
+      "layout": "portable",
+      "stagingMs": 3075.7779999999984,
+      "warmVerificationMs": null,
+      "files": 266,
+      "bytes": 4195204,
+      "payloadCopies": 2,
+      "cleanupMs": 428.16989999999714
+    },
+    {
+      "selected": 2,
+      "repeat": 2,
+      "layout": "portable",
+      "stagingMs": 1217.7757999999994,
+      "warmVerificationMs": null,
+      "files": 266,
+      "bytes": 4195204,
+      "payloadCopies": 2,
+      "cleanupMs": 411.1247000000003
+    },
+    {
+      "selected": 2,
+      "repeat": 2,
+      "layout": "shared",
+      "stagingMs": 1731.3364000000001,
+      "warmVerificationMs": 138.22910000000047,
+      "files": 134,
+      "bytes": 2097752,
+      "payloadCopies": 1,
+      "cleanupMs": 173.87259999999878
+    },
+    {
+      "selected": 4,
+      "repeat": 0,
+      "layout": "portable",
+      "stagingMs": 1260.7759000000005,
+      "warmVerificationMs": null,
+      "files": 532,
+      "bytes": 8390408,
+      "payloadCopies": 4,
+      "cleanupMs": 994.2064000000028
+    },
+    {
+      "selected": 4,
+      "repeat": 0,
+      "layout": "shared",
+      "stagingMs": 1347.3142999999982,
+      "warmVerificationMs": 222.39199999999983,
+      "files": 136,
+      "bytes": 2097992,
+      "payloadCopies": 1,
+      "cleanupMs": 216.0098999999973
+    },
+    {
+      "selected": 4,
+      "repeat": 1,
+      "layout": "shared",
+      "stagingMs": 1186.7793999999994,
+      "warmVerificationMs": 507.0077999999994,
+      "files": 136,
+      "bytes": 2097992,
+      "payloadCopies": 1,
+      "cleanupMs": 225.74700000000303
+    },
+    {
+      "selected": 4,
+      "repeat": 1,
+      "layout": "portable",
+      "stagingMs": 2427.5850999999966,
+      "warmVerificationMs": null,
+      "files": 532,
+      "bytes": 8390408,
+      "payloadCopies": 4,
+      "cleanupMs": 1153.102700000003
+    },
+    {
+      "selected": 4,
+      "repeat": 2,
+      "layout": "portable",
+      "stagingMs": 1693.368300000002,
+      "warmVerificationMs": null,
+      "files": 532,
+      "bytes": 8390408,
+      "payloadCopies": 4,
+      "cleanupMs": 1129.8398000000016
+    },
+    {
+      "selected": 4,
+      "repeat": 2,
+      "layout": "shared",
+      "stagingMs": 1558.6138999999966,
+      "warmVerificationMs": 198.43679999999586,
+      "files": 136,
+      "bytes": 2097992,
+      "payloadCopies": 1,
+      "cleanupMs": 211.81809999999678
+    }
+  ]
+}
