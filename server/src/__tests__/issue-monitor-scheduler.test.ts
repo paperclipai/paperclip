@@ -447,6 +447,28 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(actions).toContain("issue.monitor_exhausted");
   });
 
+  it("does not apply the ten-fire fallback to a monitor with its own maxAttempts", async () => {
+    const { issueId, agentId, nextCheckAt } = await seedFixture({
+      monitor: { maxAttempts: 100, recoveryPolicy: "escalate_to_board" },
+    });
+    await holdMonitorWakes(agentId);
+    const heartbeat = heartbeatService(db);
+
+    let dueAt = new Date(nextCheckAt.getTime() + 60_000);
+    for (let fire = 0; fire < 11; fire += 1) {
+      await heartbeat.tickTimers(dueAt);
+      const issue = await readIssue(issueId);
+      expect(issue.monitorNextCheckAt).not.toBeNull();
+      dueAt = issue.monitorNextCheckAt!;
+    }
+    const issue = await readIssue(issueId);
+    expect(issue.monitorAttemptCount).toBe(11);
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({ status: "scheduled" });
+    const actions = await issueActions(issueId);
+    expect(actions.filter((action) => action === "issue.monitor_deferred")).toHaveLength(11);
+    expect(actions).not.toContain("issue.monitor_exhausted");
+  });
+
   it("clamps the held-fire backoff to timeoutAt and then clears the monitor as timed out", async () => {
     const timeoutAt = new Date("2026-04-11T12:31:30.000Z");
     const { issueId, agentId } = await seedFixture({

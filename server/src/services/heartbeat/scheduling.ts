@@ -754,7 +754,7 @@ export function createHeartbeatScheduling(
       monitor,
       nextAttemptCount,
       now: input.now,
-    }) ?? (input.activitySource === "scheduled" &&
+    }) ?? (input.activitySource === "scheduled" && !monitor?.maxAttempts && !monitor?.timeoutAt &&
       issueMonitorDeferredCount(claimed) >= ISSUE_MONITOR_MAX_DEFERRED_FIRES
       ? "dispatch_deferred_exhausted" as const
       : null);
