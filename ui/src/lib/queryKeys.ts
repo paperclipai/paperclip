@@ -74,6 +74,8 @@ export const queryKeys = {
       ["tools", "connection", connectionId, "grants"] as const,
     connectionStoredContent: (connectionId: string) =>
       ["tools", "connection", connectionId, "stored-content"] as const,
+    connectionStoredContentDeletion: (connectionId: string) =>
+      ["tools", "connection", connectionId, "stored-content", "deletion"] as const,
     catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
     connectionActivity: (connectionId: string) =>
       ["tools", "connection", connectionId, "activity"] as const,

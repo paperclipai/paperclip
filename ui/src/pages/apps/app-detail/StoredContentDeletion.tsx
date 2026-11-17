@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import type { ToolConnectionStoredContent } from "@paperclipai/shared";
@@ -24,11 +24,16 @@ function plural(count: number, one: string, many: string) {
 }
 
 export function storedContentSummary(content: ToolConnectionStoredContent, appName: string): string {
-  const { toolCalls, runs } = content.stored;
-  if (toolCalls === 0) return `Paperclip has no saved results from ${appName}'s tool calls.`;
-  return runs > 0
-    ? `Paperclip will delete what it saved from ${plural(toolCalls, "tool call", "tool calls")} and the full transcripts of ${plural(runs, "run", "runs")} that used ${appName}.`
-    : `Paperclip will delete what it saved from ${plural(toolCalls, "tool call", "tool calls")} to ${appName}.`;
+  const { toolCalls, approvals, appViews, runs } = content.stored;
+  const parts = [
+    toolCalls > 0 ? plural(toolCalls, "tool call", "tool calls") : null,
+    approvals > 0 ? plural(approvals, "approval request", "approval requests") : null,
+    appViews > 0 ? plural(appViews, "app view", "app views") : null,
+    runs > 0 ? `the full transcripts of ${plural(runs, "run", "runs")}` : null,
+  ].filter((part): part is string => part !== null);
+  if (parts.length === 0) return `Paperclip found no saved data from ${appName}'s tool calls. You can still delete to check again.`;
+  const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+  return `Paperclip will delete what it saved from ${list} that used ${appName}.`;
 }
 
 export function storedContentStatus(content: ToolConnectionStoredContent): string | null {
@@ -78,21 +83,43 @@ export function StoredContentDeletionDialog({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const countsKey = queryKeys.tools.connectionStoredContent(connectionId);
+  const statusKey = queryKeys.tools.connectionStoredContentDeletion(connectionId);
   const query = useQuery({
-    queryKey: queryKeys.tools.connectionStoredContent(connectionId),
+    queryKey: countsKey,
     queryFn: () => toolsApi.getStoredContent(connectionId),
-    refetchInterval: (current) => current.state.data?.deletion?.status === "pending" ? 2_000 : false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
+  const [tracking, setTracking] = useState(false);
+  const watching = tracking || query.data?.deletion?.status === "pending";
+  const statusQuery = useQuery({
+    queryKey: statusKey,
+    queryFn: () => toolsApi.getStoredContentDeletion(connectionId),
+    enabled: watching,
+    refetchInterval: (current) => current.state.data?.deletion?.status === "completed" ? false : 2_000,
+  });
+  const latest = statusQuery.data?.deletion ?? query.data?.deletion ?? null;
+  const refreshedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!watching || latest?.status !== "completed" || refreshedFor.current === latest.id) return;
+    refreshedFor.current = latest.id;
+    setTracking(false);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.tools.connectionStoredContent(connectionId) });
+  }, [watching, latest?.status, latest?.id, queryClient, connectionId]);
   const deletion = useMutation({
     mutationFn: () => toolsApi.deleteStoredContent(connectionId),
-    onSuccess: (content) => {
-      queryClient.setQueryData(queryKeys.tools.connectionStoredContent(connectionId), content);
+    onSuccess: (result) => {
+      queryClient.setQueryData(statusKey, result);
+      setTracking(true);
     },
     onError: (error) => pushToast({ title: "Couldn't delete the data", body: describeError(error).body, tone: "error" }),
   });
-  const content = query.data;
-  const pending = deletion.isPending || content?.deletion?.status === "pending";
-  const nothingStored = content ? content.stored.toolCalls === 0 : true;
+  const content = query.data ? { ...query.data, deletion: latest } : undefined;
+  const pending = deletion.isPending || latest?.status === "pending";
+  const nothingStored = content
+    ? content.stored.toolCalls + content.stored.approvals + content.stored.appViews + content.stored.runs === 0
+    : true;
   const inProgress = content?.stored.runsInProgress ?? 0;
   const status = content ? storedContentStatus(content) : null;
 
@@ -124,8 +151,8 @@ export function StoredContentDeletionDialog({
           </p>
         ) : null}
         <AlertDialogFooter>
-          <AlertDialogCancel autoFocus>{pending || nothingStored ? "Close" : "Cancel"}</AlertDialogCancel>
-          {!nothingStored ? (
+          <AlertDialogCancel autoFocus>{pending ? "Close" : "Cancel"}</AlertDialogCancel>
+          {content ? (
             <AlertDialogAction
               className={buttonVariants({ variant: "destructive" })}
               disabled={pending || !content}

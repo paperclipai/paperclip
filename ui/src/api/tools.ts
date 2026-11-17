@@ -438,7 +438,9 @@ export const toolsApi = {
   getStoredContent: (connectionId: string) =>
     api.get<ToolConnectionStoredContent>(`/tool-connections/${connectionId}/stored-content`),
   deleteStoredContent: (connectionId: string) =>
-    api.post<ToolConnectionStoredContent>(`/tool-connections/${connectionId}/stored-content/deletion`, {}),
+    api.post<{ deletion: ToolConnectionContentDeletion }>(`/tool-connections/${connectionId}/stored-content/deletion`, {}),
+  getStoredContentDeletion: (connectionId: string) =>
+    api.get<{ deletion: ToolConnectionContentDeletion | null }>(`/tool-connections/${connectionId}/stored-content/deletion`),
   checkConnectionHealth: (connectionId: string) =>
     api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/health-check`, {}),
   reconnectConnection: (connectionId: string, credentialValues: Record<string, string>) =>

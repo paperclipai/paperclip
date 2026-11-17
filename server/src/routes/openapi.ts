@@ -12596,6 +12596,15 @@ registerCurrentRoute({
   responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Read the status of the latest stored-content deletion for a connection",
+});
+
 const MACHINE_SIGN_IN_ERRORS = {
   400: r.badRequest,
   401: r.unauthorized,

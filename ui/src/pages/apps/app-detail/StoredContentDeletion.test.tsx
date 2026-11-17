@@ -8,6 +8,7 @@ import type { ToolConnectionStoredContent } from "@paperclipai/shared";
 
 const api = vi.hoisted(() => ({
   getStoredContent: vi.fn(),
+  getStoredContentDeletion: vi.fn(),
   deleteStoredContent: vi.fn(),
 }));
 vi.mock("@/api/tools", () => ({ toolsApi: api }));
@@ -20,7 +21,7 @@ import { StoredContentDeletionDialog, storedContentStatus, storedContentSummary 
 
 const counts = { toolCalls: 0, approvals: 0, auditEvents: 0, appViews: 0, runs: 0, runsInProgress: 0, itemsInProgress: 0 };
 const stored: ToolConnectionStoredContent = {
-  stored: { toolCalls: 12, runs: 3, runsInProgress: 1 },
+  stored: { toolCalls: 12, approvals: 2, appViews: 0, runs: 3, runsInProgress: 1 },
   deletion: null,
 };
 
@@ -38,20 +39,21 @@ async function flush() {
 describe("stored content deletion", () => {
   it("describes how much will be deleted in plain words", () => {
     expect(storedContentSummary(stored, "Google Workspace")).toBe(
-      "Paperclip will delete what it saved from 12 tool calls and the full transcripts of 3 runs that used Google Workspace.",
+      "Paperclip will delete what it saved from 12 tool calls, 2 approval requests and the full transcripts of 3 runs that used Google Workspace.",
     );
-    expect(storedContentSummary({ ...stored, stored: { toolCalls: 0, runs: 0, runsInProgress: 0 } }, "Docs"))
-      .toBe("Paperclip has no saved results from Docs's tool calls.");
+    expect(storedContentSummary({ ...stored, stored: { toolCalls: 0, approvals: 0, appViews: 1, runs: 0, runsInProgress: 0 } }, "Docs"))
+      .toBe("Paperclip will delete what it saved from 1 app view that used Docs.");
+    expect(storedContentSummary({ ...stored, stored: { toolCalls: 0, approvals: 0, appViews: 0, runs: 0, runsInProgress: 0 } }, "Docs"))
+      .toBe("Paperclip found no saved data from Docs's tool calls. You can still delete to check again.");
     expect(storedContentStatus({ ...stored, deletion: { id: "d", status: "pending", requestedAt: "", completedAt: null, retrying: true, counts } }))
       .toBe("Deleting was interrupted. Paperclip keeps trying until it finishes.");
   });
 
   it("confirms with counts, warns about running work, and starts the deletion", async () => {
     api.getStoredContent.mockResolvedValue(stored);
-    api.deleteStoredContent.mockResolvedValue({
-      ...stored,
-      deletion: { id: "d", status: "pending", requestedAt: new Date().toISOString(), completedAt: null, retrying: false, counts },
-    });
+    const pendingDeletion = { id: "d", status: "pending" as const, requestedAt: new Date().toISOString(), completedAt: null, retrying: false, counts };
+    api.deleteStoredContent.mockResolvedValue({ deletion: pendingDeletion });
+    api.getStoredContentDeletion.mockResolvedValue({ deletion: pendingDeletion });
     container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -76,6 +78,7 @@ describe("stored content deletion", () => {
     await flush();
     expect(api.deleteStoredContent).toHaveBeenCalledWith("connection-1");
     expect(document.body.textContent).toContain("Deleting now. You can close this window.");
+    expect(api.getStoredContent).toHaveBeenCalledTimes(1);
     await act(async () => { root.unmount(); });
   });
 });

@@ -2427,7 +2427,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
         action: "tool_connection.content_deletion_requested",
         entityType: "tool_connection",
         entityId: connection.id,
-        details: { toolCalls: stored.toolCalls, runs: stored.runs, runsInProgress: stored.runsInProgress },
+        details: { ...stored },
       });
     }
     return deletion;
@@ -2446,8 +2446,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     await assertToolConnectionConfigureAccess(req, existing);
-    await requestStoredContentDeletion(req, existing);
-    res.status(202).json(await contentDeletion.storedContent(existing));
+    res.status(202).json({ deletion: await requestStoredContentDeletion(req, existing) });
+  });
+
+  router.get("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "GET /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json({ deletion: await contentDeletion.latestDeletion(existing) });
   });
 
   router.post("/tool-connections/:connectionId/health-check", managementGuard("connections:configure", "POST /tool-connections/:connectionId/health-check", { personal: true }), async (req, res) => {

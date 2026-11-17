@@ -436,6 +436,8 @@ export interface ToolConnectionRemovalResult {
 
 export interface ToolConnectionStoredContentCounts {
   toolCalls: number;
+  approvals: number;
+  appViews: number;
   runs: number;
   runsInProgress: number;
 }
