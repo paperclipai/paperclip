@@ -4,14 +4,16 @@ import { GoogleWorkspaceAuthError } from "./errors.js";
 import { CALENDAR_TOOLS } from "./calendar/index.js";
 import { GMAIL_TOOLS } from "./gmail/index.js";
 import { createGoogleHttp, type GoogleFetch } from "./google-http.js";
+import { SHEETS_TOOLS } from "./sheets/index.js";
 import type { RestTool } from "./tool.js";
 
-export const GOOGLE_WORKSPACE_REST_SERVICES = ["gmail", "calendar"] as const;
+export const GOOGLE_WORKSPACE_REST_SERVICES = ["gmail", "calendar", "sheets"] as const;
 export type GoogleWorkspaceRestService = (typeof GOOGLE_WORKSPACE_REST_SERVICES)[number];
 
 const TOOLS: Record<GoogleWorkspaceRestService, readonly RestTool[]> = {
   gmail: GMAIL_TOOLS,
   calendar: CALENDAR_TOOLS,
+  sheets: SHEETS_TOOLS,
 };
 
 export function isGoogleWorkspaceRestService(value: string): value is GoogleWorkspaceRestService {
