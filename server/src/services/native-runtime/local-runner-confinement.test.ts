@@ -75,6 +75,10 @@ describe("serverInstallationRoot", () => {
       mkdirSync(join(base, "repo", "server", "dist"), { recursive: true });
       mkdirSync(join(base, "repo", ".git"));
       expect(serverInstallationRoot(join(base, "repo", "server", "dist", "index.js"), "/home/u")).toBeNull();
+      // An install inside another project's checkout is still an install.
+      mkdirSync(join(base, "project", ".git"), { recursive: true });
+      expect(serverInstallationRoot(join(base, "project", "node_modules", "paperclipai", "dist", "index.js"), "/home/u"))
+        .toBe(join(base, "project", "node_modules", "paperclipai"));
       // Never the home directory.
       expect(serverInstallationRoot(join(base, "app", "server", "dist-runtime", "index.mjs"), join(base, "app"))).toBeNull();
     } finally {

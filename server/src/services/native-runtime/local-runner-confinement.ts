@@ -80,10 +80,15 @@ export function serverInstallationRoot(moduleFile: string = fileURLToPath(import
     }
   }
   if (!root) return null;
-  // A Git checkout (its .git may sit above the server package, as in the monorepo) stays writable.
-  for (let directory = dirname(resolve(moduleFile)); ; directory = dirname(directory)) {
-    if (existsSync(join(directory, ".git"))) return null;
-    if (directory === parse(directory).root) break;
+  // Outside node_modules the server runs from its own files: a Git checkout
+  // there (its .git may sit above the server package, as in the monorepo) is
+  // Paperclip source and stays writable. A package under node_modules is an
+  // install even inside another project's checkout.
+  if (packages <= 0) {
+    for (let directory = dirname(resolve(moduleFile)); ; directory = dirname(directory)) {
+      if (existsSync(join(directory, ".git"))) return null;
+      if (directory === parse(directory).root) break;
+    }
   }
   const resolvedHome = resolve(home);
   if (root === parse(root).root || resolvedHome === root || resolvedHome.startsWith(`${root}${sep}`)) return null;
