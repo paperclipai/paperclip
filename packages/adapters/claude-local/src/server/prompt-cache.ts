@@ -172,3 +172,34 @@ export async function prepareClaudePromptBundle(input: {
     instructionsFilePath,
   };
 }
+
+/**
+ * Managed AI connections start Claude with `--setting-sources user` so a
+ * workspace `.claude/settings.json` can't override the managed credential.
+ * That also drops project-scope skills, which includes everything under the
+ * prompt bundle's `--add-dir`, so `Skill()` answers "Unknown skill" for every
+ * enabled company skill. The managed `CLAUDE_CONFIG_DIR` is a disposable,
+ * per-run home, so link the same skills into its `skills/` folder, which
+ * Claude loads as user-scope skills.
+ */
+export async function linkClaudeSkillsIntoConfigDir(input: {
+  configDir: string;
+  skills: SkillEntry[];
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const { configDir, skills, onLog } = input;
+  if (skills.length === 0) return;
+  const skillsHome = path.join(configDir, "skills");
+  await fs.mkdir(skillsHome, { recursive: true });
+  for (const entry of skills) {
+    const target = path.join(skillsHome, entry.runtimeName);
+    try {
+      await ensurePaperclipSkillSymlink(entry.source, target);
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to link Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+}
