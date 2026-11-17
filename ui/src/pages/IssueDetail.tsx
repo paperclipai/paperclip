@@ -1,4 +1,5 @@
 import { createUuid } from "@/lib/uuid";
+import { invalidateInteractionRecordViews } from "@/lib/attention-record-views";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
@@ -4570,6 +4571,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const upsertInteractionInCache = useCallback(
     (interaction: IssueThreadInteraction) => {
+      invalidateInteractionRecordViews(queryClient, interaction.companyId, interaction);
       queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
         queryKeys.issues.interactions(issueId!),
         (current) => {
@@ -4587,9 +4589,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           return next;
         },
       );
-      queryClient.invalidateQueries({ queryKey: ["issues", "pending-questions"] });
-      queryClient.invalidateQueries({ queryKey: ["issues", "decision-receipts"] });
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention(interaction.companyId) });
     },
     [issueId, queryClient],
   );
