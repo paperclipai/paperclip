@@ -35,10 +35,17 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
     }
     return keys;
   }, [policies, connectionId]);
-  const toolsByProfileId = useMemo(() => new Map(grants.map(profile => {
-    const ids = new Set(profile.entries.filter(entry => entry.effect === "include").map(entry => entry.catalogEntryId));
-    return [profile.id, catalog.filter(tool => ids.has(tool.id))];
-  })), [grants, catalog]);
+  const toolsByProfileId = useMemo(() => {
+    const byId = new Map(catalog.map((tool, index) => [tool.id, { tool, index }]));
+    return new Map(grants.map(profile => {
+      const ids = new Set(profile.entries.filter(entry => entry.effect === "include").map(entry => entry.catalogEntryId));
+      const tools = [...ids].flatMap(id => {
+        const entry = id ? byId.get(id) : undefined;
+        return entry ? [entry] : [];
+      }).sort((a, b) => a.index - b.index).map(entry => entry.tool);
+      return [profile.id, tools];
+    }));
+  }, [grants, catalog]);
   if (grants.length === 0) return null;
 
   async function remove(profileId: string) {

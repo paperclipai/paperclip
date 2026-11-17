@@ -253,6 +253,7 @@ export function ActionsSection({
   const visibleCount = visibleRead.length + visibleWrite.length;
 
   return (
+    <TooltipProvider>
     <section className="space-y-6 border-t border-border pt-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-foreground">Actions</h2>
@@ -346,6 +347,7 @@ export function ActionsSection({
         </div>
       )}
     </section>
+    </TooltipProvider>
   );
 }
 
@@ -539,7 +541,6 @@ const ActionRow = memo(function ActionRow({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {canConfigure ? (
-            <TooltipProvider>
               <div
                 role="radiogroup"
                 aria-label={`${title} permission`}
@@ -575,7 +576,6 @@ const ActionRow = memo(function ActionRow({
                 );
               })}
               </div>
-            </TooltipProvider>
           ) : (
             <span className="text-sm text-muted-foreground">
               {PERMISSION_OPTIONS.find((option) => option.value === value)?.label}
