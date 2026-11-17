@@ -425,6 +425,13 @@ earliest first; working hours and out-of-office settings are not read.
 
 ### Differences from Google's Calendar MCP tools
 
+- **`update_event` is annotated `destructiveHint: true`** (deliberate). It
+  overwrites fields, can remove attendees and replaces reminders, so
+  approval and confirmation in Paperclip must treat it as destructive.
+  Google's reference marks it non-destructive. It stays `idempotentHint:
+  true`: the same patch applied twice leaves the event the same.
+  `respond_to_event` stays non-destructive (it changes only the user's own
+  response). `allowlist.test.ts` checks the write tools' annotations.
 - **Time zone when none is given.** Google says its server resolves the
   user's time zone. Here it is the target calendar's time zone (the primary
   calendar for `suggest_time`), read from `events.list`, since the user

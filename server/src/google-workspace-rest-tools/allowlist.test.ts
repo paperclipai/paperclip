@@ -95,6 +95,18 @@ describe("tool allowlist", () => {
     });
   });
 
+  it("marks the Calendar tools that overwrite or remove data destructive", () => {
+    const annotations = Object.fromEntries(listGoogleWorkspaceRestTools("calendar")
+      .filter((tool) => tool.annotations?.readOnlyHint !== true)
+      .map((tool) => [tool.name, tool.annotations]));
+    expect(annotations).toEqual({
+      create_event: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      update_event: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      delete_event: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      respond_to_event: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    });
+  });
+
   it("adds no create, delete, share or permission tool for Docs or Slides", () => {
     const names = (["docs", "slides"] as const).flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
     expect(names.filter((name) => /create|delete|share|permission|copy|trash/i.test(name))).toEqual([]);
