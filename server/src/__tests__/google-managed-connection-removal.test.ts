@@ -480,6 +480,90 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
   });
 
+  async function signInAgain(fixture: Awaited<ReturnType<typeof connectManagedGmail>>, refreshToken: string) {
+    const actor = { actorType: "user" as const, actorId: fixture.userId };
+    const started = await fixture.service.startOAuth(fixture.company.id, fixture.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
+    });
+    const claimed = await fixture.connector.claim({ subject: fixture.userId });
+    fixture.connector.claim.mockResolvedValueOnce({ ...claimed, refreshToken });
+    return () => fixture.service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: `again-${randomUUID()}`, actor,
+    });
+  }
+
+  it("keeps the new token when the user signs in again while Paperclip Cloud answers a grant removal", async () => {
+    const fixture = await connectManagedGmail();
+    let finishSignIn: (() => Promise<unknown>) | null = null;
+    fixture.connector.revoke.mockImplementation(async () => {
+      await finishSignIn!();
+      return { outcome: "revoked" };
+    });
+    finishSignIn = await signInAgain(fixture, "fresh-refresh-token-do-not-log");
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    const [grantRow] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grantRow!.status).toBe("active");
+    fixture.connector.refresh.mockClear();
+    await fixture.service.refreshOAuthGrantCredentials({
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, forceRefresh: true,
+      actor: { actorType: "user", actorId: fixture.userId },
+    });
+    expect(fixture.connector.refresh).toHaveBeenCalledWith(expect.objectContaining({ refreshToken: "fresh-refresh-token-do-not-log" }));
+  });
+
+  it("refuses a sign-in for a connection that was removed while Paperclip Cloud answered", async () => {
+    const fixture = await connectManagedGmail();
+    const finishSignIn = await signInAgain(fixture, "late-refresh-token-do-not-log");
+    let lateSignIn: unknown = null;
+    fixture.connector.revoke.mockImplementation(async () => {
+      lateSignIn = await finishSignIn().then(() => "completed", () => "refused");
+      return { outcome: "revoked" };
+    });
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
+    expect(lateSignIn).toBe("refused");
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
+  });
+
+  it("sends the new token of a grant that was signed in again after an owed revocation", async () => {
+    const fixture = await connectManagedGmail();
+    await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() }).where(eq(connectionGrants.id, fixture.grant.id));
+    await (await signInAgain(fixture, "renewed-refresh-token-do-not-log"))();
+    const [grantRow] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grantRow!.status).toBe("active");
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: "renewed-refresh-token-do-not-log" }));
+  });
+
+  it.each(["the grant is signed in again", "the token is replaced"] as const)("keeps the refresh token when %s while Paperclip Cloud answers", async (race) => {
+    const fixture = await connectManagedGmail();
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    fixture.connector.revoke.mockImplementation(async () => {
+      if (race === "the grant is signed in again") {
+        await db.update(connectionGrants).set({ status: "active", revokedAt: null }).where(eq(connectionGrants.id, fixture.grant.id));
+      } else {
+        const [row] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+        await db.update(companySecrets).set({ latestVersion: row!.latestVersion + 1 }).where(eq(companySecrets.id, refreshSecretId));
+      }
+      return { outcome: "revoked" };
+    });
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    const [refresh] = await db.select({ id: companySecrets.id }).from(companySecrets).where(and(eq(companySecrets.id, refreshSecretId), isNull(companySecrets.deletedAt)));
+    expect(refresh).toBeTruthy();
+  });
+
   it("neither ends access at Google nor deletes the token when revoking an organization grant the connection still uses", async () => {
     const fixture = await connectManagedGmail("organization");
     const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;

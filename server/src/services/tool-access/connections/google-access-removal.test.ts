@@ -11,14 +11,23 @@ import { logger } from "../../../middleware/logger.js";
 const companyId = "company-1";
 
 function fakeDb(rows: { grants?: unknown[]; connections?: unknown[] } = {}) {
-  return {
+  const answer = (columns: Record<string, unknown>) => ("secretRefs" in columns ? rows.connections ?? []
+    : "refs" in columns ? rows.grants ?? []
+      : "latestVersion" in columns ? [{ latestVersion: 1 }]
+        : "status" in columns ? [{ status: "revoked" }] : []);
+  const db: Record<string, unknown> = {
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
     select: vi.fn((columns: Record<string, unknown>) => ({
       from: () => ({
-        where: async () => ("secretRefs" in columns ? rows.connections ?? [] : "refs" in columns ? rows.grants ?? [] : []),
+        where: () => {
+          const result = Promise.resolve(answer(columns));
+          return Object.assign(result, { for: () => result });
+        },
       }),
     })),
-  } as unknown as Db;
+  };
+  db.transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run(db));
+  return db as unknown as Db;
 }
 
 const scope = () => ({ removingConnection: true, removeSecret: vi.fn(async () => true) });
@@ -67,7 +76,7 @@ describe("managed Google access removal", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     resolveConnectionGrantSecret.mockReset();
-    resolveConnectionGrantSecret.mockImplementation(async (_db, _connection, _grant, ref: { secretId: string }) => ({ value: `token-for-${ref.secretId}` }));
+    resolveConnectionGrantSecret.mockImplementation(async (_db, _connection, _grant, ref: { secretId: string }) => ({ value: `token-for-${ref.secretId}`, latestVersion: 1 }));
   });
 
   it("revokes per-user, per-agent and organization grants each under the subject that consented", async () => {

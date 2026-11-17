@@ -261,7 +261,17 @@ and never changes the local outcome. A failure anywhere in the teardown makes
 no broker call and leaves the token in place.
 
 Order for removing one grant: read the token, commit the grant revocation,
-call the broker, then delete the grant's refresh-token secret. An organization
+call the broker, then delete the grant's refresh-token secret.
+
+Deletion is compare-and-delete: in one transaction that locks the grant row
+(the lock the managed sign-in callback takes before it writes a token) and the
+secret row, the secret is deleted only if the grant is still revoked and the
+secret still has the `latestVersion` that was read. A sign-in that finishes
+during the broker call re-activates the grant and writes a new version, so its
+token is kept, and a later removal sends that new token. During a whole-
+connection removal a sign-in cannot complete after the teardown: the teardown
+deletes the connection's OAuth states, and the callback must consume its state
+in its own transaction. An organization
 grant shares its secrets with the connection's own credential (the shared
 sign-in writes the same refs to both), so revoking it alone neither calls the
 broker nor deletes the secret; removing the connection does both. The same
