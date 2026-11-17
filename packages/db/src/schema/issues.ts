@@ -75,6 +75,7 @@ export const issues = pgTable(
     billingCode: text("billing_code"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     difficultyRouting: jsonb("difficulty_routing").$type<Record<string, unknown>>(),
+    assignmentRouting: jsonb("assignment_routing").$type<Record<string, unknown>>(),
     executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
     executionState: jsonb("execution_state").$type<Record<string, unknown>>(),
     monitorNextCheckAt: timestamp("monitor_next_check_at", { withTimezone: true }),

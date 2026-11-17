@@ -3410,6 +3410,13 @@
       "when": 1794822752369,
       "tag": "0488_issue_difficulty_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 489,
+      "version": "7",
+      "when": 1794880756550,
+      "tag": "0489_issue_assignment_routing",
+      "breakpoints": true
     }
   ]
 }

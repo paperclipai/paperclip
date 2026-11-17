@@ -57,6 +57,7 @@ import { agentObservabilityRoutes } from "./routes/agent-observability.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { taskWorkspaceRoutes } from "./routes/task-workspaces.js";
 import { issueDifficultyRoutingRoutes } from "./routes/issue-difficulty-routing.js";
+import { issueAutoAssignmentRoutes } from "./routes/issue-auto-assignment.js";
 import { projectToolRoutes } from "./routes/project-tools.js";
 import { emailChannelService } from "./services/email-channels.js";
 import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
@@ -831,6 +832,7 @@ export async function createApp(
   api.use(projectToolRoutes(db));
   api.use(taskWorkspaceRoutes(db));
   api.use(issueDifficultyRoutingRoutes(db));
+  api.use(issueAutoAssignmentRoutes(db, connectionIntentHeartbeat));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
   api.use(caseHandoffRoutes(db));

@@ -132,6 +132,31 @@ describePostgres("heartbeat provider usage limit wait", () => {
     expect(resumed.status).toBe("succeeded");
   }, 60_000);
 
+  it("moves an automatically assigned task to the next candidate instead of waiting", async () => {
+    const f = await seed([rateLimited(16)]);
+    const nextAgentId = randomUUID();
+    await db.update(agents).set({ runtimeConfig: { autoAssignment: { enabled: true, capabilities: [], quality: 5 } } }).where(eq(agents.id, f.agentId));
+    await db.insert(agents).values({ id: nextAgentId, companyId: f.companyId, name: "Next agent", adapterType, status: "idle", adapterConfig: {},
+      runtimeConfig: { autoAssignment: { enabled: true, capabilities: [], quality: 1 } } });
+    await db.update(issues).set({ assignmentRouting: {
+      mode: "auto", status: "assigned", strategy: "quality", requiredCapabilities: [], tier: null, selectedAgentId: f.agentId,
+      candidates: [], decidedAt: new Date().toISOString(), fallback: null,
+    } }).where(eq(issues.id, f.issueId));
+    const finished = await wake(f);
+    expect(dispatched.has(finished.id)).toBe(false);
+    expect(finished).toMatchObject({ status: "cancelled", errorCode: "auto_assignment_fallback" });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(issue).toMatchObject({ assigneeAgentId: nextAgentId,
+      assignmentRouting: { selectedAgentId: nextAgentId, fallback: { fromAgentId: f.agentId } } });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const nextRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, nextAgentId));
+    expect(nextRuns.some(run => dispatched.has(run.id))).toBe(true);
+    // The first agent keeps no retry: the task now belongs to the next candidate.
+    const firstRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
+    expect(firstRuns.some(run => run.status === "scheduled_retry")).toBe(false);
+  }, 60_000);
+
   it("releases the task when its retry cannot be scheduled, even if diagnostics fail", async () => {
     const f = await seed([rateLimited(16)]);
     const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));

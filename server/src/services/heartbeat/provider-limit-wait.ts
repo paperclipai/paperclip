@@ -21,13 +21,18 @@ export interface ProviderLimitWaitDependencies {
   }) => Promise<{ outcome: string }>;
   releaseIssueExecutionAndPromote: (run: HeartbeatRun) => Promise<unknown>;
   finalizeAgentStatus: (agentId: string, outcome: "cancelled") => Promise<unknown>;
+  /** Moves an automatically assigned task to its next candidate instead of waiting. */
+  autoAssignmentFallback?: {
+    eligible: (input: { companyId: string; issueId: string; agentId: string }) => Promise<boolean>;
+    move: (input: { companyId: string; issueId: string; agentId: string; resetAt: string }) => Promise<boolean>;
+  };
 }
 
 /** Holds new work while the agent's provider account is out of allowance. */
 export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependencies) {
   const {
     setRunStatusIfRunning, setWakeupStatus, appendRunEvent, scheduleBoundedRetryForRun,
-    releaseIssueExecutionAndPromote, finalizeAgentStatus,
+    releaseIssueExecutionAndPromote, finalizeAgentStatus, autoAssignmentFallback,
   } = deps;
 
   /**
@@ -58,6 +63,80 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     const message = `The provider usage limit for this agent is expected to reset at ${resetAt}${
       cooldown.resetReported ? "" : " (no reset time was reported, so Paperclip waits one hour)"
     }. Paperclip will start this work then.`;
+    const holdUntilReset = async (deferred: HeartbeatRun) => {
+      // The cancellation is committed. From here the wake must either gain its
+      // retry or release its task lock; diagnostics never decide that.
+      let scheduled = false;
+      try {
+        // Scheduling is idempotent per source run, so one more attempt is safe.
+        for (let attempt = 1; attempt <= 2 && !scheduled; attempt += 1) {
+          try {
+            // Each wait is one retry at the reset; evidence expires within a day.
+            const retry = await scheduleBoundedRetryForRun(deferred, agent, {
+              now, retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "provider_limit_retry",
+              maxAttempts: (run.scheduledRetryAttempt ?? 0) + 1,
+              delayMs: Math.max(1000, cooldown.resetAt.getTime() - now.getTime() + 1000),
+            });
+            scheduled = retry.outcome === "scheduled";
+            if (!scheduled) break;
+          } catch (err) {
+            logger.warn({ err, runId: run.id, attempt }, "failed to schedule the provider limit retry");
+          }
+        }
+        await appendRunEvent(deferred, {
+          eventType: "lifecycle", stream: "system", level: "warn",
+          message: scheduled
+            ? `Waiting for the provider usage limit to reset at ${resetAt} before starting work`
+            : `The provider usage limit resets at ${resetAt}; this wake could not schedule its retry and released the task`,
+          payload: { resetAt, resetReported: cooldown.resetReported, category: cooldown.category, sourceRunId: cooldown.sourceRunId, retryScheduled: scheduled },
+        }).catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to record the provider limit wait"));
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: message })
+          .catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to settle the provider limit wakeup"));
+      } finally {
+        try {
+          if (!scheduled) await releaseIssueExecutionAndPromote(deferred);
+        } finally {
+          await finalizeAgentStatus(run.agentId, "cancelled");
+        }
+      }
+    };
+    const issueId = typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null;
+    const fallbackTarget = issueId ? { companyId: run.companyId, issueId, agentId: run.agentId } : null;
+    if (autoAssignmentFallback && fallbackTarget && await autoAssignmentFallback.eligible(fallbackTarget).catch(() => false)) {
+      const cancelledForFallback = await setRunStatusIfRunning(run.id, "cancelled", {
+        error: `${message} The task was auto-assigned, so Paperclip offers it to the next candidate.`,
+        errorCode: "auto_assignment_fallback", finishedAt: now,
+        resultJson: {
+          executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false },
+          cancellation: {
+            source: "control_plane", expected: true, initiator: { type: "system" },
+            reason: "Moving an automatically assigned task away from an exhausted provider account", recordedAt: now.toISOString(),
+          },
+        },
+      });
+      if (!cancelledForFallback.updated) return true;
+      const fallbackRun = cancelledForFallback.run ?? run;
+      let moved = false;
+      try {
+        await releaseIssueExecutionAndPromote(fallbackRun);
+        moved = await autoAssignmentFallback.move({ ...fallbackTarget, resetAt });
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "automatic assignment fallback failed; waiting for the provider limit instead");
+      }
+      if (moved) {
+        await appendRunEvent(fallbackRun, {
+          eventType: "lifecycle", stream: "system", level: "warn",
+          message: `The provider usage limit resets at ${resetAt}; the task moved to the next automatic-assignment candidate`,
+          payload: { resetAt, category: cooldown.category, sourceRunId: cooldown.sourceRunId, autoAssignmentFallback: true },
+        }).catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to record the automatic assignment fallback"));
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: message })
+          .catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to settle the fallback wakeup"));
+        await finalizeAgentStatus(run.agentId, "cancelled");
+        return true;
+      }
+      await holdUntilReset(fallbackRun);
+      return true;
+    }
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
       error: message, errorCode: "provider_limit_wait", finishedAt: now,
       resultJson: {
@@ -75,41 +154,7 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
     });
     if (!cancelled.updated) return true;
     const deferred = cancelled.run ?? run;
-    // The cancellation is committed. From here the wake must either gain its
-    // retry or release its task lock; diagnostics never decide that.
-    let scheduled = false;
-    try {
-      // Scheduling is idempotent per source run, so one more attempt is safe.
-      for (let attempt = 1; attempt <= 2 && !scheduled; attempt += 1) {
-        try {
-          // Each wait is one retry at the reset; evidence expires within a day.
-          const retry = await scheduleBoundedRetryForRun(deferred, agent, {
-            now, retryReason: AI_CONNECTION_POOL_WAIT_RETRY_REASON, wakeReason: "provider_limit_retry",
-            maxAttempts: (run.scheduledRetryAttempt ?? 0) + 1,
-            delayMs: Math.max(1000, cooldown.resetAt.getTime() - now.getTime() + 1000),
-          });
-          scheduled = retry.outcome === "scheduled";
-          if (!scheduled) break;
-        } catch (err) {
-          logger.warn({ err, runId: run.id, attempt }, "failed to schedule the provider limit retry");
-        }
-      }
-      await appendRunEvent(deferred, {
-        eventType: "lifecycle", stream: "system", level: "warn",
-        message: scheduled
-          ? `Waiting for the provider usage limit to reset at ${resetAt} before starting work`
-          : `The provider usage limit resets at ${resetAt}; this wake could not schedule its retry and released the task`,
-        payload: { resetAt, resetReported: cooldown.resetReported, category: cooldown.category, sourceRunId: cooldown.sourceRunId, retryScheduled: scheduled },
-      }).catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to record the provider limit wait"));
-      await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: message })
-        .catch((err: unknown) => logger.warn({ err, runId: run.id }, "failed to settle the provider limit wakeup"));
-    } finally {
-      try {
-        if (!scheduled) await releaseIssueExecutionAndPromote(deferred);
-      } finally {
-        await finalizeAgentStatus(run.agentId, "cancelled");
-      }
-    }
+    await holdUntilReset(deferred);
     return true;
   }
 

@@ -20,6 +20,7 @@ import { listUndispatchedQueuedRuns } from "./queued-run-dispatch-liveness.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
 import { describeFailedAttachment } from "./native-runtime/remote-warm-session-recovery.js";
 import { createProviderLimitWait } from "./heartbeat/provider-limit-wait.js";
+import { agentAssignmentService } from "./agent-assignment.js";
 import { externalConversationSettlementWork } from "./external-conversation-settlement-work.js";
 import { nativeRecoveryNoticeWork } from "./native-runtime/native-recovery-notice-work.js";
 import { nativeRunProjectionWork } from "./native-runtime/native-run-projection-work.js";
@@ -1973,6 +1974,10 @@ export function heartbeatService(
     scheduleBoundedRetryForRun,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
+    autoAssignmentFallback: (() => {
+      const assignment = agentAssignmentService(db, { wakeup: (agentId, opts) => enqueueWakeup(agentId, opts) });
+      return { eligible: assignment.fallbackEligible, move: assignment.fallbackFromProviderLimit };
+    })(),
   });
 
   async function executeRunAttempt(

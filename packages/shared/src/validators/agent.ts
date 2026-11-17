@@ -13,6 +13,7 @@ import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
 import { agentInteractionPermissionsSchema } from "../agent-interaction-permissions.js";
 import { difficultyRoutingConfigSchema } from "../difficulty-routing.js";
+import { agentAssignmentProfileSchema } from "../agent-assignment.js";
 
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
@@ -76,6 +77,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 export const agentRuntimeConfigSchema = z.object({
   aiConnection: aiConnectionBindingSchema.optional(),
   difficultyRouting: difficultyRoutingConfigSchema.optional(),
+  autoAssignment: agentAssignmentProfileSchema.optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

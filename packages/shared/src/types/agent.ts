@@ -35,6 +35,7 @@ export interface AgentProjectAccess {
 export type AgentRuntimeConfig = Record<string, unknown> & {
   aiConnection?: import("../ai-connection-router.js").AiRuntimeConnectionBinding;
   difficultyRouting?: import("../difficulty-routing.js").DifficultyRoutingConfig;
+  autoAssignment?: import("../agent-assignment.js").AgentAssignmentProfile;
 };
 
 export type AgentInstructionsBundleMode = "managed" | "external";

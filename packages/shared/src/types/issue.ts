@@ -970,6 +970,7 @@ export interface Issue {
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
   difficultyRouting?: import("../difficulty-routing.js").IssueDifficultyRouting | null;
+  assignmentRouting?: import("../agent-assignment.js").IssueAssignmentRouting | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
   monitorNextCheckAt?: Date | null;
