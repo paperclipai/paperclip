@@ -16,6 +16,7 @@ import { agents, companies, completionContracts, createDb, heartbeatRuns, issues
   statusDecisionEffects, statusDecisions, workspaceOperations, type Db } from "@paperclipai/db";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { nativeResultCommitWork } from "../services/native-runtime/native-result-commit-work.js";
+import { reserveLiveNativeFinalization } from "../services/native-runtime/live-native-finalization.js";
 import { finalizeNativeRun, NativeFinalizationDeferredError } from "../services/native-runtime/native-run-finalizer.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
@@ -136,6 +137,16 @@ describe("accepted result commit lifecycle", () => {
     expect(decisions).toHaveLength(1);
     await quiet(); await coordinator!.stop(); await start(); await flush(); await quiet();
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, binding.runId))).toHaveLength(1);
+  });
+  it("leaves a live heartbeat's run to it and commits only what the heartbeat leaves behind", async () => {
+    await start(); await flush();
+    const binding = await seed();
+    const release = reserveLiveNativeFinalization(db, binding);
+    await complete(binding, "control_plane"); await barrier(binding); await flush(); await quiet();
+    expect((await state(binding.runId)).phase).not.toBe("committed");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, binding.runId))).toHaveLength(0);
+    await release(); await flush();
+    expect((await state(binding.runId)).phase).toBe("committed"); await quiet();
   });
   it("ignores routine company-only finalization hints and still commits accepted work", async () => {
     await start(); await flush(); await quiet();

@@ -9,6 +9,7 @@ import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-wor
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 import { finalizeNativeRun, NativeFinalizationDeferredError, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { liveNativeFinalizationReserved } from "./live-native-finalization.js";
 
 type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
 
@@ -79,6 +80,8 @@ export function nativeResultCommitWork(db: Db, finalize = finalizeNativeRun) {
     const scope = { companyId: current.companyId, issueId: current.issueId, runId: current.id };
     const [row] = await candidates(scope);
     if (!row) return null;
+    // The live heartbeat commits its own result; its release wakes this queue.
+    if (liveNativeFinalizationReserved(current.id)) return null;
     const due = entry(row);
     if (due.dueAt > Date.now()) return due;
     const [run] = await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
