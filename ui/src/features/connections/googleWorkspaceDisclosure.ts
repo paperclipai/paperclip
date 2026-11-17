@@ -4,8 +4,6 @@ export const GOOGLE_WORKSPACE_PRIVACY_POLICY_URL = "https://paperclip.ing/privac
 
 type ServiceId = (typeof GOOGLE_WORKSPACE_SERVICE_GROUPS)[number]["id"];
 
-// Gmail write only creates drafts. Google's consent screen describes the compose
-// permission as sending too, so the copy says so and states that Paperclip does not send.
 const ACCESS: Record<ServiceId, { read: string; write: string }> = {
   gmail: {
     read: "Gmail: agents can read and search your email.",
@@ -28,7 +26,6 @@ const USE = [
   "Results are saved in the task and its run history. They stay there until you delete them, even after you disconnect.",
 ];
 
-/** Plain-language data-use disclosure for the selected services, shown before Google's consent screen. */
 export function googleWorkspaceDataUseDisclosure(selection: GoogleWorkspaceServiceSelection): { access: string[]; use: string[] } {
   const access = GOOGLE_WORKSPACE_SERVICE_GROUPS.flatMap(group => {
     const level = selection[group.id];

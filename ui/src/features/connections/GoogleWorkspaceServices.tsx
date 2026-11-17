@@ -41,11 +41,6 @@ export function isGoogleWorkspaceConnection(connection: Pick<ToolConnection, "co
   return connection.config?.sourceTemplateKey === "google-workspace";
 }
 
-/**
- * Every Google Workspace sign-in must pass through the service picker, so its
- * data-use disclosure always comes immediately before Google's consent screen.
- * Other connections start right away with no selection.
- */
 export function useGoogleWorkspaceServiceGate(): {
   dialog: ReactNode;
   run: (connection: ToolConnection, start: (selection?: GoogleWorkspaceServiceSelection) => void) => void;
