@@ -50,8 +50,8 @@ REST tool set part 1 (Gmail `get_message`, `search_threads`, `create_draft`).
   Recommendation: add a per-workspace client override to the broker so
   reviewers see the real flow.
 - **Reviewer login on staging.** The scoped reviewer password login is
-  hard-coded to the production tester. Recommendation: add a per-workspace
-  client override to the broker so reviewers see the real flow.
+  hard-coded to the production tester. The client override above does not fix
+  this; how to enable the login on staging is still undecided.
 - **Privacy policy edits** (see "Privacy policy" below).
 - Which security lab to use, and the budget.
 - Whether Google accepts the AI-agent client setting on a client that calls
