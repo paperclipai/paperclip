@@ -560,7 +560,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       queryClient.invalidateQueries({
         queryKey: queryKeys.apps.attention(selectedCompanyId!),
       });
-      const googleNotice = googleAccessRemovalNotice(removed?.removal.providerAccess);
+      const googleNotice = googleAccessRemovalNotice(removed?.removal?.providerAccess);
       const body =
           target.pool ? "The connections in the pool are kept." : target.kind === "chat"
             ? `${target.providerName} is disconnected. Existing Paperclip tasks remain available.`

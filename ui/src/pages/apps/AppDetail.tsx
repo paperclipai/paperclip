@@ -329,7 +329,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
-      const googleNotice = googleAccessRemovalNotice(removed.removal.providerAccess);
+      const googleNotice = googleAccessRemovalNotice(removed?.removal?.providerAccess);
       if (googleNotice) pushToast({ title: "Disconnected", body: googleNotice.body, tone: googleNotice.tone, ...(googleNotice.action ? { action: googleNotice.action } : {}) });
       navigate("/apps");
     },

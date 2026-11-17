@@ -8264,7 +8264,10 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(
         service.revokeConnectionGrant(connected.connectionId, grant!.id, actor),
       ).resolves.toMatchObject({ status: "revoked" });
-      expect(connector.revoke).not.toHaveBeenCalled();
+      expect(connector.revoke).toHaveBeenCalledTimes(1);
+      expect(connector.revoke).toHaveBeenCalledWith(expect.objectContaining({
+        subject: userId, profile: "gmail.draft", token: "gmail-refresh-token",
+      }));
     } finally {
       if (deadline) clearTimeout(deadline);
       await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);

@@ -195,7 +195,7 @@ export function Connections() {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
-      const googleNotice = googleAccessRemovalNotice(removed.removal.providerAccess);
+      const googleNotice = googleAccessRemovalNotice(removed?.removal?.providerAccess);
       const body = target.remainingConnectionCount > 0
         ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
         : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`;
