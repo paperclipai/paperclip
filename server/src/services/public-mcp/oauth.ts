@@ -32,7 +32,7 @@ export class McpOAuthError extends Error {
   constructor(readonly code: string, message: string, readonly status = 400) { super(message); }
 }
 export class PublicMcpDisabledError extends McpOAuthError {
-  constructor() { super("temporarily_unavailable", "Assistant connections are disabled. Enable them in Settings > Experimental.", 503); }
+  constructor() { super("temporarily_unavailable", "This agent connection is disabled. Enable its provider in Settings > Experimental.", 503); }
 }
 const invalidGrant = () => new McpOAuthError("invalid_grant", "Authorization is expired, revoked, or invalid.");
 

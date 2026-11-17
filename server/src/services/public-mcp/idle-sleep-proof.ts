@@ -13,6 +13,7 @@ import { readIdleMcpEventSchedule, type IdleMcpEventScheduleProof } from "./idle
 import { readIdleMcpTransferSchedule } from "./idle-transfer-schedule.js";
 import { readIdleMcpAuthorizationHandoffs } from "./idle-authorization-handoffs.js";
 import type { IdleDeadlineSnapshot } from "../idle-deadline-types.js";
+import { logger } from "../../middleware/logger.js";
 
 const owners = new WeakMap<object, { config: PublicMcpConfig | null; personal: PublicMcpEvents | null; dot: PublicMcpEvents | null; clientMirrorInstanceId?:string }>();
 export function registerIdleMcpOwners(owner: object, services: { config: PublicMcpConfig | null; personal: PublicMcpEvents | null; dot: PublicMcpEvents | null; clientMirrorInstanceId?:string }) {
@@ -31,6 +32,14 @@ export interface IdleMcpSleepProof {
   schedule: IdleDeadlineSnapshot;
   generation: string;
 }
+let lastReportedFrontDoorHold: string | null = null;
+/** Make a sleep hold from an unpublished Cloud front door visible once per state change, not once per idle check. */
+function reportFrontDoorHold(frontDoor: IdleDeadlineSnapshot) {
+  const state = frontDoor.blocked ? JSON.stringify(Array.isArray(frontDoor.state) ? frontDoor.state[0] : frontDoor.state) : null;
+  if (state === lastReportedFrontDoorHold) return;
+  lastReportedFrontDoorHold = state;
+  if (state !== null) logger.warn({ frontDoorState: JSON.parse(state) }, "Idle sleep is held until the assistant connection front door is published to Paperclip Cloud");
+}
 export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: object, context: {
   stackId: string; ownerId: string; capabilityGeneration: string; challenge: string; now: number; budget: IdleMcpInspectionBudget;
 }) : Promise<IdleMcpSleepProof> {
@@ -38,6 +47,7 @@ export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: objec
   await context.budget.beforeRead();
   const feature = await instanceSettingsService(tx as Db).getExperimentalReadOnly();
   const frontDoor = await readIdleMcpClientMirror(tx,{budget:context.budget,enabled:true,origin:services?.config?.origin,instanceId:services?.clientMirrorInstanceId,managedStackId:getCloudRuntimeIdentity()?.stackId,authorizationOrigin:services?.config?.authorizationOrigin,unsupportedProfiles:feature.enableOpenAiDot||feature.enableGrokBot&&feature.enableNativeRunner});
+  reportFrontDoorHold(frontDoor);
   const ingress = await readIdleMcpWakeProof(tx, { ...context,
     clientMirror:frontDoor.receipt,
     personalResource: services?.config?.resource ?? "", dotResource: services?.config ? services.config.origin + "/mcp/runner" : "",

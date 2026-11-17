@@ -630,6 +630,8 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
+        // Retired always-on keys are ignored on read, so an old client's write must not be rejected.
+        if (key === "enablePublicMcp") continue;
         if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
           throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
             code: "settings_operator_managed",
