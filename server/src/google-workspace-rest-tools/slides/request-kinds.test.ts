@@ -16,17 +16,22 @@ async function send(requests: Array<Record<string, unknown>>) {
 }
 
 describe("update_presentation request kinds", () => {
-  it("covers every request kind in Google's presentations.batchUpdate reference plus the MCP tool's importSlides and createAudio", () => {
-    expect(rules.map(([kind]) => kind).sort()).toEqual([
-      "addCommentReply", "createAudio", "createImage", "createLine", "createParagraphBullets", "createShape", "createSheetsChart", "createSlide",
-      "createTable", "createVideo", "deleteComment", "deleteCommentReply", "deleteObject", "deleteParagraphBullets", "deleteTableColumn",
-      "deleteTableRow", "deleteText", "duplicateObject", "groupObjects", "importSlides", "insertComment", "insertTableColumns", "insertTableRows",
-      "insertText", "mergeTableCells", "refreshSheetsChart", "replaceAllShapesWithImage", "replaceAllShapesWithSheetsChart", "replaceAllText",
-      "replaceImage", "rerouteLine", "ungroupObjects", "unmergeTableCells", "updateCommentPost", "updateImageProperties", "updateLineCategory",
-      "updateLineProperties", "updatePageElementAltText", "updatePageElementTransform", "updatePageElementsZOrder", "updatePageProperties",
-      "updateParagraphStyle", "updateShapeProperties", "updateSlideProperties", "updateSlidesPosition", "updateTableBorderProperties",
-      "updateTableCellProperties", "updateTableColumnProperties", "updateTableRowProperties", "updateTextStyle", "updateVideoProperties",
-    ]);
+  it("classifies every kind in Google's REST and MCP references explicitly: allowed, allowed in a restricted form, or refused", () => {
+    const restKinds = [
+      "createSlide", "createShape", "createTable", "insertText", "insertTableRows", "insertTableColumns", "deleteTableRow", "deleteTableColumn",
+      "replaceAllText", "deleteObject", "updatePageElementTransform", "updateSlidesPosition", "deleteText", "createImage", "createVideo",
+      "createSheetsChart", "createLine", "refreshSheetsChart", "updateShapeProperties", "updateImageProperties", "updateVideoProperties",
+      "updatePageProperties", "updateTableCellProperties", "updateLineProperties", "createParagraphBullets", "replaceAllShapesWithImage",
+      "duplicateObject", "updateTextStyle", "replaceAllShapesWithSheetsChart", "deleteParagraphBullets", "updateParagraphStyle",
+      "updateTableBorderProperties", "updateTableColumnProperties", "updateTableRowProperties", "mergeTableCells", "unmergeTableCells",
+      "groupObjects", "ungroupObjects", "updatePageElementAltText", "replaceImage", "updateSlideProperties", "updatePageElementsZOrder",
+      "updateLineCategory", "rerouteLine", "insertComment", "addCommentReply", "updateCommentPost", "deleteComment", "deleteCommentReply",
+    ];
+    const mcpOnlyKinds = ["importSlides", "createAudio", "updateAudioProperties"];
+    expect(rules.map(([kind]) => kind).sort()).toEqual([...restKinds, ...mcpOnlyKinds].sort());
+    const restricted = rules.filter(([, rule]) => rule.allowed && rule.refuse).map(([kind]) => kind).sort();
+    expect(restricted).toEqual(["createImage", "createVideo", "replaceAllShapesWithImage", "replaceImage", "updatePageProperties"]);
+    expect(refused.map(([kind]) => kind).sort()).toEqual(["createAudio", "createSheetsChart", "importSlides", "refreshSheetsChart", "replaceAllShapesWithSheetsChart"]);
   });
 
   it.each(allowed)("passes %s through unchanged", async (kind, body) => {
@@ -56,7 +61,7 @@ describe("update_presentation request kinds", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it.each(["updateAudioProperties", "createPresentation", "futureRequestKind"])("refuses the unknown kind %s and sends nothing", async (kind) => {
+  it.each(["createPresentation", "copyPresentation", "futureRequestKind"])("refuses the unknown kind %s and sends nothing", async (kind) => {
     const { calls, text } = await send([{ [kind]: {} }]);
     expect(text).toBe(`requests[0].${kind} is not a request kind this tool accepts. This tool only changes the one file it is given, so nothing was changed.`);
     expect(calls).toHaveLength(0);

@@ -66,5 +66,6 @@ describe("read_presentation tool", () => {
     const result = await readPresentation.call({ presentationId: "big" }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(result.isError).toBe(true);
     expect((result.content[0] as { text: string }).text).toMatch(/^This presentation is too large to return in one result .*Pass fields to read only part of it/);
+    expect((result.content[0] as { text: string }).text).toMatch(/\(\d+ KB; the limit is 250 KB\)/);
   });
 });

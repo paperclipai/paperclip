@@ -3,7 +3,7 @@ import { z } from "zod";
 import { GoogleToolError } from "./errors.js";
 import type { GoogleHttp, GoogleRequest } from "./google-http.js";
 
-export const MAX_RESULT_BYTES = 1_000_000;
+export const MAX_RESULT_BYTES = 250_000;
 export const MAX_BATCH_REQUESTS = 500;
 export const OBJECT_PLACEHOLDER = "￼";
 
@@ -16,13 +16,13 @@ export const batchRequestArg = z.record(z.string(), z.unknown()).refine(
 );
 
 export function sizedResult(value: Record<string, unknown>, what: string, hint: string): CallToolResult {
-  const text = JSON.stringify(value);
-  const bytes = Buffer.byteLength(text, "utf8");
+  const result: CallToolResult = { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
+  const bytes = Buffer.byteLength(JSON.stringify(result), "utf8");
   if (bytes > MAX_RESULT_BYTES) {
-    const size = (bytes / 1_000_000).toFixed(1);
-    throw new GoogleToolError("incomplete", `This ${what} is too large to return in one result (${size} MB; the limit is 1 MB). Nothing was returned. ${hint}`);
+    const size = Math.ceil(bytes / 1000);
+    throw new GoogleToolError("incomplete", `This ${what} is too large to return in one result (${size} KB; the limit is ${MAX_RESULT_BYTES / 1000} KB). Nothing was returned. ${hint}`);
   }
-  return { content: [{ type: "text", text }], structuredContent: value };
+  return result;
 }
 
 const CONFLICT_STATUSES = new Set(["FAILED_PRECONDITION", "ABORTED"]);

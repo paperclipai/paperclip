@@ -16,18 +16,30 @@ async function send(requests: Array<Record<string, unknown>>) {
 }
 
 describe("update_doc request kinds", () => {
-  it("covers every request kind in Google's documents.batchUpdate reference, each either allowed or refused", () => {
-    expect(rules.map(([kind]) => kind).sort()).toEqual([
-      "acceptSuggestion", "addCommentReply", "addDocumentTab", "createDropdownDefinition", "createFooter", "createFootnote", "createHeader",
-      "createNamedRange", "createParagraphBullets", "deleteComment", "deleteCommentReply", "deleteContentRange", "deleteDropdownDefinition",
-      "deleteFooter", "deleteHeader", "deleteNamedRange", "deleteParagraphBullets", "deletePositionedObject", "deleteSuggestion", "deleteTab",
-      "deleteTableColumn", "deleteTableRow", "insertComment", "insertDate", "insertDropdown", "insertInlineImage", "insertPageBreak", "insertPerson",
-      "insertRichLink", "insertSectionBreak", "insertTable", "insertTableColumn", "insertTableRow", "insertText", "mergeTableCells",
-      "pinTableHeaderRows", "rejectSuggestion", "replaceAllText", "replaceImage", "replaceNamedRangeContent", "unmergeTableCells",
-      "updateCommentPost", "updateDocumentStyle", "updateDocumentTabProperties", "updateDropdownDefinitionProperties", "updateDropdownProperties",
-      "updateNamedStyle", "updateParagraphStyle", "updateSectionStyle", "updateTableCellStyle", "updateTableColumnProperties",
-      "updateTableRowStyle", "updateTextStyle",
-    ]);
+  it("classifies every kind in Google's REST and MCP references explicitly: allowed, allowed in a restricted form, or refused", () => {
+    const restKinds = [
+      "replaceAllText", "insertText", "updateTextStyle", "createParagraphBullets", "deleteParagraphBullets", "createNamedRange", "deleteNamedRange",
+      "updateParagraphStyle", "deleteContentRange", "insertInlineImage", "insertTable", "insertTableRow", "insertTableColumn", "deleteTableRow",
+      "deleteTableColumn", "insertPageBreak", "deletePositionedObject", "updateTableColumnProperties", "updateTableCellStyle", "updateTableRowStyle",
+      "replaceImage", "updateDocumentStyle", "mergeTableCells", "unmergeTableCells", "createHeader", "createFooter", "createFootnote",
+      "replaceNamedRangeContent", "updateSectionStyle", "insertSectionBreak", "deleteHeader", "deleteFooter", "pinTableHeaderRows", "addDocumentTab",
+      "deleteTab", "updateDocumentTabProperties", "insertPerson", "updateNamedStyle", "insertRichLink", "insertDate", "insertComment",
+      "addCommentReply", "updateCommentPost", "deleteComment", "deleteCommentReply", "acceptSuggestion", "rejectSuggestion", "deleteSuggestion",
+      "createDropdownDefinition", "updateDropdownDefinitionProperties", "insertDropdown", "updateDropdownProperties", "deleteDropdownDefinition",
+    ];
+    const mcpKinds = [
+      "replaceAllText", "insertText", "updateTextStyle", "updateParagraphStyle", "updateNamedStyle", "updateSectionStyle", "updateDocumentStyle",
+      "createParagraphBullets", "deleteParagraphBullets", "createNamedRange", "deleteNamedRange", "replaceNamedRangeContent", "deleteContentRange",
+      "insertInlineImage", "insertTable", "insertPageBreak", "insertSectionBreak", "insertPerson", "insertRichLink", "insertDate", "createFootnote",
+      "insertTableRow", "insertTableColumn", "deleteTableRow", "deleteTableColumn", "updateTableColumnProperties", "updateTableCellStyle",
+      "updateTableRowStyle", "mergeTableCells", "unmergeTableCells", "pinTableHeaderRows", "replaceImage", "deletePositionedObject", "createHeader",
+      "createFooter", "deleteHeader", "deleteFooter", "addDocumentTab", "deleteTab", "updateDocumentTabProperties", "insertComment",
+      "addCommentReply", "updateCommentPost", "deleteComment", "deleteCommentReply", "acceptSuggestion", "rejectSuggestion", "deleteSuggestion",
+    ];
+    expect(rules.map(([kind]) => kind).sort()).toEqual([...new Set([...restKinds, ...mcpKinds])].sort());
+    const restricted = rules.filter(([, rule]) => rule.allowed && rule.refuse).map(([kind]) => kind).sort();
+    expect(restricted).toEqual(["insertInlineImage", "replaceImage"]);
+    expect(refused.map(([kind]) => kind)).toEqual(["insertRichLink"]);
   });
 
   it.each(allowed)("passes %s through unchanged", async (kind, body) => {

@@ -568,14 +568,18 @@ Formatting other than headings, lists and links (bold, colors, fonts, sizes)
 is not in `text`. Checklist items render as plain list items: the Docs API
 does not say whether a box is ticked.
 
-A result over 1 MB (the gateway's limit for an MCP response; `sizedResult`
-in `documents-shared.ts` enforces it in this folder) is refused with an error
-that gives the size and returns nothing; it is never cut short. To read a
+A result over 250,000 bytes is refused with an error that gives the size and
+returns nothing; it is never cut short. `sizedResult` in `documents-shared.ts`
+measures the final serialized MCP result, which carries the content twice (as
+JSON text and as structured content), so the content itself is limited to
+about 125,000 bytes. Paperclip delivers tool results over 500,000 bytes as a
+pointer instead of content; the lower limit keeps every read inline with
+room to spare. To read a
 large presentation in parts, pass `fields`, for example
 `["slides(objectId,pageElements(objectId,shape.text))"]`. `read_doc` has no
 way to read part of a document, since Google's tool has no such input and
-`documents.get` cannot select one tab; a document whose text form is over
-1 MB cannot be read through this tool.
+`documents.get` cannot select one tab; a document whose result would be over
+the limit cannot be read through this tool.
 
 ### How the update tools work
 
@@ -624,14 +628,24 @@ refused with an error that names it, and nothing is sent. The same table
 builds the lists in the tool descriptions and drives the tests, and a test
 checks it covers every kind in Google's reference.
 
-Docs, allowed: every `documents.batchUpdate` kind except `insertRichLink`
-(text, styles, bullets, named ranges, tables, images, page and section
-breaks, headers, footers, footnotes, tabs, person and date chips, comments,
-suggestions and dropdowns).
+Docs: every kind in Google's `documents.batchUpdate` reference and in its
+`update_doc` MCP reference is listed. All are allowed except `insertRichLink`
+(refused); `insertInlineImage` and `replaceImage` are allowed only in the
+restricted form below.
 
-Slides, allowed: every `presentations.batchUpdate` kind except the Sheets chart
-kinds (slides, shapes, tables, text, images, lines, YouTube videos, page and
-element properties, grouping, z-order, alt text and comments).
+Slides: every kind in Google's `presentations.batchUpdate` reference and in
+its `update_presentation` MCP reference (which adds `importSlides`,
+`createAudio` and `updateAudioProperties`) is listed. All are allowed except
+`createSheetsChart`, `replaceAllShapesWithSheetsChart`, `refreshSheetsChart`,
+`importSlides` and `createAudio` (refused); `createVideo`, `createImage`,
+`replaceImage`, `replaceAllShapesWithImage` and `updatePageProperties` are
+allowed only in the restricted forms below. No other kind can link content
+from another file: linked charts come only from the refused Sheets chart
+kinds, and linked slides only from the refused `importSlides`.
+
+The tests keep Google's full lists and check that each kind is classified
+explicitly; only a kind on neither list falls through to "not a request kind
+this tool accepts".
 
 Refused, because they read another file:
 

@@ -101,13 +101,25 @@ describe("read_doc tool", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("measures the limit on the whole result, which carries the content twice", async () => {
+    const under = (count: number) => oneTab(Array.from({ length: count }, () => text("z".repeat(1_000))));
+    const perParagraph = 2 * 2 * 1_000;
+    const fits = Math.floor(MAX_RESULT_BYTES / perParagraph) - 10;
+    const http = (doc: unknown) => createGoogleHttp({ accessToken: "t", fetch: fakeGoogle(() => json(doc)).fetch });
+    const ok = await readDoc.call({ documentId: "d" }, http(under(fits)));
+    expect(ok.isError).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(ok), "utf8")).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(ok.structuredContent), "utf8")).toBeLessThan(MAX_RESULT_BYTES / 2 + 1);
+    expect((await readDoc.call({ documentId: "d" }, http(under(fits + 40)))).isError).toBe(true);
+  });
+
   it("refuses a result over the size limit with a clear error instead of cutting it short", async () => {
     const paragraph = "x".repeat(10_000);
     const big = oneTab(Array.from({ length: Math.ceil(MAX_RESULT_BYTES / 20_000) + 5 }, () => text(paragraph)));
     const { fetch } = fakeGoogle(() => json(big));
     const result = await readDoc.call({ documentId: "big" }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toMatch(/^This document is too large to return in one result \(\d+\.\d MB; the limit is 1 MB\)\. Nothing was returned\./);
+    expect((result.content[0] as { text: string }).text).toMatch(/^This document is too large to return in one result \(\d+ KB; the limit is 250 KB\)\. Nothing was returned\./);
     expect(result.structuredContent).toBeUndefined();
   });
 });

@@ -27,6 +27,7 @@ export const SLIDES_REQUEST_KINDS: RequestKindRules = {
   updateShapeProperties: allow,
   updateImageProperties: allow,
   updateVideoProperties: allow,
+  updateAudioProperties: allow,
   updatePageProperties: { allowed: true, refuse: refuseGoogleFileUrl("pageProperties", "pageBackgroundFill", "stretchedPictureFill", "contentUrl"), example: { objectId: "s1", pageProperties: { pageBackgroundFill: { stretchedPictureFill: { contentUrl: "https://example.test/bg.png" } } }, fields: "pageBackgroundFill" } },
   updateTableCellProperties: allow,
   updateLineProperties: allow,
