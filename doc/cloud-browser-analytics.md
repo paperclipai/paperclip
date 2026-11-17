@@ -82,9 +82,10 @@ Masking is deny by default. A surface that nobody marked stays masked.
   Buttons do not opt in by default, because many render customer names.
 - Replay also masks attribute values (`maskReplayAttribute`): only layout
   attributes (`class`, `style`, `role`, `data-state`, SVG geometry and similar),
-  rrweb metadata, stylesheets and links outside customer content keep their
-  values. `title`, `aria-label`, `alt`, `placeholder`, `src` and `data-*` values
-  are always masked, even on unmasked chrome, so images record as empty boxes.
+  rrweb metadata and stylesheet links keep their values. `title`,
+  `aria-label`, `alt`, `placeholder`, `src`, `href` and `data-*` values are
+  always masked, even on unmasked chrome, so images record as empty boxes and
+  link targets (for example download links with file paths) never leave.
 - `ANALYTICS_MASK_CLASS` keeps customer content masked even inside unmasked
   chrome: rendered markdown (task bodies, comments, chat messages, documents),
   task and issue chat threads, the comment timeline, the rich editor and the
@@ -93,10 +94,11 @@ Masking is deny by default. A surface that nobody marked stays masked.
   every password-type `Input`, environment variable values and new secret
   values.
 - Every event and replay meta event goes through `scrubCapturedEvent`
-  (`before_send`). It redacts secrets in URLs: the token segment of
-  `/board-claim/<token>` and `/invite/<token>`, and secret query or hash values
-  such as `token`, `code` and `state` (`redactAnalyticsUrl`). Link `href`
-  attributes in replays get the same redaction.
+  (`before_send`). Every URL keeps only its origin and path: query and hash
+  values never leave, because they can hold credentials, file paths or search
+  text. The token segment of `/board-claim/<token>` and `/invite/<token>` is
+  redacted (`redactAnalyticsUrl`). Other strings only have secret
+  `key=value` pairs redacted.
 - Events never carry the page title (`before_send` drops `title`), because
   Paperclip page titles name the task and the organization.
 - Autocapture never records element text or attribute values

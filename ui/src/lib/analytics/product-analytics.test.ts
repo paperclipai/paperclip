@@ -185,4 +185,13 @@ describe("product analytics", () => {
     const data = (scrubCapturedEvent(event)!.properties.$snapshot_data as Array<{ data: unknown }>)[1]!.data;
     expect(data).toBe(gz);
   });
+
+  it("keeps the event timestamp a Date", () => {
+    const timestamp = new Date("2026-11-17T12:00:00Z");
+    const event = { uuid: "u", event: "$pageview", timestamp, properties: { $current_url: "https://a.paperclip.app/x?y=1" } } as unknown as Parameters<typeof scrubCapturedEvent>[0];
+    const out = scrubCapturedEvent(event)!;
+    expect(out.timestamp).toBeInstanceOf(Date);
+    expect(out.timestamp).toBe(timestamp);
+    expect(out.properties.$current_url).toBe("https://a.paperclip.app/x");
+  });
 });

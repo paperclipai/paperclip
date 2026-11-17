@@ -65,7 +65,11 @@ function redactStrings(value: unknown): unknown {
     return value.startsWith(GZIP_MAGIC) ? value : redactAnalyticsUrl(value);
   }
   if (Array.isArray(value)) return value.map(redactStrings);
+  // Plain objects only: a `Date` (the event timestamp) and other class
+  // instances pass through unchanged.
   if (value && typeof value === "object") {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactStrings(entry)]));
   }
   return value;

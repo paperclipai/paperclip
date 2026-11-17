@@ -82,21 +82,39 @@ export function maskReplayAttribute(name: string, value: string, element?: Eleme
   // rrweb's own serialized metadata (`rr_width`, `_cssText`, ...).
   if (key.startsWith("rr_") || key.startsWith("_")) return value;
   if (LAYOUT_ATTRIBUTES.has(key)) return value;
-  const tag = element?.tagName?.toLowerCase();
-  // Stylesheets and in-app links render the page; customer-content links do not leave.
-  if (key === "href" && (tag === "link" || !element?.closest?.(FORCED_MASK_SELECTOR))) return redactAnalyticsUrl(value);
+  // Stylesheets render the page. Every other `href` (download links carry
+  // file paths, markdown links carry customer URLs) stays masked.
+  if (key === "href" && element?.tagName?.toLowerCase() === "link") return redactAnalyticsUrl(value);
   return value.replace(/\S/g, "*");
 }
 
 /** Routes whose next path segment is a one-time secret (claim and invite links). */
 const SECRET_PATH_SEGMENT = /(\/(?:board-claim|invite)\/)[^/?#\s"']+/gi;
 
+const ABSOLUTE_URL = /^[a-z][a-z0-9+.-]*:\/\//i;
+
 /**
- * Redacts credentials from a URL or path before analytics sends it: secret
- * query and hash values (`token`, `code`, `state`, ...) and the token segment
- * of claim and invite links.
+ * Prepares a URL or path for analytics. Deny by default: a URL keeps only its
+ * origin and path, because query and hash values can hold credentials
+ * (`token`, `code`, `state`), file paths or search text. The token segment of
+ * claim and invite links is redacted. Any other string only has secret
+ * `key=value` pairs redacted.
  */
 export function redactAnalyticsUrl(value: string): string {
   if (!value.includes("/") && !value.includes("?") && !value.includes("#")) return value;
-  return redactUrlSecrets(value).replace(SECRET_PATH_SEGMENT, "$1REDACTED");
+  const trimmed = value.trim();
+  let result: string;
+  if (ABSOLUTE_URL.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      result = `${url.origin === "null" ? `${url.protocol}//` : url.origin}${url.pathname}`;
+    } catch {
+      result = redactUrlSecrets(value);
+    }
+  } else if (trimmed.startsWith("/")) {
+    result = trimmed.replace(/[?#].*$/, "");
+  } else {
+    result = redactUrlSecrets(value);
+  }
+  return result.replace(SECRET_PATH_SEGMENT, "$1REDACTED");
 }

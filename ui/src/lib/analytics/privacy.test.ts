@@ -77,25 +77,35 @@ describe("session replay attribute masking", () => {
     expect(maskReplayAttribute("rr_width", "10px", el("b"))).toBe("10px");
   });
 
-  it("keeps in-app links but masks links inside customer content", () => {
-    const el = render(`<a id="nav" href="/VER/issues">Tasks</a><div class="${ANALYTICS_MASK_CLASS}"><a id="c" href="https://example.com/private">x</a></div>`);
-    expect(maskReplayAttribute("href", "/VER/issues", el("nav"))).toBe("/VER/issues");
-    expect(maskReplayAttribute("href", "https://example.com/private", el("c"))).toBe("***************************");
+  it("masks every link href, such as a download link carrying a file path, and keeps stylesheets", () => {
+    const el = render(
+      `<a id="nav" href="/VER/issues">Tasks</a>`
+      + `<a id="dl" href="/api/files/content?path=customers%2Fplan.md">Download</a>`
+      + `<link id="css" rel="stylesheet" href="/assets/index.css">`,
+    );
+    expect(maskReplayAttribute("href", "/VER/issues", el("nav"))).toBe("***********");
+    expect(maskReplayAttribute("href", "/api/files/content?path=customers%2Fplan.md", el("dl"))).not.toContain("plan");
+    expect(maskReplayAttribute("href", "/assets/index.css", el("css"))).toBe("/assets/index.css");
   });
 });
 
 describe("analytics URL redaction", () => {
   it("redacts claim and invite tokens and secret query values", () => {
     expect(redactAnalyticsUrl("/board-claim/abc123")).toBe("/board-claim/REDACTED");
-    expect(redactAnalyticsUrl("https://x.paperclip.app/invite/tok?x=1")).toBe("https://x.paperclip.app/invite/REDACTED?x=1");
+    expect(redactAnalyticsUrl("https://x.paperclip.app/invite/tok?x=1")).toBe("https://x.paperclip.app/invite/REDACTED");
     expect(redactAnalyticsUrl("https://x.paperclip.app/cli-auth/id1?token=s3cr3t")).not.toContain("s3cr3t");
     expect(redactAnalyticsUrl("/VER/issues/VER-1")).toBe("/VER/issues/VER-1");
     expect(redactAnalyticsUrl("Desktop")).toBe("Desktop");
+    // Query and hash never leave: they can hold file paths or search text.
+    expect(redactAnalyticsUrl("https://x.paperclip.app/VER/files?path=customers/plan.md#L3")).toBe("https://x.paperclip.app/VER/files");
+    expect(redactAnalyticsUrl("/VER/issues?q=acme%20merger")).toBe("/VER/issues");
+    // Non-URL strings keep their text; only secret key=value pairs are redacted.
+    expect(redactAnalyticsUrl("Mozilla/5.0 (Macintosh)")).toBe("Mozilla/5.0 (Macintosh)");
   });
 
-  it("redacts secrets in link attributes in replay", () => {
-    document.body.innerHTML = `<a id="a" href="/invite/tok-1">join</a>`;
-    expect(maskReplayAttribute("href", "/invite/tok-1", document.getElementById("a"))).toBe("/invite/REDACTED");
+  it("redacts secrets in stylesheet links in replay", () => {
+    document.body.innerHTML = `<link id="l" rel="stylesheet" href="/x.css?token=abc">`;
+    expect(maskReplayAttribute("href", "/x.css?token=abc", document.getElementById("l"))).toBe("/x.css");
     document.body.innerHTML = "";
   });
 });
