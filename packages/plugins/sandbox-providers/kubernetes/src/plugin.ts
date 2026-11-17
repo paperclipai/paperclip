@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import path from "node:path";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
@@ -157,14 +158,48 @@ const readySandboxesByLease = new Set<string>();
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
 
+// Every agent pod mounts an emptyDir at /workspace (sandbox-cr-builder /
+// pod-spec-builder). It is the lease's working dir until a workspace is realized.
+export const DEFAULT_WORKSPACE_REMOTE_DIR = "/workspace";
+
+// The lease's remote working dir: an already-recorded absolute dir is kept;
+// otherwise the pod's /workspace mount. Recorded at acquire/resume time so a run
+// that never realizes a workspace (a plain task with no project) still has a
+// concrete sync root, and the server's execution target uses the same dir (it
+// falls back to /tmp when the lease carries none). The value is the native-sync
+// confinement root, so only a normalized absolute path below / is accepted.
+export function leaseRemoteCwd(existing: unknown): string {
+  if (typeof existing !== "string") return DEFAULT_WORKSPACE_REMOTE_DIR;
+  const trimmed = existing.trim();
+  return isConfinableRemoteDir(trimmed) ? trimmed : DEFAULT_WORKSPACE_REMOTE_DIR;
+}
+
+// A usable confinement root: absolute, below / (never / itself), already
+// normalized (no ., .., // or trailing /).
+export function isConfinableRemoteDir(value: string): boolean {
+  return (
+    value.startsWith("/") &&
+    !value.startsWith("//") &&
+    value !== "/" &&
+    !value.endsWith("/") &&
+    path.posix.normalize(value) === value
+  );
+}
+
 // The workspace remote dir is the confinement root for native file sync. It is
-// recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
-// it so a sync can never run without a concrete root to confine every sandbox
-// path against.
-function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
+// recorded on the lease metadata (`remoteCwd`) at acquire/resume time; require it
+// so a sync can never run without a concrete root to confine every sandbox path
+// against.
+export function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
   const remoteCwd = lease.metadata?.remoteCwd;
   if (typeof remoteCwd === "string" && remoteCwd.trim().length > 0) {
-    return remoteCwd.trim();
+    const trimmed = remoteCwd.trim();
+    // Validated here too, not only where it is written: a root such as "/" would
+    // make the whole container filesystem the confinement root.
+    if (!isConfinableRemoteDir(trimmed)) {
+      throw new Error("Kubernetes file sync requires a normalized absolute workspace remote dir below / on the lease metadata.");
+    }
+    return trimmed;
   }
   throw new Error("Kubernetes file sync requires a workspace remote dir on the lease metadata.");
 }
@@ -533,6 +568,7 @@ const plugin = definePlugin({
       // exposes one. Flag the job backend so the server keeps the base64 fallback
       // rather than routing its sync to a hook that would reject immediately.
       nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
+      remoteCwd: DEFAULT_WORKSPACE_REMOTE_DIR,
     };
 
     return {
@@ -612,6 +648,8 @@ const plugin = definePlugin({
       // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
       // native sync, so a resumed job lease must keep the base64 fallback.
       nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
+      // Keep an already-recorded remote dir across resume; default to the pod mount.
+      remoteCwd: leaseRemoteCwd(params.leaseMetadata?.remoteCwd),
     };
 
     return {
@@ -629,10 +667,12 @@ const plugin = definePlugin({
     // The agent pod already has /workspace mounted as an emptyDir at pod
     // scheduling time (see pod-spec-builder). Nothing to provision here —
     // we just hand back the cwd. Honor a caller-supplied remotePath if set.
+    // The server keeps only its own workspace-realization record from this
+    // result; the lease's remoteCwd (sync root) is the one set at acquire/resume.
     const cwd =
       params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
         ? params.workspace.remotePath.trim()
-        : "/workspace";
+        : DEFAULT_WORKSPACE_REMOTE_DIR;
     return {
       cwd,
       metadata: {

@@ -9,7 +9,8 @@ vi.mock("../../src/kube-client.js", () => ({
   makeKubeClients: vi.fn(() => h.clients),
 }));
 
-import plugin from "../../src/plugin.js";
+import plugin, { DEFAULT_WORKSPACE_REMOTE_DIR, leaseRemoteCwd, resolveSyncRemoteDir } from "../../src/plugin.js";
+import { assertConfinedSandboxPath } from "../../src/file-sync.js";
 
 const CONFIG = { inCluster: true, backend: "sandbox-cr" };
 
@@ -440,3 +441,87 @@ describe("quota guard and pod-ready budget", () => {
     }
   });
 });
+
+describe("lease remote working dir (TECH-8174: runs that never realize a workspace)", () => {
+  // Any kube call resolves to a benign empty object, so acquire runs end to end.
+  function permissiveClients(): Record<string, unknown> {
+    const group = () =>
+      new Proxy({}, {
+        get: () => vi.fn().mockResolvedValue({ metadata: { uid: "uid-1", name: "x" }, items: [], status: {} }),
+      });
+    return { core: group(), batch: group(), custom: group(), rbac: group(), networking: group() };
+  }
+
+  it("records the pod's /workspace mount as remoteCwd at acquire, so sync works before any realizeWorkspace", async () => {
+    h.clients = permissiveClients();
+    const lease = await plugin.definition.onEnvironmentAcquireLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: { ...CONFIG, companySlug: "acme-remote-cwd" },
+      runId: "run-1",
+    } as never);
+    expect(lease.metadata).toEqual(expect.objectContaining({ remoteCwd: DEFAULT_WORKSPACE_REMOTE_DIR }));
+    // The native sync root resolves from that lease alone (no realized workspace).
+    expect(resolveSyncRemoteDir(lease as never)).toBe("/workspace");
+  });
+
+  it("defaults remoteCwd on resume for a lease that never realized a workspace", async () => {
+    h.clients = {
+      custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")) },
+      core: { readNamespacedPod: vi.fn().mockResolvedValue({ metadata: {}, status: { phase: "Running" } }) },
+    };
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata(),
+    });
+    expect(lease.metadata).toEqual(expect.objectContaining({ remoteCwd: "/workspace" }));
+    expect(resolveSyncRemoteDir(lease as never)).toBe("/workspace");
+  });
+
+  it("keeps an already-recorded remote dir across resume", async () => {
+    h.clients = {
+      custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")) },
+      core: { readNamespacedPod: vi.fn().mockResolvedValue({ metadata: {}, status: { phase: "Running" } }) },
+    };
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ remoteCwd: "/workspace/project" }),
+    });
+    expect(lease.metadata).toEqual(expect.objectContaining({ remoteCwd: "/workspace/project" }));
+  });
+
+  it("still refuses to sync a lease with no remote dir at all, and confines runtime assets to the root", () => {
+    expect(() => resolveSyncRemoteDir({ providerLeaseId: "x", metadata: {} } as never)).toThrow(/workspace remote dir/);
+    // A recorded root that is not a confinable dir is refused at sync time too.
+    for (const unsafe of ["/", "relative", "/workspace/../etc", "//workspace"]) {
+      expect(() => resolveSyncRemoteDir({ providerLeaseId: "x", metadata: { remoteCwd: unsafe } } as never)).toThrow(
+        /normalized absolute workspace remote dir/,
+      );
+    }
+    expect(leaseRemoteCwd("  ")).toBe("/workspace");
+    // Only a normalized absolute dir below / can become the confinement root.
+    for (const unsafe of ["/", "", "relative/dir", "/workspace/../etc", "/workspace/./x", "/workspace/", "//workspace", 42]) {
+      expect(leaseRemoteCwd(unsafe)).toBe("/workspace");
+    }
+    expect(leaseRemoteCwd(" /workspace/project ")).toBe("/workspace/project");
+    // Runtime assets staged under the lease's working dir are inside the confinement root...
+    expect(() =>
+      assertConfinedSandboxPath("/workspace", "/workspace/.paperclip-runtime/hermes/hermesHome", "target"),
+    ).not.toThrow();
+    // ...and anything outside it (e.g. the server's old /tmp default) is still rejected.
+    expect(() =>
+      assertConfinedSandboxPath("/workspace", "/tmp/.paperclip-runtime/hermes/hermesHome", "target"),
+    ).toThrow();
+    expect(() => assertConfinedSandboxPath("/workspace", "/workspace/../etc/passwd", "target")).toThrow();
+  });
+});
+

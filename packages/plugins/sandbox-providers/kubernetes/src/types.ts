@@ -147,4 +147,10 @@ export interface KubernetesLeaseMetadata {
    * sync may be used when the worker advertises the verbs.
    */
   nativeFileSyncUnsupported?: boolean;
+  /**
+   * The lease's remote working dir and native file-sync confinement root. Set at
+   * acquire to the pod's /workspace mount; resume keeps an already-recorded
+   * absolute dir and otherwise uses /workspace.
+   */
+  remoteCwd?: string;
 }
