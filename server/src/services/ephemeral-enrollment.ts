@@ -9,9 +9,6 @@ import { cloudTenantPrimaryCompanyId, getCloudStackContext } from "./cloud-insta
 import { resolveDecisionSigningSecret } from "./decision-signing.js";
 import { assertEphemeralServerConfig, ephemeralServerEnabled, readEphemeralServerDataEligibility } from "./ephemeral-server-contract.js";
 
-/** Read-only: whether online preparation would accept this server's durable
- * data now, and which owners still hold data on the local disk. Uses the same
- * check as preparation and changes nothing. */
 export async function readOnlineEphemeralEnrollmentEligibility(db: Db) {
   const { eligible, blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
   return { eligible, blockers, ephemeralServer: ephemeralServerEnabled() };
