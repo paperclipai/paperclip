@@ -146,3 +146,26 @@ test('feature-absent reporting still projects DB/CLI and restores all four manif
     .filter(line => !line.includes(`"${grpc}"`) && !line.includes(`"${photon}"`)).join('\n');
   await writeFile(workspacePath, workspace);
 }));
+
+test('canonical-aligned other versions leave every reporting manifest unchanged during install', () => fixture(async root => {
+  const names = ['package.json', 'pnpm-workspace.yaml', 'packages/db/package.json', 'cli/package.json'];
+  const before = await Promise.all(names.map(name => readFile(path.join(root, name))));
+  await withReportingDependencies(root, async () => {
+    for (let i = 0; i < names.length; i++) assert.deepEqual(await readFile(path.join(root, names[i])), before[i]);
+  });
+}, async root => {
+  const packagePath = path.join(root, 'package.json'), manifest = JSON.parse(await readFile(packagePath, 'utf8'));
+  manifest.pnpm.patchedDependencies = { 'postgres@3.5.0': 'patches/postgres@3.5.0.patch' };
+  await writeFile(packagePath, JSON.stringify(manifest));
+  await writeFile(path.join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\npatchedDependencies:\n  postgres@3.5.0: patches/postgres@3.5.0.patch\n');
+  const dbPath = path.join(root, 'packages/db/package.json'), db = JSON.parse(await readFile(dbPath, 'utf8'));
+  db.dependencies = { 'drizzle-orm': '0.46.0', postgres: '3.5.0' }; await writeFile(dbPath, JSON.stringify(db));
+  const cliPath = path.join(root, 'cli/package.json'), cli = JSON.parse(await readFile(cliPath, 'utf8')); cli.dependencies.postgres = '3.5.0'; await writeFile(cliPath, JSON.stringify(cli));
+  const lockPath = path.join(root, 'pnpm-lock.yaml');
+  let lock = (await readFile(lockPath, 'utf8')).replaceAll('3.4.9', '3.5.0').replaceAll('^3.5.0', '3.5.0')
+    .replaceAll('^0.45.2', '0.46.0').replaceAll('0.45.2', '0.46.0');
+  lock = lock.replace('  cli:\n    dependencies:\n', '  cli:\n    dependencies:\n      postgres:\n        specifier: 3.5.0\n        version: 3.5.0(patch_hash=abc123)\n');
+  await writeFile(lockPath, lock);
+  const policyPath = path.join(root, 'tests/runner-e2e/report-lock.json'), policy = JSON.parse(await readFile(policyPath, 'utf8'));
+  policy.outputSha256 = digest(lock); await writeFile(policyPath, JSON.stringify(policy));
+}));

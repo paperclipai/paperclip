@@ -73,9 +73,14 @@ function reviewedDependency(lock, importer, name) {
   return { specifier: scalar(specifier[1]), version: scalar(version[1]) };
 }
 function reportingDbPins(lock, hashes, db, cli) {
-  const postgresVersion = `3.4.9(patch_hash=${hashes.get('postgres@3.4.9')})`;
   const postgres = reviewedDependency(lock, 'packages/db', 'postgres');
   const drizzle = reviewedDependency(lock, 'packages/db', 'drizzle-orm');
+  const cliPostgres = reviewedDependency(lock, 'cli', 'postgres');
+  // Already canonical is not drift: never constrain a trusted refresh to old versions.
+  if (db.dependencies?.postgres === postgres?.specifier
+      && db.dependencies?.['drizzle-orm'] === drizzle?.specifier
+      && cli.dependencies?.postgres === cliPostgres?.specifier) return;
+  const postgresVersion = `3.4.9(patch_hash=${hashes.get('postgres@3.4.9')})`;
   const serverPostgres = reviewedDependency(lock, 'server', 'postgres');
   if (!postgres || !drizzle || postgres.version !== postgresVersion || serverPostgres?.version !== postgresVersion
       || drizzle.version.split('(')[0] !== '0.45.2' || !drizzle.version.includes(`postgres@${postgresVersion}`)) fail();
@@ -83,7 +88,6 @@ function reportingDbPins(lock, hashes, db, cli) {
     if (![pin, `^${pin}`].includes(entry.specifier) || db.dependencies?.[name] !== pin) fail();
     db.dependencies[name] = entry.specifier;
   }
-  const cliPostgres = reviewedDependency(lock, 'cli', 'postgres');
   if (cliPostgres === null) {
     // The reporting tools use cli/node_modules/tsx, never the product CLI.
     // The same canonical patched postgres remains owned by DB and Server.
