@@ -70,6 +70,14 @@ any new fork patch; remove one when the patch is upstreamed.
 - `packages/shared/src/app-definitions/rh-scheduler-mcp.json`
 - `packages/adapters/hermes/src/gateway/`
 
+## Slack file text extraction (TECH-8958)
+
+- `server/src/services/connectors/slack-file-content.ts`
+- `server/src/services/connectors/slack-file-content.test.ts`
+- `server/src/services/connectors/slack.ts`
+- `server/src/services/fixtures/slack-files.ts`
+- `packages/shared/src/slack-tools.ts`
+
 ## Owner handoff and ownership (TECH-7952, comms ownership)
 
 - `server/src/services/access.ts`

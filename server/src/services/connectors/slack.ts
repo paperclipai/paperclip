@@ -1,5 +1,6 @@
 import { authorizeSlackDocument } from "./slack-document.js";
 import { slackDelivery } from "./slack-delivery.js";
+import { readSlackFileContent } from "./slack-file-content.js";
 import { slackMessage } from "./slack-message.js";
 import { findSlackUsers } from "./slack-user-search.js";
 import { executeSlackWrite } from "./slack-writes.js";
@@ -432,54 +433,11 @@ export async function executeSlackTool(
         sourceTrust: "untrusted",
       };
     }
-    let content: string | null = null;
-    const textual =
-      typeof file.mimetype === "string" &&
-      /^(text\/|application\/(json|xml|vnd\.slack-docs))/.test(file.mimetype);
-    if (
-      textual &&
-      typeof file.url_private_download === "string" &&
-      typeof file.size === "number" &&
-      file.size <= 256 * 1024
-    ) {
-      const url = new URL(file.url_private_download);
-      if (
-        url.protocol !== "https:" ||
-        url.hostname !== "files.slack.com" ||
-        url.username ||
-        url.password ||
-        url.port
-      )
-        throw forbidden("Unsupported Slack file download destination");
-      const response = await fetchImpl(url, {
-        redirect: "error",
-        signal: AbortSignal.timeout(20_000),
-        headers: { authorization: `Bearer ${authority.botToken}` },
-      });
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw forbidden("Slack file content is unavailable");
-      }
-      const reader = response.body?.getReader();
-      if (reader) {
-        const chunks: Uint8Array[] = [];
-        let size = 0;
-        try {
-          for (;;) {
-            const part = await reader.read();
-            if (part.done) break;
-            size += part.value.length;
-            if (size > 256 * 1024)
-              throw forbidden("Slack text file exceeds the read limit");
-            chunks.push(part.value);
-          }
-        } finally {
-          await reader.cancel().catch(() => {});
-          reader.releaseLock();
-        }
-        content = Buffer.concat(chunks).toString("utf8");
-      }
-    }
+    const { content, limitation } = await readSlackFileContent(
+      file,
+      authority.botToken,
+      fetchImpl,
+    );
     return {
       file: {
         id: file.id,
@@ -490,10 +448,7 @@ export async function executeSlackTool(
         permalink: file.permalink,
       },
       content,
-      limitation:
-        content === null
-          ? "Metadata only. This file type or size is not available as inline text; do not claim to have read its contents."
-          : null,
+      limitation,
       sourceTrust: "untrusted",
     };
   }

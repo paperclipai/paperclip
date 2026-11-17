@@ -187,7 +187,7 @@ export const SLACK_TOOLS = [
     "files.info",
     ["files:read"],
     "read",
-    "Read a file linked from an authorized message. Supply the source message; arbitrary file IDs do not grant access.",
+    "Read a file linked from an authorized message. Supply the source message; arbitrary file IDs do not grant access. Returns the text of text files up to 256 KB and the extracted text of PDF and Word documents up to 5 MB; other files return metadata only. For a file attached in a thread reply, pass the reply's ts and the parent post's ts as thread_ts.",
     { ...message, file },
   ),
   tool(

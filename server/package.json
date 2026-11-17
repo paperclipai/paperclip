@@ -61,6 +61,7 @@
     "@chat-adapter/teams": "4.39.0",
     "@chat-adapter/telegram": "4.39.0",
     "@discordjs/ws": "1.2.3",
+    "@firecrawl/anydoc": "0.2.4",
     "@grpc/grpc-js": "1.14.5",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@openrouter/ai-sdk-provider": "3.1.0",
