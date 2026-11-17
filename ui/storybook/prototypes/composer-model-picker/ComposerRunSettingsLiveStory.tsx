@@ -16,6 +16,7 @@ const agents = new Map(composerAgents.map((fixture) => [fixture.id, {
   adapterConfig: {
     ...(fixture.defaultModel ? { model: fixture.defaultModel } : {}),
     ...(fixture.provider === "OpenRouter" ? { provider: "openrouter" } : {}),
+    ...(fixture.engine ? { engine: fixture.engine } : {}),
   },
   defaultEnvironmentId: null,
 } as Agent]));

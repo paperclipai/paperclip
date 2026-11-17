@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { noticeMetadataReferencesRecoveryAction } from "./successful-run-handoff.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import {
   DEFAULT_STRANDED_RECOVERY_NOTICE_BODY,
   buildConfigurationIncompleteRecoveryNoticeSeed,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildNoRunningExecutionNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
   buildWorkspaceValidationRecoveryNoticeSeed,
 } from "./stranded-notice.js";
@@ -15,9 +17,19 @@ function allRows(metadata: { sections: Array<{ rows: unknown[] }> }) {
 }
 
 describe("stranded recovery notice seeds", () => {
+  it("says what happened and the one thing to do, with no internal words (the UI recognizes this wording)", () => {
+    for (const seed of [buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }),
+      buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 3 })]) {
+      expect(seed.body).toMatch(/^Paperclip tried to (start|continue) this task again, but it still could not (start|continue)\b/);
+      expect(seed.body).toContain("Press Retry");
+      expect(seed.body).not.toMatch(/execution path|intervention|`blocked`|`todo`|`in_progress`|issue|board operator|inspect|repair/i);
+    }
+    expect(buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 3 }).body).toContain("after 3 tries");
+  });
+
   it.each([
-    ["todo dispatch", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }), "No live execution path"],
-    ["in_progress continuation", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }), "No live execution path"],
+    ["todo dispatch", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }), "Task could not continue"],
+    ["in_progress continuation", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }), "Task could not continue"],
     ["workspace validation", buildWorkspaceValidationRecoveryNoticeSeed(), "Workspace validation failed"],
     ["configuration incomplete", buildConfigurationIncompleteRecoveryNoticeSeed(), "Configuration incomplete"],
     ["review participant recovery", buildExecutionReviewParticipantRecoveryNoticeSeed(), "Review recovery stalled"],
@@ -60,17 +72,65 @@ describe("stranded recovery notice seeds", () => {
     expect(disabled.body).toContain("an operator disabled it");
   });
 
+  it("explains unsupported concurrent shared workspace placement instead of missing secrets", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported" });
+    expect(seed.title).toBe("Shared workspace unavailable");
+    expect(seed.body).toContain("cannot place concurrent agents in one physical shared folder");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("isolated task workspace");
+  });
+
+  it("explains a quiet holder that still owns the shared workspace", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported", holderStale: true });
+    expect(seed.title).toBe("Shared workspace still held");
+    expect(seed.body).toContain("no output for more than an hour");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("Stop the other run on this task");
+  });
+
+  it("offers retry without a workspace repair checklist", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "workspace_source_restricted" });
+    expect(seed.title).toBe("Task couldn’t start");
+    expect(seed.body).toBe("The task couldn’t start.");
+    expect(seed.nextAction).toBe("Retry the task.");
+  });
+
   it("keeps the secret-binding copy for other configuration gaps", () => {
     expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
-      "secret/env bindings",
+      "a secret it needs is not set",
     );
-    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("a secret it needs is not set");
+  });
+
+  it("explains an unresolved workspace base ref and carries its remedy into the recovery card", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "workspace_base_ref_unresolved",
+      requestedRef: "main",
+      attemptedRefs: ["origin/main"],
+      fetchError: "fatal: couldn't find remote ref refs/heads/main",
+      missingBindings: [],
+    });
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed,
+      recoveryActionId: "base-ref-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "configuration_incomplete" },
+    });
+    expect(notice.presentation.title).toBe("Workspace base ref unavailable");
+    expect(notice.body).toContain("did not start");
+    expect(notice.body).toContain("starting branch");
+    expect(notice.body).not.toContain("secret");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Next action",
+      value: "Set a starting branch that exists in the repository, then press Retry.",
+    });
   });
 
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
-    expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
+    expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("tried to start this task again");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
-      "retried continuation",
+      "tried to continue this task again",
     );
   });
 });
@@ -86,7 +146,49 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.presentation.title).toBe("Workspace scan timed out");
     expect(notice.body).toContain("before the agent started");
     expect(notice.body).not.toContain("retried continuation");
-    expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
+    expect(JSON.stringify(notice.metadata)).toContain("took too long, so no agent work started");
+  });
+  it("promises an automatic retry for a timed-out sandbox setup only when the sweep will continue it", () => {
+    for (const errorCode of ["reusable_sandbox_resume_failed", "remote_workspace_prepare_timeout"]) {
+      for (const continuesAutomatically of [true, false]) {
+        const notice = buildStrandedRecoveryEscalationNotice({
+          seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+          recoveryActionId: "sandbox-recovery", recoveryOwner: null, continuesAutomatically,
+          sourceRun: { id: "failed-run", status: "failed", errorCode },
+        });
+        const text = `${notice.body} ${JSON.stringify(notice.metadata)}`;
+        expect(text).not.toMatch(/inspect|repair|check /i);
+        if (continuesAutomatically) expect(text).toContain("tries again automatically");
+        else {
+          expect(text).not.toContain("tries again automatically");
+          expect(notice.body).toContain("Press Retry to start it again.");
+        }
+      }
+    }
+  });
+  it("names an environment plugin that was not running after its bounded retries", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: "worker-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "plugin_worker_unavailable" },
+    });
+    expect(notice.presentation.title).toBe("Environment plugin was not running");
+    expect(notice.body).toContain("before the agent started");
+    expect(JSON.stringify(notice.metadata)).toContain("Press Retry once it is running again");
+  });
+  it("asks for Retry, not a board decision, when the environment provider stayed unavailable", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryCause: ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE,
+      recoveryActionId: "provider-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE },
+    });
+    const metadata = JSON.stringify(notice.metadata);
+    expect(notice.presentation.title).toBe("Environment provider was temporarily unavailable");
+    expect(metadata).toContain("Retry when ready");
+    expect(metadata).not.toContain("Waiting for you");
   });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
@@ -149,7 +251,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
 
     const ownerRow = allRows(notice.metadata).find((row) => row.label === "Recovery owner");
     expect(ownerRow?.type).toBe("key_value");
-    expect(ownerRow?.value).toBe("Board decision required");
+    expect(ownerRow?.value).toBe("Waiting for you");
   });
 
   it("derives title from the recovery cause and body from the plain-comment fallback", () => {
@@ -261,4 +363,54 @@ it("names the unavailable AI account instead of suggesting secret bindings", () 
   expect(notice.title).toBe("AI connection needs attention");
   expect(notice.body).toContain("Reconnect the account");
   expect(notice.body).not.toContain("secret/env");
+});
+
+it("names a found project authentication conflict instead of suggesting secret bindings", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_incompatible", actionUrl: "/agents/agent-1/runtime" });
+  expect(notice.title).toBe("AI connection conflicts with project settings");
+  expect(notice.body).toContain("apiKeyHelper");
+  expect(notice.nextAction).toContain("choose a different AI connection");
+  expect(notice.body).not.toContain("secret/env");
+});
+
+it("names a remote Runner that was still not updated after its retries", () => {
+  const notice = buildStrandedRecoveryEscalationNotice({
+    seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+    recoveryActionId: "runner-recovery",
+    recoveryOwner: null,
+    sourceRun: { id: "failed-run", status: "failed", errorCode: "runner_revision_mismatch" },
+  });
+  expect(notice.presentation.title).toBe("Remote Runner is out of date");
+  expect(notice.body).toContain("Runner was still not updated");
+  expect(notice.body).not.toContain("workspace");
+  expect(notice.body).not.toContain("authentication");
+  expect(JSON.stringify(notice.metadata)).toContain("remote Runner received the update");
+});
+
+it("names the managed AI connection a plugin Runner-task environment requires", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required" });
+  expect(notice.title).toBe("AI connection required");
+  expect(notice.body).toContain("requires a managed AI connection");
+  expect(notice.nextAction).toContain("Choose an AI connection");
+  expect(notice.body).not.toContain("secret/env");
+});
+
+it("tells the operator to switch a preconfigured Runner home to an isolated one", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_required", homeMode: "preconfigured" });
+  expect(notice.title).toBe("Isolated Runner home required");
+  expect(notice.nextAction).toContain("isolated Runner home");
+  expect(notice.nextAction).not.toContain("Choose an AI connection");
+});
+
+it("never tells a person to press Retry when the task offers no Retry", () => {
+  const sourceRun = { id: "run-1", status: "cancelled", errorCode: "execution_reconciliation_required" };
+  for (const seed of [buildNoRunningExecutionNoticeSeed({ status: "in_progress" }), null]) {
+    const offered = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun });
+    expect(`${offered.body} ${JSON.stringify(allRows(offered.metadata))}`).toMatch(/Press Retry/);
+    const withheld = buildStrandedRecoveryEscalationNotice({ seed, recoveryActionId: "action-1", recoveryOwner: null, sourceRun,
+      retryOffered: false });
+    expect(withheld.body).not.toMatch(/retry/i);
+    expect(JSON.stringify(allRows(withheld.metadata))).not.toMatch(/retry/i);
+    expect(withheld.body).toContain("Paperclip is holding this task until its saved work is settled.");
+  }
 });

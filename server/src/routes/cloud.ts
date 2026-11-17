@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { forbidden, HttpError, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { CloudPortfolioError, type CloudPortfolioPhase } from "../services/cloud-portfolio-error.js";
 import {
   getCloudStackContext,
   type CloudInstanceEnv,
@@ -8,6 +9,7 @@ import {
 
 const DEFAULT_PORTFOLIO_CACHE_TTL_MS = 30_000;
 const CLOUD_PORTFOLIO_PATH = "/v1/tenant/portfolio";
+const RETRYABLE_FETCH_RESET_CODES = new Set(["ECONNRESET", "UND_ERR_SOCKET"]);
 
 type PortfolioCacheEntry = {
   expiresAt: number;
@@ -67,35 +69,66 @@ export function cloudRoutes(opts: {
       });
     }
 
+    const startedAt = performance.now();
+    let phase: CloudPortfolioPhase = "fetch";
+    let upstreamStatus: number | null = null;
+    let upstreamSignal: AbortSignal | undefined;
+    const portfolioError = (kind: "upstream" | "invalid_response", error?: unknown) => {
+      const reportableError = new CloudPortfolioError(kind, {
+        phase,
+        elapsedMs: performance.now() - startedAt,
+        upstreamStatus,
+        deadlineExceeded: upstreamSignal?.aborted === true,
+      }, error);
+      // Preserve the route callsite instead of grouping by this helper frame.
+      Error.captureStackTrace?.(reportableError, portfolioError);
+      return reportableError;
+    };
+
     try {
-      const upstream = await fetchImpl(portfolioUrl, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${tenantToken}`,
-          "x-paperclip-cloud-user-id": actorUserId,
-          "x-paperclip-cloud-stack-id": context.stackId,
-        },
-        signal: AbortSignal.timeout(10_000),
-      });
+      upstreamSignal = AbortSignal.timeout(10_000);
+      let upstream: Response;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          upstream = await fetchImpl(portfolioUrl, {
+            method: "GET",
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${tenantToken}`,
+              "x-paperclip-cloud-user-id": actorUserId,
+              "x-paperclip-cloud-stack-id": context.stackId,
+            },
+            signal: upstreamSignal,
+          });
+          break;
+        } catch (error) {
+          const { diagnostics } = portfolioError("upstream", error);
+          if (attempt > 1 || !RETRYABLE_FETCH_RESET_CODES.has(String(diagnostics.networkCode))) throw error;
+          logger.warn(
+            { cloudPortfolio: diagnostics },
+            "Paperclip Cloud portfolio connection reset; retrying once",
+          );
+        }
+      }
+      phase = "http_response";
+      upstreamStatus = upstream.status;
       if (!upstream.ok) {
+        const error = portfolioError("upstream");
         logger.warn(
-          { status: upstream.status, stackId: context.stackId },
+          { cloudPortfolio: error.diagnostics },
           "Paperclip Cloud portfolio request failed",
         );
-        throw new HttpError(502, "Paperclip Cloud portfolio request failed", {
-          code: "cloud_portfolio_upstream_error",
-        });
+        throw error;
       }
 
+      phase = "response_body";
       let payload: unknown;
       try {
         payload = await upstream.json();
-      } catch {
-        throw new HttpError(502, "Paperclip Cloud portfolio returned invalid JSON", {
-          code: "cloud_portfolio_invalid_response",
-        });
+      } catch (error) {
+        throw portfolioError("invalid_response", error);
       }
+      phase = "response_write";
       portfolioCache.set(cacheKey, {
         expiresAt: currentTime + cacheTtlMs,
         payload,
@@ -104,13 +137,12 @@ export function cloudRoutes(opts: {
       res.json(payload);
     } catch (error) {
       if (error instanceof HttpError) throw error;
+      const reportableError = portfolioError("upstream", error);
       logger.warn(
-        { err: error, stackId: context.stackId },
+        { cloudPortfolio: reportableError.diagnostics },
         "Paperclip Cloud portfolio request failed",
       );
-      throw new HttpError(502, "Paperclip Cloud portfolio request failed", {
-        code: "cloud_portfolio_upstream_error",
-      });
+      throw reportableError;
     }
   });
 

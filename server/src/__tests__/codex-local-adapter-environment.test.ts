@@ -7,13 +7,18 @@ import { testEnvironment } from "@paperclipai/adapter-codex-local/server";
 const itWindows = process.platform === "win32" ? it : it.skip;
 const itPosix = process.platform === "win32" ? it.skip : it;
 
-async function runProbeFixture(options: { failCleanup?: boolean; error?: string } = {}) {
+async function runProbeFixture(options: { failCleanup?: boolean; error?: string; managedProvider?: boolean } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-probe-result-"));
   const capture = path.join(root, "capture.json");
   const command = path.join(root, "codex");
+  const managedHome = path.join(root, "managed");
+  if (options.managedProvider) {
+    await fs.mkdir(managedHome);
+    await fs.writeFile(path.join(managedHome, "config.toml"), 'model_provider = "paperclip"\n');
+  }
   await fs.writeFile(command, `#!${process.execPath}
 const fs = require('node:fs');
-fs.writeFileSync(process.env.PROBE_CAPTURE, JSON.stringify({ args: process.argv.slice(2), home: process.env.CODEX_HOME }));
+fs.writeFileSync(process.env.PROBE_CAPTURE, JSON.stringify({ args: process.argv.slice(2), home: process.env.CODEX_HOME, nativeKey: process.env.OPENAI_API_KEY, providerKey: process.env.PAPERCLIP_AI_PROVIDER_KEY, config: fs.existsSync(process.env.CODEX_HOME + "/config.toml") ? fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8") : null }));
 console.error('WARN codex_core_plugins::manager: remote installed plugin bundle sync failed error=chatgpt authentication required for remote plugin catalog');
 const error = process.env.PROBE_ERROR;
 if (error) { console.error(error); process.exit(1); }
@@ -27,12 +32,13 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_t
   try {
     const result = await testEnvironment({
       companyId: "company-1", adapterType: "codex_local",
-      config: { engine: "cli", command, cwd: root, env: {
-        OPENAI_API_KEY: "fixture-key", PROBE_CAPTURE: capture,
+      config: { engine: "cli", command, cwd: root, ...(options.managedProvider ? { managedAiConnection: { identity: "fixture" }, managedAiRouting: { kind: "openrouter" } } : {}), env: {
+        ...(options.managedProvider ? { CODEX_HOME: managedHome, PAPERCLIP_AI_PROVIDER_KEY: "gateway-fixture-key" } : {}),
+        OPENAI_API_KEY: options.managedProvider ? "" : "fixture-key", PROBE_CAPTURE: capture,
         PROBE_ERROR: options.error ?? "", PATH: `${root}${path.delimiter}${process.env.PATH ?? ""}`,
       } },
     });
-    return { result, capture: JSON.parse(await fs.readFile(capture, "utf8")) as { args: string[]; home: string } };
+    return { result, capture: JSON.parse(await fs.readFile(capture, "utf8")) as { args: string[]; home: string; nativeKey: string; providerKey: string; config: string | null } };
   } finally {
     const recorded = await fs.readFile(capture, "utf8").then(JSON.parse).catch(() => null);
     if (recorded?.home) await fs.rm(recorded.home, { recursive: true, force: true });
@@ -47,6 +53,16 @@ describe("codex_local environment diagnostics", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
+  itPosix("tests the managed provider without falling back to the host OpenAI key", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "unrelated-host-key");
+    const { result, capture } = await runProbeFixture({ managedProvider: true });
+    expect(result.status).toBe("pass");
+    expect(capture.nativeKey).toBe("");
+    expect(capture.providerKey).toBe("gateway-fixture-key");
+    expect(capture.config).toContain('model_provider = "paperclip"');
+    expect(result.checks).not.toContainEqual(expect.objectContaining({ code: "codex_openai_api_key_present" }));
+  });
+
   itPosix("preserves a successful hello when probe cleanup races a background writer", async () => {
     const { result } = await runProbeFixture({ failCleanup: true });
     expect(result.status).toBe("pass");

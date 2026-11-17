@@ -1,0 +1,73 @@
+{
+  "retrievedAt": "2026-10-08",
+  "providers": [
+    {
+      "slug": "tavily",
+      "provider": "Tavily",
+      "file": "ui/public/brands/apps/tavily.png",
+      "sourceUrl": "https://www.tavily.com/apple-icon.png?apple-icon.2rsjznomrsf77.png",
+      "linkedFrom": "https://www.tavily.com/",
+      "retrievedAt": "2026-10-08",
+      "sha256": "7f8dd7b74386f30b061ddfe57e58217d6d32f9318e3f95fdf4130db6a22e60dc",
+      "note": "Official Tavily touch icon; retained without modification."
+    },
+    {
+      "slug": "calendly",
+      "provider": "Calendly",
+      "file": "ui/public/brands/apps/calendly.png",
+      "sourceUrl": "https://calendly.com/media/favicon/apple-touch-icon.png",
+      "linkedFrom": "https://calendly.com/",
+      "retrievedAt": "2026-10-08",
+      "sha256": "96a66579d19466967a6326c6d5bab7195fd8f48dace937e84753674282e75246",
+      "note": "Official Calendly touch icon; retained without modification."
+    },
+    {
+      "slug": "exa",
+      "provider": "Exa",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/exa.svg",
+      "sourceUrl": "https://exa.ai/assets/Exa%20Brand%20Assets.zip",
+      "sourceContext": "Exa Brand Assets/Logo/Icons/Icon Square.svg",
+      "sha256": "1bd417f607768b78e848fd49459a028b1e01e45dd26a455d3292dba4f684a290"
+    },
+    {
+      "slug": "firecrawl",
+      "provider": "Firecrawl",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/firecrawl.svg",
+      "sourceUrl": "https://www.firecrawl.dev/brand/firecrawl-wordmark.svg",
+      "sourceContext": "https://www.firecrawl.dev/press-brand",
+      "sha256": "7edcff63dfe51f3129d039110786da574a8610ee0ed5998666f4663f3d744ae9"
+    },
+    {
+      "slug": "parallel-search",
+      "provider": "Parallel Search",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/parallel.svg",
+      "sourceUrl": "https://assets.parallel.ai/dark-parallel-avatar-270.svg",
+      "sourceContext": "https://search.parallel.ai/mcp (MCP initialize icons)",
+      "sha256": "b02498a0d8a1047d95affc7c09e92d54e560469a45610fa4514f17e460cf695a",
+      "darkAsset": "/brands/apps/parallel-dark.svg",
+      "darkSourceUrl": "https://assets.parallel.ai/white-parallel-avatar-270.svg",
+      "darkSha256": "fc7f2c8b12bad544e8428ebd14d64792a6c03444533255983668af3109e676d1"
+    },
+    {
+      "slug": "windsor-ai",
+      "provider": "Windsor.ai",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/windsor-ai.png",
+      "sourceUrl": "https://windsor.ai/wp-content/uploads/2020/02/favicon-310-300x300.png",
+      "sourceContext": "https://windsor.ai/",
+      "sha256": "0fd54d0fe1df834bbf86e1f738d7bdf1a26a89da9fc4e7d3b7c61e2ab2d81c57"
+    },
+    {
+      "slug": "gsc-wizard",
+      "provider": "GSC Wizard",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/gsc-wizard.png",
+      "sourceUrl": "https://www.gscwizard.com/wizard-logo-icon-256_circle.png",
+      "sourceContext": "https://www.gscwizard.com/",
+      "sha256": "001469a9236ced832f82bcea0b72a9a9a7ff26cab3f58473431b9b2be66c5a19"
+    }
+  ]
+}

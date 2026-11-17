@@ -20,6 +20,12 @@ const artifactsApiMock = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const artifactsV1Flag = vi.hoisted(() => ({ enabled: false, loaded: true }));
+
+vi.mock("@/hooks/useArtifactsV1Enabled", () => ({
+  useArtifactsV1Enabled: () => artifactsV1Flag,
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -161,6 +167,7 @@ describe("Artifacts page", () => {
     document.body.appendChild(container);
     breadcrumbState.setBreadcrumbs.mockReset();
     artifactsApiMock.list.mockReset();
+    artifactsV1Flag.enabled = false;
     latestObserverCallback = null;
     originalIntersectionObserver = window.IntersectionObserver;
     window.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver;
@@ -186,7 +193,7 @@ describe("Artifacts page", () => {
         cursor: undefined,
       });
       const groupControl = container.querySelector('[data-testid="artifact-group-control"]') as HTMLButtonElement;
-      const allFilter = [...container.querySelectorAll('[role="tab"]')]
+      const allFilter = [...container.querySelectorAll('[aria-label="Filter artifacts by type"] button')]
         .find((element) => element.textContent === "All") as HTMLButtonElement;
       expect(groupControl).not.toBeNull();
       expect(groupControl.textContent).toBe("");
@@ -425,5 +432,107 @@ describe("Artifacts page", () => {
     flushSync(() => {
       root.unmount();
     });
+  });
+});
+
+describe("Artifacts page — Artifacts V1 (Settings > Experimental)", () => {
+  let container: HTMLDivElement;
+  let originalIntersectionObserver: typeof IntersectionObserver | undefined;
+
+  const radio = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find((el) => el.textContent?.trim() === label) ?? null;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    breadcrumbState.setBreadcrumbs.mockReset();
+    artifactsApiMock.list.mockReset();
+    artifactsV1Flag.enabled = true;
+    latestObserverCallback = null;
+    originalIntersectionObserver = window.IntersectionObserver;
+    window.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver;
+  });
+
+  afterEach(() => {
+    window.IntersectionObserver = originalIntersectionObserver as typeof IntersectionObserver;
+    artifactsV1Flag.enabled = false;
+    container.remove();
+  });
+
+  it("shows the Tasks view by default: a stack tile per task with the identifier pill, count and link to the stack", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], groups: [sampleGroup()], nextCursor: null });
+    const { root } = renderArtifacts(container);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="artifact-v1-stack-tile"]')).not.toBeNull();
+    });
+    const tile = container.querySelector<HTMLAnchorElement>('[data-testid="artifact-v1-stack-tile"]');
+    expect(tile?.getAttribute("href")).toContain("groupIssueId=issue-1");
+    expect(tile?.querySelector("[data-artifact-pill]")?.textContent).toBe("PAP-42");
+    expect(tile?.textContent).toContain("3 Artifacts");
+    expect(radio("Tasks")?.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector('[data-testid="artifact-group-card"]')).toBeNull();
+    expect(artifactsApiMock.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ groupBy: "task", kind: "all" }));
+    flushSync(() => root.unmount());
+  });
+
+  it("shows a task with one artifact as a single tile that opens the artifact", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], groups: [sampleGroup({ count: 1 })], nextCursor: null });
+    const { root } = renderArtifacts(container);
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="artifact-v1-single-tile"]')).not.toBeNull();
+    });
+    expect(container.querySelector<HTMLAnchorElement>('[data-testid="artifact-v1-single-tile"]')?.getAttribute("href")).toBe("/PAP/issues/PAP-42#document-brief");
+    expect(container.querySelector('[data-testid="artifact-v1-stack-tile"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("switches to a flat view by kind from the view tabs", async () => {
+    artifactsApiMock.list
+      .mockResolvedValueOnce({ artifacts: [], groups: [sampleGroup()], nextCursor: null })
+      .mockResolvedValueOnce({ artifacts: [sampleArtifact({ id: "img-1", source: "work_product", mediaKind: "image", contentType: "image/png", contentPath: "/files/hero.png", title: "Hero" })], nextCursor: null });
+    const { root } = renderArtifacts(container);
+    await waitForAssertion(() => {
+      expect(radio("Images")).not.toBeNull();
+    });
+    flushSync(() => radio("Images")!.click());
+    await waitForAssertion(() => {
+      expect(artifactsApiMock.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ groupBy: "none", kind: "image" }));
+      expect(container.querySelector('[data-testid="artifact-v1-single-tile"]')).not.toBeNull();
+    });
+    expect(radio("Images")?.getAttribute("aria-checked")).toBe("true");
+    expect(container.querySelector("[data-artifact-print]")).not.toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("never hides an active kind under the Tasks view: a kind in the URL is a flat view, and grouping clears it", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [sampleArtifact({ id: "img-1", source: "work_product", mediaKind: "image", contentType: "image/png", contentPath: "/files/hero.png" })], nextCursor: null });
+    const { root } = renderArtifacts(container, ["/artifacts?kind=image&groupBy=task"]);
+    await waitForAssertion(() => {
+      expect(artifactsApiMock.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ groupBy: "none", kind: "image" }));
+    });
+    expect(radio("Images")?.getAttribute("aria-checked")).toBe("true");
+    expect(radio("Tasks")?.getAttribute("aria-checked")).toBe("false");
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], groups: [sampleGroup()], nextCursor: null });
+    flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="artifact-group-option-task"]')!.click());
+    await waitForAssertion(() => {
+      expect(artifactsApiMock.list).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ groupBy: "task", kind: "all" }));
+    });
+    expect(radio("Tasks")?.getAttribute("aria-checked")).toBe("true");
+    flushSync(() => root.unmount());
+  });
+
+  it("renders an open stack as single tiles behind the All stacks row", async () => {
+    artifactsApiMock.list.mockResolvedValue({
+      artifacts: [sampleArtifact(), sampleArtifact({ id: "artifact-2", title: "Deck", href: "/PAP/issues/PAP-42#deck" })],
+      groups: [],
+      selectedGroup: sampleGroup(),
+      nextCursor: null,
+    });
+    const { root } = renderArtifacts(container, ["/artifacts?groupIssueId=issue-1"]);
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll('[data-testid="artifact-v1-single-tile"]')).toHaveLength(2);
+    });
+    expect(container.querySelector('[data-testid="artifact-stack-back"]')).not.toBeNull();
+    expect(radio("Tasks")?.getAttribute("aria-checked")).toBe("true");
+    flushSync(() => root.unmount());
   });
 });

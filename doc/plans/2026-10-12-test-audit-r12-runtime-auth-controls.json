@@ -1,0 +1,432 @@
+{
+  "baseSHA": "e12e8de07b7cbd0c1b37a921d6db432bbb8d32c5",
+  "testPatchSHA256": "f339d62b12317218d4206eafa1434725a50ded2610285193802c6379afa44506",
+  "tests": [
+    {
+      "file": "cli/src/__tests__/runtime-info.test.ts",
+      "originalSHA256": "ab601b9fef15f75e5685d362a35750a891c0c8b7db466ff7d047010ff9e51714",
+      "candidateSHA256": "a8beaa462ce1220221b6c2628116ccd3f45152e4177ecb3fb75410ac8a28e7c4"
+    },
+    {
+      "file": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.test.ts",
+      "originalSHA256": "501bb3720e431a49f360d60b80e9b92184825920109858077bd5f2ae53ad26fa",
+      "candidateSHA256": "7c00cd14422f2657056a7fd760b4fb5dc66c07e3abcda3abe6356edb8c29731a"
+    },
+    {
+      "file": "packages/adapters/grok-local/src/server/grok-auth-merge-decision.test.ts",
+      "originalSHA256": "4af358ecdac53c1b22b0288939565be015decaefcfa8502bcd2fadb9c8a14c52",
+      "candidateSHA256": "39c4d03eeed86d16184df9173ad0df7c46a2c3eb1fe58f2a2125c965e64e8d0b"
+    },
+    {
+      "file": "packages/adapters/codex-local/src/server/adapter-auth-promotion.test.ts",
+      "originalSHA256": "19e37c4f9e470239408d3710a4ed1ca2414170d6ec83d50f3431593bda79019a",
+      "candidateSHA256": "3be8594756d8d23ff28361e88c5175c4dc043d3ec08a64d802f5c9373c97070d"
+    }
+  ],
+  "owners": [
+    {
+      "file": "cli/src/runtime-info.ts",
+      "originalSHA256": "b051153fd3553d71cadccff7d79edc85f6dc74fd87de5563fe91424f05eb90ec",
+      "finalSHA256": "b051153fd3553d71cadccff7d79edc85f6dc74fd87de5563fe91424f05eb90ec",
+      "productionRestored": true
+    },
+    {
+      "file": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.cjs",
+      "originalSHA256": "86d7323e0eb4af87718c48efa4af28fb18b5c925ca42c91cd10337e696b45557",
+      "finalSHA256": "86d7323e0eb4af87718c48efa4af28fb18b5c925ca42c91cd10337e696b45557",
+      "productionRestored": true
+    },
+    {
+      "file": "packages/adapters/codex-local/src/server/adapter-auth-promotion.ts",
+      "originalSHA256": "6065e6e64c53965709acec0fd21431c1b08799bef8a9f2a9fba92f4c367a740a",
+      "finalSHA256": "6065e6e64c53965709acec0fd21431c1b08799bef8a9f2a9fba92f4c367a740a",
+      "productionRestored": true
+    },
+    {
+      "file": "packages/adapters/grok-local/src/server/grok-auth-merge-decision.cjs",
+      "originalSHA256": "573b115eebbb2ccf93dcbae415f1f182862f196a8d10ca3b1c3aafe5ced7ec64",
+      "finalSHA256": "573b115eebbb2ccf93dcbae415f1f182862f196a8d10ca3b1c3aafe5ced7ec64",
+      "productionRestored": true
+    }
+  ],
+  "completeFileRuns": [
+    {
+      "label": "baseline",
+      "exitCode": 0,
+      "passed": 177,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "name": "packages/adapters/codex-local/src/server/adapter-auth-promotion.test.ts",
+          "status": "passed",
+          "cases": 28
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-cache.test.ts",
+          "status": "passed",
+          "cases": 31
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 17
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 14
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-home.test.ts",
+          "status": "passed",
+          "cases": 53
+        },
+        {
+          "name": "cli/src/__tests__/runtime-info.test.ts",
+          "status": "passed",
+          "cases": 3
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-home.test.ts",
+          "status": "passed",
+          "cases": 9
+        }
+      ],
+      "reportSHA256": "a2a46938d83607e37c114e7b4da42068230185e787fbd08ad97101f30820acec",
+      "logSHA256": "79fc48066d2f3f285d8a270b163121d73c99885c2708bc862c3ba8aa042abec0"
+    },
+    {
+      "label": "candidate",
+      "exitCode": 0,
+      "passed": 170,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "name": "packages/adapters/codex-local/src/server/adapter-auth-promotion.test.ts",
+          "status": "passed",
+          "cases": 25
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-cache.test.ts",
+          "status": "passed",
+          "cases": 31
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 17
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 12
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-home.test.ts",
+          "status": "passed",
+          "cases": 53
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 10
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-home.test.ts",
+          "status": "passed",
+          "cases": 9
+        },
+        {
+          "name": "cli/src/__tests__/runtime-info.test.ts",
+          "status": "passed",
+          "cases": 2
+        }
+      ],
+      "reportSHA256": "4604c4120f3a892eda54fa9836a62e1805ee5c48fbfb4e9086eaf3ae8870c782",
+      "logSHA256": "084c1048d51859ee32c514672fd0a4a0828eeea0ca2dc42bf8310d2de46e215c"
+    },
+    {
+      "label": "revert",
+      "exitCode": 0,
+      "passed": 177,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "name": "packages/adapters/codex-local/src/server/adapter-auth-promotion.test.ts",
+          "status": "passed",
+          "cases": 28
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-cache.test.ts",
+          "status": "passed",
+          "cases": 31
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 17
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 14
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-home.test.ts",
+          "status": "passed",
+          "cases": 53
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-home.test.ts",
+          "status": "passed",
+          "cases": 9
+        },
+        {
+          "name": "cli/src/__tests__/runtime-info.test.ts",
+          "status": "passed",
+          "cases": 3
+        }
+      ],
+      "reportSHA256": "b60e9b8b949acb1fb603100c59bf9c36cc564858426ebe2576fae3c11a8ab3e7",
+      "logSHA256": "0395a74d8c069e3a8963c297599d94655e3768ccc5c8c6f2ab108cb4c8a3b450"
+    },
+    {
+      "label": "candidate-after-restoration",
+      "exitCode": 0,
+      "passed": 170,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        {
+          "name": "packages/adapters/codex-local/src/server/adapter-auth-promotion.test.ts",
+          "status": "passed",
+          "cases": 25
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-cache.test.ts",
+          "status": "passed",
+          "cases": 31
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 17
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 12
+        },
+        {
+          "name": "packages/adapters/codex-local/src/server/codex-home.test.ts",
+          "status": "passed",
+          "cases": 53
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-copyback.test.ts",
+          "status": "passed",
+          "cases": 11
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-auth-merge-decision.test.ts",
+          "status": "passed",
+          "cases": 10
+        },
+        {
+          "name": "packages/adapters/grok-local/src/server/grok-home.test.ts",
+          "status": "passed",
+          "cases": 9
+        },
+        {
+          "name": "cli/src/__tests__/runtime-info.test.ts",
+          "status": "passed",
+          "cases": 2
+        }
+      ],
+      "reportSHA256": "d2d363ab57d607633f12d75eaea17265010e834c7d92bed588334a39e6550867",
+      "logSHA256": "21cfea7bd04b674fccbe2226aebfba9b19dc12b022df995d7c35e779122c01bf"
+    }
+  ],
+  "mutations": [
+    {
+      "label": "mutation-runtime-write",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 1,
+      "reportSHA256": "5271aa251ce2c804eaea9fb345854c61674247c5cf91aaf3f2c043f1177fde69",
+      "logSHA256": "68f6c2f446ef0f1717f1f676f65e999657f9455954279890566a2a777dade6da",
+      "originalSHA256": "b051153fd3553d71cadccff7d79edc85f6dc74fd87de5563fe91424f05eb90ec",
+      "mutatedSHA256": "4bab7a0eb48f9ec37c7912640c544a460e498ecc806200fb086c7f9c23c24490",
+      "owner": "cli/src/runtime-info.ts",
+      "keeper": "runtime info does not remove runtime info owned by a replacement process",
+      "mutationId": "runtime-write",
+      "assertion": "AssertionError: expected null to deeply equal { schemaVersion: 1, \u2026(6) }",
+      "edit": {
+        "from": "    fs.renameSync(temporaryPath, filePath);",
+        "to": "omit the atomic rename statement"
+      }
+    },
+    {
+      "label": "mutation-codex-default-absent",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 11,
+      "reportSHA256": "5441f2d038e120fdd62f40fbf0adad3711f5bee66ac214a2f188ad90b798a22a",
+      "logSHA256": "d52cd9f252f1f9ebf4da23f86cacd9682fc7137aef7ec64d311c14074aed2226",
+      "originalSHA256": "86d7323e0eb4af87718c48efa4af28fb18b5c925ca42c91cd10337e696b45557",
+      "mutatedSHA256": "c2140ce41b07a007adc6232b1db6ee308db14f5adfd7e31aa17d509970afa97f",
+      "owner": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.cjs",
+      "keeper": "codex-auth-merge-decision predicate seed mode the leading positional --seed-if-dest-absent flag is parsed before the two path arguments; a default two-path call never enters seed mode",
+      "mutationId": "codex-default-absent",
+      "assertion": "AssertionError: expected 10 to be 20 // Object.is equality",
+      "edit": {
+        "from": "    seedIfDestAbsent &&",
+        "to": "    true &&"
+      }
+    },
+    {
+      "label": "mutation-codex-seed-absent",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 11,
+      "reportSHA256": "0784aed1b34cb2dfa13d7c93ac10d5ef8a9f38da153eebce234c762fab6cb628",
+      "logSHA256": "02e7b7367bdecc722e3a57bffb8974dee0afc2c0304f23dcea76db3a13ce8ad6",
+      "originalSHA256": "86d7323e0eb4af87718c48efa4af28fb18b5c925ca42c91cd10337e696b45557",
+      "mutatedSHA256": "867730de34972c627b235a1499aee126ab428dd899098e5b1d30d450dd764113",
+      "owner": "packages/adapters/codex-local/src/server/codex-auth-merge-decision.cjs",
+      "keeper": "codex-auth-merge-decision predicate seed mode the leading positional --seed-if-dest-absent flag is parsed before the two path arguments; a default two-path call never enters seed mode",
+      "mutationId": "codex-seed-absent",
+      "assertion": "AssertionError: expected 20 to be 10 // Object.is equality",
+      "edit": {
+        "from": "    return sourceIsImplausible ? IMPLAUSIBLE_LAST_REFRESH : USE_SOURCE;",
+        "to": "    return KEEP_DESTINATION;"
+      }
+    },
+    {
+      "label": "mutation-grok-iso-expiry",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 9,
+      "reportSHA256": "3aa14c8f3dc9a4720743926fb0f62601aba8a7cc862d154064ab32b17cc3e2fd",
+      "logSHA256": "f7835d91b6d8bbdd039ca56cc83205de798b82b4ce791b33a546a2d7cde7bb25",
+      "originalSHA256": "573b115eebbb2ccf93dcbae415f1f182862f196a8d10ca3b1c3aafe5ced7ec64",
+      "mutatedSHA256": "20a815272eff6fefe592f09e55d9d690ca3eee41e98145b4447fcdac9828d856",
+      "owner": "packages/adapters/grok-local/src/server/grok-auth-merge-decision.cjs",
+      "keeper": "grok-auth-merge-decision predicate reads an ISO-8601 expiry, an epoch-seconds expiry, and an epoch-milliseconds expiry",
+      "mutationId": "grok-iso-expiry",
+      "assertion": "AssertionError: ISO-8601: expected 20 to be 10 // Object.is equality",
+      "edit": {
+        "from": "      const ms = Date.parse(raw);",
+        "to": "      const ms = 0;"
+      }
+    },
+    {
+      "label": "mutation-promotion-company-home",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 24,
+      "reportSHA256": "aca6aa3dc842e1f1ba1c956b245393de4d2ee993d8da156b960b0af6fd69c2bc",
+      "logSHA256": "0fa22f697fbc4b042cb58ad1efe6d8db0459a6fe129e584b4666cfc421cad8f8",
+      "originalSHA256": "6065e6e64c53965709acec0fd21431c1b08799bef8a9f2a9fba92f4c367a740a",
+      "mutatedSHA256": "cf54fc5ca674868f4b98f8af0700800153837fc5db26066aec99eb530127f06e",
+      "owner": "packages/adapters/codex-local/src/server/adapter-auth-promotion.ts",
+      "keeper": "device-login credential promotion a user login seeds this account's own home and the company default home",
+      "mutationId": "promotion-company-home",
+      "assertion": "AssertionError: expected 'wrong-account' to be 'acct-42' // Object.is equality",
+      "edit": {
+        "from": "      sourceBytes: authBytes,\n      destinationPath: companyHomeAuthPath,",
+        "to": "      sourceBytes: Buffer.from(JSON.stringify({ ...JSON.parse(authBytes.toString()), tokens: { ...JSON.parse(authBytes.toString()).tokens, account_id: \"wrong-account\" } })),\n      destinationPath: companyHomeAuthPath,"
+      }
+    },
+    {
+      "label": "mutation-promotion-account-id",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 24,
+      "reportSHA256": "73d41f793829a226a0aee3cbb12b66702353f9d83bbc7e3d146f72486f193a43",
+      "logSHA256": "4deb6470827ab1cd43e3761b43ec4f73b16dbd8a6941bbf92b50c7f527d7b549",
+      "originalSHA256": "6065e6e64c53965709acec0fd21431c1b08799bef8a9f2a9fba92f4c367a740a",
+      "mutatedSHA256": "d1b3f413f0c9e5a0c2f3fd57e37f4eaf38254884c4adb894b8e2fb03605272c0",
+      "owner": "packages/adapters/codex-local/src/server/adapter-auth-promotion.ts",
+      "keeper": "device-login credential promotion a user login seeds this account's own home and the company default home",
+      "mutationId": "promotion-account-id",
+      "assertion": "AssertionError: expected 'wrong-account' to be 'acct-42' // Object.is equality",
+      "edit": {
+        "from": "    outcome: accountHomeOutcome === \"written\" ? \"promoted\" : \"kept\",\n    accountId,",
+        "to": "    outcome: accountHomeOutcome === \"written\" ? \"promoted\" : \"kept\",\n    accountId: \"wrong-account\","
+      }
+    },
+    {
+      "label": "mutation-promotion-account-home",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 24,
+      "reportSHA256": "2202e3a9350c8cccbbf880e728055c5703c594d1480a62525858842db7052f25",
+      "logSHA256": "daa89ab14e44be704e8a6926bda850d0c2e214bf602cff161bc00c5b3fa930b7",
+      "originalSHA256": "6065e6e64c53965709acec0fd21431c1b08799bef8a9f2a9fba92f4c367a740a",
+      "mutatedSHA256": "b03b3fac62ac26b179b13505268fbfd59cbf63213f10da87835f33fd5c54843d",
+      "owner": "packages/adapters/codex-local/src/server/adapter-auth-promotion.ts",
+      "keeper": "device-login credential promotion a user login seeds this account's own home and the company default home",
+      "mutationId": "promotion-account-home",
+      "assertion": "AssertionError: expected 'wrong-home' to be the exact independently resolved account-home path",
+      "edit": {
+        "from": "    outcome: accountHomeOutcome === \"written\" ? \"promoted\" : \"kept\",\n    accountId,\n    accountHomeDir,",
+        "to": "    outcome: accountHomeOutcome === \"written\" ? \"promoted\" : \"kept\",\n    accountId,\n    accountHomeDir: \"wrong-home\","
+      }
+    },
+    {
+      "label": "mutation-promotion-created-receipt",
+      "exitCode": 1,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 24,
+      "reportSHA256": "3ded03074b1f22efa84f940fbc17a91465b4f65434010e0b2b8ccc9fb16a3fa8",
+      "logSHA256": "c12316bc00a075f589b03d2b6686120d39cd8ec89763d22599546801fcf4900f",
+      "originalSHA256": "6065e6e64c53965709acec0fd21431c1b08799bef8a9f2a9fba92f4c367a740a",
+      "mutatedSHA256": "3d13658dcc9bfeab21ace2d5f44d30bd6490e73bdacb18810ab3415822bc4956",
+      "owner": "packages/adapters/codex-local/src/server/adapter-auth-promotion.ts",
+      "keeper": "device-login credential promotion a user login seeds this account's own home and the company default home",
+      "mutationId": "promotion-created-receipt",
+      "assertion": "AssertionError: expected false to be true // Object.is equality",
+      "edit": {
+        "from": "    outcome: accountHomeOutcome === \"written\" ? \"promoted\" : \"kept\",\n    accountId,\n    accountHomeDir,\n    accountHomeCreated,",
+        "to": "    outcome: accountHomeOutcome === \"written\" ? \"promoted\" : \"kept\",\n    accountId,\n    accountHomeDir,\n    accountHomeCreated: false,"
+      }
+    }
+  ]
+}

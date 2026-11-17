@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 800" width="1600" height="800"><rect width="1600" height="800" fill="#1f4d3a"/><rect x="40" y="40" width="1520" height="720" fill="none" stroke="#f3ecd9" stroke-opacity="0.25" stroke-width="2"/>
+  <g transform="translate(300 250) scale(2.1)">
+    
+    <path d="M56 90 C34 90 10 99 4 110 C2 115 8 118 16 116 C44 108 74 104 108 103 Z" fill="#e4dbc4"/>
+    <path d="M56 90 C34 90 10 99 4 110 C22 100 44 97 62 96 Z" fill="rgba(0,0,0,0.18)"/>
+    <path d="M48 98 C46 52 76 22 116 22 C156 22 184 52 186 98 C140 104 94 104 48 98 Z" fill="#f3ecd9"/>
+    <path d="M116 22 C100 44 95 70 95 101 M116 22 C140 44 150 70 151 101" fill="none" stroke="rgba(31,77,58,0.45)" stroke-width="1.6"/>
+    <path d="M48 98 C94 104 140 104 186 98" fill="none" stroke="rgba(31,77,58,0.45)" stroke-width="2.4"/>
+    <circle cx="116" cy="21" r="4.5" fill="#f3ecd9" stroke="rgba(31,77,58,0.45)" stroke-width="1"/>
+    <rect x="60" y="60" width="30" height="19" rx="2.5" fill="#c8553d" transform="rotate(-6 75 70)"/>
+  </g>
+  <text x="740" y="440" font-family="Georgia, 'Times New Roman', serif" font-size="150" fill="#f3ecd9">acmehats</text>
+  <text x="746" y="520" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="30" letter-spacing="10" fill="#f3ecd9" opacity="0.7">CUSTOM CAPS · EST. 2026</text></svg>

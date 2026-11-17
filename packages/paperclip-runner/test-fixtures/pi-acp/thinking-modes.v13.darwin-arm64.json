@@ -1,0 +1,177 @@
+{
+  "schema": "paperclip.pi-thinking-mode-proof.v1",
+  "status": "provider-free-compatibility-passed-not-paid-qualification",
+  "sourceBase": "b70cf84ea6cb20095aaeebc6af7f025ee6fdce73",
+  "profileDigest": "sha256:fe1e6da01b2a9e4c691ca27cf689d2d6de846a93be6b23fc1e103c9addd7b177",
+  "piVersion": "1.0.0",
+  "wrapperVersion": "0.0.33",
+  "platform": "darwin-arm64",
+  "patchSha256": "8b3dbb7e08c6c356e81624b9afcab13827269579cef085db15fdec0ef72aedb3",
+  "wrapperSha256": "8ef777e9e6a3cef37775bab2b800e4931330c23a0b151ce07fdc5b943f28435d",
+  "helperSha256": "2191b1e5f281d24508ec7eaff39011ee863a8a70bf54f4aa0490ad0172b323da",
+  "testFixtureSha256": "cd66c8afb34a6fc54ead7dd939470b8f01344914d0513db58d3f6e816140a45d",
+  "privateReceiptSha256": "a2e03c0ee4a07491ee5efda8e9dc251f88d52fcbb3d845b16f13376ec345bee3",
+  "externalProviderCalls": 0,
+  "syntheticLoopbackPrompts": 2,
+  "afterModelSelection": {
+    "type": "select",
+    "id": "thought_level",
+    "category": "thought_level",
+    "name": "Thinking",
+    "description": "Set the reasoning effort for this session",
+    "currentValue": "high",
+    "options": [
+      {
+        "value": "off",
+        "name": "Thinking: off",
+        "description": null
+      },
+      {
+        "value": "low",
+        "name": "Thinking: low",
+        "description": null
+      },
+      {
+        "value": "high",
+        "name": "Thinking: high",
+        "description": null
+      },
+      {
+        "value": "max",
+        "name": "Thinking: max",
+        "description": null
+      }
+    ]
+  },
+  "lowAcknowledgement": {
+    "type": "select",
+    "id": "thought_level",
+    "category": "thought_level",
+    "name": "Thinking",
+    "description": "Set the reasoning effort for this session",
+    "currentValue": "low",
+    "options": [
+      {
+        "value": "off",
+        "name": "Thinking: off",
+        "description": null
+      },
+      {
+        "value": "low",
+        "name": "Thinking: low",
+        "description": null
+      },
+      {
+        "value": "high",
+        "name": "Thinking: high",
+        "description": null
+      },
+      {
+        "value": "max",
+        "name": "Thinking: max",
+        "description": null
+      }
+    ]
+  },
+  "requestBodies": [
+    {
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "reasoning": {
+        "effort": "high"
+      }
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "reasoning": {
+        "effort": "low"
+      }
+    }
+  ],
+  "loadedModes": {
+    "currentModeId": "max",
+    "availableModes": [
+      {
+        "id": "off",
+        "name": "Thinking: off",
+        "description": null
+      },
+      {
+        "id": "low",
+        "name": "Thinking: low",
+        "description": null
+      },
+      {
+        "id": "high",
+        "name": "Thinking: high",
+        "description": null
+      },
+      {
+        "id": "max",
+        "name": "Thinking: max",
+        "description": null
+      }
+    ]
+  },
+  "loadedThoughtLevel": {
+    "type": "select",
+    "id": "thought_level",
+    "category": "thought_level",
+    "name": "Thinking",
+    "description": "Set the reasoning effort for this session",
+    "currentValue": "max",
+    "options": [
+      {
+        "value": "off",
+        "name": "Thinking: off",
+        "description": null
+      },
+      {
+        "value": "low",
+        "name": "Thinking: low",
+        "description": null
+      },
+      {
+        "value": "high",
+        "name": "Thinking: high",
+        "description": null
+      },
+      {
+        "value": "max",
+        "name": "Thinking: max",
+        "description": null
+      }
+    ]
+  },
+  "modeUpdates": [
+    "high",
+    "low",
+    "max"
+  ],
+  "networkDenial": {
+    "deniedBeforeConnect": true,
+    "underlyingConnections": 0
+  },
+  "retirement": {
+    "allOwnedChildrenClosed": true,
+    "spawnErrors": 0,
+    "count": 2
+  },
+  "scratchRemoved": true,
+  "limits": [
+    "The actual pinned Pi SDK/CLI and patched ACP wrapper were exercised against guarded loopback synthetic model responses.",
+    "This proves mode propagation and effective state, not paid model behavior, final platform packaging, complete runner admission or production readiness.",
+    "The prior paid question HTTP body was not captured. Its timeout cause remains unproven.",
+    "Three earlier private fixture teardown failures are retained and not counted as passes."
+  ],
+  "maintainedRegression": {
+    "path": "packages/paperclip-runner/test/pi-native-package-contract.test.mjs",
+    "sha256": "8a03f65dd5bc52634d683e2fa6157ae53c85063ac91647d1b936cdbd13b58a38",
+    "testName": "real Pi 1 serialized RPC thinking-modes through owned ACP/MCP bridge"
+  },
+  "focusedSuites": {
+    "wrapper": 48,
+    "nativeSdk": 13,
+    "skips": 0,
+    "externalProviderCalls": 0
+  }
+}

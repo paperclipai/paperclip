@@ -50,6 +50,15 @@ export function contextCommentGateSelected(executionIds: readonly string[] = JSO
   return executionIds.some((id) => id.endsWith(".ordered-comment-continuation"));
 }
 
+/** Scope a completion-overlap transport hold to the exact source conversation. */
+export async function arm(issueId: string): Promise<void> {
+  await touchExclusive(path.join(issueDir(issueId), "armed"));
+}
+
+export async function isArmed(issueId: string): Promise<boolean> {
+  return exists(path.join(issueDir(issueId), "armed"));
+}
+
 export async function waitUntilHeld(issueId: string, deadlineAt: number): Promise<void> {
   const file = path.join(issueDir(issueId), HELD_FILE);
   while (Date.now() < deadlineAt) {

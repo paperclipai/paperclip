@@ -1,0 +1,77 @@
+name: Runner Windows
+
+# Builds and tests the native Runner on Windows x64. This is a standalone
+# workflow because pr.yml runs pr-trusted.yml from master: a lane added there
+# would not run on the pull request that adds or changes it.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/runner-windows.yml
+      - packages/paperclip-runner/rust-toolchain.toml
+      - packages/paperclip-runner/acpx-profiles.json
+      - packages/paperclip-runner/antigravity-distributions.json
+      - packages/paperclip-runner/runner/**
+      - packages/paperclip-runner/protocol/**
+      - packages/paperclip-runner/test-fixtures/**
+      - packages/paperclip-runner/test/fixtures/**
+      - tests/runner-e2e/fixtures/**
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/runner-windows.yml
+      - packages/paperclip-runner/rust-toolchain.toml
+      - packages/paperclip-runner/acpx-profiles.json
+      - packages/paperclip-runner/antigravity-distributions.json
+      - packages/paperclip-runner/runner/**
+      - packages/paperclip-runner/protocol/**
+      - packages/paperclip-runner/test-fixtures/**
+      - packages/paperclip-runner/test/fixtures/**
+      - tests/runner-e2e/fixtures/**
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: runner-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Runner Rust (Windows x64)
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/paperclip-runner
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml pins the channel; install it before rust-cache keys on it.
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      # The Linux lanes' caches cannot serve an MSVC build, so this lane keeps its own.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: runner-windows-v1
+          # Restore only on pull requests. Never let one evict master's entry.
+          save-if: ${{ github.event_name == 'push' }}
+      # Release mode matches the Linux lane (test:rust); some recovery tests
+      # have deadlines that unoptimized builds miss on hosted runners.
+      # The skipped test needs verified process launch, which Windows does not
+      # have yet. Its file is a Grok profile identity source, so a Windows
+      # ignore attribute there would change that identity.
+      - name: Test
+        run: >-
+          cargo test --release --manifest-path runner/Cargo.toml --locked --workspace --no-fail-fast --
+          --exact --skip acpx_provider_backend::tests::binds_sidecar_paths_arguments_and_contents_to_the_runner_profile

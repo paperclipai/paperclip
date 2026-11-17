@@ -3,7 +3,10 @@ import { ChatCommunicationInstructions } from "@/pages/apps/chat/ChatCommunicati
 import { Copy, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SlackAvatarSettings } from "@/pages/apps/chat/SlackAvatarStep";
-import avatar from "./ceo-cliptoon.png";
+import { appearanceForPalette } from "@paperclipai/shared";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
+
+const avatar = agentAvatarUrl(appearanceForPalette("flamingo-jade"), 512, 1, "rest", false, "paperclip-dark");
 
 export function SlackAvatarSettingsPreview({ initialInstructions = "", failFirstSave = false }: { initialInstructions?: string; failFirstSave?: boolean }) {
   const [instructions, setInstructions] = useState(initialInstructions);

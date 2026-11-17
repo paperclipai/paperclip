@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { looksLikeCredentialJwt } from "@paperclipai/adapter-utils/command-redaction";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { sanitizeRecord } from "../redaction.js";
 
@@ -16,7 +17,11 @@ type RedactionPattern = {
   kind: string;
   regex: RegExp;
   replacement: PatternReplacement;
+  preservesIdentifiers?: boolean;
 };
+
+const PUBLIC_IDENTIFIER_RE =
+  /\b(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)\b/gi;
 
 const SECRET_ASSIGNMENT_RE =
   /\b(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)\s*[:=]\s*([^\s,;]+)/gi;
@@ -34,7 +39,7 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
   },
   {
     kind: "bearer_token",
-    regex: /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi,
+    regex: /\bBearer\s+(?!(?:tokens?|authentication|authorization|credentials?|schemes?|flows?)[.,;:!?]?(?:\s|[)\]}]|$))[A-Za-z0-9._~+/-]+=*/gi,
     replacement: "Bearer [REDACTED_TOKEN]",
   },
   {
@@ -49,8 +54,8 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
   },
   {
     kind: "jwt",
-    regex: /\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?\b/g,
-    replacement: "[REDACTED_JWT]",
+    regex: /\b[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g,
+    replacement: (match) => looksLikeCredentialJwt(match) ? "[REDACTED_JWT]" : match,
   },
   {
     kind: "dsn",
@@ -66,6 +71,7 @@ const FREE_TEXT_PATTERNS: RedactionPattern[] = [
     kind: "phone",
     regex: /(?<!\w)(?:\+?\d[\d ()-]{7,}\d)(?!\w)/g,
     replacement: "[REDACTED_PHONE]",
+    preservesIdentifiers: true,
   },
 ];
 
@@ -84,12 +90,34 @@ function recordField(state: FeedbackRedactionState, fieldPath: string) {
 }
 
 function applyPattern(input: string, pattern: RedactionPattern) {
-  const matches = Array.from(input.matchAll(pattern.regex)).length;
-  if (matches === 0) {
-    pattern.regex.lastIndex = 0;
-    return { output: input, matches: 0 };
+  if (pattern.preservesIdentifiers) return applyPatternOutsideIdentifiers(input, pattern);
+  return applyPatternToSegment(input, pattern);
+}
+
+function applyPatternOutsideIdentifiers(input: string, pattern: RedactionPattern) {
+  let matches = 0;
+  let output = "";
+  let cursor = 0;
+  for (const identifier of input.matchAll(PUBLIC_IDENTIFIER_RE)) {
+    const start = identifier.index ?? 0;
+    const segment = applyPatternToSegment(input.slice(cursor, start), pattern);
+    output += segment.output + identifier[0];
+    matches += segment.matches;
+    cursor = start + identifier[0].length;
   }
-  const output = input.replace(pattern.regex, pattern.replacement as never);
+  const tail = applyPatternToSegment(input.slice(cursor), pattern);
+  return { output: output + tail.output, matches: matches + tail.matches };
+}
+
+function applyPatternToSegment(input: string, pattern: RedactionPattern) {
+  let matches = 0;
+  const output = input.replace(pattern.regex, (match: string, ...args: string[]) => {
+    const replacement = typeof pattern.replacement === "function"
+      ? pattern.replacement(match, ...args)
+      : pattern.replacement;
+    if (replacement !== match) matches += 1;
+    return replacement;
+  });
   pattern.regex.lastIndex = 0;
   return { output, matches };
 }

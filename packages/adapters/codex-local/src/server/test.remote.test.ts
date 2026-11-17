@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import type { AdapterManagedRuntimeAsset, AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 const {
   ensureAdapterExecutionTargetDirectory,
@@ -52,7 +52,7 @@ const {
       }
       return fallbackCwd;
     }),
-    prepareAdapterExecutionTargetRuntime: vi.fn(async (input: { assets?: Array<{ key: string; localDir: string }> }) => {
+    prepareAdapterExecutionTargetRuntime: vi.fn(async (input: { assets?: AdapterManagedRuntimeAsset[] }) => {
       const homeAsset = input?.assets?.find((asset) => asset.key === "home");
       if (homeAsset) {
         capturedHomeAssetFiles.value = (await fs.readdir(homeAsset.localDir)).sort();
@@ -176,7 +176,7 @@ describe("codex remote environment diagnostics", () => {
         workspaceLocalDir: string;
         target?: { remoteCwd?: string };
         workspaceRemoteDir?: string;
-        assets?: Array<{ key: string; localDir: string }>;
+        assets?: AdapterManagedRuntimeAsset[];
       },
     ]>;
     const runtimeInput = runtimeCalls[0]?.[0];
@@ -251,6 +251,154 @@ describe("codex remote environment diagnostics", () => {
     expect(probeCall?.[4].env.CODEX_HOME).toContain("/remote/workspace/.paperclip-runtime/codex/probe-home-codex-envtest-");
     expect(probeCall?.[4].env.CODEX_HOME?.startsWith("/tmp/")).toBe(false);
     expect(probeCall?.[3]).toContain("--skip-git-repo-check");
+  });
+
+  // `sandboxTarget()` is declared later in this describe block; function
+  // declarations hoist, so the version-floor cases below reuse it.
+  function versionProbeResult(stdout: string) {
+    return {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout,
+      stderr: "",
+      pid: 111,
+      startedAt: new Date().toISOString(),
+    };
+  }
+
+  it("fails before the hello probe when the sandbox Codex CLI is older than the model's floor", async () => {
+    // A sandbox image baked before gpt-6.1-sol reached the catalog still runs
+    // Codex 0.156.0. The backend would reject every turn with "not supported
+    // when using Codex with a ChatGPT account"; the Test must name the real
+    // gap (the CLI in the image) instead of running that doomed probe.
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.156.0\n"));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-6.1-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const incompatible = result.checks.find((check) => check.code === "codex_cli_version_incompatible");
+    expect(incompatible).toMatchObject({
+      level: "error",
+      message: "gpt-6.1-sol requires Codex CLI 0.159.0 or newer with ChatGPT sign-in.",
+      detail: "Detected Codex CLI 0.156.0.",
+    });
+    expect(incompatible?.hint).toContain("sandbox image");
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_skipped_cli_version")).toBe(true);
+    expect(result.checks.some((check) => check.code.startsWith("codex_hello_probe_") && !check.code.includes("skipped"))).toBe(false);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const versionCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, AdapterExecutionTarget, string, string[]];
+    expect(versionCall[2]).toBe("codex");
+    expect(versionCall[3]).toEqual(["--version"]);
+    expect(prepareAdapterExecutionTargetRuntime).not.toHaveBeenCalled();
+  });
+
+  it("runs the hello probe when the sandbox Codex CLI satisfies the model's floor", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.160.0\n"));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-6.1-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks.find((check) => check.code === "codex_cli_version_compatible")).toMatchObject({
+      level: "info",
+      message: "Codex CLI 0.160.0 satisfies the 0.159.0 minimum for gpt-6.1-sol.",
+    });
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_passed")).toBe(true);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips the version probe for models without a verified floor", async () => {
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-5.6-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks.some((check) => check.code.startsWith("codex_cli_version_"))).toBe(false);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const helloCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as [string, AdapterExecutionTarget, string, string[]];
+    expect(helloCall[3]).not.toEqual(["--version"]);
+  });
+
+  it("names the backend's ChatGPT model rejection instead of a generic probe failure", async () => {
+    // The CLI is new enough, but the account's plan or rollout does not include
+    // the model. The backend answers with one fixed sentence; surface it with
+    // the detected CLI version so the operator can tell the two causes apart.
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce(versionProbeResult("codex-cli 0.160.0\n"));
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\"}}",
+      pid: 222,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-6.1-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const rejected = result.checks.find((check) => check.code === "codex_hello_probe_model_rejected");
+    expect(rejected).toMatchObject({
+      level: "error",
+      message: "The Codex backend rejected gpt-6.1-sol for this ChatGPT account.",
+      detail: "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account. Detected Codex CLI 0.160.0.",
+    });
+    expect(rejected?.hint).toContain("0.159.0");
+    expect(rejected?.hint).toContain("plan");
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_failed")).toBe(false);
+    // Not an auth failure: the managed-connection flow must not invalidate the credential.
+    expect(result.checks.some((check) => check.code === "codex_hello_probe_auth_required")).toBe(false);
+  });
+
+  it("names the ChatGPT retirement when the backend rejects a retired model", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}}",
+      pid: 223,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-5.5" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const rejected = result.checks.find((check) => check.code === "codex_hello_probe_model_rejected");
+    expect(rejected).toMatchObject({
+      level: "error",
+      message: "The Codex backend rejected gpt-5.5 for this ChatGPT account.",
+      hint: "OpenAI retired gpt-5.5 from Codex with ChatGPT sign-in on 2026-10-14. Choose gpt-6.1-sol (gpt-6-luna on Free and Go plans), or use an OpenAI API key; API-key sessions are not affected.",
+    });
+    expect(rejected?.hint).not.toContain("Upgrade Codex");
   });
 
   it("emits the canonical adapter_auth_missing check when a sandbox hello probe reports missing auth", async () => {
@@ -363,6 +511,74 @@ describe("codex remote environment diagnostics", () => {
       },
       last_refresh: lastRefresh,
     });
+
+  it.each(["success", "provider failure", "foreign account", "copyback failure", "routed account"])(
+    "preserves managed SSH probe credentials through %s before cleanup",
+    async outcome => {
+      const selectedHome = await makeScratchDir("paperclip-test-selected-codex-");
+      const original = subscriptionAuth("acct-selected", "original", "2020-01-01T00:00:00Z");
+      const refreshed = subscriptionAuth(outcome === "foreign account" ? "acct-other" : "acct-selected", "refreshed", "2020-01-02T00:00:00Z");
+      const shared = subscriptionAuth("acct-shared", "untouched", "2020-01-01T00:00:00Z");
+      const authPath = path.join(selectedHome, "auth.json");
+      if (outcome === "routed account") {
+        await fs.writeFile(path.join(selectedHome, "config.toml"), 'model_provider = "paperclip"\n[model_providers.paperclip]\nrequires_openai_auth = false\nenv_key = "PAPERCLIP_AI_PROVIDER_KEY"\n');
+      } else await fs.writeFile(authPath, original);
+      await fs.writeFile(path.join(process.env.CODEX_HOME!, "auth.json"), shared);
+      const basePrepare = prepareAdapterExecutionTargetRuntime.getMockImplementation()!;
+      let stagingDir = "";
+      let assetRestoreCalls = 0;
+      prepareAdapterExecutionTargetRuntime.mockImplementationOnce(async input => {
+        const prepared = await basePrepare(input);
+        const home = input.assets!.find(asset => asset.key === "home")!;
+        stagingDir = home.localDir;
+        return { ...prepared, restoreWorkspace: vi.fn(async () => {
+          try {
+            expect(home.restore).toBeTypeOf("function");
+            await home.restore!({ assetDir: prepared.assetDirs.home,
+              readFile: async remotePath => {
+                expect(remotePath).toBe(path.posix.join(prepared.assetDirs.home, "auth.json"));
+                assetRestoreCalls += 1;
+                await expect(fs.stat(stagingDir)).resolves.toBeDefined();
+                if (outcome === "routed account") throw Object.assign(new Error("fixture auth file absent"), { code: "ENOENT" });
+                if (outcome === "copyback failure") throw new Error("fixture credential read failed");
+                return Buffer.from(refreshed);
+              },
+            } as Parameters<NonNullable<AdapterManagedRuntimeAsset["restore"]>>[0]);
+            expect(await fs.readFile(authPath, "utf8").catch(() => null)).toBe(
+              outcome === "routed account" ? null : outcome === "foreign account" ? original : refreshed,
+            );
+          } finally {
+            await restoreWorkspace();
+          }
+        }) };
+      });
+      if (outcome === "provider failure") {
+        const success = await runAdapterExecutionTargetProcess.getMockImplementation()!();
+        runAdapterExecutionTargetProcess.mockResolvedValueOnce({ ...success, exitCode: 1, stdout: "", stderr: "fixture provider unavailable" });
+      }
+      const probe = testEnvironment({ companyId: "company-1", adapterType: "codex_local",
+        config: { engine: "cli", command: "codex", managedAiConnection: { identity: "selected-account" }, env: { CODEX_HOME: selectedHome,
+          ...(outcome === "routed account" ? { PAPERCLIP_AI_PROVIDER_KEY: "fixture-route-key" } : {}) } },
+        executionTarget: { kind: "remote", transport: "ssh", remoteCwd: "/remote/workspace",
+          spec: { host: "ssh.example.test", port: 22, username: "agent", privateKey: null, knownHosts: null,
+            strictHostKeyChecking: true, remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace", useHostAuth: false } },
+      });
+      if (outcome === "copyback failure") await expect(probe).rejects.toThrow("fixture credential read failed");
+      else {
+        const result = await probe;
+        expect(result.status).toBe(outcome === "provider failure" ? "fail" : "pass");
+        expect(JSON.stringify(result)).not.toContain("synthetic-");
+      }
+      expect(assetRestoreCalls).toBe(1);
+      expect(restoreWorkspace).toHaveBeenCalledOnce();
+      await expect(fs.stat(stagingDir)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await fs.readFile(path.join(process.env.CODEX_HOME!, "auth.json"), "utf8")).toBe(shared);
+      expect(await fs.readFile(authPath, "utf8").catch(() => null)).toBe(
+        outcome === "routed account" ? null : ["foreign account", "copyback failure"].includes(outcome) ? original : refreshed,
+      );
+      if (outcome === "routed account") expect(capturedHomeAssetFiles.value).toEqual(["config.toml"]);
+    },
+  );
 
   function sandboxTarget(): AdapterExecutionTarget {
     return {

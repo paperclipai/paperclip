@@ -1,0 +1,172 @@
+{
+  "schema": "paperclip.project-skills-acceptance.v1",
+  "scope": "Disposable integration data only; source and execution receipts are separate from Storybook fixtures.",
+  "repository": "https://github.com/cryppadotta/paperclip-project-skills-20261012-5abf7178",
+  "initialCommit": "d7e95f01903678531981ce684e721191ecb0a7da",
+  "updatedCommit": "f4b35ea0082150bda320cda7b3c0777d263bf430",
+  "executions": [
+    {
+      "runId": "2db73573-eeaf-420e-aad8-898a87377342",
+      "versionId": "1ccdfa45-4a82-44ad-96cb-9ffa6e20fc64",
+      "marker": "project-skill-v1\n",
+      "outputSha256": "6d60a24f686d7786d52f89ccbc0f5dc46c5ccd4c569fde7bc026fb686c294e16",
+      "outputFile": "execution-v1-marker.txt"
+    },
+    {
+      "runId": "ae685356-02a9-4369-9bb3-b76bb112bcce",
+      "versionId": "2bd9801c-1b96-417b-b081-2867e65afdcf",
+      "marker": "project-skill-v2\n",
+      "outputSha256": "6f0fe9a6f60b84811f2ae26bf2a632fd174750c4df155ae1776f657301ac3c9d",
+      "outputFile": "execution-v2-marker.txt"
+    },
+    {
+      "runId": "f003baa3-37d7-4203-bd4d-a0c4b45171ca",
+      "versionId": "2bd9801c-1b96-417b-b081-2867e65afdcf",
+      "marker": "project-skill-v2\n",
+      "selectedImmutableVersions": {
+        "paperclipai/paperclip/complain": "b2492ac5-2b0f-4947-801a-a052a3b32700",
+        "paperclipai/paperclip/paperclip": "c6d0ff4f-5525-4aca-84de-0da670527113",
+        "paperclipai/paperclip/suggestion-box": "13b9f990-c7b4-4f91-9da2-763e3015803d",
+        "github/1416220511/7aa5a68e3a0220b8/acceptance-marker": "2bd9801c-1b96-417b-b081-2867e65afdcf"
+      },
+      "selectionSnapshot": true
+    },
+    {
+      "runId": "e2cbfc2b-aa07-4fa0-b240-82033d6d1035",
+      "implementationSha": "da5eace45e37546606c171f3acaaf4e19eacbea8",
+      "versionId": "2bd9801c-1b96-417b-b081-2867e65afdcf",
+      "marker": "project-skill-v2\n",
+      "outputSha256": "6f0fe9a6f60b84811f2ae26bf2a632fd174750c4df155ae1776f657301ac3c9d",
+      "outputFile": "execution-v2-marker.txt",
+      "selectedImmutableVersions": {
+        "paperclipai/paperclip/complain": "b2492ac5-2b0f-4947-801a-a052a3b32700",
+        "paperclipai/paperclip/paperclip": "c6d0ff4f-5525-4aca-84de-0da670527113",
+        "paperclipai/paperclip/suggestion-box": "13b9f990-c7b4-4f91-9da2-763e3015803d",
+        "github/1416220511/7aa5a68e3a0220b8/acceptance-marker": "2bd9801c-1b96-417b-b081-2867e65afdcf"
+      },
+      "selectionSnapshot": true,
+      "model": "gpt-6.1-sol"
+    },
+    {
+      "runId": "b91818ac-9e9a-4a98-bd6b-63c0a58e4a1a",
+      "implementationSha": "614a2d1d72892128c7fc949d2485308756e7c687",
+      "versionId": "2bd9801c-1b96-417b-b081-2867e65afdcf",
+      "marker": "project-skill-v2\n",
+      "outputSha256": "6f0fe9a6f60b84811f2ae26bf2a632fd174750c4df155ae1776f657301ac3c9d",
+      "outputFile": "execution-v2-marker.txt",
+      "selectedImmutableVersions": {
+        "paperclipai/paperclip/complain": "b2492ac5-2b0f-4947-801a-a052a3b32700",
+        "paperclipai/paperclip/paperclip": "5c62670f-f846-43dd-a76a-d8ec307030d0",
+        "paperclipai/paperclip/suggestion-box": "13b9f990-c7b4-4f91-9da2-763e3015803d",
+        "github/1416220511/7aa5a68e3a0220b8/acceptance-marker": "2bd9801c-1b96-417b-b081-2867e65afdcf"
+      },
+      "selectionSnapshot": true,
+      "earlierExecutionVersionId": "1ccdfa45-4a82-44ad-96cb-9ffa6e20fc64",
+      "attachmentId": "c2f15ba6-0c25-4a49-87fc-1b411c5b5a3b",
+      "model": "gpt-6.1-sol"
+    },
+    {
+      "runId": "83f6f277-5a4a-4814-ba55-8a7ed4a517e1",
+      "implementationSha": "cea9e474ba462ed9385ce2f8acb58c245585b310",
+      "versionId": "2bd9801c-1b96-417b-b081-2867e65afdcf",
+      "marker": "project-skill-v2",
+      "outputSha256": "6f0fe9a6f60b84811f2ae26bf2a632fd174750c4df155ae1776f657301ac3c9d",
+      "outputFile": "execution-master-final-marker.txt",
+      "selectedImmutableVersions": {
+        "paperclipai/paperclip/complain": "b2492ac5-2b0f-4947-801a-a052a3b32700",
+        "paperclipai/paperclip/paperclip": "5c62670f-f846-43dd-a76a-d8ec307030d0",
+        "paperclipai/paperclip/suggestion-box": "13b9f990-c7b4-4f91-9da2-763e3015803d",
+        "github/1416220511/7aa5a68e3a0220b8/acceptance-marker": "2bd9801c-1b96-417b-b081-2867e65afdcf"
+      },
+      "selectionSnapshot": true,
+      "earlierExecutionVersionId": "1ccdfa45-4a82-44ad-96cb-9ffa6e20fc64",
+      "attachmentId": null,
+      "model": "gpt-6.1-sol",
+      "outputKind": "verified_workspace_file"
+    },
+    {
+      "runId": "95d14fcf-5643-4d5f-9512-d160efcb2446",
+      "implementationSha": "50b49124dc1617a045adbe05937bcccca8486d86",
+      "versionId": "2bd9801c-1b96-417b-b081-2867e65afdcf",
+      "marker": "project-skill-v2",
+      "selectedImmutableVersions": {
+        "paperclipai/paperclip/complain": "b2492ac5-2b0f-4947-801a-a052a3b32700",
+        "paperclipai/paperclip/paperclip": "5c62670f-f846-43dd-a76a-d8ec307030d0",
+        "paperclipai/paperclip/suggestion-box": "13b9f990-c7b4-4f91-9da2-763e3015803d",
+        "github/1416220511/7aa5a68e3a0220b8/acceptance-marker": "2bd9801c-1b96-417b-b081-2867e65afdcf"
+      },
+      "selectionSnapshot": true,
+      "model": "gpt-6.1-sol",
+      "engine": "acp",
+      "outputKind": "provider_reported_workspace_file",
+      "outputFile": null,
+      "attachmentId": null
+    },
+    {
+      "runId": "d94d7009-8787-4483-81e4-71ec0b512ed6",
+      "implementationSha": "50b49124dc1617a045adbe05937bcccca8486d86",
+      "versionId": "2bd9801c-1b96-417b-b081-2867e65afdcf",
+      "selectedImmutableVersions": {
+        "paperclipai/paperclip/complain": "b2492ac5-2b0f-4947-801a-a052a3b32700",
+        "paperclipai/paperclip/paperclip": "5c62670f-f846-43dd-a76a-d8ec307030d0",
+        "paperclipai/paperclip/suggestion-box": "13b9f990-c7b4-4f91-9da2-763e3015803d",
+        "github/1416220511/7aa5a68e3a0220b8/acceptance-marker": "2bd9801c-1b96-417b-b081-2867e65afdcf"
+      },
+      "marker": "project-skill-v2",
+      "outputSha256": "6f0fe9a6f60b84811f2ae26bf2a632fd174750c4df155ae1776f657301ac3c9d",
+      "outputFile": "execution-review-cli-marker.txt",
+      "outputKind": "verified_existing_workspace_file",
+      "existingOutputPreserved": true,
+      "selectionSnapshot": true,
+      "model": "gpt-6.1-sol",
+      "engine": "cli",
+      "codexCliVersion": "0.160.0",
+      "homeScopedToPermittedInventory": true,
+      "attachmentId": null
+    }
+  ],
+  "upstreamUpdate": {
+    "observedAt": "2026-10-12T23:21:32.296Z",
+    "sources": [
+      {
+        "id": "96c64152-bf43-440d-9a2c-6c05c213cc90",
+        "repositoryUrl": "https://github.com/cryppadotta/paperclip-project-skills-20261012-5abf7178",
+        "trackingRef": "main",
+        "lastScanCommit": "f4b35ea0082150bda320cda7b3c0777d263bf430",
+        "lastSuccessAt": "2026-10-12T23:21:03.269Z",
+        "entries": [
+          {
+            "path": ".agents/skills/acceptance-marker/SKILL.md",
+            "name": "acceptance-marker",
+            "skillId": "2c6b5d31-782e-4dca-9c65-91efbcfbc346",
+            "selection": "selected",
+            "present": true
+          },
+          {
+            "path": ".agents/skills/new-project-skill/SKILL.md",
+            "name": "new-project-skill",
+            "skillId": "7b4ea060-617f-4164-82bf-9cfa161e579e",
+            "selection": "selected",
+            "present": true
+          }
+        ]
+      }
+    ]
+  },
+  "failedProbes": [
+    {
+      "runId": "4a4f5265-73ff-4430-a5e8-28cc35ebe06b",
+      "engine": "cli",
+      "hostCliVersion": "0.153.4",
+      "model": "gpt-6.1-sol",
+      "reason": "Provider rejected model for the stale client."
+    },
+    {
+      "runId": "483f9b3a-e03e-4ba4-9080-432de15163f5",
+      "engine": "cli",
+      "hostCliVersion": "0.153.4",
+      "model": "gpt-5.4",
+      "reason": "Provider rejected model for the stale client."
+    }
+  ]
+}

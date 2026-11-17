@@ -1,0 +1,11 @@
+{
+  "name": "paperclip-kimi-runtime-distribution",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@moonshot-ai/kimi-code": "2.3.3"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}
