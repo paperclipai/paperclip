@@ -79,7 +79,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerPackage": "@agentclientprotocol/claude-agent-acp",
     "agentServerVersion": "0.73.0",
     "agentRuntimePackage": "@anthropic-ai/claude-agent-sdk",
-    "agentRuntimeVersion": "0.3.286",
+    "agentRuntimeVersion": "0.3.326",
     "commandDigest": "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
     "permissionPolicy": "interactive"
   },

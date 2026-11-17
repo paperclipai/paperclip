@@ -640,6 +640,7 @@ describe("claude CLI local hello probe hardening", () => {
   });
 
   it.each([
+    ["claude-fable-5-2", "2.1.321"],
     ["claude-fable-5-1", "2.1.251"],
     ["claude-opus-5-5", "2.1.280"],
     ["claude-sonnet-5-5", "2.1.284"],

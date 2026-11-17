@@ -81,7 +81,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_server_package: "@agentclientprotocol/claude-agent-acp",
             agent_server_version: "0.73.0",
             agent_runtime_package: Some("@anthropic-ai/claude-agent-sdk"),
-            agent_runtime_version: Some("0.3.286"),
+            agent_runtime_version: Some("0.3.326"),
             command_digest:
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
             requires_provider_policy: false,

@@ -53,32 +53,32 @@ const VERIFIED_PROVIDER_RUNTIME_TARGET_ENV =
 
 const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@anthropic-ai/claude-agent-sdk",
-  runtimePackageVersion: "0.3.286",
+  runtimePackageVersion: "0.3.326",
   packageName: "@anthropic-ai/claude-agent-sdk-linux-x64",
-  packageVersion: "0.3.286",
-  dependencyDeclaration: "0.3.286",
+  packageVersion: "0.3.326",
+  dependencyDeclaration: "0.3.326",
   relativeExecutable: "claude",
   executableDigest:
-    "sha256:fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f",
+    "sha256:b6b3647d981130dc44fc670846ae97b6cde531ffb667cf9c4d17cfcafb38cb37",
   environmentVariable: "CLAUDE_CODE_EXECUTABLE",
 });
 
 const QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME = Object.freeze({
   ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
   packageName: "@anthropic-ai/claude-agent-sdk-linux-arm64",
-  executableDigest: "sha256:0292fa22ac2fd43e16be9d0e511ddd8347280d6e0ebaca744ef5b27e05d8d0f8",
+  executableDigest: "sha256:98d56f6ffe53469767a74864a38eaf359d62ef557a8de1b1ad524d61a66ec119",
 });
 
 const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
   arm64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-    executableDigest: "sha256:75e3016e9d2570767b08e43a7467d4817a4f149232c169ca295f2c95fef21433",
+    executableDigest: "sha256:e214ad76dcc0e846b03be28ed1c2734aacd4e27acb527cb7f8a9e2bed644e837",
   }),
   x64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-x64",
-    executableDigest: "sha256:53e6a936e89519d695230f9cc97943991286b72766674fba11bee845f0a7c047",
+    executableDigest: "sha256:bd8e26290f93353590b831600a7ced02d625018fbaa2a82d8817368d3e2d2f82",
   }),
 };
 
@@ -106,8 +106,8 @@ const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze([
   }),
   Object.freeze({
     packageName: "@anthropic-ai/claude-agent-sdk",
-    packageVersion: "0.3.286",
-    // The package's own package.json still declares 0.3.257 — 0.3.286 is
+    packageVersion: "0.3.326",
+    // The package's own package.json still declares 0.3.257 — 0.3.326 is
     // only what pnpm resolves, forced by the
     // "claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk" override in
     // the workspace root. This field binds the declared string, not the

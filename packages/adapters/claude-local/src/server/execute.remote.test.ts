@@ -741,6 +741,7 @@ describe("claude remote execution", () => {
     });
 
     it.each([
+      ["claude-fable-5-2", "2.1.321", "2.1.317"],
       ["claude-fable-5-1", "2.1.251", "2.1.247"],
       ["claude-opus-5-5", "2.1.280", "2.1.279"],
       ["claude-sonnet-5-5", "2.1.284", "2.1.283"],

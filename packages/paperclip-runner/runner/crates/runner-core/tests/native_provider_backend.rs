@@ -522,7 +522,7 @@ fn pending_acpx_runtime_request(
         provider["agentServerPackage"] = json!("@agentclientprotocol/claude-agent-acp");
         provider["agentServerVersion"] = json!("0.73.0");
         provider["agentRuntimePackage"] = json!("@anthropic-ai/claude-agent-sdk");
-        provider["agentRuntimeVersion"] = json!("0.3.286");
+        provider["agentRuntimeVersion"] = json!("0.3.326");
         provider["commandDigest"] = json!(digest);
         provider["sidecarArgs"][3] = json!(digest);
     } else {

@@ -77,9 +77,9 @@ describe("ACPX installation integrity", () => {
       const runtime = join(bridge, "node_modules/@anthropic-ai/claude-agent-sdk");
       const name = `@anthropic-ai/claude-agent-sdk-${os}-${cpu}`;
       const platformRoot = join(parent, "node_modules", name);
-      const optionalDependencies = { [name]: "0.3.286" };
-      const runtimeMetadata = { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.286" };
-      const platformMetadata = { name, version: "0.3.286", os: [os], cpu: [cpu] };
+      const optionalDependencies = { [name]: "0.3.326" };
+      const runtimeMetadata = { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.326" };
+      const platformMetadata = { name, version: "0.3.326", os: [os], cpu: [cpu] };
       await Promise.all([mkdir(runtime, { recursive: true }), mkdir(platformRoot, { recursive: true })]);
       const command = 'process.stdout.write("unexecuted fixture");';
       const reset = () => Promise.all([
@@ -632,7 +632,7 @@ describe("ACPX installation integrity", () => {
       },
       {
         name: "@anthropic-ai/claude-agent-sdk",
-        version: "0.3.286",
+        version: "0.3.326",
         directory: join(dependencyRoot, "claude-agent-sdk"),
       },
       {

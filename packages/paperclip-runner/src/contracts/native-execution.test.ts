@@ -462,7 +462,7 @@ describe("NativeExecutionInputV1", () => {
       agentServerVersion: "0.73.0",
       agentProfileVersion: 1,
       agentRuntimePackage: "@anthropic-ai/claude-agent-sdk",
-      agentRuntimeVersion: "0.3.286",
+      agentRuntimeVersion: "0.3.326",
     };
     const saved = {
       ...input,
