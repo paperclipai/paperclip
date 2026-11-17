@@ -1432,7 +1432,9 @@ function OnboardingWizardInner({
 
   /** A sign-in is running and has not succeeded. */
   const connectStepLoggingIn =
-    connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting";
+    (connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting") ||
+    (sourcePicked && canUseLocalLogin && credentialMode === "subscription" && !hasSavedSubscription &&
+      !managedBindingForStep() && localLogin.status !== "ready");
 
   // Detecting a credential is enough to start verification once the user has
   // chosen Claude or Codex. A saved-list refresh during that work is not a new
@@ -1547,7 +1549,7 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
+                  !connectStepReady || connectStepLoggingIn || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -3038,9 +3040,11 @@ function OnboardingWizardInner({
                         setSourcePicked(true);
                         setAdapterType(id);
                         if (id !== adapterType) setRunner("auto");
-                        if (id !== adapterType) {
+                        // Older drafts may already pair OpenAI with the Claude
+                        // model retained by a previous source switch.
+                        if (id !== adapterType || (id === "codex_local" && credentialMode === "subscription" && model.startsWith("claude-"))) {
                           if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                          else if (id !== "codex_local") setModel("");
+                          else setModel("");
                         }
                         setConnectPhase("collapsing");
                       }}

@@ -56,7 +56,7 @@ async function installLaunchIntercepts(page: Page, baseURL?: string) {
 }
 
 /** Drive the wizard from the /onboarding route through to "Get started". */
-async function runOnboardingWizard(page: Page, companyName: string) {
+async function runOnboardingWizard(page: Page, companyName: string, signIn?: { source: RegExp; complete: () => Promise<void> }) {
   await page.goto("/onboarding");
 
   // Launcher card path (existing companies) — enter the wizard if the
@@ -84,19 +84,13 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   // — the row is a question, not a confirmation — so the CTA is disabled until
   // a tile is pressed. By role rather than by label: which adapters the tiles
   // offer depends on the registry this environment reports.
-  const source = page.getByRole("radio").first();
+  const source = signIn ? page.getByRole("radio", { name: signIn.source }) : page.getByRole("radio").first();
   await source.waitFor({ timeout: 30_000 });
   await source.click();
 
-  // "Connect", not "Next": this step's button starts the sign-in where there
-  // is one to start, so it is named for what it does. This test simulates
-  // successful local account connection before the environment check and hire.
-  //
-  // Waited on for enabled rather than for visible: it is already on screen,
-  // disabled, and clicking a disabled button raises nothing and does nothing.
-  const connectNext = page.getByRole("button", { name: /^Connect$/ });
-  await expect(connectNext).toBeEnabled({ timeout: 30_000 });
-  await connectNext.click();
+  // A verified account, or pasting its authorization code, continues
+  // automatically through the environment check and hire.
+  if (signIn) await signIn.complete();
 
   // Step 5: review → Get started opens the standing chat.
   const getStarted = page.getByRole("button", { name: /Get started/ });
@@ -129,6 +123,39 @@ async function assertOnlyChatExists(page: Page, companyName: string) {
 }
 
 test.describe("Chat launch after onboarding wizard", () => {
+  test("pasting a Claude code connects automatically and continues onboarding", async ({ page, baseURL }) => {
+    await installLaunchIntercepts(page, baseURL);
+    let verified = false;
+    let submissions = 0;
+    await page.route("**/ai-connections/local/attempts", route => route.fulfill({ status: 201, json: {
+      sessionId: "00000000-0000-4000-8000-000000000001", expiresAt: "2099-01-01T00:00:00Z",
+    } }));
+    await page.route("**/ai-connections/local/check", route => route.fulfill({ json: verified
+      ? { status: "ready" }
+      : { status: "sign_in_required", authorizationUrl: "https://claude.ai/oauth/authorize?fixture=auto-paste" },
+    }));
+    await page.route("**/ai-connections/local/attempts/*/code", async route => {
+      expect(route.request().postDataJSON()).toEqual({ browserCode: "fixture-authorization-code" });
+      submissions++;
+      verified = true;
+      await route.fulfill({ json: { ok: true } });
+    });
+    const companyName = `E2E-ClaudePaste-${Date.now()}`;
+    await runOnboardingWizard(page, companyName, { source: /Claude/, complete: async () => {
+      const code = page.getByRole("textbox", { name: "Authorization code", exact: true });
+      await expect(code).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeDisabled();
+      await code.evaluate(input => {
+        const clipboardData = new DataTransfer();
+        clipboardData.setData("text/plain", "fixture-authorization-code");
+        input.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+      });
+      await expect(page.getByRole("status").filter({ hasText: "Finishing sign-in" })).toBeVisible();
+    } });
+    expect(submissions).toBe(1);
+    await assertOnlyChatExists(page, companyName);
+  });
+
   test("opens chat without creating a task or project", async ({ page, baseURL }) => {
     await instrumentNavLog(page);
     await installLaunchIntercepts(page, baseURL);
