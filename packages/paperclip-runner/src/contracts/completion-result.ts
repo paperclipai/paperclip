@@ -166,7 +166,7 @@ const artifactsSchema = {
   },
 } as const;
 
-const waitContinuationSchema = {
+const waitContinuationProperties = {
   type: "object",
   description:
     "Required when reportedWorkDisposition is yielded. Use response_wake for a response wait, or monitor only after a real monitor is persisted on the current task. Include kind, summary, and a stable idempotencyKey.",
@@ -183,13 +183,21 @@ const waitContinuationSchema = {
     idempotencyKey: { type: "string", minLength: 1 },
     handoffId: { type: "string", minLength: 1, description: "Exact server-issued handoff ID; required for case_handoff." },
   },
-  allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
 } as const;
 
-const { allOf: waitContinuationConditions, ...providerWaitContinuationProperties } = waitContinuationSchema;
+const waitContinuationCondition = {
+  if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] },
+  then: { required: ["handoffId"] },
+} as const;
+
+const waitContinuationSchema = {
+  ...waitContinuationProperties,
+  allOf: [waitContinuationCondition],
+} as const;
+
 const providerWaitContinuationSchema = {
-  ...providerWaitContinuationProperties,
-  ...waitContinuationConditions[0],
+  ...waitContinuationProperties,
+  ...waitContinuationCondition,
 } as const;
 
 const commonResultProperties = {
