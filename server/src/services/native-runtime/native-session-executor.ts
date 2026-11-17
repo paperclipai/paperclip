@@ -18189,8 +18189,10 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return false;
     const durableStorage = durableNativeHarnessStorage();
-    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId);
-    const backupOwner = durableStorage && currentAuthority ? sessionHarnessBackupOwners.get(currentAuthority) : null;
+    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId) ?? authorityEpoch;
+    const backupOwner = durableStorage
+      ? sessionHarnessBackupOwners.get(currentAuthority) ?? sessionHarnessBackupOwners.get(authorityEpoch) ?? null
+      : null;
     if (durableStorage && !backupOwner) throw new Error("native_harness_storage_owner_missing");
     if (backupOwner) await assertNativeHarnessBackupOwner(input.db, backupOwner);
     // Transport release also runs when provider bootstrap failed. In that case
@@ -18988,9 +18990,7 @@ async function createRunnerdBackendWithinSessionClaim(
           target,
           controllerPersistence: input.controllerPersistence ? nativeRunnerCheckpointPersistence(
             input.db, input.controllerPersistence.bootId, () => {
-              const current = sessionToolAuthorityEpochs.get(sessionScopeId);
-              if (!current) throw new Error("native_session_tool_authority_unavailable");
-              return current.runId;
+              return (sessionToolAuthorityEpochs.get(sessionScopeId) ?? authorityEpoch).runId;
             }, detachNativeSessionsForRestart) : undefined,
           binding: input.remoteWarmRecovery
             ? { ...input.execution.binding, runId: input.remoteWarmRecovery.identity.runId }

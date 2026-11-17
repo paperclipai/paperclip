@@ -3135,7 +3135,7 @@ export function heartbeatService(
         }
         const enforceContinuationOwnership = Boolean(issueId && (isFailedChatRunRetry || isResolvedInteractionContinuationWakeContext(context) ||
           typeof context.workspaceReconstructionActionId === "string" ||
-          ["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? "")));
+          ["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker"].includes(run.scheduledRetryReason ?? "")));
         if (issueId && enforceContinuationOwnership) {
           await options.beforeResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
           await options.afterResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
