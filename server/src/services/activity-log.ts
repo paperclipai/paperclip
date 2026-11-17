@@ -15,7 +15,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { currentRequestActor } from "./request-actor-context.js";
+import { currentRequestApiKeyId } from "./request-actor-context.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -171,7 +171,7 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const candidateApiKeyId = readNonEmptyString(input.apiKeyId)
     ?? readNonEmptyString(input.agentApiKeyId)
-    ?? (input.actorType === "system" ? null : readNonEmptyString(currentRequestActor()?.keyId));
+    ?? (input.actorType === "system" ? null : currentRequestApiKeyId());
   const apiKeyId = candidateApiKeyId && isUuidLike(candidateApiKeyId) ? candidateApiKeyId : null;
   const insert = (runner: Db) => runner.insert(activityLog).values({
     ...(receipt ? { id: receipt.id } : {}),

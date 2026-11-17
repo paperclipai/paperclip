@@ -1,5 +1,6 @@
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { currentRequestApiKeyId } from "./request-actor-context.js";
 import { extractAgentMentionIds } from "@paperclipai/shared";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { createHash } from "node:crypto";
@@ -218,7 +219,7 @@ export function agentFileStore(db: Db) {
     const origin = currentPluginInteractionOrigin();
     await tx.insert(activityLog).values({ companyId: agent.companyId, actorType: origin ? "agent" : actor.type === "board" ? "user" : "agent",
       actorId: origin?.agentId ?? (actor.type === "board" ? actor.userId : actor.agentId)!, agentId: origin?.agentId ?? (actor.type === "agent" ? actor.agentId : null),
-      runId: origin ? origin.runId : actor.runId, responsibleUserId: origin ? null : actor.type === "board" ? actor.userId : actor.onBehalfOfUserId,
+      runId: origin ? origin.runId : actor.runId, apiKeyId: currentRequestApiKeyId(), responsibleUserId: origin ? null : actor.type === "board" ? actor.userId : actor.onBehalfOfUserId,
       action: "agent.files_updated", entityType: "agent", entityId: agent.id, details });
   }
   /** The write authorization of `locked`, without the row lock or the file
