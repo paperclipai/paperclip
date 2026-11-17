@@ -197,14 +197,14 @@ const support = await getEmbeddedPostgresTestSupport();
     it("discovers the REST tools under the same names, filtered by granted scopes, after one profile probe", async () => {
       useTransport("gmail", "paperclip_rest");
       const f = await connectWorkspace();
-      expect(f.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__create_draft", "gmail__get_message", "gmail__search_threads"]);
+      expect(f.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__create_draft", "gmail__get_draft", "gmail__get_message", "gmail__get_thread", "gmail__list_drafts", "gmail__list_labels", "gmail__list_threads", "gmail__search_messages", "gmail__search_threads"]);
       expect(f.catalog.find((entry) => entry.toolName === "gmail__create_draft")?.riskLevel).toBe("write");
       expect(f.mcpRequests.some((request) => request.startsWith("gmailmcp."))).toBe(false);
       expect(f.mcpRequests).toContain("docsmcp.googleapis.com tools/list");
       expect(f.gmailRequests).toEqual([expect.objectContaining({ method: "GET", path: "/gmail/v1/users/me/profile", authorization: "Bearer workspace-access-1" })]);
 
       const readOnly = await connectWorkspace({ permissions: ["gmail.readonly", "documents.readonly"] });
-      expect(readOnly.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__get_message", "gmail__search_threads"]);
+      expect(readOnly.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__get_draft", "gmail__get_message", "gmail__get_thread", "gmail__list_drafts", "gmail__list_labels", "gmail__list_threads", "gmail__search_messages", "gmail__search_threads"]);
     });
 
     it("runs a Gmail read in process with the caller's token, screens it, and audits it", async () => {
@@ -336,7 +336,7 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(f.call("docs__read_doc", { documentId: "doc1" })).resolves.toMatchObject({ status: "completed" });
       f.setGmail(undefined);
       const recovered = await f.service.refreshCatalog(f.connectionId, f.actor);
-      expect(recovered.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__create_draft", "gmail__get_message", "gmail__search_threads"]);
+      expect(recovered.catalog.map((entry) => entry.toolName).sort()).toEqual(["docs__read_doc", "gmail__create_draft", "gmail__get_draft", "gmail__get_message", "gmail__get_thread", "gmail__list_drafts", "gmail__list_labels", "gmail__list_threads", "gmail__search_messages", "gmail__search_threads"]);
     });
 
     it("asks for reconnection when Google keeps rejecting the token after a refresh during discovery", async () => {
