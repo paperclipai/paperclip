@@ -105,6 +105,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const mcpRequests: string[] = [];
     let gmailOverride: ((url: URL, init: RequestInit) => Response | Promise<Response> | undefined) | undefined;
     let messageBody = BENIGN_BODY;
+    let mcpCallOverride: ((init: RequestInit) => Promise<Response> | undefined) | undefined;
     const remoteHttpRequest = vi.fn(async (href: string, init: RequestInit) => {
       const url = new URL(href);
       if (url.hostname === "gmail.googleapis.com") {
@@ -119,6 +120,8 @@ const support = await getEmbeddedPostgresTestSupport();
       const body = JSON.parse(String(init.body));
       mcpRequests.push(`${url.hostname} ${body.method}${body.params?.name ? ` ${body.params.name}` : ""}`);
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const overridden = body.method === "tools/call" ? await mcpCallOverride?.(init) : undefined;
+      if (overridden) return overridden;
       const result = body.method === "initialize"
         ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "google-fixture", version: "1" } }
         : body.method === "tools/list"
@@ -170,6 +173,7 @@ const support = await getEmbeddedPostgresTestSupport();
       gmailRequests, mcpRequests, remoteHttpRequest, toolNamed, call, grant,
       setGmail: (override: typeof gmailOverride) => { gmailOverride = override; },
       setMessageBody: (body: string) => { messageBody = body; },
+      setMcpCall: (override: typeof mcpCallOverride) => { mcpCallOverride = override; },
       invocations: () => db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company!.id)),
     };
   }
@@ -300,18 +304,8 @@ const support = await getEmbeddedPostgresTestSupport();
         observed = init.signal ?? undefined;
         init.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
       }) : undefined);
-      await expect(f.call("gmail__get_message", { messageId: "msg1" }, { timeoutMs: 100 })).rejects.toMatchObject({ status: 504, reasonCode: "tool_timeout" });
+      await expect(f.call("gmail__get_message", { messageId: "msg1" }, { timeoutMs: 100 })).rejects.toMatchObject({ status: 504, reasonCode: "tool_timeout", message: "Remote MCP tool call timed out" });
       expect(observed?.aborted).toBe(true);
-    });
-
-    it("warns that a timed-out draft may already exist", async () => {
-      useTransport("gmail", "paperclip_rest");
-      const f = await connectWorkspace();
-      f.setGmail((url, init) => url.pathname.endsWith("/drafts") ? new Promise<Response>((_resolve, reject) => {
-        init.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
-      }) : undefined);
-      await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }, { timeoutMs: 100 }))
-        .rejects.toMatchObject({ status: 504, reasonCode: "tool_timeout", message: expect.stringContaining("may or may not have been made") });
     });
 
     it("stops discovery and calls while the experimental connector is off", async () => {
@@ -352,5 +346,35 @@ const support = await getEmbeddedPostgresTestSupport();
       const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, f.connectionId));
       expect(grant!.status).toBe("needs_reauthorization");
     });
+  });
+  describe.each(["google_mcp", "paperclip_rest"] as const)("a Google write on %s", (transport) => {
+    const hang = (init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+    });
+    const UNCERTAIN = "may or may not have been made; check before trying again";
+
+    it("warns that a timed-out draft may already exist, in the error, the invocation and the audit", async () => {
+      useTransport("gmail", transport);
+      const f = await connectWorkspace();
+      f.setGmail((url, init) => url.pathname.endsWith("/drafts") ? hang(init) : undefined);
+      f.setMcpCall((init) => JSON.parse(String(init.body)).params?.name === "create_draft" ? hang(init) : undefined);
+      await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }, { timeoutMs: 100 }))
+        .rejects.toMatchObject({ status: 504, reasonCode: "tool_timeout", message: expect.stringContaining(UNCERTAIN) });
+      const [invocation] = await f.invocations();
+      expect(invocation).toMatchObject({ status: "timed_out", errorCode: "tool_timeout", errorMessage: expect.stringContaining(UNCERTAIN) });
+      const audit = await db.select().from(toolAccessAuditEvents).where(and(eq(toolAccessAuditEvents.companyId, f.company.id), eq(toolAccessAuditEvents.action, "call_failed")));
+      expect(JSON.stringify(audit)).toContain(UNCERTAIN);
+    });
+  });
+
+  it("returns the uncertain-write warning from an approved REST draft whose request was lost", async () => {
+    useTransport("gmail", "paperclip_rest");
+    const f = await connectWorkspace({ askFirst: ["gmail__create_draft"] });
+    f.setGmail((url) => url.pathname.endsWith("/drafts") ? Promise.reject(new TypeError("socket hang up")) : undefined);
+    await expect(f.call("gmail__create_draft", { to: ["sam@example.test"], subject: "Thursday", body: "Thursday works." }))
+      .rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [action] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id));
+    const approved = await f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: action!.id, actor: { userId: f.actor.actorId } });
+    expect(JSON.stringify(approved)).toContain("may or may not have been made");
   });
 });
