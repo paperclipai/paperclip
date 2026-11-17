@@ -3,6 +3,7 @@ import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api, click, container, render, settle } from "./NewAgent.test-support";
 import { ModelDropdown } from "@/components/AgentConfigForm";
+import * as modelUtils from "@/lib/model-utils";
 
 beforeEach(async () => {
   const actual = await vi.importActual<typeof import("@/components/AgentConfigForm")>("@/components/AgentConfigForm");
@@ -38,7 +39,7 @@ describe("New agent OpenRouter model selection", () => {
     ]);
     await render(adapter);
     await searchModels("glm-5");
-    expect(document.querySelector('[role="listbox"]')?.textContent).not.toContain("Claude Sonnet");
+    expect(document.querySelector('[role="option"] [title="openrouter/anthropic/claude-sonnet-4.6"]')).toBeNull();
     await selectModel("openrouter/z-ai/glm-5");
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     await click("Finish setup");
@@ -68,5 +69,30 @@ describe("New agent OpenRouter model selection", () => {
     expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterConfig: expect.objectContaining({ model: "openrouter/company/new-model" }),
     }));
+  });
+
+  it("bounds search work for a large OpenRouter catalog", async () => {
+    const size = 600;
+    api.adapterModels.mockResolvedValue(Array.from({ length: size }, (_, index) => ({
+      id: `openrouter/company/model-${index}`,
+      label: `Company model ${index}`,
+    })));
+    const extractProviderId = modelUtils.extractProviderId;
+    let calls = 0;
+    const providerSpy = vi.spyOn(modelUtils, "extractProviderId").mockImplementation(id => {
+      if (++calls > size * 4) throw new Error("Model search exceeded its linear work limit");
+      return extractProviderId(id);
+    });
+    try {
+      await render("opencode_local");
+      await searchModels("model-599");
+      expect(calls).toBeGreaterThanOrEqual(size);
+      expect(calls).toBeLessThanOrEqual(size * 4);
+      expect(document.querySelectorAll('[role="option"] [title]')).toHaveLength(1);
+      await selectModel("openrouter/company/model-599");
+      expect(container.querySelector('button[aria-label="Model"]')?.textContent).toContain("Company model 599");
+    } finally {
+      providerSpy.mockRestore();
+    }
   });
 });
