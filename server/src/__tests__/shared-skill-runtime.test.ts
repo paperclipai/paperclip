@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { companySkillService } from "../services/company-skills.js";
 import { skillSnapshotHash } from "../services/skill-snapshot.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
+import { skillExecutionContent } from "../services/skill-execution-content.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -40,17 +41,25 @@ describeDatabase("shared repository admission", () => {
     const gate = new Promise<void>(done => { release = done; });
     const started = new Promise<void>(done => { entered = done; });
     let pinned = false;
+    let privateSource = "";
     const work = companySkillService(db).withRuntimeSkillEntries(companyId, { onlyKeys: new Set([key]), snapshotLatest: true, repositoryLayout: "shared",
       selectVersions: async entries => { expect(entries[0]!.versionId).toBe(version!.id); pinned = true; return new Set([key]); } }, async entries => {
       expect(pinned).toBe(true);
       expect(entries[0]!.repository).toEqual({ companyId, skillId, versionId: version!.id, snapshotId: snapshot!.id, entryPath: files[0]!.path });
       expect(await fs.lstat(entries[0]!.source).catch(() => null)).toBeNull();
-      entered(); await gate;
-      return entries;
+      return skillExecutionContent(db).withRepositoryVersion(entries[0]!.repository!, async root => {
+        privateSource = root;
+        expect(path.basename(root)).toMatch(/^\.verify-/);
+        expect(await fs.readFile(path.join(root, files[0]!.path), "utf8")).toBe(files[0]!.content);
+        entered(); await gate;
+        expect(await fs.readFile(path.join(root, files[0]!.path), "utf8")).toBe(files[0]!.content);
+        return entries;
+      });
     });
     try {
       await Promise.race([started, work]);
       await withSkillVersionCacheLock(db, companyId, async () => undefined, true);
     } finally { release(); await work; }
+    expect(await fs.lstat(privateSource).catch(() => null)).toBeNull();
   }, 30_000);
 });
