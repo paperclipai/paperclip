@@ -76,9 +76,22 @@ embedded database outage before the provider's first tool call, so it is not
 a completed end-to-end startup measurement.
 
 After database recovery, another actual run measured 309,711 ms for the skill
-phase. Concurrent task recovery and host load differed. The two observations
-do not establish a consistent full-workload speedup. The smaller filesystem
-benchmark above remains valid only for its stated scope.
+phase. That run reached its first provider tool after 22m30.587s, compared with
+17m21.135s in the original run. Concurrent task recovery and host load differed.
+These observations do not establish a consistent full-workload speedup. The
+smaller filesystem benchmark above remains valid only for its stated scope.
+
+| Completed native startup observation | Original | After database recovery |
+| --- | ---: | ---: |
+| Skill preparation | 216.319 s | 309.711 s |
+| Runner runtime staging | 189.491 s | 600.834 s |
+| Provider process launch | 0.238 s | 0.297 s |
+| Provider session load | 9.124 s | 12.934 s |
+| Run creation to first tool start | 17m21.135s | 22m30.587s |
+
+[Structured observations](2026-11-17-windows-native-startup.json) retain the
+scope and limitations without private instance identifiers. The three attempts
+used the same 13 asset digests; no skills or integrity checks were removed.
 
 Repository skill projection intentionally embeds the whole pinned repository
 in each skill so authored relative references remain portable. Four selected

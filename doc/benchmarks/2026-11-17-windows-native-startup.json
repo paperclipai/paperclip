@@ -1,0 +1,58 @@
+{
+  "schema": "paperclip.windows-native-startup-observations.v1",
+  "date": "2026-11-17",
+  "environment": {
+    "platform": "win32",
+    "node": "v26.12.1",
+    "runtime": "Paperclip Runner",
+    "provider": "codex_app_server",
+    "model": "gpt-6.1-terra"
+  },
+  "scope": {
+    "selectedSkills": 13,
+    "logicalFiles": 24975,
+    "logicalBytes": 295533924,
+    "assetDigestsIdenticalAcrossObservations": true
+  },
+  "implementation": {
+    "pr": "https://github.com/paperclipai/paperclip/pull/18144",
+    "filePreparationCommit": "d276773a4fd6d00a5f8f5ac1aa9c907d5160d893",
+    "runtimeAssetFilesSha256": "a89f3569f9ef80ce6df611f3a471af552b6e505964669cbc147c303953116459"
+  },
+  "observations": [
+    {
+      "label": "before file preparation change",
+      "completedStartup": true,
+      "skillsMs": 216319,
+      "runtimeStageMs": 189491,
+      "processLaunchMs": 238,
+      "providerSessionLoadMs": 9124,
+      "createdToFirstTurnMs": 1031514,
+      "createdToFirstToolMs": 1041135
+    },
+    {
+      "label": "first restart with file preparation change",
+      "completedStartup": false,
+      "skillsMs": 171290,
+      "createdToFirstTurnMs": null,
+      "createdToFirstToolMs": null,
+      "interruption": "embedded database outage, followed by recovery restart"
+    },
+    {
+      "label": "after database recovery with file preparation change",
+      "completedStartup": true,
+      "skillsMs": 309711,
+      "runtimeStageMs": 600834,
+      "processLaunchMs": 297,
+      "providerSessionLoadMs": 12934,
+      "createdToFirstTurnMs": 1343612,
+      "createdToFirstToolMs": 1350587
+    }
+  ],
+  "limitations": [
+    "Observational comparison, not a controlled full-workload A/B benchmark.",
+    "Host load, concurrent task recovery and cache state differed.",
+    "Full startup did not improve consistently; the isolated 671-file filesystem benchmark proves only its stated component scope.",
+    "No Linux startup comparison has been measured."
+  ]
+}
