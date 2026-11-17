@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 import { fakeGoogle, json } from "./fixtures/fake-google.js";
-import { createGoogleHttp, googleRequestUrl, MAX_RESPONSE_BYTES, type GoogleRequest } from "./google-http.js";
+import { createGoogleHttp, googleRequestUrl, isWrite, MAX_RESPONSE_BYTES, type GoogleRequest } from "./google-http.js";
 
 const GET: GoogleRequest = { method: "GET", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/labels" };
 const POST: GoogleRequest = { method: "POST", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/drafts", body: { message: { raw: "eA" } } };
@@ -204,5 +204,68 @@ describe("createGoogleHttp", () => {
 
   it("rejects a non-JSON success body", async () => {
     expect(await failure(client(() => new Response("<html>")).http.send(GET))).toMatchObject({ kind: "invalid_response" });
+  });
+});
+
+describe("writes beyond POST", () => {
+  const PATCH: GoogleRequest = { method: "PATCH", host: "www.googleapis.com", path: "/calendar/v3/calendars/primary/events/e1", body: { summary: "x" } };
+  const DELETE: GoogleRequest = { method: "DELETE", host: "www.googleapis.com", path: "/calendar/v3/calendars/primary/events/e1" };
+  const PUT: GoogleRequest = { method: "PUT", host: "www.googleapis.com", path: "/calendar/v3/calendars/primary/events/e1", body: {} };
+  const READ_POST: GoogleRequest = { method: "POST", host: "www.googleapis.com", path: "/calendar/v3/freeBusy", body: {}, readOnly: true };
+
+  it("treats every method but GET, and a POST marked read-only, as a write", () => {
+    expect(isWrite({ method: "GET" })).toBe(false);
+    expect(isWrite({ method: "POST", readOnly: true })).toBe(false);
+    for (const method of ["POST", "PATCH", "PUT", "DELETE"] as const) {
+      expect(isWrite({ method })).toBe(true);
+      if (method !== "POST") expect(isWrite({ method, readOnly: true })).toBe(true);
+    }
+  });
+
+  it.each([
+    ["PATCH", PATCH],
+    ["PUT", PUT],
+    ["DELETE", DELETE],
+    ["DELETE marked read-only", { ...DELETE, readOnly: true }],
+  ] as const)("never retries %s and warns that the outcome is unknown", async (_name, request) => {
+    const after503 = client(() => json({}, 503));
+    const unavailable = await failure(after503.http.send(request));
+    expect((unavailable as Error).message).toMatch(/may or may not have been made/);
+    expect(after503.calls).toHaveLength(1);
+    const afterNetwork = client(() => { throw new TypeError("fetch failed"); });
+    const network = await failure(afterNetwork.http.send(request));
+    expect((network as Error).message).toMatch(/may or may not have been made/);
+    expect(afterNetwork.calls).toHaveLength(1);
+  });
+
+  it("retries a read-only POST once and gives no write warning", async () => {
+    const twice = client(() => json({}, 503));
+    const error = await failure(twice.http.send(READ_POST));
+    expect(twice.calls).toHaveLength(2);
+    expect((error as Error).message).not.toMatch(/may or may not/);
+  });
+
+  it("sends the method and If-Match header, and treats an empty 204 as success", async () => {
+    const { http, calls } = client(() => new Response(null, { status: 204 }));
+    await expect(http.send({ ...DELETE, ifMatch: "\"etag-1\"" })).resolves.toEqual({});
+    expect(calls[0]!.method).toBe("DELETE");
+    expect(calls[0]!.headers["if-match"]).toBe("\"etag-1\"");
+  });
+
+  it("says nothing changed when Google refuses a stale If-Match", async () => {
+    const error = await failure(client(() => json({ error: { code: 412 } }, 412)).http.send({ ...PATCH, ifMatch: "\"old\"" }));
+    expect(error).toMatchObject({ kind: "invalid_argument", httpStatus: 412 });
+    expect((error as Error).message).not.toMatch(/may or may not/);
+  });
+
+  it("maps 410 Gone to not found", async () => {
+    expect(await failure(client(() => json({ error: { code: 410 } }, 410)).http.send(DELETE))).toMatchObject({ kind: "not_found" });
+  });
+
+  it("allows www.googleapis.com only under /calendar/v3/, after path normalization", () => {
+    expect(googleRequestUrl(PATCH)).toBe("https://www.googleapis.com/calendar/v3/calendars/primary/events/e1");
+    expect(() => googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/drive/v3/files" })).toThrow(/not allowed/);
+    expect(() => googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/calendar/v3/../../drive/v3/files" })).toThrow(/not allowed/);
+    expect(() => googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/calendar/v30/x" })).toThrow(/not allowed/);
   });
 });
