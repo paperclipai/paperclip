@@ -220,7 +220,8 @@ describe("heartbeat workspace module", () => {
     await started.promise;
     release.resolve();
     const results = await Promise.all(attempts);
-    expect(resolveGitAuth).toHaveBeenCalledTimes(1);
+    // One clone, plus one fetch from the shared-checkout refresh; the refresh throttle keeps the other callers from fetching.
+    expect(resolveGitAuth).toHaveBeenCalledTimes(2);
     expect(new Set(results.map(result => result.cwd)).size).toBe(1);
     expect(await fs.readFile(path.join(results[0]!.cwd, "README.md"), "utf8")).toBe("shared checkout\n");
     expect((await runGit("git", ["-C", results[0]!.cwd, "remote", "get-url", "origin"])).stdout.trim()).toBe(repoUrl);
@@ -247,7 +248,8 @@ describe("heartbeat workspace module", () => {
     const input = { companyId: "company-one", projectId: "retry-project", repoUrl, resolveGitAuth };
     await expect(ensureManagedProjectWorkspace(input)).rejects.toThrow("credential lookup failed");
     const result = await legacyEnsureManagedProjectWorkspace(input);
-    expect(resolveGitAuth).toHaveBeenCalledTimes(2);
+    // The failed attempt, the retried clone, and one fetch from the shared-checkout refresh.
+    expect(resolveGitAuth).toHaveBeenCalledTimes(3);
     expect(await fs.readFile(path.join(result.cwd, "README.md"), "utf8")).toBe("retry succeeded\n");
   });
 });

@@ -10,6 +10,7 @@ import { deriveRepoNameFromRepoUrl, managedProjectCheckoutName, projectRepositor
 import { forbidden } from "../../errors.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../managed-repository-checkout.js";
+import { refreshSharedManagedCheckout } from "../shared-checkout-refresh.js";
 import { addNestedRepositoryWorktree, isVerifiedNestedRepositoryBase, nestedRepositoryBaseCandidates, readLinkedNestedCheckout, repairMovedNestedRepositoryWorktree } from "../nested-repository-worktrees.js";
 export { materializeManagedProjectWorkspace } from "../managed-repository-checkout.js";
 import { sql } from "drizzle-orm";
@@ -452,7 +453,7 @@ export async function ensureManagedProjectWorkspace(input: {
   prepareLocalSource?: PrepareManagedLocalSource;
   /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
   resolveGitAuth?: GitRemoteAuthProvider | null;
-}): Promise<{ cwd: string; warning: string | null }> {
+}): Promise<{ cwd: string; warning: string | null; notices: string[] }> {
   const defaultCwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
     projectId: input.projectId,
@@ -495,7 +496,14 @@ export async function ensureManagedProjectWorkspace(input: {
       return ensureManagedProjectWorkspace(input);
     }
   }
-  return result;
+  // Runs once per final result: the recursive retry paths above return before this point.
+  // Refresh notices are informational and never go into `warning`, which callers read as
+  // "materialization failed".
+  if (result.warning === null && input.repoUrl) {
+    const refresh = await refreshSharedManagedCheckout(result.cwd, { resolveGitAuth: input.resolveGitAuth });
+    return { ...result, notices: refresh.notices };
+  }
+  return { ...result, notices: [] };
 }
 
 /** Keep every distinct project repository inside the task's writable/synced root. */
@@ -589,11 +597,11 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
   repoUrl: string | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
   prepareLocalSource?: PrepareManagedLocalSource;
-}): Promise<{ cwd: string; warning: string | null }> {
+}): Promise<{ cwd: string; warning: string | null; notices: string[] }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
     await retainCurrentWorkspaceSource(configuredCwd);
-    return { cwd: configuredCwd, warning: null };
+    return { cwd: configuredCwd, warning: null, notices: [] };
   }
   return ensureManagedProjectWorkspace({
     companyId: input.companyId,
@@ -3616,6 +3624,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         }
         let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
+        let managedWorkspaceNotices: string[] = [];
         try {
           const resolvedCwd = await resolveConfiguredOrManagedProjectCwd({
             companyId: agent.companyId,
@@ -3628,6 +3637,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           });
           projectCwd = resolvedCwd.cwd;
           managedWorkspaceWarning = resolvedCwd.warning;
+          managedWorkspaceNotices = resolvedCwd.notices;
         } catch (error) {
           const scrubbedError = scrubGitCredentialText(
             error instanceof Error ? error.message : String(error),
@@ -3664,6 +3674,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
             warnings: [
               preferredWorkspaceWarning,
               managedWorkspaceWarning,
+              ...managedWorkspaceNotices,
             ].filter((value): value is string => Boolean(value)),
             baseCwdFallback: false,
             materializationFailures,
