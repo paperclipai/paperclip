@@ -1,5 +1,5 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 0214a50..73f0c16 100644
+index 0214a50..a68121d 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
 @@ -2490,11 +2490,88 @@ export class ClaudeAcpAgent {
@@ -117,7 +117,18 @@ index 0214a50..73f0c16 100644
                                      await subagents.finishTask(message.task_id, message.patch.status, sendUpdate);
                                      session.liveBackgroundTasks.delete(message.task_id);
                                  }
-@@ -2922,9 +3002,19 @@ export class ClaudeAcpAgent {
+@@ -2794,7 +2874,9 @@ export class ClaudeAcpAgent {
+                                     session.pendingGoalUpdate = undefined;
+                                     const goalCommandFailed = message.is_error ||
+                                         message.stop_reason === "refusal" ||
+-                                        ("result" in message && message.result.includes("Please run /login"));
++                                        ("result" in message &&
++                                            message.is_error &&
++                                            message.result.includes("Please run /login"));
+                                     if (goalCommandFailed) {
+                                         await this.publishGoal(params.sessionId, pendingGoalUpdate.previous ?? null);
+                                     }
+@@ -2922,9 +3004,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -140,7 +151,16 @@ index 0214a50..73f0c16 100644
                                      },
                                  });
                              }
-@@ -4506,6 +4596,48 @@ export class ClaudeAcpAgent {
+@@ -3081,7 +3173,7 @@ export class ClaudeAcpAgent {
+                             }
+                             switch (message.subtype) {
+                                 case "success": {
+-                                    if (message.result.includes("Please run /login")) {
++                                    if (message.is_error && message.result.includes("Please run /login")) {
+                                         await failActiveWithSessionFailure("auth_required", RequestError.authRequired(), message.result);
+                                         break;
+                                     }
+@@ -4506,6 +4598,48 @@ export class ClaudeAcpAgent {
       *  `$/cancel_request`, and our local abort race settles even if the client
       *  ignores it. A `cancelled` outcome, request rejection, and local abort all
       *  surface the same "Tool use aborted" the callers already expect. */
@@ -189,7 +209,7 @@ index 0214a50..73f0c16 100644
      async requestPermissionFromClient(params, toolName, signal, parentToolUseId, ownerSessionId = params.sessionId) {
          if (signal.aborted)
              throw new Error("Tool use aborted");
-@@ -5311,14 +5443,24 @@ export class ClaudeAcpAgent {
+@@ -5311,14 +5445,24 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
@@ -215,7 +235,7 @@ index 0214a50..73f0c16 100644
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5471,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5473,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),

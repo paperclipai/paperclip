@@ -364,14 +364,14 @@ export const toolsApi = {
   listConnections: (companyId: string, options?: RequestOptions) =>
     options ? api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`, options)
       : api.get<ToolConnectionsResponse>(`/companies/${companyId}/tools/connections`),
-  getConnection: (connectionId: string) =>
-    api.get<ToolConnection>(`/tool-connections/${connectionId}`),
+  getConnection: (connectionId: string, options?: RequestOptions) =>
+    api.get<ToolConnection>(`/tool-connections/${connectionId}`, options),
   // --- Installs (Phase 3b, PAP-13618): which agents carry this connection's
   // tools in their runtime context. `installed ⊆ permitted`; the server
   // auto-extends access (adds profile bindings) for any newly-installed target.
-  getConnectionInstalls: (connectionId: string) =>
+  getConnectionInstalls: (connectionId: string, options?: RequestOptions) =>
     api.get<{ connectionId: string; installs: ToolConnectionInstall[] }>(
-      `/tool-connections/${connectionId}/installs`,
+      `/tool-connections/${connectionId}/installs`, options,
     ),
   putConnectionInstalls: (
     connectionId: string,
@@ -499,8 +499,8 @@ export const toolsApi = {
     ),
 
   // --- Profiles ---
-  listConnectionProfileConfiguration: (connectionId: string) =>
-    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`),
+  listConnectionProfileConfiguration: (connectionId: string, options?: RequestOptions) =>
+    api.get<{ profiles: ToolProfileConfiguration[] }>(`/tool-connections/${connectionId}/profile-configuration`, options),
   listProfiles: (companyId: string) =>
     api.get<ToolProfilesResponse>(`/companies/${companyId}/tools/profiles`),
   getProfileNewTools: (profileId: string) =>
@@ -549,8 +549,8 @@ export const toolsApi = {
     api.get<ToolRuntimeSlot[]>(`/tool-gateway/runtime-slots?companyId=${encodeURIComponent(companyId)}`),
 
   // --- Policies (trust rules + decision simulator) ---
-  listPolicies: (companyId: string) =>
-    api.get<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies`),
+  listPolicies: (companyId: string, options?: RequestOptions) =>
+    api.get<ToolPoliciesResponse>(`/companies/${companyId}/tools/policies`, options),
   createPolicy: (companyId: string, input: CreateToolPolicy) =>
     api.post<ToolPolicy>(`/companies/${companyId}/tools/policies`, input),
   reorderPolicies: (companyId: string, input: ReorderToolPolicies) =>

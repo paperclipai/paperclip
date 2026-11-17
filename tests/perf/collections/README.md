@@ -77,15 +77,24 @@ three pending board approvals, retained in
 It gives eight fixture tasks twelve saved comments each and seeds them as the
 account's Recents. An idle Projects page must make exactly one
 `issues/chat-bootstrap` request (at most ten tasks) and no per-task reads.
+When a task enters the ten top rows later, Recents warms that task after the
+page settles. Tasks already warmed for this account and query client are
+skipped. Reordering the same tasks sends no new read. A failed preload can
+be tried on the next visit or change; there is no retry timer.
 Clicking a preloaded task must show its latest comment without any of the
 chat's first-frame reads (core issue, recent comments, comment input facts,
 recent activity, recent runs, interactions, attachments, live and active run).
 The full detail read and the task page's other side reads still follow the
 first frame; the spec records them as an annotation. Its timing cases measure
-click to the latest comment on screen over at least 5 fresh browser contexts
+click to the latest comment on screen with the chat revealed and composer
+editable over at least 5 fresh browser contexts
 (empty HTTP cache and storage apart from Recents), natively and with 150 ms
 added to every API response. They also record the idle page's API request
-count. The timings are attached evidence, not budgets.
+count and resource timing waterfalls. Both the initial history and a task
+added from another tab after the initial preload have separate timing cases.
+Set `PAPERCLIP_COLLECTION_PERF_PROFILE=1` for CPU profiles; use a separate run
+without that flag for latency comparisons. The timings are attached evidence,
+not budgets.
 
 `mine-returning-visit.spec.ts` hard loads Mine with the saved query cache
 (`paperclip:query-cache:v1:<user>:<company>`, primed by one earlier visit in
