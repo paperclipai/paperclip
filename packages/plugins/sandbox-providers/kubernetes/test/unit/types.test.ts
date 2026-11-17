@@ -36,4 +36,37 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
   });
+
+  it("defaults the per-company quota to 20 pods and the pod-ready budget to 90 s", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true });
+    expect(parsed.resourceQuota).toEqual({
+      pods: "20",
+      requestsCpu: "10",
+      requestsMemory: "20Gi",
+      limitsCpu: "20",
+      limitsMemory: "40Gi",
+    });
+    expect(parsed.podReadyTimeoutSec).toBe(90);
+  });
+
+  it("lets a partial resourceQuota override individual fields", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      resourceQuota: { pods: "3", limitsCpu: "6" },
+      podReadyTimeoutSec: 45,
+    });
+    expect(parsed.resourceQuota.pods).toBe("3");
+    expect(parsed.resourceQuota.limitsCpu).toBe("6");
+    expect(parsed.resourceQuota.limitsMemory).toBe("40Gi");
+    expect(parsed.podReadyTimeoutSec).toBe(45);
+  });
+
+  it("rejects an invalid pod quota or quantity", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, resourceQuota: { pods: "0" } }),
+    ).toThrow();
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, resourceQuota: { limitsMemory: "lots" } }),
+    ).toThrow();
+  });
 });

@@ -97,6 +97,24 @@ const manifest: PaperclipPluginManifestV1 = {
             minimum: 1,
             description: "Hard ceiling on a single run's wall-clock time (default: 3600).",
           },
+          podReadyTimeoutSec: {
+            type: "integer",
+            minimum: 1,
+            description:
+              "Longest a run waits for its sandbox pod to become Ready before failing with a clear error (default: 90). Separate from the run timeout.",
+          },
+          resourceQuota: {
+            type: "object",
+            description:
+              "Per-company ResourceQuota for the tenant namespace. `pods` caps concurrent sandbox pods per company; a run that would exceed it fails fast with an over-capacity error (no queue). Changes are applied to existing namespaces on the next lease acquire.",
+            properties: {
+              pods: { type: "string", description: "Max concurrent pods per company (default: \"20\")." },
+              requestsCpu: { type: "string", description: "Aggregate CPU requests (default: \"10\")." },
+              requestsMemory: { type: "string", description: "Aggregate memory requests (default: \"20Gi\")." },
+              limitsCpu: { type: "string", description: "Aggregate CPU limits (default: \"20\")." },
+              limitsMemory: { type: "string", description: "Aggregate memory limits (default: \"40Gi\")." },
+            },
+          },
           adapterType: {
             type: "string",
             description:

@@ -15,6 +15,7 @@ import type {
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
   PluginEnvironmentSyncResult,
+  PluginSyncOperation,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -28,11 +29,17 @@ import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./ad
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
 import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
-import { ensureTenant } from "./tenant-orchestrator.js";
+import {
+  assertPodCapacity,
+  ensureTenantCached,
+  invalidateTenantCache,
+  OverCapacityError,
+} from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
 import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
+  DEFAULT_READY_POLL_MS,
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
@@ -60,21 +67,52 @@ const PAPERCLIP_SERVER_NAMESPACE = "paperclip";
 // Name of the ServiceAccount created inside each tenant namespace by ensureTenant.
 const TENANT_SERVICE_ACCOUNT = "paperclip-tenant-sa";
 
-// Resource quota defaults applied to every tenant namespace (tunable via
-// config in a future iteration).
-const DEFAULT_RESOURCE_QUOTA = {
-  pods: "20",
-  requestsCpu: "10",
-  requestsMemory: "20Gi",
-  limitsCpu: "20",
-  limitsMemory: "40Gi",
-};
-
 function deriveTenantNamespace(config: KubernetesProviderConfig, companyId: string): string {
   // TODO: future versions could thread companyName through AcquireLeaseParams
   // to get a friendlier slug (e.g. "acme-corp") instead of the UUID-derived one.
   const slug = config.companySlug ?? deriveCompanySlug(companyId);
   return deriveNamespaceName(config.namespacePrefix, slug);
+}
+
+/**
+ * Budget for the pod-Ready wait: the configured pod-ready timeout, never longer
+ * than the caller's own timeout. This is what turns "quota full / unschedulable"
+ * into a ~90 s clear failure instead of a hang for the whole run timeout.
+ */
+function podReadyBudgetMs(config: KubernetesProviderConfig, callerTimeoutMs: number): number {
+  return Math.min(callerTimeoutMs, config.podReadyTimeoutSec * 1000);
+}
+
+/**
+ * The Ready wait timed out: say why. If the company's pod quota is full, report
+ * over-capacity; otherwise report the pod-ready timeout with the controller's
+ * last status message.
+ */
+async function describePodReadyTimeout(
+  clients: ReturnType<typeof makeKubeClients>,
+  namespace: string,
+  sandboxName: string,
+  err: SandboxCrTimeoutError,
+  budgetMs: number,
+): Promise<string> {
+  // A full quota only explains the timeout if this sandbox's pod was never
+  // admitted. If the pod exists it is counted in `used`, and a slow start at
+  // the limit is a pod-start timeout, not over capacity.
+  const podExists = await sandboxCrOrchestrator
+    .findPod(clients, namespace, sandboxName)
+    .then((name) => Boolean(name))
+    .catch(() => false);
+  if (!podExists) {
+    try {
+      await assertPodCapacity(clients, namespace);
+    } catch (capacityErr) {
+      if (capacityErr instanceof OverCapacityError) return capacityErr.message;
+    }
+  }
+  return (
+    `Sandbox pod did not become Ready within ${Math.round(budgetMs / 1000)}s` +
+    (err.lastMessage ? ` (${err.lastMessage})` : "")
+  );
 }
 
 function generateBootstrapToken(): string {
@@ -131,6 +169,22 @@ function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
   throw new Error("Kubernetes file sync requires a workspace remote dir on the lease metadata.");
 }
 
+function isNoopSync(operations: PluginSyncOperation[]): boolean {
+  return operations.every(
+    (op) => op.files.length === 0 && (op.postUploadCommands?.length ?? 0) === 0,
+  );
+}
+
+function noopSyncResult(operations: PluginSyncOperation[]): PluginEnvironmentSyncResult {
+  return {
+    operations: operations.map((op) => ({
+      operationId: op.operationId,
+      filesTransferred: 0,
+      bytesTransferred: 0,
+    })),
+  };
+}
+
 /**
  * Resolve the running Sandbox-CR pod for a native file-sync operation and return
  * a `PodStreamExec` bound to it, exactly like `onEnvironmentExecute` resolves its exec
@@ -174,10 +228,18 @@ async function resolveSyncPodExec(
   // Ensure the Sandbox pod is Ready (wait only the first time for this lease),
   // then resolve the pod name — mirrors the onEnvironmentExecute resolution.
   if (!readySandboxesByLease.has(lease.providerLeaseId)) {
-    await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
-      timeoutMs,
-      pollMs: 2000,
-    });
+    const readyBudgetMs = podReadyBudgetMs(config, timeoutMs);
+    try {
+      await sandboxCrOrchestrator.waitForCompletion(clients, namespace, lease.providerLeaseId, {
+        timeoutMs: readyBudgetMs,
+        pollMs: DEFAULT_READY_POLL_MS,
+      });
+    } catch (err) {
+      if (err instanceof SandboxCrTimeoutError) {
+        throw new Error(await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs));
+      }
+      throw err;
+    }
     readySandboxesByLease.add(lease.providerLeaseId);
   }
 
@@ -336,7 +398,7 @@ const plugin = definePlugin({
     // exist before we try to create the Job.
     const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters);
 
-    await ensureTenant(clients, {
+    await ensureTenantCached(clients, {
       namespace,
       companyId: params.companyId,
       paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
@@ -344,8 +406,12 @@ const plugin = definePlugin({
       egressMode: config.egressMode,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
-      resourceQuota: DEFAULT_RESOURCE_QUOTA,
+      resourceQuota: config.resourceQuota,
     });
+
+    // Fail fast (no queue) when the company's pod quota is already full, rather
+    // than creating a Sandbox whose pod the quota will never admit.
+    await assertPodCapacity(clients, namespace);
 
     const jobName = `pc-${newRunUlidDns()}`;
     const secretName = `${jobName}-env`;
@@ -397,7 +463,14 @@ const plugin = definePlugin({
           imagePullSecrets: config.imagePullSecrets,
         });
 
-    const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
+    let ownerUid: string;
+    try {
+      ({ uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest));
+    } catch (err) {
+      // The cached tenant ensure may be stale (namespace removed out of band).
+      invalidateTenantCache(namespace);
+      throw err;
+    }
     const scopedNetworkEgress = parseScopedNetworkEgressGrant(params.executionWorkspaceSettings);
     const scopedNetworkPolicyName = await createScopedNetworkEgressPolicyOrReleaseWorkload(
       {
@@ -715,21 +788,55 @@ const plugin = definePlugin({
       const executeStartedAt = Date.now();
 
       if (!podAlreadyKnownReady) {
+        const readyBudgetMs = podReadyBudgetMs(config, effectiveTimeoutMs);
         try {
           await sandboxCrOrchestrator.waitForCompletion(
             clients,
             namespace,
             lease.providerLeaseId,
-            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+            { timeoutMs: readyBudgetMs, pollMs: DEFAULT_READY_POLL_MS },
           );
           readySandboxesByLease.add(lease.providerLeaseId);
         } catch (err) {
+          if (err instanceof OverCapacityError) {
+            return {
+              exitCode: 1,
+              timedOut: false,
+              stdout: "",
+              stderr: err.message,
+              metadata: {
+                provider: "kubernetes",
+                backend: "sandbox-cr",
+                namespace,
+                sandboxName: lease.providerLeaseId,
+                overCapacity: true,
+              },
+            };
+          }
           if (err instanceof SandboxCrTimeoutError) {
+            const message = await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs);
+            if (message.startsWith("Over capacity")) {
+              // The pod never started because the company quota is full: report
+              // it the same way as the fail-fast path, not as a run timeout.
+              return {
+                exitCode: 1,
+                timedOut: false,
+                stdout: "",
+                stderr: message,
+                metadata: {
+                  provider: "kubernetes",
+                  backend: "sandbox-cr",
+                  namespace,
+                  sandboxName: lease.providerLeaseId,
+                  overCapacity: true,
+                },
+              };
+            }
             return {
               exitCode: null,
               timedOut: true,
               stdout: "",
-              stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
+              stderr: message,
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
@@ -1013,6 +1120,9 @@ const plugin = definePlugin({
   async onEnvironmentSyncIn(
     params: PluginEnvironmentSyncInParams,
   ): Promise<PluginEnvironmentSyncResult> {
+    // Nothing to transfer (e.g. a chat turn with no workspace): skip the pod
+    // resolution and readiness wait entirely.
+    if (isNoopSync(params.operations)) return noopSyncResult(params.operations);
     const remoteDir = resolveSyncRemoteDir(params.lease);
     const { exec, timeoutMs } = await resolveSyncPodExec(params);
     return await performSyncIn({
@@ -1027,6 +1137,7 @@ const plugin = definePlugin({
   async onEnvironmentSyncOut(
     params: PluginEnvironmentSyncOutParams,
   ): Promise<PluginEnvironmentSyncResult> {
+    if (isNoopSync(params.operations)) return noopSyncResult(params.operations);
     const remoteDir = resolveSyncRemoteDir(params.lease);
     const { exec, timeoutMs } = await resolveSyncPodExec(params);
     return await performSyncOut({

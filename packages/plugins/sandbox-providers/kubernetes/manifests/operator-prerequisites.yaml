@@ -3,6 +3,9 @@
 # Minimum cluster version: Kubernetes 1.27+
 #   - batch/v1 Job (GA since k8s 1.21)
 #   - core/v1 Pod, Secret, Namespace, ServiceAccount, ResourceQuota, LimitRange (GA since k8s 1.0)
+#     The server's credentials need get/create/update on resourcequotas: the plugin
+#     reconciles the per-company quota (`resourceQuota` config) onto existing
+#     tenant namespaces with an update.
 #   - rbac.authorization.k8s.io/v1 Role, RoleBinding (GA since k8s 1.8)
 #   - networking.k8s.io/v1 NetworkPolicy (GA since k8s 1.7)
 #   - Pod Security Standards namespace labels (GA in k8s 1.25)

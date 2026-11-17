@@ -4,6 +4,34 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
+// Kubernetes resource.Quantity subset: plain/decimal numbers with an optional
+// milli (`m`) or binary/decimal SI suffix, e.g. `10`, `500m`, `20Gi`, `1.5G`.
+const quantityRegex = /^\d+(\.\d+)?(m|k|[KMGTPE]i?)?$/;
+const quantity = z.string().regex(quantityRegex, "Invalid Kubernetes quantity");
+
+/**
+ * Per-company (tenant namespace) ResourceQuota. `pods` is the cap on concurrent
+ * sandbox pods per company; the others bound aggregate CPU/memory.
+ */
+export const DEFAULT_RESOURCE_QUOTA = {
+  pods: "20",
+  requestsCpu: "10",
+  requestsMemory: "20Gi",
+  limitsCpu: "20",
+  limitsMemory: "40Gi",
+} as const;
+
+/** Default budget for a sandbox pod to become Ready before failing the run. */
+export const DEFAULT_POD_READY_TIMEOUT_SEC = 90;
+
+export const resourceQuotaSchema = z.object({
+  pods: z.string().regex(/^[1-9]\d*$/, "pods must be a positive integer").default(DEFAULT_RESOURCE_QUOTA.pods),
+  requestsCpu: quantity.default(DEFAULT_RESOURCE_QUOTA.requestsCpu),
+  requestsMemory: quantity.default(DEFAULT_RESOURCE_QUOTA.requestsMemory),
+  limitsCpu: quantity.default(DEFAULT_RESOURCE_QUOTA.limitsCpu),
+  limitsMemory: quantity.default(DEFAULT_RESOURCE_QUOTA.limitsMemory),
+});
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
@@ -32,6 +60,20 @@ export const kubernetesProviderConfigSchema = z
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
+
+    /**
+     * Longest a run waits for its sandbox pod to become Ready. Independent of
+     * (and normally far shorter than) the run timeout so a pod that can never
+     * start (quota exhausted, unschedulable) fails the run in about a minute
+     * instead of hanging for the whole adapter timeout.
+     */
+    podReadyTimeoutSec: z.number().int().positive().default(DEFAULT_POD_READY_TIMEOUT_SEC),
+
+    /**
+     * Per-company ResourceQuota applied to each tenant namespace. Changes are
+     * reconciled onto existing namespaces on the next lease acquire.
+     */
+    resourceQuota: resourceQuotaSchema.default({}),
 
     /**
      * The adapter type that Jobs in this environment will run.

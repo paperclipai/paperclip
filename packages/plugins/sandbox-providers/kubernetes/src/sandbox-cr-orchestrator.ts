@@ -23,17 +23,25 @@
 
 import type { KubeClients } from "./kube-client.js";
 import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
+import { isQuotaExceededMessage, OverCapacityError } from "./tenant-orchestrator.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
 const SANDBOX_VERSION = "v1alpha1";
 const SANDBOX_PLURAL = "sandboxes";
 
+/** Default Ready poll interval. 500ms keeps pod-start latency tight without hammering the API. */
+export const DEFAULT_READY_POLL_MS = 500;
+
 export class SandboxCrTimeoutError extends Error {
-  constructor(namespace: string, name: string, timeoutMs: number) {
+  /** Last not-Ready condition message the controller reported, if any. */
+  readonly lastMessage?: string;
+  constructor(namespace: string, name: string, timeoutMs: number, lastMessage?: string) {
     super(
-      `Sandbox ${namespace}/${name} did not reach Ready phase within ${timeoutMs}ms`,
+      `Sandbox ${namespace}/${name} did not reach Ready phase within ${timeoutMs}ms` +
+        (lastMessage ? ` (last status: ${lastMessage})` : ""),
     );
     this.name = "SandboxCrTimeoutError";
+    this.lastMessage = lastMessage;
   }
 }
 
@@ -250,20 +258,34 @@ export async function waitForSandboxReady(
   name: string,
   opts: { timeoutMs: number; pollMs?: number } = {
     timeoutMs: 120_000,
-    pollMs: 2000,
+    pollMs: DEFAULT_READY_POLL_MS,
   },
 ): Promise<SandboxStatus> {
   const deadline = Date.now() + opts.timeoutMs;
-  const pollMs = opts.pollMs ?? 2000;
+  const pollMs = opts.pollMs ?? DEFAULT_READY_POLL_MS;
+  let lastMessage: string | undefined;
 
   while (Date.now() < deadline) {
-    const cr = await clients.custom.getNamespacedCustomObject({
-      group: SANDBOX_GROUP,
-      version: SANDBOX_VERSION,
-      namespace,
-      plural: SANDBOX_PLURAL,
-      name,
-    }) as Record<string, unknown>;
+    let cr: Record<string, unknown>;
+    try {
+      cr = await clients.custom.getNamespacedCustomObject({
+        group: SANDBOX_GROUP,
+        version: SANDBOX_VERSION,
+        namespace,
+        plural: SANDBOX_PLURAL,
+        name,
+      }) as Record<string, unknown>;
+    } catch (err) {
+      // The 500 ms poll raises the odds of hitting a throttle or a blip:
+      // ride out 429/5xx until the deadline instead of failing the run.
+      const code = (err as { code?: number; statusCode?: number }).code
+        ?? (err as { code?: number; statusCode?: number }).statusCode;
+      if (typeof code === "number" && (code === 429 || code >= 500)) {
+        await sleep(pollMs);
+        continue;
+      }
+      throw err;
+    }
 
     const status = (cr.status as Record<string, unknown>) ?? {};
     // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
@@ -292,11 +314,21 @@ export async function waitForSandboxReady(
         `Sandbox ${namespace}/${name} is Terminating — cannot wait for Ready`,
       );
     }
-    // Pending — keep polling
+    // Pending — keep polling. If the controller says the pod was refused by the
+    // namespace quota, no amount of waiting helps: fail fast with a clear error.
+    // Scan every condition: the quota rejection may sit on any of them, not
+    // necessarily the Ready one.
+    const messages = conditions
+      .map((c) => c.message)
+      .filter((m): m is string => typeof m === "string" && m.length > 0);
+    const quotaMessage = messages.find((m) => isQuotaExceededMessage(m));
+    if (quotaMessage) throw new OverCapacityError(namespace, quotaMessage);
+    const pendingMessage = (typeof readyCondition?.message === "string" && readyCondition.message) || messages[0];
+    if (pendingMessage) lastMessage = pendingMessage;
     await sleep(pollMs);
   }
 
-  throw new SandboxCrTimeoutError(namespace, name, opts.timeoutMs);
+  throw new SandboxCrTimeoutError(namespace, name, opts.timeoutMs, lastMessage);
 }
 
 /**

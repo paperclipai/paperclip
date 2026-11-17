@@ -74,8 +74,22 @@ Common optional fields:
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
+| `podReadyTimeoutSec` | `90` | Longest a run waits for its sandbox pod to become Ready. Independent of the run timeout. |
+| `resourceQuota` | see below | Per-company ResourceQuota for the tenant namespace (`pods`, `requestsCpu`, `requestsMemory`, `limitsCpu`, `limitsMemory`). |
 
 Full JSON Schema in `src/manifest.ts`.
+
+### Per-company capacity and over-capacity behavior
+
+Each company's tenant namespace gets a `ResourceQuota` (`paperclip-quota`). Defaults, all overridable per environment under `resourceQuota`:
+
+```json
+{ "resourceQuota": { "pods": "20", "requestsCpu": "10", "requestsMemory": "20Gi", "limitsCpu": "20", "limitsMemory": "40Gi" } }
+```
+
+When a company is at its pod quota there is **no queue**: a new run fails fast with an `Over capacity` error. The plugin checks the quota before creating a Sandbox (acquire fails in about a second), reads quota-rejection messages from the Sandbox status while waiting, and bounds the pod-Ready wait by `podReadyTimeoutSec` (default 90 s) instead of the run timeout. Pod readiness is polled every 500 ms.
+
+**Changing the quota for existing companies.** Edit `resourceQuota` on the environment. The plugin reconciles `paperclip-quota` `spec.hard` to the configured values the next time it provisions a lease for that namespace (a changed `resourceQuota` is part of the cached setup fingerprint, so it is applied on the very next acquire; unchanged setup is re-verified at most every 5 minutes). This needs `update` on `resourcequotas` in the tenant namespaces for the server's Kubernetes credentials (`get`/`create` alone are not enough); if it is missing the plugin logs a warning naming the missing permission and the old quota stays in force. Other tenant objects (RBAC, NetworkPolicies, LimitRange) remain create-once: change those by deleting the object, or the namespace, and the next run recreates it. Sizing note: with 2 CPU limits per pod, `limitsCpu` of 20 admits about 10 concurrent pods regardless of `pods`.
 
 ### Task-scoped egress grants
 

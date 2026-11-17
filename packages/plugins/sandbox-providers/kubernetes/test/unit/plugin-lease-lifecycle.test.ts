@@ -263,3 +263,180 @@ describe("onEnvironmentDestroyLease", () => {
     expect(deleteCr).not.toHaveBeenCalled();
   });
 });
+
+describe("quota guard and pod-ready budget", () => {
+  const FULL_QUOTA = {
+    metadata: { name: "paperclip-quota" },
+    spec: {
+      hard: {
+        pods: "20",
+        "requests.cpu": "10",
+        "requests.memory": "20Gi",
+        "limits.cpu": "20",
+        "limits.memory": "40Gi",
+      },
+    },
+    status: { hard: { pods: "20" }, used: { pods: "20" } },
+  };
+
+  it("fails acquireLease immediately with an over-capacity error when the company quota is full", async () => {
+    const exists = vi.fn().mockResolvedValue({});
+    const create = vi.fn();
+    h.clients = {
+      core: {
+        readNamespace: exists,
+        readNamespacedServiceAccount: exists,
+        readNamespacedLimitRange: exists,
+        readNamespacedResourceQuota: vi.fn().mockResolvedValue(FULL_QUOTA),
+      },
+      rbac: { readNamespacedRole: exists, readNamespacedRoleBinding: exists },
+      networking: { readNamespacedNetworkPolicy: exists },
+      custom: { getNamespacedCustomObject: exists, createNamespacedCustomObject: create },
+    };
+    await expect(
+      plugin.definition.onEnvironmentAcquireLease!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: { ...CONFIG, companySlug: "quota-full" },
+        runId: "run-1",
+      } as never),
+    ).rejects.toThrow(/Over capacity/);
+    // No Sandbox CR is created for a company that is already at its pod cap.
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("execute returns a clear over-capacity failure (not a hang) when the quota rejects the pod", async () => {
+    h.clients = {
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockResolvedValue({
+          status: {
+            conditions: [
+              { type: "Ready", status: "False", message: "pods is forbidden: exceeded quota: paperclip-quota" },
+            ],
+          },
+        }),
+      },
+    };
+    const result = await plugin.definition.onEnvironmentExecute!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      lease: { providerLeaseId: "pc-never-ready", metadata: leaseMetadata({ podName: null }) },
+      command: "true",
+      args: [],
+      timeoutMs: 1_800_000,
+    } as never);
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/Over capacity/);
+  });
+
+  it("bounds the pod-Ready wait by podReadyTimeoutSec, not the 30 minute run timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      h.clients = {
+        custom: {
+          getNamespacedCustomObject: vi.fn().mockResolvedValue({
+            status: { conditions: [{ type: "Ready", status: "False", message: "Unschedulable" }] },
+          }),
+        },
+        core: {
+          readNamespacedResourceQuota: vi.fn().mockResolvedValue({
+            status: { hard: { pods: "20" }, used: { pods: "3" } },
+          }),
+        },
+      };
+      const pending = plugin.definition.onEnvironmentExecute!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: { ...CONFIG, podReadyTimeoutSec: 5 },
+        lease: { providerLeaseId: "pc-slow", metadata: leaseMetadata({ podName: null }) },
+        command: "true",
+        args: [],
+        timeoutMs: 1_800_000,
+      } as never);
+      await vi.advanceTimersByTimeAsync(6_000);
+      const result = await pending;
+      expect(result.timedOut).toBe(true);
+      expect(result.stderr).toMatch(/did not become Ready within 5s/);
+      expect(result.stderr).toMatch(/Unschedulable/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not call a slow pod start over capacity just because its own pod fills the quota", async () => {
+    vi.useFakeTimers();
+    try {
+      h.clients = {
+        custom: {
+          getNamespacedCustomObject: vi.fn().mockResolvedValue({
+            status: { conditions: [{ type: "Ready", status: "False", message: "ContainerCreating" }] },
+          }),
+        },
+        core: {
+          // The sandbox's pod exists (so it is counted in used) and is just slow.
+          readNamespacedPod: vi.fn().mockResolvedValue({ metadata: { name: "pc-slow" } }),
+          readNamespacedResourceQuota: vi.fn().mockResolvedValue({
+            status: { hard: { pods: "20" }, used: { pods: "20" } },
+          }),
+        },
+      };
+      const pending = plugin.definition.onEnvironmentExecute!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: { ...CONFIG, podReadyTimeoutSec: 2 },
+        lease: { providerLeaseId: "pc-slow", metadata: leaseMetadata({ podName: null }) },
+        command: "true",
+        args: [],
+        timeoutMs: 1_800_000,
+      } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      const result = await pending;
+      expect(result.timedOut).toBe(true);
+      expect(result.stderr).toMatch(/did not become Ready within 2s/);
+      expect(result.stderr).not.toMatch(/Over capacity/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a Ready timeout against a full company quota as over capacity, not a run timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      h.clients = {
+        custom: {
+          getNamespacedCustomObject: vi.fn().mockResolvedValue({
+            status: { conditions: [{ type: "Ready", status: "False", message: "starting" }] },
+          }),
+        },
+        core: {
+          readNamespacedResourceQuota: vi.fn().mockResolvedValue({
+            status: { hard: { pods: "20" }, used: { pods: "20" } },
+          }),
+        },
+      };
+      const pending = plugin.definition.onEnvironmentExecute!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: { ...CONFIG, podReadyTimeoutSec: 2 },
+        lease: { providerLeaseId: "pc-full", metadata: leaseMetadata({ podName: null }) },
+        command: "true",
+        args: [],
+        timeoutMs: 1_800_000,
+      } as never);
+      await vi.advanceTimersByTimeAsync(3_000);
+      const result = await pending;
+      expect(result.timedOut).toBe(false);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toMatch(/Over capacity/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -108,7 +108,7 @@ describe("plugin", () => {
         environmentId: "env",
         config: { inCluster: true },
         lease: { providerLeaseId: "lease-1", metadata: {} },
-        operations: [],
+        operations: [{ operationId: "op1", files: [{ kind: "file", hostPath: "/tmp/a", remotePath: "a" } as never] }],
       }),
     ).rejects.toThrow(/workspace remote dir/);
   });
@@ -124,8 +124,32 @@ describe("plugin", () => {
           providerLeaseId: "lease-1",
           metadata: { remoteCwd: "/workspace", backend: "job", namespace: "paperclip-co" },
         },
-        operations: [],
+        operations: [{ operationId: "op1", files: [{ kind: "file", hostPath: "/tmp/a", remotePath: "a" } as never] }],
       }),
     ).rejects.toThrow(/only supported on the sandbox-cr backend/);
+  });
+
+  it("skips pod resolution entirely when a sync has nothing to transfer (no workspace)", async () => {
+    // No kube clients are mocked: any attempt to resolve the pod would throw.
+    const result = await plugin.definition.onEnvironmentSyncIn!({
+      driverKey: "kubernetes",
+      companyId: "co",
+      environmentId: "env",
+      config: { inCluster: true },
+      lease: { providerLeaseId: "lease-1", metadata: {} },
+      operations: [{ operationId: "op1", files: [] }],
+    });
+    expect(result).toEqual({
+      operations: [{ operationId: "op1", filesTransferred: 0, bytesTransferred: 0 }],
+    });
+    const out = await plugin.definition.onEnvironmentSyncOut!({
+      driverKey: "kubernetes",
+      companyId: "co",
+      environmentId: "env",
+      config: { inCluster: true },
+      lease: { providerLeaseId: "lease-1", metadata: {} },
+      operations: [],
+    });
+    expect(out).toEqual({ operations: [] });
   });
 });
