@@ -18,6 +18,23 @@ describe("shouldWakeAssigneeForIssueComment", () => {
     ).toBe(false);
   });
 
+  it("allows the current owner repair to request one successor", () => {
+    expect(
+      shouldWakeAssigneeForIssueComment({
+        selfComment: true,
+        resumeRequested: true,
+        allowCurrentIssueRunResume: true,
+        commentCreatedByRunId: "run-current",
+        issueAtCommentStart: {
+          checkoutRunId: "run-current",
+          executionRunId: "run-current",
+        },
+        reopened: false,
+        currentStatus: "todo",
+      }),
+    ).toBe(true);
+  });
+
   it("preserves explicit resume from a completed prior run", () => {
     expect(
       shouldWakeAssigneeForIssueComment({

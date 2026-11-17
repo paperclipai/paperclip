@@ -2980,7 +2980,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         opts.idempotencyKey !== museRequest.idempotencyKey)) {
       throw conflict("Muse work request does not match its admission authority.");
     }
-    const receiptRequest = durableRequest ?? dotRequest ?? museRequest ?? caseReceipt;
+    const ownerResumeReceipt = opts.idempotencyKey?.startsWith("issue-owner-resume:") &&
+      opts.requestedByActorType === "agent" && opts.requestedByActorId === agentId
+      ? { id: randomUUID(), requestedAt: new Date() } : undefined;
+    const receiptRequest = durableRequest ?? dotRequest ?? museRequest ?? caseReceipt ?? ownerResumeReceipt;
     const durableReceiptFields = receiptRequest
       ? { id: receiptRequest.id, requestedAt: receiptRequest.requestedAt }
       : {};
@@ -3513,6 +3516,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
+
+          if (opts.idempotencyKey?.startsWith("issue-owner-resume:")) {
+            const [prior] = await tx.select().from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey),
+              notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+            )).limit(1);
+            if (prior?.payload?.issueId === issueId &&
+                prior.requestedByActorType === "agent" && prior.requestedByActorId === agentId) {
+              if (!prior.runId) return { kind: "deferred" as const };
+              const [priorRun] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, prior.runId)).limit(1);
+              if (priorRun) return { kind: "replayed" as const, run: priorRun };
+            }
+          }
 
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(

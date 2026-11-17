@@ -2427,6 +2427,7 @@ describe("issue comment reopen routes", () => {
       }),
       mockTx,
     );
+    expect(mockIssueService.getByIdForUpdate).toHaveBeenCalledWith(issue.id, mockTx);
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
