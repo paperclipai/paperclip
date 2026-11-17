@@ -170,7 +170,6 @@ describe("GitHub star prompt", () => {
     await render();
     expect(visible()).toBe(false);
     expect(window.localStorage.getItem(STAR_PROMPT_SEEN_KEY)).toBeNull();
-    // Reopening tasks must not enroll a company that had already passed five.
     await completeTasks(4);
     await completeTasks(5);
     expect(visible()).toBe(false);

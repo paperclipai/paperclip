@@ -45,12 +45,12 @@ function readOrRecordEligibility(companyId: string, completedTasks: number) {
 }
 
 /**
- * Asks self-hosted users to star the repository when their company reaches five
- * completed tasks. Only companies first observed below five qualify; remember
- * that decision across visits so existing companies never get a belated prompt.
- * It shows at most once per browser: showing it counts as seen, so a reload or
- * another open tab never repeats it. It waits for any other dialog to close.
- * Cloud instances, unfinished onboarding and unknown state keep it hidden.
+ * Asks self-hosted users to star the repository once they have finished
+ * enough tasks to know whether Paperclip helps them. It shows at most once
+ * per browser: showing it counts as seen, so a reload or another open tab
+ * never repeats it. It waits for any other dialog to close. Cloud instances,
+ * unfinished onboarding and unknown state (loading or a failed read) keep it
+ * hidden.
  */
 export function GitHubStarPrompt() {
   const { selectedCompanyId, loading } = useCompany();
