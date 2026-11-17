@@ -1521,17 +1521,37 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
 }
 
 /**
+ * True when another task created the execution workspace and it is now closed.
+ * Older releases bound a follow-up task to the realized workspace of the task
+ * whose run created it. Once the owner closes, that binding can never run: the
+ * reopen path would hand the owner's files to the follow-up, and without it
+ * every admission fails the same way at setup.
+ */
+async function bindsClosedForeignExecutionWorkspace(
+  tx: DbTransaction,
+  input: { companyId: string; executionWorkspaceId: string; taskId: string },
+) {
+  const [workspace] = await tx.select({ sourceIssueId: executionWorkspaces.sourceIssueId, status: executionWorkspaces.status })
+    .from(executionWorkspaces)
+    .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.executionWorkspaceId)));
+  return Boolean(workspace?.sourceIssueId && workspace.sourceIssueId !== input.taskId
+    && isClosedExecutionWorkspaceStatus(workspace.status));
+}
+
+/**
  * Clears a task's binding to a relative's execution workspace that an older
- * release created, so its next run realizes its own workspace from the project
- * base. The relative and the shared workspace are never changed. Does nothing
- * while another run of the task (other than `runId`) is running or its earlier
- * run still owns workspace finalization or recovery. Runs inside the caller's
- * transaction; returns whether the binding was released.
+ * release created, or to another task's closed workspace, so its next run
+ * realizes its own workspace from the project base. The other task and the
+ * workspace are never changed. Does nothing while another run of the task
+ * (other than `runId`) is running or its earlier run still owns workspace
+ * finalization or recovery. Runs inside the caller's transaction; returns
+ * whether the binding was released.
  */
 export async function releaseAncestorWorkspaceBinding(tx: DbTransaction, input: { companyId: string; issueId: string; runId?: string }) {
   const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
   if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
-  if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
+  if (!await bindsClosedForeignExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, taskId: task.id })
+    && !await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
     return false;
   }
   const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(

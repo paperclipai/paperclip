@@ -406,6 +406,36 @@ describeEmbeddedPostgres("subtasks never share an ancestor's execution workspace
       expect((await readIssue(fixture.childIssueId)).executionWorkspaceId).toBe(fixture.parentWorkspaceId);
     });
 
+    it("rebinds a task bound to an unrelated task's workspace once that workspace is closed", async () => {
+      const fixture = await seedOldReleaseChild();
+      // Older releases bound a top-level follow-up to the realized workspace of
+      // the task whose run created it. The owner later closed and its workspace
+      // was archived; every admission of the follow-up failed at setup.
+      await db.update(issues).set({ parentId: null }).where(eq(issues.id, fixture.childIssueId));
+      await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), cleanupReason: "issue_terminal" })
+        .where(eq(executionWorkspaces.id, fixture.parentWorkspaceId));
+      const before = await readIssue(fixture.childIssueId);
+      const runId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.childIssueId, status: "running" });
+
+      expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
+        companyId: fixture.companyId, issueId: fixture.childIssueId, runId,
+      })).toBe(true);
+      const followUp = await readIssue(fixture.childIssueId);
+      expect(followUp.executionWorkspaceId).toBeNull();
+      expect(followUp.executionWorkspacePreference).toBeNull();
+      expect(followUp.workspaceBindingRevision).toBe(before.workspaceBindingRevision + 1);
+
+      // The owner keeps its closed workspace, and the workspace is untouched.
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      const ownerRunId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.parentIssueId, status: "running" });
+      expect(await executionWorkspaceService(db).releaseAncestorWorkspaceBindingAtAdmission({
+        companyId: fixture.companyId, issueId: fixture.parentIssueId, runId: ownerRunId,
+      })).toBe(false);
+      expect((await readIssue(fixture.parentIssueId)).executionWorkspaceId).toBe(fixture.parentWorkspaceId);
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, fixture.parentWorkspaceId));
+      expect(workspace).toMatchObject({ status: "archived", sourceIssueId: fixture.parentIssueId });
+    });
+
     it("never rebinds the parent, even when it is bound to its own workspace a child shares", async () => {
       const fixture = await seedOldReleaseChild();
       const runId = await insertRun({ companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.parentIssueId, status: "running" });
