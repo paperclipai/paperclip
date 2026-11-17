@@ -1035,6 +1035,7 @@ pub struct AcpxCommandExecutor {
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
     recovery_pending_effects: Option<usize>,
+    parked_relaunch: bool,
     /// The failed turn-end restart's cause, reported by the next turn start.
     failed_turn_end_restart: Option<String>,
     /// The failed turn-end restart's cause, until the Runner records it.
@@ -1079,6 +1080,7 @@ impl AcpxCommandExecutor {
             session: None,
             restore_checked: false,
             recovery_pending_effects: None,
+            parked_relaunch: false,
             failed_turn_end_restart: None,
             unreported_turn_end_restart_failure: None,
             turn_accepts_provider_turns: false,
@@ -1096,6 +1098,33 @@ impl AcpxCommandExecutor {
 
     pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
         self.recovery_pending_effects = Some(state.recovery_pending_effects());
+    }
+
+    pub(crate) fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        self.load_state_without_session()?;
+        let settled = self.state.as_ref().is_some_and(|state| {
+            state.descriptor.agent == "claude"
+                && state.descriptor.run_id == self.context.run_id
+                && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
+                && settled_checkpoint_blockers(state).is_empty()
+                && state.pending_events.is_empty()
+                && state.pending_runtime_requests.is_empty()
+                && state.provider_turn_wait.is_none()
+                && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+        });
+        if !settled
+            || self.recovery_pending_effects != Some(0)
+            || self.candidate_admission().is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "parked ACPX recovery requires a settled Claude provider checkpoint",
+            )
+            .with_classification(crate::durable::PROVIDER_ATTACH_REFUSED));
+        }
+        self.restore_checked = true;
+        self.parked_relaunch = true;
+        Ok(())
     }
 
     fn candidate_admission(
@@ -1556,6 +1585,14 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        self.start_session_from(state, recovering)
+    }
+
+    fn start_session_from(
+        &self,
+        state: &AcpxDurableState,
+        recovering: bool,
+    ) -> Result<AcpxProviderSession, DurableRunnerError> {
         let expected = recovering.then(|| state.identity.clone()).flatten();
         let config = state.descriptor.session_config(
             state.tool_set.clone(),
@@ -1933,7 +1970,12 @@ impl AcpxCommandExecutor {
         if clears_turn_end_restart_failure {
             state.turn_end_restart_failed_run = None;
         }
-        let saved = if cold_candidate_attachment {
+        let saved = if self.parked_relaunch {
+            let session = self.start_session_from(&state, true)?;
+            self.commit_staged_state(state)?;
+            self.session = Some(session);
+            Ok(())
+        } else if cold_candidate_attachment {
             self.commit_staged_state(state)
         } else {
             self.state = Some(state);
@@ -3277,6 +3319,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.parked_relaunch = false;
         self.recovery_pending_effects = None;
         self.context.run_id = config.run_id.clone();
         self.context.normalized_session_id = config.normalized_session_id.clone();
@@ -6632,6 +6675,90 @@ mod tests {
     // A settled Claude session saved by one runner build. The next deploy
     // ships a new sidecar build and provider-pack authority at the same
     // qualified launch paths, and the next run cold-attaches in a new runner.
+    #[cfg(unix)]
+    #[test]
+    fn parked_claude_relaunch_checks_dormancy_on_the_only_sidecar() {
+        for active in [false, true] {
+            let (directory, mut config, mut payload, before) =
+                settled_session_after_runner_upgrade("claude-park-relaunch");
+            config.run_id = "run-1".into();
+            config.turn_id = "turn-1".into();
+            config.item_id = "item-1".into();
+            let profile = config.acpx_launch_profile.as_mut().unwrap();
+            let checkpoint: AcpxDurableState = serde_json::from_slice(&before).unwrap();
+            let identity = checkpoint.identity.unwrap();
+            let marker = directory.join("starts");
+            let goal = json!({
+                "schema":"paperclip.session_goal.snapshot.v1",
+                "goal": if active { json!({"status":"active"}) } else { Value::Null },
+                "workingNow":false,
+            });
+            let mut script = format!("#!/bin/sh\nprintf x >> '{}'\n", marker.display());
+            for (index, (command, result)) in [
+                ("initialize", json!({"protocolVersion":2,"sidecarPid":900001,"profile":{},
+                    "capabilities":{"persistentSessions":true,"exactModelVerification":true,
+                    "permissions":"runner_policy","semanticTools":"runner_bridge","structuredInput":"paperclip.question_set.v1"}})),
+                ("session.open", json!({"sidecarPid":900001,"identity":identity,"status":{}})),
+                ("run.attach", json!({"runId":"run-2","catalogRevision":1})),
+                ("session.goal.get", goal.clone()),
+                ("session.snapshot", json!({"identity":identity,"runId":"run-2","turnId":null,
+                    "pendingToolCount":0,"pendingInputCount":0,"pendingRuntimeRequests":[]})),
+                ("session.goal.get", goal),
+            ].into_iter().enumerate() {
+                let frame = json!({"protocolVersion":2,"id":index+1,"ok":true,"result":result});
+                script.push_str(&format!("IFS= read -r line || exit 0\ncase \"$line\" in *'\"command\":\"{command}\"'*) ;; *) exit 1;; esac\nprintf '%s\\n' '{}'\n",
+                    frame.to_string().replace("900001", "'\"$$\"'")));
+            }
+            script.push_str("while IFS= read -r line; do :; done\n");
+            write_artifact(&profile.command, script.as_bytes(), true);
+            profile.artifacts[0] = artifact(&profile.command);
+
+            let mut unsettled = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            unsettled.recovery_pending_effects = Some(1);
+            assert!(unsettled.defer_parked_acpx_restore().is_err());
+            assert!(!marker.exists());
+
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            recovered.recovery_pending_effects = Some(0);
+            recovered.defer_parked_acpx_restore().unwrap();
+            let mut snapshot = cold_attach_command(json!({"quiesceForWarmAttach":true}));
+            snapshot.command_type = "session.snapshot".into();
+            assert_eq!(
+                recovered.execute(&snapshot).unwrap().result["warmAttachReady"],
+                true
+            );
+            assert!(recovered.poll_events().unwrap().is_empty());
+            assert!(!marker.exists());
+            payload["paperclipNextAuthority"] =
+                json!({"identity":{"runId":"run-2","normalizedSessionId":"session-1"}});
+            let result = recovered.execute(&cold_attach_command(payload));
+
+            assert_eq!(fs::read_to_string(marker).unwrap(), "x");
+            if active {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("active or unknown goal"));
+                assert!(recovered.session.is_none());
+                assert_eq!(fs::read(recovered.state_path()).unwrap(), before);
+            } else {
+                let result = result.unwrap();
+                assert_eq!(result.result["status"], "resumed");
+                assert!(result
+                    .events
+                    .iter()
+                    .any(|(name, _, _)| name == "run.attached"));
+                assert_eq!(recovered.state.as_ref().unwrap().descriptor.run_id, "run-2");
+                assert_eq!(
+                    recovered.state.as_ref().unwrap().identity.as_ref(),
+                    Some(&identity)
+                );
+            }
+            drop(recovered);
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
     #[cfg(unix)]
     fn settled_session_after_runner_upgrade(
         label: &str,

@@ -339,6 +339,12 @@ pub trait CommandExecutor {
         Ok(())
     }
 
+    fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
+        Err(DurableRunnerError::invalid(
+            "parked ACPX recovery requires an ACPX checkpoint",
+        ))
+    }
+
     /// Opt in only when semantic result delivery validates an exact durable
     /// call receipt and cannot dispatch the underlying business operation.
     /// Ordinary commands and providers without this proof remain indeterminate.
@@ -494,16 +500,27 @@ struct HostedRunnerControl {
     channel: HostControl,
     park_id: Option<String>,
     claiming: Option<(String, String)>,
+    acpx_park_relaunch: bool,
 }
 
 #[cfg(unix)]
 impl HostedRunnerControl {
     fn new(channel: HostControl) -> Self {
         Self {
+            acpx_park_relaunch: channel.acpx_park_relaunch,
             channel,
             park_id: None,
             claiming: None,
         }
+    }
+
+    fn awaiting_attachment(&self) -> bool {
+        self.claiming.is_some() || self.acpx_park_relaunch
+    }
+
+    fn finish_attachment(&mut self) {
+        self.claiming = None;
+        self.acpx_park_relaunch = false;
     }
 }
 
@@ -536,6 +553,22 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
     }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
+    #[cfg(unix)]
+    if let Some(control) = host_control
+        .as_mut()
+        .filter(|control| control.acpx_park_relaunch)
+    {
+        if state.warm_transition.is_some() {
+            control.finish_attachment();
+        } else if !recovered
+            || !matches!(state.lifecycle.as_str(), "ready" | "suspended")
+            || !host_park_checkpoint_is_settled(&state)
+        {
+            return Err(DurableRunnerError::invalid(
+                "parked ACPX recovery requires a settled Runner checkpoint",
+            ));
+        }
+    }
     if state.lifecycle == "revoked"
         || (state.lifecycle == "stopped"
             && state.pending_terminal_delivery.is_none()
@@ -547,6 +580,13 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         // A restarted runner process emits a new event generation (section G).
         state.begin_recovered_generation();
         executor.observe_recovery_state(&state)?;
+        #[cfg(unix)]
+        if host_control
+            .as_ref()
+            .is_some_and(|control| control.acpx_park_relaunch)
+        {
+            executor.defer_parked_acpx_restore()?;
+        }
     }
     if recovered && state.warm_transition.is_none() {
         state.reconnect_count = state.reconnect_count.saturating_add(1);
@@ -871,7 +911,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         )?;
                         #[cfg(unix)]
                         if let Some(control) = host_control.as_mut() {
-                            control.claiming = None;
+                            control.finish_attachment();
                         }
                     }
                     Err(error) => {
@@ -996,7 +1036,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
             #[cfg(unix)]
             if let Some(control) = host_control.as_mut() {
-                control.claiming = None;
+                control.finish_attachment();
             }
             disconnected_since = Some(Instant::now());
             continue;
@@ -1321,7 +1361,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         )?;
                         #[cfg(unix)]
                         if let Some(control) = host_control.as_mut() {
-                            control.claiming = None;
+                            control.finish_attachment();
                         }
                         disconnected_since = Some(Instant::now());
                         break;
@@ -1440,7 +1480,7 @@ fn admit_host_claim(
     command: &Command,
     next_authority: Option<&DurableRunnerConfig>,
 ) -> Result<(), DurableRunnerError> {
-    if control.is_some_and(|control| control.claiming.is_some())
+    if control.is_some_and(HostedRunnerControl::awaiting_attachment)
         && !(matches!(
             command.command_type.as_str(),
             "session.snapshot"
@@ -1480,7 +1520,7 @@ fn process_host_control<E: CommandExecutor>(
             acked_source_seq,
         } if !parked
             && control.park_id.is_none()
-            && control.claiming.is_none()
+            && !control.awaiting_attachment()
             && host_park_cut_matches(
                 state,
                 identity,
@@ -1571,7 +1611,12 @@ fn host_park_cut_matches(
         && identity.item_id == state.item_id
         && command_seq == state.last_controller_command_seq
         && acked_seq == state.acked_source_seq
-        && state.outbox.is_empty()
+        && host_park_checkpoint_is_settled(state)
+}
+
+#[cfg(unix)]
+fn host_park_checkpoint_is_settled(state: &DurableState) -> bool {
+    state.outbox.is_empty()
         && state.acked_source_seq == state.highest_source_seq()
         && state.warm_transition.is_none()
         && state.pending_terminal_delivery.is_none()
@@ -3271,7 +3316,12 @@ mod tests {
         assert_eq!(executor.shutdowns, 0);
         executor.ready = true;
         // Simulate completed run.attach before a later exact parked cut.
-        control.claiming = None;
+        control.finish_attachment();
+        control.acpx_park_relaunch = true;
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("run.attach"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("session.snapshot"), None).is_ok());
+        control.finish_attachment();
         assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_ok());
         let mut next_park = park.clone();
         next_park["id"] = json!("park-2");
