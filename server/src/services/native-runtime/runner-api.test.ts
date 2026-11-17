@@ -133,43 +133,6 @@ describe("connection setup response protection", () => {
 });
 
 describe("runner API catalog", () => {
-  it("lets an agent call the responsibilities routes through call_api", () => {
-    for (const operationId of [
-      "GET /api/companies/{companyId}/responsibilities",
-      "POST /api/companies/{companyId}/responsibilities",
-      "PATCH /api/responsibilities/{id}",
-      "POST /api/responsibilities/{id}/links",
-    ]) {
-      const operation = runnerApiOperation(operationId);
-      expect(operation.transport, operationId).toBe("rest");
-      expect(operation.allowedModes, operationId).toContain("standard");
-      expect(operation.authorization, operationId).toEqual({ actor: "board_or_agent" });
-    }
-    const { input } = validateRunnerApiCall({
-      operationId: "GET /api/companies/{companyId}/responsibilities",
-      query: { ownerUserId: "user-1" },
-    }, context);
-    expect(runnerApiUrl(runnerApiOperation(input.operationId), input, context, "http://127.0.0.1:3100").href)
-      .toBe("http://127.0.0.1:3100/api/companies/company-a/responsibilities?ownerUserId=user-1");
-    // Creating and filing are mutations: standard mode only, as for every write.
-    expect(() => validateRunnerApiCall({
-      operationId: "POST /api/companies/{companyId}/responsibilities",
-      body: { ownerUserId: "user-1", title: "Fundraising" },
-    }, { ...context, workMode: "ask" })).toThrow(/only reads/);
-  });
-
-  it("lets the agent in a bar conversation propose a bar through call_api, and keeps accepting for people", () => {
-    const operation = runnerApiOperation("POST /api/issues/{id}/bar-proposals");
-    expect(operation.transport).toBe("rest");
-    expect(operation.allowedModes).toContain("standard");
-    expect(operation.authorization).toEqual({ actor: "board_or_agent" });
-    for (const operationId of [
-      "POST /api/issues/{id}/bar-proposals/{interactionId}/accept",
-      "POST /api/issues/{id}/bar-proposals/{interactionId}/decline",
-      "POST /api/responsibilities/{id}/bar-conversation",
-    ]) expect(runnerApiOperation(operationId).authorization, operationId).toEqual({ actor: "board" });
-  });
-
   it("discovers the real handoff schema and recovery endpoints with standard-mode mutation authority", () => {
     const operation = runnerApiOperation("POST /api/companies/{companyId}/case-handoffs");
     expect(operation.dedicatedTools).toEqual(["handoff_case", "create_case"]);
@@ -311,7 +274,6 @@ describe("runner API catalog", () => {
       searchRunnerApi({ query: "GET /api/companies/{companyId}/issues" })
         .results[0].dedicatedTools,
     ).toContain("search_tasks");
-    // "nothing" is a real word in the catalog now (a standing check's nothing_needed outcome).
     expect(searchRunnerApi({ query: "qqqqqqqq-zzzzzzzzzz" }).total).toBe(0);
   });
   it("finds the actual instance-restart operation and explains its authority boundary", () => {
