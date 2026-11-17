@@ -332,7 +332,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
           native: agent.adapterType === "paperclip_runner" && resolvedInstanceSettings.experimental.enableNativeRunner === true
             && (!run.runtimeModeResolvedAt || run.runtimeMode === "native"),
           backend: !persistedNativeExecutionInput && agent.adapterType === "paperclip_runner"
-            ? resolvePaperclipRunnerProviderProfile(effectiveResolvedConfig, { companyId: agent.companyId }).backend : null,
+            ? () => resolvePaperclipRunnerProviderProfile(effectiveResolvedConfig, { companyId: agent.companyId }).backend : null,
           environmentDriver: selectedEnvironmentForConfig?.driver, homeMode: sourceWorkspaceConfig.homeMode,
           enabled: process.env.PAPERCLIP_SHARED_SKILL_REPOSITORIES_ENABLED !== "false", persistedExecution: persistedNativeExecutionInput,
         }),

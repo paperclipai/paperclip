@@ -12,4 +12,8 @@ describe("shared skill layout admission", () => {
     expect(sharedSkillRepositoryLayout({ ...qualified, persistedExecution: { schema: "paperclip.native-execution-input.v5", runtimeContext: { skills: [] } } })).toBeUndefined();
     expect(sharedSkillRepositoryLayout({ ...qualified, enabled: false, persistedExecution: { schema: "paperclip.native-execution-input.v12", runtimeContext: { skills: [{ repository: {} }] } } })).toBe("shared");
   });
+  it.each([{ native: false }, { environmentDriver: "plugin" }, { homeMode: "preconfigured" }, { enabled: false },
+    { persistedExecution: { schema: "paperclip.native-execution-input.v5" } }])("does not resolve a provider for a portable or saved layout: %j", change => {
+    expect(sharedSkillRepositoryLayout({ ...qualified, ...change, backend: () => { throw new Error("Unqualified provider must not be resolved"); } })).toBeUndefined();
+  });
 });
