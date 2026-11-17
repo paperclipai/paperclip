@@ -66,6 +66,7 @@ import type {
   CreateToolTrustRuleFromActionRequest,
   ToolRedactedValueSummary,
   ConnectionGrant,
+  ConnectionGrantRevocationResult,
   ConnectionGrantKind,
   ConnectionGrantDelegation,
   ConnectionGrantsResponse,
@@ -410,7 +411,7 @@ export const toolsApi = {
     `/tool-connections/${connectionId}/grants/${grantId}/delegations/${delegationId}`,
   ),
   revokeConnectionGrant: (connectionId: string, grantId: string) =>
-    api.delete<ConnectionGrant>(`/tool-connections/${connectionId}/grants/${grantId}`),
+    api.delete<ConnectionGrantRevocationResult>(`/tool-connections/${connectionId}/grants/${grantId}`),
   // An empty `memberUserIds` is the canonical "all organization members".
   // Replacement is atomic server-side, so this never partially widens access.
   replaceConnectionGrantMembers: (connectionId: string, grantId: string, memberUserIds: string[]) =>
