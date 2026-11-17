@@ -1057,6 +1057,26 @@ describeAttentionEmbeddedPostgres("attention service: blockers and feed", () => 
       expect(row?.whyNow).toContain(`its monitor is next due ${dueAt.toISOString()}`);
     });
 
+    it("does not deny a saved agent review participant on a stalled review", async () => {
+      const { companyId, workerId, reviewerId } = await seedCompany("ATP");
+      const parentId = await insertIssue({ companyId, identifier: "ATP-1", title: "Blocked parent", status: "blocked" });
+      const leafId = await insertIssue({
+        companyId,
+        identifier: "ATP-2",
+        title: "Review with a saved agent participant",
+        status: "in_review",
+        parentId,
+        assigneeAgentId: workerId,
+        executionState: pendingAgentExecutionState(reviewerId),
+      });
+
+      const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+      const row = feed.items.find((item) => item.dedupKey === `blocker:${leafId}`);
+
+      expect(row?.whyNow).toContain("In review with no active run or scheduled monitor.");
+      expect(row?.whyNow).not.toContain("no reviewer");
+    });
+
     it("shows no card, title or unblock step to a viewer who cannot read the terminal blocker", async () => {
       const { companyId } = await seedCompany("ATH");
       const pausedId = await insertPausedAgent(companyId);
@@ -1122,7 +1142,7 @@ describeAttentionEmbeddedPostgres("attention service: blockers and feed", () => 
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         subject: { id: leafId },
-        whyNow: "In review with no reviewer, active run, or scheduled monitor. Owner: Worker. Blocks 2 tasks.",
+        whyNow: "In review with no active run or scheduled monitor. Owner: Worker. Blocks 2 tasks.",
         detail: { kind: "blocker", blockedTaskCount: 2 },
       });
     });

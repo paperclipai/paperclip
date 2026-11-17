@@ -1339,8 +1339,8 @@ function terminalBlockerCause(facts: TerminalBlockerFacts | undefined, now: numb
       // Only claim facts this card checked: a saved future monitor is named,
       // not denied.
       return facts.monitorNextCheckAt && facts.monitorNextCheckAt.getTime() > now
-        ? `In review with no reviewer or active run; its monitor is next due ${facts.monitorNextCheckAt.toISOString()}.`
-        : "In review with no reviewer, active run, or scheduled monitor.";
+        ? `In review with no active run; its monitor is next due ${facts.monitorNextCheckAt.toISOString()}.`
+        : "In review with no active run or scheduled monitor.";
     case "backlog":
       return "Parked in backlog.";
   }
