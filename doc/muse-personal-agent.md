@@ -121,3 +121,36 @@ node --test scripts/smoke/muse-qualification-report.test.mjs scripts/smoke/muse-
 Cloud must deploy the matching exact protocol manifest and preserve tenant authority. Its companion generator verifies parity with `packages/shared/src/muse-protocol.ts`. Current hosted coverage can retain receiver contacts while the tenant is idle. Without that coverage, a connected receiver inhibits tenant sleep. Unavailable ingress returns a retryable failure and never implies a delivered task.
 
 Retained contact pages for deleted bindings settle through their original exact acknowledgement. They never create new receiver-contact or verification evidence. A retired qualified OAuth binding still blocks sleep until its existing detector-removal requirement is satisfied; a Cloud retirement receipt does not confirm that the device hook stopped. Local quiet evidence alone does not prove deployed host or database suspension.
+
+
+### Public signal resource bounds
+
+Public presence requests still check current binding, credential, company,
+operator, agent and resource authority. A managed HTTP 200 confirms that its
+contact has committed; overload never returns a substitute idle 200. The existing
+in-flight contact flush can coalesce accepted requests, and each accepted
+request waits for its own retained batch to persist.
+
+One receiver admission owner is shared across bindings in each App process.
+It permits at most 32 concurrent signals and uses 60-second ingress windows:
+60 admissions per binding, 1200 per request source and 6000 total, with at most 4096
+window keys. The source is the existing Express request-IP identity, not an
+untrusted forwarding header. State expires lazily on ingress; no idle timer or
+permission/response cache is added. These are abuse ceilings, not measured
+capacity or a guarantee of availability at those rates. The normal five-second
+detector schedule is 12 checks per minute, below the binding ceiling.
+
+Over-budget requests return 429 with Retry-After before database access or contact
+ownership. A handoff or full in-flight budget returns retryable 503. The current
+v9 detector retains its hook on these responses and backs off for 30 seconds;
+only 410 disconnects it. Overload can therefore delay observation and make cadence
+qualification incomplete; it does not manufacture successful presence evidence.
+
+Hosted handoff fences new local signal admission, joins its finite accepted
+frontier and persists all retained contact debt. The fence remains held through
+the actual local mirror receipt/cutover transaction and reopens after commit or
+rollback. A permanent stop remains independent. Cloud's complete ACK may already
+exist before local handoff; a failure keeps the normal pending publication and
+five-second retry, without claiming a remote rollback. The finite admission
+frontier does not cancel an already-issued SQL statement or promise instantaneous
+backend cancellation.

@@ -7,6 +7,10 @@ import { assertMuseReceiverAuthority, assertMuseCurrentAuthority, inspectMuseCon
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 import { HttpError } from "../errors.js";
 const PERSISTENCE_LAG_MS=30_000;
+// Per-process abuse ceilings, not capacity guarantees. A normal detector checks
+// every five seconds (12/minute); the binding budget leaves fivefold headroom.
+const SIGNAL_WINDOW_MS=60_000, SIGNAL_BINDING_LIMIT=60, SIGNAL_SOURCE_LIMIT=1200;
+const SIGNAL_GLOBAL_LIMIT=6000, SIGNAL_MAX_INFLIGHT=32, SIGNAL_MAX_KEYS=4096;
 const instances=new WeakMap<Db,ReturnType<typeof createReceiver>>();
 export function museReceiver(db:Db) {let receiver=instances.get(db);if(!receiver){receiver=createReceiver(db);instances.set(db,receiver);}return receiver;}
 function createReceiver(db:Db) {
@@ -15,6 +19,33 @@ function createReceiver(db:Db) {
   const previous=new Map<string,number>();
   let flushPromise:Promise<void>|undefined;
   const admittedSignals=new Set<Promise<{version:1;signal:{reference:string}|null}>>();
+  // One receiver is cached per production Db, shared by every binding/router.
+  // No authority or response is cached. Expiry is checked only on ingress.
+  const signalWindows=new Map<string,{until:number;count:number}>();
+  let nextWindowSweep=0, handoffOwners=0;
+  function admitSignal(bindingId:string,source:string) {
+    if(admittedSignals.size>=SIGNAL_MAX_INFLIGHT)throw new HttpError(503,"Muse receiver is busy.");
+    const now=Date.now();
+    if(now>=nextWindowSweep){
+      for(const [key,value]of signalWindows)if(value.until<=now)signalWindows.delete(key);
+      nextWindowSweep=now+SIGNAL_WINDOW_MS;
+    }
+    const budgets:[[string,number],[string,number],[string,number]]=[
+      ["global",SIGNAL_GLOBAL_LIMIT],["binding:"+bindingId,SIGNAL_BINDING_LIMIT],["source:"+source,SIGNAL_SOURCE_LIMIT],
+    ];
+    // Preflight every budget and required key before mutating counters/state;
+    // a denied request cannot fill the map with unused zero-count entries.
+    const entries=budgets.map(([key,limit])=>{
+      const existing=signalWindows.get(key);
+      const value=existing&&existing.until>now?existing:{until:now+SIGNAL_WINDOW_MS,count:0};
+      if(value.count>=limit)throw new HttpError(429,"Muse signal admission is temporarily limited.",
+        {retryAfterSeconds:Math.max(1,Math.ceil((value.until-now)/1000))});
+      return{key,value,isNew:!existing};
+    });
+    if(signalWindows.size+entries.filter(entry=>entry.isNew).length>SIGNAL_MAX_KEYS)
+      throw new HttpError(429,"Muse signal admission is temporarily limited.",{retryAfterSeconds:60});
+    for(const {key,value}of entries){value.count++;signalWindows.set(key,value);}
+  }
   let stopping=false;
   let stopPromise:Promise<void>|undefined;
   async function flush() {
@@ -132,19 +163,33 @@ function createReceiver(db:Db) {
     }
     return result;
   }
-  function signal(bindingId:string,expectedResource?:string) {
-    if(stopping)return Promise.reject(new HttpError(503,"Muse receiver is stopping."));
+  function signal(bindingId:string,expectedResource?:string,source="local") {
+    if(stopping||handoffOwners)return Promise.reject(new HttpError(503,"Muse receiver is temporarily unavailable."));
+    try {admitSignal(bindingId,source);}catch(error){return Promise.reject(error);}
     const admitted=signalOnce(bindingId,expectedResource);
     admittedSignals.add(admitted);
     void admitted.then(()=>admittedSignals.delete(admitted),()=>admittedSignals.delete(admitted));
     return admitted;
   }
-  async function prepareHostedHandoff(signal:AbortSignal) {
-    do {
+  async function prepareHostedHandoff(signal:AbortSignal,completeCutover?:()=>Promise<void>) {
+    // Fence synchronously before the snapshot. New requests own no contact and
+    // receive a retryable503; overlapping handoffs cannot reopen one another.
+    handoffOwners++;
+    try {
       signal.throwIfAborted();
       await Promise.allSettled([...admittedSignals]);
+      signal.throwIfAborted();
+      // The first join may belong to a timer's previously captured batch.
+      // With admission fenced, the next flush owns the finite remaining batch.
       await flush();
-    } while(admittedSignals.size||pending.size);
+      await flush();
+      signal.throwIfAborted();
+      if(admittedSignals.size||pending.size)throw new Error("Muse handoff still owns contact persistence debt.");
+      // The existing mirror owner keeps its authority/revision checks. Once
+      // entered, await its actual commit/rollback even if this signal aborts.
+      // This closure must not await new signal admission from this receiver.
+      if(completeCutover)await completeCutover();
+    } finally {handoffOwners--;}
   }
   let timer:NodeJS.Timeout|undefined;
   function start() {

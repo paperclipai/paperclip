@@ -153,9 +153,8 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
         if(!result.complete||!result.receipt.enabled||(result.receipt.dotProfile??false)!==dotProfile||JSON.stringify(result.receipt.deviceStatus)!==JSON.stringify(deviceStatus)||result.receipt.instanceId!==instanceId||result.receipt.origin!==origin||result.receipt.revision!==captured.revision||result.receipt.generation!==mcpClientMirrorGeneration(result.receipt))throw new Error("MCP client mirror was not acknowledged");
         const receipt=result.receipt;
         if(JSON.stringify(receipt.museReceivers)!==JSON.stringify(muse?.reference))throw new Error("Muse receiver publication was not acknowledged");
-        if(muse)await museReceiver(db).prepareHostedHandoff(signal);
         let retained=false;
-        await db.transaction(async tx=>{
+        const commitCutover=async()=>{await db.transaction(async tx=>{
           await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
           const [current]=await tx.select().from(state).where(eq(state.id,"public")).for("update");
           assertCurrentAuthority();
@@ -174,7 +173,12 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
           if(current.revision!==receipt.revision){pending=true;return;}
           await installMcpDeviceCutover(tx as unknown as Db,receipt);
           await tx.delete(changes).where(lte(changes.revision,receipt.revision));
-        });
+        });};
+        // Cloud may already have ACKed complete. Hold local signal admission
+        // through this exact existing receipt/cutover commit, including all
+        // early-return/failure checks; never pretend the remote ACK rolled back.
+        if(muse)await museReceiver(db).prepareHostedHandoff(signal,commitCutover);
+        else await commitCutover();
         if(retained){fullRecovery=false;reserveFullRevision=false;}
       } catch(error){
         if(enabled&&publicationAttempted&&!fullRecovery){fullRecovery=true;reserveFullRevision=true;}
