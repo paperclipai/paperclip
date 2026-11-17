@@ -4,7 +4,7 @@ import {
   readIdleIncomingWakeProof,
   incomingWakeFingerprint,
 } from "./idle-incoming-wake.js";
-import { registerConnectionEventWake } from "./connection-event-wake.js";
+import { registerConnectionEventWake,hasConnectionEventWakeReceiver,wakeConnectionEvents } from "./connection-event-wake.js";
 import type { VerifiedIdleCapabilities } from "./idle-incoming-wake-capability.js";
 
 const ownerId = "00000000-0000-4000-8000-000000000001";
@@ -81,13 +81,14 @@ function input(
   db: object,
   capabilities: VerifiedIdleCapabilities,
   now?: () => number,
+  receiver: { importsClientMetadata?: boolean } = {},
 ) {
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "fixture-instance");
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY", "fixture");
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY", "fixture");
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT", "test");
   vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL", "http://127.0.0.1");
-  stops.push(registerConnectionEventWake(db, () => {}));
+  stops.push(registerConnectionEventWake(db, () => {}, receiver));
   return { ownerId, receiverOwner: db, capabilities, now };
 }
 afterEach(() => {
@@ -180,5 +181,62 @@ describe("bounded API admission projection", () => {
     const slow = vi.fn(async () => { clock += 1100; return []; });
     await expect(readIdleIncomingWakeProof({ execute: slow } as unknown as Pick<Db, "select" | "execute">,
       { ownerId, receiverOwner: {}, capabilities: api, now: () => clock })).rejects.toThrow(/budget exhausted/);
+  });
+});
+
+
+describe("connection event and client metadata receiver purposes", () => {
+  it("does not discharge the ordinary incoming-event guard with an import-only receiver", async () => {
+    const f = fixture(1);
+    const sql = database([() => [], () => f.endpoints, () => f.registrations]);
+    const context = input(sql.db, f.capability, undefined, { importsClientMetadata: true });
+    expect(hasConnectionEventWakeReceiver(sql.db)).toBe(false);
+    expect(hasConnectionEventWakeReceiver(sql.db, { importsClientMetadata: true })).toBe(true);
+    await expect(readIdleIncomingWakeProof(sql.db, context)).rejects.toThrow("Incoming GitHub receiver is not bound");
+    expect(sql.select).not.toHaveBeenCalled();
+  });
+
+  it("keeps an ordinary receiver eligible for events without advertising metadata import", async () => {
+    const f = fixture(1);
+    const sql = database([() => [], () => f.endpoints, () => f.registrations]);
+    const context = input(sql.db, f.capability);
+    expect(hasConnectionEventWakeReceiver(sql.db)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(sql.db, { importsClientMetadata: true })).toBe(false);
+    const proof = await readIdleIncomingWakeProof(sql.db, context);
+    expect(proof?.endpointIds).toEqual(["endpoint-0"]);
+    expect(sql.select).toHaveBeenCalledTimes(3);
+  });
+
+  it("fans out both purposes and unregisters exact owners without promoting the remaining capability", () => {
+    for (const stopFirst of ["ordinary", "import"] as const) {
+      const owner = {}, ordinary = vi.fn(), metadata = vi.fn();
+      const stopOrdinary = registerConnectionEventWake(owner, ordinary);
+      const stopImport = registerConnectionEventWake(owner, metadata, { importsClientMetadata: true });
+      stops.push(stopOrdinary, stopImport);
+      expect(hasConnectionEventWakeReceiver(owner)).toBe(true);
+      expect(hasConnectionEventWakeReceiver(owner, { importsClientMetadata: true })).toBe(true);
+      expect(wakeConnectionEvents(owner)).toBe(true);
+      expect(ordinary).toHaveBeenCalledTimes(1);
+      expect(metadata).toHaveBeenCalledTimes(1);
+      (stopFirst === "ordinary" ? stopOrdinary : stopImport)();
+      expect(hasConnectionEventWakeReceiver(owner)).toBe(stopFirst !== "ordinary");
+      expect(hasConnectionEventWakeReceiver(owner, { importsClientMetadata: true })).toBe(stopFirst !== "import");
+      expect(wakeConnectionEvents(owner)).toBe(true);
+      expect(ordinary).toHaveBeenCalledTimes(stopFirst === "ordinary" ? 1 : 2);
+      expect(metadata).toHaveBeenCalledTimes(stopFirst === "import" ? 1 : 2);
+      stopOrdinary(); stopImport();
+      expect(wakeConnectionEvents(owner)).toBe(false);
+    }
+    const owner = {}, wake = vi.fn();
+    const staleStop = registerConnectionEventWake(owner, wake);
+    const stopReplacement = registerConnectionEventWake(owner, wake);
+    stops.push(staleStop, stopReplacement);
+    staleStop();
+    expect(hasConnectionEventWakeReceiver(owner)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(owner, { importsClientMetadata: true })).toBe(false);
+    expect(wakeConnectionEvents(owner)).toBe(true);
+    expect(wake).toHaveBeenCalledTimes(1);
+    stopReplacement();
+    expect(hasConnectionEventWakeReceiver(owner)).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { idleMuseWorkQuery,type IdleMuseReceiverProof } from "../../modules/external-agents/index.js";
 import { sql, type SQL } from "drizzle-orm";
 import { idleMcpHistoryChecks } from "./idle-history-proof.js";
 import type { IdleMcpWakeProof } from "./idle-wake-proof.js";
@@ -10,11 +11,13 @@ import type { IdleDeadlineSnapshot } from "../idle-deadline-types.js";
 
 export function idleMcpWorkQuery(reason: string, input: {
   ingress?: IdleMcpWakeProof;
+  muse?:IdleMuseReceiverProof;
   subscriptions?: IdleMcpSubscriptionProof;
   retries?: IdleMcpEventScheduleProof;
   transfers?: IdleDeadlineSnapshot;
   handoffs?: IdleDeadlineSnapshot;
 }): SQL | undefined {
+  const muse=idleMuseWorkQuery(reason,input.muse,input.ingress);if(muse)return muse;
   const check = idleMcpHistoryChecks.find(check => check.reason === reason);
   if (!check || !input.ingress) return;
   if (reason === "mcp_file_tickets" && input.transfers) return sql`SELECT 1 WHERE ${input.transfers.blocked}`;

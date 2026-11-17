@@ -21,3 +21,13 @@ export function createDotPrincipalHttp(oauth: Parameters<typeof dotPrincipalCont
 }
 
 export { notifyMuseContactVerification, pendingMuseContactVerifications, parseMuseVerificationHint, type MuseVerificationScope } from "./muse-verification-work.js";
+
+export { museReceiverReferenceSchema,museReceiverRecordSchema,museReceiverGeneration,type MuseReceiverReference,type MuseReceiverRecord } from "./muse-hosted-contract.js";
+export { prepareMuseReceiverMutation,prepareMuseReceiverAuthorityMutation,readMuseReceiverProjection } from "./muse-hosted-projection.js";
+export { syncMuseContactCustody } from "./muse-hosted-sync.js";
+
+export { recoverMuseReceiverContinuity } from "./muse-hosted-continuity.js";
+
+export { readIdleMuseReceiverProof,idleMuseWorkQuery,type IdleMuseReceiverProof } from "./idle-muse-receiver-proof.js";
+
+export { museReceiverDiscoveryDocument,isMuseReceiverDiscoveryRequest } from "./muse-hosted-discovery.js";

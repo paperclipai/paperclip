@@ -2,8 +2,10 @@ import { eq, sql } from "drizzle-orm";
 import { mcpOauthClientMirrorState as state, mcpOauthClientChanges as changes, type Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 
+export type McpClientMutationDatabase = Pick<Db,"select"|"insert"|"update"|"execute">;
+
 const revisions = new WeakMap<object, number>();
-export async function prepareMcpClientMutation(tx: Db) {
+export async function prepareMcpClientMutation(tx: McpClientMutationDatabase) {
   const existing = revisions.get(tx);
   if (existing !== undefined) return existing;
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);

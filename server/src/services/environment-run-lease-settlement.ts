@@ -1,5 +1,5 @@
 import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
-import { environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { currentControllerBootId } from "./controller-process-identity.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { pendingCleanupMetadataObjectSql } from "./environment-cleanup-state.js";
@@ -11,6 +11,8 @@ import { OWNER_GONE_ATTESTATION_KEY } from "./recovery/owner-gone-attestation.js
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { isBuiltinSandboxProvider } from "./sandbox-provider-runtime.js";
 import { prepareSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
+import { pendingNativeCheckpointRetry } from "./native-runtime/native-session-resumption-admission.js";
+import { postgresErrorCode } from "./transient-lock-contention.js";
 
 /** Failure reason written on a run lease the shared ownership path settled. */
 export const ORPHANED_RUN_LEASE_FAILURE_REASON = "orphaned_active_lease_recovered";
@@ -46,12 +48,34 @@ type LeaseRow = typeof environmentLeases.$inferSelect;
 export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord,
   context: { now: Date; proof: OwnerProof }): Promise<SettleOutcome> {
   if (!record.runId) return { settled: false, reason: "lease_has_no_run" };
+  const companyId = record.companyId;
+  if (!companyId) return { settled: false, reason: "lease_company_unknown" };
   const runId = record.runId;
+  let awaitingNativeTaskLock = false;
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    const [sourceRun] = await tx.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    if (sourceRun && sourceRun.companyId !== companyId) return { settled: false, reason: "native_recovery_owner_changed" };
+    let nativeCheckpointPending = false;
+    if (sourceRun && sourceRun.companyId === companyId && sourceRun.runtimeMode === "native" && sourceRun.nativeIssueId) {
+      // A passive settle must not wait behind the task owner it is reconciling.
+      awaitingNativeTaskLock = true;
+      const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, sourceRun.nativeIssueId),
+        eq(issues.companyId, sourceRun.companyId))).for("update", { noWait: true });
+      if (issue) nativeCheckpointPending = await pendingNativeCheckpointRetry(tx, { companyId: sourceRun.companyId,
+        issueId: sourceRun.nativeIssueId, agentId: sourceRun.agentId, runId });
+      awaitingNativeTaskLock = false;
+      const [currentRun] = await tx.select({ agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
+        runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, sourceRun.companyId))).for("update", { skipLocked: true });
+      if (!currentRun || currentRun.agentId !== sourceRun.agentId || currentRun.nativeIssueId !== sourceRun.nativeIssueId
+        || currentRun.runtimeMode !== sourceRun.runtimeMode) return { settled: false, reason: "native_recovery_owner_changed" };
+    }
     const [lease] = await tx.select().from(environmentLeases)
       .where(and(eq(environmentLeases.id, record.recordId), eq(environmentLeases.status, "active"),
-        eq(environmentLeases.heartbeatRunId, runId)))
+        eq(environmentLeases.heartbeatRunId, runId), eq(environmentLeases.companyId, companyId)))
       .for("update");
     if (!lease) return { settled: false, reason: "lease_no_longer_active" };
     if (!holderUnchanged(lease, record)) return { settled: false, reason: "owner_changed_since_proof" };
@@ -66,7 +90,7 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
       // run this process executes.
       return { settled: false, reason: "current_boot_owns_run" };
     }
-    const kept = await keptByAnotherObligation(tx, lease);
+    const kept = await keptByAnotherObligation(tx, lease, nativeCheckpointPending);
     if (kept) return { settled: false, reason: kept };
 
     const recovery = { recoveredOrphanedRunLease: true, ownerProof: context.proof.reason };
@@ -87,6 +111,12 @@ export async function settleEnvironmentRunLease(db: Db, record: InProgressRecord
         sql`${environmentLeases.metadata} is not distinct from ${lease.metadata === null ? null : JSON.stringify(lease.metadata)}::jsonb`))
       .returning({ id: environmentLeases.id }), { companyId: lease.companyId, runId, leaseId: lease.id });
     return flipped.length ? { settled: true, reason: context.proof.reason } : { settled: false, reason: "lease_no_longer_active" };
+  }).catch(error => {
+    // Catch outside the transaction: PostgreSQL has rolled back the refused lock.
+    if (awaitingNativeTaskLock && postgresErrorCode(error) === "55P03") {
+      return { settled: false, reason: "native_recovery_task_busy", watch: true };
+    }
+    throw error;
   });
 }
 
@@ -112,7 +142,8 @@ async function currentBootOwnsRun(tx: Db, lease: LeaseRow, runControllerBootId: 
   return native?.controllerBootId === bootId;
 }
 
-async function keptByAnotherObligation(tx: Db, lease: LeaseRow): Promise<string | null> {
+async function keptByAnotherObligation(tx: Db, lease: LeaseRow, nativeCheckpointPending: boolean): Promise<string | null> {
+  if (nativeCheckpointPending) return "native_checkpoint_recovery_pending";
   if (await nativeWorkspaceExportPendingForLease(tx, lease, { destructive: false })) return "workspace_export_pending";
   if (!(await allowLegacyShutdownWorkspaceCleanup(tx, lease))) return "legacy_shutdown_fence";
   // One provider resource id names one physical sandbox; another live lease

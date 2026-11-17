@@ -1,4 +1,5 @@
-import { and,asc,eq,exists,gt,isNotNull,ne,notInArray } from "drizzle-orm";
+import { paperclipCloudConnectorConfigFromEnv } from "../paperclip-cloud-connector.js";
+import { and,asc,eq,exists,gt,isNotNull,ne,notInArray,or,sql } from "drizzle-orm";
 import { mcpOauthClientMirrorState as state,mcpOauthDeviceRequests as devices,type Db } from "@paperclipai/db";
 import { managedMcpDeviceScope } from "./device-cutover.js";
 import type { IdleMcpInspectionBudget } from "./idle-wake-proof.js";
@@ -6,8 +7,13 @@ import type { IdleDeadlineSnapshot } from "../idle-deadline-types.js";
 
 export function pendingLegacyMcpDevicePredicate(tx:Pick<Db,"select">,now:number){
   const scope=managedMcpDeviceScope();if(!scope)return;
-  return and(eq(devices.resource,scope.resource),ne(devices.ingressOwner,"cloud"),gt(devices.expiresAt,new Date(now)),
-    notInArray(devices.status,["denied","consumed"]),exists(tx.select({id:state.id}).from(state).where(and(eq(state.id,"public"),isNotNull(state.deviceCutoverStackId),isNotNull(state.deviceCutoverAt)))));
+  const origin = scope.resource.slice(0, -"/mcp/paperclip".length), connector = paperclipCloudConnectorConfigFromEnv();
+  const personal = and(eq(devices.resource,scope.resource),exists(tx.select({id:state.id}).from(state).where(and(eq(state.id,"public"),isNotNull(state.deviceCutoverStackId),isNotNull(state.deviceCutoverAt)))));
+  const dot = connector ? and(eq(devices.resource,origin+"/mcp/runner"),exists(tx.select({id:state.id}).from(state).where(and(eq(state.id,"public"),
+    sql`${state.dotDeviceCutover}->>'version' = '1' AND ${state.dotDeviceCutover}->>'profile' = 'hosted-dot-v1'
+      AND ${state.dotDeviceCutover}->>'stackId' = ${scope.stackId} AND ${state.dotDeviceCutover}->>'instanceId' = ${connector.instanceId}
+      AND ${state.dotDeviceCutover}->>'origin' = ${origin}`)))) : undefined;
+  return and(or(personal,dot),ne(devices.ingressOwner,"cloud"),gt(devices.expiresAt,new Date(now)),notInArray(devices.status,["denied","consumed"]));
 }
 export async function readIdleMcpDeviceCutover(tx:Pick<Db,"select">,context:{now:number;budget:IdleMcpInspectionBudget}):Promise<IdleDeadlineSnapshot>{
   const predicate=pendingLegacyMcpDevicePredicate(tx,context.now);if(!predicate)return{blocked:false,state:"absent",deadlines:[]};

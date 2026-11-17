@@ -54,7 +54,7 @@ export function parseMcpRevocationIndexRequest(value: unknown): McpRevocationInd
     || typeof value.resource !== "string" || value.resource.length > 2048
     || !digest(value.keyId) || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0) throw new Error("Invalid MCP revocation identity");
   const url = new URL(value.resource);
-  if (url.protocol !== "https:" || !["/mcp/runner", "/mcp/paperclip"].includes(url.pathname) || url.search || url.hash || url.username || url.password) throw new Error("Invalid MCP revocation resource");
+  if (url.protocol !== "https:" || !["/mcp/runner", "/mcp/paperclip", "/api/muse/v1"].includes(url.pathname) || url.search || url.hash || url.username || url.password) throw new Error("Invalid MCP revocation resource");
   const common = ["authorityId", "companyId", "operatorId", "clientId", "resource", "keyId", "revision", "operation"];
   const fields = value.operation === "begin" ? ["key"] : value.operation === "append" ? ["entries"] : value.operation === "complete" ? [] : undefined;
   if (!fields || Object.keys(value).some(key => ![...common, ...fields].includes(key))) throw new Error("Unknown MCP revocation operation");

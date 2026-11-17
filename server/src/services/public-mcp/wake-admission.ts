@@ -6,7 +6,7 @@ import {
   apiWakeFingerprint, createApiWakeAdmission,
 } from "../idle-api-wake-admission.js";
 
-export const mcpWakeProfiles = ["personal-mcp", "dot-mcp"] as const;
+export const mcpWakeProfiles = ["personal-mcp", "dot-mcp", "muse-agent"] as const;
 export type McpWakeProfile = typeof mcpWakeProfiles[number];
 export type McpWakeTokenKind = "access" | "refresh";
 export interface McpWakeClaim {
@@ -74,7 +74,7 @@ export function createMcpWakeAdmission(input: Context & {
 export function parseMcpWakeAdmission(value: unknown): McpWakeAdmission {
   if (!object(value) || !exact(value, ["version", "stackId", "ownerId", "capabilityGeneration", "challenge", "generation", "lanes", "revocationAuthorities", ...(object(value) && "discovery" in value ? ["discovery"] : []), ...(object(value) && "clientMirror" in value ? ["clientMirror"] : []), ...(object(value) && "absent" in value ? ["absent"] : [])])
     || value.version !== 1 || !digest(value.challenge) || !digest(value.capabilityGeneration) || !digest(value.generation)
-    || !Array.isArray(value.lanes) || value.lanes.length > 4 || !Array.isArray(value.revocationAuthorities) || value.revocationAuthorities.length > 1000) throw new Error("Invalid MCP wake receipt");
+    || !Array.isArray(value.lanes) || value.lanes.length > 6 || !Array.isArray(value.revocationAuthorities) || value.revocationAuthorities.length > 1000) throw new Error("Invalid MCP wake receipt");
   const context = { stackId: value.stackId, ownerId: value.ownerId, capabilityGeneration: value.capabilityGeneration, challenge: value.challenge } as Context;
 
   createApiWakeAdmission({ ...context, keys: [] });

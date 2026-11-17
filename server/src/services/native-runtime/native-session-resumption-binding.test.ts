@@ -1,8 +1,13 @@
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { requestTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
+import { heartbeatService } from "../heartbeat.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
-  agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
+  authUsers, companyMemberships, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   issueRelations, issueTreeHolds, issueTreeHoldMembers,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -13,10 +18,11 @@ describe("native recovery execution binding", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("native-resume-binding-");
-    db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_RESUMPTION_BINDING_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-resume-binding-");
+    db = createDb(external ?? temporary.connectionString, { maxConnections: 2 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => temporary?.cleanup());
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
 
   async function fixture() {
     const companyId = randomUUID();
@@ -206,4 +212,73 @@ describe("native recovery execution binding", () => {
     expect(results.flat()).toHaveLength(1);
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(results.flat()[0]!.runId);
   });
+  it("normal native restore releases only its Retry wait after commit and remains safe across rollback and lost response", async () => {
+    const f = await fixture();
+    const actorId = randomUUID();
+    await db.insert(authUsers).values({ id: actorId, name: "Restore Retry operator",
+      email: `${actorId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user",
+      principalId: actorId, status: "active", membershipRole: "operator" });
+    expect(await taskRetryMutationAllowed(db, { companyId: f.companyId, issueId: f.issueId,
+      actorId, actorSource: "session" })).toBe(true);
+    await db.update(nativeRunFinalizations).set({ failureDetail: { recoveryMode: "exact_checkpoint_resume" } })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+      actorId, observedRunId: f.runId, idempotencyKey: randomUUID() });
+    expect(receipt.requestId).toBeTruthy();
+    await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId!);
+    const readWait = async (id: string) => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id)))[0];
+    const originalWait = await readWait(receipt.requestId!);
+    expect(originalWait).toMatchObject({ status: "deferred_issue_execution", runId: null,
+      payload: { executionWait: { reason: "native_checkpoint_recovery_pending" } } });
+    const otherSource = randomUUID(), otherReason = randomUUID();
+    const base = { companyId: f.companyId, agentId: f.agentId, source: "on_demand", triggerDetail: "manual",
+      requestedByActorType: "user", requestedByActorId: actorId, reason: "task_retry", status: "deferred_issue_execution" };
+    await db.insert(agentWakeupRequests).values([
+      { ...base, id: otherSource, payload: { issueId: f.issueId,
+        taskRetry: { schema: "paperclip.task-retry.v1", sourceRunId: randomUUID() },
+        executionWait: { reason: "native_checkpoint_recovery_pending" } } },
+      { ...base, id: otherReason, payload: { issueId: f.issueId,
+        taskRetry: { schema: "paperclip.task-retry.v1", sourceRunId: f.runId },
+        executionWait: { reason: "budget_hard_stop" } } },
+    ]);
+    const unrelated = [await readWait(otherSource), await readWait(otherReason)];
+    const settled: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, (event, hints) => {
+      if (event === "settled") settled.push(...hints ?? []);
+    });
+    try {
+      const rollback = new Error("component-restore-outer-rollback");
+      await expect(db.transaction(async tx => {
+        const claims = await claimNativeSessionResumptions({ db: tx as unknown as typeof db,
+          runnerInstanceId: "normal-restore-owner", runIds: [f.runId] });
+        expect(claims.map(claim => claim.runId)).toEqual([f.runId]);
+        const [inside] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+        expect(inside.payload?.executionWait).toBeUndefined();
+        expect(settled).toEqual([]);
+        throw rollback;
+      })).rejects.toBe(rollback);
+      expect(await readWait(receipt.requestId!)).toEqual(originalWait);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("failed");
+      expect([await readWait(otherSource), await readWait(otherReason)]).toEqual(unrelated);
+      settled.length = 0;
+      const lostReply = new Error("component-original-claim-committed-response-lost");
+      await expect((async () => {
+        const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "normal-restore-owner", runIds: [f.runId] });
+        expect(claims.map(claim => claim.runId)).toEqual([f.runId]);
+        throw lostReply;
+      })()).rejects.toBe(lostReply);
+      const restored = await readWait(receipt.requestId!);
+      expect(restored.status).toBe("deferred_issue_execution");
+      expect(restored.runId).toBeNull();
+      expect(restored.payload?.executionWait).toBeUndefined();
+      expect(restored.payload?.taskRetry).toEqual(originalWait.payload?.taskRetry);
+      expect(settled).toContain(JSON.stringify({ companyId: f.companyId, requestId: receipt.requestId }));
+      expect([await readWait(otherSource), await readWait(otherReason)]).toEqual(unrelated);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(f.runId);
+      expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "reconstructed-normal-owner", runIds: [f.runId] })).toEqual([]);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
+    } finally { unsubscribe(); }
+  }, 30_000);
+
 });

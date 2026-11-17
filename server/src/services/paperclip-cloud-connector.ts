@@ -36,7 +36,7 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index" | "mcp-dot-subscription-authority" | "mcp-muse-contacts";
 export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot" | "tailscale.tailnet";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack" | "tailscale";
 
@@ -101,6 +101,7 @@ type SealedEnvelope = {
 };
 
 type ConnectorResponse = {
+  museContactPage?: unknown;
   slackManager?: unknown;
   confirmationUrl?: unknown;
   authorizationUrl?: unknown;
@@ -128,6 +129,8 @@ type ConnectorResponse = {
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
   "mcp-client-mirror": "/v1/connector/mcp-client-mirror",
+  "mcp-muse-contacts": "/v1/connector/mcp-muse-contacts",
+  "mcp-dot-subscription-authority": "/v1/connector/mcp-dot-subscription-authority",
   "mcp-revocation-index": "/v1/connector/mcp-revocation-index",
   "slack-events": "/v1/connector/slack-events",
   "slack-forms": "/v1/connector/slack-forms",
@@ -333,13 +336,14 @@ export function createPaperclipCloudConnector(input: {
       ...(secret ? { [secret.field]: secret.value } : {}),
     };
     const encodedBody = JSON.stringify(body);
-    if (operation === "mcp-client-mirror" && secret?.field === "binding") {
+    if ((operation === "mcp-client-mirror" || operation === "mcp-muse-contacts") && secret?.field === "binding") {
       assertMcpClientMirrorEnvelope(body.request, secret.value, encodedBody);
     }
     let response: Response;
     try {
       response = await request(endpoint, {
         method: "POST",
+        ...(operation === "mcp-dot-subscription-authority" ? { redirect: "error" as const } : {}),
         headers: { "content-type": "application/json", accept: "application/json" },
         body: encodedBody,
         signal: AbortSignal.timeout(15_000),
@@ -359,6 +363,25 @@ export function createPaperclipCloudConnector(input: {
       );
     }
     try {
+      if (operation === "mcp-dot-subscription-authority") {
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error();
+        try {
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            size += part.value.byteLength;
+            if (size > 16_384) throw new Error();
+            chunks.push(part.value);
+          }
+          return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))) as ConnectorResponse;
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
+        }
+      }
       return await response.json() as ConnectorResponse;
     } catch {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid response", "CONNECTOR_BAD_RESPONSE");
@@ -404,6 +427,10 @@ export function createPaperclipCloudConnector(input: {
 
   return {
     instanceIdentity: () => Object.freeze({ instanceId: config.instanceId, environment: config.environment }),
+    async syncMuseReceiverContacts(serialized:string):Promise<unknown> {
+      const response=await call("mcp-muse-contacts",{subject:"instance-client-metadata",companyId:"instance-client-metadata"},{field:"binding",value:serialized});
+      return response.museContactPage;
+    },
     async syncMcpClientMirror(serialized: string): Promise<unknown> {
       const response = await call("mcp-client-mirror", {subject:"instance-client-metadata",companyId:"instance-client-metadata"}, {field:"binding",value:serialized});
       return (response as ConnectorResponse & {mcpClientMirror?:unknown}).mcpClientMirror;
@@ -411,6 +438,13 @@ export function createPaperclipCloudConnector(input: {
     async syncMcpRevocationIndex(values: { subject: string; companyId: string; serialized: string }): Promise<unknown> {
       const response = await call("mcp-revocation-index", values, { field: "binding", value: values.serialized });
       return (response as ConnectorResponse & { mcpRevocationIndex?: unknown }).mcpRevocationIndex;
+    },
+    async dotSubscriptionAuthority(values: { subject: string; companyId: string; serialized: string }): Promise<unknown> {
+      if (Buffer.byteLength(values.serialized, "utf8") > 28_000) {
+        throw new PaperclipCloudConnectorError("Invalid Dot subscription binding", "CONNECTOR_CONFIG_INVALID");
+      }
+      const response = await call("mcp-dot-subscription-authority", values, { field: "binding", value: values.serialized });
+      return (response as ConnectorResponse & { dotSubscriptionAuthority?: unknown }).dotSubscriptionAuthority;
     },
     eventWakeVersion: () => eventWakeVersion,
     async slackEventsAvailable() {

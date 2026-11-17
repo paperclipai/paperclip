@@ -2981,3 +2981,4 @@ export * from "./mcp-apps.js";
 export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
+export * from "./muse-hosted-protocol.js";

@@ -1,4 +1,5 @@
-import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { getCloudRuntimeIdentity } from "./cloud-runtime-identity.js";
+import { notifyMuseContactVerification, withExternalAdmissionGuard } from "../modules/external-agents/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { museAgentBindings as bindings, museMailboxItems as mailbox, museRunnerAssignments as assignments, museReceiverContactBuckets as buckets, externalAgentHolds as holds, type Db } from "@paperclipai/db";
@@ -6,36 +7,78 @@ import { assertMuseReceiverAuthority, assertMuseCurrentAuthority, inspectMuseCon
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 import { HttpError } from "../errors.js";
 const PERSISTENCE_LAG_MS=30_000;
+// Per-process abuse ceilings, not capacity guarantees. A normal detector checks
+// every five seconds (12/minute); the binding budget leaves fivefold headroom.
+const SIGNAL_WINDOW_MS=60_000, SIGNAL_BINDING_LIMIT=60, SIGNAL_SOURCE_LIMIT=1200;
+const SIGNAL_GLOBAL_LIMIT=6000, SIGNAL_MAX_INFLIGHT=32, SIGNAL_MAX_KEYS=4096;
 const instances=new WeakMap<Db,ReturnType<typeof createReceiver>>();
 export function museReceiver(db:Db) {let receiver=instances.get(db);if(!receiver){receiver=createReceiver(db);instances.set(db,receiver);}return receiver;}
 function createReceiver(db:Db) {
   const replicaId=randomUUID();
-  const pending=new Map<string,{companyId:string;bindingId:string;bindingGeneration:number;bucketAt:Date;firstAt:Date;lastAt:Date;contacts:number;gapsAtMostSevenSeconds:number;maxGapMs:number;timestamps:string[];incomplete:boolean}>();
+  const pending=new Map<string,{companyId:string;agentId:string;bindingId:string;bindingGeneration:number;bucketAt:Date;firstAt:Date;lastAt:Date;contacts:number;gapsAtMostSevenSeconds:number;maxGapMs:number;timestamps:string[];incomplete:boolean}>();
   const previous=new Map<string,number>();
   let flushPromise:Promise<void>|undefined;
+  const admittedSignals=new Set<Promise<{version:1;signal:{reference:string}|null}>>();
+  // One receiver is cached per production Db, shared by every binding/router.
+  // No authority or response is cached. Expiry is checked only on ingress.
+  const signalWindows=new Map<string,{until:number;count:number}>();
+  let nextWindowSweep=0, handoffOwners=0;
+  function admitSignal(bindingId:string,source:string) {
+    if(admittedSignals.size>=SIGNAL_MAX_INFLIGHT)throw new HttpError(503,"Muse receiver is busy.");
+    const now=Date.now();
+    if(now>=nextWindowSweep){
+      for(const [key,value]of signalWindows)if(value.until<=now)signalWindows.delete(key);
+      nextWindowSweep=now+SIGNAL_WINDOW_MS;
+    }
+    const budgets:[[string,number],[string,number],[string,number]]=[
+      ["global",SIGNAL_GLOBAL_LIMIT],["binding:"+bindingId,SIGNAL_BINDING_LIMIT],["source:"+source,SIGNAL_SOURCE_LIMIT],
+    ];
+    // Preflight every budget and required key before mutating counters/state;
+    // a denied request cannot fill the map with unused zero-count entries.
+    const entries=budgets.map(([key,limit])=>{
+      const existing=signalWindows.get(key);
+      const value=existing&&existing.until>now?existing:{until:now+SIGNAL_WINDOW_MS,count:0};
+      if(value.count>=limit)throw new HttpError(429,"Muse signal admission is temporarily limited.",
+        {retryAfterSeconds:Math.max(1,Math.ceil((value.until-now)/1000))});
+      return{key,value,isNew:!existing};
+    });
+    if(signalWindows.size+entries.filter(entry=>entry.isNew).length>SIGNAL_MAX_KEYS)
+      throw new HttpError(429,"Muse signal admission is temporarily limited.",{retryAfterSeconds:60});
+    for(const {key,value}of entries){value.count++;signalWindows.set(key,value);}
+  }
+  let stopping=false;
+  let stopPromise:Promise<void>|undefined;
   async function flush() {
     if(flushPromise)return flushPromise;
     flushPromise=(async()=>{
       const batch=[...pending.entries()];pending.clear();
+      let failures=0;
       for(const [key,bucket]of batch) {
         try {
           const current=await db.transaction(async tx=>{
-            const [current]=await tx.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.generation,bucket.bindingGeneration),isNull(bindings.revokedAt)));
+            // The existing MCP publication/deletion lock precedes all child locks.
+            await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
+            return withExternalAdmissionGuard(tx,bucket.companyId,bucket.agentId,async()=>{
+            const [current]=await tx.select().from(bindings).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.companyId,bucket.companyId),eq(bindings.agentId,bucket.agentId),eq(bindings.generation,bucket.bindingGeneration),isNull(bindings.revokedAt))).for("update");
             if(current?.pairedAt&&!current.verifiedReplyAt&&!current.challengeHash)await notifyMuseContactVerification(tx,{companyId:current.companyId,bindingId:current.id,generation:current.generation},"contact-persist");
-            await tx.insert(buckets).values({...bucket,replicaId}).onConflictDoUpdate({target:[buckets.bindingId,buckets.bindingGeneration,buckets.replicaId,buckets.bucketAt],set:{lastAt:bucket.lastAt,contacts:sql`${buckets.contacts}+${bucket.contacts}`,gapsAtMostSevenSeconds:sql`${buckets.gapsAtMostSevenSeconds}+${bucket.gapsAtMostSevenSeconds}`,maxGapMs:sql`greatest(${buckets.maxGapMs},${bucket.maxGapMs})`,timestamps:sql`${buckets.timestamps} || ${JSON.stringify(bucket.timestamps)}::jsonb`,incomplete:sql`${buckets.incomplete} or ${bucket.incomplete}`}});
+            const {agentId: _agentId,...contact}=bucket;
+            await tx.insert(buckets).values({...contact,replicaId}).onConflictDoUpdate({target:[buckets.bindingId,buckets.bindingGeneration,buckets.replicaId,buckets.bucketAt],set:{lastAt:bucket.lastAt,contacts:sql`${buckets.contacts}+${bucket.contacts}`,gapsAtMostSevenSeconds:sql`${buckets.gapsAtMostSevenSeconds}+${bucket.gapsAtMostSevenSeconds}`,maxGapMs:sql`greatest(${buckets.maxGapMs},${bucket.maxGapMs})`,timestamps:sql`${buckets.timestamps} || ${JSON.stringify(bucket.timestamps)}::jsonb`,incomplete:sql`${buckets.incomplete} or ${bucket.incomplete}`}});
             await tx.update(bindings).set({receiverContactAt:sql`greatest(${bindings.receiverContactAt},${bucket.lastAt.toISOString()}::timestamptz)`}).where(and(eq(bindings.id,bucket.bindingId),eq(bindings.generation,bucket.bindingGeneration)));
             return current;
+            });
           });
           if(current?.pairedAt&&!current.verifiedReplyAt&&!current.challengeHash) {
             const {museRunnerBroker}=await import("./muse-runner-broker.js");
             await museRunnerBroker(db).verify(current.companyId,current.agentId,{bindingId:current.id,generation:current.generation,expectedRevision:current.revision}).catch(()=>{});
           }
         } catch {
+          failures++;
           const newer=pending.get(key);
-          if(newer){newer.firstAt=bucket.firstAt;newer.contacts+=bucket.contacts;newer.timestamps=[...bucket.timestamps,...newer.timestamps].slice(0,60);newer.incomplete=true;}
+          if(newer){newer.firstAt=new Date(Math.min(bucket.firstAt.getTime(),newer.firstAt.getTime()));newer.lastAt=new Date(Math.max(bucket.lastAt.getTime(),newer.lastAt.getTime()));newer.contacts+=bucket.contacts;newer.gapsAtMostSevenSeconds+=bucket.gapsAtMostSevenSeconds;newer.maxGapMs=Math.max(bucket.maxGapMs,newer.maxGapMs);newer.timestamps=[...bucket.timestamps,...newer.timestamps].slice(0,60);newer.incomplete=true;}
           else pending.set(key,{...bucket,incomplete:true});
         }
       }
+      if(failures)throw new Error("Muse receiver contact persistence is incomplete.");
     })().finally(()=>{flushPromise=undefined;});return flushPromise;
   }
   function recordPublicContact(b: typeof bindings.$inferSelect, now: number) {
@@ -44,7 +87,7 @@ function createReceiver(db:Db) {
     previous.set(b.id, now);
     let bucket = pending.get(key);
     if (!bucket) {
-      bucket = { companyId: b.companyId, bindingId: b.id, bindingGeneration: b.generation,
+      bucket = { companyId: b.companyId, agentId: b.agentId, bindingId: b.id, bindingGeneration: b.generation,
         bucketAt: new Date(Math.floor(now / PERSISTENCE_LAG_MS) * PERSISTENCE_LAG_MS),
         firstAt: new Date(now), lastAt: new Date(now), contacts: 0,
         gapsAtMostSevenSeconds: 0, maxGapMs: 0, timestamps: [], incomplete: false };
@@ -57,7 +100,7 @@ function createReceiver(db:Db) {
     else bucket.incomplete = true;
   }
   /** A public binding reference is presence evidence, never worker authority. */
-  async function signal(bindingId: string, expectedResource?:string) {
+  async function signalOnce(bindingId: string, expectedResource?:string) {
     const idle = { version: 1 as const, signal: null };
     const unavailable = () => new HttpError(410, "Muse receiver is unavailable.");
     const [candidate] = await db.select().from(bindings).where(eq(bindings.id, bindingId));
@@ -89,7 +132,7 @@ function createReceiver(db:Db) {
       contacted = current;
       // Pausing suppresses ordinary work, while the worker still needs its
       // exact stop boundary to quiesce and report through authenticated control.
-      const disabled=!await museIdentity(db).enabled();
+      const disabled=!await museIdentity(db).enabled(tx);
       if(disabled&&!await hasMuseStopControlAccess(tx,current))return idle;
       const stopOnly = disabled || (agent.status === "paused" && !canConfigureAgentConnection(agent));
       const boundaries=tx.select({boundary:holds.stopBoundary}).from(holds).where(inArray(holds.id,museStopControlBoundaryIds(tx,current)));
@@ -106,11 +149,66 @@ function createReceiver(db:Db) {
       const reference = "sha256:" + createHash("sha256").update(`${current.id}:${current.generation}:${item.item.sourceEventId}:${attempt}`).digest("hex");
       return { version: 1 as const, signal: { reference } };
     });
-    if (contacted) recordPublicContact(contacted, Date.now());
+    if (contacted) {
+      recordPublicContact(contacted, Date.now());
+      if (getCloudRuntimeIdentity()) {
+        // A warm-forward decision can outlive the hosted handoff's empty join.
+        // Never confirm that late managed contact while it exists only in RAM.
+        // The first join may be a batch captured before this contact; the next
+        // flush captures its retained bucket (or joins one that already did).
+        // Normal persistence failure keeps its original debt and rejects HTTP.
+        await flush();
+        await flush();
+      }
+    }
     return result;
   }
+  function signal(bindingId:string,expectedResource?:string,source="local") {
+    if(stopping||handoffOwners)return Promise.reject(new HttpError(503,"Muse receiver is temporarily unavailable."));
+    try {admitSignal(bindingId,source);}catch(error){return Promise.reject(error);}
+    const admitted=signalOnce(bindingId,expectedResource);
+    admittedSignals.add(admitted);
+    void admitted.then(()=>admittedSignals.delete(admitted),()=>admittedSignals.delete(admitted));
+    return admitted;
+  }
+  async function prepareHostedHandoff(signal:AbortSignal,completeCutover?:()=>Promise<void>) {
+    // Fence synchronously before the snapshot. New requests own no contact and
+    // receive a retryable503; overlapping handoffs cannot reopen one another.
+    handoffOwners++;
+    try {
+      signal.throwIfAborted();
+      await Promise.allSettled([...admittedSignals]);
+      signal.throwIfAborted();
+      // The first join may belong to a timer's previously captured batch.
+      // With admission fenced, the next flush owns the finite remaining batch.
+      await flush();
+      await flush();
+      signal.throwIfAborted();
+      if(admittedSignals.size||pending.size)throw new Error("Muse handoff still owns contact persistence debt.");
+      // The existing mirror owner keeps its authority/revision checks. Once
+      // entered, await its actual commit/rollback even if this signal aborts.
+      // This closure must not await new signal admission from this receiver.
+      if(completeCutover)await completeCutover();
+    } finally {handoffOwners--;}
+  }
   let timer:NodeJS.Timeout|undefined;
-  function start() {if(timer)return;timer=setInterval(()=>void flush().catch(()=>{}),PERSISTENCE_LAG_MS);timer.unref();}
-  async function stop() {if(timer)clearInterval(timer);timer=undefined;await flush();}
-  return {signal,flush,start,stop,persistenceLagMs:PERSISTENCE_LAG_MS};
+  function start() {
+    if(stopPromise)throw new Error("Muse receiver shutdown is still running.");
+    stopping=false;
+    if(timer)return;
+    timer=setInterval(()=>void flush().catch(()=>{}),PERSISTENCE_LAG_MS);timer.unref();
+  }
+  function stop() {
+    if(stopPromise)return stopPromise;
+    stopping=true;
+    if(timer)clearInterval(timer);timer=undefined;
+    stopPromise=(async()=>{
+      await Promise.allSettled([...admittedSignals]);
+      // A signal admitted before stop may add a new batch while an older flush
+      // is in flight. Join both; failed persistence keeps its debt and rejects.
+      do {await flush();} while(pending.size);
+    })().finally(()=>{stopPromise=undefined;});
+    return stopPromise;
+  }
+  return {signal,flush,prepareHostedHandoff,start,stop,persistenceLagMs:PERSISTENCE_LAG_MS};
 }

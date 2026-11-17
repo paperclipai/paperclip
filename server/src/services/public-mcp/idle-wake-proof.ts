@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { PUBLIC_MCP_SCOPES, DOT_RUNNER_MCP_SCOPES } from "@paperclipai/shared";
 import { and, asc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import {
-  agents, authUsers, companies, companyMemberships, dotAgentBindings,
+  agents, authUsers, companies, companyMemberships, dotAgentBindings,museAgentBindings,
   mcpOauthGrants, mcpOauthTokens, type Db,
 } from "@paperclipai/db";
 import { mcpRevocationAuthorityId, parseMcpRevocationIndexReceipt, type McpRevocationIndexReceipt } from "./revocation-index-contract.js";
@@ -18,6 +18,13 @@ export interface IdleMcpWakeProof {
   dotBindingIds: string[];
 }
 export interface IdleMcpCredentialRow {
+  museBindingId?:string|null;
+  museStatus?:string|null;
+  museGeneration?:number|null;
+  museChallengeHash?:string|null;
+  agentProvider?:string|null;
+  agentMuseBindingId?:string|null;
+  companyStatus?:string|null;
   grantId: string;
   companyId: string;
   clientId: string;
@@ -50,6 +57,8 @@ export interface IdleMcpWakeProofInput {
   dotResource: string;
   personalEnabled: boolean;
   dotEnabled: boolean;
+  museEnabled?:boolean;
+  museResource?:string;
   now: number;
 }
 
@@ -69,17 +78,21 @@ export function projectIdleMcpWakeProof(rows: IdleMcpCredentialRow[], input: Idl
       && row.dotBindingId !== null && row.dotGeneration !== null && Number.isSafeInteger(row.dotGeneration) && row.dotGeneration > 0
       && row.dotPairingHash === null && row.dotChallengeHash === null
       && row.agentStatus !== null && !["terminated", "pending_approval"].includes(row.agentStatus);
-    if (!personal && !dot) continue;
+    const muse=Boolean(input.museEnabled&&row.resource===input.museResource&&row.purpose==="agent"&&row.scopes.includes("paperclip:agent")&&row.scopes.every(scope=>["paperclip:agent","offline_access"].includes(scope))
+      &&row.membershipRole!=="viewer"&&row.companyStatus==="active"&&row.agentProvider==="muse"&&row.agentMuseBindingId===row.museBindingId
+      &&row.museBindingId&&row.museStatus==="ready"&&row.museGeneration!==null&&row.museGeneration!==undefined&&Number.isSafeInteger(row.museGeneration)&&row.museGeneration>0
+      &&row.museChallengeHash===null&&row.agentStatus!==null&&!["terminated","pending_approval"].includes(row.agentStatus));
+    if (!personal && !dot&&!muse) continue;
     if (row.tokenKind !== "access" && row.tokenKind !== "refresh") throw new Error("Unknown MCP credential kind");
     if (row.tokenKind === "refresh" && row.tokenUsedAt !== null) continue;
     if (row.tokenExpiresAt === null ? !dot || row.tokenKind !== "refresh" : row.tokenExpiresAt.getTime() <= input.now) continue;
-    tokens.push({ profile: personal ? "personal-mcp" : "dot-mcp", tokenKind: row.tokenKind,
+    tokens.push({ profile: personal ? "personal-mcp" : muse?"muse-agent":"dot-mcp", tokenKind: row.tokenKind,
       tokenHash: row.tokenHash, expiresAt: row.tokenExpiresAt?.toISOString() ?? null, clientId: row.clientId });
     grantIds.add(row.grantId);
     if (dot) dotBindingIds.add(row.dotBindingId!);
   }
   const admission = createMcpWakeAdmission({ stackId: input.stackId, ownerId: input.ownerId,
-    capabilityGeneration: input.capabilityGeneration, challenge: input.challenge, tokens, discovery: input.discovery, clientMirror: input.clientMirror,...(!input.personalEnabled&&!input.dotEnabled?{absent:true as const}:{}) });
+    capabilityGeneration: input.capabilityGeneration, challenge: input.challenge, tokens, discovery: input.discovery, clientMirror: input.clientMirror,...(!input.personalEnabled&&!input.dotEnabled&&!input.museEnabled?{absent:true as const}:{}) });
   return { admission, generation: createHash("sha256").update(JSON.stringify([admission.generation, rows.map(({ tokenHash: _private, ...row }) => row)])).digest("hex"),
     grantIds: [...grantIds].sort(), dotBindingIds: [...dotBindingIds].sort() };
 }
@@ -97,6 +110,8 @@ export async function readIdleMcpWakeProof(tx: Pick<Db, "select">, input: IdleMc
     dotBindingId: dotAgentBindings.id, dotProvider: dotAgentBindings.providerKind,
     dotStatus: dotAgentBindings.status, dotGeneration: dotAgentBindings.generation,
     dotPairingHash: dotAgentBindings.pairingCodeHash, dotChallengeHash: dotAgentBindings.challengeHash,
+    museBindingId:museAgentBindings.id,museStatus:museAgentBindings.status,museGeneration:museAgentBindings.generation,museChallengeHash:museAgentBindings.challengeHash,
+    agentProvider:sql<string>`${agents.adapterConfig}->>'provider'`,agentMuseBindingId:sql<string>`${agents.adapterConfig}->>'museBindingId'`,companyStatus:companies.status,
     agentStatus: agents.status, membershipRole: companyMemberships.membershipRole,
   }).from(mcpOauthTokens)
     .innerJoin(mcpOauthGrants, and(eq(mcpOauthGrants.id, mcpOauthTokens.grantId), isNull(mcpOauthGrants.revokedAt)))
@@ -108,6 +123,7 @@ export async function readIdleMcpWakeProof(tx: Pick<Db, "select">, input: IdleMc
     .leftJoin(dotAgentBindings, and(eq(dotAgentBindings.grantId, mcpOauthGrants.id),
       eq(dotAgentBindings.companyId, mcpOauthGrants.companyId), eq(dotAgentBindings.agentId, mcpOauthGrants.agentId),
       eq(dotAgentBindings.operatorId, mcpOauthGrants.userId), isNull(dotAgentBindings.revokedAt)))
+    .leftJoin(museAgentBindings,and(eq(museAgentBindings.grantId,mcpOauthGrants.id),eq(museAgentBindings.companyId,mcpOauthGrants.companyId),eq(museAgentBindings.agentId,mcpOauthGrants.agentId),eq(museAgentBindings.operatorId,mcpOauthGrants.userId),isNull(museAgentBindings.revokedAt)))
     .where(and(or(gt(mcpOauthTokens.expiresAt, new Date(input.now)), isNull(mcpOauthTokens.expiresAt)),
 
 
@@ -119,7 +135,9 @@ export async function readIdleMcpWakeProof(tx: Pick<Db, "select">, input: IdleMc
   const authorities = await tx.select({ grant: mcpOauthGrants,
     dotBindingId: dotAgentBindings.id, dotProvider: dotAgentBindings.providerKind, dotStatus: dotAgentBindings.status,
     dotGeneration: dotAgentBindings.generation, dotPairingHash: dotAgentBindings.pairingCodeHash,
-    dotChallengeHash: dotAgentBindings.challengeHash, agentStatus: agents.status,
+    dotChallengeHash: dotAgentBindings.challengeHash,
+    museBindingId:museAgentBindings.id,museStatus:museAgentBindings.status,museGeneration:museAgentBindings.generation,museChallengeHash:museAgentBindings.challengeHash,
+    agentProvider:sql<string>`${agents.adapterConfig}->>'provider'`,agentMuseBindingId:sql<string>`${agents.adapterConfig}->>'museBindingId'`,companyStatus:companies.status,agentStatus: agents.status,
     membershipRole: companyMemberships.membershipRole,
   }).from(mcpOauthGrants)
     .innerJoin(companies, and(eq(companies.id, mcpOauthGrants.companyId), sql`${companies.status} <> 'archived'`))
@@ -129,6 +147,7 @@ export async function readIdleMcpWakeProof(tx: Pick<Db, "select">, input: IdleMc
     .leftJoin(agents, and(eq(agents.id, mcpOauthGrants.agentId), eq(agents.companyId, mcpOauthGrants.companyId)))
     .leftJoin(dotAgentBindings, and(eq(dotAgentBindings.grantId, mcpOauthGrants.id), eq(dotAgentBindings.companyId, mcpOauthGrants.companyId),
       eq(dotAgentBindings.agentId, mcpOauthGrants.agentId), eq(dotAgentBindings.operatorId, mcpOauthGrants.userId), isNull(dotAgentBindings.revokedAt)))
+    .leftJoin(museAgentBindings,and(eq(museAgentBindings.grantId,mcpOauthGrants.id),eq(museAgentBindings.companyId,mcpOauthGrants.companyId),eq(museAgentBindings.agentId,mcpOauthGrants.agentId),eq(museAgentBindings.operatorId,mcpOauthGrants.userId),isNull(museAgentBindings.revokedAt)))
     .where(isNull(mcpOauthGrants.revokedAt)).orderBy(asc(mcpOauthGrants.id)).limit(1001);
   if (authorities.length > 1000) throw new Error("Too many active MCP grant authorities");
   const grantIds: string[] = [], dotBindingIds: string[] = [], revocationAuthorities: McpRevocationIndexReceipt[] = [];
@@ -142,7 +161,11 @@ export async function readIdleMcpWakeProof(tx: Pick<Db, "select">, input: IdleMc
       && row.membershipRole !== "viewer" && row.dotProvider === "openai_dot" && ["connected", "ready"].includes(row.dotStatus ?? "")
       && row.dotBindingId !== null && row.dotGeneration !== null && Number.isSafeInteger(row.dotGeneration) && row.dotGeneration > 0
       && row.dotPairingHash === null && row.dotChallengeHash === null && row.agentStatus !== null && !["terminated", "pending_approval"].includes(row.agentStatus);
-    if ((!personal && !dot) || !grant.revocationIndexReceipt) continue;
+    const muse=Boolean(input.museEnabled&&grant.resource===input.museResource&&grant.purpose==="agent"&&grant.scopes.includes("paperclip:agent")&&grant.scopes.every(scope=>["paperclip:agent","offline_access"].includes(scope))
+      &&row.membershipRole!=="viewer"&&row.companyStatus==="active"&&row.agentProvider==="muse"&&row.agentMuseBindingId===row.museBindingId
+      &&row.museBindingId&&row.museStatus==="ready"&&row.museGeneration!==null&&Number.isSafeInteger(row.museGeneration)&&row.museGeneration>0&&row.museChallengeHash===null
+      &&row.agentStatus!==null&&!["terminated","pending_approval"].includes(row.agentStatus));
+    if ((!personal && !dot&&!muse) || !grant.revocationIndexReceipt) continue;
     const receipt = parseMcpRevocationIndexReceipt(grant.revocationIndexReceipt);
     if (receipt.revision !== grant.revocationRevision || receipt.authorityId !== mcpRevocationAuthorityId(grant.id, receipt.keyId)) continue;
     grantIds.push(grant.id); if (dot) dotBindingIds.push(row.dotBindingId!); revocationAuthorities.push(receipt);
@@ -151,9 +174,9 @@ export async function readIdleMcpWakeProof(tx: Pick<Db, "select">, input: IdleMc
   const allowed = new Set(grantIds);
   const tokensForAdmission = rows.filter(row => allowed.has(row.grantId));
   const rebuilt = createMcpWakeAdmission({ stackId: input.stackId, ownerId: input.ownerId, capabilityGeneration: input.capabilityGeneration,
-    challenge: input.challenge, revocationAuthorities, discovery: input.discovery, clientMirror: input.clientMirror,...(!input.personalEnabled&&!input.dotEnabled?{absent:true as const}:{}),
+    challenge: input.challenge, revocationAuthorities, discovery: input.discovery, clientMirror: input.clientMirror,...(!input.personalEnabled&&!input.dotEnabled&&!input.museEnabled?{absent:true as const}:{}),
     tokens: tokensForAdmission.filter(row => !(row.tokenKind === "refresh" && row.tokenUsedAt !== null)).map(row => ({
-      profile: row.resource === input.personalResource ? "personal-mcp" as const : "dot-mcp" as const,
+      profile: row.resource === input.personalResource ? "personal-mcp" as const : row.resource===input.museResource?"muse-agent" as const:"dot-mcp" as const,
       tokenKind: row.tokenKind as "access" | "refresh", tokenHash: row.tokenHash, expiresAt: row.tokenExpiresAt?.toISOString() ?? null, clientId: row.clientId,
     })) });
   input.budget?.check();

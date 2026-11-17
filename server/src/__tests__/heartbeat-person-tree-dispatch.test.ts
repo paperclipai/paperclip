@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentWakeupRequests, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, authUsers, companies, companyMemberships, closeRegisteredClients, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
@@ -21,8 +21,11 @@ vi.mock("../adapters/index.ts", async () => {
   return { ...actual, getServerAdapter: vi.fn(() => ({ supportsLocalAgentJwt: false, execute: mockAdapterExecute })) };
 });
 
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_PERSON_TREE_DISPATCH_TEST_DATABASE_URL");
 const support = await getEmbeddedPostgresTestSupport();
-const suite = support.supported ? describe : describe.skip;
+const suite = externalDatabaseUrl || support.supported ? describe : describe.skip;
 const MINUTE = 60_000;
 
 suite("dispatch of work on a task tree a person created, through the heartbeat queue", () => {
@@ -32,8 +35,12 @@ suite("dispatch of work on a task tree a person created, through the heartbeat q
   const userId = randomUUID();
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-person-tree-dispatch-");
-    db = createDb(temporary.connectionString);
+    if (externalDatabaseUrl) {
+      db = createDb(externalDatabaseUrl, { maxConnections: 4 });
+    } else {
+      temporary = await startEmbeddedPostgresTestDatabase("paperclip-person-tree-dispatch-");
+      db = createDb(temporary.connectionString);
+    }
     heartbeat = heartbeatService(db);
     await db.insert(authUsers).values({ id: userId, name: "Board", email: `${userId}@example.test`, emailVerified: true,
       createdAt: new Date(), updatedAt: new Date() });
@@ -50,7 +57,14 @@ suite("dispatch of work on a task tree a person created, through the heartbeat q
     await db.execute(sql`truncate table ${companies} cascade`);
   }, 180_000);
 
-  afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); }, 120_000);
+  afterAll(async () => {
+    const failures: unknown[] = [];
+    try { await db?.$client.end(); } catch (error) { failures.push(error); }
+    try { if (externalDatabaseUrl) await closeRegisteredClients(externalDatabaseUrl, { scope: "database" }); }
+    catch (error) { failures.push(error); }
+    try { await temporary?.cleanup(); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Person-tree fixture cleanup failed");
+  }, 120_000);
 
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID();

@@ -234,6 +234,7 @@ export const bundledRemoteRunnerRelease = runner.bundledRemoteRunnerRelease;
 export const BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH = runner.BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH;
 
 export const externalOperationDigest = runner.externalOperationDigest;
+export const externalRunnerCheckpointRecovery = runner.externalRunnerCheckpointRecovery;
 export const digestPaperclipSemanticContent = runner.digestPaperclipSemanticContent;
 export const CONFIGURED_ENVIRONMENT_KEYS = runner.CONFIGURED_ENVIRONMENT_KEYS;
 export const GENERATED_RUNTIME_ENVIRONMENT_KEYS = runner.GENERATED_RUNTIME_ENVIRONMENT_KEYS;

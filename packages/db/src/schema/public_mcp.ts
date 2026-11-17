@@ -222,10 +222,11 @@ export const mcpOauthClientMirrorState = pgTable("mcp_oauth_client_mirror_state"
   id: text("id").primaryKey(),
   enabled:boolean("enabled").notNull().default(false),
   remoteResponsibility:boolean("remote_responsibility").notNull().default(false),
+  dotDeviceCutover:jsonb("dot_device_cutover").$type<{version:1;profile:"hosted-dot-v1";stackId:string;instanceId:string;origin:string}>(),
   deviceCutoverStackId:text("device_cutover_stack_id"),
   deviceCutoverAt:timestamp("device_cutover_at",{withTimezone:true}),
   revision: integer("revision").notNull().default(0),
-  receipt: jsonb("receipt").$type<{ version: 1; instanceId: string; origin: string; revision: number; enabled:boolean; frontDoor?:"tenant-personal-v1";authorizationOrigin?:string; deviceStatus?:{keyId:string;generation:string;count:number}; generation: string }>(),
+  receipt: jsonb("receipt").$type<{ version: 1; instanceId: string; origin: string; revision: number; enabled:boolean; frontDoor?:"tenant-personal-v1";dotProfile?:"hosted-dot-v1";authorizationOrigin?:string; deviceStatus?:{keyId:string;generation:string;count:number}; generation: string }>(),
 }, t => [check("mcp_client_mirror_singleton",sql`${t.id} = 'public'`),check("mcp_client_mirror_revision",sql`${t.revision} >= 0`),check("mcp_device_cutover_identity",sql`(${t.deviceCutoverAt} IS NULL AND ${t.deviceCutoverStackId} IS NULL) OR (${t.deviceCutoverAt} IS NOT NULL AND ${t.deviceCutoverStackId} IS NOT NULL)`)]);
 export const mcpOauthClientChanges = pgTable("mcp_oauth_client_changes", {
   clientId: text("client_id").primaryKey(),

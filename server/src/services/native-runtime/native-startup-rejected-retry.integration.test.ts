@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres-fixture.js";
 
 const provider = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
@@ -19,13 +19,13 @@ import { requestTaskRetry } from "../task-retry.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
 
 describe("native session.open the provider rejected before any provider work", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID();
   const agentId = randomUUID();
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("native-startup-rejected-");
+    temporary = await startRecoveryPostgres("native-startup-rejected-");
     db = createDb(temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Startup rejected", issuePrefix: "NSR" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Codex agent", status: "active", adapterType: "paperclip_runner",

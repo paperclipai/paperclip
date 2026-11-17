@@ -3,7 +3,7 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, closeRegisteredClients, createDb, heartbeatRuns } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -39,7 +39,7 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
   const extraDeadlines: Array<() => number | null> = [];
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("issue-recovery-work-");
-    db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? database!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     if (options.meter) meter = meterDatabaseStatements(db, external ?? database!.connectionString);
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
   }, 90_000);
@@ -55,7 +55,14 @@ export function issueRecoveryFixture(options: { meter?: boolean } = {}) {
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
-  afterAll(async () => { meter?.uninstall(); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  afterAll(async () => {
+    meter?.uninstall();
+    try { await db?.$client.end({ timeout: 1 }); }
+    finally {
+      if (external) await closeRegisteredClients(external, { scope: "database" });
+      await database?.cleanup();
+    }
+  });
   async function start(options: { backstopMs?: number; fullBackstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });

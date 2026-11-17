@@ -5,12 +5,15 @@ import { resolve } from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, applyPendingMigrations, companies, createDb, environmentLeases, environments, heartbeatRunEvents,
+  agentWakeupRequests, authUsers, companyMemberships, agents, applyPendingMigrations, companies, createDb, closeCheckpointDb, environmentLeases, environments, heartbeatRunEvents,
   heartbeatRuns, issues, nativeRunFinalizations,
 } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "../heartbeat.js";
+import { requestTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { claimNativeRestartRecoveries, NATIVE_RESTART_RECOVERY_FAILED } from "./native-restart-recovery.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
@@ -31,10 +34,10 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   beforeAll(async () => {
     if (externalUrl) {
       await applyPendingMigrations(externalUrl);
-      db = createDb(externalUrl);
+      db = createDb(externalUrl, { maxConnections: 2 });
     } else {
       temporary = await startEmbeddedPostgresTestDatabase("native-restart-recovery-isolation-");
-      db = createDb(temporary.connectionString);
+      db = createDb(temporary.connectionString, { maxConnections: 2 });
     }
     await db.insert(companies).values({ id: companyId, name: "Restart isolation", issuePrefix: companyId.slice(0, 8) });
     await db.insert(agents).values({ id: agentId, companyId, name: "Engineer", adapterType: "paperclip_runner" });
@@ -42,6 +45,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "83".repeat(32));
   }, 30_000);
   afterAll(async () => {
+    if (db) await closeCheckpointDb(db, 1);
     await db?.$client.end(); await temporary?.cleanup();
     if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
@@ -175,4 +179,196 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       await restore();
     }
   });
+
+  it("normal remote original claim releases its exact Retry wait atomically across rollback and lost response", async () => {
+    const f = await seedScheduledResume({ lock: "self" });
+    const actorId = randomUUID();
+    await db.insert(authUsers).values({ id: actorId, name: "Remote Retry operator",
+      email: `${actorId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user",
+      principalId: actorId, status: "active", membershipRole: "operator" });
+    expect(await taskRetryMutationAllowed(db, { companyId, issueId: f.issueId,
+      actorId, actorSource: "session" })).toBe(true);
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId,
+      actorId, observedRunId: f.runId, idempotencyKey: randomUUID() });
+    expect(receipt.requestId).toBeTruthy();
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+    const readWait = async (id: string) => (await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, id)))[0]!;
+    const originalWait = await readWait(receipt.requestId!);
+    expect(originalWait).toMatchObject({ status: "deferred_issue_execution", runId: null,
+      payload: { executionWait: { reason: "native_checkpoint_recovery_pending" } } });
+    const otherSource = randomUUID(), otherReason = randomUUID();
+    const base = { companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      requestedByActorType: "user", requestedByActorId: actorId, reason: "task_retry", status: "deferred_issue_execution" };
+    await db.insert(agentWakeupRequests).values([
+      { ...base, id: otherSource, payload: { issueId: f.issueId,
+        taskRetry: { schema: "paperclip.task-retry.v1", sourceRunId: randomUUID() },
+        executionWait: { reason: "native_checkpoint_recovery_pending" } } },
+      { ...base, id: otherReason, payload: { issueId: f.issueId,
+        taskRetry: { schema: "paperclip.task-retry.v1", sourceRunId: f.runId },
+        executionWait: { reason: "budget_hard_stop" } } },
+    ]);
+    const unrelated = [await readWait(otherSource), await readWait(otherReason)];
+    const [originalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId));
+    const settled: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, (event, hints) => {
+      if (event === "settled") settled.push(...hints ?? []);
+    });
+    const claim = (owner: typeof db) => claimNativeRestartRecoveries({ db: owner,
+      restartKind: "hard", now: new Date(), runIds: [f.runId] });
+    try {
+      const rollback = new Error("remote-original-claim-outer-rollback");
+      await expect(db.transaction(async tx => {
+        expect(await claim(tx as unknown as typeof db)).toEqual([
+          expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]);
+        const [inside] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+        expect(inside.payload?.executionWait).toBeUndefined();
+        expect(settled).toEqual([]);
+        throw rollback;
+      })).rejects.toBe(rollback);
+      expect(await readWait(receipt.requestId!)).toEqual(originalWait);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(originalRun);
+      settled.length = 0;
+      const lostReply = new Error("remote-original-claim-committed-application-response-lost");
+      await expect((async () => {
+        expect(await claim(db)).toEqual([
+          expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]);
+        throw lostReply;
+      })()).rejects.toBe(lostReply);
+      const released = await readWait(receipt.requestId!);
+      expect(released).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(released.payload?.executionWait).toBeUndefined();
+      expect(released.payload?.taskRetry).toEqual(originalWait.payload?.taskRetry);
+      expect(settled).toContain(JSON.stringify({ companyId, requestId: receipt.requestId }));
+      expect([await readWait(otherSource), await readWait(otherReason)]).toEqual(unrelated);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+        .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+        .toMatchObject({ status: "running", processPid: originalRun.processPid, runnerProfileJson: originalRun.runnerProfileJson });
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId))).toEqual(leases);
+      const hintCount = settled.length;
+      expect(await claim(db)).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]));
+      expect(settled).toHaveLength(hintCount);
+    } finally { unsubscribe(); await heartbeat.drainActiveRunExecutions(); }
+  }, 30_000);
+  it("coalesces a request-first Retry through normal resume after the real remote original claim", async () => {
+    const f = await seedScheduledResume({ lock: "self" });
+    const actorId = randomUUID();
+    await db.insert(authUsers).values({ id: actorId, name: "Restored Retry operator",
+      email: `${actorId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user",
+      principalId: actorId, status: "active", membershipRole: "operator" });
+    expect(await taskRetryMutationAllowed(db, { companyId, issueId: f.issueId,
+      actorId, actorSource: "session" })).toBe(true);
+    const input = { db, companyId, issueId: f.issueId, actorId,
+      observedRunId: f.runId, idempotencyKey: randomUUID() };
+    const receipt = await requestTaskRetry(input);
+    expect(receipt.requestId).toBeTruthy();
+    const heartbeat = heartbeatService(db);
+    const readWait = async () => (await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, receipt.requestId!)))[0]!;
+    try {
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      expect(await readWait()).toMatchObject({ status: "deferred_issue_execution", runId: null,
+        payload: { executionWait: { reason: "native_checkpoint_recovery_pending" } } });
+      expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", now: new Date(), runIds: [f.runId] }))
+        .toEqual([expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]);
+      const beforeResume = await readWait();
+      expect(beforeResume).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(beforeResume.payload?.executionWait).toBeUndefined();
+      const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId));
+      expect(original).toMatchObject({ status: "running", nativePhase: "observed" });
+      const lostReply = new Error("restored-native-retry-committed-application-response-lost");
+      await expect((async () => {
+        await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+        throw lostReply;
+      })()).rejects.toBe(lostReply);
+      expect(await readWait()).toMatchObject({ status: "coalesced", runId: f.runId });
+      expect((await readWait()).payload?.taskRetry).toEqual(beforeResume.payload?.taskRetry);
+      await heartbeatService(db).resumeTaskRetry(companyId, receipt.requestId!);
+      expect((await requestTaskRetry(input)).requestId).toBe(receipt.requestId);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.nativeIssueId, f.issueId)))).toEqual([original]);
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toEqual(coordinator);
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId))).toEqual(leases);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+  }, 30_000);
+
+  it.each([false, true])("resumes the exact restored Retry from current ownership after diagnostic fields clear; revoked requester=%s", async revoked => {
+    const f = await seedScheduledResume({ lock: "self" });
+    const actorId = randomUUID();
+    await db.insert(authUsers).values({ id: actorId, name: "Current Retry operator",
+      email: `${actorId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user",
+      principalId: actorId, status: "active", membershipRole: "operator" });
+    const input = { db, companyId, issueId: f.issueId, actorId,
+      observedRunId: f.runId, idempotencyKey: randomUUID() };
+    expect(await taskRetryMutationAllowed(db, { companyId, issueId: f.issueId, actorId, actorSource: "session" })).toBe(true);
+    const receipt = await requestTaskRetry(input);
+    expect(receipt.requestId).toBeTruthy();
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", now: new Date(), runIds: [f.runId] }))
+        .toEqual([expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]);
+      await db.update(nativeRunFinalizations).set({ failureDetail: null, recoveryState: null })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId));
+      expect(original.status).toBe("running");expect(owner.leaseOwner).toBeTruthy();
+      if (revoked) await db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, actorId)));
+      expect(await taskRetryMutationAllowed(db, { companyId, issueId: f.issueId, actorId, actorSource: "session" })).toBe(!revoked);
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      if (revoked) expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null,
+        payload: { executionWait: { reason: "retry_authority_denied" } } });
+      else expect(wake).toMatchObject({ status: "coalesced", runId: f.runId });
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.nativeIssueId, f.issueId)))).toEqual([original]);
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(owner);
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId))).toEqual(leases);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+  }, 30_000);
+
+  it("normal restored Retry reads the current checkout fence rather than the Queue projection", async () => {
+    const f = await seedScheduledResume({ lock: "self" });
+    const actorId = randomUUID();
+    await db.insert(authUsers).values({ id: actorId, name: "Checkout Retry operator",
+      email: `${actorId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user",
+      principalId: actorId, status: "active", membershipRole: "operator" });
+    expect(await taskRetryMutationAllowed(db, { companyId, issueId: f.issueId, actorId, actorSource: "session" })).toBe(true);
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId,
+      observedRunId: f.runId, idempotencyKey: randomUUID() });
+    expect(receipt.requestId).toBeTruthy();
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      expect(await claimNativeRestartRecoveries({ db, restartKind: "hard", now: new Date(), runIds: [f.runId] }))
+        .toEqual([expect.objectContaining({ kind: "reattach_remote_runner", runId: f.runId })]);
+      const other = await seedScheduledResume({ lock: "none" });
+      await db.update(issues).set({ checkoutRunId: other.runId }).where(eq(issues.id, f.issueId));
+      const [original] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      const leases = await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId));
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(wake.runId).not.toBe(f.runId);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+        .toMatchObject({ executionRunId: f.runId, checkoutRunId: other.runId });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(original);
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(owner);
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId))).toEqual(leases);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+  }, 30_000);
+
 });

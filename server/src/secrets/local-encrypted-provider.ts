@@ -329,7 +329,10 @@ export const localEncryptedProvider: SecretProviderModule = {
     throw badRequest("local_encrypted does not support external reference secrets");
   },
   async resolveVersion(input) {
-    return createLocalEncryptedCipher("read").decrypt(input.material);
+    input.signal?.throwIfAborted();
+    const value = createLocalEncryptedCipher("read").decrypt(input.material);
+    input.signal?.throwIfAborted();
+    return value;
   },
   async deleteOrArchive() {
     // Secret metadata deletion is handled in Paperclip DB; the local key is shared and must remain.

@@ -13,7 +13,9 @@ import { secretService } from "./secrets.js";
 export async function historicalProviderCredentials(db: Db, companyId: string,
   config: SandboxEnvironmentConfig, schema: Record<string, unknown> | null | undefined,
   context: { issueId: string | null; heartbeatRunId: string | null },
+  signal?: AbortSignal,
 ): Promise<SandboxEnvironmentConfig | undefined> {
+  signal?.throwIfAborted();
   let resolved = { ...config } as Record<string, unknown>;
   for (const path of collectSecretRefPaths(schema)) {
     const raw = readConfigValueAtPath(resolved, path);
@@ -21,6 +23,7 @@ export async function historicalProviderCredentials(db: Db, companyId: string,
     if (binding && binding.version !== "latest" && binding.version !== 1) return undefined;
     const ref = binding?.secretId ?? (typeof raw === "string" ? raw.trim() : null);
     if (!ref || !isUuidSecretRef(ref)) continue;
+    signal?.throwIfAborted();
     const [version] = await db.select({ hash: companySecretVersions.valueSha256 })
       .from(companySecrets).innerJoin(companySecretVersions, and(
         eq(companySecretVersions.secretId, companySecrets.id), eq(companySecretVersions.version, 1)))
@@ -29,8 +32,10 @@ export async function historicalProviderCredentials(db: Db, companyId: string,
         sql`${companySecretVersions.revokedAt} IS NULL`,
         sql`NOT EXISTS (SELECT 1 FROM company_secret_versions other_version
           WHERE other_version.secret_id = ${companySecrets.id} AND other_version.version <> 1)`));
+    signal?.throwIfAborted();
     if (!version) return undefined;
-    const value = await secretService(db).resolveSecretValueForSandboxCleanup(companyId, ref, 1, { ...context, configPath: path });
+    const value = await secretService(db).resolveSecretValueForSandboxCleanup(companyId, ref, 1, { ...context, configPath: path, signal });
+    signal?.throwIfAborted();
     if (createHash("sha256").update(value).digest("hex") !== version.hash) return undefined;
     resolved = writeConfigValueAtPath(resolved, path, value);
   }

@@ -110,7 +110,7 @@ interface AwsSecretsManagerGateway {
     SecretId: string;
     VersionId?: string;
     VersionStage?: string;
-  }): Promise<{
+  }, options?: { signal?: AbortSignal }): Promise<{
     SecretString?: string;
     ARN?: string;
     Name?: string;
@@ -926,13 +926,13 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
     SecretId: string;
     VersionId?: string;
     VersionStage?: string;
-  }) {
+  }, options?: { signal?: AbortSignal }) {
     return this.call<{
       SecretString?: string;
       ARN?: string;
       Name?: string;
       VersionId?: string;
-    }>("GetSecretValue", input);
+    }>("GetSecretValue", input, options?.signal);
   }
 
   deleteSecret(input: {
@@ -966,9 +966,13 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
     }>("ListSecrets", input);
   }
 
-  private async call<T>(operation: string, payload: Record<string, unknown>): Promise<T> {
+  private async call<T>(operation: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
     const body = JSON.stringify(payload);
+    // Credential refresh is process-shared; do not cancel another caller's
+    // refresh. Abort this observation before signing or issuing its own HTTP.
     const credentials = await loadAwsCredentials(this.config.region);
+    signal?.throwIfAborted();
     const headers = signAwsSecretsManagerRequest({
       endpoint: this.endpoint,
       region: this.config.region,
@@ -980,9 +984,11 @@ class AwsSecretsManagerJsonGateway implements AwsSecretsManagerGateway {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(AWS_SECRETS_MANAGER_REQUEST_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(AWS_SECRETS_MANAGER_REQUEST_TIMEOUT_MS)])
+        : AbortSignal.timeout(AWS_SECRETS_MANAGER_REQUEST_TIMEOUT_MS),
     });
     const text = await response.text();
+    signal?.throwIfAborted();
     const parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
 
     if (!response.ok) {
@@ -1290,6 +1296,7 @@ export function createAwsSecretsManagerProvider(
       }
     },
     async resolveVersion(input) {
+      input.signal?.throwIfAborted();
       const config = resolveConfig(input.providerConfig);
       const gateway = resolveGateway(config);
       const material = asAwsSecretsManagerMaterial(input.material);
@@ -1303,17 +1310,22 @@ export function createAwsSecretsManagerProvider(
           : (input.externalRef ?? material.secretId);
 
       try {
-        const resolved = await gateway.getSecretValue({
+        const request = {
           SecretId: secretId,
           VersionId: input.providerVersionRef ?? material.versionId ?? undefined,
           VersionStage:
             input.providerVersionRef || material.versionId ? undefined : DEFAULT_VERSION_STAGE,
-        });
+        };
+        const resolved = input.signal
+          ? await gateway.getSecretValue(request, { signal: input.signal })
+          : await gateway.getSecretValue(request);
+        input.signal?.throwIfAborted();
         if (typeof resolved.SecretString !== "string") {
           throw new Error("SecretString was empty");
         }
         return resolved.SecretString;
       } catch (error) {
+        if (input.signal?.aborted) throw input.signal.reason;
         normalizeAwsError("resolveVersion", error);
       }
     },

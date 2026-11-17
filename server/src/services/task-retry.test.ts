@@ -1,14 +1,18 @@
+import { prepareNativeHeartbeatRun } from "./native-runtime/prepare-native-run.js";
+import { buildNativeExecutionInput } from "./native-runtime/native-execution-input.js";
+import { nativeRuntimeContextFixture } from "./native-runtime/runtime-context.test-fixture.js";
+import { type StrictCompletionContractInput } from "../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issueRelations, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { authUsers, companyMemberships, completionContracts, dotAgentBindings, dotRunnerAssignments, activityLog, agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issueRelations, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { recordRunnerApiOutcome, runnerCallOutcomeMiddleware } from "../middleware/runner-call-outcome.js";
 import { RUNNER_API_CALL_HEADER } from "./native-runtime/runner-api-client.js";
-import { requestTaskRetry } from "./task-retry.js";
+import { requestTaskRetry, taskRetryMutationAllowed } from "./task-retry.js";
 import { HttpError } from "../errors.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
@@ -33,7 +37,7 @@ describe("durable task Retry admission", () => {
     const externalUrl = process.env.PAPERCLIP_TASK_RETRY_TEST_DATABASE_URL;
     if (externalUrl) {
       await applyPendingMigrations(externalUrl);
-      db = createDb(externalUrl);
+      db = createDb(externalUrl, { maxConnections: 2 });
     } else {
       postgres = await startEmbeddedPostgresTestDatabase("task-retry-");
       db = createDb(postgres.connectionString);
@@ -1486,4 +1490,85 @@ describe("durable task Retry admission", () => {
     } })).rejects.toMatchObject({ status: 403 });
     expect(calls).toBe(1);
   });
+  async function nativeCheckpointRetryFixture(running: boolean) {
+    const input = await seed();
+    input.actorId = randomUUID();
+    await db.insert(authUsers).values({ id: input.actorId, name: "Retry operator",
+      email: `${input.actorId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: input.companyId, principalType: "user",
+      principalId: input.actorId, status: "active", membershipRole: "operator" });
+    expect(await taskRetryMutationAllowed(db, { companyId: input.companyId, issueId: input.issueId,
+      actorId: input.actorId, actorSource: "session" })).toBe(true);
+    const [issue] = await db.update(issues).set({ status: "in_progress", workMode: "standard",
+      executionRunId: input.observedRunId, checkoutRunId: input.observedRunId }).where(eq(issues.id, input.issueId)).returning();
+    const [initial] = await db.update(heartbeatRuns).set({ runtimeMode: "native", status: "running",
+      nativeIssueId: issue.id, startedAt: new Date(), finishedAt: null }).where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+    const prepared = await prepareNativeHeartbeatRun({ db, run: initial, issue, environmentLeaseId: randomUUID() });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, initial.id));
+    const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.id, run.completionContractId!));
+    const bindingId = randomUUID();
+    await db.insert(dotAgentBindings).values({ id: bindingId, companyId: input.companyId, agentId: run.agentId,
+      operatorId: input.actorId, generation: 1, status: "ready", providerKind: "openai_dot" });
+    const snapshot = { companyId: input.companyId, agentId: run.agentId, bindingId, bindingGeneration: 1,
+      acceptByUnixMs: Date.now() + 60_000, expiresAtUnixMs: Date.now() + 3_600_000 };
+    const execution = buildNativeExecutionInput({ companyId: input.companyId, agentId: run.agentId, runId: run.id,
+      issue, taskPrompt: issue.title, normalizedSessionId: prepared.normalizedSessionId,
+      provider: "openai_dot", dotBinding: snapshot,
+      workspace: { id: randomUUID(), cwd: "/component/unused", repoUrl: null, repoRef: null, branchName: null },
+      runtimeContext: nativeRuntimeContextFixture(), completionContract: { id: contract.id,
+        sha256: contract.canonicalSha256, schemaVersion: contract.schemaVersion,
+        contract: contract.contractJson as unknown as StrictCompletionContractInput } });
+    await db.update(heartbeatRuns).set({ status: running ? "running" : "failed", finishedAt: running ? null : new Date(),
+      nativePhase: running ? "observed" : "retryable_failure", driverKind: "openai_dot_mcp",
+      runnerProfileJson: { ...run.runnerProfileJson, nativeExecutionInput: execution,
+        sessionCheckpoint: { providerSessionId: "retained-component-checkpoint" } } }).where(eq(heartbeatRuns.id, run.id));
+    const stamp = currentControllerProcessStamp();
+    const [owner] = await db.insert(nativeRunFinalizations).values({ companyId: input.companyId, issueId: issue.id,
+      runId: run.id, phase: running ? "observed" : "retryable_failure", attempt: 1, controllerGeneration: 1,
+      recoveryState: running ? null : "resuming_session", nextAttemptAt: running ? null : new Date(Date.now() + 30_000),
+      leaseOwner: running ? "component-original-controller" : null, leaseExpiresAt: running ? new Date(Date.now() + 60_000) : null,
+      controllerBootId: stamp.bootId, controllerPid: stamp.pid, controllerHostHash: stamp.hostHash,
+      controllerProcessStartedAt: stamp.processStartedAt ? new Date(stamp.processStartedAt) : null,
+      failureDetail: running ? null : { recoveryMode: "exact_checkpoint_resume", checkpointExists: true, providerSessionEstablished: true } }).returning();
+    const [assignment] = await db.insert(dotRunnerAssignments).values({ companyId: input.companyId, agentId: run.agentId,
+      bindingId, bindingGeneration: 1, runId: run.id, normalizedSessionId: prepared.normalizedSessionId,
+      turnId: randomUUID(), controllerGeneration: 1, catalogDigest: "component-original-catalog", status: "accepted",
+      projection: {}, acceptBy: new Date(snapshot.acceptByUnixMs), expiresAt: new Date(snapshot.expiresAtUnixMs), acceptedAt: new Date() }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: input.companyId, issueId: issue.id,
+      heartbeatRunId: run.id, provider: "component-original-owner", providerLeaseId: randomUUID(),
+      status: "pending_cleanup", cleanupStatus: "failed", releasedAt: new Date() }).returning();
+    return { input, owner, assignment, lease, run: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0] };
+  }
+
+  it("keeps explicit Retry deferred when original native checkpoint recovery wins no running claim yet", async () => {
+    const f = await nativeCheckpointRetryFixture(false);
+    const first = await requestTaskRetry(f.input);
+    expect((await requestTaskRetry(f.input)).requestId).toBe(first.requestId);
+    await heartbeatService(db).resumeTaskRetry(f.input.companyId, first.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.requestId!));
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId))).toHaveLength(1);
+    expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null,
+      payload: { executionWait: { reason: "native_checkpoint_recovery_pending" }, taskRetry: { sourceRunId: f.run.id } } });
+    await heartbeatService(db).resumeTaskRetry(f.input.companyId, first.requestId!);
+    expect((await requestTaskRetry(f.input)).requestId).toBe(first.requestId);
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0].executionRunId).toBe(f.run.id);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0]).toEqual(f.owner);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toEqual(f.run);
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, f.assignment.id)))[0]).toEqual(f.assignment);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
+  }, 30_000);
+
+  it("coalesces explicit Retry once when original native checkpoint owner is already running", async () => {
+    const f = await nativeCheckpointRetryFixture(true);
+    const first = await requestTaskRetry(f.input);
+    expect((await requestTaskRetry(f.input)).requestId).toBe(first.requestId);
+    await heartbeatService(db).resumeTaskRetry(f.input.companyId, first.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, first.requestId!));
+    expect(wake).toMatchObject({ status: "coalesced", runId: f.run.id });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.input.companyId))).toHaveLength(1);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0]).toEqual(f.owner);
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, f.assignment.id)))[0]).toEqual(f.assignment);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
+  }, 30_000);
+
 });

@@ -33,7 +33,10 @@ import {
   settleOwnableKind,
 } from "../services/recovery/ownership-invariant-report.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ENVIRONMENT_RUN_LEASE_OWNERSHIP_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
 
 /** A PID in this PID space whose process has exited. */
@@ -52,8 +55,8 @@ suite("environment_run_lease_active on the shared ownership path", () => {
   let sandboxEnvironmentId = "";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-environment-run-lease-ownership-");
-    db = createDb(temporary.connectionString);
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("paperclip-environment-run-lease-ownership-");
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 2 });
     companyId = randomUUID();
     agentId = randomUUID();
     sandboxEnvironmentId = randomUUID();
@@ -72,6 +75,7 @@ suite("environment_run_lease_active on the shared ownership path", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await temporary?.cleanup();
   });
 
@@ -234,6 +238,56 @@ suite("environment_run_lease_active on the shared ownership path", () => {
     expect(settled).toEqual([{ kind: "environment_run_lease_active", recordId: leaseId, runId, reason: "current_process_idle" }]);
     expect((await row(leaseId)).status).toBe("pending_cleanup");
   });
+
+  it.each(["due", "future", "paused", "cancelled", "superseded", "permanent", "foreign"] as const)(
+    "preserves only the exact pending native checkpoint responsibility during idle orphan settlement: %s", async scenario => {
+      const issueId = randomUUID();
+      const foreignCompanyId = randomUUID(), foreignAgentId = randomUUID(), foreignIssueId = randomUUID(), foreignRunId = randomUUID();
+      await db.update(agents).set({ adapterType: "paperclip_runner", status: scenario === "paused" ? "paused" : "idle" })
+        .where(eq(agents.id, agentId));
+      await db.insert(issues).values({ id: issueId, companyId, title: "Original checkpoint", status: "in_progress", assigneeAgentId: agentId });
+      if (scenario === "foreign") {
+        await db.insert(companies).values({ id: foreignCompanyId, name: "Other company", issuePrefix: "FOREIGN" });
+        await db.insert(agents).values({ id: foreignAgentId, companyId: foreignCompanyId, name: "Foreign owner", status: "idle", adapterType: "paperclip_runner" });
+        await db.insert(issues).values({ id: foreignIssueId, companyId: foreignCompanyId, title: "Foreign checkpoint", status: "in_progress", assigneeAgentId: foreignAgentId });
+        await db.insert(heartbeatRuns).values({ id: foreignRunId, companyId: foreignCompanyId, agentId: foreignAgentId,
+          issueId: foreignIssueId, nativeIssueId: foreignIssueId, status: "failed", runtimeMode: "native" });
+      }
+      const runId = await run("failed", { runtimeMode: "native", issueId, nativeIssueId: issueId,
+        ...(scenario === "cancelled" ? { resultJson: { nativeCancellation: { scope: "run", dispatchState: "acknowledged" } } } : {}) });
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+      const due = new Date(Date.now() + (scenario === "due" ? -1000 : 30_000));
+      const coordinatorRunId = scenario === "foreign" ? foreignRunId : runId;
+      await db.insert(nativeRunFinalizations).values({ runId: coordinatorRunId, companyId: scenario === "foreign" ? foreignCompanyId : companyId,
+        issueId: scenario === "foreign" ? foreignIssueId : issueId, phase: scenario === "permanent" ? "terminal_failure" : "retryable_failure", resultId: null,
+        recoveryState: "resuming_session", attempt: 1, controllerGeneration: 1, nextAttemptAt: due,
+        failureDetail: { recoveryMode: "exact_checkpoint_resume", ...(scenario === "superseded" ? { successorRunId: randomUUID() } : {}) } });
+      const leaseId = await lease(runId, currentControllerProcessStamp(), true);
+      try {
+        const settled = await settleOwnableKind(db, "environment_run_lease_active", { runIds: [runId],
+          skipRunIds: new Set(), currentProcessIdle: true });
+        const kept = ["due", "future", "paused"].includes(scenario);
+        expect(await row(leaseId)).toMatchObject(kept
+          ? { status: "active", cleanupStatus: null, releasedAt: null }
+          : { status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending" });
+        expect(settled).toHaveLength(kept ? 0 : 1);
+        if (kept) expect((await row(leaseId)).metadata?.sandboxStopAndRetain).toBeUndefined();
+        const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, coordinatorRunId));
+        expect(coordinator).toMatchObject({ nextAttemptAt: due, attempt: 1, controllerGeneration: 1, resultId: null });
+      } finally {
+        await db.delete(environmentLeases).where(eq(environmentLeases.id, leaseId));
+        await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, coordinatorRunId));
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        await db.delete(issues).where(eq(issues.id, issueId));
+        if (scenario === "foreign") {
+          await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, foreignRunId));
+          await db.delete(issues).where(eq(issues.id, foreignIssueId));
+          await db.delete(agents).where(eq(agents.id, foreignAgentId));
+          await db.delete(companies).where(eq(companies.id, foreignCompanyId));
+        }
+        await db.update(agents).set({ adapterType: "codex_local", status: "idle" }).where(eq(agents.id, agentId));
+      }
+    }, 30_000);
 
   it("never settles on a read-only pass", async () => {
     const runId = await run("failed");

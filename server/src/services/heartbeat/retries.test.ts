@@ -254,7 +254,7 @@ describePostgres("heartbeat retry module database wiring", () => {
 
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("heartbeat-retries-");
-    db = createDb(external ?? database.connectionString, { maxConnections: 6 });
+    db = createDb(external ?? database.connectionString, { maxConnections: 4 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });

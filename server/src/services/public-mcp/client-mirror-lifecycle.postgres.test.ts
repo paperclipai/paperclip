@@ -1,15 +1,17 @@
-import {createHash,randomBytes,randomUUID} from "node:crypto";
+import {createHash,generateKeyPairSync,randomBytes,randomUUID} from "node:crypto";
 import {appendFileSync} from "node:fs";
 import {mkdtemp,rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
+import {pathToFileURL} from "node:url";
+import {idleWorkSnapshot} from "../task-admission.js";
 import type {Request} from "express";
 import {afterAll,afterEach,beforeAll,beforeEach,describe,expect,it,vi} from "vitest";
 import {eq,sql} from "drizzle-orm";
 import {PgDatabase} from "drizzle-orm/pg-core";
 import {subscribeDatabaseWork} from "@paperclipai/db/work-signals";
 import {DELIVERY_QUEUES} from "../delivery-work-notifications.js";
-import {applyPendingMigrations,createDb,companies,authUsers,companyMemberships,mcpOauthClients as clients,mcpOauthClientMirrorState as state,mcpOauthClientChanges as changes,mcpOauthDeviceRequests as devices,mcpOauthGrants as grants} from "@paperclipai/db";
+import {applyPendingMigrations,createDb,companies,authUsers,companyMemberships,agents,museAgentBindings,mcpOauthClients as clients,mcpOauthClientMirrorState as state,mcpOauthClientChanges as changes,mcpOauthDeviceRequests as devices,mcpOauthGrants as grants} from "@paperclipai/db";
 import {resolveExternalTestDatabaseUrl} from "../../__tests__/helpers/external-test-database.js";
 import {createDeliveryWorkCoordinator} from "../delivery-work-coordinator.js";
 import {instanceSettingsService} from "../instance-settings.js";
@@ -17,12 +19,22 @@ import {deleteCompany} from "../company-deletion.js";
 import {createPublicMcpOAuth,DEVICE_GRANT} from "./oauth.js";
 import {startMcpRevocationIndexSync} from "./revocation-index-sync.js";
 import {startMcpClientMirrorSync} from "./client-mirror-sync.js";
-import {mcpClientMirrorGeneration,type McpClientMirrorRequest,type McpClientMirrorReceipt} from "./client-mirror-contract.js";
+import {museReceiver} from "../muse-receiver.js";
+import {githubConnectionEventService} from "../github-connection-events.js";
+import {registerGitHubConnectionEventWork} from "../github-connection-work.js";
+import {hasConnectionEventWakeReceiver} from "../connection-event-wake.js";
+import {mcpClientMirrorGeneration,mcpClientMirrorReceiptSchema,type McpClientMirrorRequest,type McpClientMirrorReceipt} from "./client-mirror-contract.js";
 import {readIdleMcpClientMirror} from "./idle-client-mirror.js";
 import {readIdleMcpDeviceStatus} from "./idle-device-status.js";
 import {deriveLocalEncryptedInstanceSecret} from "../../secrets/local-encrypted-provider.js";
 import {mcpDeviceStatusFingerprint} from "./device-status-contract.js";
 import {readIdleMcpWakeProof} from "./idle-wake-proof.js";
+
+function deferredVoid(){
+  let resolve!:()=>void;
+  const promise=new Promise<void>(done=>{resolve=done;});
+  return{promise,resolve};
+}
 
 const managed=vi.hoisted(()=>({identity:null as null|{stackId:string;canonicalOrigin:string}}));
 vi.mock("../cloud-runtime-identity.js",async importOriginal=>({...await importOriginal<typeof import("../cloud-runtime-identity.js")>(),getCloudRuntimeIdentity:()=>managed.identity}));
@@ -34,7 +46,9 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
   const sent:McpClientMirrorRequest[]=[];
   const errors:unknown[]=[];
   let onAppend:(()=>Promise<void>)|undefined;
-  beforeAll(async()=>{await applyPendingMigrations(configured!);db=createDb(configured!,{maxConnections:2});},90_000);
+  let queryCount=0;
+  const observeQueries=()=>{expect(Reflect.set(db.$client.options,"debug",()=>{queryCount++;})).toBe(true);};
+  beforeAll(async()=>{await applyPendingMigrations(configured!);db=createDb(configured!,{maxConnections:2});observeQueries();},90_000);
   beforeEach(async()=>{
     await db.execute(sql`TRUNCATE TABLE companies,mcp_oauth_clients,mcp_oauth_client_mirror_state,mcp_oauth_client_changes CASCADE`);
     companyId=randomUUID();userId=randomUUID();remoteAvailable=false;failures=0;ack=undefined;sent.length=0;errors.length=0;onAppend=undefined;
@@ -45,7 +59,16 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     await db.insert(companyMemberships).values({companyId,principalId:userId,principalType:"user",membershipRole:"owner",status:"active"});
     await instanceSettingsService(db).updateExperimental({enablePublicMcp:true,enableOpenAiDot:false});
   });
-  afterEach(async()=>{await coordinator?.stop();coordinator=undefined;managed.identity=null;await db.execute(sql`TRUNCATE TABLE companies,mcp_oauth_clients,mcp_oauth_client_mirror_state,mcp_oauth_client_changes CASCADE`);await db.delete(authUsers).where(eq(authUsers.id,userId));await rm(home,{recursive:true,force:true});vi.unstubAllEnvs();});
+  afterEach(async context=>{
+    let joined=false;
+    try { await coordinator?.stop(); coordinator=undefined; joined=true; }
+    finally {
+      managed.identity=null;
+      // Preserve failed durable rows/home; still join owners and restore env.
+      try { if(joined&&!context.task.result?.errors?.length){await db.execute(sql`TRUNCATE TABLE companies,mcp_oauth_clients,mcp_oauth_client_mirror_state,mcp_oauth_client_changes CASCADE`);await db.delete(authUsers).where(eq(authUsers.id,userId));await rm(home,{recursive:true,force:true});} }
+      finally {vi.unstubAllEnvs();}
+    }
+  });
   afterAll(async()=>{await db?.$client.end({timeout:1});});
   async function publish(value:McpClientMirrorRequest){
     sent.push(structuredClone(value));if(value.operation==="append"&&onAppend){const append=onAppend;onAppend=undefined;await append();}if(failures>0){failures--;throw new Error("controlled mirror outage");}
@@ -56,9 +79,9 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     }
     return{complete:false,nextSequence:0,receivedRecords:0,nextDeviceSequence:0};
   }
-  async function start(mirrorInstance=instanceId){
+  async function start(mirrorInstance=instanceId,ownerPublish:(value:McpClientMirrorRequest)=>Promise<unknown>=publish){
     await coordinator?.stop();coordinator=createDeliveryWorkCoordinator({owner:db,canRun:()=>true,onError:error=>errors.push(error)});
-    const handle=startMcpClientMirrorSync(db,coordinator,origin,{instanceId:mirrorInstance,publish});await handle.worker.ready;return handle.worker;
+    const handle=startMcpClientMirrorSync(db,coordinator,origin,{instanceId:mirrorInstance,publish:ownerPublish});await handle.worker.ready;return handle.worker;
   }
   const current=async()=>(await db.select().from(state).where(eq(state.id,"public")))[0];
   async function acknowledged(){await vi.waitFor(async()=>{const row=await current();expect(row).toBeDefined();expect(row?.receipt).toBeTruthy();expect(row?.receipt?.revision).toBe(row?.revision);},{timeout:10_000});return(await current())!;}
@@ -93,14 +116,85 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     expect(published).toHaveLength(1);expect(await db.select().from(grants)).toHaveLength(1);
   });
   it("refreshes old partial capability exactly once at owner startup and waits for the current ACK after an outage",async()=>{
+    // Supported managed-connector fixture configuration; no private registry/ready state.
+    const sign=generateKeyPairSync("ed25519"),seal=generateKeyPairSync("x25519");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID",instanceId);
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",sign.privateKey.export({format:"pem",type:"pkcs8"}).toString());
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY",seal.privateKey.export({format:"pem",type:"pkcs8"}).toString());
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT","test");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL","https://cloud.example.test");
+    let mirror:ReturnType<typeof startMcpClientMirrorSync>["worker"]|undefined;
+    let ordinary:ReturnType<typeof registerGitHubConnectionEventWork>|undefined;
+    let primary:unknown;
+    let replacementStart:Promise<NonNullable<typeof mirror>>|undefined;
+    let releaseStartupFailure!:()=>void,releaseRecoveryFailure!:()=>void;
+    let reachedStartupFailure!:()=>void,reachedRecoveryFailure!:()=>void;
+    const startupFailure=new Promise<void>(resolve=>{reachedStartupFailure=resolve;});
+    const recoveryFailure=new Promise<void>(resolve=>{reachedRecoveryFailure=resolve;});
+    const startupMayFail=new Promise<void>(resolve=>{releaseStartupFailure=resolve;});
+    const recoveryMayFail=new Promise<void>(resolve=>{releaseRecoveryFailure=resolve;});
+    let failedBegins=0;
+    // The real publication port still records/throws the original outage. Hold
+    // delivery of its first two errors so each exact revision frontier is owned.
+    const publishOutage=async(value:McpClientMirrorRequest)=>{
+      try {return await publish(value);}
+      catch(error){
+        if(value.operation==="begin"){
+          failedBegins++;
+          if(failedBegins===1){reachedStartupFailure();await startupMayFail;}
+          else if(failedBegins===2){reachedRecoveryFailure();await recoveryMayFail;}
+        }
+        throw error;
+      }
+    };
+    try {
     await device();const [originalClient]=await db.select().from(clients),[originalDevice]=await db.select().from(devices);
-    await start();const old=await acknowledged();expect(old.receipt?.frontDoor).toBeUndefined();expect((await inspect()).blocked).toBe(true);
+    mirror=await start();
+    // Real production registration and service lifecycle, with its normal no-consumer
+    // disposition. The separate signed-loopback caller control owns pending HTTP enrollment.
+    ordinary=registerGitHubConnectionEventWork(db,coordinator!,githubConnectionEventService(db),()=>true);
+    await ordinary.ready;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
+    const old=await acknowledged();expect(old.receipt?.frontDoor).toBeUndefined();expect((await inspect()).blocked).toBe(true);
     const outageStart=sent.length;
-    remoteAvailable=true;failures=100;const worker=await start();const pending=(await current())!;
+    remoteAvailable=true;failures=100;
+    // First stop the actual metadata owner. Its cleanup must not dispose the
+    // ordinary owner sharing this same coordinator/connection-event registry.
+    await mirror.stop();
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(false);
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    // The normal coordinator keeps stopped queue identities; replacement uses
+    // its existing whole-owner startup path, never duplicate register/private deletion.
+    await ordinary.stop();ordinary=undefined;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(false);
+    replacementStart=start(instanceId,publishOutage);
+    // Join the original startup promise even if a frontier premise fails.
+    void replacementStart.catch(()=>{});
+    await Promise.race([startupFailure,replacementStart.then(()=>{throw new Error("Replacement startup settled before its real publication outage");})]);
+    ordinary=registerGitHubConnectionEventWork(db,coordinator!,githubConnectionEventService(db),()=>true);
+    await ordinary.ready;const pending=(await current())!;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
     expect(pending.revision).toBe(old.revision+1);expect(pending.receipt?.revision).toBe(old.revision);expect(pending.deviceCutoverAt).toBeNull();expect((await inspect()).blocked).toBe(true);
     expect(sent.slice(outageStart).map(value=>({operation:value.operation,revision:value.revision}))).toEqual([{operation:"begin",revision:pending.revision}]);
+    releaseStartupFailure();mirror=await replacementStart;const worker=mirror;
+    const metadataError=errors.find(error=>error instanceof Error&&error.message==="controlled mirror outage");
+    expect(metadataError,"normal metadata publication error must remain observable").toBeInstanceOf(Error);
+    // Normal notification/deadline recovery reserves exactly one new full
+    // revision after an unknown partial ACK; later retries must reuse it.
+    await recoveryFailure;
+    const reserved=(await current())!;
+    expect(reserved.revision).toBe(pending.revision+1);
+    expect(reserved.receipt?.revision).toBe(old.revision);
+    expect(reserved.deviceCutoverAt).toBeNull();expect((await inspect()).blocked).toBe(true);
+    expect(sent.slice(outageStart).map(value=>({operation:value.operation,revision:value.revision,baseRevision:value.baseRevision}))).toEqual([
+      {operation:"begin",revision:pending.revision,baseRevision:old.revision},
+      {operation:"begin",revision:reserved.revision,baseRevision:null},
+    ]);
+    expect(failedBegins).toBe(2);
     const recoveryStart=sent.length;
-    failures=0;worker.wake();const next=await acknowledged();expect(next.revision).toBe(pending.revision+1);expect(next.receipt?.revision).toBe(next.revision);expect(next.receipt?.frontDoor).toBe("tenant-personal-v1");expect(next.deviceCutoverAt).toBeInstanceOf(Date);expect((await inspect()).blocked).toBe(false);
+    failures=0;worker.wake();releaseRecoveryFailure();const next=await acknowledged();expect(next.revision).toBe(pending.revision+1);expect(next.receipt?.revision).toBe(next.revision);expect(next.receipt?.frontDoor).toBe("tenant-personal-v1");expect(next.deviceCutoverAt).toBeInstanceOf(Date);expect((await inspect()).blocked).toBe(false);
     const recovery=sent.slice(recoveryStart);
     expect(recovery.map(value=>value.operation)).toEqual(["begin","append","append-device-status","complete"]);
     for(const value of recovery){expect(value.revision).toBe(pending.revision+1);expect(value.baseRevision).toBeNull();expect(value.expectedRecords).toBe(1);expect(value.instanceId).toBe(instanceId);expect(value.origin).toBe(origin);}
@@ -111,6 +205,23 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     const key=deriveLocalEncryptedInstanceSecret(`mcp-device-status:v1:${instanceId}`);
     expect(devicePage.sequence).toBe(0);expect(devicePage.entries).toEqual([{requestId:originalDevice.id,clientId:originalDevice.clientId,resource:originalDevice.resource,ingressOwner:originalDevice.ingressOwner,status:originalDevice.status,expiresAt:originalDevice.expiresAt.getTime(),fingerprint:mcpDeviceStatusFingerprint(key,originalDevice.deviceCodeHash,originalDevice.clientId,originalDevice.resource)}]);
     expect((await db.select().from(devices))[0].expiresAt).toEqual(originalDevice.expiresAt);expect(await db.select().from(changes)).toEqual([]);expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors).toContain(metadataError);
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
+    await mirror.stop();mirror=undefined;
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(false);
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    await ordinary.stop();ordinary=undefined;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(false);
+    } catch(error) { primary=error;throw error; }
+    finally {
+      releaseStartupFailure();releaseRecoveryFailure();
+      const started=await Promise.allSettled(replacementStart?[replacementStart]:[]);
+      if(started[0]?.status==="fulfilled")mirror=started[0].value;
+      const joined=await Promise.allSettled([mirror?.stop(),ordinary?.stop()]);
+      const cleanup=[...started,...joined].flatMap(result=>result.status==="rejected"?[result.reason]:[]);
+      if(cleanup.length)throw new AggregateError(primary===undefined?cleanup:[primary,...cleanup],"Metadata/ordinary caller cleanup remains incomplete");
+    }
   });
   it("a normal client mutation supersedes an in-flight page without acknowledging or logging the old revision",async()=>{
     const oauth=createPublicMcpOAuth(db,{origin,resource:origin+"/mcp/paperclip"});
@@ -167,6 +278,53 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     const proof=await readIdleMcpWakeProof(db,{stackId,ownerId:randomUUID(),capabilityGeneration:"a".repeat(64),challenge:"c".repeat(64),personalResource:origin+"/mcp/paperclip",dotResource:origin+"/mcp/runner",personalEnabled:true,dotEnabled:false,clientMirror:after.receipt!,now:Date.now(),budget});
     expect(proof.grantIds).toEqual([]);expect(proof.admission.revocationAuthorities).toEqual([]);expect(await db.select().from(changes)).toEqual([]);
   },30_000);
+  it("deletes a retained Muse company without inverting the client mirror publication locks",async()=>{
+    const agentId=randomUUID(),bindingId=randomUUID(),at=new Date();
+    await db.insert(agents).values({id:agentId,companyId,name:"Retired Muse owner",role:"engineer",
+      adapterType:"process",adapterConfig:{},status:"terminated",lifecycleState:"terminated"});
+    await db.insert(museAgentBindings).values({id:bindingId,companyId,agentId,operatorId:userId,
+      status:"revoked",pairedAt:at,receiverContactAt:at,revokedAt:at});
+    await db.insert(state).values({id:"public",revision:1,enabled:true}).onConflictDoNothing();
+    const before=(await current())!.revision;
+    let mirrorHeld=false,advisoryQueries=0,releaseMirrorRow!:()=>void;
+    const mayLockRow=new Promise<void>(resolve=>{releaseMirrorRow=resolve;});
+    const previousDebug=db.$client.options.debug;
+    expect(Reflect.set(db.$client.options,"debug",(_connection:number,query:string)=>{
+      queryCount++;
+      if(/pg_advisory_xact_lock\(736721042\)/i.test(query))advisoryQueries++;
+    })).toBe(true);
+    const mirror=db.transaction(async tx=>{
+      await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
+      mirrorHeld=true;
+      await mayLockRow;
+      return tx.select().from(state).where(eq(state.id,"public")).for("update");
+    });
+    const mirrorJoined=Promise.allSettled([mirror]);
+    let deletion:ReturnType<typeof deleteCompany>|undefined;
+    try{
+      await vi.waitFor(()=>expect(mirrorHeld).toBe(true),{timeout:5_000});
+      deletion=deleteCompany(db,companyId);
+      const joined=Promise.allSettled([mirror,deletion]);
+      await vi.waitFor(()=>expect(advisoryQueries).toBe(2),{timeout:5_000});
+      releaseMirrorRow();
+      const results=await joined;
+      const rejected=results.filter((result):result is PromiseRejectedResult=>result.status==="rejected");
+      if(rejected.length)throw new AggregateError(rejected.map(result=>result.reason),"Mirror/delete concurrency failed");
+      expect(results).toEqual([
+        expect.objectContaining({status:"fulfilled"}),
+        expect.objectContaining({status:"fulfilled",value:expect.objectContaining({id:companyId})}),
+      ]);
+      expect(await db.select().from(companies).where(eq(companies.id,companyId))).toEqual([]);
+      expect(await db.select().from(museAgentBindings).where(eq(museAgentBindings.id,bindingId))).toEqual([]);
+      expect((await current())!.revision).toBe(before+1);
+    }finally{
+      releaseMirrorRow();
+      await mirrorJoined;
+      await Promise.allSettled(deletion?[deletion]:[]);
+      expect(Reflect.set(db.$client.options,"debug",previousDebug)).toBe(true);
+    }
+  },30_000);
   it("rotated local key invalidates old status and only the current bounded source publication restores it",async()=>{
     const packetStart=sent.length;
     let beforeRevision:number|undefined,afterRevision:number|undefined;
@@ -198,4 +356,160 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
       }
     }
   });
+  // Explicit private paired fixture: normal public CI keeps the original cases;
+  // the selected qualification mode MUST supply its source-attested Cloud output.
+  it.skipIf(!process.env.PAPERCLIP_MCP_MIRROR_CLOUD_CHECKOUT)("normal Dot retirement survives lost complete and disable ACKs, restart and personal-only re-enable without recurring work",async()=>{
+    const checkout=process.env.PAPERCLIP_MCP_MIRROR_CLOUD_CHECKOUT;
+    if(!checkout||!path.isAbsolute(checkout))throw new Error("Explicit own compiled Cloud mirror checkout required");
+    const module=await import(pathToFileURL(path.join(checkout,"dist/assistant-mcp/client-mirror-store.js")).href);
+    type Remote={sync:(binding:{stackId:string;companyId:string;instanceId:string;origin:string;frontDoor:"tenant-personal-v1";dotProfile?:"hosted-dot-v1"},request:McpClientMirrorRequest)=>Promise<unknown>;readResponsibility:(stack:string,origin:string,purpose?:"metadata"|"established")=>Promise<McpClientMirrorReceipt|undefined>};
+    const remote:Remote=new module.InMemoryMcpClientMirrorStore();
+    const sign=generateKeyPairSync("ed25519"),seal=generateKeyPairSync("x25519");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID",instanceId);vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT","test");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL","https://cloud.mirror.example.test");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",sign.privateKey.export({format:"jwk"}).d!);
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY",seal.privateKey.export({format:"jwk"}).d!);
+    const legacy=await device(),expiry=(await db.select().from(devices))[0].expiresAt;
+    const packets:Array<{operation:string;revision:number;profile:string|null}>=[];
+    let loseComplete=true,loseDisable=true,holdDotRecovery=false,holdDisableRecovery=false,lostDisableCommits=0;
+    const storeErrors:string[]=[];
+    const actualPublish=async(value:McpClientMirrorRequest)=>{
+      packets.push({operation:value.operation,revision:value.revision,profile:value.dotProfile??null});
+      if(value.operation!=="disable"&&holdDotRecovery)throw new Error("controlled publication transport unavailable until restart");
+      if(value.operation==="disable"&&holdDisableRecovery)throw new Error("controlled disable transport unavailable until restart");
+      let result:unknown;
+      try {result=await remote.sync({stackId,companyId,instanceId,origin,frontDoor:"tenant-personal-v1",dotProfile:"hosted-dot-v1"},value);}
+      catch(error){storeErrors.push(error instanceof Error?error.message:"closed mirror rejection");throw error;}
+      if(value.operation==="complete"&&value.dotProfile==="hosted-dot-v1"&&loseComplete){loseComplete=false;holdDotRecovery=true;throw new Error("controlled committed Dot complete ACK loss");}
+      if(value.operation==="disable"&&loseDisable){loseDisable=false;holdDisableRecovery=true;lostDisableCommits++;throw new Error("controlled committed disable ACK loss");}
+      return result;
+    };
+    const restart=async()=>{await coordinator?.stop();coordinator=undefined;await db.$client.end({timeout:1});db=createDb(configured!,{maxConnections:2});observeQueries();return start(instanceId,actualPublish);};
+    const settle=()=>vi.waitFor(()=>{expect(coordinator?.nextWakeAt()).toBeNull();expect(idleWorkSnapshot().active).toBe(0);},{timeout:15_000,interval:25});
+    const quiet=async()=>{
+      await settle();const observed=queryCount;
+      expect((await readIdleMcpClientMirror(db,{budget,enabled:false,origin,instanceId,managedStackId:stackId})).blocked).toBe(false);
+      expect(queryCount).toBeGreaterThan(observed); // real required inspection, outside window
+      const before={queries:queryCount,packets:packets.length,errors:errors.length},at=performance.now();
+      await new Promise(resolve=>setTimeout(resolve,15_000));
+      expect(performance.now()-at).toBeGreaterThanOrEqual(15_000);expect(queryCount).toBe(before.queries);expect(packets.length).toBe(before.packets);expect(errors.length).toBe(before.errors);
+    };
+    await start(instanceId,actualPublish);const personal=await acknowledged();expect(personal.receipt?.dotProfile).toBeUndefined();
+    await instanceSettingsService(db).updateExperimental({enablePublicMcp:false,enableOpenAiDot:true});
+    await vi.waitFor(()=>expect(errors.some(error=>error instanceof Error&&error.message==="controlled committed Dot complete ACK loss")).toBe(true),{timeout:10_000});
+    const committed=await remote.readResponsibility(stackId,origin);expect(committed?.dotProfile).toBe("hosted-dot-v1");
+    expect((await current())?.receipt?.revision).not.toBe(committed?.revision); // NOT an invented local ACK
+    await coordinator!.stop();coordinator=undefined;
+    await instanceSettingsService(db).updateExperimental({enableOpenAiDot:false});await restart();
+    // Baseline f32 fails HERE with actual Cloud's private profile-mismatch error.
+    // Candidate must reach the real store commit before the deliberate response loss.
+    expect(storeErrors).toEqual([]);expect(lostDisableCommits).toBe(1);
+    expect(errors.some(error=>error instanceof Error&&error.message==="controlled committed disable ACK loss")).toBe(true);
+    expect((await current())?.remoteResponsibility).toBe(true);expect((await current())?.receipt).toBeNull();
+    const disabledRemote=await remote.readResponsibility(stackId,origin,"established");expect(disabledRemote?.enabled).toBe(false);expect(disabledRemote?.dotProfile).toBeUndefined();
+    await coordinator!.stop();coordinator=undefined;holdDisableRecovery=false;
+    await restart();const retired=await current();expect(retired?.remoteResponsibility).toBe(false);expect(retired?.receipt).toEqual(disabledRemote);
+    expect(packets.filter(value=>value.operation==="disable").every(value=>value.profile===null)).toBe(true);await quiet();
+    holdDotRecovery=false;
+    await instanceSettingsService(db).updateExperimental({enableOpenAiDot:true});
+    const enabled=await vi.waitFor(async()=>{
+      const row=await current();
+      if(!row?.receipt)throw new Error("Current hosted Dot mirror receipt is not acknowledged");
+      expect(row.enabled).toBe(true);
+      expect(row.receipt.enabled).toBe(true);
+      expect(row.receipt.revision).toBe(row.revision);
+      expect(row.receipt.dotProfile).toBe("hosted-dot-v1");
+      const remoteReceipt=await remote.readResponsibility(stackId,origin);
+      expect(remoteReceipt).toEqual(row.receipt);
+      return row;
+    },{timeout:10_000});
+    expect(enabled.receipt?.dotProfile).toBe("hosted-dot-v1");
+    const cutover=enabled.dotDeviceCutover;expect(cutover).toMatchObject({version:1,profile:"hosted-dot-v1",stackId,instanceId,origin});
+    await instanceSettingsService(db).updateExperimental({enablePublicMcp:true,enableOpenAiDot:false});
+    await vi.waitFor(async()=>{const row=await current();expect(row?.receipt?.revision).toBe(row?.revision);expect(row?.receipt?.enabled).toBe(true);expect(row?.receipt?.dotProfile).toBeUndefined();},{timeout:10_000});
+    expect((await current())?.dotDeviceCutover).toEqual(cutover);
+    await instanceSettingsService(db).updateExperimental({enablePublicMcp:false});await vi.waitFor(async()=>expect((await current())?.remoteResponsibility).toBe(false),{timeout:10_000});
+    expect((await current())?.receipt?.dotProfile).toBeUndefined();expect((await current())?.dotDeviceCutover).toEqual(cutover);
+    expect((await db.select().from(devices).where(eq(devices.clientId,legacy.client.client_id)))[0].expiresAt).toEqual(expiry);
+    await quiet();
+  },90_000);
+
+  for(const disposition of ["commit","rollback","stop"] as const)it(`holds Muse admission through the normal mirror cutover ${disposition}`,async()=>{
+    await instanceSettingsService(db).updateExperimental({enableMuse:true,enableNativeRunner:true});remoteAvailable=true;
+    const receiver=museReceiver(db),blocker=createDb(configured!,{maxConnections:1});receiver.start();
+    const held=deferredVoid(),release=deferredVoid(),cutoverIssued=deferredVoid();
+    const constraint=`muse_cutover_${randomUUID().replaceAll("-","")}`;
+    let hold:Promise<unknown>|undefined,starting:ReturnType<typeof start>|undefined,stopping:Promise<unknown>|undefined;
+    let afterRemoteComplete=false,primary:unknown;
+    const priorDebug=db.$client.options.debug;
+    db.$client.options.debug=(connection,query,parameters,types)=>{
+      if(typeof priorDebug==="function")priorDebug(connection,query,parameters,types);
+      if(afterRemoteComplete&&/from\s+"mcp_oauth_client_mirror_state"[\s\S]*for update/i.test(query))cutoverIssued.resolve();
+    };
+    const completeWithMuse=async(value:McpClientMirrorRequest)=>{
+      const result=await publish(value);
+      if(value.operation!=="complete"||!value.museReceivers)return result;
+      if(!hold){
+        hold=blocker.transaction(async tx=>{
+          await tx.select().from(state).where(eq(state.id,"public")).for("update");held.resolve();await release.promise;
+        });
+        // Attach a handler immediately; normal finally joins the original actor.
+        void hold.catch(()=>{});
+        await Promise.race([held.promise,hold.then(()=>{throw new Error("Owned mirror blocker finished before acquiring its row");})]);
+      }
+      const receipt={...result.receipt!,museReceivers:value.museReceivers};receipt.generation=mcpClientMirrorGeneration(receipt);ack=receipt;
+      afterRemoteComplete=true;return{complete:true,receipt};
+    };
+    try {
+      if(disposition==="rollback")await db.execute(sql`alter table ${state} add constraint ${sql.identifier(constraint)} check (receipt is null)`);
+      starting=start(instanceId,completeWithMuse);
+      await Promise.race([cutoverIssued.promise,starting.then(()=>{throw new Error("Normal mirror missed its actual cutover row-lock frontier");})]);
+      expect(ack?.museReceivers).toBeDefined();expect((await current())?.receipt).toBeNull();
+      const queriesBefore=queryCount;let blocked:unknown;
+      try {await receiver.signal(randomUUID(),origin+"/api/muse");}catch(error){blocked=error;}
+      console.info("MUSE_REAL_CUTOVER_FRONTIER",JSON.stringify({disposition,controlledPublicationPortCompleteAck:true,
+        actualCutoverStatementIssued:true,localReceiptStillNull:true,signalStatus:(blocked as {status?:number})?.status,
+        queriesBefore,queriesAfter:queryCount}));
+      expect(blocked).toMatchObject({status:503});expect(queryCount).toBe(queriesBefore);
+      if(disposition==="stop"){
+        // Abort the real worker while its callback owns a blocked transaction.
+        // Its fence must remain until that transaction actually settles.
+        stopping=coordinator!.stop();
+        await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:503});
+        await receiver.stop();
+      }
+      release.resolve();await hold;await starting;
+      if(disposition==="rollback"){
+        const sqlFailures=errors.flatMap(error=>{
+          let current:unknown=error;const seen=new Set<unknown>();
+          while(current&&typeof current==="object"&&!seen.has(current)){
+            seen.add(current);const failure=current as {code?:string;constraint_name?:string;cause?:unknown};
+            if(failure.code)return[{code:failure.code,constraint:failure.constraint_name}];current=failure.cause;
+          }
+          return[];
+        });
+        expect(sqlFailures).toContainEqual({code:"23514",constraint});expect((await current())?.receipt).toBeNull();
+        await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:410});
+        await db.execute(sql`alter table ${state} drop constraint ${sql.identifier(constraint)}`);
+        // The existing pending worker retries normally; no fake ACK or direct receipt write.
+        const recovered=await acknowledged();expect(recovered.deviceCutoverAt).toBeTruthy();
+        expect(mcpClientMirrorReceiptSchema.parse(recovered.receipt).museReceivers).toBeDefined();
+      }else{
+        await stopping;const committed=await acknowledged();expect(committed.deviceCutoverAt).toBeTruthy();
+        expect(mcpClientMirrorReceiptSchema.parse(committed.receipt).museReceivers).toBeDefined();
+        if(disposition==="stop")await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:503});
+        else await expect(receiver.signal(randomUUID())).rejects.toMatchObject({status:410});
+      }
+    }catch(error){primary=error;}
+    finally {
+      release.resolve();const joined=await Promise.allSettled([...(hold?[hold]:[]),...(starting?[starting]:[]),...(stopping?[stopping]:[])]);
+      const failures=joined.flatMap(result=>result.status==="rejected"?[result.reason]:[]);
+      db.$client.options.debug=priorDebug;
+      for(const close of [()=>coordinator?.stop(),()=>receiver.stop(),()=>db.execute(sql`alter table ${state} drop constraint if exists ${sql.identifier(constraint)}`),()=>blocker.$client.end({timeout:1})]){
+        try {await close();}catch(error){failures.push(error);}
+      }
+      if(primary||failures.length)throw new AggregateError([...(primary?[primary]:[]),...failures],"Muse normal cutover original and cleanup failures");
+    }
+  },30_000);
+
 });

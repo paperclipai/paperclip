@@ -1,3 +1,13 @@
+import { completionContracts, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { projectCommittedRun } from "./native-runtime/native-run-projection.js";
+import { budgetService } from "./budgets.js";
+import { reserveRunBudget } from "./budget-reservations.js";
+import { registerCostAccountingWork } from "./budget-enforcement-worker.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { isIdleTaskDrainActive, startTaskDrain, stopTaskDrain } from "./task-admission.js";
+import { buildNativeExecutionInput } from "./native-runtime/native-execution-input.js";
+import { nativeRuntimeContextFixture } from "./native-runtime/runtime-context.test-fixture.js";
+import { validatePaperclipRunnerDotConfig, validatePaperclipRunnerMuseConfig } from "./native-runtime/provider-profile.js";
 import { randomUUID } from "node:crypto";
 import { databaseWorkPending, reconcileDatabaseWork } from "@paperclipai/db/work-signals";
 import { promises as fs } from "node:fs";
@@ -63,6 +73,162 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         provider: "test", biller: "test", model: "test", billingType: "metered_api", costUsd, costStatus: "reported",
         pricingProvenance: { source: "provider_reported", version: "test" } } };
   }
+
+
+  // Seed the already-accepted Native boundary; this is not a finalizer test.
+  // Admission, receipt journal, accounting worker and ledger are real owners.
+  async function externalAccountingRun(provider: "openai_dot" | "muse", status: "succeeded" | "failed" = "succeeded", deferProjection = false) {
+    const owner = await seed({ status: "running", runtimeMode: "native", usageJson: {} });
+    const issueId = randomUUID(), contractId = randomUUID(), bindingId = randomUUID();
+    const config = { allowUnmeteredProvider: true, lifecycleMode: "per_turn", dotBindingId: bindingId, museBindingId: bindingId };
+    (provider === "muse" ? validatePaperclipRunnerMuseConfig : validatePaperclipRunnerDotConfig)(config);
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: config }).where(eq(agents.id, owner.agentId));
+    await db.insert(issues).values({ id: issueId, companyId: owner.companyId, title: "External accounting", status: "done", assigneeAgentId: owner.agentId });
+    await db.insert(completionContracts).values({ id: contractId, companyId: owner.companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "v1", risk: "low", completionAuthority: "agent",
+      incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: "a".repeat(64), createdByActorType: "user", createdByActorId: "fixture" });
+    const binding = { bindingId, bindingGeneration: 1, companyId: owner.companyId, agentId: owner.agentId,
+      acceptByUnixMs: Date.now() + 60_000, expiresAtUnixMs: Date.now() + 120_000 };
+    const execution = buildNativeExecutionInput({ ...owner, issue: { id: issueId, identifier: null, title: "External accounting", description: null, workMode: "standard" },
+      taskPrompt: "Deliver the requested work", provider, dotBinding: binding, museBinding: binding,
+      workspace: { id: randomUUID(), cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null }, normalizedSessionId: null,
+      completionContract: { id: contractId, sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Deliver the requested work", criteria: [{ id: "output", requirement: "Deliver the requested work" }] } },
+      runtimeContext: nativeRuntimeContextFixture() });
+    await db.update(heartbeatRuns).set({ nativeIssueId: issueId, completionContractId: contractId,
+      runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, owner.runId));
+    await expect(reserveRunBudget(db, owner.companyId, owner.runId, null, { issueId })).resolves.toMatchObject({ reused: false });
+    const recorder = await createRunUsageRecorder(db, { companyId: owner.companyId, runId: owner.runId, adapterType: "paperclip_runner" }, path.join(directory, owner.runId));
+    const checkpoint = { complete: false, usageBasis: "per_run" as const, costUsd: null, costStatus: "unpriced" as const,
+      provider: "unknown", biller: "unknown", model: "unknown", billingType: "unknown" as const };
+    await recorder.capture(checkpoint);
+    await recorder.capture(checkpoint);
+    const [result] = await db.insert(nativeRunResults).values({ companyId: owner.companyId, issueId, runId: owner.runId,
+      completionContractId: contractId, serverFingerprint: "external-accounting", schemaStatus: "accepted", resultJson: { terminal: { runTerminalState: status } }, canonicalSha256: "b".repeat(64) }).returning();
+    await db.insert(nativeRunFinalizations).values({ ...owner, issueId, resultId: result.id, phase: "committed" });
+    await db.update(heartbeatRuns).set({ status: deferProjection ? "running" : status, nativePhase: deferProjection ? "workspace_finalizing" : "committed", finishedAt: deferProjection ? null : new Date(),
+      resultJson: { providerAccounting: { usage: null, cost: null, externallyBilled: true } } }).where(eq(heartbeatRuns.id, owner.runId));
+    // Current configuration is deliberately no longer authority for old work.
+    await db.update(agents).set({ adapterConfig: {} }).where(eq(agents.id, owner.agentId));
+    return { ...owner, issueId, resultId: result.id, execution };
+  }
+
+  it.each(["openai_dot", "muse"] as const)("settles frozen externally billed %s through the normal accounting worker during drain and restart", async provider => {
+    const errors: unknown[] = [];
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let worker: ReturnType<typeof registerCostAccountingWork> | undefined;
+    let primary: unknown;
+    const stop = async () => { worker?.stop(); worker = undefined; await coordinator?.stop(); coordinator = undefined; };
+    try {
+      // Failed disposition with an accepted committed result has the same
+      // externally billed boundary; no outstanding provider turn is certified.
+      const owners = [await externalAccountingRun(provider, "succeeded", true), await externalAccountingRun(provider, "failed"), await externalAccountingRun(provider)];
+      await db.update(heartbeatRuns).set({ usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"budgetExposure":{"costCents":"7"}}'::jsonb` }).where(eq(heartbeatRuns.id, owners[2].runId));
+      expect(owners.map(owner => owner.execution.schema)).toEqual([provider === "muse" ? "paperclip.native-execution-input.v8" : "paperclip.native-execution-input.v6", provider === "muse" ? "paperclip.native-execution-input.v8" : "paperclip.native-execution-input.v6", provider === "muse" ? "paperclip.native-execution-input.v8" : "paperclip.native-execution-input.v6"]);
+      for (const [index, owner] of owners.entries()) await db.insert(budgetPolicies).values({ companyId: owner.companyId,
+        scopeType: "company", scopeId: owner.companyId, metric: "billed_cents", windowKind: "calendar_month_utc",
+        amount: 1000, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: index === 0 ? "allow" : "block" });
+      startTaskDrain({ purpose: "idle" });
+      const start = async () => {
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !isIdleTaskDrainActive(), canReconcile: () => true, onError: error => errors.push(error) });
+        worker = registerCostAccountingWork(db, coordinator, createCostAccountingReconciler(db));
+        await worker.ready;
+      };
+      const snapshots = new Map<string, { run: typeof heartbeatRuns.$inferSelect; reservations: typeof budgetReservations.$inferSelect[]; charges: typeof costEvents.$inferSelect[]; receipts: typeof runUsageReceipts.$inferSelect[] }>();
+      await start();
+      const [unprojected] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owners[0].runId));
+      expect(unprojected.status).toBe("running");
+      expect(unprojected.costAccountingPending).toBe(true);
+      // This normal projection publishes accounting work in its transaction;
+      // there is no test wake or direct accounting call after eligibility changes.
+      await projectCommittedRun({ db, run: unprojected, coordinator: { issueId: owners[0].issueId, resultId: owners[0].resultId } });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owners[0].runId)))[0].status).toBe("succeeded");
+      await vi.waitFor(async () => {
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owners[0].runId)))[0].costAccountingPending).toBe(false);
+      }, { timeout: 5000, interval: 20 });
+      for (const owner of owners) {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+        expect(run.costAccountingPending).toBe(false);
+        expect(run.costAccountedAt).not.toBeNull();
+        expect(run.resultJson?.providerAccounting).toEqual({ usage: null, cost: null, externallyBilled: true });
+        expect(run.usageJson?.accountingReceiptReady).toBe(false);
+        expect(run.usageJson?.accountingReceiptUnavailable).not.toBe(true);
+        expect(run.usageJson?.accountingClosureTimedOut).not.toBe(true);
+        const reservations = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, owner.runId));
+        expect(reservations).toHaveLength(1);
+        expect(reservations[0].state).toBe("settled");
+        const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+        expect(charges).toHaveLength(1);
+        expect(charges[0].costStatus).toBe(owner === owners[2] ? "estimated" : "unpriced");
+        if (owner === owners[2]) expect(charges[0].costCents).toBe(7);
+        const receipts = await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, owner.runId));
+        expect(receipts).toHaveLength(2);
+        expect(receipts.every(receipt => receipt.complete === false)).toBe(true);
+        snapshots.set(owner.runId, { run, reservations, charges, receipts });
+      }
+      expect(await budgetService(db).getInvocationBlock(owners[0].companyId, owners[0].agentId)).toBeNull();
+      expect(await budgetService(db).getInvocationBlock(owners[1].companyId, owners[1].agentId)).not.toBeNull();
+      await stop();
+      // Simulate an acknowledgement lost after commit. The original result,
+      // reservation and immutable receipts remain untouched across restart.
+      for (const owner of owners) await db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, owner.runId));
+      await start();
+      for (const owner of owners) {
+        const before = snapshots.get(owner.runId)!;
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+        expect(run.costAccountingPending).toBe(false);
+        expect(run.costAccountedAt).toEqual(before.run.costAccountedAt);
+        expect(run.runnerProfileJson).toEqual(before.run.runnerProfileJson);
+        expect(run.resultJson).toEqual(before.run.resultJson);
+        expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId))).toEqual(before.charges);
+        expect(await db.select().from(budgetReservations).where(eq(budgetReservations.runId, owner.runId))).toEqual(before.reservations);
+        expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, owner.runId))).toEqual(before.receipts);
+      }
+      expect(errors).toEqual([]);
+    } catch (error) { primary = error; }
+    finally {
+      try { await stop(); } catch (error) { errors.push(error); }
+      stopTaskDrain();
+    }
+    if (primary || errors.length) throw new AggregateError([...(primary ? [primary] : []), ...errors], "External accounting worker failed");
+  }, 30_000);
+
+  it("retains unknown, metered and unacknowledged external accounting debt", async () => {
+    for (const provider of ["openai_dot", "muse"] as const) {
+      expect(() => (provider === "muse" ? validatePaperclipRunnerMuseConfig : validatePaperclipRunnerDotConfig)({ dotBindingId: randomUUID(), museBindingId: randomUUID() })).toThrow();
+    }
+    const owners = [];
+    for (const mode of ["unknown", "metered", "no-server-ack", "foreign", "capture-failed", "uncommitted"]) {
+      const owner = await externalAccountingRun("openai_dot");
+      owners.push(owner);
+      if (mode === "no-server-ack") await db.update(heartbeatRuns).set({ resultJson: { providerAccounting: { usage: null, cost: null, externallyBilled: false } } }).where(eq(heartbeatRuns.id, owner.runId));
+      else if (mode === "capture-failed") await db.update(heartbeatRuns).set({ usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingCaptureFailed":true}'::jsonb` }).where(eq(heartbeatRuns.id, owner.runId));
+      else if (mode === "uncommitted") await db.update(nativeRunFinalizations).set({ phase: "finalizing" }).where(eq(nativeRunFinalizations.runId, owner.runId));
+      else {
+        const execution = structuredClone(owner.execution);
+        if (mode === "foreign") execution.binding.runId = randomUUID();
+        else Object.assign(execution.provider, { kind: mode === "metered" ? "codex" : "unknown" });
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, owner.runId));
+      }
+    }
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => false, canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = registerCostAccountingWork(db, coordinator, createCostAccountingReconciler(db));
+    let primary: unknown;
+    try {
+      await worker.ready;
+      for (const owner of owners) {
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)))[0].costAccountingPending).toBe(true);
+        expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, owner.runId)))[0].state).toBe("held");
+        expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId))).toHaveLength(0);
+      }
+      expect(errors).toEqual([]);
+    } catch (error) { primary = error; }
+    finally {
+      try { worker.stop(); await coordinator.stop(); } catch (error) { errors.push(error); }
+    }
+    if (primary || errors.length) throw new AggregateError([...(primary ? [primary] : []), ...errors], "External accounting guard failed");
+  }, 30_000);
 
   async function stoppedLegacy() {
     const sourceId = randomUUID(), processStartedAt = new Date(Date.now() - 1000), finishedAt = new Date();

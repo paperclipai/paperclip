@@ -170,6 +170,7 @@ export interface SecretProviderModule {
     pageSize?: number;
   }): Promise<SecretProviderConfigDiscoveryPreviewResult>;
   resolveVersion(input: {
+    signal?: AbortSignal;
     material: StoredSecretVersionMaterial;
     externalRef: string | null;
     providerVersionRef?: string | null;

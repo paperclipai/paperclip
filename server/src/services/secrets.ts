@@ -658,6 +658,7 @@ type InstanceSecretOwner = { pluginId: string } & ({ agentId: string; projectId?
 type InstanceSecretScope = InstanceSecretOwner & { companyId: string };
 
 type SecretResolutionOptions = {
+  signal?: AbortSignal;
   bindingContext?: SecretBindingContext;
   accessContext?: SecretConsumerContext;
   allowUserSecretScope?: boolean;
@@ -1395,9 +1396,12 @@ export function secretService(db: Db | DbTransaction) {
     preloaded?: { secret: typeof companySecrets.$inferSelect; version: typeof companySecretVersions.$inferSelect | null },
     systemPurpose?: "tailscale_network",
   ): Promise<RuntimeSecretResolution> {
+    const signal = options?.signal;
+    signal?.throwIfAborted();
     const bindingContext = options?.bindingContext;
     const accessContext = options?.accessContext ?? bindingContext;
     const secret = preloaded && preloaded.secret.id === secretId ? preloaded.secret : await getById(secretId);
+    signal?.throwIfAborted();
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     const instanceOwned = secret.scope === "instance" && options?.instanceOwner &&
@@ -1422,8 +1426,10 @@ export function secretService(db: Db | DbTransaction) {
         throw forbidden("System-owned secrets require their server-only consumer", { code: "secret_system_only" });
       }
       const binding = await assertBindingContext(companyId, secret.id, bindingContext);
+      signal?.throwIfAborted();
       const versionRow = preloaded?.secret === secret && preloaded.version?.version === resolvedVersion
         ? preloaded.version : await getSecretVersion(secret.id, resolvedVersion);
+      signal?.throwIfAborted();
       if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
       if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
         throw unprocessable("Secret version is not active", { code: "version_inactive" });
@@ -1434,7 +1440,9 @@ export function secretService(db: Db | DbTransaction) {
         provider: providerId,
         providerConfigId: secret.providerConfigId,
       });
+      signal?.throwIfAborted();
       const value = await provider.resolveVersion({
+        ...(signal ? { signal } : {}),
         material: versionRow.material as Record<string, unknown>,
         externalRef: secret.externalRef,
         providerVersionRef: versionRow.providerVersionRef,
@@ -1446,6 +1454,7 @@ export function secretService(db: Db | DbTransaction) {
           version: resolvedVersion,
         },
       });
+      signal?.throwIfAborted();
       if (isTailscaleNodeState(value) && systemPurpose !== "tailscale_network") {
         throw forbidden("Network node state requires its server-only consumer", { code: "secret_system_only" });
       }
@@ -1470,6 +1479,7 @@ export function secretService(db: Db | DbTransaction) {
           outcome: "success",
         }).catch(() => undefined),
       ]);
+      signal?.throwIfAborted();
       return {
         value,
         manifestEntry: {
@@ -1485,6 +1495,7 @@ export function secretService(db: Db | DbTransaction) {
         },
       };
     } catch (err) {
+      if (signal?.aborted) throw signal.reason;
       const errorCode = secretResolutionErrorCode(err);
       if (!readOnlyEnvironmentInspection) await recordAccessEvent({
         companyId,
@@ -1507,7 +1518,7 @@ export function secretService(db: Db | DbTransaction) {
   function isSecretResolutionOptions(
     value: SecretBindingContext | SecretResolutionOptions | undefined,
   ): value is SecretResolutionOptions {
-    return Boolean(value && ("bindingContext" in value || "accessContext" in value));
+    return Boolean(value && ("bindingContext" in value || "accessContext" in value || "signal" in value));
   }
 
   async function resolveSecretValue(
@@ -1604,12 +1615,14 @@ export function secretService(db: Db | DbTransaction) {
     version: number | "latest",
     context: {
       configPath: string;
+      signal?: AbortSignal;
       issueId?: string | null;
       heartbeatRunId?: string | null;
     },
   ): Promise<string> {
     return (
       await resolveSecretValueInternal(companyId, secretId, version, {
+        signal: context.signal,
         // Audit-only access context. No `bindingContext`, so the resolver never
         // asserts the environment binding that a delete or a provider change may
         // have removed.

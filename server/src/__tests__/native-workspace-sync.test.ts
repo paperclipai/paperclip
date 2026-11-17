@@ -1,4 +1,6 @@
-import { mkdtemp, readdir, rm, mkdir, writeFile, readFile, appendFile, symlink, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, readdir, rm, mkdir, writeFile, readFile, appendFile, symlink, stat, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -273,13 +275,16 @@ describe("native workspace sync durable metadata", () => {
     ).resolves.toMatchObject({ descriptor });
   });
 
-  it("repairs finalized remote and lease stamps after an interrupted commit", async () => {
+  it.each(["realized", "missing"] as const)("repairs finalized remote and lease stamps through confined command execution (%s workspace)", async (workspaceState) => {
     const paperclipHome = await mkdtemp(
       path.join(os.tmpdir(), "paperclip-native-workspace-sync-repair-"),
     );
     cleanupDirs.push(paperclipHome);
     process.env.PAPERCLIP_HOME = paperclipHome;
     process.env.PAPERCLIP_INSTANCE_ID = "descriptor-repair-test";
+    const remoteRoot = await realpath(paperclipHome);
+    const remoteCwd = path.join(remoteRoot, "workspace");
+    if (workspaceState === "realized") await mkdir(remoteCwd);
     const baseline = {
       exclude: [".paperclip-runtime"],
       entries: new Map([
@@ -299,7 +304,7 @@ describe("native workspace sync durable metadata", () => {
         leaseId: "lease-1",
         providerLeaseId: "sandbox-1",
         localCwd: path.join(paperclipHome, "workspace"),
-        remoteCwd: "/workspace",
+        remoteCwd,
       },
       state: "finalized" as const,
       baselineSha256: directorySnapshotSha256(baseline),
@@ -344,10 +349,31 @@ describe("native workspace sync durable metadata", () => {
           }),
         }),
     };
-    const execute = vi
-      .fn()
-      .mockResolvedValueOnce({ timedOut: false, exitCode: 1, stdout: "" })
-      .mockResolvedValueOnce({ timedOut: false, exitCode: 0, stdout: "" });
+    const executeFile = promisify(execFile);
+    const execute = vi.fn(async (request: {
+      command: string; args?: string[]; cwd?: string; timeoutMs?: number; bypassSession?: boolean;
+    }) => {
+      // The normal container provider accepts literal root as a stable cwd;
+      // other foreign paths and aliases to root remain refused.
+      const cwd = await realpath(request.cwd ?? remoteRoot);
+      const literalContainerRoot = request.cwd === "/" && cwd === "/";
+      if (!literalContainerRoot && cwd !== remoteRoot && !cwd.startsWith(remoteRoot + path.sep)) throw new Error("foreign_command_cwd");
+      expect(request.timeoutMs).toBe(15_000);
+      expect(request.bypassSession).toBe(true);
+      try {
+        const result = await executeFile(request.command, request.args ?? [], {
+          cwd, timeout: request.timeoutMs, encoding: "utf8",
+        });
+        return { timedOut: false, exitCode: 0, ...result };
+      } catch (error) {
+        // Preserve ordinary nonzero shell results. Missing cwd/transport faults
+        // still throw; they are never turned into a fabricated cache miss.
+        if (error instanceof Error && "code" in error && typeof error.code === "number") {
+          return { timedOut: false, exitCode: error.code, stdout: "", stderr: "stamp command failed" };
+        }
+        throw error;
+      }
+    });
 
     await expect(
       resumeNativeWorkspaceSync({
@@ -366,6 +392,9 @@ describe("native workspace sync durable metadata", () => {
     ).resolves.toBe(true);
 
     expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls.map(([request]) => request.cwd)).toEqual(["/", "/"]);
+    const remoteStamp = JSON.parse(await readFile(path.join(remoteCwd, ".paperclip-runtime", "paperclip-runner", "workspace-sync-v1.json"), "utf8"));
+    expect(remoteStamp).toMatchObject({ hostSha256: finalHostSha256, finalizedRunId: descriptor.binding.runId });
     expect(persistedLeaseMetadata).toMatchObject({
       retained: true,
       nativeWorkspaceSync: {

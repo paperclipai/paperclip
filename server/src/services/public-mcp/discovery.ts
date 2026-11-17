@@ -1,10 +1,12 @@
+import { museReceiverDiscoveryDocument,isMuseReceiverDiscoveryRequest } from "../../modules/external-agents/index.js";
 export type McpDiscoveryProfile = "personal-mcp" | "dot-mcp";
+export type McpDiscoverySnapshotProfile=McpDiscoveryProfile|"muse-agent";
 export interface McpDiscovery {
   origin: string;
   authorizationOrigin: string;
-  profiles: McpDiscoveryProfile[];
+  profiles: McpDiscoverySnapshotProfile[];
 }
-const profiles = ["personal-mcp","dot-mcp"] as const;
+const profiles = ["personal-mcp","dot-mcp","muse-agent"] as const;
 function origin(value: unknown): string {
   if (typeof value !== "string" || value.length > 2048) throw new Error("Invalid MCP discovery origin");
   const url = new URL(value);
@@ -15,13 +17,14 @@ export function parseMcpDiscovery(value: unknown): McpDiscovery {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid MCP discovery snapshot");
   const row = value as Record<string,unknown>;
   const selected=row.profiles;
-  if (Object.keys(row).sort().join() !== "authorizationOrigin,origin,profiles" || !Array.isArray(selected) || !selected.length || selected.length > 2
+  if (Object.keys(row).sort().join() !== "authorizationOrigin,origin,profiles" || !Array.isArray(selected) || !selected.length || selected.length > 3
     || selected.some((profile,index) => !profiles.includes(profile) || index > 0 && profiles.indexOf(profile) <= profiles.indexOf(selected[index-1]))) throw new Error("Invalid MCP discovery profiles");
-  return { origin: origin(row.origin), authorizationOrigin: origin(row.authorizationOrigin), profiles: selected as McpDiscoveryProfile[] };
+  return { origin: origin(row.origin), authorizationOrigin: origin(row.authorizationOrigin), profiles: selected as McpDiscoverySnapshotProfile[] };
 }
 export function mcpDiscoveryDocuments(raw: McpDiscovery): Array<{ path: string; document: Record<string,unknown> }> {
   const input = parseMcpDiscovery(raw), documents: Array<{ path: string; document: Record<string,unknown> }> = [];
   for (const profile of input.profiles) {
+    if(profile==="muse-agent"){documents.push(museReceiverDiscoveryDocument(input));continue;}
     const dot = profile === "dot-mcp", endpoint = dot ? "/mcp/runner" : "/mcp/paperclip", oauthPath = dot ? "/mcp/runner/oauth" : "/mcp/oauth";
     const issuer = dot ? input.origin + oauthPath : input.origin, prefix = input.origin + oauthPath;
     const scopes = dot ? ["paperclip:agent","offline_access"] : ["paperclip:read","paperclip:write","paperclip:configure","offline_access"];

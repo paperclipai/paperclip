@@ -1,3 +1,4 @@
+import { prepareMuseReceiverAuthorityMutation } from "../modules/external-agents/index.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -597,6 +598,7 @@ export function accessService(db: Db) {
       if (existing.status === "active" && nextStatus !== "active" && existing.principalType === "user") {
         await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
       }
+      await prepareMuseReceiverAuthorityMutation(tx,{companyId,...(existing.principalType==="user"?{operatorId:existing.principalId}:{agentId:existing.principalId})});
       const updated = await tx
         .update(companyMemberships)
         .set({
@@ -783,6 +785,7 @@ export function accessService(db: Db) {
           ),
         );
 
+      await prepareMuseReceiverAuthorityMutation(tx,{companyId,...(existing.principalType==="user"?{operatorId:existing.principalId}:{agentId:existing.principalId})});
       const archived = await tx
         .update(companyMemberships)
         .set({
@@ -887,6 +890,7 @@ export function accessService(db: Db) {
       if (toArchive.length > 0) {
         const now = new Date();
         for (const membership of toArchive) {
+          await prepareMuseReceiverAuthorityMutation(tx,{companyId:membership.companyId,operatorId:membership.principalId});
           await sweepMemberConnectionAccess(tx, membership.companyId, membership.principalId, now);
         }
         await tx
@@ -952,6 +956,7 @@ export function accessService(db: Db) {
       )).for("update").then(rows => rows[0] ?? null);
       if (existing) {
         if (existing.status !== status || existing.membershipRole !== membershipRole) {
+          await prepareMuseReceiverAuthorityMutation(tx,{companyId,...(principalType==="user"?{operatorId:principalId}:{agentId:principalId})});
           if(status==="active"&&(principalType==="agent"||membershipRole!=="viewer")
             &&(existing.status!=="active"||principalType==="user"&&existing.membershipRole==="viewer"))
             await notifyMuseContactVerification(tx,{companyId,...(principalType==="user"?{operatorId:principalId}:{agentId:principalId})});
@@ -1207,6 +1212,7 @@ export function accessService(db: Db) {
         await sweepMemberConnectionAccess(tx, companyId, existing.principalId, now);
       }
 
+      await prepareMuseReceiverAuthorityMutation(tx,{companyId,...(existing.principalType==="user"?{operatorId:existing.principalId}:{agentId:existing.principalId})});
       return tx
         .update(companyMemberships)
         .set({

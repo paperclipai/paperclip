@@ -1,4 +1,4 @@
-import {eq} from "drizzle-orm";
+import {eq,inArray} from "drizzle-orm";
 import {mcpOauthDeviceRequests as devices,type Db} from "@paperclipai/db";
 import {deriveLocalEncryptedInstanceSecret} from "../../secrets/local-encrypted-provider.js";
 import {mcpDeviceStatusEntrySchema,mcpDeviceStatusFingerprint,mcpDeviceStatusGeneration,mcpDeviceStatusKeyId} from "./device-status-contract.js";
@@ -15,7 +15,7 @@ export async function readIdleMcpDeviceStatus(tx:Pick<Db,"select">,input:{enable
   catch{return{blocked:true,state:"device-status-key-unavailable",deadlines:[]};}
   if(mcpDeviceStatusKeyId(key)!==receipt.deviceStatus.keyId)return{blocked:true,state:"device-status-key-replaced",deadlines:[]};
   await input.budget.beforeRead();
-  const rows=await tx.select({requestId:devices.id,deviceCodeHash:devices.deviceCodeHash,clientId:devices.clientId,resource:devices.resource,ingressOwner:devices.ingressOwner,status:devices.status,expiresAt:devices.expiresAt}).from(devices).where(eq(devices.resource,receipt.origin+"/mcp/paperclip")).orderBy(devices.id).limit(1001);
+  const rows=await tx.select({requestId:devices.id,deviceCodeHash:devices.deviceCodeHash,clientId:devices.clientId,resource:devices.resource,ingressOwner:devices.ingressOwner,status:devices.status,expiresAt:devices.expiresAt}).from(devices).where(inArray(devices.resource,receipt.dotProfile==="hosted-dot-v1"?[receipt.origin+"/mcp/paperclip",receipt.origin+"/mcp/runner"]:[receipt.origin+"/mcp/paperclip"])).orderBy(devices.id).limit(1001);
   input.budget.check();
   if(rows.length>1000)return{blocked:true,state:"device-status-overflow",deadlines:[]};
   const entries=rows.map(row=>{input.budget.check();return mcpDeviceStatusEntrySchema.parse({requestId:row.requestId,clientId:row.clientId,resource:row.resource,ingressOwner:row.ingressOwner,status:row.status,expiresAt:row.expiresAt.getTime(),fingerprint:mcpDeviceStatusFingerprint(key,row.deviceCodeHash,row.clientId,row.resource)});});

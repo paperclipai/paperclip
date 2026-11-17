@@ -3,8 +3,8 @@ import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { HarnessRuntimeRequest, HarnessRuntimeRequestHandoff, HarnessRuntimeRequestResolution, HarnessDriver, HarnessDriverDescriptor, HarnessSession, OpenHarnessSessionInput, PersistedHarnessSession } from "../../contracts/harness-driver.js";
-import type { NativeExecutionInputV6, NativeExecutionInputV8 } from "../../contracts/native-execution.js";
-import type { ExternalProviderPort } from "../../contracts/external-provider.js";
+import type { NativeExecutionInput, NativeExecutionInputV6, NativeExecutionInputV8 } from "../../contracts/native-execution.js";
+import { externalOperationDigest, type ExternalProviderPort } from "../../contracts/external-provider.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { DurablePrpControlPlane, spawnRunner, type RunnerProcessHandle, type DurablePrpControlPlaneOptions } from "../../control-plane/durable-prp-control-plane.js";
@@ -67,6 +67,74 @@ const capabilities = {
   structuredResult: true, read: true, reconciliation: true, usage: false,
   dynamicTools: true, unsupported: ["resume", "steering", "interruption", "usage", "goals", "runtimeRequestResolution", "threadLineage"],
 };
+
+/** Provider-owned recovery policy; shared orchestration only reads the target and invokes this contract. */
+export function externalRunnerCheckpointRecovery(input: {
+  provider: NativeExecutionInput["provider"]; companyId: string; agentId: string;
+}, identity: {
+  runId: string; normalizedSessionId: string; turnId?: unknown;
+}) {
+  const provider = input.provider;
+  const codec = provider.kind === "muse" ? MUSE_EXTERNAL_CODEC : DOT_EXTERNAL_CODEC;
+  const expected = (provider.kind === "openai_dot" || provider.kind === "grok_bot") && typeof identity.turnId === "string" ? {
+    provider: provider.kind, companyId: input.companyId, agentId: input.agentId,
+    bindingId: provider.binding.bindingId, bindingGeneration: provider.binding.bindingGeneration,
+    expiresAtUnixMs: provider.binding.expiresAtUnixMs,
+    runId: identity.runId, sessionId: identity.normalizedSessionId, turnId: identity.turnId,
+  } : null;
+  return {
+    checkpointFile: codec.checkpointFile,
+    assertAuthority(state: Record<string, unknown>) {
+      if (state.schema !== codec.checkpointSchema || state.runId !== identity.runId
+        || state.sessionId !== identity.normalizedSessionId || state.turnId !== identity.turnId) {
+        throw new Error("dot_runner_checkpoint_authority_mismatch");
+      }
+    },
+    recoveryEligibility(readProviderState: () => Promise<Record<string, unknown> | null>): (() => Promise<boolean>) | undefined {
+      return expected ? async () => canRestartExternalRunnerCheckpoint(await readProviderState(), expected) : undefined;
+    },
+  };
+}
+
+function checkpointRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function canRestartExternalRunnerCheckpoint(saved: Record<string, unknown> | null, expected: {
+  provider: "openai_dot" | "grok_bot"; companyId: string; agentId: string;
+  bindingId: string; bindingGeneration: number; expiresAtUnixMs: number;
+  runId: string; sessionId: string; turnId: string;
+}): boolean {
+  const descriptor = checkpointRecord(saved?.descriptor);
+  const tools = checkpointRecord(saved?.tools);
+  const operations = checkpointRecord(saved?.operations);
+  return ["openai_dot", "grok_bot"].includes(expected.provider) && expected.expiresAtUnixMs > Date.now() &&
+    saved?.schema === "paperclip.runner.dot-provider-state.v1" &&
+    saved.runId === expected.runId && saved.sessionId === expected.sessionId && saved.turnId === expected.turnId &&
+    saved.lifecycle === "running" && saved.completion === null && saved.completionInput === null &&
+    descriptor.kind === expected.provider && descriptor.companyId === expected.companyId &&
+    descriptor.agentId === expected.agentId && descriptor.bindingId === expected.bindingId &&
+    descriptor.bindingGeneration === expected.bindingGeneration && descriptor.expiresAtUnixMs === expected.expiresAtUnixMs &&
+    tools.pending != null && typeof tools.pending === "object" && !Array.isArray(tools.pending) &&
+    Object.keys(checkpointRecord(tools.pending)).length === 0 && saved.operations != null &&
+    typeof saved.operations === "object" && !Array.isArray(saved.operations) &&
+    Object.entries(operations).every(([requestId, receipt]) => {
+      const status = checkpointRecord(checkpointRecord(receipt).outcome).status;
+      if (status === "completed" || status === "rejected") return true;
+      const operation = checkpointRecord(checkpointRecord(receipt).operation);
+      return status === "accepted" && operation.action === "accept" && operation.requestId === requestId &&
+        operation.runId === expected.runId && operation.normalizedSessionId === expected.sessionId &&
+        operation.turnId === expected.turnId && operation.bindingId === expected.bindingId &&
+        operation.bindingGeneration === expected.bindingGeneration &&
+        Number.isSafeInteger(saved.assignmentRevision) && Number(saved.assignmentRevision) > 0 &&
+        operation.assignmentRevision === saved.assignmentRevision && operation.input != null &&
+        typeof operation.input === "object" && !Array.isArray(operation.input) && Object.keys(operation.input).length === 0 &&
+        operation.digest === externalOperationDigest("accept", checkpointRecord(operation.input));
+    });
+}
+
 
 /** The admission path can inspect Dot without allocating a broker port or Runner. */
 export function describeRunnerdExternalDriver(codec: ExternalProviderCodec): HarnessDriverDescriptor {
@@ -144,6 +212,10 @@ class RunnerdExternalSession implements HarnessSession {
   #release: (() => Promise<void> | void) | null = null;
   #detachPort: (() => Promise<void>) | null = null;
   #closed = false;
+  #processCompletionFulfilled = false;
+  #detachComplete = false;
+  #ingressStopped = false;
+  #detachPromise: Promise<void> | null = null;
   #failure: Error | null = null;
   #resolvingRequests = new Set<string>();
   readonly handoffRuntimeRequest?: NonNullable<HarnessSession["handoffRuntimeRequest"]>;
@@ -247,6 +319,7 @@ class RunnerdExternalSession implements HarnessSession {
       if (pid && !o.runnerProcessLauncher) await o.onSpawn?.({ pid, processGroupId: this.#process.processGroupId ?? null,
         startedAt: this.#process.startedAt ?? new Date().toISOString() });
       void this.#process.completion.then(result => {
+        this.#processCompletionFulfilled = true;
         if (this.#closed) return;
         // Rust exits after the authenticated shutdown receipt is committed and
         // ACKed. That exit can precede the SDK's next command poll.
@@ -355,7 +428,10 @@ class RunnerdExternalSession implements HarnessSession {
   async read() { return await this.#command("session.snapshot", {}, `${this.codec.commandPrefix}_snapshot_${randomUUID()}`); }
   async reconcile() { return { ...await this.read(), externalStopConfirmed: false, usage: null, cost: null }; }
   async usage() { return null; }
-  async interrupt() { await this.#command("run.cancel", {}, `${this.codec.commandPrefix}_cancel`); }
+  async interrupt(input?: Parameters<NonNullable<HarnessSession["interrupt"]>>[0]) {
+    if (input?.failureCleanup === true && this.#failure) throw this.#failure;
+    await this.#command("run.cancel", {}, `${this.codec.commandPrefix}_cancel`);
+  }
   async snapshot(): Promise<PersistedHarnessSession> {
     const state = await this.read();
     // Target-owned state is authoritative. Also retain the controller's recovery
@@ -376,17 +452,37 @@ class RunnerdExternalSession implements HarnessSession {
       providerRecoveryPolicy: "same_session_only",
       lastSourceSequence: this.#events.at(-1)?.sourceSeq ?? 0 };
   }
-  async detachControllerForRestart() {
+  detachControllerForRestart(): Promise<void> {
+    if (this.#detachComplete) return Promise.resolve();
+    if (this.#detachPromise) return this.#detachPromise;
     this.#closed = true; this.#wake();
-    await this.#detachPort?.(); await this.#release?.(); await this.#core?.stop();
-    await this.#core?.drainPendingConnectionProcessing();
-    this.#core?.retireSemanticToolCallbacks();
+    const cleanup = (async () => {
+      if (this.#detachPort) { await this.#detachPort(); this.#detachPort = null; }
+      if (this.#release) { await this.#release(); this.#release = null; }
+      if (!this.#ingressStopped) { await this.#core?.stop(); this.#ingressStopped = true; }
+      await this.#core?.drainPendingConnectionProcessing();
+      this.#core?.retireSemanticToolCallbacks();
+      this.#detachComplete = true;
+    })();
+    this.#detachPromise = cleanup;
+    void cleanup.finally(() => {
+      if (this.#detachPromise === cleanup) this.#detachPromise = null;
+    }).catch(() => {});
+    return cleanup;
   }
-  async close(input: { reason: string; force?: boolean }) {
-    if (this.#closed) return;
-    if (input.force) await this.interrupt();
-    await this.#command("session.close", {}, `${this.codec.commandPrefix}_close`);
-    await this.#command("runner.shutdown", {}, `${this.codec.commandPrefix}_shutdown`);
+  async close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }) {
+    if (this.#closed) return this.detachControllerForRestart();
+    const confirmedExit = () => this.#processCompletionFulfilled && this.#process?.isExitConfirmed?.() === true;
+    if (!confirmedExit()) {
+      if (input.retainUnsettledRemoteRunner === true && this.#failure) throw this.#failure;
+      try {
+        if (input.force) await this.interrupt();
+        await this.#command("session.close", {}, `${this.codec.commandPrefix}_close`);
+        await this.#command("runner.shutdown", {}, `${this.codec.commandPrefix}_shutdown`);
+      } catch (error) {
+        if (!confirmedExit()) throw error;
+      }
+    }
     await this.detachControllerForRestart();
   }
 }

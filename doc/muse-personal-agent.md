@@ -27,7 +27,7 @@ Approve Paperclip's hostname through Muse's permission UI. Read the permission s
 
 After receiver contact has committed to Paperclip, a temporary failure to create the readiness challenge is retried automatically, including after a server restart. Contact uses the existing thirty-second persistence schedule; an uncommitted check is not durable recovery evidence. You do not need to repeat contact or select Verify to repair an ordinary transient server failure.
 
-Verification still checks the current company, agent, authorizing operator and credential. It waits while the feature is disabled or the agent is paused or access is unavailable; restoring eligibility schedules another check. Expired or revoked credentials require reconnecting and are never revived by a role or status change. Automatic retry does not establish readiness: the authenticated background reply must still confirm the challenge. While that reply is pending, the native lifecycle saves an event-owned verification wait instead of polling readiness. Authenticated confirmation records its lifecycle recheck in the same transaction, including when a verification attempt is active. On startup, Paperclip rechecks saved waits once and parks them again if the reply is still absent. No repeated contact or manual Verify action is needed for this recovery. With no eligible pending verification, this recovery does not keep issuing periodic verification queries. Qualification deadlines and unresolved native work remain separate obligations, and the connected receiver's current tenant-sleep restriction still applies.
+Verification still checks the current company, agent, authorizing operator and credential. It waits while the feature is disabled or the agent is paused or access is unavailable; restoring eligibility schedules another check. Expired or revoked credentials require reconnecting and are never revived by a role or status change. Automatic retry does not establish readiness: the authenticated background reply must still confirm the challenge. While that reply is pending, the native lifecycle saves an event-owned verification wait instead of polling readiness. Authenticated confirmation records its lifecycle recheck in the same transaction, including when a verification attempt is active. On startup, Paperclip rechecks saved waits once and parks them again if the reply is still absent. No repeated contact or manual Verify action is needed for this recovery. With no eligible pending verification, this recovery does not keep issuing periodic verification queries. Qualification deadlines and unresolved native work remain separate obligations, and a connected receiver still inhibits tenant sleep where current hosted coverage is unavailable.
 
 Muse’s Secure Vault/authd owns access and refresh credentials. The Python client stores only nonsecret connection metadata and stable operation receipts. The no-argument Bash detector reads the public receiver profile and produces opaque wake references. Empty checks and failures must not wake the model. Access expires after fifteen minutes, refresh rotates automatically, and thirty days of authenticated inactivity requires reconnecting. Signal checks do not extend credential activity.
 
@@ -118,4 +118,39 @@ Credential-free checker calibration:
 node --test scripts/smoke/muse-qualification-report.test.mjs scripts/smoke/muse-qualification.test.mjs
 ```
 
-Cloud must deploy the matching exact protocol manifest and preserve tenant authority. Its companion generator verifies parity with `packages/shared/src/muse-protocol.ts`. A connected receiver currently inhibits tenant sleep; unavailable ingress returns a retryable failure and never implies a delivered task.
+Cloud must deploy the matching exact protocol manifest and preserve tenant authority. Its companion generator verifies parity with `packages/shared/src/muse-protocol.ts`. Current hosted coverage can retain receiver contacts while the tenant is idle. Without that coverage, a connected receiver inhibits tenant sleep. Unavailable ingress returns a retryable failure and never implies a delivered task.
+
+Retained contact pages for deleted bindings settle through their original exact acknowledgement. They never create new receiver-contact or verification evidence. A retired qualified OAuth binding still blocks sleep until its existing detector-removal requirement is satisfied; a Cloud retirement receipt does not confirm that the device hook stopped. Local quiet evidence alone does not prove deployed host or database suspension.
+
+
+### Public signal resource bounds
+
+Public presence requests still check current binding, credential, company,
+operator, agent and resource authority. A managed HTTP 200 confirms that its
+contact has committed; overload never returns a substitute idle 200. The existing
+in-flight contact flush can coalesce accepted requests, and each accepted
+request waits for its own retained batch to persist.
+
+One receiver admission owner is shared across bindings in each App process.
+It permits at most 32 concurrent signals and uses 60-second ingress windows:
+60 admissions per binding, 1200 per request source and 6000 total, with at most 4096
+window keys. The source is the existing Express request-IP identity, not an
+untrusted forwarding header. State expires lazily on ingress; no idle timer or
+permission/response cache is added. These are abuse ceilings, not measured
+capacity or a guarantee of availability at those rates. The normal five-second
+detector schedule is 12 checks per minute, below the binding ceiling.
+
+Over-budget requests return 429 with Retry-After before database access or contact
+ownership. A handoff or full in-flight budget returns retryable 503. The current
+v9 detector retains its hook on these responses and backs off for 30 seconds;
+only 410 disconnects it. Overload can therefore delay observation and make cadence
+qualification incomplete; it does not manufacture successful presence evidence.
+
+Hosted handoff fences new local signal admission, joins its finite accepted
+frontier and persists all retained contact debt. The fence remains held through
+the actual local mirror receipt/cutover transaction and reopens after commit or
+rollback. A permanent stop remains independent. Cloud's complete ACK may already
+exist before local handoff; a failure keeps the normal pending publication and
+five-second retry, without claiming a remote rollback. The finite admission
+frontier does not cancel an already-issued SQL statement or promise instantaneous
+backend cancellation.

@@ -815,6 +815,7 @@ class HarnessNativeSession implements NativeSession {
               interrupt.call(this.#session, {
                 reason: input.reason,
                 signal: input.signal,
+                ...(input.failureCleanup === true ? { failureCleanup: true } : {}),
               }),
             ),
     };

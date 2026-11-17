@@ -10,6 +10,8 @@ import {
   companies,
   controllerInstances,
   createDb,
+  applyPendingMigrations,
+  closeRegisteredClients,
   heartbeatRuns,
   issueRecoveryActions,
   issueRelations,
@@ -18,6 +20,8 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs } from "../services/controller-process-identity.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -25,7 +29,8 @@ import { deliverReconciledExecutions } from "../services/execution-recovery-reso
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_COMPLETED_TURN_CLEANUP_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
 const KIND = "native_completed_turn_cleanup_hold";
 
@@ -56,10 +61,12 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
   let db!: ReturnType<typeof createDb>;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companyId = "", agentId = "";
+  let ownedHeartbeat: ReturnType<typeof heartbeatService> | undefined;
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-completed-turn-cleanup-");
-    db = createDb(temporary.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else temporary = await startEmbeddedPostgresTestDatabase("paperclip-completed-turn-cleanup-");
+    db = createDb(external ?? temporary!.connectionString, external ? { maxConnections: 4 } : undefined);
     companyId = randomUUID(); agentId = randomUUID();
     const responsibleUserId = randomUUID();
     await db.insert(authUsers).values({ id: responsibleUserId, name: "Board", email: `${responsibleUserId}@example.test`,
@@ -71,6 +78,12 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
   }, 30_000);
 
   afterEach(async () => {
+    // A continuation wake registers execution before it returns. Join the actual
+    // owner before cleanup takes destructive table locks.
+    if (ownedHeartbeat) {
+      await drainHeartbeatRunsToQuiescence(db, ownedHeartbeat);
+      ownedHeartbeat = undefined;
+    }
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
     await db.delete(workspaceOperations);
@@ -81,7 +94,18 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     await db.delete(issues);
   });
 
-  afterAll(async () => { await temporary?.cleanup(); });
+  afterAll(async () => {
+    const failures: unknown[] = [];
+    for (const close of [
+      async () => { if (ownedHeartbeat) await drainHeartbeatRunsToQuiescence(db, ownedHeartbeat); },
+      async () => { await db?.$client.end(); },
+      async () => { if (external) await closeRegisteredClients(external, { scope: "database" }); },
+      async () => { await temporary?.cleanup(); },
+    ]) {
+      try { await close(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length) throw new AggregateError(failures, "Completed-turn cleanup fixture owners did not all close");
+  });
 
   async function quarantinedRun(options: { controllerAlive?: boolean; turnCompleted?: boolean; filesSaved?: boolean;
     controllerBootId?: string; hostHashUnrecorded?: boolean; waitsOnChild?: boolean; statusVersion?: number;
@@ -222,7 +246,7 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     expect((await db.select().from(heartbeatRuns)).map(run => run.id)).toEqual([f.runId]);
     expect(await pass()).toMatchObject({ inProgress: 0 });
     // Normal admission accepts the continuation exactly once, as a fresh session.
-    const heartbeat = heartbeatService(db);
+    const heartbeat = ownedHeartbeat = heartbeatService(db);
     await deliverReconciledExecutions(db, heartbeat.wakeup);
     await deliverReconciledExecutions(db, heartbeat.wakeup);
     const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));

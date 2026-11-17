@@ -294,9 +294,9 @@ type DedicatedConnectionSet = {
   waitMs: number;
   inUse: number;
   waiters: DedicatedConnectionWaiter[];
-  stats: DedicatedDbConnectionStats;
+  stats: Omit<DedicatedDbConnectionStats, "closed">;
 };
-export type DedicatedDbConnectionStats = { limit: number; inUse: number; peakInUse: number; waiting: number;
+export type DedicatedDbConnectionStats = { closed: boolean; limit: number; inUse: number; peakInUse: number; waiting: number;
   queued: number; overLimit: number; nestedOverLimit: number };
 const dedicatedConnectionSets = new WeakMap<object, DedicatedConnectionSet>();
 type DedicatedConnectionHold = { set: DedicatedConnectionSet; active: boolean };
@@ -386,7 +386,7 @@ export function preparedStatementStats(db: Db): PreparedQueryStats | null {
 
 export function dedicatedDbConnectionStats(db: Db): DedicatedDbConnectionStats | null {
   const set = dedicatedConnectionSets.get(db);
-  return set ? { ...set.stats } : null;
+  return set ? { ...set.stats, closed: set.closed } : null;
 }
 
 function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) => Promise<void> | void): void {

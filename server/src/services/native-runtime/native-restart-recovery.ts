@@ -3,7 +3,7 @@ import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { nativeRunHandedOffTask } from "./native-human-self-handoff.js";
 import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
 import { currentControllerProcessStamp, UNKNOWN_PROCESS_SPACE } from "../controller-process-identity.js";
-import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
+import { readNativeSessionResumptionAgent, releaseNativeCheckpointRetryWaits, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -2165,6 +2165,8 @@ export async function claimNativeRestartRecoveries(input: {
 
       if (releasedRemoteRetry && resumptionAgent) {
         await restoreNativeSessionExecution(tx as unknown as Db, { issue, run: row.run, agentName: resumptionAgent.name, now });
+      } else if (failedRemoteRetry && row.issueExecutionRunId === row.run.id) {
+        await releaseNativeCheckpointRetryWaits(tx as unknown as Db, { issue, run: row.run });
       }
 
       claimScope = { companyId: row.run.companyId, issueId: row.coordinator.issueId, controller, remote: Boolean(durableAuthority || portablePreparation) };

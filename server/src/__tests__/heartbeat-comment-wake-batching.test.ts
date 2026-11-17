@@ -20,6 +20,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  closeRegisteredClients,
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
@@ -43,12 +44,15 @@ import {
 } from "./helpers/embedded-postgres.ts";
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.ts";
 
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_HEARTBEAT_COMMENT_WAKE_TEST_DATABASE_URL");
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported
+const describeEmbeddedPostgres = externalDatabaseUrl || embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
 
-if (!embeddedPostgresSupport.supported) {
+if (!externalDatabaseUrl && !embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres heartbeat comment wake batching tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
@@ -295,6 +299,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   }
 
   beforeAll(async () => {
+    if (externalDatabaseUrl) {
+      db = createDb(externalDatabaseUrl, { maxConnections: 4 });
+      return; // The external owner applies the normal migrations once before this process.
+    }
     const started = await startEmbeddedPostgresTestDatabase(
       "paperclip-heartbeat-comment-wake-",
     );
@@ -303,9 +311,13 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   }, 120_000);
 
   afterAll(async () => {
-    await heartbeatService(db).drainActiveRunExecutions();
-    await closeDbClient(db);
-    await tempDb?.cleanup();
+    const failures: unknown[] = [];
+    try { await heartbeatService(db).drainActiveRunExecutions(); } catch (error) { failures.push(error); }
+    try { await closeDbClient(db); } catch (error) { failures.push(error); }
+    try { if (externalDatabaseUrl) await closeRegisteredClients(externalDatabaseUrl, { scope: "database" }); }
+    catch (error) { failures.push(error); }
+    try { await tempDb?.cleanup(); } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Comment-wake fixture cleanup failed");
   });
 
   afterEach(() => {

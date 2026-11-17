@@ -3,8 +3,9 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, agentWakeupRequests, costEvents, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, authUsers, companyMemberships, costEvents, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { heartbeatService } from "./heartbeat.js";
+import * as checkpointAdmission from "./native-runtime/native-session-resumption-admission.js";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -128,6 +129,87 @@ describe("saved-work recovery on a full sandbox disk", () => {
       heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);
     await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId);
     await expectSavedResultApplied(f, receipt.requestId, runsBefore);
+  }, 60_000);
+
+  it.each(["authorized", "authority_removed", "receipt_cancelled"] as const)("retries rolled-back admission after real coordinator contention: %s", async kind => {
+    const f = await diskFullHold(), runsBefore = await f.runIds();
+    let actorId: string | undefined;
+    if (kind === "authority_removed") {
+      actorId = randomUUID();
+      await db.insert(authUsers).values({ id: actorId, name: "Retry owner", email: `${actorId}@example.test`,
+        createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: actorId,
+        status: "active", membershipRole: "owner" });
+    }
+    f.disk.full = false;
+    const receipt = actorId ? (await request(receiptOnlyRecoveryApp({ userId: actorId, source: "session", companyIds: [f.companyId] }))
+      .post(`/api/issues/${f.issueId}/retry`).send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body as { requestId: string }
+      : await f.retry();
+    await f.recoverAll();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let locked = false;
+    const held = db.transaction(async tx => {
+      const rows = await tx.select().from(nativeRunFinalizations).where(and(
+        eq(nativeRunFinalizations.companyId, f.companyId), eq(nativeRunFinalizations.runId, f.runId))).for("update");
+      expect(rows).toHaveLength(1); locked = true;
+      await gate;
+    });
+    const heldOutcome = held.then(() => ({ ok: true as const }), error => ({ ok: false as const, error }));
+    const original = checkpointAdmission.pendingNativeCheckpointRetry;
+    const busy: unknown[] = [];
+    const observe = vi.spyOn(checkpointAdmission, "pendingNativeCheckpointRetry").mockImplementation(async (...args) => {
+      try { return await original(...args); }
+      catch (error) {
+        if (checkpointAdmission.isNativeCheckpointAdmissionContention(error)) busy.push(error);
+        throw error;
+      }
+    });
+    let outcome: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
+    let primaryFailed = false;
+    let primaryFailure: unknown;
+    try {
+      await vi.waitFor(() => expect(locked).toBe(true));
+      outcome = heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId)
+        .then(() => ({ ok: true as const }), error => ({ ok: false as const, error }));
+      await vi.waitFor(() => expect(busy.length).toBeGreaterThanOrEqual(1));
+      // This write must complete while the competing coordinator row is still
+      // held: it proves admission released its task lock by rolling back.
+      await db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '1000ms'`);
+        await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, f.issueId));
+        if (kind === "authority_removed") await tx.update(companyMemberships).set({ status: "inactive" }).where(and(
+          eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, actorId!)));
+        else if (kind === "receipt_cancelled") await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() })
+          .where(and(eq(agentWakeupRequests.companyId, f.companyId), eq(agentWakeupRequests.id, receipt.requestId)));
+      });
+      release();
+      const holding = await heldOutcome; if (!holding.ok) throw holding.error;
+      const resumed = await outcome; if (!resumed.ok) throw resumed.error;
+      if (kind === "authorized") await expectSavedResultApplied(f, receipt.requestId, runsBefore);
+      else {
+        expect(await f.runIds()).toEqual(runsBefore);
+        expect(await coordinator(f.runId)).toMatchObject({ phase: "terminal_failure", resultId: f.resultId, recoveryHistory: [] });
+        expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+          eq(activityLog.action, "issue.saved_result_finalization_resumed")))).toEqual([]);
+        expect(await wake(receipt.requestId)).toMatchObject(kind === "authority_removed"
+          ? { status: "deferred_issue_execution", payload: { executionWait: { reason: "retry_authority_denied" } } }
+          : { status: "cancelled" });
+      }
+      expect(await f.runIds()).toEqual(runsBefore);
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toEqual([]);
+    } catch (error) { primaryFailed = true; primaryFailure = error; }
+    finally {
+      release();
+      const cleanup: unknown[] = [];
+      const holding = await heldOutcome; if (!holding.ok) cleanup.push(holding.error);
+      if (outcome) { const dispatched = await outcome; if (!dispatched.ok && !primaryFailed) cleanup.push(dispatched.error); }
+      try { observe.mockRestore(); } catch (error) { cleanup.push(error); }
+      if (primaryFailed && cleanup.length) throw new AggregateError([primaryFailure, ...cleanup],
+        "Retry admission assertion and cleanup failed", { cause: primaryFailure });
+      if (primaryFailed) throw primaryFailure;
+      if (cleanup.length) throw new AggregateError(cleanup, "Retry admission cleanup failed");
+    }
   }, 60_000);
 
   it("holds a Retry dispatched while another saved-work hold of the run is still settling, then applies the accepted result", async () => {

@@ -22,6 +22,7 @@
     "waiting": 1,
     "queued": 12,
     "overLimit": 0,
-    "nestedOverLimit": 0
+    "nestedOverLimit": 0,
+    "closed": false
   }
 }
