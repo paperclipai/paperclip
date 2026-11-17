@@ -138,14 +138,20 @@ describe("accepted result commit lifecycle", () => {
     await quiet(); await coordinator!.stop(); await start(); await flush(); await quiet();
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, binding.runId))).toHaveLength(1);
   });
-  it("leaves a live heartbeat's run to it and commits only what the heartbeat leaves behind", async () => {
+  it.each(["delivered", "lost"] as const)("leaves a live heartbeat's run to it and commits what it leaves behind (release notification %s)", async notification => {
     await start(); await flush();
     const binding = await seed();
     const release = reserveLiveNativeFinalization(db, binding);
-    await complete(binding, "control_plane"); await barrier(binding); await flush(); await quiet();
+    await complete(binding, "control_plane"); await barrier(binding);
+    await vi.advanceTimersByTimeAsync(5000); await delay(10);
+    // The reconciliation pass also leaves the reserved run to its heartbeat.
+    await reconcileNativeFinalizations(db, [binding.runId]);
     expect((await state(binding.runId)).phase).not.toBe("committed");
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, binding.runId))).toHaveLength(0);
-    await release(); await flush();
+    if (notification === "lost") vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("notification transaction failed"));
+    await release(); await release();
+    if (notification === "lost") await vi.advanceTimersByTimeAsync(30_000);
+    await flush();
     expect((await state(binding.runId)).phase).toBe("committed"); await quiet();
   });
   it("ignores routine company-only finalization hints and still commits accepted work", async () => {

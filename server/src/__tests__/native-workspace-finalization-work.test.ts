@@ -325,6 +325,8 @@ describe("workspace finalization scheduled lifecycle", () => {
     await start(); await flush();
     const binding = await seed();
     const release = reserveLiveNativeFinalization(db, binding);
+    const nested = reserveLiveNativeFinalization(db, binding);
+    await nested(); await nested();
     // The runner posts its accepted result before its process returns.
     await complete(binding); await flush(); await quiet();
     expect(await successful(binding.runId)).toHaveLength(0);

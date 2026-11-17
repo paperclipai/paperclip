@@ -15,8 +15,9 @@ export function liveNativeFinalizationReserved(runId: string): boolean {
 }
 
 /**
- * Hold a run for its live heartbeat. The returned release wakes the workers
- * for this run, so they resume anything the heartbeat left unfinished. A
+ * Hold a run for its live heartbeat. The returned release never throws. It
+ * wakes the workers for this run, so they resume anything the heartbeat left
+ * unfinished; the result worker also rechecks a reserved run on its own. A
  * crashed process loses the reservation, and startup recovery takes over.
  */
 export function reserveLiveNativeFinalization(db: Db, scope: { companyId: string; runId: string; issueId?: string }) {
@@ -37,8 +38,11 @@ export function reserveLiveNativeFinalization(db: Db, scope: { companyId: string
     } catch (error) {
       // Startup and periodic discovery still find the run.
       logger.warn({ err: error, runId: scope.runId }, "native finalization workers could not be woken after the live heartbeat");
-    } finally {
+    }
+    try {
       releaseNativeWorkspaceFinalization(db, scope);
+    } catch (error) {
+      logger.warn({ err: error, runId: scope.runId }, "native workspace finalization could not be woken after the live heartbeat");
     }
   };
 }
