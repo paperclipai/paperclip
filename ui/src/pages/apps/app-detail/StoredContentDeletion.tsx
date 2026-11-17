@@ -33,7 +33,7 @@ export function storedContentSummary(content: ToolConnectionStoredContent, appNa
   ].filter((part): part is string => part !== null);
   if (parts.length === 0) return `Paperclip found no saved data from ${appName}'s tool calls. You can still delete to check again.`;
   const list = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
-  return `Paperclip will delete what it saved from ${list} that used ${appName}.`;
+  return `Paperclip will delete what it saved from ${list} that used ${appName}${runs > 0 ? " or received its results" : ""}.`;
 }
 
 export function storedContentStatus(content: ToolConnectionStoredContent): string | null {
@@ -89,6 +89,7 @@ export function StoredContentDeletionDialog({
     queryKey: countsKey,
     queryFn: () => toolsApi.getStoredContent(connectionId),
     staleTime: Infinity,
+    refetchOnMount: "always",
     refetchOnWindowFocus: false,
   });
   const [tracking, setTracking] = useState(false);
@@ -117,9 +118,6 @@ export function StoredContentDeletionDialog({
   });
   const content = query.data ? { ...query.data, deletion: latest } : undefined;
   const pending = deletion.isPending || latest?.status === "pending";
-  const nothingStored = content
-    ? content.stored.toolCalls + content.stored.approvals + content.stored.appViews + content.stored.runs === 0
-    : true;
   const inProgress = content?.stored.runsInProgress ?? 0;
   const status = content ? storedContentStatus(content) : null;
 
@@ -135,9 +133,10 @@ export function StoredContentDeletionDialog({
         {query.error ? (
           <p role="alert" className="text-sm text-destructive">{describeError(query.error).body}</p>
         ) : null}
-        {content && !nothingStored ? (
+        {content ? (
           <div className="space-y-2 text-sm text-muted-foreground">
-            <p>Whole transcripts are deleted, including other steps of those runs. Tasks, comments and files your agents wrote are kept. Call times, sizes and outcomes stay in the activity history.</p>
+            <p>Whole transcripts are deleted, including other steps of those runs. Call times, sizes and outcomes stay in the activity history.</p>
+            <p className="font-medium text-foreground">This does not remove anything your agents wrote into tasks, such as comments, documents and files. Delete or edit those yourself.</p>
             {inProgress > 0 ? (
               <p>{`${plural(inProgress, "run is", "runs are")} still working and will be skipped. Delete again after ${inProgress === 1 ? "it finishes" : "they finish"}.`}</p>
             ) : null}
@@ -155,7 +154,7 @@ export function StoredContentDeletionDialog({
           {content ? (
             <AlertDialogAction
               className={buttonVariants({ variant: "destructive" })}
-              disabled={pending || !content}
+              disabled={pending || !content || query.isFetching}
               onClick={(event) => {
                 event.preventDefault();
                 deletion.mutate();

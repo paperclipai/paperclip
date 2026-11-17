@@ -87,7 +87,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Read the notes" }).returning();
     const finishedAt = new Date(Date.now() - 60_000);
     const [settledRun, liveRun, otherRun] = await db.insert(heartbeatRuns).values([
-      { companyId: company!.id, agentId: agent!.id, status: "succeeded", finishedAt, logStore: "local_file", logRef: `${company!.id}/settled.ndjson`, logBytes: 120, logSha256: "abc", stdoutExcerpt: SECRET, resultJson: { summary: SECRET, executionRecovery: { kind: "none" } } },
+      { companyId: company!.id, agentId: agent!.id, status: "succeeded", finishedAt, logStore: "local_file", logRef: `${company!.id}/settled.ndjson`, logBytes: 120, logSha256: "abc", stdoutExcerpt: SECRET, resultJson: { summary: SECRET, executionRecovery: { kind: "none" }, nativeResult: { schema: "paperclip.run_result.v1", summary: SECRET, continuation: { kind: "response_wake", summary: SECRET } } } },
       { companyId: company!.id, agentId: agent!.id, status: "running", logStore: "local_file", logRef: `${company!.id}/live.ndjson`, stdoutExcerpt: SECRET },
       { companyId: company!.id, agentId: agent!.id, status: "succeeded", finishedAt, logStore: "local_file", logRef: `${company!.id}/other.ndjson`, stdoutExcerpt: SECRET },
     ]).returning();
@@ -174,7 +174,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     const foreign = await seedCompany(runLogs);
 
     const before = await service.storedContent(seed.connection);
-    expect(before.stored).toEqual({ toolCalls: 2, approvals: 1, appViews: 1, runs: 2, runsInProgress: 1 });
+    expect(before.stored).toEqual({ toolCalls: 2, approvals: 1, appViews: 1, runs: 3, runsInProgress: 1 });
 
     const { created } = await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
     expect(created).toBe(true);
@@ -205,7 +205,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     expect(await db.select().from(toolMcpAppViews).where(eq(toolMcpAppViews.connectionId, seed.connection.id))).toEqual([]);
 
     const [settledRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
-    expect(settledRun).toMatchObject({ logStore: null, logRef: null, stdoutExcerpt: null, logBytes: 120, logSha256: "abc", resultJson: { executionRecovery: { kind: "none" } } });
+    expect(settledRun).toMatchObject({ logStore: null, logRef: null, stdoutExcerpt: null, logBytes: 120, logSha256: "abc", resultJson: { executionRecovery: { kind: "none" }, nativeResult: { schema: "paperclip.run_result.v1", continuation: { kind: "response_wake" } } } });
     expect(JSON.stringify(settledRun!.resultJson)).not.toContain(SECRET);
     const [audit] = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.id, seed.accessAudit.id));
     expect(audit!.details).toMatchObject({ decision: "allow", toolName: "read_doc", argumentsSummary: { summary: "", sha256: "hash-42", sizeBytes: 42 } });
@@ -356,7 +356,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       phases.push(String((job.progress as { phase: string }).phase));
     }
     expect(phases.length).toBeGreaterThan(5);
-    expect(new Set(phases)).toEqual(new Set(["events", "auditEvents", "appViews", "invocationRuns", "eventRuns", "deliveryRuns", "done"]));
+    expect(new Set(phases)).toEqual(new Set(["events", "auditEvents", "appViews", "deliveredResults", "runs", "done"]));
     expect((await service.storedContent(seed.connection)).deletion).toMatchObject({ status: "completed", counts: { runs: 2 } });
   });
 
@@ -376,7 +376,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       const board = app({ type: "board", userId: "board-user", userName: "Board", userEmail: null, isInstanceAdmin: true, source: "local_implicit" } as never);
 
       const counts = await request(board).get(`/api/tool-connections/${seed.connection.id}/stored-content`).expect(200);
-      expect(counts.body.stored).toEqual({ toolCalls: 2, approvals: 1, appViews: 1, runs: 2, runsInProgress: 1 });
+      expect(counts.body.stored).toEqual({ toolCalls: 2, approvals: 1, appViews: 1, runs: 3, runsInProgress: 1 });
 
       const requested = await request(board).post(`/api/tool-connections/${seed.connection.id}/stored-content/deletion`).expect(202);
       expect(requested.body.deletion).toMatchObject({ status: "pending" });
@@ -384,7 +384,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
         eq(activityLog.companyId, seed.company.id),
         eq(activityLog.action, "tool_connection.content_deletion_requested"),
       ));
-      expect(activity!.details).toMatchObject({ toolCalls: 2, runs: 2, runsInProgress: 1 });
+      expect(activity!.details).toMatchObject({ toolCalls: 2, runs: 3, runsInProgress: 1 });
       const status = await request(board).get(`/api/tool-connections/${seed.connection.id}/stored-content/deletion`).expect(200);
       expect(status.body.deletion).toMatchObject({ status: "pending" });
 

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNotNull, lte, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests,
   heartbeatRunEvents,
@@ -29,7 +29,7 @@ const SETTLED_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "
 const UNSETTLED_INVOCATION_STATUSES = ["pending", "authorized", "awaiting_approval", "executing"];
 const UNSETTLED_ACTION_REQUEST_STATUSES = ["pending", "approved", "executing"];
 const UNSETTLED_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
-const RESULT_TEXT_KEYS = ["summary", "result", "message"];
+const RESULT_TEXT_KEYS = ["summary", "result", "message", "text", "output", "content", "body"];
 const STRUCTURAL_EVENT_TYPES = [
   "lifecycle",
   "run.terminal",
@@ -44,8 +44,9 @@ const STRUCTURAL_EVENT_TYPES = [
   "harness.ready",
 ];
 
-type Phase = "invocations" | "events" | "auditEvents" | "appViews" | "invocationRuns" | "eventRuns" | "deliveryRuns" | "done";
-const PHASES: Phase[] = ["invocations", "events", "auditEvents", "appViews", "invocationRuns", "eventRuns", "deliveryRuns", "done"];
+type Phase = "invocations" | "events" | "auditEvents" | "appViews" | "deliveredResults" | "runs" | "done";
+const PHASES: Phase[] = ["invocations", "events", "auditEvents", "appViews", "deliveredResults", "runs", "done"];
+const RUN_BATCH_SIZE = 50;
 const DELIVERY_BATCH_SIZE = 50;
 
 type RunInProgress = { id: string; eventAfterId: number; changed: boolean; stage?: "events" | "log" };
@@ -93,6 +94,34 @@ export function settledRunSql(runId: SQL | typeof toolInvocations.runId): SQL {
       and f.phase not in ('committed', 'terminal_failure', 'applied')))`;
 }
 
+export function runsWithStoredContentSql(scope: { companyId: string; connectionId: string; cutoff: Date }): SQL {
+  const calls = sql`${toolInvocations.companyId} = ${scope.companyId} and ${toolInvocations.connectionId} = ${scope.connectionId}
+    and ${toolInvocations.createdAt} <= ${scope.cutoff.toISOString()}::timestamptz`;
+  const resultText = sql.join(RESULT_TEXT_KEYS.map((key) =>
+    sql.raw(`jsonb_path_exists(coalesce("heartbeat_runs"."result_json", '{}'::jsonb), 'lax $.**.${key} ? (@.type() == "string" && @ != "")')`)), sql` or `);
+  return sql`${heartbeatRuns.companyId} = ${scope.companyId}
+    and (${heartbeatRuns.id} in (select ${toolInvocations.runId} from ${toolInvocations} where ${calls} and ${toolInvocations.runId} is not null)
+      or ${heartbeatRuns.id} in (select ${toolCallEvents.runId} from ${toolCallEvents} where ${toolCallEvents.companyId} = ${scope.companyId}
+        and ${toolCallEvents.connectionId} = ${scope.connectionId} and ${toolCallEvents.createdAt} <= ${scope.cutoff.toISOString()}::timestamptz
+        and ${toolCallEvents.runId} is not null)
+      or (${heartbeatRuns.issueId} in (select ${toolActionRequests.issueId} from ${toolActionRequests}
+            join ${toolInvocations} on ${toolInvocations.id} = ${toolActionRequests.invocationId} where ${calls})
+        and ${heartbeatRuns.contextSnapshot}->'toolActionRequestIds' ?| array(select ${toolActionRequests.id}::text from ${toolActionRequests}
+            join ${toolInvocations} on ${toolInvocations.id} = ${toolActionRequests.invocationId} where ${calls})))
+    and (${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
+      or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
+      or ${resultText}
+      or exists (select 1 from ${heartbeatRunEvents} where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
+        and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id} and ${contentEventSql()}))`;
+}
+
+function contentEventSql(): SQL {
+  return sql`${heartbeatRunEvents.eventType} not in (${listSql(STRUCTURAL_EVENT_TYPES)})
+    and ${heartbeatRunEvents.eventType} not like 'native.%'
+    and not (${heartbeatRunEvents.eventType} = 'item.completed' and (${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage')
+    and (${heartbeatRunEvents.message} is not null or ${heartbeatRunEvents.payload} is not null)`;
+}
+
 function clearedSummary(column: SQL, deletedAt: string): SQL {
   return sql`case when ${column} is null then null
     else ${column} || jsonb_build_object('summary', '', 'contentDeletedAt', ${deletedAt}::text) end`;
@@ -115,6 +144,28 @@ export function withoutActionResults(value: unknown, actionRequestIds: ReadonlyS
   };
   const result = walk(value);
   return { value: changed ? result : value, changed };
+}
+
+export function withoutResultText(value: Record<string, unknown> | null): { value: Record<string, unknown> | null; changed: boolean } {
+  if (!value || typeof value !== "object") return { value, changed: false };
+  let changed = false;
+  const walk = (node: unknown, topLevel: boolean): unknown => {
+    if (Array.isArray(node)) return node.map((entry) => walk(entry, false));
+    if (!node || typeof node !== "object") return node;
+    const next: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(node as Record<string, unknown>)) {
+      if (RESULT_TEXT_KEYS.includes(key) && typeof entry === "string") {
+        if (entry !== "") changed = true;
+        if (!topLevel) next[key] = "";
+        else if (entry === "") next[key] = entry;
+        continue;
+      }
+      next[key] = walk(entry, false);
+    }
+    return next;
+  };
+  const next = walk(value, true) as Record<string, unknown>;
+  return { value: changed ? next : value, changed };
 }
 
 function toDeletion(row: DeletionRow): ToolConnectionContentDeletion {
@@ -167,15 +218,11 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
       .where(and(eq(toolMcpAppViews.connectionId, connection.id), eq(toolMcpAppViews.companyId, connection.companyId)));
     const [runs] = await db
       .select({
-        runs: sql<number>`count(distinct ${heartbeatRuns.id})::int`,
-        runsInProgress: sql<number>`count(distinct ${heartbeatRuns.id}) filter (where not ${settledRunSql(sql`${heartbeatRuns.id}`)})::int`,
+        runs: sql<number>`count(*)::int`,
+        runsInProgress: sql<number>`count(*) filter (where not ${settledRunSql(sql`${heartbeatRuns.id}`)})::int`,
       })
       .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, connection.companyId),
-        sql`${heartbeatRuns.id} in (select ${toolInvocations.runId} from ${toolInvocations} where ${scope} and ${toolInvocations.runId} is not null)`,
-        sql`(${heartbeatRuns.logRef} is not null or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null)`,
-      ));
+      .where(runsWithStoredContentSql({ companyId: connection.companyId, connectionId: connection.id, cutoff: new Date() }));
     return {
       stored: {
         toolCalls: calls?.toolCalls ?? 0,
@@ -234,25 +281,28 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
 
   async function clearDeliveredResults(tx: Db, job: DeletionRow, progress: Progress, requests: Array<{ id: string; issueId: string | null }>) {
     const issueIds = [...new Set(requests.flatMap((row) => row.issueId ? [row.issueId] : []))];
-    if (issueIds.length === 0) return;
+    if (issueIds.length === 0) return [];
     const ids = new Set(requests.map((row) => row.id));
+    const idList = sql`array[${listSql([...ids])}]::text[]`;
     const runs = await tx
       .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
       .where(and(
         eq(heartbeatRuns.companyId, job.companyId),
         inArray(heartbeatRuns.issueId, issueIds),
-        sql`${heartbeatRuns.contextSnapshot}::text like '%"actionRequestId"%'`,
-      ));
+        sql`${heartbeatRuns.contextSnapshot}->'toolActionRequestIds' ?| ${idList}`,
+      ))
+      .for("update");
     const settled = await settledRunIds(tx, runs.map((row) => row.id));
     for (const run of runs) {
-      const cleaned = withoutActionResults(run.contextSnapshot, ids);
-      if (!cleaned.changed) continue;
       if (!settled.has(run.id)) {
         progress.counts.itemsInProgress += 1;
         continue;
       }
-      await tx.update(heartbeatRuns).set({ contextSnapshot: cleaned.value as Record<string, unknown> }).where(eq(heartbeatRuns.id, run.id));
+      const cleaned = withoutActionResults(run.contextSnapshot, ids);
+      if (cleaned.changed) {
+        await tx.update(heartbeatRuns).set({ contextSnapshot: cleaned.value as Record<string, unknown> }).where(eq(heartbeatRuns.id, run.id));
+      }
     }
     const wakes = await tx
       .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
@@ -260,8 +310,10 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
       .where(and(
         eq(agentWakeupRequests.companyId, job.companyId),
         inArray(sql<string>`${agentWakeupRequests.payload}->>'issueId'`, issueIds),
-        sql`${agentWakeupRequests.payload}::text like '%"actionRequestId"%'`,
-      ));
+        sql`(${agentWakeupRequests.payload}->'toolActionRequestIds' ?| ${idList}
+          or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'toolActionRequestIds' ?| ${idList})`,
+      ))
+      .for("update");
     for (const wake of wakes) {
       const cleaned = withoutActionResults(wake.payload, ids);
       if (!cleaned.changed) continue;
@@ -271,6 +323,7 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
       }
       await tx.update(agentWakeupRequests).set({ payload: cleaned.value as Record<string, unknown> }).where(eq(agentWakeupRequests.id, wake.id));
     }
+    return runs.filter((row) => settled.has(row.id)).map((row) => row.id);
   }
 
   async function invocationsStep(tx: Db, job: DeletionRow, progress: Progress, deletedAt: string) {
@@ -350,7 +403,6 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
                 or ${issueThreadInteractions.result}->'toolAction'->>'resultSummary' is not null)`,
             ));
         }
-        await clearDeliveredResults(tx, job, progress, settledRequests);
       }
     }
     const last = page[page.length - 1]!;
@@ -482,10 +534,7 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
       .set({ message: null, payload: null as never })
       .where(and(
         inArray(heartbeatRunEvents.id, ids),
-        sql`${heartbeatRunEvents.eventType} not in (${listSql(STRUCTURAL_EVENT_TYPES)})`,
-        sql`${heartbeatRunEvents.eventType} not like 'native.%'`,
-        sql`not (${heartbeatRunEvents.eventType} = 'item.completed' and (${heartbeatRunEvents.payload} -> 'prpEvent' -> 'payload' ->> 'kind') = 'usage')`,
-        sql`(${heartbeatRunEvents.message} is not null or ${heartbeatRunEvents.payload} is not null)`,
+        contentEventSql(),
       ))
       .returning({ id: heartbeatRunEvents.id });
     if (cleared.length > 0) run.changed = true;
@@ -518,42 +567,22 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
   }
 
   async function finishRun(tx: Db, companyId: string, run: RunInProgress) {
-    const cleared = await tx
-      .update(heartbeatRuns)
-      .set({
-        stdoutExcerpt: null,
-        stderrExcerpt: null,
-        resultJson: sql`case when ${heartbeatRuns.resultJson} is null then null
-          else ${heartbeatRuns.resultJson} - array[${listSql(RESULT_TEXT_KEYS)}]::text[] end` as never,
-      })
-      .where(and(
-        eq(heartbeatRuns.id, run.id),
-        eq(heartbeatRuns.companyId, companyId),
-        sql`(${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
-          or ${heartbeatRuns.resultJson} ?| array[${listSql(RESULT_TEXT_KEYS)}]::text[])`,
-      ))
-      .returning({ id: heartbeatRuns.id });
-    if (cleared.length > 0) run.changed = true;
-  }
-
-  async function nextRun(tx: Db, job: DeletionRow, progress: Progress, source: "invocations" | "events") {
-    const table = source === "invocations" ? toolInvocations : toolCallEvents;
     const [row] = await tx
-      .select({ runId: table.runId })
-      .from(table)
-      .where(and(
-        eq(table.companyId, job.companyId),
-        isNotNull(table.runId),
-        progress.runCursor ? gt(table.runId, progress.runCursor) : undefined,
-        eq(table.connectionId, job.connectionId),
-        lte(table.createdAt, job.requestedAt),
-      ))
-      .orderBy(asc(table.runId))
-      .limit(1);
-    return row?.runId ?? null;
+      .select({ stdoutExcerpt: heartbeatRuns.stdoutExcerpt, stderrExcerpt: heartbeatRuns.stderrExcerpt, resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)))
+      .for("update");
+    if (!row) return;
+    const result = withoutResultText(row.resultJson);
+    if (row.stdoutExcerpt === null && row.stderrExcerpt === null && !result.changed) return;
+    await tx
+      .update(heartbeatRuns)
+      .set({ stdoutExcerpt: null, stderrExcerpt: null, resultJson: result.value as Record<string, unknown> | null })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, companyId)));
+    run.changed = true;
   }
 
-  async function nextDeliveryRuns(tx: Db, job: DeletionRow, progress: Progress) {
+  async function deliveredResultsStep(tx: Db, job: DeletionRow, progress: Progress) {
     const requests = await tx
       .select({ id: toolActionRequests.id, issueId: toolActionRequests.issueId })
       .from(toolActionRequests)
@@ -563,40 +592,36 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
         eq(toolInvocations.companyId, job.companyId),
         eq(toolInvocations.connectionId, job.connectionId),
         lte(toolInvocations.createdAt, job.requestedAt),
-        progress.cursor ? gt(toolActionRequests.id, progress.cursor.id) : undefined,
+        progress.runCursor ? gt(toolActionRequests.id, progress.runCursor) : undefined,
       ))
       .orderBy(asc(toolActionRequests.id))
       .limit(DELIVERY_BATCH_SIZE);
-    if (requests.length === 0) return null;
-    progress.cursor = { createdAt: new Date(0).toISOString(), id: requests[requests.length - 1]!.id };
-    const issueIds = [...new Set(requests.flatMap((row) => row.issueId ? [row.issueId] : []))];
-    if (issueIds.length === 0) return [];
-    const runs = await tx
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, job.companyId),
-        inArray(heartbeatRuns.issueId, issueIds),
-        sql`${heartbeatRuns.contextSnapshot}->'toolActionRequestIds' ?| array[${listSql(requests.map((row) => row.id))}]::text[]`,
-      ));
-    return runs.map((row) => row.id);
+    if (requests.length === 0) return true;
+    progress.runCursor = requests[requests.length - 1]!.id;
+    await clearDeliveredResults(tx, job, progress, requests);
+    return requests.length < DELIVERY_BATCH_SIZE;
   }
 
   async function runsStep(tx: Db, job: DeletionRow, progress: Progress) {
-    const delivery = progress.phase === "deliveryRuns";
     if (!progress.currentRun) {
       let runId = progress.pendingRuns.shift() ?? null;
-      if (!runId && delivery) {
-        const found = await nextDeliveryRuns(tx, job, progress);
-        if (found === null) return true;
-        progress.pendingRuns = found;
+      if (!runId) {
+        const rows = await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            progress.runCursor ? gt(heartbeatRuns.id, progress.runCursor) : undefined,
+            runsWithStoredContentSql({ companyId: job.companyId, connectionId: job.connectionId, cutoff: job.requestedAt }),
+          ))
+          .orderBy(asc(heartbeatRuns.id))
+          .limit(RUN_BATCH_SIZE);
+        if (rows.length === 0) return true;
+        progress.pendingRuns = rows.map((row) => row.id);
+        progress.runCursor = rows[rows.length - 1]!.id;
         return false;
       }
-      if (!runId) runId = await nextRun(tx, job, progress, progress.phase === "invocationRuns" ? "invocations" : "events");
-      if (!runId) return true;
       if (!(await settledRunIds(tx, [runId])).has(runId)) {
-        if (progress.phase !== "eventRuns") progress.counts.runsInProgress += 1;
-        if (!delivery) progress.runCursor = runId;
+        progress.counts.runsInProgress += 1;
         return false;
       }
       progress.currentRun = { id: runId, eventAfterId: 0, changed: false, stage: "events" };
@@ -605,7 +630,6 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
     const run = progress.currentRun;
     if (run.stage === "log") {
       if (run.changed) progress.counts.runs += 1;
-      if (!delivery) progress.runCursor = run.id;
       progress.currentRun = null;
       return false;
     }
@@ -627,7 +651,8 @@ export function createConnectionContentDeletion(db: Db, deps: { runLogStore: () 
         : progress.phase === "events" ? await eventsStep(tx, job, progress, deletedAt)
           : progress.phase === "auditEvents" ? await auditEventsStep(tx, job, progress, deletedAt)
             : progress.phase === "appViews" ? await appViewsStep(tx, job, progress)
-              : await runsStep(tx, job, progress);
+              : progress.phase === "deliveredResults" ? await deliveredResultsStep(tx, job, progress)
+                : await runsStep(tx, job, progress);
       if (done) {
         progress.phase = nextPhase(progress.phase);
         progress.cursor = null;

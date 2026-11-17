@@ -44,7 +44,7 @@ Deletion starts right away and continues in the background. It finishes even if 
 ## What is kept
 
 - The record that each call happened: when, which tool, which agent, the outcome, the size of the data, and a fingerprint of it. Paperclip needs these for its activity history and usage counts. They do not contain the data.
-- Tasks, comments, documents and files your agents wrote. If an agent copied data into a comment or a file, delete or edit that item yourself.
+- **Anything your agents wrote into tasks: comments, documents and files.** This action does not remove them, even when an agent copied data from the app into them. Delete or edit those items yourself, or delete the task.
 - The connection's audit activity, which records counts only.
 - Transcripts of later runs that only read the context an interactive app view shared. Paperclip does not record which runs read it. Delete those tasks if you need that text gone.
 - Raw provider traces. An administrator must turn them on, and they expire on their own within 24 hours.

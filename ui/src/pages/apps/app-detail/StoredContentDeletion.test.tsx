@@ -33,13 +33,13 @@ afterEach(() => {
 });
 
 async function flush() {
-  for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+  for (let i = 0; i < 10; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 
 describe("stored content deletion", () => {
   it("describes how much will be deleted in plain words", () => {
     expect(storedContentSummary(stored, "Google Workspace")).toBe(
-      "Paperclip will delete what it saved from 12 tool calls, 2 approval requests and the full transcripts of 3 runs that used Google Workspace.",
+      "Paperclip will delete what it saved from 12 tool calls, 2 approval requests and the full transcripts of 3 runs that used Google Workspace or received its results.",
     );
     expect(storedContentSummary({ ...stored, stored: { toolCalls: 0, approvals: 0, appViews: 1, runs: 0, runsInProgress: 0 } }, "Docs"))
       .toBe("Paperclip will delete what it saved from 1 app view that used Docs.");
