@@ -36,18 +36,37 @@ async function canonicalDirectory(value: string): Promise<string | null> {
   }
 }
 
+const ORIGIN_READ_ATTEMPTS = 3;
+
+type OriginInspection =
+  | { status: "read"; url: string | null }
+  | { status: "unreadable" };
+
+function originReadIsTransient(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code !== "number";
+}
+
 // Read the stored identity, not `remote get-url` which expands transport-only
 // insteadOf settings (including the managed SSH-to-HTTPS credential rewrite).
-async function readOrigin(cwd: string): Promise<string | null> {
-  return exec("git", ["config", "--local", "--null", "--get-all", "remote.origin.url"], {
-    cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, timeout: 10_000, maxBuffer: 16 * 1024,
-  }).then(result => {
-    const urls = result.stdout.split("\0");
-    if (urls.at(-1) === "") urls.pop();
-    // Fetch uses the first URL, while a scalar config read can select the last.
-    // Ambiguous origins are not proof that this is the recorded repository.
-    return urls.length === 1 ? urls[0]!.trim() || null : null;
-  }).catch(() => null);
+async function readOrigin(cwd: string): Promise<OriginInspection> {
+  for (let attempt = 1; attempt <= ORIGIN_READ_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await exec("git", ["config", "--local", "--null", "--get-all", "remote.origin.url"], {
+        cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" }, timeout: 10_000, maxBuffer: 16 * 1024,
+      });
+      const urls = result.stdout.split("\0");
+      if (urls.at(-1) === "") urls.pop();
+      // Fetch uses the first URL, while a scalar config read can select the last.
+      // Ambiguous origins are not proof that this is the recorded repository.
+      return { status: "read", url: urls.length === 1 ? urls[0]!.trim() || null : null };
+    } catch (error) {
+      if (!originReadIsTransient(error)) return { status: "read", url: null };
+      if (attempt === ORIGIN_READ_ATTEMPTS) return { status: "unreadable" };
+      await new Promise(resolve => setTimeout(resolve, 50 * attempt));
+    }
+  }
+  return { status: "unreadable" };
 }
 
 async function gitDirectory(cwd: string, flag: "--absolute-git-dir" | "--git-common-dir"): Promise<string | null> {
@@ -157,19 +176,28 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const dotGit = await fs.lstat(path.join(existing, ".git")).catch(() => null);
     if (!dotGit?.isFile()) fail(workspace, "source_registration_unproven");
     let repositoryMismatch = false;
+    let originUnreadable = false;
     let failedInspection: ManagedGitInspectionDiagnostic | null = null;
     for (const owner of knownRoots) {
       if (owner === existing) continue;
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
       if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
-      if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
-        repositoryMismatch = true;
-        continue;
+      if (workspace.repoUrl) {
+        const origin = await readOrigin(owner);
+        if (origin.status === "unreadable") {
+          originUnreadable = true;
+          continue;
+        }
+        if (origin.url !== workspace.repoUrl.trim()) {
+          repositoryMismatch = true;
+          continue;
+        }
       }
       return owner;
     }
     if (failedInspection) failInspection(workspace, failedInspection);
+    if (originUnreadable) fail(workspace, "source_repository_inspection_failed");
     fail(workspace, repositoryMismatch ? "source_repository_mismatch" : "source_registration_unproven");
   }
 
@@ -180,13 +208,22 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   // Reconstruct only from a source authorized by the old binding. A new project
   // primary is never a fallback for a missing historical worktree.
   let failedInspection: ManagedGitInspectionDiagnostic | null = null;
+  let originUnreadable = false;
   for (const candidate of knownRoots) {
-    if (workspace.repoUrl && await readOrigin(candidate) !== workspace.repoUrl.trim()) continue;
+    if (workspace.repoUrl) {
+      const origin = await readOrigin(candidate);
+      if (origin.status === "unreadable") {
+        originUnreadable = true;
+        continue;
+      }
+      if (origin.url !== workspace.repoUrl.trim()) continue;
+    }
     const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: candidate, repoRoot: candidate, expectedBranchName: null });
     if (inspection.valid) return candidate;
     if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
   }
   if (failedInspection) failInspection(workspace, failedInspection);
+  if (originUnreadable) fail(workspace, "source_repository_inspection_failed");
   if (workspace.repoUrl && input.materializeOriginalRepository) {
     if (input.candidateBaseCwds.length === 0 || !(await Promise.all(input.candidateBaseCwds.map(
       candidate => canMaterializeManagedCandidate(input.managedSourceRoot, candidate),
@@ -194,7 +231,11 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const materialized = await input.materializeOriginalRepository();
     const owner = await canonicalDirectory(materialized);
     const expectedRoots = await roots();
-    if (owner && expectedRoots.has(owner) && await readOrigin(owner) === workspace.repoUrl.trim()) return owner;
+    if (owner && expectedRoots.has(owner)) {
+      const origin = await readOrigin(owner);
+      if (origin.status === "unreadable") fail(workspace, "source_repository_inspection_failed");
+      if (origin.url === workspace.repoUrl.trim()) return owner;
+    }
   }
   fail(workspace, "source_repository_unavailable");
 }

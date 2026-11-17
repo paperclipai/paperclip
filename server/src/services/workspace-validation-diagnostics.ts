@@ -1,6 +1,7 @@
 export const PERSISTED_WORKSPACE_SOURCE_REASON_CODES = [
   "source_scope_mismatch", "explicit_project_workspace_conflict", "source_path_unproven",
-  "source_registration_unproven", "source_repository_mismatch", "source_repository_unavailable",
+  "source_registration_unproven", "source_repository_mismatch", "source_repository_inspection_failed",
+  "source_repository_unavailable",
 ] as const;
 
 export type PersistedWorkspaceSourceReasonCode = typeof PERSISTED_WORKSPACE_SOURCE_REASON_CODES[number];

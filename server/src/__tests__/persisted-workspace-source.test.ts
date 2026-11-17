@@ -6,9 +6,35 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolvePersistedGitWorkspaceSource } from "../services/persisted-workspace-source.js";
 
+const ORIGIN_FAILURE = vi.hoisted(() => ({ mode: "off" as "off" | "always" | "once", attempts: 0 }));
+
+vi.mock("node:child_process", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  const realExecFile = actual.execFile as unknown as ((...args: unknown[]) => unknown);
+  const promisified = (actual.execFile as unknown as Record<symbol, unknown>)[
+    Symbol.for("nodejs.util.promisify.custom")
+  ] as (...args: unknown[]) => unknown;
+  const wrapper = ((...args: unknown[]) => realExecFile(...args)) as unknown as typeof actual.execFile;
+  Object.defineProperty(wrapper, Symbol.for("nodejs.util.promisify.custom"), {
+    value: (file: string, args: readonly string[], options: unknown) => {
+      if (ORIGIN_FAILURE.mode !== "off" && file === "git" && args.includes("remote.origin.url")) {
+        ORIGIN_FAILURE.attempts += 1;
+        if (ORIGIN_FAILURE.mode === "always" || ORIGIN_FAILURE.attempts === 1) {
+          const timeout = Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: null, killed: true, signal: "SIGTERM" });
+          return Promise.reject(timeout);
+        }
+      }
+      return promisified(file, args, options);
+    },
+  });
+  return { ...actual, execFile: wrapper };
+});
+
 const exec = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => {
+  ORIGIN_FAILURE.mode = "off";
+  ORIGIN_FAILURE.attempts = 0;
   vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
 });
@@ -291,6 +317,42 @@ describe("persisted Git workspace source", () => {
       workspaceValidation: { reasonCode: "source_registration_unproven" },
     } });
     expect(await fs.readFile(path.join(worktree, "retained.txt"), "utf8")).toBe("keep this work\n");
+  });
+
+  it("reports an unreadable origin instead of a source mismatch", async () => {
+    const { original, input } = await fixture();
+    ORIGIN_FAILURE.mode = "always";
+    const outcome = await resolvePersistedGitWorkspaceSource({ ...input, candidateBaseCwds: [original] })
+      .then(source => ({ source }), (error: unknown) => ({ error }));
+    expect(outcome).toMatchObject({ error: { resultJson: { workspaceValidation: {
+      reason: "persisted_workspace_source_conflict", reasonCode: "source_repository_inspection_failed",
+    } } } });
+    expect(ORIGIN_FAILURE.attempts).toBe(3);
+  });
+
+  it("retries a transient origin read instead of discarding the retained source", async () => {
+    const { original, input } = await fixture();
+    ORIGIN_FAILURE.mode = "once";
+    await expect(resolvePersistedGitWorkspaceSource({ ...input, candidateBaseCwds: [original] })).resolves.toBe(original);
+    expect(ORIGIN_FAILURE.attempts).toBe(2);
+  });
+
+  it("does not let an empty candidate directory block materialization", async () => {
+    const { root, original, input } = await fixture();
+    const emptyCandidate = path.join(root, "empty-candidate");
+    await fs.mkdir(emptyCandidate);
+    const restored = path.join(root, "restored-source");
+    const materializeOriginalRepository = vi.fn(async () => {
+      await exec("git", ["clone", original, restored]);
+      await exec("git", ["-C", restored, "remote", "set-url", "origin", input.workspace.repoUrl]);
+      return restored;
+    });
+    const missingWorktree = path.join(root, "missing-worktree");
+    await expect(resolvePersistedGitWorkspaceSource({ ...input,
+      workspace: { ...input.workspace, cwd: missingWorktree, providerRef: missingWorktree },
+      candidateBaseCwds: [emptyCandidate, restored], materializeOriginalRepository,
+    })).resolves.toBe(restored);
+    expect(materializeOriginalRepository).toHaveBeenCalledTimes(1);
   });
 
 });
