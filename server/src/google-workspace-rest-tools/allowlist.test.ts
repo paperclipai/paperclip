@@ -34,9 +34,39 @@ describe("tool allowlist", () => {
     }
   });
 
+  it("describes the search label: operator as taking label names, never label IDs", () => {
+    const queries = listGoogleWorkspaceRestTools("gmail")
+      .map((tool) => (tool.inputSchema.properties as Record<string, { description?: string }> | undefined)?.query?.description)
+      .filter((text): text is string => typeof text === "string");
+    expect(queries.length).toBeGreaterThanOrEqual(3);
+    expect(queries.filter((item) => item.includes("label:"))).toHaveLength(2);
+    for (const text of queries.filter((item) => item.includes("label:"))) {
+      expect(text).toMatch(/`label:` takes a label name/);
+    }
+    const everything = JSON.stringify(listGoogleWorkspaceRestTools("gmail"));
+    expect(everything).not.toMatch(/label:`? takes label IDs/i);
+  });
+
   it("implements no send tool", () => {
     const names = GOOGLE_WORKSPACE_REST_SERVICES.flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
     expect(names.filter((name) => /send/i.test(name))).toEqual([]);
+  });
+
+  it("implements every Gmail tool on the allowlist (9 of 9) and nothing else", () => {
+    const allowlisted = [
+      "get_message", "get_thread", "get_draft", "list_drafts", "list_labels",
+      "search_threads", "list_threads", "search_messages", "create_draft",
+    ];
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("gmail", name)), name).not.toBeNull();
+    for (const name of ["label_message", "label_thread", "unlabel_message", "trash_message", "send_message"]) {
+      expect(googleWorkspaceToolTarget(googleWorkspaceToolName("gmail", name)), name).toBeNull();
+    }
+    expect(listGoogleWorkspaceRestTools("gmail").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+  });
+
+  it("implements only read tools besides create_draft", () => {
+    const writes = listGoogleWorkspaceRestTools("gmail").filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name);
+    expect(writes).toEqual(["create_draft"]);
   });
 
   it("implements every allowlisted Calendar tool (9 of 9)", () => {
@@ -44,9 +74,5 @@ describe("tool allowlist", () => {
     for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", name)), name).not.toBeNull();
     expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", "unlisted_tool"))).toBeNull();
     expect(listGoogleWorkspaceRestTools("calendar").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
-  });
-
-  it("implements the Gmail tools of this release", () => {
-    expect(listGoogleWorkspaceRestTools("gmail").map((tool) => tool.name)).toEqual(["get_message", "search_threads", "create_draft"]);
   });
 });

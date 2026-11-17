@@ -1,21 +1,18 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { GoogleToolError } from "../errors.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
 import { defineTool, structuredResult } from "../tool.js";
 import {
-  bodyAttachmentRequest,
-  externalBodyIds,
   gmailId,
+  readMessageBodies,
   SUMMARY_HEADERS,
   toMcpMessage,
-  type GmailRestAttachment,
   type GmailRestMessage,
   type MessageDetail,
 } from "./message.js";
 import { messageSchema } from "./schemas.js";
 
-const MESSAGE_FORMATS = ["MESSAGE_FORMAT_UNSPECIFIED", "MINIMAL", "FULL_CONTENT", "METADATA_ONLY"] as const;
+export const MESSAGE_FORMATS =["MESSAGE_FORMAT_UNSPECIFIED", "MINIMAL", "FULL_CONTENT", "METADATA_ONLY"] as const;
 
 const args = z.object({
   messageId: gmailId,
@@ -47,23 +44,10 @@ export function getMessageResult(
   return structuredResult(toMcpMessage(message, messageDetail(input.messageFormat), externalBodies));
 }
 
-async function readExternalBodies(message: GmailRestMessage, input: GetMessageArgs, http: GoogleHttp): Promise<Map<string, string>> {
-  const bodies = new Map<string, string>();
-  if (messageDetail(input.messageFormat) !== "full") return bodies;
-  for (const attachmentId of externalBodyIds(message.payload)) {
-    let answer: GmailRestAttachment;
-    try {
-      answer = await http.send<GmailRestAttachment>(bodyAttachmentRequest(input.messageId, attachmentId));
-    } catch (error) {
-      if (error instanceof GoogleToolError) {
-        throw new GoogleToolError("incomplete", `Could not read the full body of this message. ${error.message}`, error.httpStatus);
-      }
-      throw error;
-    }
-    if (typeof answer.data !== "string") throw new GoogleToolError("incomplete", "Could not read the full body of this message.");
-    bodies.set(attachmentId, answer.data);
-  }
-  return bodies;
+async function readExternalBodies(message: GmailRestMessage, input: GetMessageArgs, http: GoogleHttp): Promise<ReadonlyMap<string, string> | undefined> {
+  if (messageDetail(input.messageFormat) !== "full") return undefined;
+  const bodies = await readMessageBodies([{ ...message, id: input.messageId }], http);
+  return bodies.get(input.messageId);
 }
 
 export const getMessage = defineTool({

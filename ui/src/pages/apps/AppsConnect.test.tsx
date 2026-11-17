@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition, pluginAppSlug } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RequestOptions } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -471,6 +471,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
     await act(async () => buttonByText("View connection")?.click());
     expect(mockNavigate).toHaveBeenCalledWith("/apps/saved-account/permissions");
+  });
+
+  it("shows an unavailable state for a plugin connector the host no longer provides", async () => {
+    mockSearch.value = `source=${pluginAppSlug("example.meetings", "circleback")}`;
+    listGalleryMock.mockResolvedValue({ apps: [] });
+    await render();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("This connector is unavailable. Ask an instance admin to enable its plugin.");
+    expect(connectAppMock).not.toHaveBeenCalled();
   });
 
   it("shows an unavailable saved sign-in without creating a replacement", async () => {
