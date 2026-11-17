@@ -8,6 +8,8 @@ import { sendAgentChatMessage } from "../services/agent-chat-messages.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
+import * as issueServices from "../services/issues.js";
+import { agentService } from "../services/agents.js";
 import { activityService } from "../services/activity.js";
 import { recordAcceptedChatHandoff } from "../services/chat-completion-delivery.js";
 import { conversationReplay, deliverConversationComments, undeliveredConversationComments } from "../services/agent-conversations.js";
@@ -52,6 +54,29 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     action: "issue.cross_issue_influence_observed", entityType: "issue", entityId: f.issueId,
     details: { kind: ["comment", "update", "interaction_resolution"][index % 3] },
   })));
+
+  it("uses the current agent name for a proactive chat created across a rename", async () => {
+    const f = await fixture();
+    const reached = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+    const realIssueService = issueServices.issueService;
+    const spy = vi.spyOn(issueServices, "issueService").mockImplementation(database => {
+      const service = realIssueService(database);
+      return { ...service, create: async (companyId, data, transaction) => {
+        if (data.conversationAgentId === f.agentId) { reached.resolve(); await resume.promise; }
+        return service.create(companyId, data, transaction);
+      } };
+    });
+    const delivery = send(f);
+    try {
+      await Promise.race([reached.promise, delivery.then(() => { throw new Error("Delivery ended before chat creation"); })]);
+      await agentService(server.db).update(f.agentId, { name: "Renamed chat sender" });
+    } finally {
+      resume.resolve();
+      spy.mockRestore();
+    }
+    const receipt = (await delivery)!;
+    expect((await issueService(server.db).getById(receipt.conversationId))?.title).toBe("Chat with Renamed chat sender");
+  });
 
   it.each(["native", "http"])("enforces the shared run cap for %s delivery without creating an empty chat", async transport => {
     const f = await fixture();

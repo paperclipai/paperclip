@@ -32,7 +32,6 @@ type VerificationCommandResult = {
 
 /** Retry only these read-only probes, never provider work or artifact mutations.
  * Each transport call enforces its own 30s timeout; two attempts is the hard cap.
- * Wait one second before the retry so a fast gateway failure can recover.
  * A completed, failing verifier is incompatible. An interrupted probe proves no
  * incompatibility. Exhaustion holds the original run: reattachment does not
  * spend a new provider attempt, so scheduling another attach could loop.
