@@ -435,11 +435,15 @@ export async function reconcileSafeNativeReplacements(
       if (historicalListener && !await historicalListenerGuardEvidence(db, run)) continue;
       const preClaim = coordinator.failureCode === NATIVE_PRE_CLAIM_FAILURE_CODE;
       if (preClaim && !await preClaimFailureEvidence(db, run)) continue;
-      const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim
-        ? await options.verifyStoppedSession?.(run) ?? null : null;
+      const needsStopProof = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim;
+      const stoppedSession = needsStopProof ? await options.verifyStoppedSession?.(run) ?? null : null;
       // A transport label alone is not evidence. Keep inspecting these candidates
-      // as process cleanup and the final transcript become durable.
-      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim && !stoppedSession) continue;
+      // as process cleanup and the final transcript become durable. A remote or
+      // non-Codex session can never produce that local stop proof, so it is
+      // refused now and its hold continues in a fresh isolated run.
+      const stopProofUnavailable = needsStopProof && !stoppedSession && (record(execution.provider).kind !== "codex"
+        || leases.some(lease => lease.provider !== null && lease.provider !== "local"));
+      if (needsStopProof && !stoppedSession && !stopProofUnavailable) continue;
       const invocations = await db
         .select()
         .from(toolInvocations)
@@ -545,13 +549,13 @@ export async function reconcileSafeNativeReplacements(
         // A facade transport failure can conceal an authoritative protocol
         // rejection. A stopped process and read receipts do not resolve that.
         // Before its first claim the run could not dispatch provider work.
-        failureMeaningKnown:
+        failureMeaningKnown: !stopProofUnavailable && (
           preClaim || Boolean(stoppedSession) || (typeof coordinator.failureDetail?.originalFailureCode === "string" &&
           ![
             "notification_transport_failed",
             "provider_turn_failed",
             "native_provider_terminal_failed",
-          ].includes(coordinator.failureDetail.originalFailureCode)),
+          ].includes(coordinator.failureDetail.originalFailureCode))),
         predecessorFenced:
           coordinator.leaseOwner === null && run.status === "failed",
         providerStopped:

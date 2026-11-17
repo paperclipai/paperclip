@@ -226,6 +226,41 @@ const support = externalDatabaseUrl
         }
       },
     );
+    it.each(["remote_sandbox", "local_codex"] as const)(
+      "continues a transport failure whose stop can never be proven locally without waiting for a person (%s)",
+      async (mode) => {
+        const source = await seed();
+        const workspace = await mkdtemp(join(tmpdir(), "paperclip-remote-transport-"));
+        try {
+          await db.update(heartbeatRuns).set({ finishedAt: new Date(), errorCode: "provider_transport_failed",
+            runnerProfileJson: { nativeExecutionInput: { provider: { kind: mode === "remote_sandbox" ? "opencode" : "codex" },
+              workspace: { cwd: workspace } } } }).where(eq(heartbeatRuns.id, source.runId));
+          await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed", failureDetail: {} })
+            .where(eq(nativeRunFinalizations.runId, source.runId));
+          if (mode === "remote_sandbox") await db.insert(environmentLeases).values({ companyId: source.companyId,
+            issueId: source.issueId, heartbeatRunId: source.runId, provider: "fake-sandbox", providerLeaseId: "sandbox-1",
+            status: "released", releasedAt: new Date(), cleanupStatus: "success" });
+          const verifyStoppedSession = vi.fn(async () => null);
+          invalidateNativeReplacementDiscovery(db);
+          await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+          const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+          const holds = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+          if (mode === "local_codex") {
+            expect(decision!.failureDetail?.replacementDenied).toBeUndefined();
+            expect(holds).toHaveLength(0);
+            return;
+          }
+          expect(decision!.failureDetail?.replacementDenied).toBe("provider_failure_meaning_unverified");
+          expect(holds).toMatchObject([{ status: "active", cause: "provider_failure_meaning_unverified" }]);
+          await settleUnrecoverableExecutions(db);
+          const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+          expect(settled).toMatchObject({ status: "resolved", outcome: "restored",
+            evidence: { freshContinuation: { trigger: "recovery_refused", sourceRunId: source.runId }, continuationDelivery: "pending" } });
+        } finally {
+          await rm(workspace, { recursive: true, force: true });
+        }
+      },
+    );
     it("wakes a completed replacement scan after actual local stop proof commits", async () => {
       const source = await seed(2);
       const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-stop-"));
