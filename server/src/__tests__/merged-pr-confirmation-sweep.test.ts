@@ -419,7 +419,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
     }, unrelatedInteractionId, {}, {
       systemId: "system:pr-merged",
       resolutionDetails: { source: "merged_pull_request_sweep" },
-    })).rejects.toMatchObject({ status: 403 });
+    })).rejects.toMatchObject({ status: 409 });
 
     await expect(service.sweepMergedPullRequestConfirmations([{
       companyId,
