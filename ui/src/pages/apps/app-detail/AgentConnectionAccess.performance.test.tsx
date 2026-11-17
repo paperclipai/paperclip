@@ -5,12 +5,12 @@ import { expect, it, vi } from "vitest";
 import type { ToolCatalogEntry, ToolPolicy, ToolProfileConfiguration } from "@paperclipai/shared";
 import { AgentConnectionAccess } from "./AgentConnectionAccess";
 
-it("indexes grant entries instead of scanning them for each catalog action", async () => {
+async function renderGrant(catalogSize: number) {
   let entryReads = 0;
   let policyReads = 0;
-  const catalog = Array.from({ length: 500 }, (_, index) => ({ id: `tool-${index}`, toolName: `Tool ${index}` })) as ToolCatalogEntry[];
+  const catalog = Array.from({ length: catalogSize }, (_, index) => ({ id: `tool-${index}`, toolName: `Tool ${index}` })) as ToolCatalogEntry[];
   const entries = catalog.map(tool => ({ effect: "include", get catalogEntryId() {
-    if (++entryReads > 1000) throw new Error("Grant matching scans the full entry list for each tool");
+    if (++entryReads > catalogSize * 20) throw new Error("Grant matching scans the full entry list for each tool");
     return tool.id;
   } }));
   const profiles = [{ id: "profile-1", profileKey: "connection-intent:conn-1:agent-1", status: "active",
@@ -19,7 +19,7 @@ it("indexes grant entries instead of scanning them for each catalog action", asy
   }] as unknown as ToolProfileConfiguration[];
   const policies = catalog.map(tool => ({ enabled: true, policyType: "require_approval", selectors: { catalogEntryId: tool.id },
     get config() {
-      if (++policyReads > 2000) throw new Error("Grant matching scans the policy list for each tool");
+      if (++policyReads > catalogSize * 20) throw new Error("Grant matching scans the policy list for each tool");
       return { source: "connection_intent", connectionId: "conn-1", agentId: "agent-1" };
     },
   })) as unknown as ToolPolicy[];
@@ -29,12 +29,20 @@ it("indexes grant entries instead of scanning them for each catalog action", asy
   try {
     await act(() => root.render(<AgentConnectionAccess connectionId="conn-1" profiles={profiles} policies={policies}
       catalog={catalog} agents={[]} canManage onRemove={vi.fn()} />));
-    expect(container.querySelectorAll("li")).toHaveLength(500);
-    expect(entryReads).toBeLessThanOrEqual(1000);
-    expect(policyReads).toBeLessThanOrEqual(2000);
-    expect(container.querySelectorAll("li")[499]?.textContent).toContain("Ask first");
+    expect(container.querySelectorAll("li")).toHaveLength(catalogSize);
+    expect(container.querySelectorAll("li")[catalogSize - 1]?.textContent).toContain("Ask first");
+    return { entryReads, policyReads };
   } finally {
     await act(() => root.unmount());
     container.remove();
   }
+}
+
+it("keeps grant entry and policy matching below quadratic growth", async () => {
+  const small = await renderGrant(100);
+  const large = await renderGrant(500);
+  expect(small.entryReads).toBeGreaterThan(0);
+  expect(small.policyReads).toBeGreaterThan(0);
+  expect(large.entryReads).toBeLessThan(small.entryReads * 10);
+  expect(large.policyReads).toBeLessThan(small.policyReads * 10);
 });

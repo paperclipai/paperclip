@@ -84,7 +84,7 @@ export { connectionAddress, connectionTransportLabel };
 
 export function AppDetail(props: { renderActions?: (connection: ToolConnection) => ReactNode; renderAgentSettings?: (connection: ToolConnection) => ReactNode; renderConnectionSettings?: (connection: ToolConnection) => ReactNode; onReconnect?: (connection: ToolConnection) => void } = {}) {
   const { connectionId = "" } = useParams<{ connectionId: string }>();
-  const connection = useQuery({ queryKey: queryKeys.tools.connection(connectionId), queryFn: () => toolsApi.getConnection(connectionId), enabled: !!connectionId });
+  const connection = useQuery({ queryKey: queryKeys.tools.connection(connectionId), queryFn: ({ signal }) => toolsApi.getConnection(connectionId, { signal, fresh: true }), enabled: !!connectionId });
   const view = useQueryView(connection);
   if (connection.isPending || view.kind === "reconnecting") return <p role="status">Loading connection…</p>;
   if (view.kind === "error" && view.errorKind === "not_found") return <AppNotFound />;
@@ -117,7 +117,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
 
   const connectionQuery = useQuery({
     queryKey: queryKeys.tools.connection(connectionId),
-    queryFn: () => toolsApi.getConnection(connectionId),
+    queryFn: ({ signal }) => toolsApi.getConnection(connectionId, { signal, fresh: true }),
     enabled: !!connectionId && !!activeTab,
   });
   const applicationsQuery = useQuery({
@@ -127,7 +127,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   });
   const installsQuery = useQuery({
     queryKey: queryKeys.tools.connectionInstalls(connectionId),
-    queryFn: () => toolsApi.getConnectionInstalls(connectionId),
+    queryFn: ({ signal }) => toolsApi.getConnectionInstalls(connectionId, { signal, fresh: true }),
     enabled: !!connectionId && activeTab === "permissions",
   });
   const galleryQuery = useQuery({
@@ -142,12 +142,12 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   });
   const profilesQuery = useQuery({
     queryKey: queryKeys.tools.connectionProfileConfiguration(selectedCompanyId ?? "__none__", connectionId),
-    queryFn: () => toolsApi.listConnectionProfileConfiguration(connectionId),
+    queryFn: ({ signal }) => toolsApi.listConnectionProfileConfiguration(connectionId, { signal, fresh: true }),
     enabled: !!selectedCompanyId && !!connectionId && (activeTab === "review" || activeTab === "permissions"),
   });
   const policiesQuery = useQuery({
     queryKey: queryKeys.tools.policies(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listPolicies(selectedCompanyId!),
+    queryFn: ({ signal }) => toolsApi.listPolicies(selectedCompanyId!, { signal, fresh: true }),
     enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
   });
   const agentsQuery = useQuery({

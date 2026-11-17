@@ -4,6 +4,7 @@ import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { ACTION_PAGE_SIZE } from "./constants";
 import { appDefinitionSlug } from "../app-definition-display";
 import type { AppDetailSectionProps } from "./types";
 import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-sheets";
@@ -254,7 +255,7 @@ export function QuarantinedActionsReview({
   onSubmit: (enabledIds: string[]) => void;
 }) {
   const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set());
-  const [visibleLimit, setVisibleLimit] = useState(50);
+  const [visibleLimit, setVisibleLimit] = useState(ACTION_PAGE_SIZE);
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
   return (
@@ -317,7 +318,7 @@ export function QuarantinedActionsReview({
         })}
       </div>
       {visibleLimit < count ? (
-        <Button type="button" variant="outline" size="sm" onClick={() => setVisibleLimit(limit => limit + 50)}>
+        <Button type="button" variant="outline" size="sm" onClick={() => setVisibleLimit(limit => limit + ACTION_PAGE_SIZE)}>
           Show more new actions
         </Button>
       ) : null}

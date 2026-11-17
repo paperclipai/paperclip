@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
 import { ActionTestDialog } from "./ActionTestDialog";
+import { ACTION_PAGE_SIZE } from "./constants";
 import { ProviderToolIcon } from "@/components/ProviderToolIcon";
 
 /** Action rows without a provider icon show none, as before. */
@@ -369,7 +370,6 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
-const ACTION_PAGE_SIZE = 50;
 
 function byName(a: ToolCatalogEntry, b: ToolCatalogEntry) {
   return (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
@@ -407,7 +407,6 @@ function ActionGroup({
 }) {
   const [visibleLimit, setVisibleLimit] = useState(ACTION_PAGE_SIZE);
   const visibleActions = actions.slice(0, visibleLimit);
-  // A direct permission link must remain usable even outside the first page.
   const focusedAction = focusId ? actions.find(action => action.id === focusId) : undefined;
   if (focusedAction && !visibleActions.includes(focusedAction)) visibleActions.push(focusedAction);
   if (actions.length === 0) return null;

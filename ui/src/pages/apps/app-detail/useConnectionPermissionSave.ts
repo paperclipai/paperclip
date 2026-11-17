@@ -12,7 +12,6 @@ interface PermissionDraft {
   reviewed?: Set<string>;
 }
 
-/** Show a pending choice immediately, then replace it with the saved response. */
 export function useConnectionPermissionSave({ companyId, connectionId, connection, onError }: {
   companyId: string | null;
   connectionId: string;
@@ -34,7 +33,6 @@ export function useConnectionPermissionSave({ companyId, connectionId, connectio
       }),
     onMutate: async (next) => {
       setDraft(next);
-      // An older read must not overwrite the response of this save.
       await Promise.all([
         queryKeys.tools.connectionProfileConfiguration(companyId!, connectionId),
         queryKeys.tools.policies(companyId!),
