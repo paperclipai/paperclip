@@ -25,7 +25,7 @@ describe.skipIf(!support.supported)("board retry held by an unresolved blocker",
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  it("keeps the saved Retry and names the blocker without a new skipped receipt on later sweeps", async () => {
+  it("keeps the saved Retry while a blocker is open, then dispatches it after that blocker is done", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Blocked retry", issuePrefix: `B${companyId.slice(0, 7)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Assignee", adapterType: "paperclip_runner" });
@@ -61,5 +61,28 @@ describe.skipIf(!support.supported)("board retry held by an unresolved blocker",
     expect(await skipped()).toEqual([]);
     expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])
       .toMatchObject({ status: "deferred_issue_execution", runId: null });
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blocker.id));
+    // One occupied slot keeps this sweep's dispatch queued. The assertion is the
+    // successor run, not a provider process.
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" });
+    await heartbeat.resumeExecutionWaitComments({ companyId });
+    expect(await skipped()).toEqual([]);
+    const [dispatched] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    const queued = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued"),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${parent.id}`,
+    ));
+    expect(queued, JSON.stringify({ status: dispatched?.status, runId: dispatched?.runId, payload: dispatched?.payload })).toHaveLength(1);
+    expect(queued[0].contextSnapshot).toMatchObject({
+      issueId: parent.id, previousRunId: runId, taskRetryRequestId: receipt.requestId,
+    });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])
+      .toMatchObject({ status: "coalesced", reason: "task_retry", runId: queued[0].id });
+    await heartbeat.resumeExecutionWaitComments({ companyId });
+    expect(await skipped()).toEqual([]);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])
+      .toMatchObject({ status: "coalesced", runId: queued[0].id });
   });
 });
