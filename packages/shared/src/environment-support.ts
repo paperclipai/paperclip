@@ -76,24 +76,41 @@ const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
   "pi_local",
 ]);
 
+// Adapters that run in sandbox environments only, never over SSH, and only on the
+// listed sandbox providers. hermes_local (TECH-8174) carries its system prompt and
+// provider key in the exec env, which only the Kubernetes provider keeps out of the
+// exec command (env over stdin), so other providers are not offered. Keep in sync with
+// HERMES_SANDBOX_PROVIDERS in packages/adapters/hermes/src/server/execute-sandbox.ts, which refuses
+// any other provider at run time (the adapter does not depend on this package).
+const SANDBOX_ONLY_ADAPTER_PROVIDERS: ReadonlyMap<AgentAdapterType, readonly string[]> = new Map([
+  ["hermes_local", ["kubernetes"]],
+]);
+const SANDBOX_ONLY_ADAPTERS = new Set<AgentAdapterType>(SANDBOX_ONLY_ADAPTER_PROVIDERS.keys());
+
 export function adapterSupportsRemoteManagedEnvironments(adapterType: string): boolean {
   return REMOTE_MANAGED_ADAPTERS.has(adapterType as AgentAdapterType);
 }
 
+/** True when the adapter may run in a sandbox environment (remote-managed or sandbox-only). */
+export function adapterSupportsSandboxEnvironments(adapterType: string): boolean {
+  return adapterSupportsRemoteManagedEnvironments(adapterType) ||
+    SANDBOX_ONLY_ADAPTERS.has(adapterType as AgentAdapterType);
+}
+
 export function supportedEnvironmentDriversForAdapter(adapterType: string): EnvironmentDriver[] {
   if (adapterType === "paperclip_runner") return ["local", "ssh", "sandbox", "plugin"];
-  return adapterSupportsRemoteManagedEnvironments(adapterType)
-    ? ["local", "ssh", "sandbox"]
-    : ["local"];
+  if (adapterSupportsRemoteManagedEnvironments(adapterType)) return ["local", "ssh", "sandbox"];
+  return SANDBOX_ONLY_ADAPTERS.has(adapterType as AgentAdapterType) ? ["local", "sandbox"] : ["local"];
 }
 
 export function supportedSandboxProvidersForAdapter(
   adapterType: string,
   additionalProviders: readonly string[] = [],
 ): SandboxEnvironmentProvider[] {
-  return adapterSupportsRemoteManagedEnvironments(adapterType)
-    ? Array.from(new Set(additionalProviders)) as SandboxEnvironmentProvider[]
-    : [];
+  if (!adapterSupportsSandboxEnvironments(adapterType)) return [];
+  const providers = Array.from(new Set(additionalProviders));
+  const only = SANDBOX_ONLY_ADAPTER_PROVIDERS.get(adapterType as AgentAdapterType);
+  return (only ? providers.filter((provider) => only.includes(provider)) : providers) as SandboxEnvironmentProvider[];
 }
 
 export function isEnvironmentDriverSupportedForAdapter(

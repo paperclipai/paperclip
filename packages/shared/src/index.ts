@@ -2623,6 +2623,7 @@ export {
 
 export {
   adapterSupportsRemoteManagedEnvironments,
+  adapterSupportsSandboxEnvironments,
   getEnvironmentCapabilities,
   getAdapterEnvironmentSupport,
   isEnvironmentDriverSupportedForAdapter,

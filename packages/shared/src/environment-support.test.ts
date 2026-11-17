@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   adapterSupportsRemoteManagedEnvironments,
+  adapterSupportsSandboxEnvironments,
   getEnvironmentCapabilities,
+  isEnvironmentDriverSupportedForAdapter,
   isSandboxProviderSupportedForAdapter,
   supportedEnvironmentDriversForAdapter,
 } from "./environment-support.js";
@@ -98,5 +100,30 @@ describe("getEnvironmentCapabilities reusable leases default", () => {
 
     // The built-in fake provider presents as false.
     expect(capabilities.sandboxProviders.fake.supportsReusableLeases).toBe(false);
+  });
+
+  it("allows hermes_local in sandbox environments only, never over SSH (TECH-8174)", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("hermes_local")).toBe(false);
+    expect(adapterSupportsSandboxEnvironments("hermes_local")).toBe(true);
+    expect(supportedEnvironmentDriversForAdapter("hermes_local")).toEqual(["local", "sandbox"]);
+    expect(isEnvironmentDriverSupportedForAdapter("hermes_local", "sandbox")).toBe(true);
+    expect(isEnvironmentDriverSupportedForAdapter("hermes_local", "ssh")).toBe(false);
+    expect(
+      isSandboxProviderSupportedForAdapter("hermes_local", "kubernetes", ["kubernetes"]),
+    ).toBe(true);
+    // Only providers that keep exec env out of the exec command (Kubernetes: env over stdin).
+    expect(
+      isSandboxProviderSupportedForAdapter("hermes_local", "modal", ["modal", "kubernetes"]),
+    ).toBe(false);
+    const capabilities = getEnvironmentCapabilities(["hermes_local"], {
+      sandboxProviders: { kubernetes: { displayName: "Kubernetes" }, modal: { displayName: "Modal" } },
+    });
+    expect(capabilities.adapters).toEqual([
+      expect.objectContaining({
+        adapterType: "hermes_local",
+        drivers: expect.objectContaining({ local: "supported", sandbox: "supported", ssh: "unsupported" }),
+        sandboxProviders: expect.objectContaining({ kubernetes: "supported", modal: "unsupported" }),
+      }),
+    ]);
   });
 });

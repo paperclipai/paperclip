@@ -301,6 +301,56 @@ describe("resolveEnvironmentExecutionTarget", () => {
     }
   });
 
+  it("resolves sandbox targets for hermes_local but never SSH targets (TECH-8174)", async () => {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "kubernetes", reuseLease: false, timeoutMs: 30_000 },
+    });
+    const sandboxTarget = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "hermes_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "kubernetes" } },
+      leaseId: "lease-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+    expect(sandboxTarget).toMatchObject({ kind: "remote", transport: "sandbox", providerKey: "kubernetes" });
+
+    // Another sandbox provider still resolves a sandbox target (never null, which callers treat
+    // as a local run); the Hermes adapter itself refuses providers it does not support.
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: "fake-plugin", reuseLease: false, timeoutMs: 30_000 },
+    });
+    const otherProvider = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "hermes_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
+      leaseId: "lease-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+    expect(otherProvider).toMatchObject({ kind: "remote", transport: "sandbox", providerKey: "fake-plugin" });
+
+    mockResolveEnvironmentDriverConfigForRuntime.mockReset();
+    const sshTarget = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "hermes_local",
+      environment: { id: "env-ssh-1", driver: "ssh", config: {} },
+      leaseId: "lease-ssh-1",
+      leaseMetadata: {},
+      lease: null,
+      environmentRuntime: null,
+    });
+    expect(sshTarget).toBeNull();
+    expect(mockResolveEnvironmentDriverConfigForRuntime).not.toHaveBeenCalled();
+  });
+
   it("returns null for adapters without remote-managed environment support", async () => {
     for (const driver of ["sandbox", "ssh"] as const) {
       const target = await resolveEnvironmentExecutionTarget({

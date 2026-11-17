@@ -42,6 +42,7 @@ import {
   type RouterLaunchPlanResult,
 } from "./router-readiness.js";
 import dotenv from "dotenv";
+import { testRemoteEnvironment } from "./test-sandbox.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -604,6 +605,12 @@ export async function testEnvironment(
   }
 
   const config = (ctx.config ?? {}) as Record<string, unknown>;
+  // TECH-8174: a remote target is tested inside the target, mirroring the sandbox run path; nothing on
+  // this host (its ~/.hermes, its Hermes install, its launcher) is consulted. Local targets continue
+  // below unchanged.
+  if (isRemoteExecutionTarget(ctx)) {
+    return testRemoteEnvironment(ctx, config, scanMode);
+  }
   // Match execute.ts: non-empty strings only, no trimming or absolute-path normalization.
   const cwd = asString(config.cwd) || asString(config.workspaceDir) || ".";
   let command = resolveHermesCommand(config);
@@ -628,30 +635,26 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
 
   // Managed connections must prove the selected destination with the isolated
-  // runtime environment. Host credentials and ~/.hermes are not evidence.
+  // runtime environment. Host credentials and ~/.hermes are not evidence. (Remote targets were
+  // answered by testRemoteEnvironment above.)
   if (config.managedAiRouting) {
-    const remote = ctx.executionTarget?.kind === "remote";
-    if (remote) {
-      checks.push({ level: "error", code: "hermes_remote_probe_unsupported", message: "Hermes connection testing requires a local execution environment." });
-    } else {
-      // TECH-7076: strict allowlist base, never the full server environment.
-      const env: NodeJS.ProcessEnv = buildAgentChildBaseEnv(process.env);
-      for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
-        if (typeof value === "string") env[key] = value;
-      }
-      const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
-      if (asString(config.model)) args.push("-m", asString(config.model)!);
-      const provider = asString(config.provider);
-      if (provider && provider !== "auto") args.push("--provider", provider);
-      try {
-        const { stdout } = await execFileAsync(command, args, {
-          env, cwd: asString(config.cwd), timeout: 45_000, maxBuffer: 1024 * 1024,
-        });
-        if (!/\bhello\b/i.test(stdout)) throw new Error("No hello response");
-        checks.push({ level: "info", code: "hermes_hello_probe_passed", message: "Hermes responded through the selected connection." });
-      } catch {
-        checks.push({ level: "error", code: "hermes_hello_probe_failed", message: "Hermes could not complete a request through this connection.", hint: "Check the Hermes installation, endpoint, credential, and model, then test again." });
-      }
+    // TECH-7076: strict allowlist base, never the full server environment.
+    const env: NodeJS.ProcessEnv = buildAgentChildBaseEnv(process.env);
+    for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
+      if (typeof value === "string") env[key] = value;
+    }
+    const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
+    if (asString(config.model)) args.push("-m", asString(config.model)!);
+    const provider = asString(config.provider);
+    if (provider && provider !== "auto") args.push("--provider", provider);
+    try {
+      const { stdout } = await execFileAsync(command, args, {
+        env, cwd: asString(config.cwd), timeout: 45_000, maxBuffer: 1024 * 1024,
+      });
+      if (!/\bhello\b/i.test(stdout)) throw new Error("No hello response");
+      checks.push({ level: "info", code: "hermes_hello_probe_passed", message: "Hermes responded through the selected connection." });
+    } catch {
+      checks.push({ level: "error", code: "hermes_hello_probe_failed", message: "Hermes could not complete a request through this connection.", hint: "Check the Hermes installation, endpoint, credential, and model, then test again." });
     }
     return { adapterType: ADAPTER_TYPE, status: checks.some(check => check.level === "error") ? "fail" : "pass", checks, testedAt: new Date().toISOString() };
   }
@@ -672,17 +675,8 @@ export async function testEnvironment(
   }
   const effective = resolveTestRunConfig(config, detectedConfig);
 
-  // TECH-7895: a Router config is only supported where this adapter actually executes (the local host).
-  // Reject a remote/sandbox target here, before ANY preliminary CLI or Python subprocess: those would
-  // otherwise run the locally configured command with inherited host env on behalf of a remote target.
-  if (effective.isRouter && isRemoteExecutionTarget(ctx)) {
-    return {
-      adapterType: ADAPTER_TYPE,
-      status: "fail",
-      checks: [{ level: "error", message: ROUTER_REMOTE_TARGET_UNSUPPORTED_MESSAGE, code: "hermes_router_remote_unsupported" }],
-      testedAt: new Date().toISOString(),
-    };
-  }
+  // TECH-7895: a Router config on a remote target was already answered (refused) by
+  // testRemoteEnvironment above, before ANY preliminary CLI or Python subprocess.
 
   // TECH-7895: a Router config binds its launcher once (absolute cwd, normalized PATH, credential-free
   // launch env); the `--version` checks and the registry probe all use that binding. When it cannot
