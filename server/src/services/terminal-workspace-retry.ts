@@ -48,3 +48,46 @@ export async function clearTerminalWorkspaceRetry(db: Db, workspaceId: string) {
     .set({ metadata: sql`${executionWorkspaces.metadata} - ${TERMINAL_WORKSPACE_RETRY_KEY}::text` })
     .where(and(eq(executionWorkspaces.id, workspaceId), sql`${executionWorkspaces.metadata} -> ${TERMINAL_WORKSPACE_RETRY_KEY}::text IS NOT NULL`));
 }
+
+// A provider workspace that a sweep inspected and kept. `local_data` holds until
+// the workspace or its task tree changes; `unmerged` re-checks on a growing
+// interval because the remote can change without touching the workspace.
+export const TERMINAL_WORKSPACE_HOLD_KEY = "terminalInspectionHold";
+export const TERMINAL_WORKSPACE_RECHECK_MS = 60 * 60 * 1000;
+export const TERMINAL_WORKSPACE_RECHECK_MAX_MS = 24 * 60 * 60 * 1000;
+
+export type TerminalWorkspaceHold = {
+  generation: number;
+  fingerprint: string;
+  reason: "local_data" | "unmerged";
+  headSha: string | null;
+  checks: number;
+  checkedAt: string;
+  recheckAt: string | null;
+};
+
+export function terminalWorkspaceRecheckDelayMs(checks: number) {
+  return Math.min(TERMINAL_WORKSPACE_RECHECK_MS * 2 ** Math.min(Math.max(checks - 1, 0), 16), TERMINAL_WORKSPACE_RECHECK_MAX_MS);
+}
+
+export function readTerminalWorkspaceHold(metadata: Record<string, unknown> | null | undefined, generation: number) {
+  const hold = metadata?.[TERMINAL_WORKSPACE_HOLD_KEY] as Partial<TerminalWorkspaceHold> | undefined;
+  return hold && typeof hold === "object" && hold.generation === generation && typeof hold.fingerprint === "string"
+    && (hold.reason === "local_data" || hold.reason === "unmerged") && Number.isInteger(hold.checks)
+    && typeof hold.checkedAt === "string" && (hold.recheckAt === null || typeof hold.recheckAt === "string")
+    ? hold as TerminalWorkspaceHold : null;
+}
+
+/** Records the hold only while the workspace is still in the inspected lifecycle generation. */
+export async function recordTerminalWorkspaceHold(db: Db, workspaceId: string, hold: TerminalWorkspaceHold) {
+  await db.update(executionWorkspaces)
+    .set({ metadata: sql`coalesce(${executionWorkspaces.metadata}, '{}'::jsonb) || jsonb_build_object(${TERMINAL_WORKSPACE_HOLD_KEY}::text, ${JSON.stringify(hold)}::jsonb)` })
+    .where(and(eq(executionWorkspaces.id, workspaceId),
+      sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${hold.generation}`));
+}
+
+export async function clearTerminalWorkspaceHold(db: Db, workspaceId: string) {
+  await db.update(executionWorkspaces)
+    .set({ metadata: sql`${executionWorkspaces.metadata} - ${TERMINAL_WORKSPACE_HOLD_KEY}::text` })
+    .where(and(eq(executionWorkspaces.id, workspaceId), sql`${executionWorkspaces.metadata} -> ${TERMINAL_WORKSPACE_HOLD_KEY}::text IS NOT NULL`));
+}
