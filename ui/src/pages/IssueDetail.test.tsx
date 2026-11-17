@@ -3145,7 +3145,7 @@ describe("IssueDetail", () => {
     expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
   });
 
-  it("uses task activity for recency and ignores passive revisits", async () => {
+  it("refreshes task snapshots without promoting background activity or passive revisits", async () => {
     const authRequest = createDeferred<{
       session: { userId: string };
       user: { id: string };
@@ -3208,7 +3208,7 @@ describe("IssueDetail", () => {
     ).toMatchObject({
       title: "Snapshot refresh title",
       status: "in_progress",
-      recordedAt: 200,
+      recordedAt: 100,
     });
   });
 

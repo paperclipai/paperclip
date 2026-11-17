@@ -145,16 +145,18 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
 export function recordRecentTask(
   issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention" | "updatedAt" | "conversationAgentId">,
   userId: string | null | undefined,
-  recordedAt = new Date(issue.updatedAt).getTime(),
+  recordedAt?: number,
 ) {
   if (issue.conversationAgentId) return;
   const storageKey = getRecentTasksStorageKey(issue.companyId, userId);
   const current = readRecentTasks(storageKey, issue.companyId);
   const existing = current.find((candidate) => candidate.id === issue.id);
-  const activityAt = Number.isFinite(recordedAt)
-    ? recordedAt
-    : existing?.recordedAt ?? Date.now();
   const snapshotUpdatedAt = new Date(issue.updatedAt).getTime();
+  // Passive reads can seed a candidate, but only explicit local human actions
+  // advance its recency. A newer task version alone is not personal activity.
+  const activityAt = recordedAt !== undefined && Number.isFinite(recordedAt)
+    ? recordedAt
+    : existing?.recordedAt ?? (Number.isFinite(snapshotUpdatedAt) ? snapshotUpdatedAt : Date.now());
   const snapshot: RecentTaskEntry = existing ? mergeRecentTaskSnapshot(existing, issue) : {
     id: issue.id,
     companyId: issue.companyId,

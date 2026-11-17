@@ -3834,15 +3834,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
-  const recentVisitRef = useRef<string | null>(null);
   useEffect(() => {
     if (!streamlinedUiEnabled || !issue || !sessionResolved) return;
-    const visit = JSON.stringify([issue.companyId, issue.id, currentUserId]);
-    if (recentVisitRef.current === visit) return;
-    recentVisitRef.current = visit;
-    // Record the human visit once. Background task refreshes only update the
-    // sidebar snapshot; the navigation summary decides personal eligibility.
-    recordRecentTask(issue, currentUserId, Date.now());
+    // Passive reads refresh the snapshot without promoting it. The navigation
+    // summary still decides whether this candidate is personal work.
+    recordRecentTask(issue, currentUserId);
   }, [issue, currentUserId, sessionResolved, streamlinedUiEnabled]);
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,

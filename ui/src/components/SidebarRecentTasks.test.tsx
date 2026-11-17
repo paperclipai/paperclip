@@ -255,7 +255,7 @@ describe("SidebarRecentTasks", () => {
     mockIssuesApi.get.mockImplementation(async (id: string) => task(id, 0));
     const queryClient = await render();
     vi.useFakeTimers();
-    act(() => recordRecentTask(task("first", 3), "user-1"));
+    act(() => recordRecentTask(task("first", 3), "user-1", 3));
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/second");
     await act(async () => {
       recordRecentTask(task("new", 4), "user-1");

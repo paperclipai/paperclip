@@ -24,7 +24,7 @@ Routine ownership, connected-account provenance and read-only visits do not qual
 Inbox archive is independent of this personal history. Readable children remain
 contextual navigation beneath a qualifying parent.
 
-Ordering uses deliberate visits and local human actions. Background title, status
+Local human actions advance recency. Passive visits and background title, status
 and readiness refreshes preserve the recorded time and never promote a task.
 Activity-only reorderings wait for one second without further activity changes;
 new and removed tasks appear immediately. Titles, status, and live indicators stay

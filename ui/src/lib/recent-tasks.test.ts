@@ -61,6 +61,7 @@ describe("recent task persistence", () => {
     updateRecentTaskSnapshots(storageKey, "company-1", [{
       ...issue("older"), title: "Agent finished", status: "done", updatedAt: new Date(100),
     }]);
+    recordRecentTask({ ...issue("older"), title: "Agent finished", status: "done", updatedAt: new Date(100) }, "user-1");
     expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual(["newer", "older"]);
     expect(readRecentTasks(storageKey, "company-1")[1]).toMatchObject({
       title: "Agent finished", status: "done", recordedAt: 10, snapshotUpdatedAt: 100,
