@@ -133,6 +133,13 @@ describe("createGoogleHttp", () => {
     expect(calls).toBe(1);
   });
 
+  it("sends nothing to a disallowed host, and does not treat it as a network failure", async () => {
+    const { http, calls } = client(() => json({}));
+    const error = await failure(http.send({ ...GET, host: "evil.example.test" as never }));
+    expect(error).not.toBeInstanceOf(GoogleToolError);
+    expect(calls).toHaveLength(0);
+  });
+
   it("rejects an oversized response", async () => {
     const declared = client(() => new Response("{}", { headers: { "content-length": String(MAX_RESPONSE_BYTES + 1) } }));
     expect(await failure(declared.http.send(GET))).toMatchObject({ kind: "invalid_response" });

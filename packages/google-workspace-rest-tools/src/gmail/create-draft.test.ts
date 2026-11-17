@@ -38,6 +38,17 @@ describe("create_draft request", () => {
     expect(decodedParts(mime)).toEqual(["plain", "<p>rich</p>"]);
   });
 
+  it("folds a long non-ASCII subject into encoded-words of at most 75 characters", () => {
+    const subject = "Résumé für das Quartal ".repeat(6).trim();
+    const mime = decodedRaw(createDraftRequest({ to: ["a@example.test"], subject, body: "x" }, undefined, "b4"));
+    const folded = /Subject: ((?:=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=(?:\r\n )?)+)\r\n/.exec(mime)![1]!;
+    const words = folded.split("\r\n ");
+    expect(words.length).toBeGreaterThan(1);
+    for (const word of words) expect(word.length).toBeLessThanOrEqual(75);
+    const decoded = words.map((word) => Buffer.from(word.slice(10, -2), "base64").toString("utf8")).join("");
+    expect(decoded).toBe(subject);
+  });
+
   it("threads a reply and defaults the subject to Re:", () => {
     const reply = replyContext(REPLY_ORIGINAL);
     expect(reply).toEqual({

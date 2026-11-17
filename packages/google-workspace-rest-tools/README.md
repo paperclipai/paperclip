@@ -205,7 +205,7 @@ knows tool names and scopes and needs no change.
 - **`create_draft`**: for a reply, the draft is threaded (`threadId`,
   `In-Reply-To`, `References`) and an empty subject becomes `Re: <original>`,
   but the original message is not quoted under the new body as Google's tool
-  does. The result is built from the request and Google's `drafts.create`
+  does, and recipients are not filled in from the original: pass `to`. The result is built from the request and Google's `drafts.create`
   answer, without a second read; `date` is the creation date (UTC).
   Attachments are refused, as Google's tool currently does.
 - **Errors** for Google failures are tool error results with our own short

@@ -24,11 +24,27 @@ function assertSingleLine(name: string, value: string): string {
   return value;
 }
 
-/** RFC 2047 encoded-word for non-ASCII header text. */
+/** Most UTF-8 bytes per encoded-word, keeping each word within RFC 2047's 75 characters. */
+const ENCODED_WORD_BYTES = 45;
+
+/**
+ * RFC 2047 encoded-words for non-ASCII header text, split on character
+ * boundaries and folded onto continuation lines.
+ */
 export function encodeHeaderText(value: string): string {
   assertSingleLine("Header", value);
   if (/^[\x20-\x7e]*$/.test(value)) return value;
-  return `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
+  const words: string[] = [];
+  let chunk = "";
+  for (const char of value) {
+    if (Buffer.byteLength(chunk + char, "utf8") > ENCODED_WORD_BYTES) {
+      words.push(chunk);
+      chunk = "";
+    }
+    chunk += char;
+  }
+  if (chunk) words.push(chunk);
+  return words.map((word) => `=?UTF-8?B?${Buffer.from(word, "utf8").toString("base64")}?=`).join(`${CRLF} `);
 }
 
 function base64Body(text: string): string {
@@ -46,6 +62,7 @@ function textPart(mimeType: "text/plain" | "text/html", text: string): string {
 
 export function buildDraftMime(input: DraftMime): string {
   assertSingleLine("Boundary", input.boundary);
+  for (const address of [...input.to, ...input.cc, ...input.bcc]) assertSingleLine("Address", address);
   const headers = [
     "MIME-Version: 1.0",
     input.to.length ? `To: ${input.to.join(", ")}` : null,
@@ -55,7 +72,6 @@ export function buildDraftMime(input: DraftMime): string {
     input.inReplyTo ? `In-Reply-To: ${assertSingleLine("In-Reply-To", input.inReplyTo)}` : null,
     input.references ? `References: ${assertSingleLine("References", input.references)}` : null,
   ].filter((line): line is string => line !== null);
-  for (const line of headers) assertSingleLine("Header", line);
 
   if (input.htmlBody !== undefined && input.body !== undefined) {
     return [

@@ -2,8 +2,8 @@ import { McpError } from "@modelcontextprotocol/sdk/types.js";
 
 /**
  * JSON-RPC error code for a request Google refused because of the access
- * token, not the arguments. Outside the reserved -32000..-32099 server range
- * values used by the MCP SDK itself.
+ * token, not the arguments. In the implementation-defined server range
+ * (-32000..-32099) and not used by the MCP SDK or the gateway's MCP client.
  */
 export const GOOGLE_AUTH_ERROR_CODE = -32050;
 

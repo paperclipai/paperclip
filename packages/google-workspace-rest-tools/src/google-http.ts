@@ -68,8 +68,10 @@ export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
       Accept: "application/json",
     };
     if (request.body !== undefined) headers["Content-Type"] = "application/json";
+    // Built outside the try: a disallowed host is a programming error, not a network failure.
+    const url = googleRequestUrl(request);
     try {
-      return await doFetch(googleRequestUrl(request), {
+      return await doFetch(url, {
         method: request.method,
         headers,
         body: request.body === undefined ? undefined : JSON.stringify(request.body),
@@ -209,10 +211,14 @@ function isAbort(error: unknown): boolean {
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       clearTimeout(timer);
       reject(new GoogleToolError("timeout", "The request was cancelled."));
-    }, { once: true });
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
