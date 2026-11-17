@@ -2062,6 +2062,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         | "setupSecretActivityLogger"
         | "setupSecretCredentialPersistBarrier"
         | "receiptReactionTransportBarrier"
+        | "reachAuthorizationBarrier"
         | "storage"
       >
     > & { wakeup?: ChatChannelServiceOptions["heartbeat"]["wakeup"] } = {},
@@ -2368,9 +2369,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   }
 
   describe("GitHub agent review workflow", () => {
-    async function reviewBotFixture() {
+    async function reviewBotFixture(overrides: Parameters<typeof configuredGitHubEndpoint>[1] = {}) {
       const fixture = await seedCompany();
-      const context = await configuredGitHubEndpoint(fixture, {}, true);
+      const context = await configuredGitHubEndpoint(fixture, overrides, true);
       const endpoint = await context.service.get(context.endpoint.id);
       const [principal] = await db
         .insert(chatExternalPrincipals)
@@ -2847,6 +2848,174 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       await githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Working on it", idempotencyKey: "auto-tool-2" });
       expect(f.responseComments.size).toBe(1);
+
+      await f.service.shutdown();
+    });
+
+    it("denies automatic GitHub event for guest author when allowUnlinkedPeople is disabled, even if sponsor holds tasks:assign", async () => {
+      let flipAllowUnlinkedPeopleAtFence = false;
+      let endpointIdForFence = "";
+      const f = await reviewBotFixture({
+        reachAuthorizationBarrier: async () => {
+          if (flipAllowUnlinkedPeopleAtFence) {
+            await db.update(chatEndpoints).set({ allowUnlinkedPeople: false }).where(eq(chatEndpoints.id, endpointIdForFence));
+          }
+        },
+      });
+      endpointIdForFence = f.endpoint.id;
+      await db.update(agents).set({
+        permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+      }).where(eq(agents.id, f.assignedAgentId));
+
+      const sponsorUserId = `guest-sponsor-${randomUUID()}`;
+      const now = new Date();
+      await db.insert(authUsers).values([
+        { id: sponsorUserId, name: "Guest Sponsor", email: `${sponsorUserId}@example.test`, emailVerified: true, createdAt: now, updatedAt: now },
+      ]);
+      await db.insert(companyMemberships).values([
+        { companyId: f.companyId, principalType: "user", principalId: sponsorUserId, status: "active", membershipRole: "member" },
+      ]);
+      // Sponsor holds tasks:assign
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: sponsorUserId,
+        permissionKey: "tasks:assign", scope: null,
+      });
+
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, {
+        expectedRevision: config.revision,
+        configuration: {
+          ...config.configuration,
+          responsibleUserId: sponsorUserId,
+          people: [
+            ...config.configuration.people,
+            { githubUserId: "9901", login: "guest-9901", kind: "guest", sponsorUserId, permissionProfile: "restricted" },
+          ],
+          defaults: { ...config.configuration.defaults, invocation: "allowed_authors", includeAuthors: ["guest-9901"] },
+        },
+      }, "owner-user");
+
+      // Case 1: allowUnlinkedPeople is disabled -> automatic PR event from guest is filtered at admission
+      await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+
+      const deliveryId1 = randomUUID();
+      const payload1 = {
+        action: "opened",
+        repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 9901, login: "guest-9901" },
+        pull_request: {
+          number: 891, title: "Guest PR unlinked disabled", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 9901, login: "guest-9901", type: "User" }, labels: [],
+        },
+      };
+      const res1 = await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: deliveryId1, payload: payload1, webhookSecret: f.webhookSecret,
+      }));
+      expect(res1.status).toBeLessThan(300);
+
+      await expect.poll(async () => {
+        const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+        return deliveries.find(r => r.providerEventId.includes(deliveryId1))?.state;
+      }, { timeout: 10_000 }).toBe("filtered");
+      const deliveries1 = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+      const filtered1 = deliveries1.find(r => r.providerEventId.includes(deliveryId1));
+      expect(filtered1?.redactedError).toBe("Linked Paperclip account is not currently permitted");
+      expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toHaveLength(0);
+
+      // Case 2: allowUnlinkedPeople is enabled -> automatic PR event is allowed and tools work
+      await f.service.update(f.endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+
+      const deliveryId2 = randomUUID();
+      const payload2 = {
+        action: "opened",
+        repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 9901, login: "guest-9901" },
+        pull_request: {
+          number: 892, title: "Guest PR unlinked enabled", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 9901, login: "guest-9901", type: "User" }, labels: [],
+        },
+      };
+      const send2 = () => f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: deliveryId2, payload: payload2, webhookSecret: f.webhookSecret,
+      }));
+      expect((await send2()).status).toBeLessThan(300);
+      await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(f.endpoint.id)).length, { timeout: 10_000 }).toBe(1);
+      await send2();
+      await f.service.processPendingDeliveries();
+
+      const [review] = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+      const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.issueId, review.issueId));
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: f.companyId, agentId: f.assignedAgentId, status: "running", runtimeMode: "native",
+        contextSnapshot: await chatWakeContext({
+          endpointId: f.endpoint.id, issueId: conversation.issueId, provider: "github", providerMessageId: `pr-event:${deliveryId2}`,
+        }),
+      }).returning();
+      const session = { companyId: f.companyId, agentId: f.assignedAgentId, issueId: conversation.issueId, runId: run.id };
+
+      // Case 3: Disabling allowUnlinkedPeople mid-flight denies both direct tools with unlinked denial
+      await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+      await expect(githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Working on it", idempotencyKey: "guest-tool-1" }))
+        .rejects.toMatchObject({ status: 403, message: "The initiating GitHub person is no longer authorized" });
+
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded" })
+        .where(eq(heartbeatRuns.id, run.id));
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, conversation.issueId));
+      await expect(githubResponseCommentService(db, f.providerFetch).failRun({
+        companyId: f.companyId, endpointId: f.endpoint.id, issueId: conversation.issueId, runId: run.id, body: "Run stopped",
+      })).rejects.toMatchObject({ status: 403, message: "The initiating GitHub person is no longer authorized" });
+
+      // Reset run back to running
+      await db.update(heartbeatRuns).set({ status: "running", errorCode: null }).where(eq(heartbeatRuns.id, run.id));
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, conversation.issueId));
+
+      // Case 4: Re-enabling allowUnlinkedPeople, but revoking sponsor's tasks:assign denies tools with assignment denial
+      await f.service.update(f.endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+      await db.delete(principalPermissionGrants).where(and(
+        eq(principalPermissionGrants.companyId, f.companyId),
+        eq(principalPermissionGrants.principalId, sponsorUserId),
+        eq(principalPermissionGrants.permissionKey, "tasks:assign"),
+      ));
+      await expect(githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Working on it", idempotencyKey: "guest-tool-2" }))
+        .rejects.toMatchObject({ status: 403, message: "The initiating GitHub person is not authorized to direct this agent" });
+
+      // Case 5: Restoring sponsor's tasks:assign reopens review tool
+      await db.insert(principalPermissionGrants).values({
+        companyId: f.companyId, principalType: "user", principalId: sponsorUserId,
+        permissionKey: "tasks:assign", scope: null,
+      });
+      await githubChatReviewService(db, f.providerFetch).execute(session, "comment", { body: "Guest review allowed", idempotencyKey: "guest-tool-3" });
+      expect(f.responseComments.size).toBe(1);
+
+      // Case 6: Late-bound fence: allowUnlinkedPeople initially true, flipped to false before fence drain -> filtered at fence, no issue
+      flipAllowUnlinkedPeopleAtFence = true;
+      const deliveryId3 = randomUUID();
+      const payload3 = {
+        action: "opened",
+        repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 9901, login: "guest-9901" },
+        pull_request: {
+          number: 893, title: "Guest PR late bound fence", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 9901, login: "guest-9901", type: "User" }, labels: [],
+        },
+      };
+      const send3 = () => f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: deliveryId3, payload: payload3, webhookSecret: f.webhookSecret,
+      }));
+      expect((await send3()).status).toBeLessThan(300);
+
+      await expect.poll(async () => {
+        const deliveries = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+        return deliveries.find(r => r.providerEventId.includes(deliveryId3))?.state;
+      }, { timeout: 10_000 }).toBe("filtered");
+
+      const deliveries3 = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+      const filtered3 = deliveries3.find(r => r.providerEventId.includes(deliveryId3));
+      expect(filtered3?.state).toBe("filtered");
+      expect(filtered3?.redactedError).toBe("Linked Paperclip account is not currently permitted");
 
       await f.service.shutdown();
     });

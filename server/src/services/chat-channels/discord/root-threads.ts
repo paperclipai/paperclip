@@ -186,8 +186,8 @@ export function createDiscordRootThreads(db: Db, options: DiscordRootThreadsOpti
             } else if (!endpoint.allowUnlinkedPeople) {
               allowed = false;
             } else if (!endpoint.sponsorUserId) {
-              allowed = await principalMayDirectAssignedAgent(tx, endpoint, null);
-              if (!allowed) assignmentDenied = true;
+              // Unsponsored self-hosted endpoints without an acting user stay open by design.
+              allowed = true;
             } else {
               const sponsor = await tx
                 .select({

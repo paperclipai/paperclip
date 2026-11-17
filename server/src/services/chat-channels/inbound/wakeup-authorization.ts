@@ -164,10 +164,16 @@ export function createInboundWakeAuthority(db: Db, options: WakeAuthorityOptions
       const automatic = await resolveGitHubWakeAuthority(tx, endpoint, delivery);
       if (automatic.kind === "denied") throw deny();
       if (automatic.kind === "allowed") {
+        if (!authorization.identityAllowed) throw deny();
+        const responsibleAllowed = await principalMayDirectAssignedAgent(
+          tx,
+          endpoint,
+          automatic.userId ?? endpoint.sponsorUserId,
+        );
+        if (!responsibleAllowed) throw deny();
         authorization.allowed = true;
         authorization.linkedDenied = false;
         authorization.userId = automatic.userId;
-        if (!(await principalMayDirectAssignedAgent(tx, endpoint, automatic.userId))) throw deny();
       }
     }
     if (!(await canActorReadIssuePrivacy(tx, authorization.userId

@@ -215,6 +215,18 @@ describeEmbeddedPostgres("chat inbound provider authorization fence", () => {
     const denied = await authority().lockCurrentPrincipalAuthorization(db, base.endpoint, principal.id);
     expect(denied).toMatchObject({ allowed: false, linkedDenied: true, userId: null });
 
+    // An agent-scoped grant matching the assigned agent satisfies the gate.
+    await db.insert(principalPermissionGrants).values({
+      companyId: base.companyId,
+      principalType: "user",
+      principalId: "linked-u",
+      permissionKey: "tasks:assign",
+      scope: { assigneeAgentId: base.endpoint.assignedAgentId },
+    });
+    const scopedAllowed = await authority().lockCurrentPrincipalAuthorization(db, base.endpoint, principal.id);
+    expect(scopedAllowed).toMatchObject({ allowed: true, linkedDenied: false, userId: "linked-u" });
+
+    await revokeAssignment(base.companyId, "linked-u");
     await grantAssignment(base.companyId, "linked-u");
     const allowed = await authority().lockCurrentPrincipalAuthorization(db, base.endpoint, principal.id);
     expect(allowed).toMatchObject({ allowed: true, linkedDenied: false, userId: "linked-u" });

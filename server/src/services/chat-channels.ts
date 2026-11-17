@@ -1739,11 +1739,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const githubAutomaticAdmissionResult = (endpoint.provider === "github" && githubAutomaticContext)
         ? await githubAutomaticAdmission(db, endpoint, githubAutomaticContext)
         : null;
-      const githubAccess = endpoint.provider === "github" && !githubAutomaticContext
+      const githubAccess = endpoint.provider === "github"
         ? await githubChatPrincipalAccess(db, endpoint, principalResolution.principal.id)
         : null;
       const actingUserId = githubAutomaticContext
-        ? (githubAutomaticAdmissionResult?.responsibleUserId ?? null)
+        ? (githubAutomaticAdmissionResult?.responsibleUserId ?? endpoint.sponsorUserId)
         : githubAccess
           ? (githubAccess.userId ?? githubAccess.sponsorUserId ?? null)
           : principalResolution.userId;
@@ -2447,11 +2447,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         const automaticContext = githubAutomatic?.context ?? githubIssue?.context;
         const automaticAdmission = automaticContext ? await githubAutomaticAdmission(tx, currentEndpoint, automaticContext) : null;
         if (automaticContext) {
-          if (!automaticAdmission?.allowed) {
+          if (!currentPrincipalAuthorization.identityAllowed || !automaticAdmission?.allowed) {
             currentPrincipalAuthorization.allowed = false;
+            currentPrincipalAuthorization.linkedDenied = true;
           } else {
-            const responsibleAllowed = !automaticAdmission.responsibleUserId ||
-              (await principalMayDirectAssignedAgent(tx, currentEndpoint, automaticAdmission.responsibleUserId));
+            const responsibleAllowed = await principalMayDirectAssignedAgent(
+              tx,
+              currentEndpoint,
+              automaticAdmission.responsibleUserId ?? currentEndpoint.sponsorUserId,
+            );
             currentPrincipalAuthorization.allowed = responsibleAllowed;
             currentPrincipalAuthorization.linkedDenied = !responsibleAllowed;
             currentPrincipalAuthorization.userId = automaticAdmission.responsibleUserId ?? null;

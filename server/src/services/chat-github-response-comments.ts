@@ -165,11 +165,11 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
     if (automatic && !automaticAdmission?.allowed)
       throw forbidden("Automatic GitHub task authority changed");
     const access = await githubChatPrincipalAccess(db, row.endpoint, row.delivery.principalId);
-    if (!access?.allowed && !automatic)
+    if (!access?.allowed)
       throw forbidden("The initiating GitHub person is no longer authorized");
     const actingUserId = automatic
-      ? (automaticAdmission?.responsibleUserId ?? null)
-      : (access?.userId ?? access?.sponsorUserId ?? row.endpoint.sponsorUserId);
+      ? (automaticAdmission?.responsibleUserId ?? row.endpoint.sponsorUserId)
+      : (access.userId ?? access.sponsorUserId ?? row.endpoint.sponsorUserId);
     if (!(await principalMayDirectAssignedAgent(db, row.endpoint, actingUserId)))
       throw forbidden("The initiating GitHub person is not authorized to direct this agent");
     const match = /^github:([^:]+):(?:issue:)?([1-9][0-9]*)(?::rc:([1-9][0-9]*))?$/.exec(row.conversation.externalThreadId);

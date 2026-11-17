@@ -220,11 +220,11 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       source.endpoint,
       source.delivery.principalId,
     );
-    if (!access?.allowed && !automatic)
+    if (!access?.allowed)
       throw forbidden("The initiating GitHub person is no longer authorized");
     const actingUserId = automatic
-      ? (automaticAdmission?.responsibleUserId ?? null)
-      : (access?.userId ?? access?.sponsorUserId ?? source.endpoint.sponsorUserId);
+      ? (automaticAdmission?.responsibleUserId ?? source.endpoint.sponsorUserId)
+      : (access.userId ?? access.sponsorUserId ?? source.endpoint.sponsorUserId);
     if (!(await principalMayDirectAssignedAgent(db, source.endpoint, actingUserId)))
       throw forbidden("The initiating GitHub person is not authorized to direct this agent");
     const repositoryId = String(
