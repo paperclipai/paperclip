@@ -104,7 +104,7 @@ export function textLines(text: RestTextContent | undefined): string[] {
 }
 
 function cellText(text: RestTextContent | undefined): string {
-  return textLines(text).join("\n").replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+  return textLines(text).join("\n");
 }
 
 function label(kind: string, element: RestPageElement): string {

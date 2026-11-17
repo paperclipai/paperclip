@@ -124,9 +124,13 @@ export function tableGrid(rows: readonly (readonly TableCellText[])[], columns: 
   return grid.map((row) => Array.from({ length: width }, (_, index) => row[index] ?? ""));
 }
 
+export function escapeTableCell(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+}
+
 export function markdownTable(rows: readonly (readonly TableCellText[])[], columns: number): string[] {
   if (rows.length === 0) return ["[empty table]"];
-  const grid = tableGrid(rows, columns);
+  const grid = tableGrid(rows, columns).map((cells) => cells.map(escapeTableCell));
   const lines = grid.map((cells) => `| ${cells.join(" | ")} |`);
   return [lines[0]!, `| ${grid[0]!.map(() => "---").join(" | ")} |`, ...lines.slice(1)];
 }

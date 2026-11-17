@@ -197,6 +197,14 @@ describe("read_doc text rendering", () => {
     expect(render([element])).toBe(expected.join("\n"));
   });
 
+  it("escapes a nested table's cells exactly once, so the outer row keeps its column count", () => {
+    const nested = table([[cell("a|b"), cell("c\\d")], [cell("e\u000bf"), cell("x")]]);
+    const rendered = render([table([[cell("Outer"), { content: [nested] }, cell("p|q\\")]])]);
+    const row = rendered.split("\n")[0]!;
+    expect(row).toBe("| Outer | [table: a\\|b / c\\\\d; e<br>f / x] | p\\|q\\\\ |");
+    expect(row.split(/(?<!\\)(?:\\\\)*\|/).length - 2).toBe(3);
+  });
+
   it("marks merged cells in a nested table too", () => {
     const nested = table([[{ ...cell("Span"), tableCellStyle: { columnSpan: 2 } }, cell("")], [cell("a"), cell("b")]]);
     expect(render([table([[cell("Outer"), { content: [nested] }]])])).toBe("| Outer | [table: Span / (merged left); a / b] |\n| --- | --- |");

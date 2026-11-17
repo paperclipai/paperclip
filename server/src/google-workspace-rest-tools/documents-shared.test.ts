@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertRequestKinds, googleFileUrl, isRevisionConflict, markdownTable, refuseGoogleFileUrl, tableGrid, type RequestKindRules } from "./documents-shared.js";
+import { assertRequestKinds, escapeTableCell, googleFileUrl, isRevisionConflict, markdownTable, refuseGoogleFileUrl, tableGrid, type RequestKindRules } from "./documents-shared.js";
 import { GoogleToolError, type GoogleErrorDetail } from "./errors.js";
 
 describe("revision conflicts", () => {
@@ -68,6 +68,17 @@ describe("table grid", () => {
 
   it("places cells by their row when given", () => {
     expect(tableGrid([[{ text: "top", column: 0 }], [{ text: "moved", row: 0, column: 1 }, { text: "own", column: 0 }]], 2)).toEqual([["top", "moved"], ["own", ""]]);
+  });
+
+  it.each([
+    ["a|b", "a\\|b"],
+    ["c\\d", "c\\\\d"],
+    ["ends\\", "ends\\\\"],
+    ["e\\|f", "e\\\\\\|f"],
+    ["g\nh\r\ni", "g<br>h<br>i"],
+  ])("escapes the table cell %j once as %j", (raw, escaped) => {
+    expect(escapeTableCell(raw)).toBe(escaped);
+    expect(markdownTable([[{ text: raw }, { text: "z" }]], 2)[0]).toBe(`| ${escaped} | z |`);
   });
 
   it("renders an empty table", () => {

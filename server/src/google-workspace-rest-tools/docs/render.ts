@@ -268,10 +268,6 @@ function paragraphLine(paragraph: RestParagraph, context: TabContext): string {
   return prefix && text ? `${prefix}${text}` : text;
 }
 
-function escapeCell(text: string): string {
-  return text.replace(/\|/g, "\\|").replace(/\n/g, "<br>");
-}
-
 function cellText(content: readonly RestStructuralElement[], context: TabContext): string {
   const parts: string[] = [];
   for (const element of content) {
@@ -282,7 +278,7 @@ function cellText(content: readonly RestStructuralElement[], context: TabContext
     } else if (element.tableOfContents) parts.push(cellText(element.tableOfContents.content ?? [], context));
   }
   while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
-  return escapeCell(parts.join("\n"));
+  return parts.join("\n");
 }
 
 function tableCells(element: RestStructuralElement, context: TabContext): TableCellText[][] {

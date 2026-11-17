@@ -142,6 +142,14 @@ describe("read_presentation text rendering", () => {
     expect(body([table])).toBe(expected.join("\n"));
   });
 
+  it("escapes a table cell's backslashes and pipes exactly once", () => {
+    const table: RestPageElement = {
+      objectId: "t",
+      table: { rows: 1, columns: 2, tableRows: [{ tableCells: [{ location: { rowIndex: 0, columnIndex: 0 }, text: textContent({ text: "a\\|b" }) }, { location: { rowIndex: 0, columnIndex: 1 }, text: textContent({ text: "c" }) }] }] },
+    };
+    expect(body([table])).toBe("| a\\\\\\|b | c |\n| --- | --- |");
+  });
+
   it("renders nested groups in order", () => {
     const group: RestPageElement = { objectId: "g", elementGroup: { children: [shape("a", [{ text: "outer" }]), { objectId: "g2", elementGroup: { children: [shape("b", [{ text: "inner" }])] } }] } };
     expect(body([group])).toBe("outer\n\ninner");
