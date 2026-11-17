@@ -4,7 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
-import { createDurableRunLogStore } from "./run-log-store.js";
+import { composeRunLogStore, createDurableRunLogStore } from "./run-log-store.js";
+import { objectLogFixture } from "./heartbeat/__tests__/object-log-fixture.js";
 import type { StorageProvider } from "../storage/types.js";
 
 // In-memory StorageProvider stand-in: durable, survives the "pod roll" (local
@@ -68,6 +69,46 @@ afterEach(async () => {
 const begin = { companyId: "co1", agentId: "ag1", runId: "run1" };
 
 describe("createDurableRunLogStore", () => {
+  it("removes a migrated run's original local log and mirror along with its object journal", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const local = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const external = objectLogFixture();
+    const store = composeRunLogStore(local, external);
+    const original = await local.begin(begin);
+    await local.append(original, { stream: "stdout", chunk: "tool result content", ts: "t1" });
+    await local.finalize(original);
+    const migrated = await external.begin(begin);
+    await external.append(migrated, { stream: "stdout", chunk: "tool result content", ts: "t1", seq: 1 });
+    await external.finalize(migrated);
+    expect(objects.has(original.logRef)).toBe(true);
+    await store.remove!(migrated);
+    await store.remove!(migrated);
+    expect(objects.has(original.logRef)).toBe(false);
+    await expect(fs.stat(path.join(baseDir, original.logRef))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(external.read(migrated)).rejects.toThrow("Run log not found");
+    await expect(store.remove!({ store: "s3_segments", logRef: "../escape" })).rejects.toThrow("Invalid run log reference");
+  });
+
+  it("refuses to report an object log removed when object storage is not configured", async () => {
+    const local = createDurableRunLogStore({ basePath: baseDir });
+    const store = composeRunLogStore(local, null);
+    await expect(store.remove!({ store: "s3_segments", logRef: "co1/ag1/run1" })).rejects.toThrow("Object run log storage is not configured");
+  });
+
+  it("removes a finalized log from local disk and its object mirror", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "tool result content", ts: "t1" });
+    await store.finalize(handle);
+    expect(objects.has(handle.logRef)).toBe(true);
+    await store.remove!(handle);
+    await store.remove!(handle);
+    expect(objects.has(handle.logRef)).toBe(false);
+    await expect(fs.stat(path.join(baseDir, handle.logRef))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(store.read(handle)).rejects.toThrow("Run log not found");
+  });
+
   it.each([false, true])("reads a complete long final record from a compact tail (S3 fallback: %s)", async (remote) => {
     const { provider, objects, calls } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
