@@ -54,6 +54,8 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import * as instanceSettingsModule from "../services/instance-settings.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { assignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
+import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
@@ -131,6 +133,8 @@ type FixtureOptions = {
   registrationFailure?: { status: number; body: Record<string, unknown> };
   /** Extra provider-owned callbacks returned alongside the requested callback. */
   registrationExtraRedirectUris?: string[];
+  /** Serve the MCP endpoint at this address instead of `MCP_URL`. */
+  mcpUrl?: string;
 };
 
 type FixtureRequest = {
@@ -193,7 +197,8 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
   const tokenResponses: { access_token: string; refresh_token: string }[] = [];
   const tools = options.tools ?? FIXTURE_TOOLS;
   const scopes = options.scopes ?? (options.notebookAccount ? ["notebook:read", "notebook:write", "notebook:share", "notebook:delete"] : null);
-  const resourceMetadataUrl = `${MCP_ORIGIN}/.well-known/oauth-protected-resource/mcp`;
+  const mcpUrl = options.mcpUrl ?? MCP_URL;
+  const resourceMetadataUrl = `${MCP_ORIGIN}/.well-known/oauth-protected-resource${new URL(mcpUrl).pathname}`;
 
   const authorizationServerMetadata = () => ({
     issuer: ISSUER,
@@ -220,7 +225,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
       : null;
     requests.push({ method, url: href, headers, body: parsedBody });
 
-    if (href === MCP_URL && method === "POST") {
+    if (href === mcpUrl && method === "POST") {
       if (auth === "oauth" && headers.authorization !== `Bearer ${accessToken}`) {
         return unauthorizedMcpResponse(resourceMetadataUrl);
       }
@@ -258,7 +263,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
     }
 
     if (href === resourceMetadataUrl) {
-      return jsonResponse({ resource: MCP_URL, authorization_servers: [ISSUER] });
+      return jsonResponse({ resource: mcpUrl, authorization_servers: [ISSUER] });
     }
 
     // RFC 8414 inserts the well-known segment before the issuer path; OIDC
@@ -862,6 +867,182 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       `app:${result.connectionId}`,
     ));
     expect(profiles).toEqual([]);
+  });
+
+  describe("another Paperclip instance", () => {
+    const PEER_MCP_URL = `${MCP_ORIGIN}/mcp/paperclip`;
+
+    it("names the connection after the instance and tells agents it is a different Paperclip", async () => {
+      installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+
+      const result = await service.connectGalleryApp(company.id, { link: PEER_MCP_URL });
+
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, result.connectionId));
+      expect(connection!.name).toBe("8-8-8-8 Paperclip");
+      expect(connection!.agentInstructions).toMatchObject({ enabled: true, template: { id: "paperclip.peer", version: 1 } });
+      expect(connection!.agentInstructions!.text).toContain(`a different Paperclip instance at ${MCP_ORIGIN}`);
+      expect(connection!.agentInstructions!.text).toContain("keep using your own Paperclip tools");
+      // Writes start on, the same as any other connection.
+      expect(result.suggestedDefaults).toMatchObject({ askFirstRiskLevels: [] });
+    });
+
+    it("prefixes the agent's tool names with the other instance, not a generic link key", async () => {
+      const listAgentTools = async (link: string) => {
+        const company = await createCompany(db);
+        const service = toolAccessService(db);
+        const connected = await service.connectGalleryApp(company.id, { link });
+        const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Sender", role: "engineer", status: "active", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }).returning();
+        await service.finishGalleryAppConnection(company.id, connected.connectionId, {
+          enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: { agentIds: [agent!.id] },
+        });
+        const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent!.id, invocationSource: "on_demand", status: "running" }).returning();
+        const gateway = createToolGatewayService(db);
+        const list = async () => {
+          const session = await gateway.createSession({ companyId: company.id, agentId: agent!.id, runId: run!.id });
+          return (await gateway.listToolsForSession(session.token))
+            .filter((tool) => tool.connectionId === connected.connectionId)
+            .sort((a, b) => a.name.localeCompare(b.name));
+        };
+        return Object.assign(await list(), { list, service, companyId: company.id, connectionId: connected.connectionId });
+      };
+
+      installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
+      const peerTools = await listAgentTools(PEER_MCP_URL);
+      expect(peerTools.map((tool) => tool.name)).toEqual([
+        expect.stringMatching(/^mcp\.8-8-8-8-paperclip-[0-9a-f]+:create-insight$/),
+        expect.stringMatching(/^mcp\.8-8-8-8-paperclip-[0-9a-f]+:list-insights$/),
+      ]);
+      expect(assignedToolName(peerTools[0]!.name)).toMatch(/^app_mcp_8_8_8_8_papercli_create_insight_/);
+
+      // Provider icons are keyed by the same gateway name, so the chat finds them.
+      const icons = [{ src: "https://cdn.example.com/peer.png", mimeType: "image/png" }];
+      await db.update(toolCatalogEntries).set({ icons }).where(eq(toolCatalogEntries.connectionId, peerTools.connectionId));
+      expect((await listCompanyProviderToolIcons(db, peerTools.companyId, [peerTools.connectionId])).map((entry) => entry.gatewayToolName).sort())
+        .toEqual(peerTools.map((tool) => tool.name));
+
+      // Renaming the connection must not rename tools agents or approvals already hold.
+      await peerTools.service.updateConnection(peerTools.connectionId, { name: "Ops intake" });
+      expect((await peerTools.list()).map((tool) => tool.name)).toEqual(peerTools.map((tool) => tool.name));
+
+      expect((await db.select().from(toolConnections).where(eq(toolConnections.id, peerTools.connectionId)))[0]!.config)
+        .toMatchObject({ paperclipPeerToolNamespace: "8-8-8-8-paperclip" });
+
+      // A peer connection made before the prefix existed keeps its original
+      // names, so saved tool-name rules and pending approvals still match it.
+      const [legacy] = await db.select().from(toolConnections).where(eq(toolConnections.id, peerTools.connectionId));
+      const { paperclipPeerToolNamespace: _dropped, ...legacyConfig } = legacy!.config as Record<string, unknown>;
+      await db.update(toolConnections).set({ config: legacyConfig }).where(eq(toolConnections.id, peerTools.connectionId));
+      expect((await peerTools.list()).map((tool) => tool.name)).toEqual([
+        expect.stringMatching(/^mcp\.app-gallery-link-/),
+        expect.stringMatching(/^mcp\.app-gallery-link-/),
+      ]);
+
+      // Other address-based connections keep their existing names.
+      vi.restoreAllMocks();
+      installMcpOAuthFixture({ auth: "public" });
+      const otherTools = await listAgentTools(MCP_URL);
+      expect(otherTools.map((tool) => tool.name)).toEqual([
+        expect.stringMatching(/^mcp\.app-gallery-link-/),
+        expect.stringMatching(/^mcp\.app-gallery-link-/),
+      ]);
+    });
+
+    it("never revives a removed connection for a different server that has the same name", async () => {
+      installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
+      const company = await createCompany(db);
+      const service = toolAccessService(db);
+      const peer = await service.connectGalleryApp(company.id, { link: PEER_MCP_URL, name: "Shared name" });
+      await service.archiveConnection(peer.connectionId, company.id);
+
+      vi.restoreAllMocks();
+      installMcpOAuthFixture({ auth: "public" });
+      const other = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Shared name" });
+
+      expect(other.connectionId).not.toBe(peer.connectionId);
+      expect(other.application.id).not.toBe(peer.application.id);
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, other.connectionId));
+      expect(connection!.agentInstructions).toBeNull();
+      expect(connection!.config).not.toHaveProperty("paperclipPeerToolNamespace");
+
+      // The same server still gets its retained identity back.
+      await service.archiveConnection(other.connectionId, company.id);
+      const again = await service.connectGalleryApp(company.id, { link: MCP_URL, name: other.application.name });
+      expect(again.application.id).toBe(other.application.id);
+    });
+
+    it("keeps instructions the person supplied instead of the default", async () => {
+      installMcpOAuthFixture({ auth: "public", mcpUrl: PEER_MCP_URL });
+      const company = await createCompany(db);
+      const supplied = { enabled: false, text: "Only file bugs here." };
+
+      const result = await toolAccessService(db).connectGalleryApp(company.id, { link: PEER_MCP_URL, name: "Ops intake", agentInstructions: supplied });
+
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, result.connectionId));
+      expect(connection).toMatchObject({ name: "Ops intake", agentInstructions: supplied });
+    });
+
+    it("adds no instructions to an MCP server that is not Paperclip", async () => {
+      installMcpOAuthFixture({ auth: "public" });
+      const company = await createCompany(db);
+
+      const result = await toolAccessService(db).connectGalleryApp(company.id, { link: MCP_URL });
+
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, result.connectionId));
+      expect(connection).toMatchObject({ name: "8.8.8.8/mcp", agentInstructions: null });
+    });
+
+    it("refuses to connect this Paperclip to itself", async () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://127.0.0.1:3100");
+      const company = await createCompany(db);
+      const app = createRouteApp(db, { deploymentMode: "local_trusted", deploymentExposure: "private" });
+
+      const response = await request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({ link: "http://localhost:3100/mcp/paperclip" })
+        .expect(422);
+
+      expect(response.body).toMatchObject({ details: { code: "paperclip_self_connection" } });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    });
+
+    it("recognizes this Paperclip by the port it actually listens on", async () => {
+      vi.spyOn(globalThis, "fetch");
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+      vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "");
+      vi.stubEnv("BETTER_AUTH_URL", "");
+      vi.stubEnv("BETTER_AUTH_BASE_URL", "");
+      vi.stubEnv("PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "");
+      // Startup moved this server off the requested port, which another instance holds.
+      vi.stubEnv("PORT", "3101");
+      vi.stubEnv("PAPERCLIP_LISTEN_PORT", "3100");
+      const company = await createCompany(db);
+      const app = createRouteApp(db, { deploymentMode: "local_trusted", deploymentExposure: "private" });
+      const connect = (link: string) => request(app)
+        .post(`/api/companies/${company.id}/tools/apps/connect`)
+        .set("Host", "paperclip.internal.test")
+        .send({ link });
+
+      const self = await connect("http://localhost:3100/mcp/paperclip").expect(422);
+      expect(self.body).toMatchObject({ details: { code: "paperclip_self_connection" } });
+      // The instance on the requested port is someone else, so it is not refused as self.
+      const other = await connect("http://localhost:3101/mcp/paperclip");
+      expect(other.body?.details?.code).not.toBe("paperclip_self_connection");
+    });
+
+    it("sends a Paperclip address entered under Executor to the generic connection", async () => {
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const company = await createCompany(db);
+
+      await expect(toolAccessService(db).connectGalleryApp(company.id, {
+        galleryKey: "executor", connectionMethodKey: "mcp", link: PEER_MCP_URL, authMode: "none",
+      })).rejects.toMatchObject({ status: 400, details: { code: "paperclip_peer_requires_generic_connection" } });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    });
   });
 
   it.each(["organization", "user"] as const)("vaults a credential-bearing MCP URL for %s and never returns or logs its token", async (grantKind) => {

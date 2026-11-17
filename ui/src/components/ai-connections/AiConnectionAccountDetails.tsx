@@ -11,7 +11,8 @@ export function AiConnectionAccountDetails({ account, grant }: {
   account: AiManagedConnectionSummary;
   grant: ConnectionGrant;
 }) {
-  const canLookUp = account.provider === "anthropic" && account.method === "subscription" && account.status === "connected";
+  const isChatGpt = account.provider === "openai" && account.method === "subscription" && !account.routing;
+  const canLookUp = !account.routing && (account.provider === "anthropic" || isChatGpt) && account.method === "subscription" && account.status === "connected";
   const identity = useQuery({
     queryKey: ["ai-account-identity", account.companyId, account.id, grant.id, grant.updatedAt],
     queryFn: ({ signal }) => aiConnectionsApi.accountIdentity(account.companyId, account.id, grant.id, { signal }),
@@ -28,9 +29,9 @@ export function AiConnectionAccountDetails({ account, grant }: {
       <dl className="grid grid-cols-2 gap-3 text-sm">
         <dt className="text-muted-foreground">{AI_PROVIDERS[account.provider].name} account</dt>
         <dd className="break-words">{accountLabel ?? "Not available"}</dd>
-        {identity.data?.organizationLabel && <>
-          <dt className="text-muted-foreground">Organization</dt>
-          <dd className="break-words">{identity.data.organizationLabel}</dd>
+        {(isChatGpt || identity.data?.organizationLabel) && <>
+          <dt className="text-muted-foreground">{isChatGpt ? "ChatGPT workspace" : "Organization"}</dt>
+          <dd className="break-words">{identity.data?.organizationLabel ?? (identity.isPending && canLookUp ? "Checking…" : "Not available")}</dd>
         </>}
         <dt className="text-muted-foreground">Sign-in method</dt>
         <dd>{aiMethodLabel(account.provider, account.method)}</dd>

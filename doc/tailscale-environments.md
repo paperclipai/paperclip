@@ -61,6 +61,36 @@ SSH environments display it as on; opening or upgrading an installation does
 not rewrite their saved configuration. The same option applies to direct SSH
 and Tailscale connections.
 
+## SSH on a volume-free Cloud stack
+
+Cloud SSH execution uses the same durable task workspace storage as Cloud
+sandboxes. Claude Code and Codex use their existing SSH adapters with
+`engine=cli`. ACP archive staging cannot use an in-place Cloud workspace. An
+explicit engine choice preserves the agent's execution and permission settings.
+The selected
+SSH account supplies the installed harness; the agent's Paperclip AI account
+supplies authentication unless the remote authentication option is enabled.
+
+Each task receives a private directory below the configured SSH workspace path,
+inside `.paperclip-workspaces`. The task runs in that remote directory. Core
+keeps the workspace binding and saved file versions in its database and object
+storage. A Cloud restart reconnects to the same remote files. Restoring a saved
+workspace to another allocation uses the existing snapshot verification and
+single-writer rules. It does not restore private provider credentials from a
+task snapshot.
+
+The SSH machine needs Node.js and Git on its login PATH in addition to its agent
+harness. The workspace owner uses Node.js for preparation and verified file
+archives. SSH access alone does not qualify these dependencies or the selected
+AI account.
+
+An existing server-local workspace is not automatically imported. Cloud still
+rejects local filesystem authority and unsupported adapters. An uncertain SSH
+exit or failed save retains the remote files and the writer hold; it does not
+authorize another run to overwrite them. Paperclip does not stop or delete the
+SSH computer. This change does not add automatic reconciliation of an unknown
+remote provider process after an SSH connection is lost.
+
 The environment keeps the `ssh` driver. Machine selection stores the connector
 ID and Tailscale’s stable device ID, and runtime
 resolution looks up its current address through that connection’s private

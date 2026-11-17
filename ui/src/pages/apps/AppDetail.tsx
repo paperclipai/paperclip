@@ -1,6 +1,6 @@
 import { AppNotFound, AppReadError } from "./app-detail/AppReadError";
 import { AiConnectionPoolConnector } from "@/components/ai-connections/AiConnectionPoolConnector";
-import { aiConnectionRouterPluginKey, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
+import { aiConnectionRouterPluginKey, googleWorkspaceSelectedScopes, paperclipPeerFromMcpUrl, paperclipPeerInstructionTemplate, type GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
 import { ConnectionInstructionsSettings } from "@/features/connections/ConnectionInstructions";
 import { HonchoWorkspaceSettings } from "@/features/connections/HonchoWorkspaceSettings";
 import { BrowserUseSettingsPanel } from "./app-detail/BrowserUseSettingsPanel";
@@ -232,6 +232,13 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection, application),
     [galleryQuery.data, connection, application],
   );
+  // Curated apps carry their own template. A connection to another Paperclip
+  // gets one derived from its address, so its default guidance stays editable.
+  const instructionsTemplate = useMemo(() => {
+    if (logoEntry?.agentInstructions) return { provider: logoEntry.name, template: logoEntry.agentInstructions };
+    const peer = paperclipPeerFromMcpUrl(typeof connection?.config?.url === "string" ? connection.config.url : null);
+    return peer ? { provider: peer.host, template: paperclipPeerInstructionTemplate(peer) } : null;
+  }, [logoEntry, connection]);
   const brandKey = appApplicationSourceSlug(application)
     ?? appConnectionSourceSlug(connection)
     ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
@@ -694,7 +701,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
               </p> : null}
               {connection.config?.sourceTemplateKey !== "composio" && isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
               <PermissionsPanel
-                afterAgentAccess={<>{logoEntry?.agentInstructions && <ConnectionInstructionsSettings key={connection.id} connection={connection} provider={logoEntry.name} template={logoEntry.agentInstructions} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}{renderAgentSettings?.(connection)}</>}
+                afterAgentAccess={<>{instructionsTemplate && <ConnectionInstructionsSettings key={connection.id} connection={connection} provider={instructionsTemplate.provider} template={instructionsTemplate.template} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}{renderAgentSettings?.(connection)}</>}
                 actions={actionsContent}
                 connectionId={connectionId}
                 capabilities={grantsQuery.data?.capabilities}

@@ -1,8 +1,7 @@
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { hasRemoteRecoveryAttachment, removeRemoteRecoveryAttachment } from "./remote-workspace-transport.js";
+import { hasRemoteRecoveryAttachment, removeRemoteRecoveryAttachment, type RemoteWorkspaceTarget } from "./remote-workspace-transport.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { LEGACY_WORKSPACE_RECOVERY_MIGRATION } from "./legacy-workspace-recovery-migration.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -225,7 +224,7 @@ function record(value: unknown): Record<string, unknown> {
  * provenance. This checks the selected root; it never imports or replaces files. */
 export async function retainRemoteRecoveryAttachments(input: {
   db: Db; workspace: Pick<typeof executionWorkspaces.$inferSelect, "id" | "companyId" | "sourceIssueId" | "metadata">;
-  runId: string; remoteRoot: string; target: AdapterSandboxExecutionTarget; assertOwned?: () => Promise<void>;
+  runId: string; remoteRoot: string; target: RemoteWorkspaceTarget; assertOwned?: () => Promise<void>;
   recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string; provenance: string; retired?: true }>;
   retiredOperationIds: ReadonlySet<string>; storage?: StorageService;
 }) {

@@ -6,8 +6,8 @@ land. It covers section 2 of the
 
 Based on a read of master at `56654adecd`. Items marked **confirmed** were seen
 in the code. Items marked **to check** are suspected gaps that need a look
-before any change. Fixes 1 to 4 landed on November 17. Work on fixes 9 and
-10 has started. Fixes 5 to 8 are not started.
+before any change. Fixes 1 to 4 and 6 landed on November 17. Work on fixes 9
+and 10 has started. Fixes 5, 7 and 8 are not started.
 
 Each fix is its own pull request with a failing test first. For the scope
 change in fix 2, the deploy order is app first, then broker (see fix 10).
@@ -21,10 +21,10 @@ change in fix 2, the deploy order is app first, then broker (see fix 10).
 | 3 | Take `gmail.modify` off the Paperclip-managed client | Small | Yes | Done, [#22001](https://github.com/paperclipai/paperclip/pull/22001) |
 | 4 | Confirm injection screening on Google results | Check, then small | Yes | Done, [#21999](https://github.com/paperclipai/paperclip/pull/21999) |
 | 5 | Revoke at Google on last disconnect | Medium | Likely | Not started |
-| 6 | Retention and deletion of Google content | Audit, then unknown | Yes | Audit reported; fix not started |
+| 6 | Retention and deletion of Google content | Audit, then unknown | Yes | Done with limits, [#22010](https://github.com/paperclipai/paperclip/pull/22010) |
 | 7 | Security scan findings | Unknown | Yes (assessment) | Not started |
 | 8 | Remove the experimental gate | Small | No, release step | Not started |
-| 9 | REST-backed tool set | Large | Yes | Part 1 merged Nov 17, [#22000](https://github.com/paperclipai/paperclip/pull/22000) |
+| 9 | REST-backed tool set | Large | Yes | Gmail and Calendar done, switch merged, none switched on; Drive, Docs, Sheets, Slides in progress |
 | 10 | Scope cleanup across code, Cloud and Console | Medium | Yes | App done; broker and Console open |
 
 ## 1. Data-use disclosure in the picker
@@ -160,6 +160,17 @@ reasoning mostly goes away, and reviewers expect disconnect to end access.
 
 ## 6. Retention and deletion of Google content
 
+**Done, with limits** (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010)).
+Any connection's page has "Delete data", and removing a connection offers the
+same. It clears previews, approval cards, results passed to later runs, app
+views and the whole transcript of each settled run that used the connection.
+It keeps call records without content. Limits: content agents wrote into
+tasks stays; deleting a task or a company does not yet run the same cleanup;
+runs in progress are skipped. The help page is
+`docs/guides/board-operator/deleting-connection-data.md`. The inventory is in
+the working memory under "Where Google content is kept". Revoking at Google is
+fix 5. The plan below is kept for reference.
+
 **To check.** Email and file content returned by tools is stored in task
 comments, run history, tool results and attachments. Disconnecting does not
 delete any of it. Google requires that users can delete their data and that we
@@ -202,6 +213,22 @@ deleted cleanly. Part 1 is
 [#22000](https://github.com/paperclipai/paperclip/pull/22000) (merged Nov 17): the
 folder and Gmail `get_message`, `search_threads` and `create_draft`. Its README
 records the dispatch trace and the recommended in-process seam.
+
+Status (Nov 17, late evening):
+
+| Service | Implemented | Switched on | PRs |
+| --- | --- | --- | --- |
+| Gmail | 9 of 9 | No | [#22000](https://github.com/paperclipai/paperclip/pull/22000), [#22014](https://github.com/paperclipai/paperclip/pull/22014) |
+| Calendar | 9 of 9 | No | [#22017](https://github.com/paperclipai/paperclip/pull/22017) |
+| Drive | 0 of 8 | No | In progress |
+| Docs | 0 of 2 | No | In progress |
+| Sheets | 0 of 6 | No | In progress |
+| Slides | 0 of 2 | No | In progress |
+
+The per-service switch and in-process dispatch landed in
+[#22016](https://github.com/paperclipai/paperclip/pull/22016). Every service is
+still on Google's MCP. The gateway calls the REST tools in process, as the
+trace in #22000 recommended.
 
 ### The seam
 
@@ -316,6 +343,10 @@ Also needed:
 - Compare the Console declaration for both Google apps with the 14 (needs the
   project owner's sign-in).
 - Keep the working memory's "Scopes" and "Cloud broker" sections current.
+
+Read & write Calendar now also requests `calendar.events.freebusy` (Nov 17).
+It is one of the 14 and the broker accepts any nonempty subset of
+`workspace.all`, so neither the broker nor the Console needs a change for it.
 
 ## Not code, but needed by these fixes
 

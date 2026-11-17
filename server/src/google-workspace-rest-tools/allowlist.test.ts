@@ -75,4 +75,47 @@ describe("tool allowlist", () => {
     expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", "unlisted_tool"))).toBeNull();
     expect(listGoogleWorkspaceRestTools("calendar").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
   });
+
+  it.each([
+    ["docs", ["read_doc", "update_doc"], ["update_doc"]],
+    ["slides", ["read_presentation", "update_presentation"], ["update_presentation"]],
+  ] as const)("implements every allowlisted %s tool (2 of 2), writing only through its update tool", (service, allowlisted, writes) => {
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName(service, name)), name).not.toBeNull();
+    expect(listGoogleWorkspaceRestTools(service).map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+    expect(listGoogleWorkspaceRestTools(service).filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name)).toEqual(writes);
+  });
+
+  it("marks the Docs and Slides update tools destructive and not idempotent, and the reads read-only", () => {
+    const annotations = Object.fromEntries((["docs", "slides"] as const).flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => [tool.name, tool.annotations])));
+    expect(annotations).toEqual({
+      read_doc: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      update_doc: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      read_presentation: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      update_presentation: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    });
+  });
+
+  it("marks the Calendar tools that overwrite or remove data destructive", () => {
+    const annotations = Object.fromEntries(listGoogleWorkspaceRestTools("calendar")
+      .filter((tool) => tool.annotations?.readOnlyHint !== true)
+      .map((tool) => [tool.name, tool.annotations]));
+    expect(annotations).toEqual({
+      create_event: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      update_event: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      delete_event: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      respond_to_event: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    });
+  });
+
+  it("adds no create, delete, share or permission tool for Docs or Slides", () => {
+    const names = (["docs", "slides"] as const).flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
+    expect(names.filter((name) => /create|delete|share|permission|copy|trash/i.test(name))).toEqual([]);
+  });
+
+  it("implements every allowlisted Sheets tool (6 of 6)", () => {
+    const allowlisted = ["get_values", "get_spreadsheet", "update_spreadsheet", "update_values", "update_formulas", "insert_dimension"];
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("sheets", name)), name).not.toBeNull();
+    expect(googleWorkspaceToolTarget(googleWorkspaceToolName("sheets", "delete_spreadsheet"))).toBeNull();
+    expect(listGoogleWorkspaceRestTools("sheets").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+  });
 });

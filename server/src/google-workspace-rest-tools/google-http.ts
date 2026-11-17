@@ -1,8 +1,13 @@
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 
-export const GOOGLE_API_HOSTS = ["gmail.googleapis.com", "www.googleapis.com"] as const;
+export const GOOGLE_API_HOSTS = ["gmail.googleapis.com", "www.googleapis.com", "docs.googleapis.com", "slides.googleapis.com", "sheets.googleapis.com"] as const;
 export type GoogleApiHost = (typeof GOOGLE_API_HOSTS)[number];
-export const GOOGLE_API_PATH_PREFIXES: Partial<Record<GoogleApiHost, string>> = { "www.googleapis.com": "/calendar/v3/" };
+export const GOOGLE_API_PATH_PREFIXES: Partial<Record<GoogleApiHost, string>> = {
+  "www.googleapis.com": "/calendar/v3/",
+  "docs.googleapis.com": "/v1/documents/",
+  "slides.googleapis.com": "/v1/presentations/",
+  "sheets.googleapis.com": "/v4/spreadsheets/",
+};
 
 export type QueryValue = string | number | boolean | readonly string[] | undefined;
 
@@ -198,11 +203,11 @@ export function googleError(
   if (status === 429 || reasons.has("RATE_LIMIT_EXCEEDED") || reasons.has("rateLimitExceeded") || reasons.has("userRateLimitExceeded")) {
     return new GoogleToolError("rate_limited", "Google is rate limiting requests. Try again shortly.", status);
   }
-  if (status === 403) return new GoogleToolError("permission_denied", message ?? "Google denied access to this item.", status);
+  if (status === 403) return new GoogleToolError("permission_denied", message ?? "Google denied access to this item.", status, { status: error?.status, reasons: [...reasons] });
   if (status === 404 || status === 410) return new GoogleToolError("not_found", "Google could not find that item.", status);
   if (status === 412) return new GoogleToolError("invalid_argument", "The item changed after it was read, so nothing was changed. Read it again and retry.", status);
   if (status === 400 || status === 409 || status === 413) {
-    return new GoogleToolError("invalid_argument", message ?? "Google rejected the request.", status);
+    return new GoogleToolError("invalid_argument", message ?? "Google rejected the request.", status, { status: error?.status, reasons: [...reasons] });
   }
   if (status >= 500) {
     const unavailable = "Google is temporarily unavailable.";

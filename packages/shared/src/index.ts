@@ -389,6 +389,15 @@ export {
   type McpRemoteHeaderRejection,
 } from "./mcp-remote-headers.js";
 export {
+  PAPERCLIP_PEER_MCP_PATH,
+  isSamePaperclipInstance,
+  PAPERCLIP_PEER_INSTRUCTIONS_TEMPLATE_ID,
+  paperclipPeerAgentInstructions,
+  paperclipPeerFromMcpUrl,
+  paperclipPeerInstructionTemplate,
+  type PaperclipPeer,
+} from "./paperclip-peer.js";
+export {
   checkOAuthEndpointUrl,
   isSafeOAuthEndpointUrl,
   oauthEndpointDisplayHost,
@@ -2451,6 +2460,7 @@ export {
   currentUserProfileSchema,
   authSessionSchema,
   browserTracingConfigSchema,
+  browserAnalyticsConfigSchema,
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
@@ -2477,6 +2487,7 @@ export {
   type CurrentUserProfile,
   type AuthSession,
   type BrowserTracingConfig,
+  type BrowserAnalyticsConfig,
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,

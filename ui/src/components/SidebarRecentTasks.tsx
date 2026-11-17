@@ -10,7 +10,7 @@ import { useAccountIdentity } from "@/api/companies-query";
 import { useSidebar } from "@/context/SidebarContext";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import {
-  updateRecentTaskSnapshots,
+  recordRecentTask,
   type RecentTaskEntry,
 } from "@/lib/recent-tasks";
 import { Button } from "@/components/ui/button";
@@ -108,7 +108,7 @@ function RecentTasksList({
   liveIssueIds: ReadonlySet<string>;
   rail: boolean;
 }) {
-  const { entries, storageKey } = useRecentTasks({ companyId, userId });
+  const { entries } = useRecentTasks({ companyId, userId });
   const { pathname } = useLocation();
   const hierarchy = useMemo(() => recentTaskHierarchy(entries, pathname), [entries, pathname]);
   const queryClient = useQueryClient();
@@ -146,7 +146,7 @@ function RecentTasksList({
     try {
       const updated = await issuesApi.update(renameEntry.id, { title: nextTitle });
       queryClient.setQueryData(queryKeys.issues.detail(renameEntry.id), updated);
-      if (storageKey) updateRecentTaskSnapshots(storageKey, companyId, [updated]);
+      recordRecentTask(updated, userId, Date.now());
       await refreshIssueQueries(renameEntry.id);
       setRenameEntry(null);
       toastActions?.pushToast({ title: "Task renamed", tone: "success" });
