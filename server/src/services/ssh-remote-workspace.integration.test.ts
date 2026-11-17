@@ -26,6 +26,8 @@ import * as runLogModule from "./run-log-store.js";
 import { objectLogFixture } from "./heartbeat/__tests__/object-log-fixture.js";
 import { issueService } from "./issues.js";
 import { getServerAdapter } from "../adapters/index.js";
+import * as recoverySnapshots from "./workspace-recovery-snapshot.js";
+import { hasRemoteRecoveryAttachment } from "./remote-workspace-transport.js";
 
 const [postgres, ssh] = await Promise.all([getEmbeddedPostgresTestSupport(), getSshEnvLabSupport()]);
 
@@ -83,7 +85,7 @@ describe.skipIf(!postgres.supported || !ssh.supported)("Cloud SSH durable worksp
 
     const first = await acquire(runId);
     const reserved = await reserveRemoteWorkspace({ db, storage, companyId, issueId, runId, agentId,
-      environmentId: environment.id, projectId: null, projectWorkspaceId: null, existingWorkspaceId: null, source: { kind: "empty" } });
+      environmentId: environment.id, projectId: null, projectWorkspaceId: null, existingWorkspaceId: null, source: { kind: "empty" }, mode: "shared_workspace" });
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId, ...first });
     const firstTarget = { ...first.target, remoteCwd: prepared.remoteRoot, spec: { ...first.target.spec, remoteCwd: prepared.remoteRoot } };
     const result = await requireRemoteWorkspaceTarget(firstTarget).runner!.execute({ command: "node", args: ["-e",
@@ -107,10 +109,26 @@ describe.skipIf(!postgres.supported || !ssh.supported)("Cloud SSH durable worksp
     await expect(reserveRemoteWorkspace({ db, storage, companyId, issueId, runId: blockedId, agentId,
       environmentId: environment.id, projectId: null, projectWorkspaceId: null,
       existingWorkspaceId: prepared.workspace.id, source: { kind: "empty" } })).rejects.toMatchObject({ status: 409 });
-    const finalized = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId, remoteWorkspaceId: prepared.workspace.id }, ownership =>
-      saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId,
-        lease: stopped, target: firstTarget, assertOwned: ownership.assertHeld }));
+    const peerIssueId = randomUUID(), peerRunId = randomUUID();
+    await db.insert(issues).values({ id: peerIssueId, companyId, title: "Use the saved shared workspace", assigneeAgentId: agentId,
+      executionWorkspaceId: prepared.workspace.id });
+    await db.insert(heartbeatRuns).values({ id: peerRunId, companyId, agentId, issueId: peerIssueId, runtimeMode: "legacy", status: "running" });
+    const finalized = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId, remoteWorkspaceId: prepared.workspace.id }, async ownership => {
+      await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId,
+        lease: stopped, target: firstTarget, assertOwned: ownership.assertHeld });
+      const handedOn = await reserveRemoteWorkspace({ db, storage, companyId, issueId: peerIssueId, runId: peerRunId, agentId,
+        environmentId: environment.id, projectId: null, projectWorkspaceId: null, existingWorkspaceId: prepared.workspace.id, source: { kind: "empty" } });
+      expect(readRemoteWorkspaceAuthority(handedOn.metadata)).toMatchObject({ epoch: 2, writerRunId: peerRunId });
+      await ownership.assertHeld();
+      await expect(saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId,
+        lease: stopped, target: firstTarget, assertOwned: ownership.assertHeld })).rejects.toThrow("authority_changed");
+    });
     expect(finalized.acquired).toBe(true);
+    const [finishedOwner] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(finishedOwner.runnerProfileJson).not.toHaveProperty("nativeWorkspaceFinalizationOwner");
+    await expect(withNativeWorkspaceFinalizationOwnership({ db, companyId, runId, remoteWorkspaceId: prepared.workspace.id }, async () => {}))
+      .rejects.toThrow("binding_missing");
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, peerRunId));
 
     // Replace the controller connection. The saved task and remote files are the authority.
     db = createDb(database.connectionString);
@@ -137,6 +155,44 @@ describe.skipIf(!postgres.supported || !ssh.supported)("Cloud SSH durable worksp
     const restored = await prepareRemoteWorkspace({ db, storage, workspace: restoring, runId: restoreId, ...replacement });
     expect(restored.remoteRoot).not.toBe(prepared.remoteRoot);
     expect(await readFile(path.join(restored.remoteRoot, "hello_world.txt"), "utf8")).toBe("Hello World\n");
+  }, 60_000);
+
+  it("prepares a verified recovered copy on SSH without directory-sync support", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), sourceId = randomUUID(), operationId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "SSH recovery test", issuePrefix: "REC" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Recovery worker", adapterType: "claude_local" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Recover earlier files", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, runtimeMode: "legacy", status: "running" });
+    const [environment] = await db.insert(environments).values({ driver: "ssh", name: "SSH recovery", config: {} }).returning();
+    const config = await buildSshEnvLabFixtureConfig(sshd!);
+    const [lease] = await db.insert(environmentLeases).values({ companyId, environmentId: environment.id,
+      heartbeatRunId: runId, issueId, provider: "ssh", providerLeaseId: "ssh-recovery", status: "active" }).returning();
+    const target: AdapterSshExecutionTarget = { kind: "remote", transport: "ssh", environmentId: environment.id,
+      leaseId: lease.id, remoteCwd: config.remoteWorkspacePath, spec: { ...config, remoteCwd: config.remoteWorkspacePath } };
+    const storage = { ...createStorageService(createLocalDiskStorageProvider(path.join(root, "recovery-objects"))), provider: "s3" as const };
+    const reserved = await reserveRemoteWorkspace({ db, storage, companyId, issueId, runId, agentId,
+      environmentId: environment.id, projectId: null, projectWorkspaceId: null, existingWorkspaceId: null,
+      source: { kind: "empty" }, recoverySourceRunIds: [sourceId] });
+    const provenance = JSON.stringify({ operationId, sourceRunId: sourceId });
+    // Start at the verified extraction boundary; source authorization and snapshot verification keep their existing owner.
+    const extract = vi.spyOn(recoverySnapshots, "attachPreservedWorkspaceSnapshots").mockImplementationOnce(async input => {
+      expect(input.sourceRunIds).toContain(sourceId);
+      const recovered = path.join(input.cwd, "recovered", operationId);
+      await mkdir(path.join(recovered, "files", "nested"), { recursive: true });
+      await writeFile(path.join(recovered, "files", "nested", "preserved.txt"), "Earlier work\n");
+      await writeFile(path.join(recovered, "provenance.json"), provenance);
+      return [{ operationId, sourceRunId: sourceId, path: recovered }];
+    });
+    try {
+      const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId, lease: lease as EnvironmentLease, target });
+      const recovered = path.join(prepared.remoteRoot, ".paperclip-recovered", operationId);
+      expect(await readFile(path.join(recovered, "files", "nested", "preserved.txt"), "utf8")).toBe("Earlier work\n");
+      expect(await readFile(path.join(recovered, "provenance.json"), "utf8")).toBe(provenance);
+      expect(await hasRemoteRecoveryAttachment({ target: requireRemoteWorkspaceTarget(target), remoteCwd: prepared.remoteRoot, operationId, provenance })).toBe(true);
+      await writeFile(path.join(recovered, "files", "nested", "preserved.txt"), "A later edit\n");
+      await prepareRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId, lease: prepared.lease, target });
+      expect(await readFile(path.join(recovered, "files", "nested", "preserved.txt"), "utf8")).toBe("A later edit\n");
+    } finally { extract.mockRestore(); }
   }, 60_000);
 
   it("runs an assigned Claude task through heartbeat with the configured Paperclip account", async () => {

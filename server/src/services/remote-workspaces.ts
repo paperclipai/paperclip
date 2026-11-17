@@ -33,7 +33,7 @@ import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
   RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause, hasRemoteRecoveryAttachment,
   requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
-  type RemoteWorkspaceSavePhaseTiming,
+  type RemoteWorkspaceSavePhaseTiming, syncRemoteWorkspaceRecoveryDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, findUnchangedWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, uploadWorkspaceSnapshot,
@@ -568,9 +568,8 @@ export async function prepareRemoteWorkspace(input: {
           const provenance = await readFile(path.join(item.path, "provenance.json"), "utf8");
           const exists = await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId,
             provenance });
-          if (!exists) await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
-              kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
-            }] }]);
+          if (!exists) await syncRemoteWorkspaceRecoveryDirectory({ target,
+            sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative) });
           recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative, provenance });
         }
       } finally { await removeTaskDirectoryTree(scratch); }

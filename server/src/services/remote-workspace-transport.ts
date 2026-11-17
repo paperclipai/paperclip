@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +39,26 @@ export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | nu
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask
     || !target.runner.syncIn || !target.runner.syncOut) throw new Error("remote_workspace_transport_unsupported");
   return target;
+}
+
+export async function syncRemoteWorkspaceRecoveryDirectory(input: {
+  target: RemoteWorkspaceTarget; sourcePath: string; targetPath: string;
+}) {
+  if (input.target.transport === "sandbox") {
+    await input.target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
+      kind: "directory", sourcePath: input.sourcePath, targetPath: input.targetPath,
+    }] }]);
+    return;
+  }
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-recovery-transfer-"));
+  try {
+    const archivePath = path.join(scratch, "recovery.pcws");
+    const captured = await captureRemoteWorkspaceDirectory({ cwd: input.sourcePath, archivePath });
+    const restorationIdentity = createHash("sha256").update(JSON.stringify([input.targetPath, captured.manifestDigest])).digest("hex");
+    const restored = await restoreRemoteWorkspaceDirectory({ target: input.target, remoteCwd: input.targetPath,
+      archivePath, manifestDigest: captured.manifestDigest, restorationIdentity });
+    await cleanupRemoteWorkspaceArchive({ target: input.target, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
+  } finally { await removeTaskDirectoryTree(scratch); }
 }
 
 /** The workspace archive is built inside the sandbox, so a full sandbox disk stops the save. */

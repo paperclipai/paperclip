@@ -131,10 +131,11 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           and ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,state}' = 'saved'))
       and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,epoch}' = ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,epoch}'
       and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,location,leaseId}' = ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,leaseId}')`) : undefined;
-  const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-    input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"])
-      : or(eq(heartbeatRuns.runtimeMode, "native"), remoteLegacy));
-  const owned = and(scope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
+  const runScope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+    input.retainedRepairActionId || input.remoteWorkspaceId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"])
+      : eq(heartbeatRuns.runtimeMode, "native"));
+  const claimScope = and(runScope, input.retainedRepairActionId ? undefined : or(eq(heartbeatRuns.runtimeMode, "native"), remoteLegacy));
+  const owned = and(runScope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
   const runKey = nativeWorkspaceFinalizationLockKey(input.companyId, input.runId);
   let claimed = false;
   let actionPromise: Promise<T> | undefined;
@@ -151,7 +152,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
         // Reads and durable progress use the ordinary pool, not the lock transaction.
         const [run] = await input.db.select({ profile: heartbeatRuns.runnerProfileJson,
           issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
-          agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(scope).limit(1);
+          agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(claimScope).limit(1);
         if (!run) throw new Error("native_workspace_finalization_binding_missing");
         const rawPrior = run.profile?.[OWNER_KEY];
         const prior = readOwner(rawPrior);
@@ -166,7 +167,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           const [issue] = await db.select().from(issues).where(and(
             eq(issues.companyId, input.companyId), eq(issues.id, run.issueId),
           )).for("update");
-          const [currentRun] = await db.select().from(heartbeatRuns).where(scope).for("update");
+          const [currentRun] = await db.select().from(heartbeatRuns).where(claimScope).for("update");
           if (input.retainedRepairActionId) {
             const [repair] = await db.select().from(issueRecoveryActions).where(and(
               eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, run.issueId),
@@ -288,7 +289,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           claimed = true;
           const [claimedRun] = await db.update(heartbeatRuns).set({
             runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), array[${OWNER_KEY}], ${JSON.stringify(owner)}::jsonb) || ${JSON.stringify(platformProof ? { nativeWorkspaceOwnerStopProof: platformProof } : {})}::jsonb`,
-          }).where(and(scope, prior
+          }).where(and(claimScope, prior
             ? sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY} = ${JSON.stringify(rawPrior)}::jsonb`
             : sql`${heartbeatRuns.runnerProfileJson}->>${OWNER_KEY} is null`
           )).returning({ id: heartbeatRuns.id });
