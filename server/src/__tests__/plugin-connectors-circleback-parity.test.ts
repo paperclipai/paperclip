@@ -132,7 +132,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Review meetings", assigneeAgentId: agentId }).returning();
       const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId, issueId: issue.id, scopeKind: "issue",
         invocationSource: "on_demand", status: "running", responsibleUserId: actor.actorId, contextSnapshot: { issueId: issue.id } }).returning();
-      return gateway.createSession({ companyId: company.id, agentId, runId: run.id, issueId: issue.id });
+      return { ...(await gateway.createSession({ companyId: company.id, agentId, runId: run.id, issueId: issue.id })), runId: run.id };
     };
     const sessions = { a: await session(agentA.id), b: await session(agentB.id) };
     const circlebackTools = async (token: string, galleryKey: string) => (await gateway.listToolsForSession(token))
@@ -264,6 +264,9 @@ const support = await getEmbeddedPostgresTestSupport();
       .rejects.toMatchObject({ status: 404 });
     await expect(f.service.connectGalleryApp(f.company.id, { galleryKey: PLUGIN_SLUG, connectionMethodKey: "mcp-oauth" }, actor))
       .rejects.toMatchObject({ status: 404 });
+    // Token exchange is refused too.
+    await expect(f.service.mintConnectionTokenForAgent({ connectionId: fromPlugin.first.connectionId, companyId: f.company.id,
+      agentId: f.agentA.id, runId: f.sessions.a.runId, body: {} })).rejects.toMatchObject({ status: 404 });
     // Saved setup is untouched while disabled.
     expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, fromPlugin.first.connectionId))).toEqual(installsBefore);
     expect(await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fromPlugin.first.connectionId))).toEqual(grantsBefore);
