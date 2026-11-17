@@ -29,7 +29,7 @@ function failingGateway() {
 
 describe("tool errors returned to agents", () => {
   it("delivers the safe upstream message and stable reason in the MCP error envelope", async () => {
-    const message = mcpErrorMessage("Remote MCP server returned an error", {
+    const message = await mcpErrorMessage("Remote MCP server returned an error", {
       message: "Skill refunds was not found; TOKEN=private-provider-token",
       data: { raw: "private-provider-data" },
     }, {});

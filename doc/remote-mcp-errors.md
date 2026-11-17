@@ -7,10 +7,14 @@ numeric code and the connection identifiers in error details.
 When the upstream error has a non-empty string message, the gateway appends it
 as `Upstream message (untrusted): ...`. This is provider content, not an
 instruction or a Paperclip policy decision. The message uses the existing secret
-redactors. The gateway also removes known request header values, sensitive
-argument values, and endpoint query values before it clips the provider message
+redactors. The gateway also removes known credentials, sensitive request header and query values, and sensitive
+argument values before it clips the provider message
 to 1,000 characters. Control characters are removed. An absent or malformed
-message keeps the generic fallback.
+message keeps the generic fallback. The existing result-content prompt-injection
+screen runs on the redacted, bounded text before it is returned or persisted.
+Flagged text uses the generic fallback while keeping the upstream code and
+remote error status. The same configured classifier and regex fallback apply as
+for successful results. Ordinary header and query values are preserved.
 
 Arbitrary upstream `error.data`, stacks, and raw response bodies are not returned.
 The same safe message is used for caller errors and saved invocation failures.
