@@ -7,7 +7,7 @@ import {
   googleWorkspaceSelectedScopes, googleWorkspaceEffectiveScopes, GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   googleWorkspaceDraftRequestedScopes, GOOGLE_WORKSPACE_SERVICE_GROUPS, GOOGLE_WORKSPACE_SUBMITTED_SCOPES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS, googleWorkspaceProfileWithinSubmittedScopes,
-  GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
+  GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames, googleWorkspaceSelectionForScopes,
   type GoogleWorkspaceServiceSelection,
 } from "./google-workspace-connectors.js";
 
@@ -30,7 +30,8 @@ describe("combined Google Workspace consent", () => {
 
   it("defaults to Gmail, combined Drive, and Calendar write scopes without Chat or People", () => {
     const selected = googleWorkspaceSelectedScopes(GOOGLE_WORKSPACE_DEFAULT_SELECTION);
-    expect(selected).toHaveLength(9);
+    expect(selected).toHaveLength(10);
+    expect(googleWorkspaceSelectedScopes({ gmail: "read", drive: "read", calendar: "read" })).toHaveLength(8);
     expect(selected).toContain(scope("gmail.compose"));
     expect(selected.some(value => /chat|contacts|directory|userinfo/.test(value))).toBe(false);
     expect(googleWorkspaceSelectedScopes({})).toEqual([]);
@@ -46,6 +47,38 @@ describe("combined Google Workspace consent", () => {
     expect(isGoogleWorkspaceToolGranted("docs__read_doc", effective)).toBe(true);
     expect(googleWorkspaceEffectiveScopes([scope("documents")], [scope("documents.readonly")])).toEqual([scope("documents.readonly")]);
   });
+  it("requests the free/busy permission with read and write Calendar access", () => {
+    expect(googleWorkspaceSelectedScopes({ calendar: "read" })).toEqual([
+      scope("calendar.calendarlist.readonly"), scope("calendar.events.freebusy"), scope("calendar.events.readonly"),
+    ]);
+    expect(googleWorkspaceSelectedScopes({ calendar: "write" })).toEqual([
+      scope("calendar.calendarlist.readonly"), scope("calendar.events"), scope("calendar.events.freebusy"),
+    ]);
+    expect([...profiles["calendar.write"].scopes]).toEqual([scope("calendar.calendarlist.readonly"), scope("calendar.events")]);
+  });
+
+  it("keeps Calendar read and write access for grants made before and after free/busy was requested", () => {
+    const before = [scope("calendar.calendarlist.readonly"), scope("calendar.events")];
+    const after = googleWorkspaceSelectedScopes({ calendar: "write" });
+    for (const [requested, granted] of [[before, before], [after, after], [after, before]]) {
+      const effective = googleWorkspaceEffectiveScopes(requested!, granted!);
+      expect(effective).toEqual(granted);
+      expect(googleWorkspaceSelectionForScopes(effective)).toEqual({ calendar: "write" });
+      for (const tool of ["list_calendars", "list_events", "suggest_time", "create_event", "delete_event"]) {
+        expect(isGoogleWorkspaceToolGranted(`calendar__${tool}`, effective), tool).toBe(true);
+      }
+    }
+    expect(googleWorkspaceSelectionForScopes(googleWorkspaceSelectedScopes({ calendar: "read" }))).toEqual({ calendar: "read" });
+  });
+
+  it("does not record a free/busy permission that Google did not grant", () => {
+    const write = googleWorkspaceSelectedScopes({ calendar: "write" });
+    expect(googleWorkspaceEffectiveScopes(write, [scope("calendar.events")])).toEqual([scope("calendar.events")]);
+    expect(googleWorkspaceEffectiveScopes(googleWorkspaceSelectedScopes({ calendar: "read" }), [scope("calendar.events")]))
+      .toEqual([scope("calendar.events.readonly")]);
+    expect(googleWorkspaceEffectiveScopes([scope("calendar.events")], write)).toEqual([scope("calendar.events")]);
+  });
+
   it("limits every selectable service combination to the 14 scopes submitted for Google verification", () => {
     const submitted = [
       "gmail.readonly", "gmail.compose",

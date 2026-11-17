@@ -61,7 +61,9 @@ Decisions and the details behind them are kept in the
 - [x] Data-use disclosure shown in the picker immediately before Google consent
       (Nov 17, [#21998](https://github.com/paperclipai/paperclip/pull/21998)).
 - [ ] Limited Use statement published and linked from the picker.
-- [ ] Help page: how to disconnect and how to delete stored Google data.
+- [x] Help page: how to disconnect and how to delete stored Google data
+      (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010):
+      `docs/guides/board-operator/deleting-connection-data.md`).
 - [x] Paperclip-managed Google sign-in can only request the 14 scopes for the
       unified connection (Nov 17,
       [#22001](https://github.com/paperclipai/paperclip/pull/22001)). The Cloud
@@ -71,12 +73,22 @@ Decisions and the details behind them are kept in the
 - [x] Prompt-injection screening confirmed on every Google tool result
       (Nov 17, [#21999](https://github.com/paperclipai/paperclip/pull/21999)).
 - [ ] Disconnecting the last Google connection revokes the grant at Google.
-- [ ] Retention and deletion of Google content in tasks, runs and files audited.
+- [x] Retention and deletion of Google content in tasks, runs and files audited
+      (Nov 17, [#22010](https://github.com/paperclipai/paperclip/pull/22010)
+      store inventory; summary in the working memory's "Where Google content
+      is kept"). Users can now delete it per connection. Content agents wrote
+      into tasks stays, and task or company deletion does not yet run the same
+      cleanup.
 - [ ] REST-backed tool set for all 36 actions, in its own folder inside the
-      server, with the same tool names and shapes as Google's MCP tools
-      (part 1, three Gmail tools:
-      [#22000](https://github.com/paperclipai/paperclip/pull/22000), merged
-      Nov 17; not yet called by the gateway).
+      server, with the same tool names and shapes as Google's MCP tools.
+      18 of 36 so far: Gmail 9 of 9
+      ([#22000](https://github.com/paperclipai/paperclip/pull/22000),
+      [#22014](https://github.com/paperclipai/paperclip/pull/22014)) and
+      Calendar 9 of 9
+      ([#22017](https://github.com/paperclipai/paperclip/pull/22017)). The
+      per-service switch exists
+      ([#22016](https://github.com/paperclipai/paperclip/pull/22016)); no
+      service is switched on yet.
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [ ] `googletester.staging.paperclip.app` created and wired to the new Google

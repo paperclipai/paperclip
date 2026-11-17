@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   callGoogleWorkspaceRest,
   googleWorkspaceRestTransportGaps,
-  listGoogleWorkspaceRest,
   probeGoogleWorkspaceRest,
 } from "./google-workspace-rest-dispatch.js";
 
@@ -12,19 +11,14 @@ describe("Google Workspace REST transport eligibility", () => {
     expect(googleWorkspaceRestTransportGaps()).toEqual([]);
   });
 
-  it("finds Calendar fully implemented and Gmail not yet", () => {
-    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, calendar: "paperclip_rest" })).toEqual([]);
-    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, gmail: "paperclip_rest" }).map((gap) => gap.service)).toEqual(["gmail"]);
+  it("finds Gmail and Calendar fully implemented and Chat not", () => {
+    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, gmail: "paperclip_rest", calendar: "paperclip_rest" })).toEqual([]);
+    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, chat: "paperclip_rest" }).map((gap) => gap.service)).toEqual(["chat"]);
   });
 
-  it("names the missing tools of a partially implemented or unimplemented service", () => {
-    const flipped = { ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, gmail: "paperclip_rest" as const, chat: "paperclip_rest" as const };
-    const implemented = new Set(listGoogleWorkspaceRest("gmail").map((tool) => tool.name));
-    const gaps = googleWorkspaceRestTransportGaps(flipped);
-    expect(gaps.map((gap) => gap.service)).toEqual(["gmail", "chat"]);
-    expect(gaps[0]!.missing).toEqual(googleWorkspaceServiceToolNames("gmail").filter((name) => !implemented.has(name)));
-    expect(gaps[0]!.missing.length).toBeGreaterThan(0);
-    expect(gaps[1]!.missing).toEqual(googleWorkspaceServiceToolNames("chat"));
+  it("names every missing tool of a service with no REST tools", () => {
+    expect(googleWorkspaceRestTransportGaps({ ...GOOGLE_WORKSPACE_TOOL_TRANSPORT, chat: "paperclip_rest" }))
+      .toEqual([{ service: "chat", missing: googleWorkspaceServiceToolNames("chat") }]);
   });
 });
 
