@@ -222,8 +222,7 @@ function GovernanceSelect({
  *
  * The open default is the headline — interactions are resolvable by anyone in
  * the company unless a row here narrows them — so the panel only offers
- * narrowing choices and never presents an unrestricted card as board-required
- * (PAP-17280, contract in `doc/SPEC-implementation.md` §9.8.1).
+ * narrowing choices and never presents an unrestricted card as board-required.
  */
 export function InteractionGovernancePanel({
   governance,

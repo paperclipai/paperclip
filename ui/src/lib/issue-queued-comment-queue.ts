@@ -5,6 +5,34 @@ import type {
   IssueQueuedCommentQueueState,
   IssueQueuedCommentSteeringDisposition,
 } from "@paperclipai/shared";
+import type { RunForIssue } from "../api/activity";
+
+/** Presentation only. Admission has accepted these inputs, but has not consumed them. */
+export function startingQueuedCommentIds(
+  queue: IssueQueuedCommentQueue | null | undefined,
+  runs: readonly RunForIssue[],
+): ReadonlySet<string> {
+  // The user's Interrupt is delivering this queue. Every page load, not only
+  // the tab that clicked, shows its messages as sent.
+  if (queue?.queueId && isQueuedInterruptHandoff(queue)) {
+    return new Set(queue.entries.flatMap(entry =>
+      !entry.source && !entry.comment.authorAgentId && !entry.comment.deletedAt ? [entry.comment.id] : []));
+  }
+  if (!queue?.queueId || queue.state !== "queued" || queue.targetRunId) return new Set();
+  const owners = runs.filter(run => run.contextIssueId === queue.issueId &&
+    run.wakeupRequestId === queue.queueId && run.status === "queued" &&
+    !run.startedAt && !run.retryOfRunId);
+  if (owners.length !== 1 || runs.some(run => run.contextIssueId === queue.issueId &&
+    run.runId !== owners[0]!.runId && run.status === "running")) return new Set();
+  const run = owners[0]!;
+  const inputs = new Set(run.wakeCommentIds?.length ? run.wakeCommentIds
+    : [run.wakeCommentId ?? run.contextCommentId]);
+  const createdAt = new Date(run.createdAt).getTime();
+  return new Set(queue.entries.flatMap(entry =>
+    !entry.source && !entry.comment.authorAgentId && !entry.comment.deletedAt &&
+    inputs.has(entry.comment.id) && new Date(entry.comment.createdAt).getTime() <= createdAt
+      ? [entry.comment.id] : []));
+}
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -91,6 +119,9 @@ export function normalizeIssueQueuedCommentQueue(
     executionWait: typeof wait?.reason === "string" && typeof wait?.message === "string"
       ? { reason: wait.reason, message: wait.message }
       : null,
+    ...(Array.isArray(source?.firstTurnCommentIds) ? {
+      firstTurnCommentIds: source.firstTurnCommentIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+    } : {}),
   };
 }
 
@@ -134,8 +165,11 @@ export function mergePendingIssueQueuedComments(params: {
   const fallbackTargetRunId =
     params.pendingComments.find((entry) => entry.targetRunId)?.targetRunId ??
     null;
-  const protocol =
-    params.authoritativeQueue?.protocol ?? params.fallbackProtocol;
+  // An empty snapshot predating this submission does not own its runtime.
+  // Use the active run until the server acknowledges an actual queue.
+  const protocol = authoritativeOwnsQueue
+    ? params.authoritativeQueue!.protocol
+    : params.fallbackProtocol;
   const targetRunId = authoritativeOwnsQueue
     ? (params.authoritativeQueue?.targetRunId ?? null)
     : fallbackTargetRunId;
@@ -151,11 +185,20 @@ export function mergePendingIssueQueuedComments(params: {
     revision: params.authoritativeQueue?.revision ?? "awaiting-server",
     protocol,
     steeringDisposition:
-      params.authoritativeQueue?.steeringDisposition ??
+      (authoritativeOwnsQueue ? params.authoritativeQueue?.steeringDisposition : undefined) ??
       (protocol === "paperclip_runner_v1" && targetRunId
         ? "temporarily_unavailable"
         : "unsupported"),
     entries,
     executionWait: params.authoritativeQueue?.executionWait ?? null,
+    ...(params.authoritativeQueue?.firstTurnCommentIds ? { firstTurnCommentIds: params.authoritativeQueue.firstTurnCommentIds } : {}),
   };
+}
+
+/**
+ * The user's Interrupt is delivering this deferred queue while the turn it
+ * stopped settles. Its messages count as sent, not as waiting.
+ */
+export function isQueuedInterruptHandoff(queue: Pick<IssueQueuedCommentQueue, "state" | "executionWait"> | null | undefined) {
+  return queue?.state === "deferred" && queue.executionWait?.reason === "interrupt_handoff";
 }

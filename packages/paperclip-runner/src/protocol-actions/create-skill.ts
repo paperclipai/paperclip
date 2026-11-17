@@ -25,7 +25,7 @@ export const createSkillAction = {
   },
   "documentation": {
     "title": "Create skill",
-    "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. A skill already exists when its SKILL.md is in a local directory, repository, URL or catalog, even when the company library has no match; import it instead of copying its content here. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
     "note": null
   },
   "examples": {
@@ -67,7 +67,7 @@ export const createSkillAction = {
       "operationId": "create_skill",
       "version": 1,
       "title": "Create skill",
-      "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+      "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. A skill already exists when its SKILL.md is in a local directory, repository, URL or catalog, even when the company library has no match; import it instead of copying its content here. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
       "exposure": "optional",
       "requiredClaims": [],
       "allowedModes": [
@@ -147,7 +147,7 @@ export const createSkillAction = {
       "operationId": "create_skill",
       "version": 1,
       "title": "Create skill",
-      "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+      "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. A skill already exists when its SKILL.md is in a local directory, repository, URL or catalog, even when the company library has no match; import it instead of copying its content here. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -24,7 +24,7 @@ test("500 avatars load images without WebGL, live modules or avatar frame loops"
   await page.addInitScript(() => {
     (window as any).__personaProbe = { webgl: 0, frames: 0 };
     const getContext = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (kind: string, ...args: any[]) {
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, kind: string, ...args: any[]) {
       if (kind.includes("webgl")) (window as any).__personaProbe.webgl++;
       return (getContext as any).call(this, kind, ...args);
     } as any;

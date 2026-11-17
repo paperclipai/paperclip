@@ -78,6 +78,7 @@ describe("continuation behavioral evaluation", () => {
       ]),
     );
     expect(matrix.every((c) => !c.suite.manualOnly)).toBe(true);
+    expect(matrix.every(c => c.task.automaticRetryPolicy === "single_attempt")).toBe(true);
   });
   it.each(CONTINUATION_CASES.filter(id => !["question-tool-documentation", "provider-question-bridge"].includes(id)))("accepts a complete %s recording", (id) =>
     expect(failures(recording(id))).toEqual([]),

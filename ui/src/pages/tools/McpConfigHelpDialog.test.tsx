@@ -126,13 +126,14 @@ describe("Paste a config — MCP config help", () => {
     await openHelp();
 
     await act(async () => {
-      buttonWithText("Copy prompt")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonWithText("Get a config with an agent")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     await flushReact();
 
-    expect(copyTextToClipboardMock).toHaveBeenCalledWith(MCP_CONFIG_HELP_PROMPT);
-    expect(document.body.textContent).toContain("Copied to clipboard.");
+    expect(copyTextToClipboardMock).toHaveBeenCalledExactlyOnceWith(MCP_CONFIG_HELP_PROMPT);
+    expect(document.querySelector('pre[aria-label="Setup prompt"]')?.textContent).toBe(MCP_CONFIG_HELP_PROMPT);
+    expect(document.body.textContent).toContain("Copied to clipboard");
   });
 
   it("tells the operator to copy by hand when the clipboard is unavailable", async () => {
@@ -141,14 +142,15 @@ describe("Paste a config — MCP config help", () => {
     await openHelp();
 
     await act(async () => {
-      buttonWithText("Copy prompt")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonWithText("Get a config with an agent")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
     await flushReact();
 
     await vi.waitFor(() => {
-      expect(document.body.textContent).toContain("select the text above and copy it");
+      expect(document.body.textContent).toContain("Select and copy the prompt above");
     });
+    expect(document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Setup prompt"]')?.value).toBe(MCP_CONFIG_HELP_PROMPT);
   });
 
   it("makes no connection or import request when opened or copied", async () => {
@@ -163,7 +165,7 @@ describe("Paste a config — MCP config help", () => {
 
     await openHelp();
     await act(async () => {
-      buttonWithText("Copy prompt")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      buttonWithText("Get a config with an agent")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 

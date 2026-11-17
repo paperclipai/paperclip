@@ -26,7 +26,16 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://asset-management.mcp.cloudinary.com/mcp"
+        "serverUrl": "https://asset-management.mcp.cloudinary.com/mcp",
+        "scopesHint": [
+          "openid",
+          "profile",
+          "email",
+          "offline_access",
+          "asset_management",
+          "upload",
+          "media_generation"
+        ]
       },
       "guidanceMd": "Connect Cloudinary in the browser. A Cloudinary account; authorization is limited by the signed-in user's roles.",
       "riskTier": "S3",

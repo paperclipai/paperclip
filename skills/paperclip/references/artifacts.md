@@ -156,3 +156,8 @@ confirms storage and response binding in Paperclip; it does not confirm delivery
 to an external chat provider. If registration fails, use the returned error to
 resolve the failure or explain the limitation; do not describe a workspace path
 as an uploaded file.
+
+The shell helper keeps temporary responses and retry receipts in the assigned
+workspace's private `.paperclip/artifact-helper` directory, so CLI sandboxes can
+write them even when the controller's `TMPDIR` is inaccessible.
+`PAPERCLIP_HELPER_STATE_DIR` overrides that directory when explicitly configured.

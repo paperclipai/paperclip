@@ -91,6 +91,7 @@ export function boardMutationGuard(): RequestHandler {
     if (
       req.actor.source === "local_implicit"
       || req.actor.source === "board_key"
+      || req.actor.source === "mcp_oauth"
       || req.actor.source === "cloud_tenant"
       || req.actor.source === "cloud_control"
     ) {

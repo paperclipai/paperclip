@@ -205,6 +205,9 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
                         "-e",
                         "console.log('stop fixture ready'); setInterval(() => console.log('working'), 200);",
                       ],
+                      // The child only runs this script; server-only fixture
+                      // loaders must not follow NODE_OPTIONS into the adapter.
+                      env: { NODE_OPTIONS: "" },
                       graceSec: 1,
                     }
                   : { provider: "codex", model: "gpt-5.1-codex-mini" },
@@ -275,12 +278,12 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         await request.get(`/api/issues/${parent.id}/comments`),
       );
       expect(JSON.stringify(comments)).toContain("Please check mobile too.");
-      const queue = await json(
-        await request.get(`/api/issues/${parent.id}/queued-comments`),
-      );
-      expect(JSON.stringify(queue.entries)).toContain(
-        "Please check mobile too.",
-      );
+      await expect.poll(async () => {
+        const queue = await json(
+          await request.get(`/api/issues/${parent.id}/queued-comments`),
+        );
+        return JSON.stringify(queue.entries);
+      }).toContain("Please check mobile too.");
 
       let dispatchedAt = 0;
       page.on("request", (req) => {
@@ -377,7 +380,16 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         ).toEqual([]);
       }
       await menu(page, "Resume subtree");
-      await page.getByRole("dialog").getByRole("checkbox").check();
+      const resumeWake = page.getByRole("dialog").getByRole("checkbox");
+      if (adapter === "process") {
+        // Stopped legacy work is blocked pending reconciliation. Removing the
+        // pause must not promise or request a wake through that recovery gate.
+        await expect(resumeWake).toHaveAccessibleName("Wake affected agents (0)");
+        await expect(resumeWake).toBeDisabled();
+        await expect(resumeWake).not.toBeChecked();
+      } else {
+        await resumeWake.check();
+      }
       await page
         .getByRole("dialog")
         .getByRole("button", { name: "Resume subtree", exact: true })

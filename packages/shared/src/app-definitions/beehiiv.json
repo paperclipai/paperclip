@@ -25,7 +25,11 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.beehiiv.com/mcp"
+        "serverUrl": "https://mcp.beehiiv.com/mcp",
+        "scopesHint": [
+          "read",
+          "write"
+        ]
       },
       "guidanceMd": "Connect beehiiv in the browser. A beehiiv account; the subscription plan controls available write capabilities.",
       "riskTier": "S3",

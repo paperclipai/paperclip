@@ -7,6 +7,8 @@ export interface LifecycleSnapshot {
 }
 export type LifecycleCheckpoint = ContinuationCheckpoint & {
   lifecycle?: LifecycleSnapshot;
+  // Successful persisted mutations; not a count of failed tool/HTTP attempts.
+  activity?: unknown[];
 };
 type Interaction = {
   id?: string;
@@ -14,6 +16,7 @@ type Interaction = {
   status?: string;
   sourceRunId?: string;
   payload?: {
+    runtimeRequestId?: string;
     target?: {
       type?: string;
       issueId?: string;
@@ -22,6 +25,28 @@ type Interaction = {
     };
   };
 };
+const nonempty = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
+/** Semantic questions yield the run; provider-native questions instead pause
+ * inside it. Only a pending runtime request bound to that running native run
+ * permits retaining its execution lock at a waiting checkpoint. */
+function hasHealthyWait(checkpoint: LifecycleCheckpoint, pending: Interaction[]) {
+  const state = checkpoint.lifecycle;
+  if (!state || state.scheduledRetry !== null || state.activeRecoveryAction !== null ||
+      state.monitorNextCheckAt !== null || checkpoint.runs.length === 0) return false;
+  const active = checkpoint.runs.filter(run => run.status !== "succeeded");
+  if (active.length === 0)
+    return checkpoint.issue.status === "in_review" && state.executionRunId === null;
+  if (active.length !== 1) return false;
+  const run = active[0];
+  return run.status === "running" && run.runtimeMode === "native" && nonempty(run.id) &&
+    state.executionRunId === run.id && ["in_progress", "in_review"].includes(checkpoint.issue.status) &&
+    pending.some(interaction => interaction.kind === "ask_user_questions" &&
+      nonempty(interaction.id) && interaction.sourceRunId === run.id &&
+      nonempty(interaction.payload?.runtimeRequestId));
+}
+
 /** Independent durable-state oracle. It never interprets response prose. */
 export function gradeLifecycleBaseline(checkpoints: LifecycleCheckpoint[]) {
   const checks: Array<{ id: string; passed: boolean; detail: string }> = [];
@@ -36,6 +61,14 @@ export function gradeLifecycleBaseline(checkpoints: LifecycleCheckpoint[]) {
       waiting.every((c) => !!c.lifecycle),
     "Every checkpoint must retain lifecycle evidence from the public task API.",
   );
+  const first = waiting[0];
+  check(
+    "lifecycle.task-owner-preserved",
+    nonempty(first?.issue.id) && nonempty(first?.issue.assigneeAgentId) &&
+      checkpoints.every(c => c.issue.id === first.issue.id &&
+        c.issue.assigneeAgentId === first.issue.assigneeAgentId),
+    "Waiting and resuming retain the same task and assigned agent.",
+  );
   for (const c of waiting) {
     const pending = (c.interactions as Interaction[]).filter(
       (i) => i.status === "pending",
@@ -44,7 +77,7 @@ export function gradeLifecycleBaseline(checkpoints: LifecycleCheckpoint[]) {
       `lifecycle.${c.phase}.durable-wait`,
       pending.some(
         (i) =>
-          typeof i.id === "string" &&
+          nonempty(i.id) &&
           [
             "ask_user_questions",
             "request_confirmation",
@@ -52,6 +85,11 @@ export function gradeLifecycleBaseline(checkpoints: LifecycleCheckpoint[]) {
           ].includes(i.kind ?? ""),
       ),
       "Waiting must have an identifiable pending interaction, not only an assistant message.",
+    );
+    check(
+      `lifecycle.${c.phase}.wait-state`,
+      hasHealthyWait(c, pending),
+      "A settled wait is in_review with no execution lock, retry, recovery or monitor. A bound native provider question may keep its paused run and lock.",
     );
     for (const i of pending.filter(
       (i) => i.payload?.target?.type === "issue_document",
@@ -90,27 +128,26 @@ export function gradeLifecycleBaseline(checkpoints: LifecycleCheckpoint[]) {
       ),
     "Completion has no unresolved interaction.",
   );
-  const first = waiting[0];
   if (first && final) {
-    for (const question of (first.interactions as Interaction[]).filter(
-      (i) => i.kind === "ask_user_questions" && i.status === "pending",
-    )) {
+    const questions = new Map(waiting.flatMap(c =>
+      (c.interactions as Interaction[]).filter(i => i.kind === "ask_user_questions" && i.status === "pending")
+        .map(i => [i.id, i] as const)));
+    for (const question of questions.values()) {
+      const answers = (final.interactions as Interaction[]).filter(i => i.id === question.id);
       check(
         `lifecycle.answer:${question.id}`,
-        typeof question.id === "string" &&
-          (final.interactions as Interaction[]).some(
-            (i) => i.id === question.id && i.status === "answered",
-          ),
-        "The original question identity has a durable answer.",
+        nonempty(question.id) && answers.length === 1 &&
+          answers[0].kind === "ask_user_questions" && answers[0].status === "answered",
+        "Every observed pending question retains exactly one answered identity, including later questions.",
       );
     }
-    const originalIds = new Set(first.runs.map((r) => r.id));
+    const finalIds = new Set(final.runs.map(r => r.id));
     check(
       "lifecycle.final.preserved-runs",
-      first.runs.length > 0 &&
-        [...originalIds].every((id) => final.runs.some((r) => r.id === id)) &&
-        new Set(final.runs.map((r) => r.id)).size === final.runs.length,
-      "Original run receipts remain present without duplicated IDs.",
+      checkpoints.every(c => c.runs.length > 0 && c.runs.every(r => nonempty(r.id)) &&
+        new Set(c.runs.map(r => r.id)).size === c.runs.length) &&
+        waiting.every(c => c.runs.every(r => finalIds.has(r.id))),
+      "All intermediate run receipts survive in the final snapshot without duplicated or empty IDs.",
     );
   }
   return checks;

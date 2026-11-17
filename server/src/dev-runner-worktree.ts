@@ -57,6 +57,19 @@ export function resolveWorktreeEnvFilePath(rootDir: string): string {
   return path.resolve(rootDir, ".paperclip", ".env");
 }
 
+/** An explicitly empty instance owns its saved keys, even in an agent shell. */
+export function applyEmptyWorktreeSigningSecrets(rootDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!existsSync(path.resolve(rootDir, ".paperclip", "seed-empty"))) return false;
+  const entries = parseEnvFile(readFileSync(resolveWorktreeEnvFilePath(rootDir), "utf8"));
+  for (const key of ["PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET"] as const) {
+    if (!entries[key]?.trim()) throw new Error(`Empty worktree is missing its saved ${key}. Reinitialize its configuration before starting.`);
+    env[key] = entries[key];
+  }
+  // Better Auth otherwise prefers an inherited key over this instance's JWT key.
+  env.BETTER_AUTH_SECRET = entries.BETTER_AUTH_SECRET?.trim() || entries.PAPERCLIP_AGENT_JWT_SECRET;
+  return true;
+}
+
 export function isWorktreeSeedPending(rootDir: string): boolean {
   const markerDir = path.resolve(rootDir, ".paperclip");
   const manifestPath = path.resolve(markerDir, "seed-manifest.json");
@@ -134,6 +147,7 @@ export function bootstrapDevRunnerWorktreeEnv(
     if (typeof env[key] === "string" && env[key]!.trim().length > 0) continue;
     env[key] = value;
   }
+  applyEmptyWorktreeSigningSecrets(rootDir, env);
 
   return {
     envPath,

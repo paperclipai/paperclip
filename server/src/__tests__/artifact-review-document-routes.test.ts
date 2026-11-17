@@ -81,6 +81,7 @@ function registerRouteMocks() {
       reportRunActivity: vi.fn(async () => undefined),
       getRun: vi.fn(async () => null),
       getActiveRunForAgent: vi.fn(async () => null),
+      getQueuedAssignmentRunForIssue: vi.fn(async () => null),
       cancelRun: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({
@@ -137,10 +138,10 @@ function createStorageService(): StorageService {
 }
 
 async function createApp(options?: { companyIds?: string[] }) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
+  // Both modules traverse the reset/mocked service graph; concurrent imports
+  // can wait on each other's partially evaluated modules.
+  const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js");
+  const { issueRoutes } = await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
