@@ -152,7 +152,7 @@ default all-read-and-write selection, 8 for all read-only). Prefix:
   our tool list has no send action. Never say the scope itself prevents sending.
 - **Out of scope:** Chat, Contacts, Directory, cross-service Search. Not in the
   picker, the request, the tools, the docs or the submission.
-- **Read & write Calendar asks for free/busy** (Nov 17, this change). Google's
+- **Read & write Calendar asks for free/busy** (Nov 17, [#22026](https://github.com/paperclipai/paperclip/pull/22026)). Google's
   REST `freeBusy.query` accepts only `calendar.readonly`, `calendar`,
   `calendar.events.freebusy` and `calendar.freebusy`, not `calendar.events`
   (<https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query>).
