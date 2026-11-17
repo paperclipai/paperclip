@@ -75,4 +75,11 @@ describe("tool allowlist", () => {
     expect(googleWorkspaceToolTarget(googleWorkspaceToolName("calendar", "unlisted_tool"))).toBeNull();
     expect(listGoogleWorkspaceRestTools("calendar").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
   });
+
+  it("implements every allowlisted Sheets tool (6 of 6)", () => {
+    const allowlisted = ["get_values", "get_spreadsheet", "update_spreadsheet", "update_values", "update_formulas", "insert_dimension"];
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("sheets", name)), name).not.toBeNull();
+    expect(googleWorkspaceToolTarget(googleWorkspaceToolName("sheets", "delete_spreadsheet"))).toBeNull();
+    expect(listGoogleWorkspaceRestTools("sheets").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+  });
 });

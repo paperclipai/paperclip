@@ -1,8 +1,11 @@
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 
-export const GOOGLE_API_HOSTS = ["gmail.googleapis.com", "www.googleapis.com"] as const;
+export const GOOGLE_API_HOSTS = ["gmail.googleapis.com", "www.googleapis.com", "sheets.googleapis.com"] as const;
 export type GoogleApiHost = (typeof GOOGLE_API_HOSTS)[number];
-export const GOOGLE_API_PATH_PREFIXES: Partial<Record<GoogleApiHost, string>> = { "www.googleapis.com": "/calendar/v3/" };
+export const GOOGLE_API_PATH_PREFIXES: Partial<Record<GoogleApiHost, string>> = {
+  "www.googleapis.com": "/calendar/v3/",
+  "sheets.googleapis.com": "/v4/spreadsheets/",
+};
 
 export type QueryValue = string | number | boolean | readonly string[] | undefined;
 
