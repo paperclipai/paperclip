@@ -8421,6 +8421,9 @@ export function createToolGatewayService(
         });
       }
       if (payloadRecord.error !== undefined) {
+        // The remote response is complete. Screening has its own classifier
+        // deadline; it must not turn a received protocol error into a timeout.
+        clearTimeout(timer);
         const errorRecord = asRecord(payloadRecord.error);
         throw new ToolGatewayHttpError(
           502,

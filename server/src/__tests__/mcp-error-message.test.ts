@@ -29,6 +29,14 @@ describe("remote MCP error messages", () => {
       .toBe(`${fallback}. Upstream message (untrusted): Invalid page 1 for refunds; [REDACTED] [REDACTED]`);
   });
 
+  it("uses URL-vault rules for code, state, nonce and provider-specific query secrets", async () => {
+    const values = mcpErrorRequestSecrets(new URLSearchParams(
+      "code=opaque-code&state=opaque-state&nonce=opaque-nonce&vendor_auth_id=opaque-auth&page=1"));
+    expect(values).toEqual(["opaque-code", "opaque-state", "opaque-nonce", "opaque-auth"]);
+    expect(await mcpErrorMessage(fallback, { message: "Rejected opaque-code opaque-state opaque-nonce opaque-auth page 1" }, {}, values))
+      .toBe(`${fallback}. Upstream message (untrusted): Rejected [REDACTED] [REDACTED] [REDACTED] [REDACTED] page 1`);
+  });
+
   it("screens the redacted bounded text and honors model findings", async () => {
     const classifier = vi.fn(async (_content: string): Promise<PromptInjectionModelOutcome> => ({
       status: "classified", violation: true, findings: ["instruction_hijack"],

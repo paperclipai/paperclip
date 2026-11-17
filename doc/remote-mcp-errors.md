@@ -14,7 +14,11 @@ message keeps the generic fallback. The existing result-content prompt-injection
 screen runs on the redacted, bounded text before it is returned or persisted.
 Flagged text uses the generic fallback while keeping the upstream code and
 remote error status. The same configured classifier and regex fallback apply as
-for successful results. Ordinary header and query values are preserved.
+for successful results. Ordinary header and query values are preserved. Query
+secret names use the same rules as URL-vault storage, including code, state and
+nonce. Once a complete remote error arrives, its call timer stops; screening
+uses the classifier's own deadline and cannot turn the received error into a
+remote-call timeout.
 
 Arbitrary upstream `error.data`, stacks, and raw response bodies are not returned.
 The same safe message is used for caller errors and saved invocation failures.

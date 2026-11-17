@@ -1,12 +1,14 @@
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import { redactSensitiveValueOccurrences } from "../middleware/redact-sensitive.js";
+import { isRemoteUrlSecretParameter } from "./remote-url-credentials.js";
 import { ToolContentValidationError, validateToolContent } from "./tool-content-guards.js";
 
-/** Reuse the event redactor's credential names for headers and query keys.
- * MCP endpoints also commonly use the bare query name `key`. */
+/** Reuse the URL-vault policy for query keys and the event redactor for headers. */
 export function mcpErrorRequestSecrets(values: Record<string, string> | URLSearchParams): string[] {
-  const entries = values instanceof URLSearchParams ? [...values] : Object.entries(values);
-  return entries
+  if (values instanceof URLSearchParams) {
+    return [...values].filter(([key]) => isRemoteUrlSecretParameter(key)).map(([, value]) => value);
+  }
+  return Object.entries(values)
     .filter(([key, value]) => (redactEventPayload({ [key]: value }) as Record<string, unknown>)[key] !== value
       || /^(key|session|mcp-session-id)$/i.test(key))
     .map(([, value]) => value);
