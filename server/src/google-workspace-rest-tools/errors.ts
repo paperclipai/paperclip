@@ -34,7 +34,8 @@ export type GoogleToolErrorKind =
   | "network"
   | "invalid_response"
   | "unsupported"
-  | "incomplete";
+  | "incomplete"
+  | "too_large";
 
 export interface GoogleErrorDetail {
   status?: string;

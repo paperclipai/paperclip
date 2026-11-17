@@ -50,7 +50,7 @@ describe("callGoogleWorkspaceRest", () => {
   });
 
   it("refuses a service the REST tools do not implement", async () => {
-    await expect(callGoogleWorkspaceRest({ service: "drive", toolName: "search_files", arguments: {}, credentialHeaders: {}, fetch: vi.fn() }))
+    await expect(callGoogleWorkspaceRest({ service: "chat", toolName: "send_message", arguments: {}, credentialHeaders: {}, fetch: vi.fn() }))
       .rejects.toThrow("no Paperclip REST tools");
   });
 });

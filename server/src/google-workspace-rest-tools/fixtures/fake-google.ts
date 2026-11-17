@@ -5,6 +5,7 @@ export interface RecordedCall {
   url: URL;
   headers: Record<string, string>;
   body: unknown;
+  raw?: Buffer;
 }
 
 export type Route = (call: RecordedCall) => Response | Promise<Response>;
@@ -21,6 +22,7 @@ export function fakeGoogle(route: Route): { fetch: GoogleFetch; calls: RecordedC
       url: new URL(url),
       headers: Object.fromEntries(new Headers(init.headers).entries()),
       body: typeof init.body === "string" ? JSON.parse(init.body) : undefined,
+      raw: init.body instanceof Uint8Array ? Buffer.from(init.body) : undefined,
     };
     calls.push(call);
     return route(call);
