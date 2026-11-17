@@ -499,19 +499,23 @@ describe("stageAgyHomeForSync", () => {
     expect(content.customSetting).toBe("abc");
   });
 
-  it("stages the host CLI home's brain/ directory when present", async () => {
+  it("stages only the resumed conversation's brain/ directory", async () => {
     const fakeHome = makeTmpDir();
     const dir = path.join(fakeHome, ".gemini", "antigravity-cli");
     fs.mkdirSync(path.join(dir, "brain", "conv-1"), { recursive: true });
     fs.writeFileSync(path.join(dir, "brain", "conv-1", "session.json"), JSON.stringify({ turns: 3 }));
+    fs.mkdirSync(path.join(dir, "brain", "conv-2"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "brain", "conv-2", "session.json"), JSON.stringify({ turns: 9 }));
     fs.writeFileSync(path.join(dir, "antigravity-oauth-token"), JSON.stringify({ access_token: "ya29.test" }));
 
-    const staged = await stageAgyHomeForSync({ homedir: fakeHome });
+    const staged = await stageAgyHomeForSync({ homedir: fakeHome, conversationIds: ["conv-1"] });
     tmpDirs.push(staged);
 
     const stagedSession = path.join(staged, "brain", "conv-1", "session.json");
     expect(fs.existsSync(stagedSession)).toBe(true);
     expect(JSON.parse(fs.readFileSync(stagedSession, "utf8"))).toEqual({ turns: 3 });
+    // Another agent's conversation must never reach the remote run.
+    expect(fs.existsSync(path.join(staged, "brain", "conv-2"))).toBe(false);
   });
 
   it("stages brain/ from the token's home when the token lives in the alternate home", async () => {
@@ -521,10 +525,39 @@ describe("stageAgyHomeForSync", () => {
     fs.writeFileSync(path.join(altDir, "brain", "conv-9", "session.json"), JSON.stringify({ turns: 1 }));
     fs.writeFileSync(path.join(altDir, "antigravity-oauth-token"), JSON.stringify({ access_token: "ya29.alt" }));
 
-    const staged = await stageAgyHomeForSync({ homedir: fakeHome });
+    const staged = await stageAgyHomeForSync({ homedir: fakeHome, conversationIds: ["conv-9"] });
     tmpDirs.push(staged);
 
     expect(fs.existsSync(path.join(staged, "brain", "conv-9", "session.json"))).toBe(true);
+  });
+
+  it("stages no brain/ when no conversation is being resumed", async () => {
+    const fakeHome = makeTmpDir();
+    const dir = path.join(fakeHome, ".gemini", "antigravity-cli");
+    fs.mkdirSync(path.join(dir, "brain", "conv-1"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "brain", "conv-1", "session.json"), JSON.stringify({ turns: 3 }));
+
+    const staged = await stageAgyHomeForSync({ homedir: fakeHome });
+    tmpDirs.push(staged);
+
+    expect(fs.existsSync(path.join(staged, "brain"))).toBe(false);
+  });
+
+  it("ignores conversation ids that are not a single path segment", async () => {
+    const fakeHome = makeTmpDir();
+    const dir = path.join(fakeHome, ".gemini", "antigravity-cli");
+    fs.mkdirSync(path.join(dir, "brain", "conv-1"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "brain", "conv-1", "session.json"), JSON.stringify({ turns: 3 }));
+
+    const staged = await stageAgyHomeForSync({
+      homedir: fakeHome,
+      conversationIds: ["../evil", "conv-1", "", "a/b"],
+    });
+    tmpDirs.push(staged);
+
+    expect(fs.existsSync(path.join(staged, "brain", "conv-1", "session.json"))).toBe(true);
+    expect(fs.existsSync(path.join(staged, "evil"))).toBe(false);
+    expect(fs.existsSync(path.join(staged, "brain", "a"))).toBe(false);
   });
 
   it("does not fail when there is no brain/ directory", async () => {

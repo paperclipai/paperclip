@@ -361,6 +361,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // it with the real cleanup once remote setup has run.
   let cleanupRemoteSetupFailure: () => Promise<void> = async () => {};
 
+  // The remote setup stages the run's conversation state, so the resume
+  // target must be known before it runs. Parse it here from the runtime
+  // session params; the full canResumeSession check below still decides
+  // whether the CLI is actually told to resume it.
+  const runtimeSessionParams = parseObject(runtime.sessionParams);
+  const runtimeSessionId =
+    asString(runtimeSessionParams.sessionId, "") ||
+    asString(runtimeSessionParams.conversationId, "") ||
+    asString(runtime.sessionId, "");
+
   if (executionTargetIsRemote) {
     const preparedRemoteRun = await prepareAgyRemoteRun({
       runId,
@@ -385,6 +395,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       workspaceRepoRef,
       workspaceHints,
       agentHome,
+      resumeConversationIds: runtimeSessionId ? [runtimeSessionId] : [],
     });
     restoreRemoteWorkspace = preparedRemoteRun.restoreRemoteWorkspace;
     remoteRuntimeRootDir = preparedRemoteRun.remoteRuntimeRootDir;
@@ -472,11 +483,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return asStringArray(config.args);
   })();
 
-  const runtimeSessionParams = parseObject(runtime.sessionParams);
-  const runtimeSessionId =
-    asString(runtimeSessionParams.sessionId, "") ||
-    asString(runtimeSessionParams.conversationId, "") ||
-    asString(runtime.sessionId, "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const sessionCwdsMatch =

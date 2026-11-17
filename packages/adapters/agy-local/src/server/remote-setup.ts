@@ -46,6 +46,8 @@ export interface PrepareAgyRemoteRunInput {
   workspaceRepoRef: string;
   workspaceHints: Record<string, unknown>[];
   agentHome: string;
+  /** Conversation ids this run resumes; only their brain/ state is staged. */
+  resumeConversationIds?: string[];
 }
 
 export interface PreparedAgyRemoteRun {
@@ -257,6 +259,7 @@ export async function prepareAgyRemoteRun(
       homedir: runtimeEnv.HOME || os.homedir(),
       env: runtimeEnv,
       runId,
+      conversationIds: input.resumeConversationIds,
     });
 
     if (runtimeMcpServers.length > 0) {

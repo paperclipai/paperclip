@@ -321,6 +321,14 @@ export interface StageAgyHomeForSyncOptions {
   homedir?: string;
   env?: NodeJS.ProcessEnv;
   runId?: string;
+  /**
+   * Conversation ids whose brain/ state this run resumes. Only those
+   * conversations are staged: the host CLI home may hold other agents' or
+   * companies' conversations, and uploading the whole brain/ tree would
+   * hand them to the remote agent. Empty/absent means a fresh run — stage
+   * no brain/ at all.
+   */
+  conversationIds?: string[];
 }
 
 /**
@@ -411,19 +419,27 @@ export async function stageAgyHomeForSync(
     }
   }
 
-  // Stage the CLI home's conversation state alongside the credential and
-  // settings: the CLI writes its transcripts under <cli-home>/brain/, and
-  // a remote run whose staged home lacks them cannot resume a saved
-  // --conversation (the restore callback copies them back at teardown).
-  // Best-effort like the other copies: a missing or unreadable brain/
-  // simply means the run starts fresh.
-  try {
-    const brainDir = path.join(resolveAgyCliHomeDir(homedir, env), "brain");
-    if (fs.existsSync(brainDir)) {
-      await fs.promises.cp(brainDir, path.join(stagedDir, "brain"), { recursive: true });
+  // Stage only the resumed conversations' state, never the whole brain/
+  // tree: the host CLI home may hold other agents' or companies'
+  // conversations, and the remote agent must receive only what this run
+  // resumes. A conversation id is a single path segment; anything else is
+  // ignored rather than staged. Best-effort like the other copies: a
+  // missing or unreadable conversation simply means the run starts fresh.
+  const conversationIds = (options.conversationIds ?? []).filter(
+    (id) => typeof id === "string" && id.length > 0 && !id.includes("/") && !id.includes("\\") && id !== "." && id !== "..",
+  );
+  if (conversationIds.length > 0) {
+    const cliHomeDir = resolveAgyCliHomeDir(homedir, env);
+    for (const conversationId of conversationIds) {
+      try {
+        const brainDir = path.join(cliHomeDir, "brain", conversationId);
+        if (fs.existsSync(brainDir)) {
+          await fs.promises.cp(brainDir, path.join(stagedDir, "brain", conversationId), { recursive: true });
+        }
+      } catch {
+        // Ignore copy failures
+      }
     }
-  } catch {
-    // Ignore copy failures
   }
 
   return stagedDir;
