@@ -9,7 +9,10 @@ It exposes a small authenticated JSON API under `/api/paperclip-sandbox/v1` and 
 - health and probe
 - acquire, resume, release, and destroy leases
 - execute commands in a sandbox session
+- stream raw file bytes into and out of a sandbox (`GET` and `PUT /files`), which the plugin uses for native workspace sync
 - clean up timed-out sessions so Paperclip does not inherit wedged background processes
+
+File streaming needs the Sandbox SDK RPC transport. `wrangler.jsonc` sets `SANDBOX_TRANSPORT` to `rpc`. A bridge without the file route does not report `fileTransfer` on its leases. The plugin then marks those leases for the base64 fallback, so an old bridge keeps working with a new plugin.
 
 ## Prerequisites
 

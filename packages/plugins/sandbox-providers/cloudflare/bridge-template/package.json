@@ -10,7 +10,7 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "^0.7.0"
+    "@cloudflare/sandbox": "^0.12.10"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260501.0",
