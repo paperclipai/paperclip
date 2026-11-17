@@ -19,6 +19,7 @@ import {
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetLocalWorkspace,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
   adapterExecutionTargetDuplexObservabilityRecorder,
@@ -44,7 +45,6 @@ import {
   readPaperclipIssueWorkModeFromContext,
   joinPromptSections,
   buildInvocationEnvForLogs,
-  ensureAbsoluteDirectory,
   ensurePathInEnv,
   isForbiddenConfigEnvKey,
   isPaperclipRuntimeEnvKey,
@@ -222,9 +222,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  if (!executionTargetIsRemote || executionTarget?.workspaceRealization?.mode !== "in_place") {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  }
+  await ensureAdapterExecutionTargetLocalWorkspace(executionTarget, cwd);
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent, input.agentIdentity) };

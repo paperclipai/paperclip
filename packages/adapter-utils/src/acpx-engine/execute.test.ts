@@ -2181,11 +2181,11 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     const changedEnv = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-2" } },
-      { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
+      { context: { taskId: "issue-1", wakeReason: "issue_assigned" }, runtime: { sessionParams: first.result.sessionParams } },
     );
     const sameEnvNewWake = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
-      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" } },
+      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" }, runtime: { sessionParams: first.result.sessionParams } },
     );
 
     const fp = (r: { result: { sessionParams?: unknown } }) =>
@@ -2195,9 +2195,11 @@ describe("shared ACPX engine runtime behavior", () => {
     // the next launch sources the latest env.
     expect(fp(first)).toBeDefined();
     expect(fp(changedEnv)).not.toBe(fp(first));
+    expect(changedEnv.result.resultJson?.sessionReset).toMatchObject({ code: "acpx_session_identity_changed" });
     // A new heartbeat with the same config env keeps the fingerprint stable, so
     // per-wake PAPERCLIP_* churn does not needlessly reset the session.
     expect(fp(sameEnvNewWake)).toBe(fp(first));
+    expect(sameEnvNewWake.result.resultJson?.sessionReset).toBeUndefined();
   });
 
   it("keeps rotated run scratch paths out of session identity while retaining user temp overrides", async () => {
@@ -4563,7 +4565,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     return { root, stateDir, localCwd, remoteCwd, executionTarget };
   }
 
-  it.each(["custom", "claude"].flatMap(agent => ["turn", "bridge"].flatMap(failure => [
+  it.each(["custom", "claude", "codex", "gemini"].flatMap(agent => ["turn", "bridge"].flatMap(failure => [
     { inPlace: false, legacySettings: false }, { inPlace: true, legacySettings: false },
     ...(agent === "claude" ? [{ inPlace: true, legacySettings: true }] : []),
   ].map(workspace => ({ agent, failure, ...workspace })))))(
@@ -4723,6 +4725,27 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(restore).toHaveBeenCalledTimes(4);
       expect(dispose).toHaveBeenCalledTimes(2);
       expect(stagedRuntimes.size).toBe(0);
+      if (inPlace && failure === "turn" && ["codex", "gemini"].includes(agent)) {
+        const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+          : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => [key, canonical(entry)])) : value;
+        const legacyHash = (value: unknown) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex").slice(0, 16);
+        const { commandNotes: _notes, ...legacySkills } = result.result.sessionParams!.skills as Record<string, unknown>;
+        const legacyFingerprint = buildSessionFingerprint({ acpxAgent: agent, agentCommand: "fixture-acp-client", cwd: remoteCwd,
+          mode: "persistent", permissionMode: "approve-all", nonInteractivePermissions: "deny", requestedModel: "", requestedThinkingEffort: "", fastMode: false,
+          remoteExecutionIdentity: result.result.sessionParams!.remoteExecution as Record<string, unknown>,
+          additionalSourcesIdentity: [] as unknown as Record<string, unknown>, skillsIdentity: legacySkills, skillPromptInstructions: "",
+          paperclipClaudeSettings: null, mcpServers: [], secretManifestHash: legacyHash([]),
+          adapterEnvHash: legacyHash(managedAiSessionFingerprintConfig({ env: config.env, managedAiConnection: config.managedAiConnection }, config.env.HOME)) });
+        expect(legacyFingerprint).not.toBe(result.result.sessionParams!.configFingerprint);
+        const stored = sessionCodec.serialize({ ...result.result.sessionParams, configFingerprint: legacyFingerprint,
+          sessionKey: buildSessionKey({ companyId: "company-1", agentId: "agent-1", taskKey: "default" }, legacyFingerprint) });
+        failTurn = false;
+        const upgraded = await runExecutor(configForTurn(1), { ...options, runId: "run-upgrade",
+          runtime: { sessionParams: sessionCodec.deserialize(JSON.parse(JSON.stringify(stored))) } });
+        expect(upgraded.sessionInputs[0]?.resumeSessionId).toBeUndefined();
+        expect(upgraded.result.resultJson?.sessionReset).toMatchObject({ code: "acpx_session_identity_changed" });
+        await expect(fs.readFile(remoteMount, "utf8")).resolves.toBe("This path is not a directory on the controller.");
+      }
     } finally {
       vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(actual.prepareAdapterExecutionTargetRuntime);
       vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetPaperclipBridge);

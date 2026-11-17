@@ -30,6 +30,7 @@ import {
   adapterExecutionTargetEnablesSandboxDuplexBridge,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  ensureAdapterExecutionTargetLocalWorkspace,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
@@ -75,7 +76,6 @@ import {
   asString,
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
-  ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
   isForbiddenConfigEnvKey,
@@ -2001,9 +2001,8 @@ async function buildRuntime(input: {
   });
   // Step 1 — workspace.resolve: the workspace resolution/fallback chain closes
   // here on the awaited directory materialization.
-  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", async () => {
-      if (!sshWorkspaceInPlace) await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-    },
+  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", () =>
+    ensureAdapterExecutionTargetLocalWorkspace(executionTarget, cwd),
     stepMetrics,
   );
 
@@ -2354,6 +2353,14 @@ async function buildRuntime(input: {
         : resolvedAdapterEnv,
     ),
   };
+  if (useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && config.managedAiConnection && env.HOME) {
+    const managedHome = path.resolve(env.HOME);
+    const skills = Object.fromEntries(Object.entries(skillsIdentity).map(([key, value]) => [key,
+      typeof value === "string" && path.isAbsolute(value) && (value === managedHome || value.startsWith(managedHome + path.sep))
+        ? path.join("<managed-ai-home>", path.relative(managedHome, value)) : value,
+    ]));
+    fingerprintIdentity = { ...fingerprintIdentity, skillsIdentity: skills };
+  }
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sshWorkspaceRunId = useRemoteProcessSession && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
     ? shortHash({ companyId: agent.companyId, agentId: agent.id, taskKey, fingerprintIdentity })
@@ -6007,7 +6014,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           };
         },
       };
-      return await runAttempt(plan);
+      const result = await runAttempt(plan);
+      const previousSession = parseObject(ctx.runtime.sessionParams);
+      if (asString(previousSession.acpSessionId, "") && result.sessionParams?.configFingerprint
+        && previousSession.configFingerprint !== result.sessionParams.configFingerprint) {
+        return { ...result, resultJson: { ...result.resultJson,
+          sessionReset: { code: "acpx_session_identity_changed", reason: "The agent configuration or execution identity changed." },
+        } };
+      }
+      return result;
     } finally {
       // Record the in-memory evidence synchronously, but never let diagnostic
       // persistence hold the staging lease or delay the completed run's return.
