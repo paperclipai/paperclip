@@ -311,6 +311,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
           assigneeAgentId: issueContext.assigneeAgentId ?? null,
         },
         agentId: agent.id,
+        runId: run.id,
       })
       : null,
     // The dashboard conversation's instructions, rebuilt from the person's dashboard each wake; they differ by mode.

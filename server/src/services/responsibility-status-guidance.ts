@@ -1,8 +1,9 @@
-import { and, asc, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   authUsers,
+  heartbeatRuns,
   issues,
   projects,
   responsibilities,
@@ -31,6 +32,7 @@ import {
   type ResponsibilityStatusReportStatus,
 } from "@paperclipai/shared";
 import { activeResponsibilitiesForTask, loadResponsibilityReporters } from "./responsibility-status-reporter.js";
+import { issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 
 /**
  * What an agent is told about writing a responsibility's status. Two pieces
@@ -171,6 +173,8 @@ export function buildStatusUpdateGuidance(input: StatusUpdateGuidanceInput): str
 export async function loadStatusUpdateGuidance(db: Db, input: {
   issue: { id: string; companyId: string; originKind: string | null; originId: string | null; assigneeAgentId: string | null };
   agentId: string;
+  /** The run the guidance is for: its agent may see only the work it could read. */
+  runId?: string | null;
   now?: Date;
 }): Promise<string | null> {
   const { issue } = input;
@@ -181,11 +185,23 @@ export async function loadStatusUpdateGuidance(db: Db, input: {
     .where(and(eq(responsibilities.id, issue.originId), eq(responsibilities.companyId, issue.companyId)));
   if (!row) return null;
   const now = input.now ?? new Date();
+  // The guidance lists work the agent then reads through the API: list only
+  // what that agent may read, so a private task or project never reaches it.
+  const run = input.runId
+    ? await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, row.companyId))).then((rows) => rows[0] ?? null)
+    : null;
+  const reader: AuthorizationActor = {
+    type: "agent", agentId: input.agentId, companyId: row.companyId, runId: input.runId ?? null,
+    onBehalfOfUserId: run?.responsibleUserId ?? null, keyScope: { kind: "standard" },
+  };
+  const [issueRead, projectRead] = await Promise.all([issueReadSqlCondition(db, reader), projectReadSqlCondition(db, reader)]);
+  const readableProjectIds = db.select({ id: projects.id }).from(projects).where(and(eq(projects.companyId, row.companyId), projectRead));
   const membership = or(
     sql`${issues.id} in (select l.issue_id from ${responsibilityLinks} l where l.responsibility_id = ${row.id} and l.issue_id is not null)`,
     sql`${issues.projectId} in (select l.project_id from ${responsibilityLinks} l where l.responsibility_id = ${row.id} and l.project_id is not null)`,
   );
-  const memberWhere = and(eq(issues.companyId, row.companyId), isNull(issues.hiddenAt), membership);
+  const memberWhere = and(eq(issues.companyId, row.companyId), isNull(issues.hiddenAt), membership, issueRead);
   const [area, owner, openTasks, openCount, done, projectRows, routineRows, reports] = await Promise.all([
     row.areaId
       ? db.select({ title: responsibilityAreas.title }).from(responsibilityAreas)
@@ -208,13 +224,14 @@ export async function loadStatusUpdateGuidance(db: Db, input: {
     db.select({ name: projects.name, status: projects.status, targetDate: sql<string | null>`to_char(${projects.targetDate}, 'YYYY-MM-DD')`, late: sql<boolean>`coalesce(${projects.targetDate} < current_date, false)` })
       .from(responsibilityLinks)
       .innerJoin(projects, and(eq(projects.id, responsibilityLinks.projectId), eq(projects.companyId, responsibilityLinks.companyId)))
-      .where(and(eq(responsibilityLinks.responsibilityId, row.id), sql`${projects.status} not in ('completed', 'cancelled') and ${projects.archivedAt} is null`))
+      .where(and(eq(responsibilityLinks.responsibilityId, row.id), sql`${projects.status} not in ('completed', 'cancelled') and ${projects.archivedAt} is null`, projectRead))
       .orderBy(asc(projects.name)),
     db.select({ title: routines.title, status: routines.status, assignee: agents.name })
       .from(routines).leftJoin(agents, eq(agents.id, routines.assigneeAgentId))
       .where(and(
         eq(routines.companyId, row.companyId),
         ne(routines.status, "archived"),
+        or(isNull(routines.projectId), inArray(routines.projectId, readableProjectIds)),
         or(
           sql`${routines.id} in (select l.routine_id from ${responsibilityLinks} l where l.responsibility_id = ${row.id} and l.routine_id is not null)`,
           sql`${routines.projectId} in (select l.project_id from ${responsibilityLinks} l where l.responsibility_id = ${row.id} and l.project_id is not null)`,

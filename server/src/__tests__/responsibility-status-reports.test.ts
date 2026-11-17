@@ -322,6 +322,26 @@ describeEmbeddedPostgres("agent-written responsibility status", () => {
       expect(logged).toHaveLength(2);
     });
 
+    it("lists only the work the reporting agent may read in its instructions", async () => {
+      const seeded = await seed();
+      await fileTask(seeded, { assigneeAgentId: seeded.builder.id, title: "Convert the catalogue to AVIF" });
+      const owner = createApp(sessionBoardActor(seeded.company.id, OWNER));
+      expect((await request(owner).post(`/api/responsibilities/${seeded.responsibility.id}/status-report/request`).send({})).status).toBe(201);
+      const [helper] = await db.select().from(issues).where(and(eq(issues.companyId, seeded.company.id), eq(issues.originKind, RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND)));
+      const privateId = randomUUID();
+      await db.insert(issues).values({
+        id: privateId, companyId: seeded.company.id, title: "Confidential vendor dispute", status: "todo", priority: "medium",
+        visibility: "private", privacyRootIssueId: privateId, responsibleUserId: "someone-else",
+      });
+      await db.insert(responsibilityLinks).values({ companyId: seeded.company.id, responsibilityId: seeded.responsibility.id, issueId: privateId });
+      const guidance = await loadStatusUpdateGuidance(db, {
+        issue: { id: helper!.id, companyId: helper!.companyId, originKind: helper!.originKind, originId: helper!.originId, assigneeAgentId: helper!.assigneeAgentId },
+        agentId: seeded.builder.id,
+      });
+      expect(guidance).toContain("Convert the catalogue to AVIF");
+      expect(guidance).not.toContain("Confidential vendor dispute");
+    });
+
     it("reminds the reporter, and only the reporter, on other work under the responsibility", async () => {
       const seeded = await seed();
       const mine = await fileTask(seeded, { assigneeAgentId: seeded.builder.id });
