@@ -21,7 +21,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
-import { decideNativeReplacement } from "./native-replacement-evidence.js";
+import { decideNativeReplacement, type NativeReplacementDecision } from "./native-replacement-evidence.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
@@ -438,11 +438,11 @@ export async function reconcileSafeNativeReplacements(
       const needsStopProof = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim;
       const stoppedSession = needsStopProof ? await options.verifyStoppedSession?.(run) ?? null : null;
       // A transport label alone is not evidence. Keep inspecting these candidates
-      // as process cleanup and the final transcript become durable. A remote or
-      // non-Codex session can never produce that local stop proof, so it is
-      // refused now and its hold continues in a fresh isolated run.
-      const stopProofUnavailable = needsStopProof && !stoppedSession && (record(execution.provider).kind !== "codex"
-        || leases.some(lease => lease.provider !== null && lease.provider !== "local"));
+      // as process cleanup and the final transcript become durable.
+      const providerKind = record(execution.provider).kind;
+      const stopProofUnavailable = needsStopProof && !stoppedSession
+        && ((typeof providerKind === "string" && providerKind !== "codex")
+          || leases.some(lease => lease.provider !== null && lease.provider !== "local"));
       if (needsStopProof && !stoppedSession && !stopProofUnavailable) continue;
       const invocations = await db
         .select()
@@ -544,18 +544,35 @@ export async function reconcileSafeNativeReplacements(
         && run.runnerProfileJson?.nativeWorkspaceSync == null && nativeRunHasNoWorkspaceAccess(run);
       if (preClaim && (invocations.length || !noWorkspaceToSave
         && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped))) continue;
-      const decision = decideNativeReplacement({
+      const unconfirmedActions = stopProofUnavailable ? [...new Set([
+        ...invocations.filter(row => row.riskLevel !== "read" || row.status !== "succeeded" || !row.completedAt || !row.resultHash)
+          .map(row => row.toolName),
+        ...uncertainProviderActions.map(action => {
+          const started = events.filter(event => event.eventType === "tool.execution.started").map(event => {
+            const envelope = record(event.payload);
+            return envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope;
+          }).find(payload => String(payload.executionId ?? payload.name) === action);
+          return typeof started?.name === "string" ? started.name : action;
+        }),
+      ])] : [];
+      const unprovenAction = unconfirmedActions[0];
+      const decision: NativeReplacementDecision = stopProofUnavailable ? unprovenAction ? { allowed: false,
+        cause: "uncertain_external_action",
+        nextAction: `Reconcile ${unprovenAction} and preserve its result before continuing. Do not repeat it automatically.` }
+        : { allowed: false, cause: "provider_failure_meaning_unverified",
+          nextAction: "The previous session could not be confirmed stopped and recorded no unconfirmed action, so the task continues in a fresh run from its saved work." }
+        : decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
         // rejection. A stopped process and read receipts do not resolve that.
         // Before its first claim the run could not dispatch provider work.
-        failureMeaningKnown: !stopProofUnavailable && (
+        failureMeaningKnown:
           preClaim || Boolean(stoppedSession) || (typeof coordinator.failureDetail?.originalFailureCode === "string" &&
           ![
             "notification_transport_failed",
             "provider_turn_failed",
             "native_provider_terminal_failed",
-          ].includes(coordinator.failureDetail.originalFailureCode))),
+          ].includes(coordinator.failureDetail.originalFailureCode)),
         predecessorFenced:
           coordinator.leaseOwner === null && run.status === "failed",
         providerStopped:
@@ -622,6 +639,7 @@ export async function reconcileSafeNativeReplacements(
                 ...current.failureDetail,
                 replacementDenied: decision.cause,
                 nextAction,
+                ...(unconfirmedActions.length ? { unconfirmedActions } : {}),
               },
               updatedAt: now,
             })

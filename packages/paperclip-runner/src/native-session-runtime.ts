@@ -285,7 +285,6 @@ function quarantinedRemoteCleanupScope(
     ? remoteCleanupScope : null;
 }
 
-/** Remote resources whose quarantined session cleanup still holds this task. */
 export function nativeSessionCleanupRemoteScopes(input: {
   companyId: string;
   issueId: string;
@@ -298,10 +297,6 @@ export function nativeSessionCleanupRemoteScopes(input: {
   return [...scopes];
 }
 
-/** The environment provider confirmed the task's remote resource is gone, so no
- * session of any run can still execute there. Retires every settled quarantine
- * of this task in that resource, whichever run's session it holds. An in-flight
- * close keeps its entry until it settles. Returns the number retired. */
 export function completeTerminatedRemoteNativeSessionCleanupForTask(input: {
   companyId: string;
   issueId: string;

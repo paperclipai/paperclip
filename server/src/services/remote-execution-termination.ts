@@ -130,9 +130,6 @@ export async function remoteExecutionHasReleased(db: Db, companyId: string, runI
   return leases.length > 0 && leases.every(hasRemoteTerminationReceipt);
 }
 
-/** The company's newest lease on this remote resource was released with its
- * termination receipt and none is still held, so no run's session can still
- * execute there. Returns that terminated lease. */
 export async function terminatedRemoteCleanupScope(db: Db, companyId: string, remoteCleanupScope: string) {
   let parsed: unknown;
   try {
