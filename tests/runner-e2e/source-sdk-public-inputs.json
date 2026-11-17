@@ -435,7 +435,7 @@
     "packages/shared/src/types/tailscale.ts": "d02a917945d7779009a2dea4c4b535e9478e0680",
     "packages/shared/src/types/task-workspace.ts": "a23afa13d2cb58dc2eb72692ed28c16ed6fb84fb",
     "packages/shared/src/types/teams-catalog.ts": "632fe75f8e5a4cfc455843c2a1a2daff28a022be",
-    "packages/shared/src/types/tool-access.ts": "49f3c7fbf20bcd48b2969ae14009e78dd076da14",
+    "packages/shared/src/types/tool-access.ts": "978cac1aca717b4d41f05b4b099756760b594153",
     "packages/shared/src/types/user-profile.ts": "1ac26e033a79fab21dc267fd983959814c8b680f",
     "packages/shared/src/types/voice-sessions.ts": "95e3b62cdd51f62290e68536728ddd7297bc0459",
     "packages/shared/src/types/work-product.ts": "26f9129f606a207ce7a218ccef40f96747283086",
