@@ -9905,7 +9905,11 @@ export function resolveRunnerdCodexSkillInputs(
  */
 export function coldAdmissionTimeoutMs(provider: string | undefined, agent: string | undefined, coldProcess: boolean): number {
   if (!coldProcess) return 30_000;
-  return (provider === "acpx" && (agent === "pi" || agent === "claude")) || provider === "opencode" ? 60_000 : 30_000;
+  return (
+    (provider === "acpx" && (agent === "pi" || agent === "claude")) ||
+    provider === "opencode" ||
+    provider === "codex"
+  ) ? 60_000 : 30_000;
 }
 
 export interface RunnerCommandFailure extends Error {

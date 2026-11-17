@@ -77,6 +77,8 @@ pub(crate) fn runtime_notification_codex_args(
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const QUALIFIED_OPENCODE_VERSION: &str = "1.18.34";
 const CURSOR_CLOUD_PROXY_VERSION: &str = "cursor-cloud-v1";
+const CODEX_DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CODEX_STARTUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -129,6 +131,14 @@ const MAX_COMPLETED_TOOL_CALL_IDS: usize = 4_096;
 const MAX_PENDING_RUNTIME_REQUESTS: usize = 128;
 const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const OPENCODE_RUNTIME_REQUEST_METHOD: &str = "paperclip/runtimeRequest";
+
+fn codex_request_timeout(method: &str) -> Duration {
+    match method {
+        "initialize" | "thread/start" => CODEX_STARTUP_REQUEST_TIMEOUT,
+        _ => CODEX_DEFAULT_REQUEST_TIMEOUT,
+    }
+}
+
 pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
 pub(crate) const MAX_DESCENDANT_THREAD_IDS: usize = 4_096;
 
@@ -3981,7 +3991,7 @@ impl CodexProvider {
         self.send_frame(&json!({"id": request_id, "method": method, "params": params}))
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
-            let remaining = deadline.map_or(Duration::from_secs(30), |deadline| {
+            let remaining = deadline.map_or(codex_request_timeout(method), |deadline| {
                 deadline.saturating_duration_since(std::time::Instant::now())
             });
             if remaining.is_zero() {
@@ -5157,6 +5167,16 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn codex_initialization_requests_use_sixty_seconds_and_other_requests_keep_thirty() {
+        for method in ["initialize", "thread/start"] {
+            assert_eq!(codex_request_timeout(method), CODEX_STARTUP_REQUEST_TIMEOUT);
+        }
+        for method in ["thread/resume", "turn/start", "thread/compact/start"] {
+            assert_eq!(codex_request_timeout(method), CODEX_DEFAULT_REQUEST_TIMEOUT);
+        }
+    }
 
     #[test]
     fn only_a_complete_settled_ended_history_proves_no_new_turn() {
