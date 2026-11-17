@@ -18,12 +18,34 @@ function withoutRoute(angle: string): string {
   return angle;
 }
 
+function withoutUnquotedSpace(text: string): string {
+  let result = "";
+  let quoted = false;
+  let escaped = false;
+  for (const char of text) {
+    if (escaped) {
+      escaped = false;
+      result += char;
+      continue;
+    }
+    if (quoted && char === "\\") {
+      escaped = true;
+      result += char;
+      continue;
+    }
+    if (char === "\"") quoted = !quoted;
+    if (!quoted && /\s/.test(char)) continue;
+    result += char;
+  }
+  return result;
+}
+
 function mailboxAddress(mailbox: Mailbox): string | null {
   if (mailbox.hasAngle) {
     const address = withoutRoute(mailbox.angle.trim()).trim();
     return address.length > 0 ? address : null;
   }
-  const address = mailbox.outside.trim().replace(/\s+/g, "");
+  const address = withoutUnquotedSpace(mailbox.outside);
   const enclosed = /<([^<>]*@[^<>]*)>?/.exec(address);
   if (enclosed) return enclosed[1]!.trim();
   return address.includes("@") && !/[<>]/.test(address) ? address : null;
