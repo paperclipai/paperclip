@@ -691,23 +691,16 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     } finally { resetControllerInstanceLeaseForTests(); }
   });
 
-  async function parkFollowUpBehindOutgoingServer(waitingFor?: (owner: { runId: string; controllerBootId: string }) => { runId: string; controllerBootId: string }) {
+  async function followUpBehindOutgoingServer() {
     const seeded = await seedWarmFollowUpOnOldServer();
-    const { fixture, current, identity, recordOwner, runId } = seeded;
+    const { fixture, current, identity, recordOwner } = seeded;
     const outgoingBoot = fixture.owner.bootId;
     await recordOwner({ controllerBootId: outgoingBoot, controllerPid: 7, controllerHostHash: "outgoing-container",
       controllerProcessStartedAt: new Date(Date.now() - 600_000), leaseOwner: null, leaseExpiresAt: null });
     await db.insert(controllerInstances).values({ bootId: outgoingBoot, processSpace: "outgoing-container", pid: 7,
       leaseExpiresAt: new Date(Date.now() + 90_000) });
-    await db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID() }).where(eq(nativeRunFinalizations.runId, runId));
     const wait = (checkpointedAt: Date | null) => waitForLiveWarmSessionOwner({ db, execution: current,
       priorRunId: fixture.scope.runId, checkpointedAt: async () => checkpointedAt });
-    const waiting = await wait(null).catch(error => error);
-    expect(waiting).toBeInstanceOf(NativeControllerRecoveryWaitingError);
-    expect(waiting.owner).toEqual({ runId: fixture.scope.runId, controllerBootId: outgoingBoot });
-    const parkedAt = Date.now();
-    await deferNativeControllerRecovery(db, { ...current.binding, retryAt: waiting.retryAt,
-      waitingForOwner: waitingFor ? waitingFor(waiting.owner) : waiting.owner });
     const outgoingRoot = join(root, `${fixture.scope.runId}-outgoing`);
     (await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))!
       .restoreSessionDirectory(outgoingRoot);
@@ -725,9 +718,184 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       await saveSuspend();
       return new Date();
     };
-    return { ...seeded, wait, waiting: waiting as NativeControllerRecoveryWaitingError, parkedAt, outgoing,
-      fenceHarnessBackup, saveSuspend, closeIdleSession };
+    const savedRecords = async () => (await loadNativeRunnerCheckpoint(db,
+      { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))?.records;
+    const savedCommands = async () => {
+      const restoredRoot = join(root, `${seeded.runId}-${randomUUID()}`);
+      (await loadNativeRunnerCheckpoint(db, { companyId, issueId: fixture.scope.issueId, runId: fixture.scope.runId }))!
+        .restoreSessionDirectory(restoredRoot);
+      return JSON.parse(await readFile(join(restoredRoot, "control-plane", "control-plane-state.json"), "utf8")).commands;
+    };
+    return { ...seeded, outgoingBoot, wait, outgoing, fenceHarnessBackup, saveSuspend, closeIdleSession, savedRecords, savedCommands };
   }
+
+  async function parkFollowUpBehindOutgoingServer(waitingFor?: (owner: { runId: string; controllerBootId: string }) => { runId: string; controllerBootId: string } | undefined) {
+    const behind = await followUpBehindOutgoingServer();
+    const { fixture, current, runId, wait, outgoingBoot } = behind;
+    await db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID() }).where(eq(nativeRunFinalizations.runId, runId));
+    const waiting = await wait(null).catch(error => error);
+    expect(waiting).toBeInstanceOf(NativeControllerRecoveryWaitingError);
+    expect(waiting.owner).toEqual({ runId: fixture.scope.runId, controllerBootId: outgoingBoot });
+    const parkedAt = Date.now();
+    await deferNativeControllerRecovery(db, { ...current.binding, retryAt: waiting.retryAt,
+      waitingForOwner: waitingFor ? waitingFor(waiting.owner) : waiting.owner });
+    return { ...behind, waiting: waiting as NativeControllerRecoveryWaitingError, parkedAt };
+  }
+
+  async function prepareFollowUpOnIncomingServer(runId: string, issueId: string, run: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", issueId, nativeIssueId: null, nativeSessionId: null,
+      executionStage: "preparing", controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() + 60_000), ...run })
+      .where(eq(heartbeatRuns.id, runId));
+  }
+
+  it("the outgoing server checkpoints and closes its idle warm session while the incoming server still prepares the follow-up, before it selects native execution", async () => {
+    registerControllerInstanceDb(db);
+    const behind = await followUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, closeIdleSession, savedCommands } = behind;
+      await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId);
+      await closeIdleSession();
+      expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+    } finally {
+      await behind.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it("holds the incoming server's native selection of the preparing follow-up until the outgoing server's save commits", async () => {
+    registerControllerInstanceDb(db);
+    const behind = await followUpBehindOutgoingServer();
+    try {
+      const { fixture, runId, saveSuspend } = behind;
+      await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId);
+      let selection!: Promise<unknown>;
+      let selectionSettled = false;
+      await db.transaction(async tx => {
+        await assertNativeRunnerCheckpointOwner(tx, fixture.owner, false);
+        selection = db.transaction(async selectTx => {
+          await selectTx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+          await selectTx.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: fixture.scope.issueId,
+            nativeSessionId: fixture.scope.normalizedSessionId, executionStage: null, controllerBootId: null, controllerLeaseExpiresAt: null })
+            .where(eq(heartbeatRuns.id, runId));
+          await selectTx.insert(nativeRunFinalizations).values({ companyId, issueId: fixture.scope.issueId, runId, phase: "observed" });
+        });
+        void selection.finally(() => { selectionSettled = true; }).catch(() => undefined);
+        await vi.waitFor(async () => {
+          const [blocked] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%heartbeat_runs%'`);
+          expect(blocked.count).toBeGreaterThan(0);
+        }, { timeout: 1_500, interval: 20 });
+        expect(selectionSettled).toBe(false);
+      });
+      await selection;
+      await expect(saveSuspend()).resolves.toBeUndefined();
+    } finally {
+      await behind.outgoing.stop();
+      resetControllerInstanceLeaseForTests();
+    }
+  });
+
+  it.each(["expired-controller", "dispatching", "own-process", "own-process-event", "other-issue"] as const)(
+    "refuses the outgoing server's idle checkpoint when the incoming server's preparing follow-up is no longer unstarted: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const behind = await followUpBehindOutgoingServer();
+      try {
+        const { fixture, runId, fenceHarnessBackup, saveSuspend, savedRecords } = behind;
+        await prepareFollowUpOnIncomingServer(runId, fixture.scope.issueId, scenario === "expired-controller"
+          ? { controllerLeaseExpiresAt: new Date(Date.now() - 1_000) } : scenario === "dispatching" ? { executionStage: "dispatching" }
+            : scenario === "own-process" ? { processPid: 4242, processGroupId: 4242, processStartedAt: new Date() }
+              : scenario === "other-issue" ? { issueId: null } : {});
+        if (scenario === "own-process-event") {
+          await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED });
+        }
+        const before = await savedRecords();
+        await expect(fenceHarnessBackup()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        await expect(saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        expect(await savedRecords()).toEqual(before);
+      } finally {
+        await behind.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it.each(["unclaimed", "inherited-process"] as const)(
+    "the outgoing server checkpoints and closes its idle warm session while the incoming server's follow-up is selected but has not checked the owner yet, and the follow-up continues at that check: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const behind = await followUpBehindOutgoingServer();
+      try {
+        const { fixture, runId, wait, closeIdleSession, savedCommands } = behind;
+        if (scenario === "inherited-process") {
+          const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date(),
+            runnerProfileJson: { ...successor!.runnerProfileJson, inheritedProcessIdentityRunId: fixture.scope.runId } })
+            .where(eq(heartbeatRuns.id, runId));
+        }
+        expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0])
+          .toMatchObject({ phase: "observed", attempt: 0, leaseOwner: null, resultId: null, failureCode: null, recoveryHistory: [] });
+        const checkpointedAt = await closeIdleSession();
+        expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+        await behind.outgoing.stop();
+        await expect(wait(checkpointedAt)).resolves.toBeUndefined();
+      } finally {
+        await behind.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it.each(["own-process", "other-run-process", "own-process-event", "own-checkpoint", "other-session", "admitted"] as const)(
+    "refuses the outgoing server's idle checkpoint when the selected follow-up is no longer unstarted: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const behind = await followUpBehindOutgoingServer();
+      try {
+        const { fixture, runId, fenceHarnessBackup, saveSuspend, savedRecords } = behind;
+        const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        if (scenario === "own-process") {
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        } else if (scenario === "other-run-process") {
+          await db.update(heartbeatRuns).set({ processPid: 4242, processGroupId: 4242, processStartedAt: new Date(),
+            runnerProfileJson: { ...successor!.runnerProfileJson, inheritedProcessIdentityRunId: randomUUID() } }).where(eq(heartbeatRuns.id, runId));
+        } else if (scenario === "own-process-event") {
+          await appendHeartbeatRunEvent(db, { companyId, runId, agentId, eventType: PROCESS_START_REQUESTED });
+        } else if (scenario === "own-checkpoint") {
+          await db.insert(nativeRunnerCheckpoints).values({ companyId, issueId: fixture.scope.issueId, runId, part: "header", material: {} });
+        } else if (scenario === "other-session") {
+          await db.update(heartbeatRuns).set({ nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, runId));
+        } else {
+          await db.update(nativeRunFinalizations).set({ attempt: 1, leaseOwner: randomUUID(), controllerBootId: randomUUID(),
+            leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, runId));
+        }
+        const before = await savedRecords();
+        await expect(fenceHarnessBackup()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        await expect(saveSuspend()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+        expect(await savedRecords()).toEqual(before);
+      } finally {
+        await behind.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
+
+  it.each(["parked", "re-claimed", "re-claimed-by-previous-release"] as const)(
+    "the outgoing server checkpoints and closes its idle warm session while the follow-up waits without naming its owner: %s", async scenario => {
+      registerControllerInstanceDb(db);
+      const parked = await parkFollowUpBehindOutgoingServer(() => undefined);
+      try {
+        const { runId, waiting, closeIdleSession, savedCommands } = parked;
+        if (scenario !== "parked") {
+          expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "incoming", runIds: [runId], now: waiting.retryAt })).toHaveLength(1);
+        }
+        if (scenario === "re-claimed-by-previous-release") {
+          await db.execute(sql`update native_run_finalizations set recovery_history = jsonb_set(recovery_history,
+            array[(jsonb_array_length(recovery_history) - 1)::text, 'evidence'], (recovery_history->-1->'evidence') - 'waitingForOwner')
+            where run_id = ${runId}`);
+        }
+        await closeIdleSession();
+        expect(await savedCommands()).toContainEqual(expect.objectContaining({ type: "runner.suspend" }));
+      } finally {
+        await parked.outgoing.stop();
+        resetControllerInstanceLeaseForTests();
+      }
+    });
 
   it("the outgoing server checkpoints and closes its idle warm session while the incoming server's follow-up waits for it, and the follow-up resumes within one recheck", async () => {
     registerControllerInstanceDb(db);
