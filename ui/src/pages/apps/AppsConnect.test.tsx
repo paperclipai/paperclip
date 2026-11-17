@@ -1021,7 +1021,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it.each(["page", "card"])("resumes a custom MCP OAuth draft from %s without a provider slug", async host => {
     const draft = { id: "custom-oauth-draft", applicationId: "custom-app", companyId: "company-1", name: "Archive",
       status: "draft", enabled: false, transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user",
-      credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp" }, transportConfig: {} };
+      credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp", oauth: {
+        clientId: "saved-client", clientRegistrationSource: host === "page" ? "manual" : "dcr",
+      } }, transportConfig: {} };
     listApplicationsMock.mockResolvedValue({ applications: [{ id: draft.applicationId, companyId: "company-1", name: "Archive", type: "mcp_http" }] });
     listConnectionsMock.mockResolvedValue({ connections: [draft] });
     getConnectionMock.mockResolvedValue(draft);
@@ -1031,9 +1033,26 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await vi.waitFor(() => expect(container.textContent).toContain(draft.config.url));
     expect(container.textContent).not.toContain("This setup can’t be resumed");
     await act(async () => { buttonByText("Check link")!.click(); });
-    await vi.waitFor(() => expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id, link: draft.config.url })));
-    expect(connectAppMock).toHaveBeenCalledOnce();
-    expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser: true, interactionId: "custom-intent" });
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser: true, interactionId: "custom-intent" }));
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves a custom draft's selected agent audience at completion", async () => {
+    const draft = { id: "custom-draft", applicationId: "custom-app", companyId: "company-1", name: "Archive",
+      status: "draft", enabled: false, transport: "mcp_remote", authKind: "none", credentialPolicy: "shared",
+      config: { url: "https://archive.example.test/mcp" }, transportConfig: {} };
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: draft.applicationId, companyId: "company-1", name: "Archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    getConnectionMock.mockResolvedValue(draft);
+    getConnectionInstallsMock.mockResolvedValue({ installs: [{ targetType: "agent", targetId: "saved-agent" }] });
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, application: { name: "Archive" }, catalog: [], actions: { readOnly: [], canMakeChanges: [] } });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" resumeConnectionId={draft.id} interactionId="custom-intent" />);
+    await vi.waitFor(() => expect(buttonByText("Check link")).toBeTruthy());
+    await act(async () => { buttonByText("Check link")!.click(); });
+    await vi.waitFor(() => expect(finishAppMock).toHaveBeenCalledWith("company-1", draft.id,
+      expect.objectContaining({ access: { agentIds: ["saved-agent"] }, preserveExistingAccess: true })));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id }));
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
   });
 
   it.each(["foreign-company", "wrong-application", "active"])("refuses a custom draft resume with %s", async mismatch => {
@@ -3280,7 +3299,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true, ...(host === "card" ? { interactionId: "saved-draft-intent" } : {}) });
   });
 
-  it("keeps a resumed unauthenticated draft through its finish-time active transition", async () => {
+  it.each([{ agentIds: [] }, { agentIds: ["saved-agent"] }])("keeps a resumed unauthenticated draft and its saved audience $agentIds through activation", async ({ agentIds }) => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
     const draft = {
       id: connectionId,
@@ -3294,6 +3313,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       transportConfig: { sourceTemplateKey: "context7" },
     };
     mockSearch.value = `source=context7&resume=${connectionId}`;
+    getConnectionInstallsMock.mockResolvedValue({ installs: agentIds.map(targetId => ({ targetType: "agent", targetId })) });
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValue({
       applications: [{
@@ -3327,6 +3347,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: connectionId }));
     expect(finishAppMock).toHaveBeenCalledWith("company-1", connectionId, expect.any(Object));
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", connectionId, expect.objectContaining({ access: { agentIds }, preserveExistingAccess: true }));
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
     await act(async () => {
       buttonByText("View connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

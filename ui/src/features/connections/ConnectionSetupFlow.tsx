@@ -1978,23 +1978,29 @@ function StandardConnectionSetupFlow({
         connected,
         (catalogEntryId) => Boolean(enabledMap[catalogEntryId]),
       );
-      if (requiredAgentId && installChoice !== "all" && !installAgentIds.has(requiredAgentId)) {
+      const retainingDraft = resumeConnectionId === connected.connectionId;
+      if (requiredAgentId && !retainingDraft && installChoice !== "all" && !installAgentIds.has(requiredAgentId)) {
         throw new Error("Include the requesting agent or choose all agents to continue this task.");
       }
       // The Access step asks one question about agent reach, so profile access
       // and installs are committed to the same target set instead of drifting
       // apart behind two separate wizard screens.
-      const selection: AppAccessSelection = installChoice === "all"
+      let selection: AppAccessSelection = installChoice === "all"
         ? "all_agents"
         : { agentIds: Array.from(installAgentIds) };
+      if (retainingDraft) {
+        const { installs } = await toolsApi.getConnectionInstalls(connected.connectionId);
+        selection = installs.some(install => install.targetType === "company" && install.targetId === selectedCompanyId)
+          ? "all_agents" : { agentIds: installs.filter(install => install.targetType === "agent").map(install => install.targetId) };
+      }
       const finished = await toolsApi.finishApp(selectedCompanyId!, connected.connectionId, {
         enabledCatalogEntryIds: enabledIds,
         askFirstCatalogEntryIds: askFirstIds,
         ...(instructionValue ? { agentInstructions: instructionValue } : {}),
         access: selection,
-        ...(requestedAgentId ? { preserveExistingAccess: true } : {}),
+        ...(requestedAgentId || retainingDraft ? { preserveExistingAccess: true } : {}),
       });
-      await applyAccessInstalls(connected.connectionId);
+      if (!retainingDraft) await applyAccessInstalls(connected.connectionId);
       return finished;
     },
     onSuccess: async (_finished, input) => {
@@ -2504,7 +2510,7 @@ function StandardConnectionSetupFlow({
         onOpenAuthorization={openAuthorizationTab}
         onRetry={() => {
           setOAuthError(null);
-          const connection = connectResult?.connection;
+          const connection = connectResult?.connection ?? (genericResumeMatches ? resumeConnection : null);
           if (connection) {
             setOAuthPhase("starting");
             startOAuth(connection);
@@ -2861,12 +2867,18 @@ function StandardConnectionSetupFlow({
           guidance={linkGuidance}
           matchedEntry={linkMatchedEntry}
           onUseMatchedEntry={linkMatchedEntry ? () => useMatchedGalleryEntry(linkMatchedEntry) : undefined}
-          submitting={connectMutation.isPending || genericOAuthPending}
+          submitting={connectMutation.isPending || oauthStartMutation.isPending || genericOAuthPending}
           defaults={connectionDefaults}
           onBack={backToGallery}
           onConnect={() => {
             setLinkGuidance(null);
-            connectApp();
+            if (genericResumeMatches && resumeConnection?.authKind === "oauth" && linkAuthMode === "oauth"
+              && linkUrl.trim() === resumeEndpoint && !linkOAuthClientId.trim() && !linkOAuthClientSecret
+              && !linkHeaders.some(header => header.name.trim() || header.value.trim())) {
+              setGenericOAuthPending(true);
+              setOAuthPhase("starting");
+              startOAuth(resumeConnection);
+            } else connectApp();
           }}
           machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId && !resumeConnectionId
             ? { companyId: selectedCompanyId, applicationId: prefill.applicationId, onConnected: acceptMachineSignInResult }
