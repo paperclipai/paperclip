@@ -83,6 +83,16 @@ describe("createGoogleHttp", () => {
     expect(error).toMatchObject({ kind, httpStatus: status });
   });
 
+  it("keeps Google's structured status and reasons on 400, 409 and 403 errors", async () => {
+    const rejected = await failure(client(() => json({ error: { code: 400, status: "FAILED_PRECONDITION", message: "x", details: [{ reason: "STALE" }] } }, 400)).http.send(POST));
+    expect(rejected).toMatchObject({ kind: "invalid_argument", google: { status: "FAILED_PRECONDITION", reasons: ["STALE"] } });
+    const aborted = await failure(client(() => json({ error: { code: 409, status: "ABORTED" } }, 409)).http.send(POST));
+    expect(aborted).toMatchObject({ google: { status: "ABORTED", reasons: [] } });
+    const denied = await failure(client(() => json({ error: { code: 403, status: "PERMISSION_DENIED", message: "no" } }, 403)).http.send(GET));
+    expect(denied).toMatchObject({ kind: "permission_denied", google: { status: "PERMISSION_DENIED" } });
+    expect(await failure(client(() => json({}, 404)).http.send(GET))).toMatchObject({ google: {} });
+  });
+
   it("retries a read once after 503, then succeeds", async () => {
     let count = 0;
     const { http, calls } = client(() => (count++ === 0 ? json({}, 503) : json({ labels: [] })));

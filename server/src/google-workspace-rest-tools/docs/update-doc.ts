@@ -48,6 +48,7 @@ export const updateDoc = defineTool({
     description: [
       "Edits an existing Google Doc with a list of Docs API batchUpdate requests (for example insertText, deleteContentRange, replaceAllText, updateTextStyle, updateParagraphStyle, createParagraphBullets, insertTable or insertInlineImage), and returns one reply per request.",
       "Requests are applied in the order given, all or none: if any request is invalid, nothing is changed.",
+      "The requests can delete or replace content in this one document, for example deleteContentRange, replaceAllText or deleteTab. This tool cannot create, delete, move, copy or share files.",
       "Each request sees the document as changed by the requests before it, so indices after an insertion or deletion move. When making several edits by index from one read_doc result, order them from the highest index to the lowest.",
       "Indices are UTF-16 code units from read_doc's content.tabs; the body starts at index 1. Pass tabId in locations and ranges to edit a tab other than the first.",
       "writeControl.requiredRevisionId is required: pass content.revisionId from read_doc. If the document changed since, nothing is changed and you must read it again. The new revision ID is returned in writeControl.",
@@ -82,7 +83,7 @@ export const updateDoc = defineTool({
       },
       required: ["replies", "writeControl"],
     },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   args,
   async run(input, http) {

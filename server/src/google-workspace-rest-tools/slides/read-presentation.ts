@@ -1,6 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { fileIdArg, sizedResult } from "../documents-shared.js";
+import { fileIdArg, readWithComments, sizedResult } from "../documents-shared.js";
 import type { GoogleRequest } from "../google-http.js";
 import { defineTool } from "../tool.js";
 import { presentationPath, SLIDES_HOST, type RestPresentation } from "./presentation.js";
@@ -26,6 +26,12 @@ export function readPresentationRequest(input: ReadPresentationArgs): GoogleRequ
     },
   };
 }
+
+export function readPresentationAccessCheckRequest(input: ReadPresentationArgs): GoogleRequest {
+  return { method: "GET", host: SLIDES_HOST, path: presentationPath(input.presentationId), query: { fields: "presentationId" } };
+}
+
+export const COMMENTS_UNAVAILABLE = "Comments are not available for this presentation with your access, so nothing was returned. The presentation can be read without them: call read_presentation again without commentsIncluded.";
 
 export function readPresentationResult(presentation: RestPresentation, input: ReadPresentationArgs): CallToolResult {
   if (input.fields?.length) {
@@ -55,7 +61,7 @@ export const readPresentation = defineTool({
           items: { type: "string" },
           description: "Optional. A field mask over the Slides API presentation resource, such as [\"revisionId\", \"slides(objectId,pageElements(objectId,shape.text))\"]. When set, content is the raw resource limited to these fields instead of the text form.",
         },
-        commentsIncluded: { type: "boolean", description: "Optional. If true, comment threads are included. Default: false." },
+        commentsIncluded: { type: "boolean", description: "Optional. If true, comment threads are included. Needs access to comments; without it the call fails and says so. Default: false." },
       },
       required: ["presentationId"],
     },
@@ -68,6 +74,7 @@ export const readPresentation = defineTool({
   },
   args,
   async run(input, http) {
-    return readPresentationResult(await http.send<RestPresentation>(readPresentationRequest(input)), input);
+    const plain = input.commentsIncluded ? readPresentationAccessCheckRequest(input) : undefined;
+    return readPresentationResult(await readWithComments<RestPresentation>(http, readPresentationRequest(input), plain, COMMENTS_UNAVAILABLE), input);
   },
 });

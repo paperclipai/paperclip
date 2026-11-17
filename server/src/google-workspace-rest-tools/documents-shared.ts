@@ -25,15 +25,88 @@ export function sizedResult(value: Record<string, unknown>, what: string, hint: 
   return { content: [{ type: "text", text }], structuredContent: value };
 }
 
+const CONFLICT_STATUSES = new Set(["FAILED_PRECONDITION", "ABORTED"]);
+const CONFLICT_REASON = /REVISION|CONDITION_NOT_MET|conditionNotMet/i;
+const CONFLICT_MESSAGE = /\brequired revision\b|\brevision id\b|\blatest revision\b/i;
+
+export function isRevisionConflict(error: GoogleToolError): boolean {
+  if (error.kind !== "invalid_argument" || (error.httpStatus !== 400 && error.httpStatus !== 409)) return false;
+  if (error.google.status && CONFLICT_STATUSES.has(error.google.status)) return true;
+  if ((error.google.reasons ?? []).some((reason) => CONFLICT_REASON.test(reason))) return true;
+  return CONFLICT_MESSAGE.test(error.message);
+}
+
+export function assertRequestKinds(requests: ReadonlyArray<Record<string, unknown>>, blocked: Readonly<Record<string, string>>): void {
+  const refused = [...new Set(requests.map((request) => Object.keys(request)[0]!).filter((kind) => Object.hasOwn(blocked, kind)))];
+  if (refused.length) {
+    throw new GoogleToolError("invalid_argument", `${refused.map((kind) => `${kind} ${blocked[kind]}`).join(" ")} This tool only changes the one file it is given. Nothing was changed.`);
+  }
+}
+
+export interface TableCellText {
+  text: string;
+  rowSpan?: number;
+  columnSpan?: number;
+  row?: number;
+  column?: number;
+}
+
+export const MERGED_LEFT = "(merged left)";
+export const MERGED_UP = "(merged up)";
+
+const span = (value: number | undefined) => (value !== undefined && value > 1 ? Math.floor(value) : 1);
+
+export function tableGrid(rows: readonly (readonly TableCellText[])[], columns: number): string[][] {
+  const grid: Array<Array<string | undefined>> = rows.map(() => []);
+  for (const [listedRow, cells] of rows.entries()) {
+    const positional = cells.length === columns && cells.every((cell) => cell.column === undefined);
+    let column = 0;
+    for (const [cellIndex, cell] of cells.entries()) {
+      const rowIndex = cell.row !== undefined && cell.row >= 0 && cell.row < rows.length ? cell.row : listedRow;
+      if (positional) column = cellIndex;
+      else if (cell.column !== undefined) column = cell.column;
+      else while (grid[rowIndex]![column] !== undefined) column += 1;
+      if (positional && grid[rowIndex]![column] !== undefined && cell.text === "") continue;
+      grid[rowIndex]![column] = cell.text;
+      for (let down = 0; down < span(cell.rowSpan) && rowIndex + down < rows.length; down += 1) {
+        for (let across = 0; across < span(cell.columnSpan); across += 1) {
+          if (down === 0 && across === 0) continue;
+          grid[rowIndex + down]![column + across] = down === 0 ? MERGED_LEFT : MERGED_UP;
+        }
+      }
+      column += span(cell.columnSpan);
+    }
+  }
+  const width = Math.max(columns, ...grid.map((row) => row.length));
+  return grid.map((row) => Array.from({ length: width }, (_, index) => row[index] ?? ""));
+}
+
+export function markdownTable(rows: readonly (readonly TableCellText[])[], columns: number): string[] {
+  if (rows.length === 0) return ["[empty table]"];
+  const grid = tableGrid(rows, columns);
+  const lines = grid.map((cells) => `| ${cells.join(" | ")} |`);
+  return [lines[0]!, `| ${grid[0]!.map(() => "---").join(" | ")} |`, ...lines.slice(1)];
+}
+
+export async function readWithComments<T>(http: GoogleHttp, request: GoogleRequest, plain: GoogleRequest | undefined, unavailable: string): Promise<T> {
+  try {
+    return await http.send<T>(request);
+  } catch (error) {
+    if (!plain || !(error instanceof GoogleToolError) || error.kind !== "permission_denied") throw error;
+    await http.send(plain);
+    throw new GoogleToolError("permission_denied", unavailable, error.httpStatus);
+  }
+}
+
 export async function sendBatchUpdate<T>(http: GoogleHttp, request: GoogleRequest, what: string, readTool: string): Promise<T> {
   try {
     return await http.send<T>(request);
   } catch (error) {
-    if (error instanceof GoogleToolError && error.httpStatus === 400 && /revision/i.test(error.message)) {
+    if (error instanceof GoogleToolError && isRevisionConflict(error)) {
       throw new GoogleToolError(
         "invalid_argument",
         `The ${what} is no longer at the revision you read (or that revision ID is not valid), so nothing was changed. Read it again with ${readTool} and retry with its new revisionId.`,
-        400,
+        error.httpStatus,
       );
     }
     throw error;

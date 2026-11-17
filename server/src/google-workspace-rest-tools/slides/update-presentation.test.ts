@@ -81,6 +81,19 @@ describe("update_presentation tool", () => {
     expect((result.content[0] as { text: string }).text).toMatch(/may or may not have been made/);
   });
 
+  it.each(["createSheetsChart", "replaceAllShapesWithSheetsChart", "refreshSheetsChart"])("refuses %s, which reads another file, and sends nothing", async (kind) => {
+    const { fetch, calls } = fakeGoogle(() => json({}));
+    const result = await updatePresentation.call({ presentationId: "d", requests: [{ insertText: { objectId: "a", text: "x" } }, { [kind]: {} }], writeControl: REVISION }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect((result.content[0] as { text: string }).text).toBe(`${kind} reads a chart from a Google Sheets spreadsheet, another file. This tool only changes the one file it is given. Nothing was changed.`);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("recognizes a conflict from Google's structured status", async () => {
+    const { fetch } = fakeGoogle(() => json({ error: { code: 400, status: "FAILED_PRECONDITION", message: "Precondition check failed." } }, 400));
+    const result = await updatePresentation.call({ presentationId: "d", requests: [{ deleteObject: { objectId: "x" } }], writeControl: REVISION }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect((result.content[0] as { text: string }).text).toMatch(/^The presentation is no longer at the revision you read/);
+  });
+
   it.each([
     ["no requests", { presentationId: "d", writeControl: REVISION }],
     ["an empty request list", { presentationId: "d", requests: [], writeControl: REVISION }],

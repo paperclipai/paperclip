@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RestDocument, RestDocumentTab, RestStructuralElement } from "./document.js";
 import { cell, MULTI_TAB_DOCUMENT, MULTI_TAB_TEXT, oneTab, para, run, table, text } from "./fixtures/docs-rest.js";
-import { formatListNumber, renderDocument } from "./render.js";
+import { formatListNumber, INLINE_NOTE, renderDocument } from "./render.js";
 
 const render = (body: RestStructuralElement[], extra: RestDocumentTab = {}) => renderDocument(oneTab(body, extra)).text;
 
@@ -11,9 +11,9 @@ describe("read_doc text rendering", () => {
     expect(content.text).toBe(MULTI_TAB_TEXT);
     expect(content).toMatchObject({ documentId: "doc-synthetic-multi", title: "Synthetic launch plan", revisionId: "ALm37BV-synthetic-rev" });
     expect(content.notes).toEqual([
+      INLINE_NOTE,
       "1 image is shown as [image] with its title or alt text; the picture itself is not included.",
       "1 equation is shown as [equation]; the Docs API does not return equation content.",
-      "Suggested edits that are not accepted yet are marked {+inserted+} and {-deleted-}.",
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("read_doc text rendering", () => {
     });
     const content = renderDocument(document);
     expect(content.text).toBe(`A ${expected}`);
-    expect(content.notes?.[0]).toMatch(new RegExp(`^${note.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    expect(content.notes[1]).toMatch(new RegExp(`^${note.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   });
 
   it("renders positioned images after their paragraph and counts them", () => {
@@ -106,7 +106,7 @@ describe("read_doc text rendering", () => {
     });
     const content = renderDocument(document);
     expect(content.text).toBe("Caption [image: Map] [image]\n[image: Floor plan]");
-    expect(content.notes).toEqual(["3 images are shown as [image] with its title or alt text; the picture itself is not included."]);
+    expect(content.notes).toEqual([INLINE_NOTE, "3 images are shown as [image] with its title or alt text; the picture itself is not included."]);
   });
 
   it.each([
@@ -127,7 +127,7 @@ describe("read_doc text rendering", () => {
   it("renders a dropdown as a placeholder and says its value is not available", () => {
     const content = renderDocument(oneTab([para([{ dropdown: {} }, run("\n")])]));
     expect(content.text).toBe("[dropdown]");
-    expect(content.notes).toEqual(["1 dropdown is shown as [dropdown]; the Docs API does not return the selected value."]);
+    expect(content.notes).toEqual([INLINE_NOTE, "1 dropdown is shown as [dropdown]; the Docs API does not return the selected value."]);
   });
 
   it("turns soft line breaks into new lines inside the same item", () => {
@@ -144,7 +144,7 @@ describe("read_doc text rendering", () => {
       run("\n"),
     ])]));
     expect(content.text).toBe("keep {+add+} {-drop-}{+[page break]+}");
-    expect(content.notes).toEqual(["Suggested edits that are not accepted yet are marked {+inserted+} and {-deleted-}."]);
+    expect(content.notes).toEqual([INLINE_NOTE]);
   });
 
   it("renders tables with escaped pipes, multi-paragraph cells, nested tables and blank lines around them", () => {
@@ -168,6 +168,38 @@ describe("read_doc text rendering", () => {
   it("renders a table with a single row and an empty table", () => {
     expect(render([table([[cell("only"), cell("")]])])).toBe("| only |  |\n| --- | --- |");
     expect(render([{ startIndex: 1, endIndex: 2, table: { rows: 0, columns: 0, tableRows: [] } }])).toBe("[empty table]");
+  });
+
+  it.each([
+    [
+      "a header spanning two columns",
+      [[{ ...cell("Q1 and Q2"), tableCellStyle: { columnSpan: 2 } }, { ...cell(""), tableCellStyle: { columnSpan: 1 } }, cell("Q3")], [cell("1"), cell("2"), cell("3")]],
+      ["| Q1 and Q2 | (merged left) | Q3 |", "| --- | --- | --- |", "| 1 | 2 | 3 |"],
+    ],
+    [
+      "a cell spanning two rows",
+      [[{ ...cell("North"), tableCellStyle: { rowSpan: 2 } }, cell("x")], [cell(""), cell("y")]],
+      ["| North | x |", "| --- | --- |", "| (merged up) | y |"],
+    ],
+    [
+      "a two-by-two merge",
+      [[{ ...cell("Big"), tableCellStyle: { rowSpan: 2, columnSpan: 2 } }, cell(""), cell("r")], [cell(""), cell(""), cell("s")]],
+      ["| Big | (merged left) | r |", "| --- | --- | --- |", "| (merged up) | (merged up) | s |"],
+    ],
+    [
+      "rows that leave out covered cells",
+      [[{ ...cell("Wide"), tableCellStyle: { columnSpan: 2 } }], [cell("a"), cell("b")]],
+      ["| Wide | (merged left) |", "| --- | --- |", "| a | b |"],
+    ],
+  ])("renders %s with every row as wide as the table and the merged region marked", (_name, rows, expected) => {
+    const element = table(rows);
+    element.table!.columns = Math.max(...rows.map((row) => row.length));
+    expect(render([element])).toBe(expected.join("\n"));
+  });
+
+  it("marks merged cells in a nested table too", () => {
+    const nested = table([[{ ...cell("Span"), tableCellStyle: { columnSpan: 2 } }, cell("")], [cell("a"), cell("b")]]);
+    expect(render([table([[cell("Outer"), { content: [nested] }]])])).toBe("| Outer | [table: Span / (merged left); a / b] |\n| --- | --- |");
   });
 
   it("does not add a blank line after a table when the next paragraph is already empty", () => {
@@ -237,7 +269,7 @@ describe("read_doc text rendering", () => {
   });
 
   it("renders an empty document as empty text", () => {
-    expect(renderDocument({ documentId: "d", title: "Empty", tabs: [] })).toEqual({ documentId: "d", title: "Empty", text: "", tabs: [] });
+    expect(renderDocument({ documentId: "d", title: "Empty", tabs: [] })).toEqual({ documentId: "d", title: "Empty", suggestionsViewMode: "SUGGESTIONS_INLINE", text: "", tabs: [], notes: [INLINE_NOTE] });
     expect(render([text("")])).toBe("");
   });
 });

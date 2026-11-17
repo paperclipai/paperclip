@@ -100,6 +100,28 @@ describe("update_doc tool", () => {
     });
   });
 
+  it.each([
+    ["FAILED_PRECONDITION", { code: 400, status: "FAILED_PRECONDITION", message: "Precondition check failed." }, 400],
+    ["a revision reason in the details", { code: 400, status: "INVALID_ARGUMENT", message: "Request failed.", details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "REVISION_MISMATCH" }] }, 400],
+    ["ABORTED on 409", { code: 409, status: "ABORTED", message: "Aborted." }, 409],
+  ])("recognizes a conflict from Google's structured %s", async (_name, error, status) => {
+    const { fetch } = fakeGoogle(() => json({ error }, status));
+    const result = await updateDoc.call({ documentId: "d", requests: [{ insertText: { text: "a", location: { index: 1 } } }], writeControl: REVISION }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect((result.content[0] as { text: string }).text).toMatch(/^The document is no longer at the revision you read/);
+  });
+
+  it("does not call a 400 that only mentions revisions a conflict", async () => {
+    const { fetch } = fakeGoogle(() => json({ error: { code: 400, status: "INVALID_ARGUMENT", message: "Invalid requests[0].updateDocumentStyle: revisions of the page size are not allowed." } }, 400));
+    const result = await updateDoc.call({ documentId: "d", requests: [{ updateDocumentStyle: {} }], writeControl: REVISION }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect((result.content[0] as { text: string }).text).toBe("Invalid requests[0].updateDocumentStyle: revisions of the page size are not allowed.");
+  });
+
+  it("passes every Docs request kind through, since none of them acts outside the document", () => {
+    const requests = ["insertText", "deleteContentRange", "replaceAllText", "insertRichLink", "insertPerson", "insertInlineImage", "deleteTab", "addDocumentTab", "insertComment"]
+      .map((kind) => ({ [kind]: {} }));
+    expect((updateDocRequest({ documentId: "d", requests, writeControl: REVISION }).body as { requests: unknown[] }).requests).toEqual(requests);
+  });
+
   it("passes other rejections through with Google's message", async () => {
     const { fetch } = fakeGoogle(() => json({ error: { code: 400, message: "Invalid requests[0].insertText: Index 99 must be less than the end index of the referenced segment, 12." } }, 400));
     const result = await updateDoc.call({ documentId: "d", requests: [{ insertText: { text: "a", location: { index: 99 } } }], writeControl: REVISION }, createGoogleHttp({ accessToken: "t", fetch }));

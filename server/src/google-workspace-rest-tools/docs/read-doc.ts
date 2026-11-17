@@ -1,10 +1,11 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { fileIdArg, sizedResult } from "../documents-shared.js";
-import type { GoogleRequest } from "../google-http.js";
+import { GoogleToolError } from "../errors.js";
+import type { GoogleHttp, GoogleRequest } from "../google-http.js";
 import { defineTool } from "../tool.js";
 import { DOCS_HOST, documentPath, type RestDocument } from "./document.js";
-import { renderDocument } from "./render.js";
+import { renderDocument, type SuggestionsView } from "./render.js";
 
 const args = z.object({
   documentId: fileIdArg("Docs document"),
@@ -12,20 +13,31 @@ const args = z.object({
 });
 export type ReadDocArgs = z.infer<typeof args>;
 
-export function readDocRequest(input: ReadDocArgs): GoogleRequest {
+export function readDocRequest(input: ReadDocArgs, view: SuggestionsView = "SUGGESTIONS_INLINE"): GoogleRequest {
+  const comments = input.commentsIncluded && view === "SUGGESTIONS_INLINE";
   return {
     method: "GET",
     host: DOCS_HOST,
     path: documentPath(input.documentId),
     query: {
       includeTabsContent: true,
-      ...(input.commentsIncluded ? { commentsViewMode: "COMMENTS_VIEW_MODE_INCLUDED", suggestionsViewMode: "SUGGESTIONS_INLINE" } : {}),
+      suggestionsViewMode: view,
+      ...(comments ? { commentsViewMode: "COMMENTS_VIEW_MODE_INCLUDED" } : {}),
     },
   };
 }
 
-export function readDocResult(document: RestDocument, input: ReadDocArgs): CallToolResult {
-  const content = renderDocument(document, { commentsRequested: input.commentsIncluded === true });
+export async function readDocument(http: GoogleHttp, input: ReadDocArgs): Promise<{ document: RestDocument; view: SuggestionsView }> {
+  try {
+    return { document: await http.send<RestDocument>(readDocRequest(input)), view: "SUGGESTIONS_INLINE" };
+  } catch (error) {
+    if (!(error instanceof GoogleToolError) || error.kind !== "permission_denied") throw error;
+    return { document: await http.send<RestDocument>(readDocRequest(input, "PREVIEW_WITHOUT_SUGGESTIONS")), view: "PREVIEW_WITHOUT_SUGGESTIONS" };
+  }
+}
+
+export function readDocResult(document: RestDocument, input: ReadDocArgs, view: SuggestionsView = "SUGGESTIONS_INLINE"): CallToolResult {
+  const content = renderDocument(document, { commentsRequested: input.commentsIncluded === true, suggestionsView: view });
   return sizedResult({ content }, "document", "Google Docs cannot return part of a document through this tool.");
 }
 
@@ -38,12 +50,13 @@ export const readDoc = defineTool({
       "Items that have no text form are shown in brackets, such as [image: alt text], [equation] or [page break], and content.notes says what was left out.",
       "content.tabs gives each tab's paragraphs and tables with their startIndex and endIndex (UTF-16 code units), for use with update_doc; in a paragraph's text, every non-text item such as an image takes one index and appears as U+FFFC.",
       "content.revisionId is required by update_doc.",
+      "content.suggestionsViewMode says how pending suggested edits were read: SUGGESTIONS_INLINE shows them marked; when your access does not include suggestions the document is read as PREVIEW_WITHOUT_SUGGESTIONS, without them, and content.notes says so.",
     ].join(" "),
     inputSchema: {
       type: "object",
       properties: {
         documentId: { type: "string", description: "Required. The ID of the document to read: the part of its docs.google.com link after /d/." },
-        commentsIncluded: { type: "boolean", description: "Optional. If true, comment threads are listed at the end of content.text. Default: false." },
+        commentsIncluded: { type: "boolean", description: "Optional. If true, comment threads are listed at the end of content.text. When your access does not include comments and suggestions, the document is returned without them and content.notes says so. Default: false." },
       },
       required: ["documentId"],
     },
@@ -56,6 +69,7 @@ export const readDoc = defineTool({
   },
   args,
   async run(input, http) {
-    return readDocResult(await http.send<RestDocument>(readDocRequest(input)), input);
+    const { document, view } = await readDocument(http, input);
+    return readDocResult(document, input, view);
   },
 });

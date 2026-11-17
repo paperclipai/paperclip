@@ -93,20 +93,53 @@ describe("read_presentation text rendering", () => {
     expect(body([{ objectId: "w", wordArt: { renderedText: "BIG" } }, { objectId: "l", line: {} }, { objectId: "s", speakerSpotlight: {} }])).toBe("BIG");
   });
 
-  it("renders tables with escaped pipes, multi-line cells, merged cells and empty tables", () => {
+  it("renders tables with escaped pipes, multi-line cells and empty tables", () => {
     const table: RestPageElement = {
       objectId: "t",
       table: {
         rows: 2,
         columns: 2,
         tableRows: [
-          { tableCells: [{ columnSpan: 2, text: textContent({ text: "Merged | header" }) }, {}] },
-          { tableCells: [{ text: textContent({ text: "a", bullet: { glyph: "●" } }, { text: "b", bullet: { glyph: "●" } }) }, { text: textContent({ text: "" }) }] },
+          { tableCells: [{ location: { rowIndex: 0, columnIndex: 0 }, text: textContent({ text: "A | B" }) }, { location: { rowIndex: 0, columnIndex: 1 }, text: textContent({ text: "C" }) }] },
+          { tableCells: [{ location: { rowIndex: 1, columnIndex: 0 }, text: textContent({ text: "a", bullet: { glyph: "●" } }, { text: "b", bullet: { glyph: "●" } }) }, { location: { rowIndex: 1, columnIndex: 1 }, text: textContent({ text: "" }) }] },
         ],
       },
     };
-    expect(body([table])).toBe("| Merged \\| header |  |\n| --- | --- |\n| ● a<br>● b |  |");
+    expect(body([table])).toBe("| A \\| B | C |\n| --- | --- |\n| ● a<br>● b |  |");
     expect(body([{ objectId: "e", table: { rows: 0, columns: 0, tableRows: [] } }])).toBe("[empty table]");
+  });
+
+  it.each([
+    [
+      "a header spanning two columns",
+      3,
+      [
+        [{ location: { rowIndex: 0, columnIndex: 0 }, columnSpan: 2, text: textContent({ text: "Q1 and Q2" }) }, { location: { rowIndex: 0, columnIndex: 2 }, text: textContent({ text: "Q3" }) }],
+        [{ location: { rowIndex: 1, columnIndex: 0 }, text: textContent({ text: "1" }) }, { location: { rowIndex: 1, columnIndex: 1 }, text: textContent({ text: "2" }) }, { location: { rowIndex: 1, columnIndex: 2 }, text: textContent({ text: "3" }) }],
+      ],
+      ["| Q1 and Q2 | (merged left) | Q3 |", "| --- | --- | --- |", "| 1 | 2 | 3 |"],
+    ],
+    [
+      "a cell spanning two rows",
+      2,
+      [
+        [{ location: { rowIndex: 0, columnIndex: 0 }, rowSpan: 2, text: textContent({ text: "North" }) }, { location: { rowIndex: 0, columnIndex: 1 }, text: textContent({ text: "x" }) }],
+        [{ location: { rowIndex: 1, columnIndex: 1 }, text: textContent({ text: "y" }) }],
+      ],
+      ["| North | x |", "| --- | --- |", "| (merged up) | y |"],
+    ],
+    [
+      "a two-by-two merge without locations",
+      3,
+      [
+        [{ rowSpan: 2, columnSpan: 2, text: textContent({ text: "Big" }) }, { text: textContent({ text: "r" }) }],
+        [{ text: textContent({ text: "s" }) }],
+      ],
+      ["| Big | (merged left) | r |", "| --- | --- | --- |", "| (merged up) | (merged up) | s |"],
+    ],
+  ])("renders %s with every row as wide as the table and the merged region marked", (_name, columns, tableRows, expected) => {
+    const table = { objectId: "t", table: { rows: tableRows.length, columns, tableRows: tableRows.map((tableCells) => ({ tableCells })) } } as RestPageElement;
+    expect(body([table])).toBe(expected.join("\n"));
   });
 
   it("renders nested groups in order", () => {

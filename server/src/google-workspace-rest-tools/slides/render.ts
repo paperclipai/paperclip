@@ -1,4 +1,4 @@
-import { plural, renderComments, type RestCommentThread } from "../documents-shared.js";
+import { markdownTable, plural, renderComments, type RestCommentThread } from "../documents-shared.js";
 import type { RestPage, RestPageElement, RestPresentation, RestSlidesLink, RestTextContent, RestTextElement } from "./presentation.js";
 
 export interface SlidesTableCellView {
@@ -119,10 +119,14 @@ export function elementLines(element: RestPageElement, tally: Tally): string[] {
     return lines;
   }
   if (element.table) {
-    const rows = (element.table.tableRows ?? []).map((row) => (row.tableCells ?? []).map((cell) => cellText(cell.text)));
-    if (rows.length === 0) return ["[empty table]"];
-    const lines = rows.map((cells) => `| ${cells.join(" | ")} |`);
-    return [lines[0]!, `| ${rows[0]!.map(() => "---").join(" | ")} |`, ...lines.slice(1)];
+    const rows = (element.table.tableRows ?? []).map((row) => (row.tableCells ?? []).map((cell) => ({
+      text: cellText(cell.text),
+      rowSpan: cell.rowSpan,
+      columnSpan: cell.columnSpan,
+      row: cell.location?.rowIndex,
+      column: cell.location?.columnIndex,
+    })));
+    return markdownTable(rows, element.table.columns ?? 0);
   }
   if (element.image) {
     tally.images += 1;

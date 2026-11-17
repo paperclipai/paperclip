@@ -324,6 +324,12 @@ Google's servers return if they ever expose tools with these names:
 
 A switch back to `google_mcp` would drop these three unless Google adds them.
 
+To check when a live tester exists: record `read_doc` and `read_presentation`
+answers from Google's Docs and Slides MCP servers for a test document and
+deck, and compare their `content` with ours. Google publishes only that
+`content` is an object; our text form and structure are unverified against
+Google's server.
+
 ## Calendar tools
 
 Names, input fields, enums, result shapes and annotations come from Google's
@@ -466,16 +472,18 @@ earliest first; working hours and out-of-office settings are not read.
 
 ## Docs and Slides tools
 
-Names, input fields and annotations come from Google's MCP references
+Names and input fields come from Google's MCP references
 (<https://developers.google.com/workspace/docs/api/reference/mcp/tools_list/read_doc>,
 `.../update_doc`,
 <https://developers.google.com/workspace/slides/api/reference/mcp/tools_list/read_presentation>
-and `.../update_presentation`, recorded 2026-11-17). Each tool makes exactly
-one REST call.
+and `.../update_presentation`, recorded 2026-11-17). Annotations follow them
+except `destructiveHint` on `update_doc` (see the differences below). Each
+tool makes one REST call; `read_doc` makes a second only when Google refuses
+the first for the user's access (see "Suggestions and comments").
 
 | Tool | REST call | Works with | Google documentation |
 | --- | --- | --- | --- |
-| `read_doc` | `documents.get` with `includeTabsContent=true` | `documents.readonly` or `documents` | <https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/get> |
+| `read_doc` | `documents.get` with `includeTabsContent=true` and an explicit `suggestionsViewMode` | `documents.readonly` or `documents` | <https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/get> |
 | `update_doc` | `documents.batchUpdate` | `documents` | <https://developers.google.com/workspace/docs/api/reference/rest/v1/documents/batchUpdate> |
 | `read_presentation` | `presentations.get` | `presentations.readonly` or `presentations` | <https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/get> |
 | `update_presentation` | `presentations.batchUpdate` | `presentations` | <https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations/batchUpdate> |
@@ -491,12 +499,14 @@ holds:
   one), headings as `#`, list items with their real numbering (`1.`, `a.`,
   `iv.`, nested formats such as `1.2.`, start numbers, numbering that
   continues across interrupting paragraphs), tables as `| cells |` with nested
-  tables flattened into one cell, links as `[text](url)` (heading, bookmark and
+  tables flattened into one cell, merged table cells placed on the full grid
+  (every row has the table's column count; cells covered by a merge read
+  `(merged left)` or `(merged up)`, never a blank), links as `[text](url)` (heading, bookmark and
   tab links as `#heading=…`, `#bookmark=…`, `#tab=…`), footnote references as
   `[^n]` with the footnotes after the body, headers and footers labelled
   default, first page or even pages, person and date chips, rich links, page
-  and column breaks, and unaccepted suggestions as `{+inserted+}` and
-  `{-deleted-}`. Slides: each slide as `## Slide n` (marked skipped when it
+  and column breaks, and, in the `SUGGESTIONS_INLINE` view only, pending
+  suggestions as `{+inserted+}` and `{-deleted-}`. Slides: each slide as `## Slide n` (marked skipped when it
   is), title placeholders as `###`, bullets with their own glyph, tables,
   groups, word art, and each slide's speaker notes under `Speaker notes:`.
 - A structure for edits. Docs: `tabs[]` with every paragraph's and table
@@ -505,11 +515,40 @@ holds:
   index (an image, a footnote reference, a chip) is one U+FFFC, so
   `text.length` equals `endIndex - startIndex`. Slides: `slides[]` with each
   page element's `objectId`, type, placeholder and raw text, table cells by
-  row and column, and the speaker notes shape's `objectId`.
+  row and column (Slides tables are placed on the grid by each cell's
+  `location` and spans, since `tableCells` leaves out covered cells), and the
+  speaker notes shape's `objectId`.
 - `revisionId`, which the update tools require.
-- `notes`, present when something could not be shown as text, with a count.
+- `notes`: what could not be shown as text, with a count, and for Docs always
+  which suggestions view was used.
+- Docs: `suggestionsViewMode`, the view the document was read in.
 - With `commentsIncluded`, a `[Comments]` section (`commentsViewMode` on both
   APIs).
+
+### Suggestions and comments
+
+`read_doc` always asks for `suggestionsViewMode=SUGGESTIONS_INLINE`, so
+pending suggested edits are shown and the indices are the ones
+`documents.batchUpdate` needs (the Document reference: "When editing a
+document, changes must be based on a document with SUGGESTIONS_INLINE").
+Google answers 403 to that view when the user may not see suggestions; without
+an explicit view a viewer would silently get `PREVIEW_WITHOUT_SUGGESTIONS`.
+On a 403 permission answer the tool reads again with
+`PREVIEW_WITHOUT_SUGGESTIONS` (without comments, which Google returns only
+with inline suggestions). That result says, in `suggestionsViewMode` and
+`notes`, that pending suggestions are not shown and that its indices may not
+be valid for `update_doc`; if comments were asked for, `[Comments]` and
+`notes` say they are not available with the user's access. Any other failure
+(not found, API disabled, a missing Docs permission on the grant) is returned
+as is, without a second read. A document that is readable is never turned
+into an error by these options.
+
+`read_presentation` with `commentsIncluded` asks for
+`commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED`. If Google refuses that with a
+permission error, the tool reads only the presentation's ID to check that the
+presentation itself is readable; if it is, it returns an error saying comments
+are not available with the user's access and that it can be read without
+`commentsIncluded`. If not, Google's own error is returned.
 
 `read_presentation` with `fields` returns Google's resource limited to those
 fields, unchanged, as Google's tool does.
@@ -522,9 +561,14 @@ Formatting other than headings, lists and links (bold, colors, fonts, sizes)
 is not in `text`. Checklist items render as plain list items: the Docs API
 does not say whether a box is ticked.
 
-A result over 1 MB (the gateway's limit for an MCP response) is refused with
-an error that says so and returns nothing; it is never cut short.
-`read_presentation` suggests `fields` to read less.
+A result over 1 MB (the gateway's limit for an MCP response; `sizedResult`
+in `documents-shared.ts` enforces it in this folder) is refused with an error
+that gives the size and returns nothing; it is never cut short. To read a
+large presentation in parts, pass `fields`, for example
+`["slides(objectId,pageElements(objectId,shape.text))"]`. `read_doc` has no
+way to read part of a document, since Google's tool has no such input and
+`documents.get` cannot select one tab; a document whose text form is over
+1 MB cannot be read through this tool.
 
 ### How the update tools work
 
@@ -540,26 +584,50 @@ does not.
 
 `writeControl.requiredRevisionId` is required (Google makes it optional). It
 is the `revisionId` from the read tool. If the file changed since, Google
-rejects the whole batch with 400 and the tool answers that the file is no
-longer at the revision you read, nothing was changed, and to read it again.
+rejects the whole batch and the tool answers that the file is no longer at
+the revision you read, nothing was changed, and to read it again. A rejection
+counts as a conflict when Google's structured `error.status` is
+`FAILED_PRECONDITION` or `ABORTED`, or a reason in `error.details` names a
+revision or an unmet condition; only when neither field says so does the
+message decide ("required revision", "revision ID" or "latest revision").
+Any other 400 returns Google's own message.
 `targetRevisionId` (Docs), which would apply the edit to a newer version, is
 refused. The answer includes the new revision in `writeControl`, also for
 Slides (Google's Slides tool lists only `replies`). A write is never retried;
 a failure after it was sent carries the uncertain-outcome warning.
 
 Each request must name exactly one request kind; at most 500 per call.
-Google validates everything else. These tools edit existing files only: there
-is no create, copy, delete, share or permission tool. Requests inside a batch
-can still delete content, tabs (`deleteTab`) or slides (`deleteObject`), as
-in Google's tools; `update_presentation` is marked destructive as Google
-marks it.
+Google validates everything else.
+
+The requests can delete or replace content in the one file the call names:
+text (`deleteContentRange`, `deleteText`, `replaceAllText`), tabs
+(`deleteTab`) and slides or page elements (`deleteObject`), as in Google's
+tools. Both update descriptions say so. The tools cannot create, delete, move,
+copy or share files, and there is no tool that can. No Docs request kind acts
+on another file. Three Slides kinds read another file, a Google Sheets
+spreadsheet: `createSheetsChart`, `replaceAllShapesWithSheetsChart` and
+`refreshSheetsChart`. `update_presentation` refuses a batch that contains
+any of them and sends nothing; they also need a Sheets or Drive permission
+that the Slides grant does not include.
+
+Both update tools are annotated `destructiveHint: true` and
+`idempotentHint: false`, because a batch can delete or overwrite content and
+repeating it repeats the edit. Google marks `update_doc` non-destructive; this
+is a deliberate difference so that approval and confirmation in Paperclip
+match what the tool can do. `allowlist.test.ts` checks all four tools'
+annotations.
 
 ### Differences from Google's Docs and Slides MCP tools
 
 - `content` is the text form and structure above, not the raw REST resource
-  (except `read_presentation` with `fields`). Google's inner format is not
-  published.
+  (except `read_presentation` with `fields`). Google does not publish the
+  inner format of `content`, and ours has not been compared with an answer
+  from Google's server (see "Not verified against Google's servers").
 - `requiredRevisionId` is required and `targetRevisionId` is refused.
+- `update_doc` is annotated destructive (Google: not destructive).
+- `read_doc` always sets `suggestionsViewMode` and falls back to
+  `PREVIEW_WITHOUT_SUGGESTIONS` for users who may not see suggestions.
+- `update_presentation` refuses the three Sheets chart request kinds.
 - At least one request is required.
 - Descriptions are our own wording. The `documentId` description does not
   name Drive's file ID field, since the Drive tool is not in this folder.

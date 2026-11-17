@@ -85,6 +85,16 @@ describe("tool allowlist", () => {
     expect(listGoogleWorkspaceRestTools(service).filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name)).toEqual(writes);
   });
 
+  it("marks the Docs and Slides update tools destructive and not idempotent, and the reads read-only", () => {
+    const annotations = Object.fromEntries((["docs", "slides"] as const).flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => [tool.name, tool.annotations])));
+    expect(annotations).toEqual({
+      read_doc: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      update_doc: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+      read_presentation: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      update_presentation: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    });
+  });
+
   it("adds no create, delete, share or permission tool for Docs or Slides", () => {
     const names = (["docs", "slides"] as const).flatMap((service) => listGoogleWorkspaceRestTools(service).map((tool) => tool.name));
     expect(names.filter((name) => /create|delete|share|permission|copy|trash/i.test(name))).toEqual([]);

@@ -1,4 +1,4 @@
-import { OBJECT_PLACEHOLDER, plural, renderComments } from "../documents-shared.js";
+import { markdownTable, OBJECT_PLACEHOLDER, plural, renderComments, tableGrid, type TableCellText } from "../documents-shared.js";
 import type {
   RestDocsLink,
   RestDocument,
@@ -76,9 +76,10 @@ export interface DocsContent {
   documentId: string;
   title: string;
   revisionId?: string;
+  suggestionsViewMode: SuggestionsView;
   text: string;
   tabs: DocsTabView[];
-  notes?: string[];
+  notes: string[];
   [key: string]: unknown;
 }
 
@@ -88,7 +89,6 @@ interface Tally {
   charts: number;
   equations: number;
   dropdowns: number;
-  suggestions: number;
 }
 
 interface TabContext {
@@ -236,13 +236,8 @@ function renderInline(element: RestParagraphElement, context: TabContext): strin
   const target = linkTarget(element.textRun?.textStyle?.link);
   if (target) body = `[${body}](${target})`;
   const marks = suggestible(element);
-  if (marks?.suggestedInsertionIds?.length) {
-    context.tally.suggestions += 1;
-    body = `{+${body}+}`;
-  } else if (marks?.suggestedDeletionIds?.length) {
-    context.tally.suggestions += 1;
-    body = `{-${body}-}`;
-  }
+  if (marks?.suggestedInsertionIds?.length) body = `{+${body}+}`;
+  else if (marks?.suggestedDeletionIds?.length) body = `{-${body}-}`;
   return body + trailing;
 }
 
@@ -282,7 +277,7 @@ function cellText(content: readonly RestStructuralElement[], context: TabContext
   for (const element of content) {
     if (element.paragraph) parts.push(paragraphLine(element.paragraph, context));
     else if (element.table) {
-      const rows = (element.table.tableRows ?? []).map((row) => (row.tableCells ?? []).map((cell) => cellText(cell.content ?? [], context)).join(" / "));
+      const rows = tableGrid(tableCells(element, context), element.table.columns ?? 0).map((cells) => cells.join(" / "));
       parts.push(`[table: ${rows.join("; ")}]`);
     } else if (element.tableOfContents) parts.push(cellText(element.tableOfContents.content ?? [], context));
   }
@@ -290,12 +285,16 @@ function cellText(content: readonly RestStructuralElement[], context: TabContext
   return escapeCell(parts.join("\n"));
 }
 
+function tableCells(element: RestStructuralElement, context: TabContext): TableCellText[][] {
+  return (element.table?.tableRows ?? []).map((row) => (row.tableCells ?? []).map((cell) => ({
+    text: cellText(cell.content ?? [], context),
+    rowSpan: cell.tableCellStyle?.rowSpan,
+    columnSpan: cell.tableCellStyle?.columnSpan,
+  })));
+}
+
 function tableLines(element: RestStructuralElement, context: TabContext): string[] {
-  const rows = (element.table?.tableRows ?? []).map((row) => (row.tableCells ?? []).map((cell) => cellText(cell.content ?? [], context)));
-  if (rows.length === 0) return ["[empty table]"];
-  const lines = rows.map((cells) => `| ${cells.join(" | ")} |`);
-  const separator = `| ${rows[0]!.map(() => "---").join(" | ")} |`;
-  return [lines[0]!, separator, ...lines.slice(1)];
+  return markdownTable(tableCells(element, context), element.table?.columns ?? 0);
 }
 
 export function renderContent(content: readonly RestStructuralElement[], context: TabContext): string[] {
@@ -448,16 +447,22 @@ export function tallyNotes(tally: Tally): string[] {
   if (tally.charts) notes.push(`${plural(tally.charts, "chart is", "charts are")} shown as [chart]; chart data is not included.`);
   if (tally.equations) notes.push(`${plural(tally.equations, "equation is", "equations are")} shown as [equation]; the Docs API does not return equation content.`);
   if (tally.dropdowns) notes.push(`${plural(tally.dropdowns, "dropdown is", "dropdowns are")} shown as [dropdown]; the Docs API does not return the selected value.`);
-  if (tally.suggestions) notes.push("Suggested edits that are not accepted yet are marked {+inserted+} and {-deleted-}.");
   return notes;
 }
 
+export type SuggestionsView = "SUGGESTIONS_INLINE" | "PREVIEW_WITHOUT_SUGGESTIONS";
+
 export interface RenderDocumentOptions {
   commentsRequested?: boolean;
+  suggestionsView?: SuggestionsView;
 }
 
+export const PREVIEW_NOTE = "Pending suggested edits are not shown: your access to this document does not include suggestions, so it was read in Google's PREVIEW_WITHOUT_SUGGESTIONS view. Google requires edits to be based on the SUGGESTIONS_INLINE view, so these indices may not be valid for update_doc.";
+export const INLINE_NOTE = "Read in Google's SUGGESTIONS_INLINE view: pending suggested edits are included, marked {+inserted+} and {-deleted-}, and the indices are valid for update_doc.";
+export const COMMENTS_UNAVAILABLE_NOTE = "Comments were asked for but are not available with your access to this document.";
+
 export function renderDocument(document: RestDocument, options: RenderDocumentOptions = {}): DocsContent {
-  const tally: Tally = { images: 0, drawings: 0, charts: 0, equations: 0, dropdowns: 0, suggestions: 0 };
+  const tally: Tally = { images: 0, drawings: 0, charts: 0, equations: 0, dropdowns: 0 };
   const flat = flattenTabs(document.tabs ?? []);
   const rendered = flat.map(({ tab, path }) => ({ path, ...renderTab(tab, tally) }));
   const sections = rendered.map(({ path, lines }) => {
@@ -465,7 +470,10 @@ export function renderDocument(document: RestDocument, options: RenderDocumentOp
     return rendered.length > 1 ? [`=== Tab: ${path.join(" / ")} ===`, ...body] : body;
   });
   const lines = sections.flatMap((section, index) => (index === 0 ? section : ["", ...section]));
-  if (options.commentsRequested) {
+  const view = options.suggestionsView ?? "SUGGESTIONS_INLINE";
+  const preview = view === "PREVIEW_WITHOUT_SUGGESTIONS";
+  if (options.commentsRequested && preview) lines.push("", "[Comments]", "Not available with your access to this document.");
+  else if (options.commentsRequested) {
     const comments = document.comments ?? [];
     const tabTitles = new Map<string, string>();
     for (const { tab, path } of flat) {
@@ -475,13 +483,14 @@ export function renderDocument(document: RestDocument, options: RenderDocumentOp
       ? renderComments(comments, (thread) => (flat.length > 1 && thread.anchorId ? tabTitles.get(thread.anchorId) : undefined))
       : ["No comments."]));
   }
-  const notes = tallyNotes(tally);
+  const notes = [preview ? PREVIEW_NOTE : INLINE_NOTE, ...(preview && options.commentsRequested ? [COMMENTS_UNAVAILABLE_NOTE] : []), ...tallyNotes(tally)];
   return {
     documentId: document.documentId ?? "",
     title: document.title ?? "",
     ...(document.revisionId ? { revisionId: document.revisionId } : {}),
+    suggestionsViewMode: view,
     text: trimBlankEdges(lines).join("\n"),
     tabs: rendered.map(({ view }) => view),
-    ...(notes.length ? { notes } : {}),
+    notes,
   };
 }

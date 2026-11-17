@@ -50,6 +50,15 @@ describe("read_presentation tool", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("says when comments are not available with the user's access, after checking the presentation itself can be read", async () => {
+    const { fetch, calls } = fakeGoogle(({ url }) => (url.searchParams.get("fields") === "presentationId"
+      ? json({ presentationId: "deck-1" })
+      : json({ error: { code: 403, status: "PERMISSION_DENIED", message: "The caller does not have permission" } }, 403)));
+    const result = await readPresentation.call({ presentationId: "deck-1", commentsIncluded: true }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect((result.content[0] as { text: string }).text).toBe("Comments are not available for this presentation with your access, so nothing was returned. The presentation can be read without them: call read_presentation again without commentsIncluded.");
+    expect(calls.map((call) => call.url.search)).toEqual(["?commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED", "?fields=presentationId"]);
+  });
+
   it("refuses a result over the size limit and suggests fields", async () => {
     const line = "y".repeat(10_000);
     const big = { presentationId: "big", slides: Array.from({ length: Math.ceil(MAX_RESULT_BYTES / 20_000) + 5 }, (_, index) => slide(`s${index}`, [shape(`e${index}`, [{ text: line }])])) };
