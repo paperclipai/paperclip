@@ -58,7 +58,8 @@ export async function readWorktreePointer(admin: string) {
       length += bytesRead;
     }
     if (length > WORKTREE_POINTER_LIMIT) throw new Error("unproven_managed_checkout");
-    return buffer.subarray(0, length).toString("utf8").trim();
+    const pointer = buffer.subarray(0, length).toString("utf8").trim();
+    return pointer && path.resolve(pointer);
   } finally { await handle.close(); }
 }
 
@@ -97,7 +98,7 @@ export async function isVerifiedNestedRepositoryBase(base: string, candidates: s
   const storage = await fs.lstat(path.join(real, ".git")).catch(() => null);
   if (!storage?.isDirectory() || storage.isSymbolicLink()) return false;
   const common = (await git(real, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).catch(() => "")).trim();
-  if (common !== path.join(real, ".git")) return false;
+  if (!common || path.resolve(common) !== path.join(real, ".git")) return false;
   return (await git(real, ["config", "--local", "--null", "--get-all", "remote.origin.url"]).catch(() => "")) === `${repoUrl}\0`;
 }
 
@@ -117,7 +118,7 @@ export async function readLinkedNestedCheckout(checkout: string, baseCandidates?
   if (path.basename(pointer) !== ".git" || path.join(await fs.realpath(path.dirname(pointer)).catch(() => ""), ".git") !== path.join(real, ".git")) {
     throw new Error("unproven_managed_checkout");
   }
-  if ((await git(real, ["rev-parse", "--show-toplevel"])).trim() !== real) throw new Error("unproven_managed_checkout");
+  if (path.resolve((await git(real, ["rev-parse", "--show-toplevel"])).trim()) !== real) throw new Error("unproven_managed_checkout");
   const base = path.dirname(common);
   const storage = await fs.lstat(common);
   if (!storage.isDirectory() || storage.isSymbolicLink()) throw new Error("unproven_managed_checkout");
