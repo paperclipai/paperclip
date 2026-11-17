@@ -861,6 +861,16 @@ export function App() {
           <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
+          {/* Deep links written outside the app (emails, docs) cannot know a
+              reader's company prefix. These are the remaining core surfaces
+              such links point at. Each forwards to the same page under the
+              reader's company, exactly as Tasks and Agents above already do;
+              every access check stays on the prefixed route it lands on. */}
+          <Route path="dashboard" element={<UnprefixedBoardRedirect />} />
+          <Route path="apps" element={<UnprefixedBoardRedirect />} />
+          <Route path="apps/connect" element={<UnprefixedBoardRedirect />} />
+          <Route path="chats" element={<UnprefixedBoardRedirect />} />
+          <Route path="inbox" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/services" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedExecutionWorkspaceRedirect />} />
