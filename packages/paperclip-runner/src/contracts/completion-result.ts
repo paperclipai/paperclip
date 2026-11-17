@@ -9,13 +9,20 @@ export const PRP_BLOCK_TOOL_DESCRIPTION =
 export const PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE = "A different semantic result was already committed";
 export const PRP_BLOCKER_ALREADY_REPORTED_MESSAGE =
   "This turn already reported a blocker, and a turn's first accepted report is final, so this report was not recorded. Do not report again in this turn. " +
-  "In your final response, list the steps that are complete and say whether the blocker still applies, then end the turn. " +
-  "Paperclip continues a system environment or tool blocker automatically in a fresh session that checks the saved work.";
+  "In your final response, list the steps that are complete and say whether the blocker still applies, then end the turn.";
+export const PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE = PRP_BLOCKER_ALREADY_REPORTED_MESSAGE +
+  " Paperclip continues this environment or tool blocker automatically in a fresh session that checks the saved work.";
+
+const PRP_ENVIRONMENT_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["environment_unavailable", "tool_unavailable"]);
 
 /** Feedback for a later report in a turn that already committed a different one. */
-export function prpSemanticResultConflictMessage(committed: { reportedWorkDisposition: string } | null | undefined): string {
-  return committed?.reportedWorkDisposition === "blocked"
-    ? PRP_BLOCKER_ALREADY_REPORTED_MESSAGE : PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE;
+export function prpSemanticResultConflictMessage(committed: {
+  reportedWorkDisposition: string;
+  blocker?: { owner?: { kind?: string } | null; reasonCode?: string } | null;
+} | null | undefined): string {
+  if (committed?.reportedWorkDisposition !== "blocked") return PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE;
+  return committed.blocker?.owner?.kind === "system" && PRP_ENVIRONMENT_BLOCKER_REASON_CODES.has(committed.blocker.reasonCode ?? "")
+    ? PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE : PRP_BLOCKER_ALREADY_REPORTED_MESSAGE;
 }
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,

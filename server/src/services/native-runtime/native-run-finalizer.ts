@@ -1701,7 +1701,8 @@ export async function finalizeNativeRun(input: {
         issueId: authoritativeIssue.id,
         runId: run.id,
       }),
-      (terminalState === "failed" || (assessment.reportedDisposition === "yielded" &&
+      (terminalState === "failed" || (terminalState === "succeeded" && isNativeEnvironmentBlocker(result)) ||
+      (assessment.reportedDisposition === "yielded" &&
       assessment.continuation?.kind === "response_wake" &&
       assessment.hasBlockingRemainingWork))
         ? issueTreeControlService(input.db).getActivePauseHoldGate(

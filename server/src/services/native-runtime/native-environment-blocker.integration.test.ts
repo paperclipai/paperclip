@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpStructuredRunResult, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -37,7 +37,7 @@ describe("native run that reports a system environment blocker", () => {
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  async function reportBlocked(blocker: Blocker, contextSnapshot: Record<string, unknown> = {}) {
+  async function reportBlocked(blocker: Blocker, contextSnapshot: Record<string, unknown> = {}, beforeFinalize?: (issueId: string) => Promise<unknown>) {
     const issueId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Ledger task", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: "env-owner" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: "env-owner", contextSnapshot: { issueId, ...contextSnapshot } });
@@ -72,6 +72,7 @@ describe("native run that reports a system environment blocker", () => {
     });
     const unexpected = async () => { throw new Error("Unexpected provider call"); };
     await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: { descriptor: unexpected, openSession: unexpected } });
+    await beforeFinalize?.(issueId);
     for (let replay = 0; replay < 2; replay++) await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
     const retries = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
@@ -102,6 +103,16 @@ describe("native run that reports a system environment blocker", () => {
     expect(issue).toMatchObject({ status: "blocked",
       unblockDescriptor: { owner: "board", action: NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION } });
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: false });
+  });
+
+  it("does not continue a paused task automatically", async () => {
+    const { decision, retries } = await reportBlocked(environmentBlocker, {}, async issueId => {
+      const holdId = randomUUID();
+      await db.insert(issueTreeHolds).values({ id: holdId, companyId, rootIssueId: issueId, mode: "pause", status: "active" });
+      await db.insert(issueTreeHoldMembers).values({ companyId, holdId, issueId, depth: 0, issueTitle: "Ledger task", issueStatus: "in_progress" });
+    });
+    expect(decision.reasonCode).not.toBe(NATIVE_ENVIRONMENT_BLOCKER_CODE);
+    expect(retries).toHaveLength(0);
   });
 
   it("keeps a blocker that only its owner can resolve", async () => {

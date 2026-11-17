@@ -2885,6 +2885,7 @@ describe("OpenCodeServerDriver", () => {
     expect(evidence).toBeDefined();
     expect(JSON.parse(await readFile(join(root, evidence!), "utf8"))).toMatchObject({ result: { isError: true,
       content: [{ text: expect.stringContaining(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE) }] } });
+    expect(JSON.stringify(JSON.parse(await readFile(join(root, evidence!), "utf8")))).not.toContain("continues this environment or tool blocker");
     await session.close({ reason: "test" });
   });
 
