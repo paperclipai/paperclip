@@ -71,6 +71,10 @@ also supports this directory. ACP requires its server command, such as
 `claude-agent-acp`, on the SSH login PATH. Selecting SSH does not change the
 agent's engine or permission settings.
 
+An in-place SSH workspace exists on the SSH computer. Neither engine creates
+that workspace path on the controller. ACP keeps its local relay and state files
+in the controller's state directory and leaves remote project settings in place.
+
 The SSH account supplies the installed harness; the agent's Paperclip AI account
 supplies authentication unless the remote authentication option is enabled.
 Host authentication remains supported by the CLI engine.

@@ -1970,6 +1970,8 @@ async function buildRuntime(input: {
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
   });
+  const sshWorkspaceInPlace = executionTarget?.kind === "remote" &&
+    executionTarget.transport === "ssh" && executionTarget.workspaceRealization?.mode === "in_place";
   const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
   const effectiveExecutionCwd =
     remoteExecutionIdentity && typeof remoteExecutionIdentity.remoteCwd === "string"
@@ -1998,8 +2000,9 @@ async function buildRuntime(input: {
   });
   // Step 1 — workspace.resolve: the workspace resolution/fallback chain closes
   // here on the awaited directory materialization.
-  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", () =>
-    ensureAbsoluteDirectory(cwd, { createIfMissing: true }),
+  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", async () => {
+      if (!sshWorkspaceInPlace) await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+    },
     stepMetrics,
   );
 
@@ -2035,6 +2038,7 @@ async function buildRuntime(input: {
   const timeoutSec = timeoutResolution.timeoutSec;
   const stateDir = path.resolve(asString(config.stateDir, "") || defaultStateDir(agent.companyId, agent.id));
   await fs.mkdir(stateDir, { recursive: true });
+  const hostSpawnCwd = sshWorkspaceInPlace ? stateDir : cwd;
 
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = { ...buildPaperclipEnv(agent, input.ctx.agentIdentity), PAPERCLIP_RUN_ID: runId };
@@ -2174,7 +2178,7 @@ async function buildRuntime(input: {
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
     claudeSkillsBundleDir = preparedSkills.bundleDir;
-    paperclipClaudeSettings = await writePaperclipClaudeSettings({
+    paperclipClaudeSettings = sshWorkspaceInPlace ? null : await writePaperclipClaudeSettings({
       cwd,
       stateDir,
       // A run's writable AGENT_HOME moves, but the existing permission root
@@ -2184,7 +2188,7 @@ async function buildRuntime(input: {
       agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
     });
-    skillCommandNotes.push(
+    if (paperclipClaudeSettings) skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
@@ -2433,7 +2437,7 @@ async function buildRuntime(input: {
       now: nowMs,
       idleMs: input.stagedIdleMs,
       sessionCwd,
-      spawnCwd: cwd,
+      spawnCwd: hostSpawnCwd,
       target: remoteTarget,
       env,
       managedHomeRunBinding: { env: { ...env }, onLog: input.ctx.onLog },
@@ -2742,11 +2746,7 @@ async function buildRuntime(input: {
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
     // reads `prepared.cwd`, so binding it once here keeps them consistent.
     cwd: sessionCwd,
-    // Only the remote process-session lane needs the host proxy's `spawn()`
-    // `chdir` redirected off the in-sandbox `sessionCwd` and onto the host
-    // `cwd` (which is where the workspace was staged FROM, so it is host-valid).
-    // Every other lane leaves it `undefined` → acpx falls back to `cwd`.
-    hostSpawnCwd: useRemoteProcessSession ? cwd : undefined,
+    hostSpawnCwd: useRemoteProcessSession ? hostSpawnCwd : undefined,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,

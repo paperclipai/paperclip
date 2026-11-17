@@ -4559,9 +4559,12 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     return { root, stateDir, localCwd, remoteCwd, executionTarget };
   }
 
-  it.each(["turn", "bridge"].flatMap(failure => [false, true].map(inPlace => ({ failure, inPlace }))))(
-    "stages the configured SSH account and restores credentials after $failure failure (inPlace=$inPlace)", async ({ failure, inPlace }) => {
-    const { root, stateDir, localCwd, remoteCwd } = await setupRemoteSandbox();
+  it.each(["custom", "claude"].flatMap(agent => ["turn", "bridge"].flatMap(failure => [false, true].map(inPlace => ({ agent, failure, inPlace })))))(
+    "stages the configured SSH account and restores credentials after $failure failure (agent=$agent, inPlace=$inPlace)", async ({ agent, failure, inPlace }) => {
+    const { root, stateDir, localCwd, remoteCwd: copyRemoteCwd } = await setupRemoteSandbox();
+    const remoteMount = path.join(root, "remote-filesystem");
+    await fs.writeFile(remoteMount, "This path is not a directory on the controller.");
+    const remoteCwd = inPlace ? path.join(remoteMount, "workspace") : copyRemoteCwd;
     const homes = await Promise.all(["first", "second", "third"].map(async name => {
       const home = path.join(root, `selected-account-${name}`);
       await fs.mkdir(path.join(home, "provider"), { recursive: true });
@@ -4591,7 +4594,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockResolvedValue({ env: { PAPERCLIP_API_URL: "http://127.0.0.1:3210", PAPERCLIP_API_KEY: "bridge-fixture" }, stop: stopControl });
     vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockResolvedValue({ agentCommand: "/fixture/agent-proxy.cjs", stop: stopProcess });
     try {
-      const configForTurn = (turn: number) => ({ agent: "custom", agentCommand: "fixture-acp-client", stateDir, cwd: localCwd,
+      const configForTurn = (turn: number) => ({ agent, agentCommand: "fixture-acp-client", stateDir, cwd: inPlace ? remoteCwd : localCwd,
         managedAiConnection: { identity: `credential-revision-${turn}`, sessionIdentity: "selected-agent-account" },
         env: { CODEX_HOME: path.join(homes[turn]!, "provider"), HOME: homes[turn]!, XDG_CONFIG_HOME: path.join(homes[turn]!, "config"),
           XDG_DATA_HOME: path.join(homes[turn]!, "data"), OPENAI_API_KEY: `fixture-token-${turn}`, USER_OPTION: "kept" }, mode: "persistent" });
@@ -4604,6 +4607,14 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(seam.mock.calls[0]![0].executionTarget).toMatchObject({ kind: "remote", transport: "ssh" });
       if (inPlace) {
         expect(result.sessionInputs[0]?.cwd).toBe(remoteCwd);
+        const hostSpawnCwd = result.runtimeOptions[0]!.spawnCwd as string;
+        expect(hostSpawnCwd).not.toBe(remoteCwd);
+        const hostProcess = await runChildProcess("ssh-acp-host-cwd", process.execPath, ["-e", "process.stdout.write(process.cwd())"], {
+          cwd: hostSpawnCwd, env: {}, timeoutSec: 10, graceSec: 1, onLog: async () => {},
+        });
+        expect(hostProcess.exitCode).toBe(0);
+        expect(hostProcess.stdout).toBe(await fs.realpath(hostSpawnCwd));
+        await expect(fs.readFile(remoteMount, "utf8")).resolves.toBe("This path is not a directory on the controller.");
         expect(vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0]).toMatchObject({
           syncWorkspace: false, workspaceRemoteDir: remoteCwd, privateRuntime: true, retainRuntime: true,
         });
