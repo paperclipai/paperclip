@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
-import type { GoogleRequest } from "../google-http.js";
+import type { GoogleHttp, GoogleRequest } from "../google-http.js";
 import { compact } from "../tool.js";
 import { parseAddressList } from "./address.js";
+import { mapLimited } from "./parallel.js";
 
 export interface GmailHeader { name?: string; value?: string }
 export interface GmailMessagePart {
@@ -44,7 +45,8 @@ export interface McpGmailMessage extends Record<string, unknown> {
 
 const REPORTED_SYSTEM_LABELS = new Set(["INBOX", "SPAM", "TRASH", "UNREAD", "STARRED", "IMPORTANT", "SENT", "DRAFT", "CHAT"]);
 
-export const gmailId = z.string().regex(/^[A-Za-z0-9_-]{1,256}$/, "Must be a Gmail ID");
+const MESSAGE_ID = /^[A-Za-z0-9_-]{1,256}$/;
+export const gmailId = z.string().regex(MESSAGE_ID, "Must be a Gmail ID");
 const ATTACHMENT_ID = /^[A-Za-z0-9_-]{1,4096}$/;
 
 export function header(part: GmailMessagePart | undefined, name: string): string | undefined {
@@ -112,12 +114,48 @@ export function externalBodyIds(payload: GmailMessagePart | undefined): string[]
 }
 
 export function bodyAttachmentRequest(messageId: string, attachmentId: string): GoogleRequest {
-  if (!ATTACHMENT_ID.test(attachmentId)) throw new GoogleToolError("incomplete", "Gmail returned a message body this tool cannot read.");
+  if (!ATTACHMENT_ID.test(attachmentId) || !MESSAGE_ID.test(messageId)) {
+    throw new GoogleToolError("incomplete", "Gmail returned a message body this tool cannot read.");
+  }
   return {
     method: "GET",
     host: "gmail.googleapis.com",
     path: `/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
   };
+}
+
+export type MessageBodies = ReadonlyMap<string, ReadonlyMap<string, string>>;
+
+export const MAX_SEPARATE_BODIES_PER_CALL = 20;
+
+export async function readMessageBodies(messages: readonly GmailRestMessage[], http: GoogleHttp): Promise<MessageBodies> {
+  const jobs = messages.flatMap((message) => externalBodyIds(message.payload).map((attachmentId) => ({ messageId: message.id ?? "", attachmentId })));
+  if (jobs.length > MAX_SEPARATE_BODIES_PER_CALL) {
+    throw new GoogleToolError(
+      "incomplete",
+      `Could not read the full body of every message: they need ${jobs.length} separate body reads and one call makes at most ${MAX_SEPARATE_BODIES_PER_CALL}. Ask for fewer results, or read the messages one at a time with get_message.`,
+    );
+  }
+  const answers = await mapLimited(jobs, async ({ messageId, attachmentId }) => {
+    let answer: GmailRestAttachment;
+    try {
+      answer = await http.send<GmailRestAttachment>(bodyAttachmentRequest(messageId, attachmentId));
+    } catch (error) {
+      if (error instanceof GoogleToolError) {
+        throw new GoogleToolError("incomplete", `Could not read the full body of this message. ${error.message}`, error.httpStatus);
+      }
+      throw error;
+    }
+    if (typeof answer.data !== "string") throw new GoogleToolError("incomplete", "Could not read the full body of this message.");
+    return answer.data;
+  });
+  const bodies = new Map<string, Map<string, string>>();
+  jobs.forEach(({ messageId, attachmentId }, index) => {
+    const forMessage = bodies.get(messageId) ?? new Map<string, string>();
+    forMessage.set(attachmentId, answers[index]!);
+    bodies.set(messageId, forMessage);
+  });
+  return bodies;
 }
 
 export interface MessageContent {

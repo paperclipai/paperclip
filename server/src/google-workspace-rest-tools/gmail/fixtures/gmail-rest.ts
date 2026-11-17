@@ -93,3 +93,61 @@ export const CREATED_DRAFT = {
   id: "r-1234567890123456789",
   message: { id: "18c0ffee00000099", threadId: "18c0ffee00000000", labelIds: ["DRAFT"] },
 };
+
+export const FULL_THREAD = {
+  id: "18c0ffee00000000",
+  historyId: "9002",
+  messages: [FULL_MESSAGE, { ...METADATA_MESSAGE, payload: { ...METADATA_MESSAGE.payload, body: { size: 18, data: b64("Thanks, looks good") } } }],
+};
+
+export const MESSAGE_LIST = {
+  messages: [
+    { id: "18c0ffee00000002", threadId: "18c0ffee00000000" },
+    { id: "18c0ffee00000001", threadId: "18c0ffee00000000" },
+  ],
+  nextPageToken: "messages-page-2",
+  resultSizeEstimate: 37,
+};
+
+export const FULL_DRAFT = {
+  id: "r-1234567890123456789",
+  message: {
+    id: "18c0ffee00000099",
+    threadId: "18c0ffee00000000",
+    labelIds: ["DRAFT"],
+    snippet: "Draft reply",
+    internalDate: "1763510400000",
+    payload: {
+      mimeType: "multipart/alternative",
+      headers: [
+        { name: "To", value: "Avery <avery@example.test>" },
+        { name: "Cc", value: "casey@example.test" },
+        { name: "Bcc", value: "\"Ops\" <ops@example.test>" },
+        { name: "Subject", value: "Re: Quarterly plan" },
+      ],
+      parts: [
+        { mimeType: "text/plain", body: { size: 11, data: b64("Draft reply") } },
+        { mimeType: "text/html", body: { size: 18, data: b64("<p>Draft reply</p>") } },
+      ],
+    },
+  },
+};
+
+export const DRAFT_LIST = {
+  drafts: [
+    { id: "r-1234567890123456789", message: { id: "18c0ffee00000099", threadId: "18c0ffee00000000" } },
+    { id: "r-2000000000000000001", message: { id: "18c0ffee000000a0", threadId: "18c0ffee000000a0" } },
+  ],
+  nextPageToken: "drafts-page-2",
+  resultSizeEstimate: 2,
+};
+
+export const LABEL_LIST = {
+  labels: [
+    { id: "INBOX", name: "INBOX", type: "system", messageListVisibility: "hide", labelListVisibility: "labelShow" },
+    { id: "Label_7", name: "Receipts", type: "user", color: { textColor: "#000000", backgroundColor: "#4a86e8" } },
+    { id: "CATEGORY_UPDATES", name: "CATEGORY_UPDATES", type: "system" },
+    { id: "Label_42", name: "Projects", type: "user" },
+    { id: "Label_3", name: "Projects/Plan", type: "user", color: { backgroundColor: "#ffffff" } },
+  ],
+};
