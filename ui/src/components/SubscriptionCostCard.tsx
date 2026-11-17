@@ -9,6 +9,7 @@ import { Card } from "./ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export function subscriptionMoney(cents: string, currency: string) {
   return currency === "USD" ? formatCents(Number(cents))
@@ -97,7 +98,7 @@ export function SubscriptionCostCard({ companyId, report, error, onChanged }: {
           {report?.accounts.length === 0 && <p className="text-sm text-muted-foreground">No subscriptions are visible to you yet. Connect an AI account or run an agent with a connected subscription.</p>}
           {report?.accounts.map(account => <div key={account.id} className="space-y-2 border-b border-border pb-4 last:border-0">
             <div className="flex flex-wrap items-start justify-between gap-3">
-              <div><div className="font-medium">{account.name}</div><div className="text-xs text-muted-foreground">{account.shared ? "Shared" : account.ownerName ?? (account.ownerUserId ? "Account owner" : "Personal accounts")} · {providerDisplayName(account.provider)} · {account.price.plan}</div></div>
+              <div className={ANALYTICS_MASK_CLASS}><div className="font-medium">{account.name}</div><div className="text-xs text-muted-foreground">{account.shared ? "Shared" : account.ownerName ?? (account.ownerUserId ? "Account owner" : "Personal accounts")} · {providerDisplayName(account.provider)} · {account.price.plan}</div></div>
               <div className="text-right"><div className="font-mono">{account.price.status !== "active" ? account.price.status === "ended" ? "Ended" : "Excluded" : account.price.monthlyCents == null ? "Price unknown" : `${subscriptionMoney(account.price.monthlyCents, account.price.currency)}/month`}</div><div className="text-xs text-muted-foreground">{account.price.source === "catalog" ? "Estimated · before tax" : account.price.source === "user" ? "User supplied" : ""}{account.price.cadence === "year" ? " · annual payment ÷ 12" : ""}</div></div>
             </div>
             <SubscriptionTokenUsage usage={account.usage} />

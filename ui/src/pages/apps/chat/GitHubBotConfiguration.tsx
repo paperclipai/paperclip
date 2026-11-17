@@ -51,6 +51,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export const githubSelectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
@@ -707,7 +709,7 @@ export function GitHubAccessEditor({
             className="flex flex-wrap items-center gap-x-4 gap-y-3 py-4"
           >
             <div className="min-w-0 flex-1 basis-32">
-              <p className="break-words text-sm font-medium">@{person.login}</p>
+              <p className={cn("break-words text-sm font-medium", ANALYTICS_MASK_CLASS)}>@{person.login}</p>
               <p className="text-xs text-muted-foreground">
                 {person.kind === "guest"
                   ? `Sponsored by ${memberName(person.sponsorUserId)}`
@@ -1053,7 +1055,7 @@ export function GitHubAccessEditor({
                 />
               </div>
               {candidate && (
-                <p role="status" className="text-sm">
+                <p role="status" className={cn("text-sm", ANALYTICS_MASK_CLASS)}>
                   {configuration.people.some(
                     (p) => p.githubUserId === candidate.githubUserId,
                   ) ||

@@ -2886,7 +2886,7 @@ function RequestConnectionAuthorizationCard({
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground" data-testid="connection-authorization-body">{lead}</p>
           <DecisionPanel>
-            <NeedsYouPanelRow icon={<Lock />} title={connectionName && connectionName !== providerName ? `${providerName} · ${connectionName}` : providerName} meta="Not connected" />
+            <NeedsYouPanelRow icon={<Lock />} title={connectionName && connectionName !== providerName ? <>{providerName} · <span className={ANALYTICS_MASK_CLASS}>{connectionName}</span></> : providerName} meta="Not connected" />
             <NeedsYouPanelNote>{consentSentence}</NeedsYouPanelNote>
           </DecisionPanel>
         </div>

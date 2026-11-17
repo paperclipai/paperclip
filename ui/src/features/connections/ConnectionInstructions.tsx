@@ -19,6 +19,8 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { InlineBanner } from "@/components/InlineBanner";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function ConnectionInstructionsEditor({ provider, template, value, onChange, disabled = false }: {
   provider: string;
@@ -92,7 +94,7 @@ export function AgentConnectionInstructions({ companyId, agentId }: { companyId:
       const app = getConnectableAppDefinition(String(config.sourceTemplateKey ?? ""));
       const context = connectionInstructionContext(app, config);
       return <div key={connection.id} className="space-y-3 rounded-lg border border-border p-4">
-        <Link className="text-sm font-medium underline underline-offset-2" to={`/apps/${connection.id}/permissions`}>{connection.name}</Link>
+        <Link className={cn("text-sm font-medium underline underline-offset-2", ANALYTICS_MASK_CLASS)} to={`/apps/${connection.id}/permissions`}>{connection.name}</Link>
         {!connection.agentInstructions!.enabled && <InlineBanner tone="warning">These instructions are turned off for this connection.</InlineBanner>}
         {context === null ? <InlineBanner tone="warning">Complete this connection’s configuration before agents receive its instructions.</InlineBanner>
           : <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{connection.agentInstructions!.text}</p>}

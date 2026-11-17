@@ -180,7 +180,7 @@ export function IdentitiesSection({
         <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
         <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
         <IdentityRow
-          title={github ? `@${github.login}` : "Dedicated GitHub account"}
+          title={github ? <span className={ANALYTICS_MASK_CLASS}>@{github.login}</span> : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
           detail={dedicatedAgent ? (
             <Link
@@ -439,7 +439,7 @@ function HumanAccessCards({
       />
       {connectedName && status !== null ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Identity name={connectedName} avatarUrl={connectedImage} />
+          <Identity name={connectedName} avatarUrl={connectedImage} className={ANALYTICS_MASK_CLASS} />
           {status === "active" ? null : <StatusText status={status} />}
         </div>
       ) : null}
@@ -455,7 +455,7 @@ function IdentityRow({
   actions,
 }: {
   id?: string;
-  title: string;
+  title: ReactNode;
   status: ConnectionGrant["status"] | null;
   detail: ReactNode;
   actions: ReactNode;
@@ -625,7 +625,7 @@ export function RevokeGrantDialog({
     <AlertDialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogTitle className={ANALYTICS_MASK_CLASS}>{title}</AlertDialogTitle>
           <AlertDialogDescription>{description ?? body}</AlertDialogDescription>
         </AlertDialogHeader>
         {children}

@@ -19,7 +19,7 @@ export function AiConnectionIdentity({
     <div className="flex min-w-0 items-start gap-3">
       <AppLogo name={provider.name} brandKey={connection.provider} logoUrl={provider.logo} size={24} />
       <div className="flex min-w-0 flex-col gap-1">
-        <span className="break-words text-sm font-medium">
+        <span className={cn("break-words text-sm font-medium", ANALYTICS_MASK_CLASS)}>
           {connection.name}
         </span>
         <span className={cn("text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>

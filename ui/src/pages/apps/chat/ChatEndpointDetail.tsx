@@ -72,7 +72,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { describeError } from "@/api/errors";
-import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
 
 const tabs = ["settings", "access", "reviews", "conversations", "activity"] as const;
@@ -778,7 +778,7 @@ function Access({
         <div className="space-y-2 border-y border-border py-3">
           <p className={cn("text-sm font-medium", ANALYTICS_MASK_CLASS)}>Confirm {confirmationFor ?? "this account"}</p>
           <p className="text-xs text-muted-foreground">Share only with this person. They must sign in and confirm their own account.</p>
-          <p className="break-all text-xs text-muted-foreground">
+          <p className={cn("break-all text-xs text-muted-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>
             {confirmationUrl}
           </p>
           <Button

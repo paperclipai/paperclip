@@ -4,6 +4,7 @@ import type { Project } from "@paperclipai/shared";
 import { projectsApi } from "@/api/projects";
 import { Button } from "./ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export function ProjectGitAuthorization({ project }: { project: Project }) {
   const client = useQueryClient();
@@ -40,12 +41,12 @@ export function ProjectGitAuthorization({ project }: { project: Project }) {
       {data && (
         <div className="flex flex-wrap gap-2">
           <Select value={selected} onValueChange={setSelected} disabled={save.isPending}>
-            <SelectTrigger aria-label="Your GitHub authorization">
+            <SelectTrigger aria-label="Your GitHub authorization" className={ANALYTICS_MASK_CLASS}>
               <SelectValue placeholder="Select your GitHub account" />
             </SelectTrigger>
             <SelectContent>
               {data.options.map((option) => (
-                <SelectItem key={option.grantId} value={option.grantId}>
+                <SelectItem key={option.grantId} value={option.grantId} className={ANALYTICS_MASK_CLASS}>
                   {option.login} · {option.connectionName}
                 </SelectItem>
               ))}

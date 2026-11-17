@@ -27,6 +27,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function aiProviderForAdapter(
   adapterType: string,
@@ -185,7 +187,7 @@ export function AiConnectionField({
               {pendingAdoption?.mode === "router" ? "Reset existing sessions that use an account outside this pool." : "Saving validates access to the selected connection. Existing sessions keep their account or require an explicit reset before adoption."}
             </DialogDescription>
           </DialogHeader>
-          {pendingAdoption?.mode !== "router" && <p className="text-sm">
+          {pendingAdoption?.mode !== "router" && <p className={cn("text-sm", ANALYTICS_MASK_CLASS)}>
             {pendingAdoption?.mode === "responsible_user"
               ? `Responsible user’s default. For you: ${pendingAccount ? aiConnectionDisplayLabel(pendingAccount) : "Not connected"}. Other users use their own default.`
               : pendingAccount && aiConnectionDisplayLabel(pendingAccount)}
