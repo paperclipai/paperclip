@@ -296,7 +296,6 @@ describe("per-caller abort semantics", () => {
     expect(abortedSignal.reason).toMatchObject({ name: "AbortError" });
     expect(isIntentionalAbortReason(abortedSignal.reason)).toBe(true);
     expect(isIntentionalAbortReason(timedSignal.reason)).toBe(true);
-    // A caller's own abort reason is not the app's cancellation.
     expect(isIntentionalAbortReason(controller.signal.reason)).toBe(false);
   });
 

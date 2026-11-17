@@ -216,13 +216,8 @@ export function buildBrowserSentryInitOptions(
         value.mechanism?.type === "onunhandledrejection"
         || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
       ) ?? false;
-      // The app cancelled this request on purpose and handled it. Only a
-      // `fetch` wrapper outside the app can leave that rejection unhandled.
       if (isUnhandledRejection && isIntentionalAbortReason(hint.originalException)) {
-        try {
-          // Consume its snapshot so it cannot pair with a later report.
-          takeRejectionEventSnapshot(classifyRejectionReason(hint.originalException));
-        } catch { /* diagnostic unavailable */ }
+        takeRejectionEventSnapshot(classifyRejectionReason(hint.originalException));
         return null;
       }
       // Global handlers do not pass through our React boundaries. Give their
