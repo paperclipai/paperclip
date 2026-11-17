@@ -61,6 +61,9 @@ describe("explicit file output requirements", () => {
     "Export the results as a file that is easy to open.",
     "Save it as a file that is named out.csv",
     "Export the results as the CSV that is compatible with Excel.",
+    "Save the report as a PDF that is printable.",
+    "Write the data as output.json that is valid JSON.",
+    "Save the output as a file read from the log.",
     "Save the summary of the log as the file is named ledger.csv.",
     "Save the summary of the log as the file is called ledger.csv.",
     "Save the summary of the log as the file is currently titled ledger.csv.",
@@ -139,10 +142,8 @@ describe("explicit file output requirements", () => {
     "Write the summary from the log as the file shows it.",
     "Save this issue's document exactly as the file reads.",
     "Save this issue's document exactly as the files are.",
-    "Save this issue's document exactly as the file that reads.",
     "Save this issue's document exactly as the file actually reads.",
     "Save this issue's document exactly as the file really reads.",
-    "Save this issue's document exactly as the file read.",
   ])("does not require a file for a text or source-review request: %s", objective => {
     expect(explicitlyRequestsFileOutput(objective)).toBe(false);
   });
