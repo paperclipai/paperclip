@@ -56,7 +56,6 @@ import type { FolderListItem } from "@paperclipai/shared";
 import { Tabs } from "@/components/ui/tabs";
 import {
   AllUnfiledBanner,
-  BulkBar,
   DeleteFolderDialog,
   FolderChip,
   FolderFormDialog,
@@ -66,7 +65,6 @@ import {
   MoveToMenu,
   folderSearchValue,
   normalizeFolderSelection,
-  selectedFolderFromList,
   type FolderSelection,
 } from "../components/folders/FolderControls";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
@@ -326,8 +324,6 @@ export function Routines() {
   const [folderDialogTarget, setFolderDialogTarget] = useState<FolderListItem | null>(null);
   const [deleteFolderTarget, setDeleteFolderTarget] = useState<FolderListItem | null>(null);
   const [mobileFoldersOpen, setMobileFoldersOpen] = useState(false);
-  const [selectMode, setSelectMode] = useState(false);
-  const [selectedRoutineIds, setSelectedRoutineIds] = useState<string[]>([]);
   const [moveAfterCreateIds, setMoveAfterCreateIds] = useState<string[]>([]);
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
   const [statusMutationRoutineId, setStatusMutationRoutineId] = useState<string | null>(null);
@@ -380,11 +376,13 @@ export function Routines() {
   });
   const { data: routines, isLoading } = routinesQuery;
   const routinesView = useQueryView(routinesQuery);
-  const { data: routineFolders, isLoading: foldersLoading } = useQuery({
+  const foldersQuery = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId!, "routine"),
     queryFn: () => foldersApi.list(selectedCompanyId!, "routine"),
     enabled: !!selectedCompanyId,
   });
+  const { data: routineFolders, isLoading: foldersLoading } = foldersQuery;
+  const foldersView = useQueryView(foldersQuery);
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
@@ -712,7 +710,6 @@ export function Routines() {
   );
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
-  const activeFolder = selectedFolderFromList(routineFolders?.folders ?? [], folderSelection);
   const hasRoutineFolders = (routineFolders?.folders.length ?? 0) > 0;
   const showFolderRail = routineViewState.groupBy === "folder" && hasRoutineFolders;
 
@@ -746,27 +743,6 @@ export function Routines() {
       folderId: folderSelection === "all" || folderSelection === "unfiled" ? null : folderSelection,
     }));
     setComposerOpen(true);
-  }
-
-  async function moveSelectedRoutines(folderId: string | null) {
-    const ids = selectedRoutineIds;
-    if (ids.length === 0) return;
-    try {
-      await Promise.all(ids.map((itemId) => foldersApi.moveItem(selectedCompanyId!, { kind: "routine", itemId, folderId })));
-      setSelectedRoutineIds([]);
-      setSelectMode(false);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
-      ]);
-      pushToast({ title: "Routines moved", body: `${ids.length} routine${ids.length === 1 ? "" : "s"} filed.`, tone: "success" });
-    } catch (moveError) {
-      pushToast({
-        title: "Failed to move routines",
-        body: describeError(moveError, { action: "move the selected routines" }).body,
-        tone: "error",
-      });
-    }
   }
 
   function handleRunNow(routine: RoutineListItem) {
@@ -805,7 +781,9 @@ export function Routines() {
 
   // Keep loaded routines on screen through a failed refetch; only a real
   // failure, or an outage before the first load, replaces the page.
-  if (isLoading || routinesView.kind === "reconnecting") {
+  const waitingForFolders = activeTab === "routines" && routineViewState.groupBy === "folder"
+    && (foldersLoading || foldersView.kind === "reconnecting");
+  if (isLoading || routinesView.kind === "reconnecting" || waitingForFolders) {
     return <PageSkeleton variant="issues-list" />;
   }
 
@@ -862,7 +840,6 @@ export function Routines() {
         onNewFolder={routineViewState.groupBy === "folder" && !hasRoutineFolders ? () => openCreateFolder() : undefined}
         onCreateRoutine={openCreateRoutine}
         tasksHref="/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc"
-        selectMode={selectMode} onToggleSelect={showFolderRail ? () => setSelectMode(current => !current) : undefined}
       />
 
       {!streamlinedUiEnabled ? (
@@ -879,18 +856,16 @@ export function Routines() {
         </Tabs>
       ) : null}
 
-      <div className="flex flex-col gap-4">
-        {routineViewState.groupBy === "folder" ? (
-          <div className="md:hidden">
-            <FolderChip
-              result={railFolderResult}
-              selection={folderSelection}
-              allLabel="All routines"
-              onClick={() => setMobileFoldersOpen(true)}
-            />
-          </div>
-        ) : null}
-      </div>
+      {routineViewState.groupBy === "folder" ? (
+        <div className="md:hidden">
+          <FolderChip
+            result={railFolderResult}
+            selection={folderSelection}
+            allLabel="All routines"
+            onClick={() => setMobileFoldersOpen(true)}
+          />
+        </div>
+      ) : null}
 
       <Dialog
         open={composerOpen}
@@ -1176,6 +1151,11 @@ export function Routines() {
         />
       ) : null}
 
+      {routineViewState.groupBy === "folder" && foldersView.kind === "error" ? (
+        <QueryErrorState error={foldersView.error} action="load routine folders"
+          onRetry={foldersView.retry} retrying={foldersView.isFetching} />
+      ) : null}
+
       <div className={cn(showFolderRail && "flex gap-4")}>
           {showFolderRail ? (
             <FolderRail
@@ -1195,35 +1175,11 @@ export function Routines() {
             />
           ) : null}
           <div className="min-w-0 flex-1">
-          {routineViewState.groupBy === "folder" && hasRoutineFolders ? (
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              {folderSelection === "all" ? <FolderIconHeader label="All routines" count={sortedRoutines.length} /> : (
-                <div className="flex min-w-0 items-center gap-2 text-sm">
-                  <FolderSwatch color={activeFolder?.color} />
-                  <span className="truncate font-medium">{folderSelection === "unfiled" ? "Unfiled" : activeFolder?.name ?? "Folder"}</span>
-                  <span className="text-muted-foreground">{sortedRoutines.length} routine{sortedRoutines.length === 1 ? "" : "s"}</span>
-                </div>
-              )}
-            </div>
-          ) : null}
           {routineViewState.groupBy === "folder" && !hasRoutineFolders && !foldersLoading && visibleRoutines.length > 0 ? (
             <AllUnfiledBanner
               storageKey={`paperclip:routines-folder-nudge:${selectedCompanyId ?? "none"}`}
               itemLabelPlural="routines"
               onCreateFolder={() => openCreateFolder()}
-            />
-          ) : null}
-          {selectMode ? (
-            <BulkBar
-              selectedCount={selectedRoutineIds.length}
-              folders={routineFolders?.folders ?? []}
-              onMove={(folderId) => void moveSelectedRoutines(folderId)}
-              onCreateAndMove={() => openCreateFolder(selectedRoutineIds)}
-              onClear={() => setSelectedRoutineIds([])}
-              onDone={() => {
-                setSelectMode(false);
-                setSelectedRoutineIds([]);
-              }}
             />
           ) : null}
           {visibleRoutines.length === 0 ? (
@@ -1286,15 +1242,6 @@ export function Routines() {
                           onRunNow={handleRunNow}
                           onToggleEnabled={handleToggleEnabled}
                           onToggleArchived={handleToggleArchived}
-                          selectMode={selectMode}
-                          selected={selectedRoutineIds.includes(routine.id)}
-                          onSelectChange={(selectedRoutine, selected) => {
-                            setSelectedRoutineIds((current) =>
-                              selected
-                                ? Array.from(new Set([...current, selectedRoutine.id]))
-                                : current.filter((id) => id !== selectedRoutine.id)
-                            );
-                          }}
                           extraMenuItems={
                             <MoveToMenu
                               folders={routineFolders?.folders ?? []}
@@ -1380,16 +1327,6 @@ export function Routines() {
           runRoutine.mutate({ id: runDialogRoutine.id, data });
         }}
       />
-    </div>
-  );
-}
-
-function FolderIconHeader({ label, count }: { label: string; count: number }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 text-sm">
-      <Repeat className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="truncate font-medium">{label}</span>
-      <span className="text-muted-foreground">{count} routine{count === 1 ? "" : "s"}</span>
     </div>
   );
 }

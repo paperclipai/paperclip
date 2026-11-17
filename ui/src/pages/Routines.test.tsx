@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
 
 let currentSearch = "";
@@ -611,6 +612,52 @@ describe("Routines page", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("reveals routines with their folder navigation after a delayed folder read", async () => {
+    routinesListMock.mockResolvedValue([createRoutine({ title: "Delayed folder routine", folderId: "folder-1" })]);
+    let resolveFolders!: (result: FolderListResult) => void;
+    foldersListMock.mockReturnValue(new Promise((resolve) => { resolveFolders = resolve; }));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>);
+      await flush();
+    });
+    await act(async () => { await flush(); });
+    expect(container.textContent).not.toContain("Delayed folder routine");
+
+    await act(async () => {
+      resolveFolders({
+        kind: "routine", allCount: 1, unfiledCount: 0,
+        folders: [{
+          id: "folder-1", companyId: "company-1", kind: "routine", parentId: null,
+          name: "Reporting", slug: "reporting", systemKey: null, path: "reporting",
+          depth: 1, color: "indigo", position: 0, itemCount: 1,
+          createdAt: new Date(), updatedAt: new Date(),
+        }],
+      });
+      await flush();
+    });
+    await act(async () => { await flush(); });
+    expect(container.textContent).toContain("Delayed folder routine");
+    expect(container.querySelector('nav[aria-label="routines folders"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Unknown folder");
+
+    const folderKey = queryKeys.folders.list("company-1", "routine");
+    const cachedFolders = queryClient.getQueryData<FolderListResult>(folderKey)!;
+    const routineLink = container.querySelector('a[href="/routines/routine-1"]');
+    let resolveRefresh!: (result: FolderListResult) => void;
+    foldersListMock.mockReturnValueOnce(new Promise((resolve) => { resolveRefresh = resolve; }));
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: folderKey });
+      await flush();
+    });
+    expect(container.textContent).toContain("Delayed folder routine");
+    expect(container.querySelector('a[href="/routines/routine-1"]')).toBe(routineLink);
+    await act(async () => { resolveRefresh(cachedFolders); await flush(); });
+    await act(async () => { root.unmount(); });
   });
 
   it("defaults the routines list to folder mode with inline folder sections", async () => {
