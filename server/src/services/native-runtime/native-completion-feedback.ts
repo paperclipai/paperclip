@@ -355,6 +355,16 @@ export async function nativeCompletionFeedback(
   }
   const unfinishedWork = !result.completionClaim.objectiveSatisfied || result.completionClaim.remainingWork.some(work => work.blocksCompletion);
   if (unfinishedWork && result.reportedWorkDisposition === "blocked" &&
+      result.blocker?.owner.kind === "agent" && result.blocker.scope === "current_track" &&
+      issue.executionRunId === run.id && run.status === "running") {
+    const [worker] = await db.select({ name: agents.name }).from(agents).where(and(
+      eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
+    const owner = result.blocker.owner.name?.trim().toLowerCase();
+    if (worker && owner === worker.name.trim().toLowerCase()) {
+      throw new Error("Your own remaining work is not an external blocker. Continue the authorized work from its saved evidence, complete the remaining source traces and deliverables, and request any required independent review through the existing workflow. Do not park the task or ask the board to perform your remaining work. If work truly cannot continue, report the concrete external dependency, its actual owner, and fresh evidence.");
+    }
+  }
+  if (unfinishedWork && result.reportedWorkDisposition === "blocked" &&
       result.blocker?.owner.kind === "system" && result.blocker.scope === "current_track" &&
       result.blocker.reasonCode === "budget_exhausted" &&
       issue.executionRunId === run.id && run.status === "running" &&

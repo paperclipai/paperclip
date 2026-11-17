@@ -50,6 +50,19 @@ describe("native final-response feedback", () => {
     } } }).where(eq(heartbeatRuns.id, value.runId));
     await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
   });
+  it("rejects parking an active worker on its own unfinished research", async () => {
+    const value = await fixture();
+    const report: PrpStructuredRunResult = { ...done, reportedWorkDisposition: "blocked",
+      blocker: { owner: { kind: "agent", name: "Worker" }, scope: "current_track", reasonCode: "research_incomplete",
+        unblockAction: "Finish the remaining source trace and request independent review" },
+      completionClaim: { ...done.completionClaim, objectiveSatisfied: false,
+        remainingWork: [{ description: "Complete the remaining source trace", blocksCompletion: true }] },
+    };
+    await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow("Your own remaining work is not an external blocker");
+    await expect(nativeCompletionFeedback(db, value.runId, { ...report,
+      blocker: { ...report.blocker!, owner: { kind: "agent", name: "Independent reviewer" } },
+    })).resolves.toContain("Blocker report accepted");
+  });
   async function publishedFileReport(value: Awaited<ReturnType<typeof fixture>>, objective = "Save a document on this task. Export the results as a CSV."): Promise<PrpStructuredRunResult> {
     await db.update(issues).set({ description: objective }).where(eq(issues.id, value.issueId));
     const bytes = Buffer.from("category,total\nverified,3\n");
