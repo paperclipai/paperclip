@@ -136,9 +136,9 @@ export function resolveNativeRuntimeMode(input: {
     if (!input.enabled) throw ineligible("paperclip_runner_rollout_disabled", "Paperclip Runner is experimental and disabled on this instance.");
     if (input.museEnabled !== true) throw ineligible("paperclip_runner_muse_disabled", "Enable Muse personal-agent connections in experimental settings before assigning new work.");
   } else if (runnerProfile.provider === "openai_dot") {
-    if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings before assigning new work.");
+    if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot in experimental settings before assigning new work.");
   } else if (runnerProfile.provider === "grok_bot" && (input.grokEnabled !== true || !input.enabled)) {
-    throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot, Paperclip Runner, and Assistant connections (MCP) before assigning new work.");
+    throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot and Paperclip Runner before assigning new work.");
   } else if (runnerProfile.provider !== "codex" && runnerProfile.provider !== "opencode"
     && !(runnerProfile.provider === "acpx"
       && (["claude", "copilot", "pi", "antigravity"].includes(runnerProfile.acpxAgent ?? "")))
