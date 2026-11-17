@@ -61,6 +61,84 @@ describe("get_message result", () => {
     ]);
     expect(parseAddressList(undefined)).toEqual([]);
   });
+
+  it("drops RFC 5322 comments before taking the address", () => {
+    expect(parseAddressList("Avery <avery@example.test> (work)")).toEqual(["avery@example.test"]);
+    expect(parseAddressList("blake@example.test (Blake, (home)), \"C (x)\" <c@example.test>")).toEqual(["blake@example.test", "c@example.test"]);
+  });
+
+  it("reads the first plain and HTML bodies from nested multiparts", () => {
+    const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
+    const nested = {
+      id: "n1",
+      payload: {
+        mimeType: "multipart/mixed",
+        parts: [{
+          mimeType: "multipart/related",
+          parts: [{
+            mimeType: "multipart/alternative",
+            parts: [
+              { mimeType: "text/plain", body: { data: b64("plain ü") } },
+              { mimeType: "text/html", body: { data: b64("<p>html</p>") } },
+            ],
+          }, { mimeType: "image/png", filename: "logo.png", headers: [{ name: "Content-Disposition", value: "inline" }], body: { attachmentId: "img1" } }],
+        }, { mimeType: "text/plain", filename: "notes.txt", body: { attachmentId: "att2" } }],
+      },
+    };
+    expect(getMessageResult(nested, { messageId: "n1" }).structuredContent).toMatchObject({
+      plaintextBody: "plain ü",
+      htmlBody: "<p>html</p>",
+      attachmentIds: ["img1", "att2"],
+    });
+  });
+});
+
+describe("get_message with a body Gmail stores separately", () => {
+  const large = "A long body line.\n".repeat(5000);
+  const message = {
+    id: "big1",
+    snippet: "A long body line.",
+    payload: {
+      mimeType: "multipart/alternative",
+      headers: [{ name: "Subject", value: "Large" }],
+      parts: [
+        { mimeType: "text/plain", body: { size: large.length, attachmentId: "ANGjdJ_body_plain" } },
+        { mimeType: "text/html", body: { size: 12, data: Buffer.from("<p>short</p>").toString("base64url") } },
+      ],
+    },
+  };
+
+  it("fetches the body bytes before returning FULL_CONTENT", async () => {
+    const { fetch, calls } = fakeGoogle(({ url }) => (url.pathname.includes("/attachments/")
+      ? json({ size: large.length, data: Buffer.from(large).toString("base64url") })
+      : json(message)));
+    const result = await getMessage.call({ messageId: "big1" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(result.isError).toBeUndefined();
+    expect((result.structuredContent as { plaintextBody: string }).plaintextBody).toBe(large);
+    expect((result.structuredContent as { htmlBody: string }).htmlBody).toBe("<p>short</p>");
+    expect(calls.map((call) => call.url.pathname)).toEqual([
+      "/gmail/v1/users/me/messages/big1",
+      "/gmail/v1/users/me/messages/big1/attachments/ANGjdJ_body_plain",
+    ]);
+  });
+
+  it("does not fetch body bytes for MINIMAL", async () => {
+    const { fetch, calls } = fakeGoogle(() => json(message));
+    await getMessage.call({ messageId: "big1", messageFormat: "MINIMAL" }, createGoogleHttp({ accessToken: "t", fetch }));
+    expect(calls).toHaveLength(1);
+  });
+
+  it("returns an explicit error, never a body-less success, when the body cannot be read", async () => {
+    const { fetch } = fakeGoogle(({ url }) => (url.pathname.includes("/attachments/") ? json({ error: { code: 500 } }, 500) : json(message)));
+    const result = await getMessage.call({ messageId: "big1" }, createGoogleHttp({ accessToken: "t", fetch, retryDelayMs: 0 }));
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toBeUndefined();
+    expect((result.content[0] as { text: string }).text).toMatch(/^Could not read the full body of this message/);
+  });
+
+  it("refuses to map a separately stored body that was not fetched", () => {
+    expect(() => getMessageResult(message, { messageId: "big1" })).toThrow(/full body/);
+  });
 });
 
 describe("get_message tool", () => {

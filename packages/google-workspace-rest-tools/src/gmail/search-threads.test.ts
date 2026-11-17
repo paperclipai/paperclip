@@ -8,10 +8,17 @@ import { effectiveQuery, listThreadsRequest, searchThreads, searchThreadsResult 
 describe("search_threads request", () => {
   it("excludes drafts unless the query asks for them", () => {
     expect(effectiveQuery({})).toBe("-in:draft");
-    expect(effectiveQuery({ query: "from:avery@example.test" })).toBe("from:avery@example.test -in:draft");
+    expect(effectiveQuery({ query: "from:avery@example.test" })).toBe("(from:avery@example.test) -in:draft");
+    expect(effectiveQuery({ query: "from:a@example.test OR from:b@example.test" })).toBe("(from:a@example.test OR from:b@example.test) -in:draft");
     expect(effectiveQuery({ query: "in:draft subject:plan" })).toBe("in:draft subject:plan");
     expect(effectiveQuery({ query: "-in:draft is:unread" })).toBe("-in:draft is:unread");
     expect(effectiveQuery({ query: "in:anywhere plan" })).toBe("in:anywhere plan");
+  });
+
+  it("ignores operator-looking text inside quotes", () => {
+    expect(effectiveQuery({ query: "subject:\"go in:draft mode\"" })).toBe("(subject:\"go in:draft mode\") -in:draft");
+    expect(effectiveQuery({ query: "\"in:spam\" report", includeTrash: true })).toBe("(\"in:spam\" report) -in:draft -in:spam");
+    expect(effectiveQuery({ query: "\"quoted\" in:draft" })).toBe("\"quoted\" in:draft");
   });
 
   it("adds trash but not spam for includeTrash", () => {

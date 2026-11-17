@@ -13,7 +13,6 @@ export function json(body: unknown, status = 200, headers: Record<string, string
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 }
 
-/** A fetch that records each call and answers from `route`. No network. */
 export function fakeGoogle(route: Route): { fetch: GoogleFetch; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   const fetch: GoogleFetch = async (url, init) => {

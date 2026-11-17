@@ -1,9 +1,3 @@
-/**
- * JSON Schema fragments for Google's Gmail MCP tools. Field names, types and
- * enums follow https://developers.google.com/workspace/gmail/api/reference/mcp
- * (recorded 2026-11-17). Descriptions are our own wording.
- */
-
 const stringArray = (description: string) => ({ type: "array", items: { type: "string" }, description });
 
 export const attachmentMetadataSchema = {

@@ -1,8 +1,3 @@
-/**
- * Thin MCP wiring: one MCP server per Google service, answering `tools/list`
- * and `tools/call`. The access token comes from the transport's auth info,
- * the same bearer token a client sends to Google's MCP server.
- */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { GoogleWorkspaceAuthError } from "./errors.js";

@@ -9,7 +9,6 @@ import { messageSchema } from "./schemas.js";
 const THREAD_VIEWS = ["THREAD_VIEW_UNSPECIFIED", "THREAD_VIEW_MINIMAL", "THREAD_VIEW_METADATA_ONLY"] as const;
 export const DEFAULT_PAGE_SIZE = 20;
 export const MAX_PAGE_SIZE = 50;
-/** Thread reads in flight at once for one search. */
 const THREAD_FETCH_CONCURRENCY = 10;
 
 const args = z.object({
@@ -28,17 +27,19 @@ interface GmailThreadList {
 }
 interface GmailRestThread { id?: string; messages?: GmailRestMessage[] }
 
-/**
- * Gmail search operators for what Google's tool does by default: drafts are
- * excluded unless the query asks for them, and `includeTrash` adds trash but
- * not spam (REST's `includeSpamTrash` would add both).
- */
+export function unquotedOperators(query: string): string {
+  return query.replace(/"[^"]*"?/g, " ");
+}
+
 export function effectiveQuery(input: SearchThreadsArgs): string {
   const query = (input.query ?? "").trim();
-  const terms = [query];
-  if (!/(^|[\s(])-?(in|is):(drafts?|anywhere)\b/i.test(query)) terms.push("-in:draft");
-  if (input.includeTrash && !/(^|[\s(])-?(in|is):(spam|anywhere)\b/i.test(query)) terms.push("-in:spam");
-  return terms.filter(Boolean).join(" ");
+  const operators = unquotedOperators(query);
+  const added: string[] = [];
+  if (!/(^|[\s({])-?(in|is):(drafts?|anywhere)\b/i.test(operators)) added.push("-in:draft");
+  if (input.includeTrash && !/(^|[\s({])-?(in|is):(spam|anywhere)\b/i.test(operators)) added.push("-in:spam");
+  if (!query) return added.join(" ");
+  if (added.length === 0) return query;
+  return [`(${query})`, ...added].join(" ");
 }
 
 export function threadDetail(view: SearchThreadsArgs["view"]): MessageDetail {
@@ -72,7 +73,6 @@ export function getThreadRequest(threadId: string): GoogleRequest {
   };
 }
 
-/** Threads in list order. A thread deleted between the list and its read is `null` and dropped. */
 export function searchThreadsResult(list: GmailThreadList, threads: Array<GmailRestThread | null>, input: SearchThreadsArgs): CallToolResult {
   const detail = threadDetail(input.view);
   const mapped = threads.filter((thread): thread is GmailRestThread => thread !== null).map((thread) => ({

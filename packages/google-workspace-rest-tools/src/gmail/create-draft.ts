@@ -1,7 +1,3 @@
-/**
- * `create_draft` saves a draft and nothing else. It only ever calls
- * `users.drafts.create`; this package has no send tool and must not get one.
- */
 import { randomBytes } from "node:crypto";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -11,7 +7,6 @@ import { compact, defineTool, structuredResult } from "../tool.js";
 import { gmailId, header, type GmailRestMessage } from "./message.js";
 import { buildDraftMime } from "./mime.js";
 
-/** A plain address only: no display name, no list separators, no line breaks. */
 const plainEmail = z.string().regex(/^[^\s<>@,;"()\\]+@[^\s<>@,;"()\\]+\.[^\s<>@,;"()\\]+$/, "Must be a plain email address such as user@example.com");
 const addressList = z.array(plainEmail).max(100).optional();
 
@@ -53,7 +48,6 @@ export function replyLookupRequest(messageId: string): GoogleRequest {
   };
 }
 
-/** Threading headers for a reply, keeping only well-formed message-id tokens. */
 export function replyContext(original: GmailRestMessage): ReplyContext {
   const messageId = header(original.payload, "Message-ID")?.trim();
   const inReplyTo = messageId && MESSAGE_ID_TOKEN.test(messageId) ? messageId : undefined;
@@ -75,7 +69,6 @@ export function draftSubject(input: CreateDraftArgs, reply?: ReplyContext): stri
 }
 
 export function assertDraftSupported(input: CreateDraftArgs): void {
-  // Google's create_draft does not support attachments yet; match it.
   if (input.attachments?.length) throw new GoogleToolError("unsupported", "Drafts with attachments are not supported yet.");
 }
 

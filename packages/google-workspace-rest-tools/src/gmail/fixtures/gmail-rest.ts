@@ -1,9 +1,3 @@
-/**
- * Synthetic Gmail REST responses in the shape `users.messages.get`,
- * `users.threads.list`, `users.threads.get` and `users.drafts.create` return.
- * No real mail: every address uses example.test and every ID is made up.
- */
-
 const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64url");
 
 export const FULL_MESSAGE = {
@@ -11,7 +5,7 @@ export const FULL_MESSAGE = {
   threadId: "18c0ffee00000000",
   labelIds: ["INBOX", "UNREAD", "CATEGORY_PERSONAL", "Label_42"],
   snippet: "Here is the quarterly plan we discussed",
-  internalDate: "1763337600000", // 2025-11-17T00:00:00Z
+  internalDate: "1763337600000",
   sizeEstimate: 4096,
   historyId: "9001",
   payload: {
@@ -55,7 +49,7 @@ export const METADATA_MESSAGE = {
   threadId: "18c0ffee00000000",
   labelIds: ["SENT", "CATEGORY_UPDATES"],
   snippet: "Thanks, looks good",
-  internalDate: "1763424000000", // 2025-11-18
+  internalDate: "1763424000000",
   payload: {
     mimeType: "text/plain",
     headers: [

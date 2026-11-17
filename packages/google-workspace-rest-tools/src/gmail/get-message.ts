@@ -1,8 +1,18 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import type { GoogleRequest } from "../google-http.js";
+import { GoogleToolError } from "../errors.js";
+import type { GoogleHttp, GoogleRequest } from "../google-http.js";
 import { defineTool, structuredResult } from "../tool.js";
-import { gmailId, SUMMARY_HEADERS, toMcpMessage, type GmailRestMessage, type MessageDetail } from "./message.js";
+import {
+  bodyAttachmentRequest,
+  externalBodyIds,
+  gmailId,
+  SUMMARY_HEADERS,
+  toMcpMessage,
+  type GmailRestAttachment,
+  type GmailRestMessage,
+  type MessageDetail,
+} from "./message.js";
 import { messageSchema } from "./schemas.js";
 
 const MESSAGE_FORMATS = ["MESSAGE_FORMAT_UNSPECIFIED", "MINIMAL", "FULL_CONTENT", "METADATA_ONLY"] as const;
@@ -29,8 +39,31 @@ export function getMessageRequest(input: GetMessageArgs): GoogleRequest {
   };
 }
 
-export function getMessageResult(message: GmailRestMessage, input: GetMessageArgs): CallToolResult {
-  return structuredResult(toMcpMessage(message, messageDetail(input.messageFormat)));
+export function getMessageResult(
+  message: GmailRestMessage,
+  input: GetMessageArgs,
+  externalBodies?: ReadonlyMap<string, string>,
+): CallToolResult {
+  return structuredResult(toMcpMessage(message, messageDetail(input.messageFormat), externalBodies));
+}
+
+async function readExternalBodies(message: GmailRestMessage, input: GetMessageArgs, http: GoogleHttp): Promise<Map<string, string>> {
+  const bodies = new Map<string, string>();
+  if (messageDetail(input.messageFormat) !== "full") return bodies;
+  for (const attachmentId of externalBodyIds(message.payload)) {
+    let answer: GmailRestAttachment;
+    try {
+      answer = await http.send<GmailRestAttachment>(bodyAttachmentRequest(input.messageId, attachmentId));
+    } catch (error) {
+      if (error instanceof GoogleToolError) {
+        throw new GoogleToolError("incomplete", `Could not read the full body of this message. ${error.message}`, error.httpStatus);
+      }
+      throw error;
+    }
+    if (typeof answer.data !== "string") throw new GoogleToolError("incomplete", "Could not read the full body of this message.");
+    bodies.set(attachmentId, answer.data);
+  }
+  return bodies;
 }
 
 export const getMessage = defineTool({
@@ -54,6 +87,7 @@ export const getMessage = defineTool({
   },
   args,
   async run(input, http) {
-    return getMessageResult(await http.send<GmailRestMessage>(getMessageRequest(input)), input);
+    const message = await http.send<GmailRestMessage>(getMessageRequest(input));
+    return getMessageResult(message, input, await readExternalBodies(message, input, http));
   },
 });

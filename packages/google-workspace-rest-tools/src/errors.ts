@@ -1,20 +1,9 @@
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 
-/**
- * JSON-RPC error code for a request Google refused because of the access
- * token, not the arguments. In the implementation-defined server range
- * (-32000..-32099) and not used by the MCP SDK or the gateway's MCP client.
- */
 export const GOOGLE_AUTH_ERROR_CODE = -32050;
 
 export type GoogleAuthFailure = "unauthenticated" | "insufficient_scope";
 
-/**
- * Google rejected the access token (401) or the token lacks a scope the call
- * needs (403 insufficient scope). Thrown, never returned as a tool result, so a
- * caller can refresh the token or ask the user to reconnect. `data.code` uses
- * the same `insufficient_scope` value the gateway already recognizes.
- */
 export class GoogleWorkspaceAuthError extends McpError {
   readonly reason: GoogleAuthFailure;
   readonly httpStatus: 401 | 403;
@@ -34,7 +23,6 @@ export class GoogleWorkspaceAuthError extends McpError {
   }
 }
 
-/** Why a call failed for a reason other than authorization. Becomes an MCP tool error result. */
 export type GoogleToolErrorKind =
   | "invalid_argument"
   | "not_found"
@@ -45,7 +33,8 @@ export type GoogleToolErrorKind =
   | "timeout"
   | "network"
   | "invalid_response"
-  | "unsupported";
+  | "unsupported"
+  | "incomplete";
 
 export class GoogleToolError extends Error {
   readonly kind: GoogleToolErrorKind;

@@ -1,6 +1,3 @@
-// The reviewed allowlist (`toolScopes` in @paperclipai/shared) stays the single
-// list of allowed Google tools. This package may implement only tools on it.
-// Test-only import: the package itself knows nothing about Paperclip.
 import { googleWorkspaceToolName, googleWorkspaceToolTarget } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import { GOOGLE_WORKSPACE_REST_SERVICES, listGoogleWorkspaceRestTools } from "./tools.js";

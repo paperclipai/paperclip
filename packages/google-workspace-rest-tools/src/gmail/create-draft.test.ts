@@ -49,6 +49,29 @@ describe("create_draft request", () => {
     expect(decoded).toBe(subject);
   });
 
+  it("folds long ASCII subjects and long recipient lists to RFC 5322 line limits", () => {
+    const subject = Array.from({ length: 140 }, (_, index) => `word${index}`).join(" ");
+    const to = Array.from({ length: 100 }, (_, index) => `person.number${index}@example.test`);
+    const mime = decodedRaw(createDraftRequest({ to, subject, body: "x" }, undefined, "b5"));
+    const headerBlock = mime.slice(0, mime.indexOf("\r\n\r\n") + 2);
+    for (const line of headerBlock.split("\r\n").slice(0, -1)) {
+      expect(line.length).toBeLessThanOrEqual(78);
+      expect(line.trim().length).toBeGreaterThan(0);
+    }
+    const unfolded = headerBlock.replace(/\r\n /g, " ");
+    expect(unfolded).toContain(`Subject: ${subject}\r\n`);
+    expect(unfolded).toContain(`To: ${to.join(", ")}\r\n`);
+  });
+
+  it("encodes a single ASCII token too long for one line", () => {
+    const subject = "x".repeat(990);
+    const mime = decodedRaw(createDraftRequest({ subject }, undefined, "b6"));
+    const headerBlock = mime.slice(0, mime.indexOf("\r\n\r\n") + 2);
+    for (const line of headerBlock.split("\r\n")) expect(line.length).toBeLessThanOrEqual(78);
+    const words = /Subject: ([\s\S]*?)\r\n(?! )/.exec(headerBlock)![1]!.split("\r\n ");
+    expect(words.map((word) => Buffer.from(word.slice(10, -2), "base64").toString("utf8")).join("")).toBe(subject);
+  });
+
   it("threads a reply and defaults the subject to Re:", () => {
     const reply = replyContext(REPLY_ORIGINAL);
     expect(reply).toEqual({

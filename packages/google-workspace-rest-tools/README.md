@@ -35,10 +35,11 @@ so they can be deleted cleanly when that happens.
   for one call and dropped.
 - **One file calls Google.** `src/google-http.ts` is the only place that calls
   `googleapis.com`. It sets the bearer header, allows only listed hosts,
-  bounds each request (20 s deadline, 20 MB response), maps Google errors, and
-  retries a read (GET) once after a network error or HTTP 502/503/504. **It
-  never retries a write.** A write that times out reports that the change may
-  or may not have been made.
+  bounds each request (20 s deadline, 20 MB response, including the body
+  read), maps Google errors, and retries a read (GET) once after a network
+  error or HTTP 502/503/504. **It never retries a write.** A write that fails
+  after it was sent (network error, dropped connection, timeout, caller
+  cancellation or HTTP 5xx) says that the change may or may not have been made.
 - **One tool, one file.** Each tool in `src/gmail/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
@@ -194,20 +195,37 @@ knows tool names and scopes and needs no change.
   not say which time zone it uses.
 - **`sender` and recipients** are plain addresses parsed from the headers;
   display names are dropped. Bodies are decoded as UTF-8.
+- **Large bodies.** Gmail can store a body part separately and return only
+  its `attachmentId`. With `FULL_CONTENT`, `get_message` reads those bytes
+  (`users.messages.attachments.get`) before it answers. The first `text/plain`
+  and first `text/html` body parts are found depth first through nested
+  multiparts. If a body part cannot be read, the call returns a tool error that
+  starts with "Could not read the full body of this message"; it never returns
+  a result without the body. Google's reference does not say what its tool
+  does here.
+- **Address comments** such as `(work)` are removed before the address is
+  taken.
 - **`labelIds`** keeps user labels and the system labels Google lists (INBOX,
   SPAM, TRASH, UNREAD, STARRED, IMPORTANT, SENT, DRAFT, CHAT); category labels
   are dropped.
 - **`search_threads`** makes one `threads.list` call and then one
   `threads.get` per thread (10 at a time), so a 50-thread page is 51 requests.
-  Drafts are excluded by adding `-in:draft` unless the query mentions drafts;
-  `includeTrash` uses `includeSpamTrash` plus `-in:spam`. A thread deleted
+  Drafts are excluded by adding `-in:draft` unless the query itself uses
+  `in:draft`, `is:draft` or `in:anywhere` outside quoted text;
+  `includeTrash` uses `includeSpamTrash` plus `-in:spam`, with the same rule
+  for `in:spam`. When terms are added, the caller's query is wrapped in
+  parentheses first. Google's reference documents the default exclusions but
+  not how its tool applies them. A thread deleted
   between the two calls is left out. `pageSize` above 50 is capped at 50.
 - **`create_draft`**: for a reply, the draft is threaded (`threadId`,
   `In-Reply-To`, `References`) and an empty subject becomes `Re: <original>`,
   but the original message is not quoted under the new body as Google's tool
   does, and recipients are not filled in from the original: pass `to`. The result is built from the request and Google's `drafts.create`
   answer, without a second read; `date` is the creation date (UTC).
-  Attachments are refused, as Google's tool currently does.
+  Attachments are refused, as Google's tool currently does. Long subjects and
+  recipient lists are folded onto continuation lines (RFC 5322); non-ASCII
+  subjects and single words longer than 900 characters become RFC 2047
+  encoded-words. Google's reference sets no length limits.
 - **Errors** for Google failures are tool error results with our own short
   messages, not Google's raw error text (except for 400 and 403 messages,
   trimmed to one line).
@@ -233,7 +251,9 @@ knows tool names and scopes and needs no change.
 2. Delete `packages/google-workspace-rest-tools/`.
 3. Remove its registration: the dependency in `server/package.json`, the server
    adapter file and its two call sites (gateway and discovery), the project in
-   the root `vitest.config.ts`, and the `COPY` line in `Dockerfile`.
+   the root `vitest.config.ts`, its entry in `nonServerProjects` in
+   `scripts/run-vitest-stable.mjs`, its `tsconfig.test.json` in `PROGRAMS` in
+   `scripts/typecheck-test-programs.mjs`, and the `COPY` line in `Dockerfile`.
 4. Check that the build, typecheck and tests pass, then delete the setting
    itself if nothing else uses it.
 

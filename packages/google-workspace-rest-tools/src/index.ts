@@ -1,5 +1,3 @@
-// Public surface: MCP tool definitions, MCP results and MCP errors only.
-// No Google REST types are exported.
 export {
   GOOGLE_WORKSPACE_REST_SERVICES,
   callGoogleWorkspaceRestTool,

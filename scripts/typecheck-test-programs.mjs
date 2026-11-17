@@ -44,6 +44,7 @@ export const LOCKED_PROVIDERS = ["packages/plugins/sandbox-providers/daytona"];
 
 export const PROGRAMS = [
   "packages/db/tsconfig.test.json",
+  "packages/google-workspace-rest-tools/tsconfig.test.json",
   "packages/kv-demo-mcp-server/tsconfig.test.json",
   "packages/paperclip-runner/tsconfig.browser.test.json",
   "packages/paperclip-runner/tsconfig.surfaces.test.json",

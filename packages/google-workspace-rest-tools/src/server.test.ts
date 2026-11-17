@@ -10,7 +10,6 @@ async function connect(route: Parameters<typeof fakeGoogle>[0], token?: string) 
   const fake = fakeGoogle(route);
   const server = createGoogleWorkspaceRestServer("gmail", { fetch: fake.fetch });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  // Stand in for an HTTP transport that read `Authorization: Bearer <token>`.
   const send = clientTransport.send.bind(clientTransport);
   clientTransport.send = (message, options) => send(message, { ...options, ...(token ? { authInfo: { token, clientId: "test", scopes: [] } } : {}) });
   await server.connect(serverTransport);

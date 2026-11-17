@@ -106,6 +106,50 @@ describe("createGoogleHttp", () => {
     expect(afterNetwork.calls).toHaveLength(1);
   });
 
+  it("warns that a failed write may have been applied, for network errors, 5xx and caller cancellation", async () => {
+    const network = await failure(client(() => { throw new TypeError("fetch failed"); }).http.send(POST));
+    expect((network as Error).message).toMatch(/may or may not have been made/);
+    const unavailable = await failure(client(() => json({}, 503)).http.send(POST));
+    expect((unavailable as Error).message).toMatch(/may or may not have been made/);
+
+    const controller = new AbortController();
+    const cancelled = createGoogleHttp({
+      accessToken: "test-token",
+      signal: controller.signal,
+      fetch: (_url, init) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        controller.abort();
+      }),
+    });
+    const error = await failure(cancelled.send(POST));
+    expect(error).toMatchObject({ kind: "timeout" });
+    expect((error as Error).message).toMatch(/may or may not have been made/);
+
+    const readFailure = await failure(client(() => { throw new TypeError("fetch failed"); }).http.send(GET));
+    expect((readFailure as Error).message).not.toMatch(/may or may not/);
+  });
+
+  it("treats a connection that drops while the body streams like any network failure", async () => {
+    const dropping = () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{\"partial\":"));
+        controller.error(new TypeError("terminated"));
+      },
+    }), { status: 200 });
+
+    let reads = 0;
+    const read = client(() => (reads++ === 0 ? dropping() : json({ ok: true })));
+    await expect(read.http.send(GET)).resolves.toEqual({ ok: true });
+    expect(read.calls).toHaveLength(2);
+
+    const write = client(() => dropping());
+    const error = await failure(write.http.send(POST));
+    expect(error).toBeInstanceOf(GoogleToolError);
+    expect(error).toMatchObject({ kind: "network" });
+    expect((error as Error).message).toMatch(/may or may not have been made/);
+    expect(write.calls).toHaveLength(1);
+  });
+
   it("retries a read once after a network failure", async () => {
     let count = 0;
     const { http, calls } = client(() => {

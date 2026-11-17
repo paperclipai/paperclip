@@ -1,11 +1,5 @@
-/**
- * The only module that talks to googleapis.com. It sets the bearer header,
- * bounds each request in time and size, maps Google's errors to MCP errors,
- * and never retries a write.
- */
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 
-/** Hosts this package may call. Add a host when a service's tools land. */
 export const GOOGLE_API_HOSTS = ["gmail.googleapis.com"] as const;
 export type GoogleApiHost = (typeof GOOGLE_API_HOSTS)[number];
 
@@ -14,23 +8,18 @@ export type QueryValue = string | number | boolean | readonly string[] | undefin
 export interface GoogleRequest {
   method: "GET" | "POST";
   host: GoogleApiHost;
-  /** Absolute path, already percent-encoded where it embeds caller input. */
   path: string;
   query?: Record<string, QueryValue>;
   body?: unknown;
 }
 
-/** Same shape as `fetch`; a caller may pass its own egress-guarded fetch. */
 export type GoogleFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface GoogleHttpOptions {
   accessToken: string;
   fetch?: GoogleFetch;
-  /** Cancels every request made with this client. */
   signal?: AbortSignal;
-  /** Per-request deadline. */
   timeoutMs?: number;
-  /** Delay before the single retry of a read. Tests set 0. */
   retryDelayMs?: number;
 }
 
@@ -38,11 +27,18 @@ export interface GoogleHttp {
   send<T = unknown>(request: GoogleRequest): Promise<T>;
 }
 
+interface GoogleAnswer {
+  status: number;
+  headers: Headers;
+  text: string;
+}
+
 export const DEFAULT_TIMEOUT_MS = 20_000;
 export const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const RETRYABLE_READ_STATUSES = new Set([502, 503, 504]);
 const DEFAULT_RETRY_DELAY_MS = 250;
 const MAX_ERROR_MESSAGE_LENGTH = 300;
+export const UNCERTAIN_WRITE = "The change may or may not have been made; check before trying again.";
 
 export function googleRequestUrl(request: GoogleRequest): string {
   if (!GOOGLE_API_HOSTS.includes(request.host)) throw new Error(`Host is not allowed: ${request.host}`);
@@ -56,48 +52,51 @@ export function googleRequestUrl(request: GoogleRequest): string {
   return url.toString();
 }
 
+function isWrite(request: GoogleRequest): boolean {
+  return request.method !== "GET";
+}
+
+function withWriteWarning(request: GoogleRequest, message: string): string {
+  return isWrite(request) ? `${message} ${UNCERTAIN_WRITE}` : message;
+}
+
 export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
   const doFetch = options.fetch ?? ((url, init) => fetch(url, init));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
 
-  async function attempt(request: GoogleRequest): Promise<Response> {
-    const signals = [AbortSignal.timeout(timeoutMs), ...(options.signal ? [options.signal] : [])];
+  async function attempt(request: GoogleRequest): Promise<GoogleAnswer> {
+    const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(options.signal ? [options.signal] : [])]);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${options.accessToken}`,
       Accept: "application/json",
     };
     if (request.body !== undefined) headers["Content-Type"] = "application/json";
-    // Built outside the try: a disallowed host is a programming error, not a network failure.
     const url = googleRequestUrl(request);
     try {
-      return await doFetch(url, {
+      const response = await doFetch(url, {
         method: request.method,
         headers,
         body: request.body === undefined ? undefined : JSON.stringify(request.body),
-        signal: AbortSignal.any(signals),
+        signal,
         redirect: "error",
       });
+      return { status: response.status, headers: response.headers, text: await readBounded(response) };
     } catch (error) {
-      if (options.signal?.aborted) throw new GoogleToolError("timeout", "The request was cancelled.");
-      if (isAbort(error)) {
-        throw new GoogleToolError("timeout", request.method === "GET"
-          ? "Google did not answer in time."
-          : "Google did not answer in time. The change may or may not have been made; check before trying again.");
-      }
-      throw new GoogleToolError("network", "Could not reach Google.");
+      if (error instanceof GoogleToolError) throw error;
+      if (options.signal?.aborted) throw new GoogleToolError("timeout", withWriteWarning(request, "The request was cancelled."));
+      if (isAbort(error)) throw new GoogleToolError("timeout", withWriteWarning(request, "Google did not answer in time."));
+      throw new GoogleToolError("network", withWriteWarning(request, "Could not reach Google."));
     }
   }
 
   return {
     async send<T>(request: GoogleRequest): Promise<T> {
-      let response: Response;
+      let answer: GoogleAnswer;
       for (let tries = 0; ; tries += 1) {
-        // Reads are safe to repeat once. Writes are never repeated: Google may
-        // have applied a request before failing.
-        const mayRetry = request.method === "GET" && tries === 0;
+        const mayRetry = !isWrite(request) && tries === 0;
         try {
-          response = await attempt(request);
+          answer = await attempt(request);
         } catch (error) {
           if (mayRetry && error instanceof GoogleToolError && error.kind === "network") {
             await delay(retryDelayMs, options.signal);
@@ -105,20 +104,18 @@ export function createGoogleHttp(options: GoogleHttpOptions): GoogleHttp {
           }
           throw error;
         }
-        if (mayRetry && RETRYABLE_READ_STATUSES.has(response.status)) {
-          await response.body?.cancel().catch(() => undefined);
+        if (mayRetry && RETRYABLE_READ_STATUSES.has(answer.status)) {
           await delay(retryDelayMs, options.signal);
           continue;
         }
         break;
       }
-      const text = await readBounded(response);
-      if (!response.ok) throw googleError(response, text);
-      if (text.length === 0) return {} as T;
+      if (answer.status < 200 || answer.status >= 300) throw googleError(answer, answer.text, request);
+      if (answer.text.length === 0) return {} as T;
       try {
-        return JSON.parse(text) as T;
+        return JSON.parse(answer.text) as T;
       } catch {
-        throw new GoogleToolError("invalid_response", "Google returned a response that is not JSON.", response.status);
+        throw new GoogleToolError("invalid_response", "Google returned a response that is not JSON.", answer.status);
       }
     },
   };
@@ -157,14 +154,17 @@ interface GoogleErrorBody {
   } | string;
 }
 
-/** Map a non-2xx Google response to the error a caller can act on. */
-export function googleError(response: Pick<Response, "status" | "headers">, text: string): Error {
+export function googleError(
+  response: { status: number; headers: Pick<Headers, "get"> },
+  text: string,
+  request?: GoogleRequest,
+): Error {
   const status = response.status;
   let body: GoogleErrorBody = {};
   try {
     body = JSON.parse(text) as GoogleErrorBody;
   } catch {
-    // Non-JSON error bodies keep the status mapping below.
+    body = {};
   }
   const error = typeof body.error === "object" ? body.error : undefined;
   const reasons = new Set([
@@ -194,7 +194,10 @@ export function googleError(response: Pick<Response, "status" | "headers">, text
   if (status === 400 || status === 409 || status === 412 || status === 413) {
     return new GoogleToolError("invalid_argument", message ?? "Google rejected the request.", status);
   }
-  if (status >= 500) return new GoogleToolError("unavailable", "Google is temporarily unavailable. Try again shortly.", status);
+  if (status >= 500) {
+    const unavailable = "Google is temporarily unavailable.";
+    return new GoogleToolError("unavailable", request && isWrite(request) ? withWriteWarning(request, unavailable) : `${unavailable} Try again shortly.`, status);
+  }
   return new GoogleToolError("invalid_response", message ?? `Google returned HTTP ${status}.`, status);
 }
 
