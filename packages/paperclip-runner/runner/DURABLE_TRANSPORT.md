@@ -313,6 +313,14 @@ claim ID, the unchanged authority and sequence cut, and provider quiescence.
 Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
 suspended lifecycle and provider shutdown path. There is no new checkpoint state.
 
+When a trusted host relaunches an absent Runner from a verified ACPX park, it can
+pass `--acpx-park-relaunch` with the private host-control descriptor. For
+park-eligible ACPX providers, Runner validates the settled checkpoint and keeps
+the claim fence without starting the provider. The authenticated `run.attach`
+opens the provider with the incoming run's bindings and checks live session
+identity and dormancy before committing the attachment. An existing warm
+transition receipt follows the ordinary replay path.
+
 This native loop does not advertise hosted parking support: Launcher retention,
 Core orchestration, provider-specific qualification, and live VM sleep/wake
 verification are required before rollout. Providers without an eligibility

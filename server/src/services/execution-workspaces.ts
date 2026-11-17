@@ -39,10 +39,12 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_PLUGIN_HINT, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
 import {
   clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
   TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
+  clearTerminalWorkspaceHold, readTerminalWorkspaceHold, recordTerminalWorkspaceHold, terminalWorkspaceRecheckDelayMs,
+  TERMINAL_WORKSPACE_HOLD_KEY, type TerminalWorkspaceHold,
 } from "./terminal-workspace-retry.js";
 import {
   deleteWorkspaceCompactionTrash,
@@ -269,6 +271,19 @@ export function clearMetadataReopenPendingConsumption(
   return next;
 }
 
+/** What a kept provider workspace's inspection depends on, apart from its lifecycle generation and the remote. */
+function terminalHoldFingerprint(workspace: typeof executionWorkspaces.$inferSelect,
+  issueTree: Array<{ id: string; status: string; completedAt: Date | null; cancelledAt: Date | null; updatedAt: Date }>,
+  deliveryCandidate: { operationId: string; headSha: string; destinationRef: string } | null) {
+  return createHash("sha256").update(JSON.stringify([
+    workspace.updatedAt.toISOString(), workspace.status, workspace.providerRef, workspace.repoUrl, workspace.branchName, workspace.baseRef,
+    readWorkspaceProviderBinding(workspace.metadata) ?? null,
+    deliveryCandidate && [deliveryCandidate.operationId, deliveryCandidate.headSha, deliveryCandidate.destinationRef],
+    issueTree.map(issue => [issue.id, issue.status, issueTerminalTimestamp(issue)?.toISOString() ?? null] as const)
+      .sort((a, b) => a[0].localeCompare(b[0])),
+  ])).digest("hex");
+}
+
 function terminalWorkspaceTargetFilter(targets: TerminalWorkspaceTargets) {
   const ids = (values: string[]) => sql.join(values.map(id => sql`${id}::uuid`), sql`, `);
   const byWorkspace = targets.workspaceIds.length ? sql`${executionWorkspaces.id} in (${ids(targets.workspaceIds)})` : undefined;
@@ -314,7 +329,8 @@ function preserveWorkspaceMetadataForPatch(
       }
     }
   }
-  const coreOwnedKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner", TERMINAL_WORKSPACE_RETRY_KEY] as const;
+  const coreOwnedKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner", TERMINAL_WORKSPACE_RETRY_KEY,
+    TERMINAL_WORKSPACE_HOLD_KEY] as const;
   if (patch.metadata !== undefined && (patch.metadata !== null || coreOwnedKeys.some(key => current.metadata?.[key] !== undefined))) {
     nextPatch.metadata = { ...(nextPatch.metadata ?? patch.metadata) };
     for (const key of coreOwnedKeys) {
@@ -1563,6 +1579,7 @@ export async function releaseAncestorWorkspaceBinding(tx: DbTransaction, input: 
 // move and the guard finish in one short transaction.
 const WORKSPACE_COMPACTION_TRASH_STALE_MS = 60 * 60 * 1000;
 const WORKSPACE_COMPACTION_TRASH_PURGE_INTERVAL_MS = 30 * 60 * 1000;
+const TERMINAL_HOLD_RESET_LIMIT = 65_536;
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   const destroyRemoteLease: DestroyRemoteWorkspaceLease = input => opts.destroyRemoteWorkspaceLease
@@ -1937,6 +1954,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // when a sweep reaches the end of the candidate set.
   let terminalSweepCursor: { updatedAt: string; id: string } | null = null;
   const terminalInspections = new Map<string, { revision: string; issueIds: Set<string>; nextAt: number; parked?: boolean }>();
+  // A `workspace:` or `issue:` hint ends the persisted inspection holds it names
+  // that were checked at or before the hint. A sweep visit clears such a hold
+  // from the row, so an entry is dropped once a full rotation that started after
+  // it completes. A hint without a scope ends every hold.
+  const terminalHoldResets = new Map<string, number>();
+  let terminalHoldResetAllAt = Number.NEGATIVE_INFINITY;
+  let terminalHoldRotationStartedAt: number | null = null;
   const terminalWorkspaceDeadlines = new Map<string, number>();
   const isolatedRehomeDeadlines = new Map<string, number>();
   const isolatedRehomeNotBefore = new Map<string, number>();
@@ -2277,6 +2301,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       trees.set(workspace.id, tree);
     }
     return trees;
+  }
+
+  async function readPageLinkedIssueIds(workspaces: Array<Pick<ExecutionWorkspaceRow, "id" | "companyId">>) {
+    const linked = new Map<string, string[]>();
+    if (workspaces.length === 0) return linked;
+    const rows = await db.select({ id: issues.id, workspaceId: issues.executionWorkspaceId }).from(issues).where(and(
+      inArray(issues.companyId, [...new Set(workspaces.map(workspace => workspace.companyId))]),
+      inArray(issues.executionWorkspaceId, workspaces.map(workspace => workspace.id))));
+    for (const row of rows) {
+      if (!row.workspaceId) continue;
+      const ids = linked.get(row.workspaceId);
+      if (ids) ids.push(row.id);
+      else linked.set(row.workspaceId, [row.id]);
+    }
+    return linked;
   }
 
   async function readPageActiveRunWorkspaces(workspaces: Array<Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">>) {
@@ -3655,6 +3694,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // rotation cover a finite set, so the cursor always reaches a short page.
       if (!targets && !cursor) {
         terminalSweepBoundary = now();
+        terminalHoldRotationStartedAt = terminalSweepBoundary.getTime();
         terminalWorkspaceDeadlines.clear();
         isolatedRehomeDeadlines.clear();
         nestedCloneMigrationDeadlines.clear();
@@ -3697,7 +3737,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // Advance the cursor to this page's last row. A short page means the scan
       // reached the end of the bounded candidate set, so reset the cursor and
       // the bound to start a new rotation on the next sweep.
-      if (!targets && candidates.length < limit) {
+      const rotationCompleted = !targets && candidates.length < limit;
+      const completedRotationStartedAt = terminalHoldRotationStartedAt;
+      if (rotationCompleted) {
         terminalSweepCursor = null;
         terminalSweepBoundary = null;
       } else if (!targets) {
@@ -3723,8 +3765,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       if (targets) for (const id of [...targets.workspaceIds, ...candidates.map(candidate => candidate.workspace.id)]) terminalWorkspaceDeadlines.delete(id);
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
       const pageWorkspaces = candidates.map(candidate => candidate.workspace);
-      const [pageIssueTrees, pageActiveRunWorkspaces] = await Promise.all([
-        readPageIssueTrees(pageWorkspaces), readPageActiveRunWorkspaces(pageWorkspaces)]);
+      const [pageIssueTrees, pageActiveRunWorkspaces, pageLinkedIssueIds] = await Promise.all([
+        readPageIssueTrees(pageWorkspaces), readPageActiveRunWorkspaces(pageWorkspaces),
+        readPageLinkedIssueIds(pageWorkspaces.filter(workspace => workspace.metadata?.[TERMINAL_WORKSPACE_HOLD_KEY] !== undefined))]);
+      // Clear a persisted hold that a hint or a malformed record has ended, so
+      // the reset survives this process and the hint entry can be pruned.
+      const releaseEndedTerminalHold = async (target: ExecutionWorkspaceRow) => {
+        const hold = target.metadata?.[TERMINAL_WORKSPACE_HOLD_KEY] as { checkedAt?: unknown } | undefined;
+        if (hold === undefined) return target;
+        const checkedAt = typeof hold?.checkedAt === "string" ? Date.parse(hold.checkedAt) : Number.NaN;
+        const issueIds = [...(pageIssueTrees.get(target.id) ?? []).map(issue => issue.id), ...(pageLinkedIssueIds.get(target.id) ?? [])];
+        const resetAt = Math.max(terminalHoldResetAllAt, terminalHoldResets.get(`workspace:${target.id}`) ?? Number.NEGATIVE_INFINITY,
+          ...issueIds.map(id => terminalHoldResets.get(`issue:${id}`) ?? Number.NEGATIVE_INFINITY));
+        if (Number.isFinite(checkedAt) && resetAt < checkedAt) return target;
+        await clearTerminalWorkspaceHold(db, target.id);
+        const metadata = { ...target.metadata };
+        delete metadata[TERMINAL_WORKSPACE_HOLD_KEY];
+        return { ...target, metadata };
+      };
       const backOffTerminalWorkspace = async (snapshot: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
         const [target] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id));
         if (!target) return;
@@ -3735,6 +3793,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         terminalWorkspaceDeadlines.set(target.id, Date.parse(retry.retryAt));
         logger.warn({ event: "execution_workspace.terminal_cleanup_retry", executionWorkspaceId: target.id, sourceIssueId: target.sourceIssueId,
           failures: retry.failures, retryAt: retry.retryAt, failure: retry.failure }, "terminal workspace cleanup failed; a later sweep retries");
+      };
+      const setTerminalWorkspaceDeadline = (workspaceId: string, recheckAt: number | null, compactionAt: number | null) => {
+        const nextAt = Math.min(recheckAt ?? Number.POSITIVE_INFINITY, compactionAt ?? Number.POSITIVE_INFINITY);
+        if (Number.isFinite(nextAt)) terminalWorkspaceDeadlines.set(workspaceId, nextAt);
+        else terminalWorkspaceDeadlines.delete(workspaceId);
       };
       const settleTerminalWorkspaceRetry = async (target: ExecutionWorkspaceRow) => {
         if (target.metadata?.[TERMINAL_WORKSPACE_RETRY_KEY] !== undefined) await clearTerminalWorkspaceRetry(db, target.id);
@@ -3769,8 +3832,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       };
 
       for (const candidate of candidates) {
-        let workspace = candidate.workspace;
         signal?.throwIfAborted();
+        let workspace = await releaseEndedTerminalHold(candidate.workspace);
         // Trash deletion is part of compaction, so a sweep that skips compaction
         // also leaves leftover trash for a later sweep.
         if (options.compact !== false) await purgeCompactionTrashIfDue(workspace);
@@ -4021,6 +4084,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedBackoff += 1;
           continue;
         }
+        // Each inspection of a provider workspace is a provider operation. Skip
+        // it while an earlier inspection kept the workspace and nothing that
+        // could change that answer has changed.
+        const pendingCompactionAt = compactionPending && compactedTerminalAt.get(workspace.id) !== latestTerminalAt ? compactionDueAt : null;
+        const holdGeneration = readExecutionWorkspaceLifecycleGeneration(workspace.metadata);
+        const holdFingerprint = workspace.providerType === "plugin" && !reopenPending
+          && !workspace.metadata?.workspaceProviderRemoval && !workspace.metadata?.workspaceProviderRestoration
+          ? terminalHoldFingerprint(workspace, issueTree, deliveryCandidate) : null;
+        const priorHold = holdFingerprint ? readTerminalWorkspaceHold(workspace.metadata, holdGeneration) : null;
+        if (priorHold && priorHold.fingerprint === holdFingerprint
+          && (priorHold.recheckAt === null || Date.parse(priorHold.recheckAt) > now().getTime())) {
+          setTerminalWorkspaceDeadline(workspace.id, priorHold.recheckAt === null ? null : Date.parse(priorHold.recheckAt), pendingCompactionAt);
+          result.skippedBackoff += 1;
+          continue;
+        }
         if (opts.terminalWorkspaceInspectionBackoffMs) {
           const revision = createHash("sha256").update(JSON.stringify([
             workspace.updatedAt, workspace.metadata,
@@ -4094,6 +4172,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           ? JSON.stringify([workspace.companyId, workspacePath, workspace.baseRef, workspace.branchName, createdByRuntime])
           : `workspace:${workspace.id}`;
         let inspection = readinessByWorkingTree.get(readinessKey);
+        const inspectionStartedAt = now().getTime();
         if (!inspection) {
           inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
           readinessByWorkingTree.set(readinessKey, inspection);
@@ -4134,17 +4213,32 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (assessment.workspaceDirty) {
+        const keepReason = assessment.workspaceDirty ? "local_data" as const
+          : assessment.deliveryState !== "merged_via_pr" && assessment.deliveryState !== "merged_by_ancestry" ? "unmerged" as const : null;
+        if (keepReason && holdFingerprint) {
+          const headSha = git?.headSha ?? null;
+          const checks = priorHold?.reason === keepReason && priorHold.fingerprint === holdFingerprint && priorHold.headSha === headSha
+            ? priorHold.checks + 1 : 1;
+          const recheckAt = keepReason === "unmerged" ? inspectionStartedAt + terminalWorkspaceRecheckDelayMs(checks) : null;
+          const hold: TerminalWorkspaceHold = { generation: holdGeneration, fingerprint: holdFingerprint, reason: keepReason, headSha, checks,
+            checkedAt: new Date(inspectionStartedAt).toISOString(), recheckAt: recheckAt === null ? null : new Date(recheckAt).toISOString() };
+          await recordTerminalWorkspaceHold(db, workspace.id, hold);
+          setTerminalWorkspaceDeadline(workspace.id, recheckAt, pendingCompactionAt);
+        }
+        if (keepReason === "local_data") {
           result.skippedUndelivered += 1;
           continue;
         }
-        if (
-          assessment.deliveryState !== "merged_via_pr"
-          && assessment.deliveryState !== "merged_by_ancestry"
-        ) {
+        if (keepReason === "unmerged") {
           if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
           result.skippedUndelivered += 1;
           continue;
+        }
+        if (workspace.metadata?.[TERMINAL_WORKSPACE_HOLD_KEY] !== undefined) {
+          await clearTerminalWorkspaceHold(db, workspace.id);
+          const metadata = { ...workspace.metadata };
+          delete metadata[TERMINAL_WORKSPACE_HOLD_KEY];
+          workspace = { ...workspace, metadata };
         }
         // Hold the archive during the cooldown window. The anchor is the most
         // recent terminal timestamp across the issue tree. A person can reopen
@@ -4392,6 +4486,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           });
         }
       }
+      if (rotationCompleted && completedRotationStartedAt !== null) {
+        for (const [key, at] of terminalHoldResets) if (at < completedRotationStartedAt) terminalHoldResets.delete(key);
+        if (terminalHoldResetAllAt < completedRotationStartedAt) terminalHoldResetAllAt = Number.NEGATIVE_INFINITY;
+      }
       return result;
       } catch (error) {
         if (!options.targets) {
@@ -4422,6 +4520,20 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           if (hint.startsWith("workspace:")) taskDirectoryRowSkips.delete(hint.slice("workspace:".length));
           else for (const [id, skip] of taskDirectoryRowSkips) if (`issue:${skip.issueId}` === hint) taskDirectoryRowSkips.delete(id);
         }
+      }
+      // A provider refresh (activation, upgrade, capability change, company
+      // re-enablement) can change how any plugin workspace inspects, and holds
+      // apply only to plugin workspaces, so it ends every hold.
+      const resetAt = now().getTime();
+      if (!hints || hints.has(TERMINAL_WORKSPACE_PLUGIN_HINT)) terminalHoldResetAllAt = resetAt;
+      for (const hint of hints ?? []) {
+        if (!hint.startsWith("workspace:") && !hint.startsWith("issue:")) continue;
+        if (terminalHoldResets.size >= TERMINAL_HOLD_RESET_LIMIT) {
+          terminalHoldResets.clear();
+          terminalHoldResetAllAt = resetAt;
+          break;
+        }
+        terminalHoldResets.set(hint, resetAt);
       }
       if (!hints) { terminalInspections.clear(); return; }
       for (const [id, inspection] of terminalInspections) {
