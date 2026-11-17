@@ -5612,6 +5612,11 @@ describe("remote preinstalled executable discovery", () => {
     expect(mayUsePreinstalledRunnerArtifact("  ")).toBe(true);
     expect(mayUsePreinstalledRunnerArtifact(undefined)).toBe(true);
   });
+
+  it("checks a preinstalled runnerd against a configured artifact the controller holds", () => {
+    expect(mayUsePreinstalledRunnerArtifact("/artifacts/paperclip-runnerd", true)).toBe(true);
+    expect(mayUsePreinstalledRunnerArtifact("/artifacts/paperclip-runnerd", false)).toBe(false);
+  });
 });
 
 describe("remote runner build metadata", () => {
@@ -23387,7 +23392,7 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each([
-    ...["current", "preinstalled-exact", "preinstalled-mismatch", "preinstalled-error", "preinstalled-timeout", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
+    ...["current", "preinstalled-exact", "preinstalled-mismatch", "preinstalled-error", "preinstalled-timeout", "preinstalled-explicit", "preinstalled-explicit-mismatch", "preinstalled-explicit-discover-fails", "stale", "missing", "retained", "retained-mismatch", "retained-error", "retained-timeout", "retained-explicit"]
       .map((image) => ({ image, version: "0.160.0" })),
     ...["0.149.0", "0.149.1", "0.153.4", "0.156.0", "0.160.1"]
       .map((version) => ({ image: "current", version })),
@@ -23396,7 +23401,7 @@ describe("runnerd provider runtime wiring", () => {
   ])("uses shared Codex and the server-owned replacement artifact (image=$image, Codex=$version)", async ({ image, version }) => {
     const retained = image.startsWith("retained");
     const exactRetained = image === "retained" || image === "retained-explicit";
-    const needsReplacement = image !== "current" && image !== "preinstalled-exact" && !exactRetained;
+    const needsReplacement = image !== "current" && image !== "preinstalled-exact" && image !== "preinstalled-explicit" && !exactRetained;
     // The mocked remote executes metadata probes; artifact staging only needs bytes.
     // Keep this regression independent of a locally compiled Rust runner binary.
     const controllerArtifact = join(isolatedStateDirectory, "paperclip-runnerd");
@@ -23437,6 +23442,7 @@ describe("runnerd provider runtime wiring", () => {
         } else if (script === "uname -s; uname -m") {
           stdout = `${process.platform === "darwin" ? "Darwin" : "Linux"}\n${process.arch === "arm64" ? "arm64" : "x86_64"}\n`;
         } else if (script.includes("command -v paperclip-runnerd")) {
+          if (image === "preinstalled-explicit-discover-fails") throw new Error("sandbox provider unavailable");
           stdout = image === "missing" ? "" : "/usr/local/bin/paperclip-runnerd\n";
         } else if (script.includes("command -v codex")) {
           stdout = script.includes("/opt/paperclip-runner/bin/codex")
@@ -23462,7 +23468,7 @@ describe("runnerd provider runtime wiring", () => {
       execution,
       runnerInstanceId: "runner-image-runtime",
       onLog,
-      ...(image === "retained-explicit" ? { runnerRemoteBinaryPath: controllerArtifact } : {}),
+      ...(image.includes("explicit") ? { runnerRemoteBinaryPath: controllerArtifact } : {}),
       runnerIngressAuthorized: true,
       runnerExecutionTarget: {
         kind: "remote",
