@@ -151,6 +151,8 @@ describe("rh-mcp service tool set", () => {
       expect(RH_MCP_SERVICE_REVIEWED_TOOLS).not.toContain(identityKeyed);
     }
     expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["comps:run"]).toEqual(["comps__start", "comps__get", "comps__cancel"]);
+    // voice_apply rides the existing voice:read scope: no new scope, so no org-token rotation.
+    expect(RH_MCP_SERVICE_TOOLS_BY_SCOPE["voice:read"]).toContain("voice_apply");
     // The blocking one-call comps tool outlives the gateway's 60 s clamp, so only the async verbs are offered.
     expect(RH_MCP_SERVICE_REVIEWED_TOOLS).not.toContain("comps__run_business_area_comps");
     // The review verbs are what ClaudeBot-style agents need; losing them would silently recreate TECH-8066.
