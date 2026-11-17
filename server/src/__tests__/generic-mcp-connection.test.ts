@@ -919,6 +919,19 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       await peerTools.service.updateConnection(peerTools.connectionId, { name: "Ops intake" });
       expect((await peerTools.list()).map((tool) => tool.name)).toEqual(peerTools.map((tool) => tool.name));
 
+      expect((await db.select().from(toolConnections).where(eq(toolConnections.id, peerTools.connectionId)))[0]!.config)
+        .toMatchObject({ paperclipPeerToolNamespace: "8-8-8-8-paperclip" });
+
+      // A peer connection made before the prefix existed keeps its original
+      // names, so saved tool-name rules and pending approvals still match it.
+      const [legacy] = await db.select().from(toolConnections).where(eq(toolConnections.id, peerTools.connectionId));
+      const { paperclipPeerToolNamespace: _dropped, ...legacyConfig } = legacy!.config as Record<string, unknown>;
+      await db.update(toolConnections).set({ config: legacyConfig }).where(eq(toolConnections.id, peerTools.connectionId));
+      expect((await peerTools.list()).map((tool) => tool.name)).toEqual([
+        expect.stringMatching(/^mcp\.app-gallery-link-/),
+        expect.stringMatching(/^mcp\.app-gallery-link-/),
+      ]);
+
       // Other address-based connections keep their existing names.
       vi.restoreAllMocks();
       installMcpOAuthFixture({ auth: "public" });

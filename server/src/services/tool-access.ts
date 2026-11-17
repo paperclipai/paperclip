@@ -2188,7 +2188,20 @@ export function toolAccessService(
               }
             : {}),
         }
-      : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
+      : {
+          ...baseConfig,
+          quarantineNewEntries: false,
+          unverifiedServer: true,
+          // Peer tool prefix, fixed when the identity is created. A retained
+          // identity keeps whatever it had, so tool names that saved rules and
+          // approvals refer to never change on reconnect or rename.
+          ...(() => {
+            const namespace = retainedConnection
+              ? asRecord(retainedConnection.config).paperclipPeerToolNamespace
+              : paperclipPeer?.toolNamespace;
+            return typeof namespace === "string" ? { paperclipPeerToolNamespace: namespace } : {};
+          })(),
+        };
     if (method && isPaperclipCloudConnectorStrategy(method.oauthStrategy)) {
       const connectorProfile = method.connectorProfile;
       const profile = managedConnectorProfile(connectorProfile);

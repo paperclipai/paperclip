@@ -94,9 +94,11 @@ only the address you typed (nothing the other server says):
   `mcp.acme-paperclip-<id>:paperclip-create-task` (native runners:
   `app_mcp_acme_paperclip_…_paperclip_create_task_…`), never a bare
   `create_task` that looks like their own. Other address-based connections
-  keep their existing tool names. The prefix comes from the stored address,
-  so renaming the connection never changes tool names that agents or pending
-  approvals already hold;
+  keep their existing tool names. Setup records the prefix on the connection
+  (`paperclipPeerToolNamespace`) when it is created, so renaming or
+  reconnecting never changes tool names that saved tool-name rules, agents or
+  pending approvals refer to. Paperclip connections created before this keep
+  their original names;
 - adds agent instructions (template `paperclip.peer`, editable and
   resettable under **Agent instructions** on the connection's Permissions page)
   saying these tools act on a different

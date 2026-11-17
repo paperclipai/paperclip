@@ -25,7 +25,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { measureToolDiscovery, measureRunPhase } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
-import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
+import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
 import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
@@ -1765,13 +1765,15 @@ export function createToolGatewayService(
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
         const applicationKey = application.applicationKey ?? null;
-        // Another Paperclip's tools share names with the agent's own, so name
-        // them after that instance. The prefix comes from the stored address,
-        // not the editable connection name, so a rename cannot break tool names
-        // agents or pending approvals already hold. Other address-based
-        // connections keep their existing internal key.
-        const paperclipPeer = paperclipPeerFromMcpUrl(typeof connection.config?.url === "string" ? connection.config.url : null);
-        const namespaceSource = paperclipPeer ? paperclipPeer.toolNamespace : applicationKey ?? connection.name ?? application.name;
+        // Another Paperclip's tools share names with the agent's own, so they
+        // carry that instance's label. Setup records it when the connection is
+        // created; it never follows the editable name. Connections without it,
+        // including peers created before it existed, keep their original names
+        // so saved tool-name rules and pending approvals still match.
+        const peerNamespace = connection.config?.paperclipPeerToolNamespace;
+        const namespaceSource = typeof peerNamespace === "string" && peerNamespace
+          ? peerNamespace
+          : applicationKey ?? connection.name ?? application.name;
         const connectionNamespace = `${slugSegment(namespaceSource, "mcp")}-${shortStableId(connection.id)}`;
         const toolSlug = slugSegment(catalogEntry.toolName, "tool");
         return `${connection.transport === "rest_api" ? "app" : "mcp"}.${connectionNamespace}:${toolSlug}`;
