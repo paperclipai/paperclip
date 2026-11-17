@@ -27,7 +27,6 @@ import {
   ANALYTICS_MASK_TEXT_SELECTOR,
   ANALYTICS_NO_CAPTURE_CLASS,
   maskReplayAttribute,
-  maskReplayText,
   redactAnalyticsUrl,
 } from "./privacy";
 
@@ -64,7 +63,6 @@ export type PostHogInitOptions = {
   session_recording: {
     maskAllInputs: boolean;
     maskTextSelector: string;
-    maskTextFn: (text: string, element?: HTMLElement | null) => string;
     maskAttributeFn: (name: string, value: string, element?: Element | null) => string;
     blockClass: string;
   };
@@ -171,10 +169,9 @@ export function buildPostHogInitOptions(
     enable_heatmaps: true,
     disable_session_recording: !config.replayEnabled,
     session_recording: {
-      // Mask everything; only opted-in UI chrome shows its text (privacy.ts).
+      // Text shows; only marked customer content and secrets mask (privacy.ts).
       maskAllInputs: true,
       maskTextSelector: ANALYTICS_MASK_TEXT_SELECTOR,
-      maskTextFn: maskReplayText,
       // Attributes too (title, aria-label, alt, src, ...): deny by default.
       maskAttributeFn: maskReplayAttribute,
       blockClass: ANALYTICS_NO_CAPTURE_CLASS,

@@ -76,6 +76,7 @@ import {
 } from "./TaskChatComposerTakeoverContext";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatRichInput } from "./TaskChatRichInput";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const TAKEOVER_TEXTAREA_CLASS =
   "min-h-16 resize-y border-0 bg-muted/35 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0";
@@ -578,7 +579,7 @@ function ReceiptDisclosure({
                 {interaction.payload.toolAction.previewMarkdown}
               </MarkdownBody>
             </div>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
+            <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs", ANALYTICS_MASK_CLASS)}>
               {interaction.payload.toolAction.argumentsSummaryJson}
             </pre>
             <ToolActionAuditHashCopy hash={interaction.payload.toolAction.argumentsHash} />
@@ -954,7 +955,7 @@ function ConfirmationCard({
             <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
               Arguments
             </summary>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+            <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
               {interaction.payload.toolAction.argumentsSummaryJson}
             </pre>
             <ToolActionAuditHashCopy hash={interaction.payload.toolAction.argumentsHash} />

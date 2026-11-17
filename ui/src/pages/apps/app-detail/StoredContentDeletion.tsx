@@ -18,6 +18,7 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { relativeTime } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 function plural(count: number, one: string, many: string) {
   return `${count.toLocaleString()} ${count === 1 ? one : many}`;
@@ -123,7 +124,7 @@ export function StoredContentDeletionDialog({
 
   return (
     <AlertDialog open onOpenChange={(next) => { if (!next) onClose(); }}>
-      <AlertDialogContent>
+      <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
         <AlertDialogHeader>
           <AlertDialogTitle>{`Delete data read through ${appName}?`}</AlertDialogTitle>
           <AlertDialogDescription>

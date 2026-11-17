@@ -41,6 +41,7 @@ import {
 } from "./board-send-draft";
 
 import { LegacyBoardSendNotice } from "./LegacyBoardSendNotice";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -558,7 +559,7 @@ function ConnectedTaskComposer({
             <p className="font-medium">
               Connected to {providerNames[binding.provider]}
             </p>
-            <p className="truncate text-xs text-muted-foreground">
+            <p className={cn("truncate text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
               {binding.externalLabel} · {binding.provider === "slack"
                 ? "Messages you send here and agent replies are also posted to Slack."
                 : "Agent assignment is fixed for this external task."}
