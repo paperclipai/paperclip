@@ -18,8 +18,8 @@ import http from "node:http";
 import https from "node:https";
 import { pipeline, Transform } from "node:stream";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
-import { isIP } from "node:net";
 import { Router, type Request, type Response } from "express";
+import { isPublicIpAddress } from "../lib/ip-address.js";
 import { logger } from "../middleware/logger.js";
 import type { CloudInstanceEnv } from "../services/cloud-instance.js";
 import {
@@ -119,26 +119,14 @@ export function posthogUpstreamUrl(ingestHost: string, method: string, requestUr
  * decision from fixing analytics location.
  */
 export function posthogVisitorIp(peerIp: string | undefined, headers: IncomingHttpHeaders): string | undefined {
-  if (peerIp && !isPrivateAddress(peerIp)) return peerIp;
+  if (peerIp && isPublicIpAddress(peerIp)) return peerIp;
   const raw = headers["x-forwarded-for"];
   const entries = (Array.isArray(raw) ? raw.join(",") : raw ?? "").split(",").map((entry) => entry.trim());
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
-    if (isIP(entry) === 0) continue;
-    if (!isPrivateAddress(entry)) return entry;
+    if (isPublicIpAddress(entry)) return entry;
   }
   return peerIp;
-}
-
-function isPrivateAddress(address: string): boolean {
-  const ip = address.startsWith("::ffff:") ? address.slice(7) : address;
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number) as [number, number];
-    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-      (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
-  }
-  const lower = ip.toLowerCase();
-  return lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd") || lower.startsWith("fe80:");
 }
 
 export function posthogForwardRequestHeaders(

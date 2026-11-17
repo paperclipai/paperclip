@@ -176,11 +176,11 @@ describe("PostHog proxy forwarding", () => {
     const res = await request(proxyApp())
       .post("/_ph/e/")
       .set("Content-Type", "application/json")
-      .set("X-Forwarded-For", "203.0.113.7, 100.64.0.11")
+      .set("X-Forwarded-For", "8.8.8.8, 100.64.0.11")
       .send(JSON.stringify({ event: "$pageview" }));
 
     expect(res.status).toBe(200);
-    expect(seen[0]!.headers["x-forwarded-for"]).toBe("203.0.113.7");
+    expect(seen[0]!.headers["x-forwarded-for"]).toBe("8.8.8.8");
   });
 
   it.each([
@@ -308,19 +308,19 @@ describe("PostHog proxy forwarding", () => {
 
 describe("posthogVisitorIp", () => {
   it("keeps a public peer address and ignores X-Forwarded-For", () => {
-    expect(posthogVisitorIp("198.51.100.4", { "x-forwarded-for": "203.0.113.7" })).toBe("198.51.100.4");
+    expect(posthogVisitorIp("9.9.9.9", { "x-forwarded-for": "8.8.8.8" })).toBe("9.9.9.9");
   });
 
-  it.each(["100.64.0.11", "10.1.2.3", "172.20.0.1", "192.168.1.5", "127.0.0.1", "::1", "::ffff:100.64.0.5", "fd00::1"])(
+  it.each(["100.64.0.11", "10.1.2.3", "172.20.0.1", "192.168.1.5", "127.0.0.1", "::1", "::ffff:100.64.0.5", "::ffff:7f00:1", "fd00::1", "febf::1"])(
     "uses the edge-appended X-Forwarded-For entry behind private hop %s",
     (peer) => {
-      expect(posthogVisitorIp(peer, { "x-forwarded-for": "203.0.113.7, 100.64.0.2" })).toBe("203.0.113.7");
+      expect(posthogVisitorIp(peer, { "x-forwarded-for": "8.8.8.8, 100.64.0.2" })).toBe("8.8.8.8");
     },
   );
 
   it("ignores a client-supplied leftmost entry and uses the address the edge appended", () => {
-    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 198.51.100.9" })).toBe("198.51.100.9");
-    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 198.51.100.9, 100.64.0.3" })).toBe("198.51.100.9");
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 1.1.1.1" })).toBe("1.1.1.1");
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 1.1.1.1, 100.64.0.3" })).toBe("1.1.1.1");
   });
 
   it("falls back to the peer when X-Forwarded-For is missing or not an IP", () => {
