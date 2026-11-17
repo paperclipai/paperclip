@@ -9,6 +9,11 @@ import { HERMES_ADAPTER_TYPE } from "./run-state.js";
 
 /** Env key that holds the per-agent memory token for Claude and Codex agents (see default-mcp-agent-memory). */
 const EXTERNAL_MEMORY_TOKEN_ENV_KEY = "RH_MEMORY_TOKEN";
+/** The memory tools default-MCP entry (TECH-8832); the key is spelled out so this module does not import the hook. */
+const MEMORY_TOOLS_ENTRY_KEY = "agent-memory-tools";
+/** Env switch the Claude/Codex hook reads; the hook's own off values are mirrored here. */
+const CAPTURE_SWITCH_ENV_KEY = "RH_MEMORY_CAPTURE";
+const CAPTURE_OFF_VALUES = new Set(["off", "false", "0", "no"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -42,6 +47,17 @@ export function agentUsesExternalMemory(
   return false;
 }
 
+/**
+ * Whether the end-of-turn capture hook is on for a Claude or Codex agent. It is on unless `RH_MEMORY_CAPTURE` holds an
+ * off value; a value that is not a plain string (for example a secret reference) is treated as on, the hook's default.
+ */
+function captureHookOn(adapterConfig: unknown): boolean {
+  if (!isRecord(adapterConfig) || !isRecord(adapterConfig.env)) return true;
+  const entry = adapterConfig.env[CAPTURE_SWITCH_ENV_KEY];
+  const value = typeof entry === "string" ? entry : isRecord(entry) && entry.type === "plain" && typeof entry.value === "string" ? entry.value : "";
+  return !CAPTURE_OFF_VALUES.has(value.trim().toLowerCase());
+}
+
 export interface ComputeMemoryAgentCapabilitiesInput {
   agentMetadata: unknown;
   runtimeMemory: unknown;
@@ -65,6 +81,7 @@ export function computeMemoryAgentCapabilities(
   const mcpState = readDefaultMcpState(input.agentMetadata);
   const arcanaReady =
     mcpState?.entries[BRAIN_BINDING_ARCANA_ENTRY_KEY]?.setup?.state === "ready";
+  const memoryToolsEntry = mcpState?.entries[MEMORY_TOOLS_ENTRY_KEY];
   const isHermes = input.adapterType === HERMES_ADAPTER_TYPE;
   const hasRuntimeMemory = Boolean(input.runtimeMemory);
   // The Hermes adapter drops `memoryProvider` while runtime memory is active, so runtime memory wins.
@@ -74,6 +91,13 @@ export function computeMemoryAgentCapabilities(
   return {
     mem0: mem0Available,
     ...(externalMemory ? { externalMemory: true } : {}),
+    ...(externalMemory && !isHermes
+      ? {
+          // Claude and Codex: the explicit tools exist only once the agent's own connection is ready and installed.
+          memoryTools: memoryToolsEntry?.setup?.state === "ready" && memoryToolsEntry.enabled === true,
+          captureOn: captureHookOn(input.adapterConfig),
+        }
+      : {}),
     arcana: arcanaReady,
     hermesBuiltInStores: Boolean(
       isHermes && !mem0Available && !input.flags.hermesMemoryConfig,

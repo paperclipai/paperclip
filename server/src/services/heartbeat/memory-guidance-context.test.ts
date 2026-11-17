@@ -320,8 +320,68 @@ describe("external memory (agent opted out of runtimeMemory)", () => {
         flags: { hermesMemoryConfig: false },
         adapterType,
       });
-      expect(caps).toEqual({ mem0: true, externalMemory: true, arcana: false, hermesBuiltInStores: false });
+      // Hooks only: no memory tools entry, and capture is the hook's default (on).
+      expect(caps).toEqual({ mem0: true, externalMemory: true, memoryTools: false, captureOn: true, arcana: false, hermesBuiltInStores: false });
     }
+  });
+
+  describe("memory tools and capture for Claude and Codex (TECH-8832)", () => {
+    const toolsEntry = (state: string, enabled: boolean) => ({
+      defaultMcp: { version: 1, entries: { "agent-memory-tools": { key: "agent-memory-tools", templateKey: "rh-agent-memory-tools", dedicated: true, enabled, setup: { state } } } },
+    });
+    const caps = (agentMetadata: unknown, env: Record<string, unknown> = {}, adapterType = "claude_local") =>
+      computeMemoryAgentCapabilities({
+        agentMetadata,
+        runtimeMemory: null,
+        adapterConfig: { env: { ...tokenRef, ...env } },
+        flags: { hermesMemoryConfig: false },
+        adapterType,
+      });
+
+    it("reports the tools only once the entry is ready and installed", () => {
+      expect(caps(toolsEntry("ready", true)).memoryTools).toBe(true);
+      expect(caps(toolsEntry("ready", false)).memoryTools).toBe(false);
+      expect(caps(toolsEntry("pending", true)).memoryTools).toBe(false);
+      expect(caps(toolsEntry("error", false)).memoryTools).toBe(false);
+      expect(caps({}, {}, "codex_local").memoryTools).toBe(false);
+    });
+
+    it("mirrors the hook's capture switch: on by default, off for off/false/0/no (plain or string)", () => {
+      expect(caps({}).captureOn).toBe(true);
+      for (const value of ["off", "false", "0", "no", " OFF "]) {
+        expect(caps({}, { RH_MEMORY_CAPTURE: { type: "plain", value } }).captureOn).toBe(false);
+        expect(caps({}, { RH_MEMORY_CAPTURE: value }).captureOn).toBe(false);
+      }
+      expect(caps({}, { RH_MEMORY_CAPTURE: { type: "plain", value: "on" } }).captureOn).toBe(true);
+      expect(caps({}, { RH_MEMORY_CAPTURE: { type: "secret_ref", secretId: "s" } }).captureOn).toBe(true);
+    });
+
+    it("never adds the Claude fields for Hermes or an agent without external memory", () => {
+      const hermes = computeMemoryAgentCapabilities({
+        agentMetadata: toolsEntry("ready", true),
+        runtimeMemory: null,
+        adapterConfig: hermesExternal,
+        flags: { hermesMemoryConfig: false },
+        adapterType: "hermes_local",
+      });
+      expect(hermes).toEqual({ mem0: true, externalMemory: true, arcana: false, hermesBuiltInStores: false });
+      const none = computeMemoryAgentCapabilities({ agentMetadata: toolsEntry("ready", true), runtimeMemory: null, adapterConfig: {}, flags: { hermesMemoryConfig: false }, adapterType: "claude_local" });
+      expect(none).toEqual({ mem0: false, arcana: false, hermesBuiltInStores: false });
+    });
+
+    it("an end-to-end Claude agent with the tools and capture off is told to use the tools and not to re-save", () => {
+      const result = buildHeartbeatMemoryGuidanceContext({
+        agentMetadata: toolsEntry("ready", true),
+        runtimeMemory: null,
+        adapterConfig: { env: { ...tokenRef, RH_MEMORY_CAPTURE: { type: "plain", value: "off" } } },
+        flags,
+        adapterType: "claude_local",
+      });
+      const guidance = buildMemoryAgentGuidance(result!);
+      expect(guidance).toContain("`memory_search`");
+      expect(guidance).not.toContain("saved after each turn");
+      expect(guidance).not.toContain("captured automatically");
+    });
   });
 
   it("still reports mem0 unavailable with no runtime memory and no external memory", () => {
