@@ -559,7 +559,6 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
       ...options,
       transport: () => ({ send: async () => ({}), flush: async () => true }),
       beforeSend: async (event, hint) => {
-        // `null` is a dropped event; only a missing hook passes the event on.
         const enriched = options.beforeSend ? await options.beforeSend(event, hint) : event;
         if (enriched) onEvent(enriched as unknown as Record<string, unknown>);
         return enriched;
@@ -600,7 +599,6 @@ describe("captured event shape against the real @sentry/browser SDK", () => {
       await Sentry.flush(2000);
       expect(captured).toEqual([]);
 
-      // An abort the app did not mark is still reported.
       window.onunhandledrejection?.call(window, {
         reason: new DOMException("signal is aborted without reason", "AbortError"),
       } as PromiseRejectionEvent);
