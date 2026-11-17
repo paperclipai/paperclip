@@ -179,6 +179,17 @@ export function findRemoteWorkspaceRestoreError(error: unknown): RemoteWorkspace
   return null;
 }
 
+const CLONE_ACCESS_FAILURE = /; remote_workspace_(?:prepare|repository)_failed: stage=clone(?: [a-z_]+=[A-Za-z0-9_]+)*? git=(auth_failed|repository_not_found)(?: |$)/;
+
+export function findRemoteWorkspaceCloneAccessFailure(error: unknown): "github_auth_required" | "github_repo_not_accessible" | null {
+  for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
+    if (!(cause instanceof RemoteWorkspaceOperationError)) continue;
+    const git = CLONE_ACCESS_FAILURE.exec(remoteWorkspaceFailureCause(cause) ?? "")?.[1];
+    if (git) return git === "auth_failed" ? "github_auth_required" : "github_repo_not_accessible";
+  }
+  return null;
+}
+
 const TRANSPORT_FAILURE_LABELS: Array<[RegExp, string]> = [
   [/daytona_sandbox_not_found/i, "daytona_sandbox_not_found"],
   [/sandbox lease \S+ is no longer active/i, "sandbox_lease_inactive"],

@@ -11,6 +11,7 @@ import { ProviderFailureNotice } from "./ProviderFailureNotice";
 import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
 import { PreviousServerStopConfirmation } from "./WorkspaceExportRecovery";
 import { issuesApi } from "../api/issues";
+import { appSourceConnectHref } from "../pages/apps/app-connect-policy";
 
 const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recoveryStep"]>, string> = {
   checking_previous_run: "Checking that the previous attempt stopped",
@@ -106,6 +107,19 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
         placeholder: "For example: no codex or claude process for this task is running on the server host.",
         resuming: "Starting your Retry…", confirm: "Confirm it stopped" }} />;
   }
+  if (!optimistic && presentation?.state === "waiting_for_user" && presentation.userAction === "connect_github") return (
+    <div className={cn("pt-4", className)}>
+      <div role="status" aria-label="Task status" data-testid="task-execution-waiting"
+        className="flex items-center justify-between gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
+        <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
+        <span className="min-w-0 flex-1">{presentation.githubAccess === "github_repo_not_accessible"
+          ? "Your GitHub account can’t reach this repository. Check the repository and its access in the GitHub connection, then retry."
+          : "Couldn’t get this project’s repository from GitHub. Connect your GitHub account, then retry. Your message is saved."}</span>
+        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
+        <Button asChild size="sm" className="shrink-0"><Link to={appSourceConnectHref("github")} data-testid="task-execution-connect-github">Connect GitHub</Link></Button>
+      </div>
+    </div>
+  );
   // Other person-owned decisions have their own card on the task (approval,
   // project access, ...). A budget hold has none, so name it here and keep the
   // failure visible. The saved attempt starts by itself once the budget allows.

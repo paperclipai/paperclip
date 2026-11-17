@@ -610,3 +610,20 @@ describe("hand-off of a run that failed before any provider work", () => {
       .toMatchObject({ state: "failed", canRetry: true });
   });
 });
+
+describe("task GitHub access interruption", () => {
+  it.each(["github_auth_required", "github_repo_not_accessible"] as const)("asks the person to fix the GitHub connection for %s, keeping Retry", errorCode => {
+    const failed = { ...run, errorCode, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+    expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false })).toMatchObject({
+      state: "waiting_for_user", responsibility: "user", userAction: "connect_github", canRetry: true, githubAccess: errorCode,
+    });
+  });
+
+  it("shows an accepted Retry as working and keeps a generic setup failure generic", () => {
+    const failed = { ...run, errorCode: "github_auth_required", resultJson: null };
+    expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
+      wait: { id: "request", requestedAt: new Date() } })).toMatchObject({ state: "working", canRetry: false });
+    expect(projectTaskInterruption(issue, { run: { ...failed, errorCode: "setup_failed" }, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "failed", responsibility: "system", userAction: null, canRetry: true });
+  });
+});
