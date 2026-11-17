@@ -22,8 +22,9 @@ operator handoff, never here.
 ## The scope contract
 
 One connection, 14 scopes; the table is in the working memory's
-[Scopes](../memory/google-connector-memory.md#scopes) section, and nothing
-outside it is requested, declared in the Console, or shown in the demo.
+[Scopes](../memory/google-connector-memory.md#scopes) section. The target is
+that nothing outside it is requested, declared in the Console, or shown in the
+demo.
 
 ## 0. Decisions (Dotta)
 
@@ -74,7 +75,8 @@ Decisions and the details behind them are kept in the
 - [ ] REST-backed tool set for all 36 actions, in its own folder inside the
       server, with the same tool names and shapes as Google's MCP tools
       (part 1, three Gmail tools:
-      [#22000](https://github.com/paperclipai/paperclip/pull/22000), open).
+      [#22000](https://github.com/paperclipai/paperclip/pull/22000), merged
+      Nov 17; not yet called by the gateway).
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [ ] `googletester.staging.paperclip.app` created and wired to the new Google

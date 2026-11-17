@@ -6,8 +6,8 @@ land. It covers section 2 of the
 
 Based on a read of master at `56654adecd`. Items marked **confirmed** were seen
 in the code. Items marked **to check** are suspected gaps that need a look
-before any change. Fixes 1 to 4 landed on November 17; the rest are not
-implemented yet.
+before any change. Fixes 1 to 4 landed on November 17. Work on fixes 9 and
+10 has started. Fixes 5 to 8 are not started.
 
 Each fix is its own pull request with a failing test first. For the scope
 change in fix 2, the deploy order is app first, then broker (see fix 10).
@@ -24,7 +24,7 @@ change in fix 2, the deploy order is app first, then broker (see fix 10).
 | 6 | Retention and deletion of Google content | Audit, then unknown | Yes | Audit reported; fix not started |
 | 7 | Security scan findings | Unknown | Yes (assessment) | Not started |
 | 8 | Remove the experimental gate | Small | No, release step | Not started |
-| 9 | REST-backed tool set | Large | Yes | Part 1 open, [#22000](https://github.com/paperclipai/paperclip/pull/22000) |
+| 9 | REST-backed tool set | Large | Yes | Part 1 merged Nov 17, [#22000](https://github.com/paperclipai/paperclip/pull/22000) |
 | 10 | Scope cleanup across code, Cloud and Console | Medium | Yes | App done; broker and Console open |
 
 ## 1. Data-use disclosure in the picker
@@ -199,7 +199,7 @@ connection" action.
 Decision: launch on our own tools over Google's REST APIs, designed so we can
 switch to Google's hosted MCP servers later, kept in one folder so it can be
 deleted cleanly. Part 1 is
-[#22000](https://github.com/paperclipai/paperclip/pull/22000) (open): the
+[#22000](https://github.com/paperclipai/paperclip/pull/22000) (merged Nov 17): the
 folder and Gmail `get_message`, `search_threads` and `create_draft`. Its README
 records the dispatch trace and the recommended in-process seam.
 
@@ -269,11 +269,11 @@ server/src/google-workspace-rest-tools/
 
 ### Order of work
 
-1. Trace the dispatch path and confirm the seam. Traced in #22000's README
-   (open): an in-process call, because the egress guard refuses a loopback
-   address on public deployments.
+1. Trace the dispatch path and confirm the seam. Traced in #22000's README:
+   an in-process call, because the egress guard refuses a loopback address on
+   public deployments.
 2. Folder skeleton, `google-http.ts`, and Gmail `get_message`,
-   `search_threads` and `create_draft` (#22000, open). Then the switch, end to
+   `search_threads` and `create_draft` (#22000, merged). Then the switch, end to
    end on the staging tester. The demo depends on Gmail.
 3. Rest of Gmail, then Calendar, Drive, Docs, Sheets, Slides.
 4. Contract and removal tests.

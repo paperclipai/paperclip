@@ -37,9 +37,7 @@ Last updated: November 17, 2026 (evening).
 | [#21998](https://github.com/paperclipai/paperclip/pull/21998) | Data-use disclosure in the service picker, shown just before Google consent. Every Google Workspace sign-in start goes through the picker, including four sign-in paths on the app page (Reconnect, Connect as me, Connect organization identity, dedicated-agent connect). The Gmail read & write line says Google's screen also mentions sending and that Paperclip does not send. | `b124ad0674` |
 | [#21999](https://github.com/paperclipai/paperclip/pull/21999) | Prompt-injection screening now also covers resource reads through a named gateway, the one path that was not screened. Applies to every connector, not only Google. | `65eac24876` |
 | [#22001](https://github.com/paperclipai/paperclip/pull/22001) | Scope lock. `GOOGLE_WORKSPACE_SUBMITTED_SCOPES` is the hand-written list of 14, and `workspace.all` uses it. Paperclip-managed Google methods outside the 14 (Gmail archive, Chat, People, Workspace Search) are no longer offered for new setup or reconnect through Paperclip's Google app; saved ones keep refreshing and running. | `66ac5d7aa0` |
-
-In progress: [#22000](https://github.com/paperclipai/paperclip/pull/22000),
-REST tool set part 1 (Gmail `get_message`, `search_threads`, `create_draft`).
+| [#22000](https://github.com/paperclipai/paperclip/pull/22000) | REST tool set part 1: the folder `server/src/google-workspace-rest-tools/` with Gmail `get_message`, `search_threads` and `create_draft`. Nothing calls it yet; the switch comes in a later PR. | `a29658b5b7` |
 
 ## Still open
 
@@ -122,8 +120,9 @@ default all-read-and-write selection, 8 for all read-only). Prefix:
   our tool list has no send action. Never say the scope itself prevents sending.
 - **Out of scope:** Chat, Contacts, Directory, cross-service Search. Not in the
   picker, the request, the tools, the docs or the submission.
-- Nothing outside this table is requested, declared in the Console, or shown
-  in the demo.
+- Target: nothing outside this table is requested, declared in the Console,
+  or shown in the demo. The app side is done; the broker and Console are not
+  (below).
 
 Known mismatches to clean up (after #22001 the app side matches the 14):
 
