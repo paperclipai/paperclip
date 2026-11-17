@@ -88,12 +88,14 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   write("ui/src/environment.ts", 'import {readFileSync} from "node:fs"; readFileSync(process.env.INPUT);');
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup builtin/, "setup filesystem reads can affect every test outside the import graph");
   mkdirSync(path.join(directory, "server/src/__tests__/helpers"), { recursive: true });
-  for (const file of ["server/src/__tests__/setup-supertest.ts", "server/src/__tests__/helpers/isolated-test-home.ts"]) {
+  mkdirSync(path.join(directory, "server/src/services"), { recursive: true });
+  for (const [file, fixture] of [
+    ["server/src/__tests__/setup-supertest.ts", "setup-supertest.reviewed.txt"],
+    ["server/src/__tests__/helpers/isolated-test-home.ts", "isolated-test-home.reviewed.txt"],
+    ["server/src/services/instance-settings-cache.ts", "instance-settings-cache.reviewed.txt"],
+  ]) {
     // Exercise the exact reviewed setup contract, independently of later product setup edits.
-    const source = file === "server/src/__tests__/setup-supertest.ts"
-      ? new URL("./fixtures/setup-supertest.reviewed.txt", import.meta.url)
-      : new URL("./fixtures/isolated-test-home.reviewed.txt", import.meta.url);
-    write(file, readFileSync(source, "utf8"));
+    write(file, readFileSync(new URL(`./fixtures/${fixture}`, import.meta.url), "utf8"));
   }
   write("ui/setup.ts", 'import "../server/src/__tests__/setup-supertest.ts";');
   const reviewed = await select(["ui/src/leaf.ts"]);
@@ -101,6 +103,8 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   const helper = "server/src/__tests__/helpers/isolated-test-home.ts";
   const changedSetup = await select([helper]);
   assert.deepEqual(changedSetup.selected, changedSetup.inventory, "reviewed helpers still invalidate all tests when changed");
+  const changedCache = await select(["server/src/services/instance-settings-cache.ts"]);
+  assert.deepEqual(changedCache.selected, changedCache.inventory, "the reviewed settings cache reset still invalidates all tests when changed");
   write(helper, `${readFileSync(path.join(directory, helper), "utf8")}\n// setup edited since review\n`);
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup/, "a stale review cannot authorize new setup effects");
 });
