@@ -80,6 +80,7 @@ import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RU
 import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { AGENT_TOOL_CALL_LOOP, TOOL_CALL_LOOP_HINT, toolCallLoopContinuationKey, type ToolCallLoopError } from "./repeated-tool-failure-guard.js";
+import { nativeRunHasStopRequest } from "./native-tool-receipt-limit.js";
 import { enqueueWake } from "./status-decision-committer.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -357,7 +358,13 @@ export class PaperclipRunnerToolAuthority {
     const review = this.binding.nativeReview;
     const loopContext = { sourceRunId: this.binding.runId, continuationCause: AGENT_TOOL_CALL_LOOP,
       tool: loop.tool, refusals: loop.refusals, runRefusals: loop.runRefusals, argumentNames: loop.argumentNames };
-    await this.db.transaction(tx => enqueueWake({
+    return this.db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, this.binding.issueId), eq(issues.companyId, this.binding.companyId))).for("update");
+      const [run] = await tx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, this.binding.runId), eq(heartbeatRuns.companyId, this.binding.companyId))).for("share");
+      if (!run || nativeRunHasStopRequest(run.resultJson)) return false;
+      await enqueueWake({
       tx: tx as unknown as Db,
       originRunId: this.binding.runId,
       companyId: this.binding.companyId,
@@ -368,8 +375,9 @@ export class PaperclipRunnerToolAuthority {
       payload: { ...(review ?? {}), ...loopContext },
       contextSnapshot: { ...(review ?? {}), forceFreshSession: true, livenessContinuationSourceRunId: this.binding.runId,
         livenessContinuationReason: AGENT_TOOL_CALL_LOOP, livenessContinuationInstruction: TOOL_CALL_LOOP_HINT },
-    }));
-    return true;
+      });
+      return true;
+    });
   }
   constructor(readonly db: Db, readonly binding: Binding) {}
 

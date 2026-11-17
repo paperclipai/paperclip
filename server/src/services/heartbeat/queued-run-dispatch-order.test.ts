@@ -208,6 +208,80 @@ describe("queued run dispatch order", () => {
   });
 });
 
+describe("work on a task tree a person created", () => {
+  const newAssignment = (createdMinutesAgo: number) => run({ wakeReason: "issue_assigned", requestedByUser: true,
+    readinessRank: 1, createdAt: minutesAgo(createdMinutesAgo) });
+  const first = (queue: QueuedRunDispatchFacts[]) => {
+    const input = { now, startsSinceRecovery: 0, startsSinceOldest: 0 };
+    const [next] = orderQueuedRunsForDispatch(queue, input);
+    expect(queuedRunDispatchLine(queue, input)[0]!.id).toBe(next!.id);
+    return next!;
+  };
+
+  it("starts the parent's resume after its children complete ahead of a newer assignment by a person", () => {
+    const resume = run({ wakeReason: "issue_children_completed", personTask: true, readinessRank: 1, createdAt: minutesAgo(20) });
+    const assignment = newAssignment(10);
+    expect(queuedRunDispatchClass(resume, now)).toBe("person");
+    expect(first([assignment, resume]).id).toBe(resume.id);
+  });
+
+  it("starts a subtask of a person's task ahead of a newer assignment by a person", () => {
+    const subtask = run({ wakeReason: "issue_assigned", personTask: true, readinessRank: 1, createdAt: minutesAgo(20) });
+    const assignment = newAssignment(10);
+    expect(first([assignment, subtask]).id).toBe(subtask.id);
+  });
+
+  it("keeps work on a tree an agent started in the work tier, behind a newer assignment by a person", () => {
+    const agentTree = run({ wakeReason: "issue_children_completed", readinessRank: 1, createdAt: minutesAgo(20) });
+    const assignment = newAssignment(10);
+    expect(queuedRunDispatchClass(agentTree, now)).toBe("work");
+    expect(first([agentTree, assignment]).id).toBe(assignment.id);
+  });
+
+  it("keeps system recovery on a person's tree in the recovery tier", () => {
+    const recovery = run({ wakeReason: "issue_continuation_needed", personTask: true, sourceEndedAt: minutesAgo(5),
+      createdAt: minutesAgo(4) });
+    expect(queuedRunDispatchClass(recovery, now)).toBe("recovery");
+  });
+
+  it("starts another person's new task within the oldest-run share while a deep tree keeps adding in-progress work", () => {
+    const start = new Date(now.getTime() - 2 * 60 * 60_000);
+    const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
+    let id = 0;
+    const treeRun = (minutes: number) => ({ id: `tree-${++id}`, wakeReason: "issue_commented", requestedByUser: false,
+      personTask: true, sourceEndedAt: null, readinessRank: 0, priorityRank: 1, createdAt: at(minutes) });
+    const otherPerson = { ...newAssignment(0), createdAt: at(0) };
+    let pending: QueuedRunDispatchFacts[] = [otherPerson, ...Array.from({ length: 10 }, () => treeRun(0))];
+    const started: QueuedRunDispatchFacts[] = [];
+    // One start a minute, and the tree adds two higher-ranked runs for every one that starts.
+    for (let minute = 0; minute < 120 && !started.includes(otherPerson); minute += 1) {
+      pending.push(treeRun(minute), treeRun(minute));
+      const clock = at(minute);
+      const history = [...started].reverse().map(entry => queuedRunStartOf(entry, clock));
+      const [next] = orderQueuedRunsForDispatch(pending, { now: clock, ...dispatchCountersFromStarts(pending, history, clock) });
+      started.push(next!);
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    const position = started.indexOf(otherPerson);
+    expect(position).toBeGreaterThanOrEqual(0);
+    expect(position).toBeLessThan(QUEUED_RUN_AGING_MS / 60_000 + OLDEST_DISPATCH_SHARE);
+  });
+
+  it("never lets newer tree work pass another person's waiting task of the same rank", () => {
+    const otherPerson = newAssignment(5);
+    const tree = Array.from({ length: 20 }, (_, index) => run({ wakeReason: "issue_assigned", personTask: true, readinessRank: 1,
+      createdAt: minutesAgo(4 - index * 0.1) }));
+    expect(first([...tree, otherPerson]).id).toBe(otherPerson.id);
+  });
+
+  it("does not hold recovery's share for tree work a person did not ask for", () => {
+    const recovery = run({ wakeReason: "issue_recovery_action_restored", createdAt: minutesAgo(3), sourceEndedAt: minutesAgo(4) });
+    const tree = Array.from({ length: 5 }, () => run({ wakeReason: "issue_assigned", personTask: true, createdAt: minutesAgo(2) }));
+    const ordered = orderQueuedRunsForDispatch([...tree, recovery], { now, startsSinceRecovery: RECOVERY_DISPATCH_SHARE - 1 });
+    expect(ordered[0]!.id).toBe(recovery.id);
+  });
+});
+
 describe("deep per-agent queue: a recovery burst behind 20 busy slots (paperclip.staging, 2026-11-13)", () => {
   // Codie, maxConcurrentRuns 20, every slot busy: each freed slot is one dispatch.
   const at = new Date("2026-11-13T14:30:00.000Z");

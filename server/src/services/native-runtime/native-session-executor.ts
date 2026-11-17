@@ -215,6 +215,7 @@ import {
   applyNativeSessionGoalControl,
   inspectStagedRunAttachment,
   inspectDurablePrpCheckpointHeader,
+  inspectDurablePrpCheckpointRunner,
   inspectStagedRunAttachmentHeader,
   inspectRetainedRunInstructions,
   inspectWarmRunTransition,
@@ -922,7 +923,7 @@ async function detachReleasedWarmNativeSession(entry: WarmNativeSession) {
   entry.controllerDetachedForRestart = true;
   if (!entry.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
   await entry.session.detachControllerForRestart();
-  await entry.githubAccess?.stop();
+  await entry.githubAccess?.stop({ preserveLaunchers: true });
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -2556,6 +2557,14 @@ function nativeSessionScopeKey(execution: NativeExecutionInput): string {
       identity: nativeProviderSessionScope(execution),
     },
     normalizedSessionId: nativeSessionKey(execution),
+  });
+}
+
+function nativeGitHubLauncherKey(execution: NativeExecutionInput): string {
+  return canonicalJson({
+    schema: "paperclip.native-github-launcher.v1",
+    session: nativeSessionScopeKey(execution),
+    issueId: execution.binding.issueId,
   });
 }
 
@@ -11231,7 +11240,16 @@ async function executePaperclipNativeSessionAttempt(
           record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
             NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
       }) ?? undefined;
-      if (remoteWarmRecovery) remoteWarmRecovery.releasedSource = releasedSource;
+      if (remoteWarmRecovery) {
+        remoteWarmRecovery.releasedSource = releasedSource;
+        if (releasedSource) {
+          const header = await loadNativeRunnerCheckpointHeader(input.db, remoteWarmRecovery.previousExecution.binding).catch((error: unknown) => {
+            if (error instanceof Error && error.message === "native_runner_checkpoint_retired") return null;
+            throw error;
+          });
+          remoteWarmRecovery.releasedSourceRunner = header ? inspectDurablePrpCheckpointRunner(header) ?? undefined : undefined;
+        }
+      }
     }
   }
   if (input.useRunnerd) {
@@ -12456,6 +12474,7 @@ async function executePaperclipNativeSessionAttempt(
           env: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
           resolveCredentials: (binding) => resolveGitHubOperationCredentials(input.db, binding),
           onLog: input.onLog,
+          launcherKey: nativeGitHubLauncherKey(input.execution),
         }));
         executionContext?.assertOpen();
         releaseGitHubRun = githubAccess.activate(input.execution.binding);
@@ -13878,7 +13897,8 @@ async function executePaperclipNativeSessionAttempt(
     settlingNativeSessionScopes.set(nativeSessionScopeKey(input.execution), input.execution.binding.runId);
     releaseGitHubRun?.();
     if (githubAccess && (!warmSessionId || warmNativeSessions.get(warmSessionId)?.githubAccess !== githubAccess)) {
-      await timeController("github_stop", () => githubAccess!.stop());
+      const preserveLaunchers = nativeRunsDetachingForRestart.has(input.execution.binding.runId);
+      await timeController("github_stop", () => githubAccess!.stop({ preserveLaunchers }));
     }
   }
   let postExecutionFailed = false;
@@ -14229,8 +14249,9 @@ export function buildRemoteCodexLauncherCommand(
 
 export function mayUsePreinstalledRunnerArtifact(
   configuredRemoteBinaryPath: string | null | undefined,
+  configuredArtifactAvailable = false,
 ): boolean {
-  return !configuredRemoteBinaryPath?.trim();
+  return !configuredRemoteBinaryPath?.trim() || configuredArtifactAvailable;
 }
 
 const RUNNERD_BUILD_METADATA_SCHEMA =
@@ -16832,9 +16853,11 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
       resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
+      resumeRelaunchedRunnerVersion: description.resumeRelaunchedRunnerVersion,
       launchDigestVersion: description.launchDigestVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
+      releasedSourceRunner: input.remoteWarmRecovery?.releasedSourceRunner,
       sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,
       onResumed: async source => updateReleasedWarmRunner(input.execution, source, input.remoteWarmRecovery?.portableSourceTaskId ?? description.taskId, null),
       onRetired: async source => updateReleasedWarmRunner(input.execution, source, description.taskId, null),
@@ -18119,8 +18142,10 @@ async function createRunnerdBackendWithinSessionClaim(
     )
       return false;
     const durableStorage = durableNativeHarnessStorage();
-    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId);
-    const backupOwner = durableStorage && currentAuthority ? sessionHarnessBackupOwners.get(currentAuthority) : null;
+    const currentAuthority = sessionToolAuthorityEpochs.get(sessionScopeId) ?? authorityEpoch;
+    const backupOwner = durableStorage
+      ? sessionHarnessBackupOwners.get(currentAuthority) ?? sessionHarnessBackupOwners.get(authorityEpoch) ?? null
+      : null;
     if (durableStorage && !backupOwner) throw new Error("native_harness_storage_owner_missing");
     if (backupOwner) await assertNativeHarnessBackupOwner(input.db, backupOwner);
     // Transport release also runs when provider bootstrap failed. In that case
@@ -18918,9 +18943,7 @@ async function createRunnerdBackendWithinSessionClaim(
           target,
           controllerPersistence: input.controllerPersistence ? nativeRunnerCheckpointPersistence(
             input.db, input.controllerPersistence.bootId, () => {
-              const current = sessionToolAuthorityEpochs.get(sessionScopeId);
-              if (!current) throw new Error("native_session_tool_authority_unavailable");
-              return current.runId;
+              return (sessionToolAuthorityEpochs.get(sessionScopeId) ?? authorityEpoch).runId;
             }, detachNativeSessionsForRestart) : undefined,
           binding: input.remoteWarmRecovery
             ? { ...input.execution.binding, runId: input.remoteWarmRecovery.identity.runId }
@@ -19296,11 +19319,15 @@ export function createRemoteNativeArtifactPreparation(input: {
         );
       }
       const explicitRemoteBinary = input.runnerRemoteBinaryPath?.trim() || null;
-      if (!runnerArtifactPrepared && mayUsePreinstalledRunnerArtifact(explicitRemoteBinary)) {
+      const controllerArtifactAvailable = existsSync(controllerRunnerBinary);
+      if (!runnerArtifactPrepared &&
+          mayUsePreinstalledRunnerArtifact(explicitRemoteBinary, controllerArtifactAvailable)) {
         const preinstalledRunner = await measureNativeRunnerSpan(
           input.trace,
           "runner.artifact.discover",
-          () => discoverPreinstalledExecutable("paperclip-runnerd"),
+          () => explicitRemoteBinary
+            ? discoverPreinstalledExecutable("paperclip-runnerd").catch(() => null)
+            : discoverPreinstalledExecutable("paperclip-runnerd"),
         );
         if (preinstalledRunner) {
           try {
@@ -19309,7 +19336,7 @@ export function createRemoteNativeArtifactPreparation(input: {
               "runner.artifact.verify_preinstalled",
               () => verifyRemoteRunner(requiredMode, preinstalledRunner),
             );
-            if (existsSync(controllerRunnerBinary) &&
+            if (controllerArtifactAvailable &&
                 !await matchesControllerRunnerArtifact(preinstalledRunner)) {
               throw new Error("runner_remote_preinstalled_artifact_mismatch");
             }

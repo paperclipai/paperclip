@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   agents, applyPendingMigrations, authUsers, companies, companyMemberships, createDb, instanceSettings,
@@ -12,6 +12,8 @@ import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./au
 import { errorHandler } from "./error-handler.js";
 import { userProfileRoutes } from "../routes/user-profiles.js";
 import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { logger } from "./logger.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const aliasFields = ["name", "email-local", "email", "principal"] as const;
@@ -138,7 +140,9 @@ const aliasFields = ["name", "email-local", "email", "principal"] as const;
     expect(await db.select().from(authUsers).where(eq(authUsers.id, userId))).toEqual([beforeUser]);
     expect(await db.select().from(companyMemberships).where(membershipWhere)).toEqual([beforeMembership]);
     expect(await db.execute(sql`select * from cloud_sync_write_probe`)).toEqual([]);
-    expect((await db.select().from(principalPermissionGrants).where(and(eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalId, userId)))).length).toBeGreaterThan(0);
+    // An unchanged membership does not hold the request; the repair finishes after it.
+    await vi.waitFor(async () => expect((await db.select().from(principalPermissionGrants).where(and(eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalId, userId)))).length).toBeGreaterThan(0));
+    expect(await db.execute(sql`select * from cloud_sync_write_probe`)).toEqual([]);
     await resolve(freshDb(), { ...value, "x-paperclip-cloud-user-name": "Changed profile", "x-paperclip-cloud-stack-role": "member" });
     const [changedUser] = await db.select().from(authUsers).where(eq(authUsers.id, userId));
     const [changedMembership] = await db.select().from(companyMemberships).where(membershipWhere);
@@ -147,6 +151,163 @@ const aliasFields = ["name", "email-local", "email", "principal"] as const;
     expect(changedMembership.membershipRole).toBe("member");
     expect(changedMembership.updatedAt.getTime()).toBeGreaterThan(oldUpdatedAt.getTime());
   });
+
+  it("authenticates an already-synced user while another transaction holds that user's rows", async () => {
+    const value = headers();
+    const actor = await resolve(db, value);
+    const companyId = actor!.companyIds![0]!;
+    const userId = value["x-paperclip-cloud-user-id"];
+    const holder = freshDb();
+    let release!: () => void;
+    const released = new Promise<void>(done => { release = done; });
+    let locked!: () => void;
+    const lockHeld = new Promise<void>(done => { locked = done; });
+    // Another open transaction that touched this user: it inserted a row that
+    // references the user and holds the membership row. Staging hung every
+    // request of one signed-in user for 6.5 minutes behind such a transaction.
+    const holding = holder.transaction(async tx => {
+      await tx.execute(sql`select id from "user" where id = ${userId} for key share`);
+      await tx.execute(sql`select id from company_memberships where company_id = ${companyId}
+        and principal_type = 'user' and principal_id = ${userId} for update`);
+      locked();
+      await released;
+    });
+    await lockHeld;
+    try {
+      const next = freshDb(); // a new client has no process-local write debounce
+      const outcome = await Promise.race([
+        resolve(next, value).then(result => ({ result })),
+        new Promise<"timed_out">(done => setTimeout(() => done("timed_out"), 3_000)),
+      ]);
+      expect(outcome).not.toBe("timed_out");
+      const result = (outcome as { result: Awaited<ReturnType<typeof resolve>> }).result;
+      expect(result?.companyIds).toEqual(actor!.companyIds);
+      expect(result?.memberships?.[0]).toEqual({ companyId, membershipRole: "owner", status: "active" });
+    } finally {
+      release();
+      await holding;
+    }
+  });
+
+  it("tracks one blocked shared sync once across many requests and reports its failure once", async () => {
+    const value = headers();
+    const actor = await resolve(db, value);
+    const companyId = actor!.companyIds![0]!;
+    const userId = value["x-paperclip-cloud-user-id"];
+    const holder = freshDb();
+    let release!: () => void;
+    const released = new Promise<void>(done => { release = done; });
+    let locked!: () => void;
+    const lockHeld = new Promise<void>(done => { locked = done; });
+    const holding = holder.transaction(async tx => {
+      await tx.execute(sql`select id from "user" where id = ${userId} for key share`);
+      await tx.execute(sql`select id from company_memberships where company_id = ${companyId}
+        and principal_type = 'user' and principal_id = ${userId} for update`);
+      locked();
+      await released;
+    });
+    await lockHeld;
+    const warn = vi.spyOn(logger, "warn");
+    const before = idleWorkSnapshot().active;
+    try {
+      const next = freshDb(); // one server's client, past the write debounce
+      for (let index = 0; index < 5; index += 1) {
+        expect((await resolve(next, value))?.companyIds).toEqual(actor!.companyIds);
+      }
+      expect(idleWorkSnapshot().active).toBe(before + 1);
+      // End the blocked sync with an error, as a lock or statement timeout would.
+      await vi.waitFor(async () => {
+        const cancelled = await db.execute(sql`select pg_cancel_backend(pid) as cancelled from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'`);
+        expect(cancelled.length).toBeGreaterThan(0);
+      });
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(before));
+      expect(warn.mock.calls.filter(call => call[1] === "Cloud tenant sync failed; the next request retries it")).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      release();
+      await holding;
+    }
+  });
+
+  it("restores missing default grants before an unchanged membership skips a blocked sync", async () => {
+    const value = headers();
+    const actor = await resolve(db, value);
+    const companyId = actor!.companyIds![0]!;
+    const userId = value["x-paperclip-cloud-user-id"];
+    const grantsOf = () => db.select().from(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalId, userId)));
+    const granted = (await grantsOf()).length;
+    expect(granted).toBeGreaterThan(0);
+    // An earlier sync wrote the membership and failed before its grants.
+    await db.delete(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalId, userId)));
+    const holder = freshDb();
+    let release!: () => void;
+    const released = new Promise<void>(done => { release = done; });
+    let locked!: () => void;
+    const lockHeld = new Promise<void>(done => { locked = done; });
+    const holding = holder.transaction(async tx => {
+      await tx.execute(sql`select id from "user" where id = ${userId} for key share`);
+      await tx.execute(sql`select id from company_memberships where company_id = ${companyId}
+        and principal_type = 'user' and principal_id = ${userId} for update`);
+      locked();
+      await released;
+    });
+    await lockHeld;
+    try {
+      const outcome = await Promise.race([
+        resolve(freshDb(), value).then(result => ({ result })),
+        new Promise<"timed_out">(done => setTimeout(() => done("timed_out"), 3_000)),
+      ]);
+      expect(outcome).not.toBe("timed_out");
+      // The grants exist when the request proceeds, not some time after it.
+      expect((await grantsOf()).length).toBe(granted);
+    } finally {
+      release();
+      await holding;
+    }
+  });
+
+  it("still authenticates when the default grant repair times out on a held lock", async () => {
+    const value = headers();
+    const actor = await resolve(db, value);
+    const companyId = actor!.companyIds![0]!;
+    const userId = value["x-paperclip-cloud-user-id"];
+    await db.delete(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, companyId), eq(principalPermissionGrants.principalId, userId)));
+    const holder = freshDb();
+    let release!: () => void;
+    const released = new Promise<void>(done => { release = done; });
+    let locked!: () => void;
+    const lockHeld = new Promise<void>(done => { locked = done; });
+    // The company row is locked FOR UPDATE, so the grant insert's foreign-key
+    // check waits until its lock timeout.
+    const holding = holder.transaction(async tx => {
+      await tx.execute(sql`select id from companies where id = ${companyId} for update`);
+      await tx.execute(sql`select id from company_memberships where company_id = ${companyId}
+        and principal_type = 'user' and principal_id = ${userId} for update`);
+      locked();
+      await released;
+    });
+    await lockHeld;
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      const outcome = await Promise.race([
+        resolve(freshDb(), value).then(result => ({ result }), error => ({ error })),
+        new Promise<"timed_out">(done => setTimeout(() => done("timed_out"), 6_000)),
+      ]);
+      expect(outcome).not.toBe("timed_out");
+      expect(outcome).not.toHaveProperty("error");
+      expect((outcome as { result: Awaited<ReturnType<typeof resolve>> }).result?.memberships?.[0])
+        .toEqual({ companyId, membershipRole: "owner", status: "active" });
+      expect(warn.mock.calls.some(call => call[1] === "Cloud tenant default grant repair failed; the sync retries it")).toBe(true);
+    } finally {
+      warn.mockRestore();
+      release();
+      await holding;
+    }
+  }, 15_000);
 
   it("preserves runtime invalidation on real membership changes while no-op conflicts produce no invalidation", async () => {
     const value = headers();

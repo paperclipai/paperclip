@@ -1,4 +1,5 @@
 import type { heartbeatRuns } from "@paperclipai/db";
+import { sql, type SQLWrapper } from "drizzle-orm";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "status" | "startedAt" | "finishedAt" | "runtimeMode" | "errorCode" | "error" | "resultJson">;
 const SOURCES = ["operator", "queued_message", "shutdown", "provider", "transport", "control_plane", "controller_lease", "unknown"] as const;
@@ -143,6 +144,29 @@ export function recordedUserStop(run: Pick<Run, "status" | "resultJson">) {
   const cancellation = readRunCancellation(run.resultJson);
   return cancellation && cancellation.initiator.type === "user" &&
     ["operator", "queued_message"].includes(cancellation.source) ? cancellation : null;
+}
+
+/** Presentation of a settled operator Stop; this does not grant replay authority. */
+export function isAcknowledgedLegacyUserStop(run: Pick<Run, "status" | "resultJson"> & Partial<Pick<Run, "runtimeMode" | "finishedAt">>): boolean {
+  const cancellation = recordedUserStop(run);
+  const receipt = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
+  return run.status === "cancelled" && run.runtimeMode === "legacy" && Boolean(run.finishedAt)
+    && cancellation?.source === "operator" && cancellation.expected
+    && receipt?.state === "acknowledged" && receipt.proof === "preparation_settled";
+}
+
+/** The same bounded Stop evidence for both task-page projections. */
+export function runStopPresentationJson(result: SQLWrapper) {
+  return sql<Record<string, unknown>>`jsonb_build_object(
+    'cancellation', jsonb_build_object(
+      'source', left(${result}->'cancellation'->>'source', 32),
+      'expected', ${result}->'cancellation'->'expected',
+      'initiator', jsonb_build_object('type', left(${result}->'cancellation'->'initiator'->>'type', 32)),
+      'reason', left(${result}->'cancellation'->>'reason', 512),
+      'recordedAt', left(${result}->'cancellation'->>'recordedAt', 64)),
+    'executionCancellation', jsonb_build_object(
+      'state', left(${result}->'executionCancellation'->>'state', 32),
+      'proof', left(${result}->'executionCancellation'->>'proof', 64)))`;
 }
 
 /** When a user's Stop or interrupt took effect for message ordering. A native

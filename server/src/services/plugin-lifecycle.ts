@@ -301,6 +301,11 @@ export interface PluginLifecycleManagerOptions {
  * @see PLUGIN_SPEC.md §21.3 — `plugins.status` column
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
+async function retireConnectorConnectionsFor(db: Db, pluginKey: string): Promise<void> {
+  const { retirePluginAppConnections } = await import("./plugin-app-catalog.js");
+  await retirePluginAppConnections(db, pluginKey);
+}
+
 export function pluginLifecycleManager(
   db: Db,
   options?: PluginLoader | PluginLifecycleManagerOptions,
@@ -320,6 +325,7 @@ export function pluginLifecycleManager(
   }
 
   const registry = pluginRegistryService(db);
+  const retireConnectorConnections = (pluginKey: string) => retireConnectorConnectionsFor(db, pluginKey);
   const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
@@ -540,6 +546,8 @@ export function pluginLifecycleManager(
 
       // If already uninstalled and removeData, hard-delete
       if (plugin.status === "uninstalled") {
+        // Finish any connector cleanup an earlier uninstall could not complete.
+        await retireConnectorConnections(plugin.pluginKey);
         if (removeData) {
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
           const deleted = await registry.uninstall(pluginId, true);
@@ -563,8 +571,16 @@ export function pluginLifecycleManager(
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
 
-      // Perform the uninstall via registry (handles soft/hard delete)
-      const result = await registry.uninstall(pluginId, removeData);
+      // Mark the plugin uninstalled first, so no new connector setup can
+      // start. Then retire the connections made from its connector types:
+      // rows stay for audit, archived, with grants revoked and owned
+      // credentials deleted. A setup already in flight archives its own
+      // connection (see tool-access). A failure is reported, and uninstalling
+      // again finishes the cleanup; a hard delete happens only after it.
+      let result = await registry.uninstall(pluginId, false);
+      await retireConnectorConnections(plugin.pluginKey);
+      if (removeData) result = await registry.uninstall(pluginId, true);
+
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, removeData },
