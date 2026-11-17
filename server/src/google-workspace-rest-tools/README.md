@@ -13,8 +13,9 @@ Gmail has all nine allowlisted tools: `get_message`, `get_thread`,
 `list_drafts`, `list_labels` and `create_draft`. Only `create_draft` writes.
 There is no send, trash, delete or label-changing tool, and none may be added.
 It also has all nine allowlisted Calendar tools (see "Calendar tools" below),
-both Docs tools and both Slides tools (see "Docs and Slides tools" below), and
-all six allowlisted Sheets tools (see "Sheets tools" below).
+all eight allowlisted Drive tools (see "Drive tools" below), both Docs tools
+and both Slides tools (see "Docs and Slides tools" below), and all six
+allowlisted Sheets tools (see "Sheets tools" below).
 
 ## Why this exists, and why it is temporary
 
@@ -59,11 +60,16 @@ so they can be deleted cleanly when that happens.
   says that the change may or may not have been made. Every method other than
   GET (POST, PATCH, PUT, DELETE) is a write; the only exception is a POST the
   request marks `readOnly` (Calendar's free/busy query). `www.googleapis.com`
-  is allowed only under `/calendar/v3/`, `docs.googleapis.com` only under
-  `/v1/documents/`, `slides.googleapis.com` only under `/v1/presentations/`
-  and `sheets.googleapis.com` only under `/v4/spreadsheets/`, checked after
-  URL normalization.
-- **One tool, one file.** Each tool in `gmail/`, `calendar/`, `docs/`, `slides/` and `sheets/` is a set of pure functions
+  is allowed only under the prefixes `GOOGLE_API_PATH_PREFIXES` lists for it
+  (`/calendar/v3/`, `/drive/v3/`, `/upload/drive/v3/`), `docs.googleapis.com`
+  only under `/v1/documents/`, `slides.googleapis.com` only under
+  `/v1/presentations/`, `sheets.googleapis.com` only under `/v4/spreadsheets/`
+  and `gmail.googleapis.com` only under `/gmail/v1/users/me/`; every allowed host
+  must have a prefix list (the type requires it, and `google-http.test.ts`
+  requires an allowed and a rejected path for each). Paths are checked after URL
+  normalization, so `..` and `%2e%2e` segments cannot leave them. Redirects are
+  never followed: requests use `redirect: "manual"` and any 3xx is a tool error.
+- **One tool, one file.** Each tool in `gmail/`, `calendar/`, `drive/`, `docs/`, `slides/` and `sheets/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
 - **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
@@ -81,6 +87,9 @@ so they can be deleted cleanly when that happens.
 | 401 | Throws `GoogleWorkspaceAuthError` (`reason: "unauthenticated"`, JSON-RPC `data: { code: "unauthenticated", httpStatus: 401 }`) |
 | 403 with insufficient scope (`ACCESS_TOKEN_SCOPE_INSUFFICIENT`, `insufficientPermissions`, or `WWW-Authenticate: error="insufficient_scope"`) | Throws `GoogleWorkspaceAuthError` (`reason: "insufficient_scope"`, `data.code: "insufficient_scope"`, the value the gateway already recognizes) |
 | 403 API not enabled (`SERVICE_DISABLED`, `accessNotConfigured`) | Tool error result, without the project number |
+| 403 `exportSizeLimitExceeded` (Drive) | Tool error: the file is over Google's 10 MB export limit |
+| 403 `appNotAuthorizedToFile` (Drive) | Tool error saying `drive.file` covers only files this app created or opened, without the app's project number |
+| Any 3xx redirect | Tool error; the redirect is not followed |
 | Other 403, 404, 400, 429, 5xx, timeout, network failure | Tool error result (`isError: true`) with a short message |
 | Invalid arguments | Tool error result, no request sent |
 | Unknown tool | Throws `McpError` `InvalidParams` |
@@ -145,6 +154,7 @@ plain constant: no environment variable, instance setting or database row.
   | Calendar | one `calendarList.list` entry | `calendar.calendarlist.readonly`, `calendar.readonly` |
   | Calendar | one event of the primary calendar | `calendar.events.readonly`, `calendar.events`, `calendar.readonly` |
   | Calendar | one minute of `freeBusy.query` on the primary calendar | `calendar.events.freebusy` |
+  | Drive | `about.get` with `fields=kind` | `drive.readonly`, `drive.file` |
 
   Docs and Slides have no probe: every read of either API needs a document or
   presentation ID, and Google does not document what a made-up ID returns, so
@@ -482,6 +492,175 @@ earliest first; working hours and out-of-office settings are not read.
   comes from REST `transparency`; `conferenceUrl` from `hangoutLink` or the
   video entry point.
 
+## Drive tools
+
+Names, input fields, result shapes and annotations come from Google's Drive
+MCP reference
+(<https://developers.google.com/workspace/drive/api/reference/mcp>, recorded
+2026-11-17) and the `tools/list` of Google's hosted Drive MCP server on the
+same date, which adds `snippetVerbosity`, `includeRichMetadata`,
+`revisionId`, `pregeneratedId` and `inheritedPermissionsDisabled` to the
+published pages. All calls go to the Drive REST API v3 at
+`https://www.googleapis.com/drive/v3/` (uploads at
+`https://www.googleapis.com/upload/drive/v3/`). The allowlist gives the six
+reads `drive.readonly` and the two writes `drive.file`. Each REST method below
+accepts that scope according to its reference page (recorded 2026-11-17), so
+no broader scope is needed or requested.
+
+| Tool | REST calls | Scope it runs under | Google reference |
+| --- | --- | --- | --- |
+| `search_files` | `files.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list> |
+| `list_recent_files` | `files.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list> |
+| `get_file_metadata` | `files.get` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/get> |
+| `get_file_permissions` | `permissions.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/permissions/list> |
+| `read_file_content` | `files.get`, then `files.export` (Google files) or `files.get` with `alt=media` (text files); with comments, `comments.list` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>, <https://developers.google.com/workspace/drive/api/reference/rest/v3/comments/list> |
+| `download_file_content` | `files.get`, then `files.export`, `files.get` with `alt=media`, or `revisions.get` with `alt=media` | `drive.readonly` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/revisions/get> |
+| `create_file` | `files.create` (metadata only, or `uploadType=multipart` on the upload path) | `drive.file` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create> |
+| `copy_file` | `files.copy` | `drive.file` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/files/copy> |
+| (probe) | `about.get` | `drive.readonly` or `drive.file` | <https://developers.google.com/workspace/drive/api/reference/rest/v3/about/get> |
+
+### What `drive.file` allows
+
+`files.copy` accepts only `drive`, `drive.appdata`, `drive.file` and
+`drive.photos.readonly`; `drive.readonly` cannot copy. Google's scope guide
+(<https://developers.google.com/workspace/drive/api/guides/api-specific-auth>)
+says `drive.file` covers files "that you open with an app or that the user
+shares with an app". So with `drive.file`:
+
+- `create_file` creates new files and folders in My Drive, and in folders this
+  app created or was given.
+- `copy_file` copies files this app created or was given. Whether Google also
+  lets it copy a file the same token can only read through `drive.readonly` is
+  not documented and has not been tried against Google (see open questions).
+  When Google refuses, the tool error says that `drive.file` covers only files
+  this app created or opened, and that nothing was created. The same applies
+  to a `parentId` the app cannot use.
+- Neither tool changes, moves, shares, trashes or deletes an existing file, and
+  no tool in this folder does.
+
+### Content
+
+| File | `read_file_content` | `download_file_content` default |
+| --- | --- | --- |
+| Google Doc | `files.export` as `text/markdown` | `text/plain` |
+| Google Sheet | `text/csv` of the first sheet, after a line saying only the first sheet is shown | `text/csv`, first sheet only (the description says so and names the XLSX type for every sheet) |
+| Google Slides | `text/plain` | `text/plain` |
+| Google Drawing | not supported | `image/svg+xml` |
+| Apps Script | not supported | `application/vnd.google-apps.script+json` |
+| Other Google types (folder, form, site, shortcut) | not supported | tool error |
+| `text/*`, JSON, XML, YAML, `+json` and `+xml` types | the stored bytes as UTF-8 | the stored bytes |
+| Anything else (PDF, Office, images, video) | not supported | the stored bytes |
+
+`exportMimeType` picks the export format for Google files and is ignored for
+other files, as in Google's reference. It must be one of the formats Google's
+export table lists for that file type (`EXPORT_FORMATS` in
+`drive/content.ts`, from
+<https://developers.google.com/workspace/drive/api/guides/ref-export-formats>);
+anything else is refused before a request is sent. Every request uses the
+`fileId` the caller passed, never an ID taken from Google's answer. `download_file_content` returns
+`{ id, title, mimeType, content }`: `content` is base64 and `mimeType` is the
+type of the returned bytes (the export format for Google files).
+"Not supported" means `fileContent: ""` with `textFormattingNotSupported:
+true`, the field Google's result has for this case. Text that is not valid
+UTF-8 is also not supported.
+
+**Size cap.** Every Drive read bounds its final serialized result (the whole
+`CallToolResult`, which carries the payload twice: as `structuredContent` and
+as its JSON text) to 250,000 bytes (the folder's shared `MAX_RESULT_BYTES`,
+checked by `boundedStructuredResult`, both in `tool.ts`). That is about 90 KB of file
+bytes for `download_file_content` (base64 adds a third) and about 120 KB of
+plain text for `read_file_content`. Content is also never read past 250,000
+bytes (`MAX_CONTENT_BYTES`), since more could never fit: a stored file whose
+metadata size is larger is refused before any download, and exports and
+revisions are read through `GoogleHttp.download`, which stops at the cap. Both
+limits are far under Google's 10 MB export limit
+(<https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>)
+and the 20 MB `MAX_RESPONSE_BYTES`. A refused result is an error that says
+nothing was returned and how to ask for less (a smaller `pageSize`, no
+`includeRichMetadata` or `includeComments`, another export format, or
+`read_file_content` for a Google file's text). It never returns cut-short
+content. Google's `exportSizeLimitExceeded` answer gives a similar error. `create_file`
+uploads at most 5 MB, the limit for one multipart upload.
+
+**Redirects.** `files.export` and `alt=media` downloads are answered by
+`www.googleapis.com` itself. `google-http.ts` never follows a redirect (it
+sends `redirect: "manual"`, and the gateway's guarded fetch never follows
+one either), so a download Google redirects elsewhere is a tool error, not a
+request to a host outside the allowlist.
+
+### Search
+
+`search_files` takes Google's MCP query language (`title contains 'x' and
+modifiedTime > '...'`). `drive/query.ts` tokenizes and parses it into a tree,
+checks each term and operator against the list Google publishes, and writes a
+new Drive `q` string from the tree. Values are always re-quoted with `'` and
+`\` escaped, so text inside a value can never become an operator; tests cover
+quote, backslash and parenthesis injection. Mapping: `title` → `name`;
+`parentId = 'x'` → `'x' in parents`; `owner = 'x'` → `'x' in owners`; `!=` on
+those → `not ...`; `visibility = 'anyone'` or `'domain'` → both of Drive's
+`...CanFind` and `...WithLink` values; other terms pass through. `creator`,
+`sharedFrom`, `sharedTo`, `followUp`, `folderProperties` and
+`visibility = 'external'` have no Drive `q` equivalent and are refused with an
+error rather than ignored. Unless the query uses `trashed`,
+`and trashed = false` is added, as Google's tool does.
+
+Drive's `name contains` is a prefix match ("HelloWorld" matches `'Hello'`, not
+`'World'`), so `title contains` is too; the query help says so and suggests
+`fullText contains` for a word inside a title. When Google answers
+`incompleteSearch: true` (it could not search every corpus), both list tools
+return `incompleteSearch: true` so an agent does not take a short list as
+proof that a file does not exist. Google's MCP result has no such field.
+
+### Google requests per call
+
+`search_files`, `list_recent_files` and `get_file_metadata`: 1.
+`get_file_permissions`: 1 per 100 permissions, at most 10 (more is an error).
+`download_file_content`: 2 (1 when the stored size is over the cap).
+`read_file_content`: 1 for unsupported types, otherwise 2, plus 1 per 100
+comment threads with `includeComments`, at most 10 (more is an error, never a
+partial list). `create_file` and `copy_file`: 1. Page size for `search_files`
+and `list_recent_files`: default 10, at most 100 (Drive allows 1,000). Reads
+may be retried once by `google-http.ts`. Writes never are, and any failure
+after a write was sent says it may or may not have happened.
+
+### Differences from Google's Drive MCP tools
+
+- **No content snippets.** REST has no generated snippet, so `contentSnippet`
+  is never returned. `excludeContentSnippets` and `snippetVerbosity` are
+  accepted (and still may not both be set) but change nothing.
+- **Rich metadata.** `includeRichMetadata` adds `ownerName`,
+  `lastModifyingUserName`, `lastModifyingUserEmail` and `visibility`.
+  `visibility` comes from the file's `anyone` and `domain` permissions and is
+  absent when Google does not show the user the file's sharing.
+  `lastCommentedTime` is not returned; REST has no such field.
+- **Text, not extraction.** Google's `read_file_content` also reads PDFs,
+  Office files, images and video transcripts. REST can only do that by
+  converting the file into a new Google file, which is a write, so those types
+  return `textFormattingNotSupported: true`.
+- **Spreadsheets** read as CSV of the first sheet only, since Drive's text
+  exports of a spreadsheet hold only the first sheet. Every sheet needs the
+  Sheets API.
+- **Comments** are listed in `unanchoredComments` and never placed in the
+  text, so `contentAnchoredComments` is always empty; REST anchors are opaque.
+- **`revisionId`** works only for files that are not Google files.
+- **`list_recent_files` `orderBy`** maps to Drive's `recency desc`,
+  `modifiedTime desc` and `modifiedByMeTime desc`; other values fall back to
+  recency, as Google documents.
+- **`search_files` `orderBy`** accepts `modifiedTime` and `viewedByMeTime`,
+  with `asc` or `desc`; anything else is an error. Without it, Drive's own
+  order is used, which may differ from Google's relevance order.
+- **Shared drives.** Lists include shared-drive items the user can see
+  (`includeItemsFromAllDrives`), within Drive's default `user` corpus.
+- **`create_file` conversion** uses a fixed table (text, Markdown, HTML, RTF,
+  Word and OpenDocument text to Docs; CSV, TSV, Excel and OpenDocument sheets
+  to Sheets; PowerPoint and OpenDocument presentations to Slides) instead of
+  reading Drive's `importFormats`. Without content, only Docs, Sheets, Slides
+  and folders can be created.
+- **`copy_file`** sends no name or folder unless given, so the copy's default
+  name and folder are the REST defaults. Folders cannot be copied.
+- **`pregeneratedId`** is passed to Drive as the new file's `id`. This folder
+  has no tool that generates IDs.
+
 ## Docs and Slides tools
 
 Names and input fields come from Google's MCP references
@@ -696,7 +875,7 @@ annotations.
   kinds and forms that read another file (see "Allowed request kinds").
 - At least one request is required.
 - Descriptions are our own wording. The `documentId` description does not
-  name Drive's file ID field, since the Drive tool is not in this folder.
+  name Drive's file ID field.
 
 ## Sheets tools
 
@@ -855,6 +1034,10 @@ says `false`.
   users get the `events.list` fallback, which cannot see coworkers who share
   only free/busy. Adding `calendar.events.freebusy` (already one of the 14
   submitted scopes) to the `calendar.write` profile would fix that.
+- Whether `files.copy` with a token that holds `drive.readonly` and
+  `drive.file` can copy a file the app never created or opened. Google's scope
+  pages do not say; one live call on the test account will tell. If it cannot,
+  `copy_file` copies only files this app created or that were opened with it.
 
 ## Removal procedure
 

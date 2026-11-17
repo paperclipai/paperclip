@@ -1,7 +1,46 @@
 import { describe, expect, it } from "vitest";
 import { GoogleToolError, GoogleWorkspaceAuthError } from "./errors.js";
 import { fakeGoogle, json } from "./fixtures/fake-google.js";
-import { createGoogleHttp, googleRequestUrl, isWrite, MAX_RESPONSE_BYTES, type GoogleRequest } from "./google-http.js";
+import { createGoogleHttp, GOOGLE_API_HOSTS, googleError, googleRequestUrl, isWrite, MAX_RESPONSE_BYTES, type GoogleApiHost, type GoogleRequest } from "./google-http.js";
+
+const HOST_PATHS: ReadonlyArray<readonly ["allows" | "rejects", string, string]> = [
+  ["allows", "/gmail/v1/users/me/messages/m1", "gmail.googleapis.com"],
+  ["allows", "/gmail/v1/users/me/profile", "gmail.googleapis.com"],
+  ["rejects", "/gmail/v1/users/other@example.test/messages", "gmail.googleapis.com"],
+  ["rejects", "/upload/gmail/v1/users/me/messages", "gmail.googleapis.com"],
+  ["rejects", "/gmail/v1/users/me/../../../oauth2/v1/tokeninfo", "gmail.googleapis.com"],
+  ["rejects", "/drive/v3/files/f1", "gmail.googleapis.com"],
+  ["allows", "/calendar/v3/calendars/primary/events/e1", "www.googleapis.com"],
+  ["allows", "/drive/v3/files/f1", "www.googleapis.com"],
+  ["allows", "/drive/v3/files/f1/export", "www.googleapis.com"],
+  ["allows", "/upload/drive/v3/files", "www.googleapis.com"],
+  ["rejects", "/drive/v2/files", "www.googleapis.com"],
+  ["rejects", "/gmail/v1/users/me/profile", "www.googleapis.com"],
+  ["rejects", "/calendar/v30/x", "www.googleapis.com"],
+  ["rejects", "/drive/v3", "www.googleapis.com"],
+  ["rejects", "/upload/drive/v2/files", "www.googleapis.com"],
+  ["rejects", "/upload/calendar/v3/x", "www.googleapis.com"],
+  ["rejects", "/calendar/v3/../../drive/v2/files", "www.googleapis.com"],
+  ["rejects", "/drive/v3/../../oauth2/v1/tokeninfo", "www.googleapis.com"],
+  ["rejects", "/drive/v3/%2e%2e/%2e%2e/oauth2/v1/tokeninfo", "www.googleapis.com"],
+  ["rejects", "/upload/drive/v3/../../../storage/v1/b", "www.googleapis.com"],
+  ["rejects", "/v4/spreadsheets/s1", "www.googleapis.com"],
+  ["allows", "/v4/spreadsheets/s1", "sheets.googleapis.com"],
+  ["allows", "/v4/spreadsheets/s1:batchUpdate", "sheets.googleapis.com"],
+  ["rejects", "/v4/spreadsheets", "sheets.googleapis.com"],
+  ["rejects", "/v4/other", "sheets.googleapis.com"],
+  ["rejects", "/v4/spreadsheets/../other", "sheets.googleapis.com"],
+  ["rejects", "/drive/v3/files/f1", "sheets.googleapis.com"],
+  ["allows", "/v1/documents/doc-1", "docs.googleapis.com"],
+  ["allows", "/v1/documents/doc-1:batchUpdate", "docs.googleapis.com"],
+  ["rejects", "/v1/documents", "docs.googleapis.com"],
+  ["rejects", "/v1/documents/../../drive/v3/files", "docs.googleapis.com"],
+  ["rejects", "/v1/documents/doc-1", "www.googleapis.com"],
+  ["allows", "/v1/presentations/deck-1", "slides.googleapis.com"],
+  ["allows", "/v1/presentations/deck-1:batchUpdate", "slides.googleapis.com"],
+  ["rejects", "/v1/presentations", "slides.googleapis.com"],
+  ["rejects", "/v1/documents/doc-1", "slides.googleapis.com"],
+];
 
 const GET: GoogleRequest = { method: "GET", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/labels" };
 const POST: GoogleRequest = { method: "POST", host: "gmail.googleapis.com", path: "/gmail/v1/users/me/drafts", body: { message: { raw: "eA" } } };
@@ -272,11 +311,112 @@ describe("writes beyond POST", () => {
     expect(await failure(client(() => json({ error: { code: 410 } }, 410)).http.send(DELETE))).toMatchObject({ kind: "not_found" });
   });
 
-  it("allows www.googleapis.com only under /calendar/v3/, after path normalization", () => {
-    expect(googleRequestUrl(PATCH)).toBe("https://www.googleapis.com/calendar/v3/calendars/primary/events/e1");
-    expect(() => googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/drive/v3/files" })).toThrow(/not allowed/);
-    expect(() => googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/calendar/v3/../../drive/v3/files" })).toThrow(/not allowed/);
-    expect(() => googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/calendar/v30/x" })).toThrow(/not allowed/);
+  it.each(HOST_PATHS)("%s %s on %s", (expected, path, host) => {
+    const attempt = () => googleRequestUrl({ ...GET, host: host as GoogleApiHost, path });
+    if (expected === "rejects") expect(attempt).toThrow(/not allowed/);
+    else expect(new URL(attempt()).host).toBe(host);
+  });
+
+  it("has an allowed and a rejected path for every allowed host", () => {
+    for (const host of GOOGLE_API_HOSTS) {
+      expect(HOST_PATHS.some(([expected, , rowHost]) => expected === "allows" && rowHost === host), `${host} allowed row`).toBe(true);
+      expect(HOST_PATHS.some(([expected, , rowHost]) => expected === "rejects" && rowHost === host), `${host} rejected row`).toBe(true);
+    }
+  });
+
+  it("keeps an encoded slash inside one path segment", () => {
+    expect(new URL(googleRequestUrl({ ...GET, host: "www.googleapis.com", path: "/drive/v3/files/..%2f..%2f" })).pathname.startsWith("/drive/v3/files/")).toBe(true);
+  });
+});
+
+describe("download", () => {
+  const MEDIA: GoogleRequest = { method: "GET", host: "www.googleapis.com", path: "/drive/v3/files/f1", query: { alt: "media" } };
+  const bytes = (size: number) => new Uint8Array(size).fill(7);
+
+  it("returns the raw bytes and content type, and asks for any type", async () => {
+    const { http, calls } = client(() => new Response(bytes(3), { headers: { "content-type": "image/png" } }));
+    const answer = await http.download(MEDIA, 10);
+    expect([...answer.data]).toEqual([7, 7, 7]);
+    expect(answer.contentType).toBe("image/png");
+    expect(calls[0]!.headers.accept).toBe("*/*");
+  });
+
+  it("refuses content over the cap, declared or streamed, as too large", async () => {
+    const declared = await failure(client(() => new Response(bytes(11), { headers: { "content-length": "11" } })).http.download(MEDIA, 10));
+    expect(declared).toMatchObject({ kind: "too_large" });
+    expect((declared as Error).message).toMatch(/larger than 10 bytes/);
+    const streamed = await failure(client(() => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes(6));
+        controller.enqueue(bytes(6));
+        controller.close();
+      },
+    }))).http.download(MEDIA, 10));
+    expect(streamed).toMatchObject({ kind: "too_large" });
+  });
+
+  it("never asks for more than the response cap", async () => {
+    const { http } = client(() => new Response(null, { headers: { "content-length": String(MAX_RESPONSE_BYTES + 1) } }));
+    expect(await failure(http.download(MEDIA, MAX_RESPONSE_BYTES * 2))).toMatchObject({ kind: "too_large" });
+  });
+
+  it("maps Google errors as send does, and retries a download once", async () => {
+    let count = 0;
+    const flaky = client(() => (count++ === 0 ? json({}, 503) : new Response(bytes(1))));
+    await expect(flaky.http.download(MEDIA, 10)).resolves.toMatchObject({ contentType: null });
+    expect(flaky.calls).toHaveLength(2);
+    expect(await failure(client(() => json({ error: { code: 404 } }, 404)).http.download(MEDIA, 10))).toMatchObject({ kind: "not_found" });
+  });
+
+  it("refuses to download with a write method", async () => {
+    const { http, calls } = client(() => new Response(bytes(1)));
+    await expect(http.download({ ...MEDIA, method: "POST" }, 10)).rejects.toThrow(/must be a read/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("redirects", () => {
+  it("asks fetch not to follow redirects, and turns any redirect into a tool error", async () => {
+    let init: RequestInit | undefined;
+    const fetch = async (_url: string, given: RequestInit) => {
+      init = given;
+      return new Response(null, { status: 302, headers: { location: "https://elsewhere.example.test/file" } });
+    };
+    const http = createGoogleHttp({ accessToken: "t", fetch, retryDelayMs: 0 });
+    const error = await failure(http.download({ method: "GET", host: "www.googleapis.com", path: "/drive/v3/files/f1", query: { alt: "media" } }, 10));
+    expect(init?.redirect).toBe("manual");
+    expect(error).toMatchObject({ kind: "invalid_response", message: "Google answered with a redirect, which is not followed." });
+    const write = await failure(http.send(POST));
+    expect((write as Error).message).toMatch(/redirect, which is not followed\. The change may or may not have been made/);
+  });
+
+  it("treats an opaque redirect (status 0) the same way", () => {
+    expect(googleError({ status: 0, headers: new Headers() }, "")).toMatchObject({ kind: "invalid_response" });
+  });
+});
+
+describe("uploads and Drive error reasons", () => {
+  it("sends an upload body with its own content type", async () => {
+    const { http, calls } = client(() => json({ id: "n1" }));
+    await http.send({ method: "POST", host: "www.googleapis.com", path: "/upload/drive/v3/files", upload: { contentType: "multipart/related; boundary=b", data: Buffer.from("abc") } });
+    expect(calls[0]!.headers["content-type"]).toBe("multipart/related; boundary=b");
+    expect(calls[0]!.raw?.toString()).toBe("abc");
+  });
+
+  it("refuses a request with both a JSON body and an upload", async () => {
+    const { http, calls } = client(() => json({}));
+    await expect(http.send({ ...POST, upload: { contentType: "text/plain", data: Buffer.from("x") } })).rejects.toThrow(/either/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("maps Drive's export size limit to too_large and drive.file refusals to a clear message", () => {
+    const headers = new Headers();
+    expect(googleError({ status: 403, headers }, JSON.stringify({ error: { code: 403, errors: [{ reason: "exportSizeLimitExceeded" }] } })))
+      .toMatchObject({ kind: "too_large" });
+    const denied = googleError({ status: 403, headers }, JSON.stringify({ error: { code: 403, message: "The user has not granted the app 123456 write access to the file f1.", errors: [{ reason: "appNotAuthorizedToFile" }] } }));
+    expect(denied).toMatchObject({ kind: "permission_denied" });
+    expect((denied as Error).message).not.toContain("123456");
+    expect((denied as Error).message).toMatch(/drive\.file/);
   });
 
   it.each([

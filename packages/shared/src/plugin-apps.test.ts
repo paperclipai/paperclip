@@ -108,6 +108,32 @@ describe("plugin app credentials", () => {
   });
 });
 
+describe("plugin connector settings schemas", () => {
+  const method = (settingsSchema: Record<string, unknown>) => ({
+    key: "default", transport: "plugin", auth: "none", ownershipModes: ["customer"], whenToUse: "Use", guidanceMd: "Use", riskTier: "S1",
+    settingsSchema, tools: { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] },
+  });
+  const app = (settingsSchema: Record<string, unknown>) => ({ ...structuredClone(circleback), methods: [method(settingsSchema)] });
+
+  it("accepts a flat object of simple fields the board can render", () => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apps: [app({ type: "object", properties: {
+      region: { type: "string", enum: ["us", "eu"], title: "Region" }, limit: { type: "integer", minimum: 1 }, verbose: { type: "boolean" },
+    }, required: ["region"], additionalProperties: false })] }).success).toBe(true);
+  });
+
+  it.each([
+    { type: "object", properties: { nested: { type: "object", properties: {} } } },
+    { type: "object", properties: { linked: { $ref: "#/definitions/x" } } },
+    { type: "object", allOf: [] },
+    { type: "array" },
+    { type: "object", properties: { a: { type: "string" } }, required: ["missing"] },
+    { type: "object", properties: { flag: { type: "boolean", enum: [true, false] } } },
+    { type: "object", properties: { token: { type: "string", format: "secret-ref" } } },
+  ])("rejects settings the board cannot render: %j", (settingsSchema) => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apps: [app(settingsSchema)] }).success).toBe(false);
+  });
+});
+
 describe("plugin app slugs", () => {
   it("namespaces by plugin key and reads the owner back from the slug", () => {
     const slug = pluginAppSlug("example.meetings", "circleback");

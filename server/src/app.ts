@@ -235,6 +235,8 @@ import { heartbeatService } from "./services/heartbeat.js";
 import { registerInterruptedTurnChatRetry } from "./services/heartbeat/restart-interrupted-turn.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { loadPluginAppCatalog } from "./services/plugin-app-catalog.js";
+import { setPluginConnectorWorkers } from "./services/plugin-connector-runtime.js";
+import { completeLegacyPluginToolAccess } from "./services/plugin-connector-legacy-access.js";
 import { registerPluginLifecycleDelivery } from "./services/plugin-lifecycle-delivery.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import {
@@ -919,7 +921,9 @@ export async function createApp(
   const lifecycle = pluginLifecycleManager(db, { workerManager });
   // Seed the plugin-provided connector lookups; readers refresh them again
   // from the plugins table whenever they need a current answer.
-  void loadPluginAppCatalog(db).catch((error) => logger.warn({ err: error }, "Could not load plugin connector catalog"));
+  setPluginConnectorWorkers(workerManager);
+  void loadPluginAppCatalog(db)
+    .catch((error) => logger.warn({ err: error }, "Could not load plugin connector catalog"));
   const scheduler = createPluginJobScheduler({
     isBackgroundWorkEnabled: () => !isWarmStandby() && !isIdleTaskDrainActive(),
     db,
@@ -1445,6 +1449,10 @@ export async function createApp(
   // environments bootstrap checks plugin entries against them.
   app.locals.managedBundledPluginKeys = managedBundledPluginKeys;
   void bundledPluginsStartup.then(() => { lifecyclePluginsReady = true; resourceLifecycleDelivery.wake(); agentLifecycleDelivery.wake(); }).catch(() => logger.warn("Agent lifecycle recovery failed; retrying."));
+  // Carry over legacy plugin tool access once plugin workers have started,
+  // since a plugin connection is healthy only while its worker runs.
+  void bundledPluginsStartup.then(() => completeLegacyPluginToolAccess(db))
+    .catch((error) => logger.warn({ err: error }, "Could not keep legacy plugin tool access"));
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
   // instead of starting a second teardown.

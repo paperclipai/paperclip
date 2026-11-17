@@ -76,6 +76,22 @@ describe("tool allowlist", () => {
     expect(listGoogleWorkspaceRestTools("calendar").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
   });
 
+  it("implements every allowlisted Drive tool (8 of 8), with only create_file and copy_file writing", () => {
+    const allowlisted = ["download_file_content", "get_file_metadata", "get_file_permissions", "list_recent_files", "read_file_content", "search_files", "copy_file", "create_file"];
+    for (const name of allowlisted) expect(googleWorkspaceToolTarget(googleWorkspaceToolName("drive", name)), name).not.toBeNull();
+    const tools = listGoogleWorkspaceRestTools("drive");
+    expect(tools.map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
+    expect(tools.filter((tool) => tool.annotations?.readOnlyHint !== true).map((tool) => tool.name).sort()).toEqual(["copy_file", "create_file"]);
+  });
+
+  it("implements no Drive tool that updates, deletes, trashes, moves or shares a file", () => {
+    const names = listGoogleWorkspaceRestTools("drive").map((tool) => tool.name);
+    expect(names.filter((name) => /update|delete|trash|move|share|permission_|rename|empty/i.test(name))).toEqual([]);
+    for (const name of ["update_file", "trash_file", "share_file", "delete_file"]) {
+      expect(googleWorkspaceToolTarget(googleWorkspaceToolName("drive", name)), name).toBeNull();
+    }
+  });
+
   it.each([
     ["docs", ["read_doc", "update_doc"], ["update_doc"]],
     ["slides", ["read_presentation", "update_presentation"], ["update_presentation"]],
@@ -119,3 +135,4 @@ describe("tool allowlist", () => {
     expect(listGoogleWorkspaceRestTools("sheets").map((tool) => tool.name).sort()).toEqual([...allowlisted].sort());
   });
 });
+
