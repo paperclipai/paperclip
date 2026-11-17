@@ -137,6 +137,15 @@ instance `.env`. Locations configured outside the instance directory
 hidden the same way. On macOS it also cannot connect to the embedded database port
 or run set-user-ID programs such as `ps`; use `pgrep` instead.
 
+When the server runs from an installed package (an npm install or a container
+image, not a Git checkout), its installation is read-only inside the scope, so a
+session cannot change code that the server runs later. A source checkout stays
+writable, because developers point agents at it.
+
+The scope protects instance state. It is not a full operating-system user
+boundary: a session can still change other files that the server's user owns
+outside these paths.
+
 `PAPERCLIP_LOCAL_AGENT_CONFINEMENT` selects the behavior:
 
 - `auto` (default): confine where the host supports it. The server proves this

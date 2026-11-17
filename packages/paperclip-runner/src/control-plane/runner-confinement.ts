@@ -33,6 +33,12 @@ export interface RunnerConfinementPolicy {
   sessionStateRoots?: readonly string[];
   /** Instance-private paths outside the default layout, such as configured storage or the secrets key. */
   privatePaths?: readonly string[];
+  /**
+   * Paths a session may read and execute but not change, such as the server's
+   * own installation: code the server user runs later must not be replaced
+   * from inside a session.
+   */
+  readOnlyPaths?: readonly string[];
 }
 
 export interface RunnerConfinementScope {
@@ -50,6 +56,8 @@ export interface RunnerConfinementScope {
   /** Shared directories created before launch: Landlock leaves a hidden path's parent without new entries. */
   precreated: string[];
   deniedLoopbackPorts: number[];
+  /** Readable and executable, never writable. */
+  readOnly: string[];
 }
 
 export class RunnerConfinementUnavailableError extends Error {
@@ -126,7 +134,7 @@ export function runnerConfinementScope(policy: RunnerConfinementPolicy, args: re
   const instanceRoot = resolve(policy.instanceRoot);
   const paths = instanceSessionStatePaths(instanceRoot);
   const scope: RunnerConfinementScope = {
-    hidden: [], exposed: [], exposedFiles: [], traversable: [], precreated: [],
+    hidden: [], exposed: [], exposedFiles: [], traversable: [], precreated: [], readOnly: [],
     deniedLoopbackPorts: [...new Set((policy.deniedLoopbackPorts ?? []).filter((port) => Number.isInteger(port) && port > 0 && port < 65_536))],
   };
   const hide = (value: string) => { if (!scope.hidden.includes(value)) scope.hidden.push(value); };
@@ -162,6 +170,12 @@ export function runnerConfinementScope(policy: RunnerConfinementPolicy, args: re
     const path = resolve(configured);
     // A private path that holds the launch's own state would hide the session from itself.
     if (isAbsolute(configured) && !holdsInstance(path) && (state === null || !within(state, path))) hide(path);
+  }
+  for (const configured of policy.readOnlyPaths ?? []) {
+    const path = resolve(configured);
+    // Never freeze the instance or the launch's own state.
+    if (isAbsolute(configured) && !holdsInstance(path) && !within(path, instanceRoot) && (state === null || !within(state, path))
+      && !scope.readOnly.includes(path)) scope.readOnly.push(path);
   }
   if (state) {
     for (const root of sessionRoots) {
@@ -232,6 +246,7 @@ export function seatbeltInvocation(scope: RunnerConfinementScope, command: strin
     const filter = scope.exposedFiles.includes(path) ? "literal" : "subpath";
     return `(${filter} ${parameter("EXPOSE", index, canonical)})`;
   });
+  const readOnly = scope.readOnly.map((path, index) => `(subpath ${parameter("READONLY", index, canonicalPath(path))})`);
   const traversable = scope.traversable.map((path, index) => `(literal ${parameter("TRAVERSE", index, canonicalPath(path))})`);
   const profile = [
     "(version 1)",
@@ -240,6 +255,8 @@ export function seatbeltInvocation(scope: RunnerConfinementScope, command: strin
     ...(traversable.length ? [`(allow file-read-metadata ${traversable.join(" ")})`] : []),
     ...(exposed.length ? [`(allow file-read* file-write* ${exposed.join(" ")})`] : []),
     ...scope.deniedLoopbackPorts.map((port) => `(deny network-outbound (remote ip "localhost:${port}"))`),
+    // Last, so no earlier allow can make these writable.
+    ...(readOnly.length ? [`(deny file-write* ${readOnly.join(" ")})`] : []),
   ].join("\n");
   return { command: "/usr/bin/sandbox-exec", args: [...parameters, "-p", profile, command, ...args] };
 }
@@ -253,22 +270,22 @@ export function seatbeltInvocation(scope: RunnerConfinementScope, command: strin
 export const LANDLOCK_HELPER = String.raw`
 import ctypes, os, stat, struct, sys
 CREATE, ADD, RESTRICT = 444, 445, 446
-FILE_RIGHTS = 7; ABI1 = (1 << 13) - 1; REFER = 1 << 13; TRUNCATE = 1 << 14; IOCTL_DEV = 1 << 15
+FILE_RIGHTS = 7; READ_ONLY_RIGHTS = 1 | 4 | 8; ABI1 = (1 << 13) - 1; REFER = 1 << 13; TRUNCATE = 1 << 14; IOCTL_DEV = 1 << 15
 class Attr(ctypes.Structure):
     _fields_ = [("handled_access_fs", ctypes.c_uint64)]
 def fail(message, code=125):
     sys.stderr.write("runner_confinement: %s\n" % message); sys.stderr.flush(); os._exit(code)
 def within(candidate, root):
     return candidate == root or candidate.startswith(root.rstrip("/") + "/")
-argv = sys.argv[1:]; required = False; hidden = []; exposed = []; command = None; i = 0
+argv = sys.argv[1:]; required = False; hidden = []; exposed = []; readonly = []; command = None; i = 0
 while i < len(argv):
     token = argv[i]
     if token == "--": command = argv[i + 1:]; break
     if token == "--required": required = True
-    elif token in ("--hide", "--expose") and i + 1 < len(argv):
+    elif token in ("--hide", "--expose", "--read-only") and i + 1 < len(argv):
         i += 1; value = os.path.realpath(argv[i])
         if not os.path.isabs(argv[i]) or value == "/": fail("invalid path: %s" % argv[i], 2)
-        (hidden if token == "--hide" else exposed).append(value)
+        {"--hide": hidden, "--expose": exposed, "--read-only": readonly}[token].append(value)
     else: fail("unexpected argument: %s" % token, 2)
     i += 1
 libc = ctypes.CDLL(None, use_errno=True); libc.syscall.restype = ctypes.c_long
@@ -284,28 +301,33 @@ def restrict():
     handled = ABI1 | (REFER if abi >= 2 else 0) | (TRUNCATE if abi >= 3 else 0) | (IOCTL_DEV if abi >= 5 else 0)
     attr = Attr(handled)
     ruleset = syscall(ctypes.c_long(CREATE), ctypes.byref(attr), ctypes.c_long(ctypes.sizeof(attr)), ctypes.c_long(0))
-    def allow(path):
+    def allow(path, read_only=False):
         try: descriptor = os.open(path, os.O_PATH | os.O_CLOEXEC)
         except OSError: return
         try:
             mode = os.fstat(descriptor).st_mode
             access = handled if stat.S_ISDIR(mode) else handled & (FILE_RIGHTS | TRUNCATE | IOCTL_DEV)
+            # Execute, read file, read directory.
+            if read_only: access &= READ_ONLY_RIGHTS
             rule = ctypes.create_string_buffer(struct.pack("=Qi", access, descriptor), 12)
             syscall(ctypes.c_long(ADD), ctypes.c_long(ruleset), ctypes.c_long(1), rule, ctypes.c_long(0))
         finally: os.close(descriptor)
+    # Read-only paths are walked around like hidden ones, then granted read access.
+    blocked = hidden + readonly
     def grant(directory):
         try: names = sorted(os.listdir(directory))
         except OSError: return
         for name in names:
             child = os.path.join(directory, name)
-            if any(within(child, path) for path in hidden): continue
+            if any(within(child, path) for path in blocked): continue
             try: is_link = os.path.islink(child); real = os.path.realpath(child)
             except OSError: continue
-            if any(within(real, path) or within(path, real) for path in hidden):
-                if not is_link and any(within(path, child) for path in hidden): grant(child)
+            if any(within(real, path) or within(path, real) for path in blocked):
+                if not is_link and any(within(path, child) for path in blocked): grant(child)
                 continue
             allow(child)
     grant("/")
+    for path in readonly: allow(path, read_only=True)
     for path in exposed: allow(path)
     if libc.prctl(ctypes.c_int(38), ctypes.c_ulong(1), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0)) != 0:
         raise RuntimeError("prctl(PR_SET_NO_NEW_PRIVS) failed")
@@ -341,6 +363,7 @@ export function landlockInvocation(scope: RunnerConfinementScope, python: string
       ...(required ? ["--required"] : []),
       ...scope.hidden.flatMap((path) => ["--hide", path]),
       ...scope.exposed.flatMap((path) => ["--expose", path]),
+      ...scope.readOnly.flatMap((path) => ["--read-only", path]),
       "--", command, ...args,
     ],
   };
@@ -477,7 +500,8 @@ export function setRunnerConfinementAvailabilityForTest(platform: NodeJS.Platfor
 export function landlockTemporaryConflict(platform: NodeJS.Platform, scope: RunnerConfinementScope, sharedTemporaryDirectories?: readonly string[]) {
   if (platform !== "linux") return null;
   const shared = [...new Set((sharedTemporaryDirectories ?? [tmpdir(), "/tmp", "/var/tmp"]).map(canonicalPath))];
-  const conflict = scope.hidden.map(canonicalPath).find((hidden) => shared.some((temporary) => hidden !== temporary && within(hidden, temporary)));
+  // Read-only paths leave their ancestors without new entries too.
+  const conflict = [...scope.hidden, ...scope.readOnly].map(canonicalPath).find((hidden) => shared.some((temporary) => hidden !== temporary && within(hidden, temporary)));
   return conflict ? "instance state lies in a shared temporary directory" : null;
 }
 

@@ -102,13 +102,15 @@ describe("seatbeltInvocation", () => {
   it("passes paths as parameters so no path can change the profile", () => {
     const hostile = join(root, 'x")(allow default)(deny "y');
     const invocation = seatbeltInvocation(
-      { hidden: [hostile], exposed: [], exposedFiles: [], traversable: [], precreated: [], deniedLoopbackPorts: [5432] },
+      { hidden: [hostile], exposed: [], exposedFiles: [], traversable: [], precreated: [], deniedLoopbackPorts: [5432], readOnly: ["/opt/server"] },
       "/bin/runnerd", ["--a"],
     );
     const profile = invocation.args[invocation.args.indexOf("-p") + 1]!;
     expect(profile).not.toContain(hostile);
     expect(profile).toContain('(subpath (param "HIDE0"))');
     expect(profile).toContain('(deny network-outbound (remote ip "localhost:5432"))');
+    // The read-only rule comes last so no allow can override it.
+    expect(profile.trim().split("\n").at(-1)).toBe('(deny file-write* (subpath (param "READONLY0")))');
     expect(invocation.args).toContain(`HIDE0=${hostile}`);
     expect(invocation.args.slice(-2)).toEqual(["/bin/runnerd", "--a"]);
   });
@@ -193,6 +195,9 @@ r() { if cat "$2" >/dev/null 2>&1; then echo "$1=readable"; else echo "$1=denied
   r runLog "$INSTANCE/data/run-logs/c/a/other.ndjson"
   r environmentFile "$INSTANCE/.env"
   r companyFile "$INSTANCE/companies/c/agents/a/notes.md"
+  install="\${INSTANCE%/instance}/server-install"
+  r serverCodeRead "$install/dist/index.js"
+  if echo hijack >> "$install/dist/index.js" 2>/dev/null || touch "$install/dist/new.js" 2>/dev/null || mv "$install/dist" "$install/moved" 2>/dev/null; then echo serverCodeWrite=allowed; else echo serverCodeWrite=denied; fi
   r otherCompanyFile "$INSTANCE/companies/other/agents/b/notes.md"
   if stat "$INSTANCE/runtime/paperclip-runner/durable-sessions" >/dev/null 2>&1; then echo sessionRootStat=allowed; else echo sessionRootStat=denied; fi
   if mkdir -p "$state/nested/dir" 2>/dev/null; then echo ownStateMkdirP=allowed; else echo ownStateMkdirP=denied; fi
@@ -225,6 +230,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
     writeFixture(paths.environmentFile);
     writeFixture(join(instance, "companies", "c", "agents", "a", "notes.md"), "shared\n");
     writeFixture(join(instance, "companies", "other", "agents", "b", "notes.md"));
+    writeFixture(join(root, "server-install", "dist", "index.js"), "server\n");
     // Provider state saved by an earlier launch (or an earlier release) of this session.
     writeFixture(join(paths.durableSessions, "own-scope", "opencode", "own-session", "data", "opencode", "opencode.db"), "saved\n");
     const ownState = join(paths.durableSessions, "own-scope", "runner");
@@ -252,7 +258,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       runnerDigest: "test",
       opencodeLaunchProfile: OPENCODE_LAUNCH_PROFILE,
       environment: { PAPERCLIP_PROVIDER_TRACE_PATH: join(paths.providerTraces, "run", "attempt", "trace.ndjson") },
-      ...(confine ? { confinement: { mode: "required" as const, instanceRoot: instance, companyId: "c", deniedLoopbackPorts: databasePort ? [databasePort] : [] } } : {}),
+      ...(confine ? { confinement: { mode: "required" as const, instanceRoot: instance, companyId: "c", readOnlyPaths: [join(root, "server-install")], deniedLoopbackPorts: databasePort ? [databasePort] : [] } } : {}),
     });
     const result = await waitForProcess(handle, 30_000);
     expect(result.code).toBe(0);
@@ -282,6 +288,8 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       sessionListing: "denied",
       companyFile: "readable",
       otherCompanyFile: "denied",
+      serverCodeRead: "readable",
+      serverCodeWrite: "denied",
       sessionRootStat: "allowed",
       ownStateMkdirP: "allowed",
       ownNestedTrace: "writable",
@@ -289,5 +297,6 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       ownOpencodeSession: "readable",
     });
     expect(readFileSync(join(instanceSessionStatePaths(join(root, "instance")).secrets, "master.key"), "utf8")).toBe("other session\n");
+    expect(readFileSync(join(root, "server-install", "dist", "index.js"), "utf8")).toBe("server\n");
   }, 60_000);
 });

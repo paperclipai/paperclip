@@ -1,9 +1,11 @@
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RUNNER_CONFINEMENT_UNAVAILABLE,
   localRunnerConfinementPolicy,
   resetLocalRunnerConfinementPaths,
+  serverInstallationRoot,
   setLocalRunnerConfinementDatabase,
 } from "./local-runner-confinement.js";
 import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode } from "./native-session-executor.js";
@@ -47,6 +49,30 @@ describe("localRunnerConfinementPolicy", () => {
   it("follows the operator's confinement mode and an external database", () => {
     vi.stubEnv("PAPERCLIP_LOCAL_AGENT_CONFINEMENT", "required");
     expect(localRunnerConfinementPolicy("company-1")).toMatchObject({ mode: "required", deniedLoopbackPorts: [] });
+  });
+});
+
+describe("serverInstallationRoot", () => {
+  it("freezes an installed server package but not a source checkout, the home directory or the root", () => {
+    expect(serverInstallationRoot("/usr/lib/node_modules/paperclipai/node_modules/@paperclipai/server/dist/index.js", "/home/u"))
+      .toBe("/usr/lib/node_modules/paperclipai");
+    expect(serverInstallationRoot("/opt/x/node_modules/@paperclipai/server/dist/index.js", "/home/u")).toBe("/opt/x/node_modules/@paperclipai/server");
+    expect(serverInstallationRoot("/home/u/node_modules/paperclipai/dist/index.js", "/home/u")).toBe("/home/u/node_modules/paperclipai");
+    const base = mkdtempSync(join(process.cwd(), ".server-install-test-"));
+    try {
+      // An image layout: /app/node_modules beside /app/server.
+      mkdirSync(join(base, "app", "node_modules"), { recursive: true });
+      mkdirSync(join(base, "app", "server", "dist-runtime"), { recursive: true });
+      expect(serverInstallationRoot(join(base, "app", "server", "dist-runtime", "index.mjs"), "/home/u")).toBe(join(base, "app"));
+      // A source checkout stays writable.
+      mkdirSync(join(base, "app", ".git"));
+      expect(serverInstallationRoot(join(base, "app", "server", "dist-runtime", "index.mjs"), "/home/u")).toBeNull();
+      // Never the home directory.
+      rmSync(join(base, "app", ".git"), { recursive: true });
+      expect(serverInstallationRoot(join(base, "app", "server", "dist-runtime", "index.mjs"), join(base, "app"))).toBeNull();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 
