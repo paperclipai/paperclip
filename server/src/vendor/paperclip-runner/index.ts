@@ -70,6 +70,7 @@ export type {
   ProviderTurnWaitOptions,
   ReplayControlPlaneEventsInput,
   RunnerExecutionDriver,
+  RunnerReleaseResumeOutcome,
   RunnerLaunchPreparer,
   DurableRecoveryIdentity,
   DurablePrpCheckpoint,

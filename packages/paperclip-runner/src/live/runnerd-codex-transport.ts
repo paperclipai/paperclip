@@ -4254,6 +4254,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
   } | null = null;
+  #relaunchedRunnerArtifact: { version: string; digest: string } | null = null;
   #startupDrainTimedOut = false;
   #controllerDetachedForRestart = false;
   #failure: Error | null = null;
@@ -4980,6 +4981,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       while (!episode.claimed) {
         assertPending();
         let outcome: "resumed" | "unavailable" | undefined;
+        let relaunched: { version: string; digest: string } | undefined;
         try {
           if (!episode.ticket) {
             episode.ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -4990,7 +4992,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             episode.ticketFlushed = true;
           }
           assertPending();
-          outcome = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          const result = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          outcome = typeof result === "string" ? result : result.outcome;
+          relaunched = typeof result === "string" ? undefined : result.runner;
         } catch (error) {
           // A generic RPC error cannot prove refusal. Keep this exact pending claim quiet.
           assertPending();
@@ -5000,6 +5004,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         assertPending();
         if (outcome === "unavailable") throw new Error("native_runner_reuse_unavailable");
+        if (relaunched) {
+          try {
+            core.acceptRelaunchedRunner(episode.ticket!, relaunched);
+          } catch {
+            throw new Error("native_runner_reuse_unavailable");
+          }
+          this.#relaunchedRunnerArtifact = structuredClone(relaunched);
+          await Promise.race([core.flushCheckpoint(), deadline, closed]);
+        }
         episode.claimed = true;
       }
     } finally {
@@ -5227,7 +5240,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (core.store.state.stagedRunAttachment && this.options.readRunnerState
         && (registration?.connection?.mode === "listen" || registration?.connection?.mode === "external")) {
         const deadline = Math.min(Date.now() + (this.options.runnerReconnectGraceMs ?? 5_000), this.#sourceAttachmentDeadline ?? Infinity);
-        const artifact = this.options.runnerArtifact ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
+        const artifact = this.#relaunchedRunnerArtifact ?? this.options.runnerArtifact
+          ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
         for (;;) {
           this.#assertStartupOpen();
           const physical = await this.options.readRunnerState();
@@ -6994,7 +7008,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
-    const runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
+    let runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
     this.#durableTurnId = identity.turnId;
     this.#eventIdentity = structuredClone(identity);
     const provider = this.options.provider ?? "codex";
@@ -7423,6 +7437,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (!this.#controlPlaneCheckpoint) throw new Error("native_runner_released_cleanup_unavailable");
       this.#releaseEpisode = { source: structuredClone(source), confirmed: true };
       await this.#claimReleasedRunner(this.#authorityRunId() ?? "");
+      runnerArtifact = this.#relaunchedRunnerArtifact ?? runnerArtifact;
     }
     const bootstrapTicket = adoptedRunner
       ? null

@@ -47,6 +47,7 @@ import {
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
 import { crashPoint } from "../crash-point.js";
+import { runnerVersionCanResume } from "../contracts/runner-version.js";
 
 const protocol = "paperclip.runner";
 export const RUNNER_PRP_PROTOCOL_MIN = 1;
@@ -2849,6 +2850,24 @@ export class DurablePrpControlPlane {
       captureCheckpoint(this.#store.state, this.#expectedRunnerVersion, this.#expectedRunnerDigest).records,
       this.#identity,
     );
+  }
+
+  acceptRelaunchedRunner(bootstrapTicket: string, runner: { version: string; digest: string }): void {
+    this.#store.assertWritable();
+    if (runner.version === this.#expectedRunnerVersion && runner.digest === this.#expectedRunnerDigest) return;
+    const ticket = this.#store.state.tickets[credentialMaterial(bootstrapTicket).credentialId];
+    if (this.#connections.size !== 0 || !ticket || ticket.usedAt !== null
+      || canonicalJson(ticket.identity) !== canonicalJson(this.#identity)
+      || ticket.runnerVersion !== this.#expectedRunnerVersion || ticket.runnerDigest !== this.#expectedRunnerDigest
+      || !/^sha256:[a-f0-9]{64}$/.test(runner.digest)
+      || !runnerVersionCanResume(runner.version, this.#expectedRunnerVersion)) {
+      throw new Error("native_runner_relaunched_build_unaccepted");
+    }
+    ticket.runnerVersion = runner.version;
+    ticket.runnerDigest = runner.digest;
+    this.#store.save();
+    this.#expectedRunnerVersion = runner.version;
+    this.#expectedRunnerDigest = runner.digest;
   }
 
   issueBootstrapTicket(ttlMs = 5_000): string {

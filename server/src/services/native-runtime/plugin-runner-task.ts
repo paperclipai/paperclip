@@ -4,7 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, runnerLaunchPreparationDigest, runnerLaunchRunDigest, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
-  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
+  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerReleaseResumeOutcome, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 
@@ -50,6 +50,7 @@ export function createPluginRunnerTaskOwner(input: {
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
   resumeLaunchInputsVersion?: 1;
+  resumeRelaunchedRunnerVersion?: 1;
   launchDigestVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
@@ -430,7 +431,7 @@ export function createPluginRunnerTaskOwner(input: {
     await call(environmentTaskOperationSchema.parse({ kind: "release", identity }));
     requireReleaseResume();
   };
-  const resume = async (identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<"resumed" | "unavailable"> => {
+  const resume = async (identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<RunnerReleaseResumeOutcome> => {
     requireReleaseResume();
     const handoffCredential = input.sessionHandoff && input.credential?.type === "claude-env"
       ? { accountIdentity: input.accountIdentity, environment: input.credential.environment }
@@ -440,6 +441,7 @@ export function createPluginRunnerTaskOwner(input: {
       ...(handoffCredential ? { handoffCredential } : {}),
       ...(launchInputs && input.credential ? { credential: input.credential } : {}),
       ...configuredEnvironmentFields(!!input.sessionHandoff || launchInputs),
+      ...(input.resumeRelaunchedRunnerVersion === 1 ? { relaunchedRunnerVersion: 1 as const } : {}),
     }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
@@ -447,6 +449,9 @@ export function createPluginRunnerTaskOwner(input: {
     if (result.outcome === "unavailable") {
       const state = await call({ kind: "status" }).catch(() => undefined);
       retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
+    }
+    if (result.outcome === "resumed" && result.runner && input.resumeRelaunchedRunnerVersion === 1) {
+      return { outcome: "resumed", runner: result.runner };
     }
     return result.outcome;
   };

@@ -135,7 +135,7 @@ export { BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH, PROVIDER_PACK_COMPATIBILITY, b
 export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";
 
-export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";
+export type { RunnerExecutionDriver, RunnerReleaseResumeOutcome } from "./control-plane/runner-execution-driver.js";
 
 export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunnerProviderLaunch, runnerProviderLaunchRequirements, runnerLaunchPreparationDigest, runnerLaunchRequirementsDigest, runnerLaunchRunDigest, validatePreparedRunnerLaunch } from "./live/runner-provider-launch.js";
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
