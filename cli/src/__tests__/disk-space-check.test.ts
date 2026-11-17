@@ -1,5 +1,5 @@
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   diskSpaceCheck,
   type DiskSpaceCheckDeps,
@@ -133,6 +133,13 @@ function useHome(home: string): void {
   process.env.PAPERCLIP_HOME = home;
   delete process.env.PAPERCLIP_INSTANCE_ID;
 }
+
+beforeEach(() => {
+  // Overrides the check reads; a value from the caller's shell must not leak in.
+  delete process.env.PAPERCLIP_STORAGE_PROVIDER;
+  delete process.env.PAPERCLIP_STORAGE_LOCAL_DIR;
+  delete process.env.PAPERCLIP_DB_BACKUP_DIR;
+});
 
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
