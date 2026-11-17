@@ -687,6 +687,14 @@ pressure, has zero effects.
 
 ## Semantic operations that outlive a turn
 
+Claude's local HTTP tool bridge passes its Authorization value through a
+runtime-specific environment variable. ACP and the SDK receive an environment
+reference, which the Claude CLI expands after launch. Process argument
+diagnostics therefore contain the reference instead of the bridge bearer.
+This does not hide the environment from processes that can inspect it. Bridge
+authentication, turn admission, approvals, and lifetime ownership still apply.
+Other providers retain their own MCP credential transport.
+
 An execution session includes the provider process, the runner's durable call
 receipts and event outbox, and the controller's durable command queue. Ending a
 provider turn closes admission of new work. It does not establish whether a

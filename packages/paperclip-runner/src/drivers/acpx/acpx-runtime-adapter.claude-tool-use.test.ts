@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { expect, it, vi } from "vitest";
 
@@ -26,11 +27,20 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
   await Promise.all([mkdir(config, { recursive: true }), mkdir(cwd)]);
   const issued: string[][] = [];
   const answered: string[][] = [];
+  const exportedLogs: string[] = [];
+  let diagnosticResult = "";
+  let providerPid: number | undefined;
   let releaseTurnTwo!: () => void;
   const turnTwoGate = new Promise<void>(resolve => { releaseTurnTwo = resolve; });
   const api = createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
+    if (request.url === "/v1/logs" || request.url === "/v1/traces") {
+      if (request.url === "/v1/logs") exportedLogs.push(raw);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{}");
+      return;
+    }
     if (request.method === "GET") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ data: [], has_more: false }));
@@ -60,8 +70,15 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
       { type: "content_block_stop", index: 0 },
       { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } });
     if (results.length > 0) {
+      if (results.includes("toolu_Diagnostics")) diagnosticResult = JSON.stringify(last);
       answered.push(results);
       text("Probe complete.");
+    } else if (process.platform === "linux" && /TURN-DIAGNOSTICS/.test(textOf(last))) {
+      frames.push(
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_Diagnostics", name: "Bash", input: {} } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify({ command: `ps -ww -o args= --ppid ${providerPid}`, description: "Inspect this fixture's CLI process." }) } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 1 } });
     } else if (offersProbe && /TURN-ONE/.test(textOf(last))) {
       const ids = [0, 1].map(index => `toolu_01Acp${issued.length + 1}${index}`);
       issued.push(ids);
@@ -98,7 +115,11 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
   });
   const entry = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/index.js");
   const command: VerifiedAcpxCommandLease = {
-    spawn: (args, input) => spawn(process.execPath, [entry, ...(args ?? [])], { ...input, detached: true, stdio: ["pipe", "pipe", "pipe"] }),
+    spawn: (args, input) => {
+      const child = spawn(process.execPath, [entry, ...(args ?? [])], { ...input, detached: true, stdio: ["pipe", "pipe", "pipe"] });
+      providerPid = child.pid;
+      return child;
+    },
     close: async () => undefined,
   };
   const options: AcpxRuntimePortOpenOptions = {
@@ -111,7 +132,11 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
     permissionPolicy: { autoApprove: ["read", "write", "execute", "other"], defaultAction: "approve" },
     launchEnvironment: { HOME: home, CLAUDE_CONFIG_DIR: config, PATH: "/usr/bin:/bin", TMPDIR: root,
       ANTHROPIC_API_KEY: "local-fixture-only", ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`,
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", ENABLE_TOOL_SEARCH: "false" },
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_ERROR_REPORTING: "1", ENABLE_TOOL_SEARCH: "false",
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1", CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "1",
+      OTEL_LOGS_EXPORTER: "otlp", OTEL_TRACES_EXPORTER: "none", OTEL_METRICS_EXPORTER: "none",
+      OTEL_EXPORTER_OTLP_LOGS_PROTOCOL: "http/json", OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `http://127.0.0.1:${address.port}/v1/logs`,
+      OTEL_LOG_TOOL_DETAILS: "1", OTEL_LOG_TOOL_CONTENT: "1", OTEL_BLRP_SCHEDULE_DELAY: "50" },
     credentialFenceFds: [42, 43] as const,
     activateCredentialFenceOwner: async () => undefined,
     systemInstructions: "Use Paperclip tools.",
@@ -140,6 +165,10 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
     .then(response => response.json() as Promise<{ result: { isError?: boolean; content: Array<{ text: string }> } }>);
   let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
   try {
+    const unauthorized = await fetch(bridge.url, { method: "POST",
+      headers: { Authorization: "Bearer wrong-fixture-secret", "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 899, method: "tools/list", params: {} }) });
+    expect(unauthorized.status).toBe(401);
     port = await openCodexAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
@@ -151,6 +180,13 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
     expect(dispatched.map(call => call.tag).sort()).toEqual([first, second].sort());
     expect(answered.flat().sort()).toEqual([first, second].sort());
 
+    if (process.platform === "linux") {
+      // Inspect only this fixture's CLI child, never unrelated process credentials.
+      const { stdout } = await promisify(execFile)("ps", ["-ww", "-o", "args=", "--ppid", String(providerPid)]);
+      expect(stdout).toContain("--mcp-config");
+      expect(stdout.includes(bridge.secret)).toBe(false);
+    }
+
     const turnTwo = await runTurn("turn-2", "TURN-TWO: do not call tools.", async () => {
       const sameArguments = await replay(900, first!, first!);
       expect(sameArguments.result.isError).not.toBe(true);
@@ -161,6 +197,25 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
     });
     expect(turnTwo).toMatchObject({ status: "completed" });
     expect(dispatched).toHaveLength(2);
+    if (process.platform === "linux") {
+      expect(await runTurn("turn-3", "TURN-DIAGNOSTICS: inspect this fixture's CLI process.")).toMatchObject({ status: "completed" });
+      expect(diagnosticResult).toContain("--mcp-config");
+      expect(diagnosticResult.includes(bridge.secret)).toBe(false);
+      await port.close({ reason: "flush diagnostic telemetry" });
+      port = undefined;
+      // Read the CLI's own persisted transcript independently of the ACP stream.
+      const transcripts = (await readdir(config, { recursive: true })).filter(path => path.endsWith(".jsonl"));
+      const retained = (await Promise.all(transcripts.map(path => readFile(join(config, path), "utf8")))).join("\n");
+      expect(retained.includes("toolu_Diagnostics")).toBe(true);
+      expect(retained.includes("--mcp-config")).toBe(true);
+      expect(retained.includes(bridge.secret)).toBe(false);
+      // This CLI version exports tool-result metadata, but omits raw output.
+      // Do not mistake absent output for a passing output-redaction check.
+      const telemetry = exportedLogs.join("\n");
+      expect(telemetry.includes("claude_code.tool_result")).toBe(true);
+      expect(telemetry.includes("toolu_Diagnostics")).toBe(true);
+      expect(telemetry.includes(bridge.secret)).toBe(false);
+    }
   } finally {
     releaseTurnTwo();
     try { await port?.close({ reason: "tool-use admission verified" }); }

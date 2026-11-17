@@ -13,6 +13,7 @@ import type { ProviderFailure } from "../../contracts/provider-failure.generated
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -431,10 +432,24 @@ export async function openQualifiedAcpxRuntime(
     ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
     : null;
   const contextAdmission = instructionAdmission ?? antigravityAdmission;
+  // Claude's SDK serializes MCP headers into CLI argv. The CLI expands these
+  // references only after launch; keep the values in this runtime's environment.
+  const claudeMcpEnvironment: Record<string, string> = {};
+  const claudeMcpHeaders = new Map<string, string>();
+  if (options.profile.agent === "claude") {
+    const prefix = `PAPERCLIP_CLAUDE_MCP_${randomUUID().replaceAll("-", "_")}`;
+    for (const [index, server] of options.mcpServers.entries()) {
+      if ("command" in server) continue;
+      const name = `${prefix}_${index}`;
+      claudeMcpEnvironment[name] = `Bearer ${server.bearerToken}`;
+      claudeMcpHeaders.set(server.name, `\${${name}}`);
+    }
+  }
   // The agent's complete launch environment. ACPX's own environment handling
   // (credential checks, ACP terminals) keeps reading this process's environment.
   const agentEnvironment = (): Record<string, string> => ({
     ...definedEnvironment(options.launchEnvironment),
+    ...claudeMcpEnvironment,
     ...(options.profile.agent === "claude"
       ? {
           ...(preconfigured ? {
@@ -526,7 +541,7 @@ export async function openQualifiedAcpxRuntime(
       name: server.name,
       url: server.url,
       headers: [
-        { name: "Authorization", value: `Bearer ${server.bearerToken}` },
+        { name: "Authorization", value: claudeMcpHeaders.get(server.name) ?? `Bearer ${server.bearerToken}` },
       ],
     })),
     onPermissionRequest: async (request, context) => {
