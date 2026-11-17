@@ -445,7 +445,7 @@ export type ManagedGoogleRevocationOutcome =
 
 export interface ManagedGoogleAccessRemoval {
   provider: "google";
-  result: "ended" | "other_connections_remain" | "not_ended";
+  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "not_ended";
   outcomes: ManagedGoogleRevocationOutcome[];
 }
 

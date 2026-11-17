@@ -234,12 +234,16 @@ token envelopes, and refresh.
 
 Removing a Paperclip-managed Google connection, or one of its per-user,
 organization or per-agent grants, sends each removed grant's refresh token to
-Paperclip Cloud's signed `POST /v1/connector/revoke`, under the subject that
-consented to that grant (`providerTenant.externalId`, which refresh also signs;
-grants saved without it fall back to the subject refresh used before). The
-broker removes its record for that token. It revokes at Google only when it
+Paperclip Cloud's signed `POST /v1/connector/revoke`. Revoke signs with the
+subject that consented to the grant (`providerTenant.externalId`, saved by the
+managed callback), which is the subject of the broker's ledger row from the
+claim. Grants saved without it fall back to the subject refresh uses. Refresh
+keeps its own existing subject rule.
+
+The broker removes its record for that token. It revokes at Google only when it
 knows of no other live binding that could share the grant, because Google's
-revoke ends the user's whole grant to the managed client. Its `outcome` is one
+revoke ends the user's whole grant to the managed client. A repeated call for a
+token it already removed returns the outcome it recorded. Its `outcome` is one
 of `revoked`, `other_connections_remain`, `provider_revocation_failed`,
 `binding_not_known`, `provider_revocation_disabled` or
 `revocation_in_progress`. The app adds `revocation_not_available` (an older
@@ -247,22 +251,40 @@ broker's 409), `broker_unavailable` (timeout, network failure or no usable
 Cloud client), `broker_error`, `credential_unavailable` and
 `unexpected_error`.
 
-Order: the app reads the tokens, commits the local removal (grants revoked,
-connection archived, secrets deleted), and only then calls the broker with the
-tokens held in memory. A removal that fails locally makes no broker call. The
-calls run one after another so the broker sees each earlier removal, share one
-5-second deadline, and are never retried. Any failure in this step becomes an
-outcome; it never changes the local result.
+Order for removing a whole connection:
 
-The removal response and its activity entry carry
-`providerAccess: { provider, result, outcomes }`, codes only. `result` is
-judged per consenting subject: a subject whose access was revoked stays
-`ended` even if another of its grants reports a later outcome. Across
-subjects, all `ended` gives `ended`; otherwise all `ended` or
-`other_connections_remain` gives `other_connections_remain`; anything else,
-including `binding_not_known` (the broker had no record, so Google was not
-called), gives `not_ended`. The removal message links `not_ended` to
-https://myaccount.google.com/connections.
+1. Read the refresh tokens.
+2. Commit the grant revocation.
+3. Call the broker, one token at a time, under one 5-second deadline. This step
+   never throws, is never retried, and never changes the local outcome.
+4. Delete the refresh-token secrets that were sent.
+5. Run the remaining cleanup (installs, profiles, the connection, other
+   secrets).
+
+Order for removing one grant: read the token, commit the grant revocation, call
+the broker. The single-grant path keeps the grant's secrets, as before.
+
+A refresh-token secret that still exists for a revoked managed Google grant
+means the call may still be owed (for example, the process stopped between
+steps 2 and 3, or the grant was revoked on its own). Every later removal
+includes such grants. A removal that failed before step 2 includes the grants
+on retry. A removal that failed after step 4 does not call the broker again.
+
+`providerAccess: { provider, result, outcomes }` is returned with the removal
+and recorded in its activity entry, codes only. The result is judged over the
+distinct tokens sent:
+
+| Outcomes | `result` | Message |
+| --- | --- | --- |
+| Every token `revoked` | `ended` | Access was ended at Google |
+| Any other code (failure, not known, unavailable, error) | `not_ended` | Could not end access; link to https://myaccount.google.com/connections |
+| Only `other_connections_remain` | `other_connections_remain` | Other connections keep access |
+| At least one `revoked`, the rest `other_connections_remain` | `ended_unconfirmed` | Access was ended; check Google if more than one account was connected; link to the same page |
+
+The last row is the sequence the broker returns for two tokens of one Google
+grant sent one at a time, but two different Google accounts can return it too.
+Grants record no Google account identity (none of the 14 scopes returns one),
+so the app cannot report `ended` for it.
 
 Connections on a customer-owned Google OAuth client are removed locally only.
 

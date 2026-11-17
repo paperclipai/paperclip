@@ -38,7 +38,7 @@ import { buildCompanyUserProfileMap } from "@/lib/company-members";
 import { installStateFrom, type InstallState } from "@/lib/tool-installs";
 import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useGoogleWorkspaceServiceGate } from "@/features/connections/GoogleWorkspaceServices";
-import { googleAccessRemovalNotice } from "@/features/connections/googleAccessRemoval";
+import { connectionRemovalToast } from "@/features/connections/googleAccessRemoval";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -329,8 +329,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.applications(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
-      const googleNotice = googleAccessRemovalNotice(removed?.removal?.providerAccess);
-      if (googleNotice) pushToast({ title: "Disconnected", body: googleNotice.body, tone: googleNotice.tone, ...(googleNotice.action ? { action: googleNotice.action } : {}) });
+      pushToast(connectionRemovalToast({
+        title: "Disconnected",
+        body: "The connection was removed and agents can no longer use it.",
+        providerAccess: removed?.removal?.providerAccess,
+      }));
       navigate("/apps");
     },
     onError: (error) => pushToast({ title: "Couldn't disconnect", body: describeError(error).body, tone: "error" }),

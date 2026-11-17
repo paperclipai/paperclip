@@ -1,21 +1,31 @@
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolConnections } from "@paperclipai/db";
+import { companySecrets, connectionGrants, toolConnections } from "@paperclipai/db";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { ManagedGoogleAccessRemoval, ManagedGoogleRevocationOutcome } from "@paperclipai/shared";
 import { logger } from "../../../middleware/logger.js";
 import { resolveConnectionGrantSecret } from "../../connection-credentials.js";
 import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
-import { managedConnectorProfile, managedConnectorSubject } from "../oauth/client-settings.js";
+import { managedConnectorConsentSubject, managedConnectorProfile } from "../oauth/client-settings.js";
 import { oauthConfig } from "../oauth/metadata.js";
 import type { ActorInfo } from "../types.js";
 
 export const MANAGED_GOOGLE_REVOKE_TIMEOUT_MS = 5_000;
 
 type RemovedGrant = Pick<typeof connectionGrants.$inferSelect,
-  "id" | "companyId" | "connectionId" | "kind" | "subjectUserId" | "subjectAgentId" | "credentialSecretRefs" | "providerTenant">;
+  "id" | "companyId" | "connectionId" | "status" | "kind" | "subjectUserId" | "subjectAgentId" | "credentialSecretRefs" | "providerTenant">;
 
-type PreparedRevocation = { subject: string | null; token?: string; outcome?: ManagedGoogleRevocationOutcome };
+type PreparedRevocation =
+  | { kind: "call"; subject: string; token: string }
+  | { kind: "skip"; outcome: ManagedGoogleRevocationOutcome };
 
-export type PreparedGoogleAccessRemoval = { send(): Promise<ManagedGoogleAccessRemoval> };
+export type PreparedGoogleAccessRemoval = {
+  refreshSecretIds: string[];
+  send(): Promise<ManagedGoogleAccessRemoval>;
+};
+
+function refreshSecretId(grant: RemovedGrant): string | null {
+  return (grant.credentialSecretRefs ?? []).find((ref) => ref.configPath === "oauth.refresh_token")?.secretId ?? null;
+}
 
 function outcomeForError(error: unknown): ManagedGoogleRevocationOutcome {
   if (!(error instanceof PaperclipCloudConnectorError)) return "broker_error";
@@ -24,29 +34,17 @@ function outcomeForError(error: unknown): ManagedGoogleRevocationOutcome {
   return "broker_error";
 }
 
-function resultOf(outcomes: ManagedGoogleRevocationOutcome[]): ManagedGoogleAccessRemoval["result"] {
-  if (outcomes.every((outcome) => outcome === "revoked")) return "ended";
-  if (outcomes.every((outcome) => outcome === "revoked" || outcome === "other_connections_remain")) return "other_connections_remain";
-  return "not_ended";
-}
-
-export function summarizeManagedGoogleAccess(
-  calls: Array<{ subject: string | null; outcome: ManagedGoogleRevocationOutcome }>,
-): ManagedGoogleAccessRemoval {
-  const bySubject = new Map<string, ManagedGoogleRevocationOutcome>();
-  const unattributed: ManagedGoogleRevocationOutcome[] = [];
-  for (const call of calls) {
-    if (call.subject === null) {
-      unattributed.push(call.outcome);
-      continue;
-    }
-    if (bySubject.get(call.subject) !== "revoked") bySubject.set(call.subject, call.outcome);
-  }
-  return {
-    provider: "google",
-    result: resultOf([...bySubject.values(), ...unattributed]),
-    outcomes: calls.map((call) => call.outcome),
-  };
+export function summarizeManagedGoogleAccess(outcomes: ManagedGoogleRevocationOutcome[]): ManagedGoogleAccessRemoval {
+  const revoked = outcomes.filter((outcome) => outcome === "revoked").length;
+  const remaining = outcomes.filter((outcome) => outcome === "other_connections_remain").length;
+  const result: ManagedGoogleAccessRemoval["result"] = revoked + remaining < outcomes.length
+    ? "not_ended"
+    : revoked === outcomes.length
+      ? "ended"
+      : revoked === 0
+        ? "other_connections_remain"
+        : "ended_unconfirmed";
+  return { provider: "google", result, outcomes };
 }
 
 export function createManagedGoogleAccessRemoval(db: Db, deps: {
@@ -62,7 +60,7 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     profile: string,
     revocations: PreparedRevocation[],
   ): Promise<ManagedGoogleAccessRemoval> {
-    const calls: Array<{ subject: string | null; outcome: ManagedGoogleRevocationOutcome }> = [];
+    const outcomes: ManagedGoogleRevocationOutcome[] = [];
     let connector: PaperclipCloudConnector | null = null;
     let connectorUnavailable = false;
     try {
@@ -72,13 +70,13 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     }
     const deadline = now() + timeoutMs;
     for (const revocation of revocations) {
-      if (revocation.outcome || !revocation.token || !revocation.subject) {
-        calls.push({ subject: revocation.subject, outcome: revocation.outcome ?? "credential_unavailable" });
+      if (revocation.kind === "skip") {
+        outcomes.push(revocation.outcome);
         continue;
       }
       const remaining = deadline - now();
       if (connectorUnavailable || !connector || remaining <= 0) {
-        calls.push({ subject: revocation.subject, outcome: "broker_unavailable" });
+        outcomes.push("broker_unavailable");
         continue;
       }
       try {
@@ -89,12 +87,12 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
           token: revocation.token,
           timeoutMs: remaining,
         });
-        calls.push({ subject: revocation.subject, outcome: outcome ?? "broker_error" });
+        outcomes.push(outcome ?? "broker_error");
       } catch (error) {
-        calls.push({ subject: revocation.subject, outcome: outcomeForError(error) });
+        outcomes.push(outcomeForError(error));
       }
     }
-    const summary = summarizeManagedGoogleAccess(calls);
+    const summary = summarizeManagedGoogleAccess(outcomes);
     if (summary.result === "not_ended") {
       logger.warn(
         { companyId: connection.companyId, connectionId: connection.id, outcomes: summary.outcomes },
@@ -109,7 +107,7 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
       { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
       "Could not prepare ending Google access for a removed connection",
     );
-    return { send: async () => summarizeManagedGoogleAccess([{ subject: null, outcome: "unexpected_error" }]) };
+    return { refreshSecretIds: [], send: async () => summarizeManagedGoogleAccess(["unexpected_error"]) };
   }
 
   async function prepare(
@@ -122,15 +120,25 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     const profile = managedConnectorProfile(typeof oauth.connectorProfile === "string" ? oauth.connectorProfile : undefined);
     if (profile?.provider !== "google") return null;
     try {
+      const revokedSecretIds = grants.flatMap((grant) => {
+        const secretId = grant.status === "revoked" ? refreshSecretId(grant) : null;
+        return secretId ? [secretId] : [];
+      });
+      const stillStored = new Set(revokedSecretIds.length === 0 ? [] : (await db.select({ id: companySecrets.id }).from(companySecrets)
+        .where(and(eq(companySecrets.companyId, connection.companyId), inArray(companySecrets.id, revokedSecretIds), isNull(companySecrets.deletedAt))))
+        .map((row) => row.id));
       const seen = new Set<string>();
       const revocations: PreparedRevocation[] = [];
+      const refreshSecretIds: string[] = [];
       for (const grant of grants) {
+        const secretId = refreshSecretId(grant);
         const refreshRef = (grant.credentialSecretRefs ?? []).find((ref) => ref.configPath === "oauth.refresh_token");
-        if (!refreshRef || seen.has(refreshRef.secretId)) continue;
-        seen.add(refreshRef.secretId);
-        const subject = managedConnectorSubject(grant, oauth);
+        if (!secretId || !refreshRef || seen.has(secretId)) continue;
+        if (grant.status === "revoked" && !stillStored.has(secretId)) continue;
+        seen.add(secretId);
+        const subject = managedConnectorConsentSubject(grant, oauth);
         if (!subject) {
-          revocations.push({ subject: null, outcome: "credential_unavailable" });
+          revocations.push({ kind: "skip", outcome: "credential_unavailable" });
           continue;
         }
         try {
@@ -140,13 +148,15 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
             actorType: actor?.actorType ?? "system",
             actorId: actor?.actorId ?? null,
           });
-          revocations.push({ subject, token: value });
+          revocations.push({ kind: "call", subject, token: value });
+          refreshSecretIds.push(secretId);
         } catch {
-          revocations.push({ subject, outcome: "credential_unavailable" });
+          revocations.push({ kind: "skip", outcome: "credential_unavailable" });
         }
       }
       if (revocations.length === 0) return null;
       return {
+        refreshSecretIds,
         send: async () => {
           try {
             return await send(connection, profile.id, revocations);

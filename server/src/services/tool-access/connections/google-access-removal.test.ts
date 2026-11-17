@@ -84,7 +84,7 @@ describe("managed Google access removal", () => {
     expect(connector.revoke).toHaveBeenCalledTimes(1);
   });
 
-  it("sends two grants of one subject one after the other and reports access ended once the last one is revoked", async () => {
+  it("sends two grants of one user one after the other and reports access ended but unconfirmed", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
     const outcomes = ["other_connections_remain", "revoked"];
@@ -99,7 +99,7 @@ describe("managed Google access removal", () => {
     await expect(run(removal, managedGoogle, [
       grant("org-grant", "organization", { consentSubject: "user-1" }),
       grant("user-grant", "user", { subjectUserId: "user-1", consentSubject: "user-1" }),
-    ])).resolves.toEqual({ provider: "google", result: "ended", outcomes: ["other_connections_remain", "revoked"] });
+    ])).resolves.toEqual({ provider: "google", result: "ended_unconfirmed", outcomes: ["other_connections_remain", "revoked"] });
     expect(maxInFlight).toBe(1);
     expect(connector.revoke.mock.calls.map(([values]) => values.token)).toEqual([
       "token-for-org-grant-refresh", "token-for-user-grant-refresh",
@@ -108,14 +108,14 @@ describe("managed Google access removal", () => {
 
   it.each([
     "binding_not_known", "provider_revocation_failed", "revocation_in_progress",
-  ])("keeps a subject's ended access when a later grant of that subject reports %s", async (later) => {
+  ])("reports access not ended when one token was revoked and another reports %s", async (later) => {
     const outcomes = ["revoked", later];
     const connector = connectorWith(async () => ({ outcome: outcomes.shift() }));
     const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
     await expect(run(removal, managedGoogle, [
       grant("a", "user", { consentSubject: "user-1" }),
       grant("b", "organization", { consentSubject: "user-1" }),
-    ])).resolves.toMatchObject({ result: "ended" });
+    ])).resolves.toMatchObject({ result: "not_ended" });
   });
 
   it.each([
@@ -172,17 +172,28 @@ describe("managed Google access removal", () => {
       grant("b", "user", { consentSubject: "user-2" }),
     ])).resolves.toEqual({ provider: "google", result: "not_ended", outcomes: ["other_connections_remain", "broker_unavailable"] });
     expect(connector.revoke).toHaveBeenCalledTimes(1);
+    expect(connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 5_000 }));
   });
 
-  it("summarizes subjects toward the least complete result", () => {
-    expect(summarizeManagedGoogleAccess([
-      { subject: "a", outcome: "revoked" }, { subject: "b", outcome: "other_connections_remain" },
-    ]).result).toBe("other_connections_remain");
-    expect(summarizeManagedGoogleAccess([
-      { subject: "a", outcome: "revoked" }, { subject: "b", outcome: "binding_not_known" },
-    ]).result).toBe("not_ended");
-    expect(summarizeManagedGoogleAccess([
-      { subject: "a", outcome: "other_connections_remain" }, { subject: "a", outcome: "binding_not_known" },
-    ]).result).toBe("not_ended");
+  it("reports a per-agent connection whose last agent grant was revoked as ended but unconfirmed", async () => {
+    const outcomes = ["other_connections_remain", "revoked"];
+    const connector = connectorWith(async () => ({ outcome: outcomes.shift() }));
+    const removal = createManagedGoogleAccessRemoval({} as Db, { currentCloudConnector: () => connector });
+    await expect(run(removal, managedGoogle, [
+      grant("agent-a", "agent", { subjectAgentId: "a", consentSubject: "agent:a" }),
+      grant("agent-b", "agent", { subjectAgentId: "b", consentSubject: "agent:b" }),
+    ])).resolves.toMatchObject({ result: "ended_unconfirmed" });
+  });
+
+  it.each([
+    [["revoked", "revoked"], "ended"],
+    [["broker_unavailable", "revoked"], "not_ended"],
+    [["other_connections_remain", "binding_not_known"], "not_ended"],
+    [["revoked", "unexpected_error"], "not_ended"],
+    [["other_connections_remain", "other_connections_remain"], "other_connections_remain"],
+    [["other_connections_remain", "revoked"], "ended_unconfirmed"],
+    [["revoked", "other_connections_remain"], "ended_unconfirmed"],
+  ] as const)("summarizes %j as %s", (outcomes, result) => {
+    expect(summarizeManagedGoogleAccess([...outcomes]).result).toBe(result);
   });
 });

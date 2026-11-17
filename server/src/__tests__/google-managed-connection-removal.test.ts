@@ -191,8 +191,11 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(response.status).toBe(200);
     expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
     expect(fixture.connector.revoke).toHaveBeenCalledWith({
-      subject: fixture.userId, companyId: fixture.company.id, profile: "gmail.draft", token: REFRESH_TOKEN, timeoutMs: 5_000,
+      subject: fixture.userId, companyId: fixture.company.id, profile: "gmail.draft", token: REFRESH_TOKEN, timeoutMs: expect.any(Number),
     });
+    const [{ timeoutMs }] = fixture.connector.revoke.mock.calls[0] as unknown as [{ timeoutMs: number }];
+    expect(timeoutMs).toBeGreaterThan(4_000);
+    expect(timeoutMs).toBeLessThanOrEqual(5_000);
     expect(response.body.removal.providerAccess).toEqual({ provider: "google", result, outcomes: [outcome] });
     const [entry] = await db.select().from(activityLog).where(and(
       eq(activityLog.companyId, fixture.company.id), eq(activityLog.action, "tool_connection.archived")));
@@ -224,7 +227,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(JSON.stringify(logged)).not.toContain(REFRESH_TOKEN);
   });
 
-  it("ends access at Google only after the local removal is committed", async () => {
+  it("ends access at Google right after the grants are revoked locally and before the remaining cleanup", async () => {
     const fixture = await connectManagedGmail();
     const seen: Array<{ connection?: string; grant?: string; liveSecrets: number }> = [];
     fixture.connector.revoke.mockImplementation(async () => {
@@ -237,7 +240,9 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
 
     expect(response.status).toBe(200);
-    expect(seen).toEqual([{ connection: "archived", grant: "revoked", liveSecrets: 0 }]);
+    expect(seen).toEqual([{ connection: "active", grant: "revoked", liveSecrets: expect.any(Number) }]);
+    expect(seen[0]!.liveSecrets).toBeGreaterThan(0);
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
   });
 
   it("revokes a single grant at Google only after the grant is marked revoked", async () => {
@@ -255,16 +260,76 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(seen).toEqual(["revoked"]);
   });
 
-  it.each(["connection", "grant"] as const)("makes no broker call when the local %s removal fails", async (path) => {
+  it("makes no broker call when the local grant revocation fails", async () => {
     const fixture = await connectManagedGmail();
     vi.spyOn(db, "transaction").mockRejectedValue(new Error("local removal failed"));
 
-    const response = await request(fixture.app).delete(path === "connection"
-      ? `/api/tool-connections/${fixture.connectionId}`
-      : `/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
 
     expect(response.status).toBe(500);
     expect(fixture.connector.revoke).not.toHaveBeenCalled();
+  });
+
+  it("calls the broker once when cleanup fails after the grants were revoked, and the retry does not call it again", async () => {
+    const fixture = await connectManagedGmail();
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValue(new Error("cleanup failed"));
+
+    const failed = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    expect(failed.status).toBe(500);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+
+    transaction.mockRestore();
+    const retried = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    expect(retried.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
+  });
+
+  it("sends a revocation still owed when the process stopped after the grants were revoked", async () => {
+    const fixture = await connectManagedGmail();
+    await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() }).where(eq(connectionGrants.id, fixture.grant.id));
+    const seen: number[] = [];
+    fixture.connector.revoke.mockImplementation(async () => {
+      seen.push(await liveSecretCount(fixture.company.id));
+      return { outcome: "revoked" };
+    });
+    const logged: unknown[] = [];
+    for (const level of ["trace", "debug", "info", "warn", "error", "fatal"] as const) {
+      vi.spyOn(logger, level).mockImplementation(((...args: unknown[]) => { logged.push(args); }) as never);
+    }
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+    expect(seen[0]).toBeGreaterThan(0);
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
+    expect(response.body.removal.providerAccess).toEqual({ provider: "google", result: "ended", outcomes: ["revoked"] });
+    expect(JSON.stringify(logged)).not.toContain(REFRESH_TOKEN);
+  });
+
+  it("makes no broker call when removal fails before the grants are revoked, and the retry sends them", async () => {
+    const fixture = await connectManagedGmail();
+    const update = db.update.bind(db);
+    let failedOnce = false;
+    vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
+      if (table === connectionGrants && !failedOnce) {
+        failedOnce = true;
+        throw new Error("grant revocation failed");
+      }
+      return update(table as never);
+    }) as never);
+
+    const failed = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    expect(failed.status).toBe(500);
+    expect(fixture.connector.revoke).not.toHaveBeenCalled();
+
+    const retried = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    expect(retried.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
+    expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: REFRESH_TOKEN }));
+    expect(retried.body.removal.providerAccess).toEqual({ provider: "google", result: "ended", outcomes: ["revoked"] });
   });
 
   it.each(["connection", "grant"] as const)("still completes the local %s removal when the Paperclip Cloud client cannot be created", async (path) => {
@@ -341,9 +406,15 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
       eq(activityLog.companyId, fixture.company.id), eq(activityLog.action, "tool_connection.grant_revoked")));
     expect(entry!.details).toMatchObject({ providerAccess: { outcomes: ["other_connections_remain"] } });
 
+    fixture.connector.revoke.mockResolvedValue({ outcome: "revoked" });
     const removal = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
     expect(removal.status).toBe(200);
-    expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
-    expect(removal.body.removal.providerAccess).toBeUndefined();
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(2);
+    expect(removal.body.removal.providerAccess).toEqual({ provider: "google", result: "ended", outcomes: ["revoked"] });
+    expect(await liveSecretCount(fixture.company.id)).toBe(0);
+
+    const again = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+    expect(again.status).toBe(200);
+    expect(fixture.connector.revoke).toHaveBeenCalledTimes(2);
   });
 });

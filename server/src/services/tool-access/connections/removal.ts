@@ -284,7 +284,7 @@ async function removeConnection(
         ),
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
-    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantsToRevoke, actor);
+    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantRows, actor);
     if (grantsToRevoke.length > 0) {
       await db
         .update(connectionGrants)
@@ -304,6 +304,14 @@ async function removeConnection(
             grantsToRevoke.map((row) => row.id),
           ),
         );
+    }
+    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
+    let secretsRevoked = 0;
+    if (providerAccessRemoval && providerAccessRemoval.refreshSecretIds.length > 0) {
+      const sent = await classifyConnectionSecrets(connection, providerAccessRemoval.refreshSecretIds);
+      for (const secretId of sent.owned) {
+        if (await secrets.remove(secretId)) secretsRevoked += 1;
+      }
     }
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
@@ -620,7 +628,6 @@ async function removeConnection(
       connection,
       candidateSecretIds,
     );
-    let secretsRevoked = 0;
     for (const secretId of owned) {
       const removed = await secrets.remove(secretId);
       if (removed) secretsRevoked += 1;
@@ -652,8 +659,6 @@ async function removeConnection(
           ),
         );
     }
-
-    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
 
     return {
       connection: toConnection(cleared ?? archived.connection),

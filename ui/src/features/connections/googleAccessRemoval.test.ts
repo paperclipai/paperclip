@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GOOGLE_THIRD_PARTY_ACCESS_URL, googleAccessRemovalNotice } from "./googleAccessRemoval";
+import { connectionRemovalToast, GOOGLE_THIRD_PARTY_ACCESS_URL, googleAccessRemovalNotice } from "./googleAccessRemoval";
 
 describe("googleAccessRemovalNotice", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -33,5 +33,18 @@ describe("googleAccessRemovalNotice", () => {
     notice?.action?.onClick?.();
     expect(open).toHaveBeenCalledWith(GOOGLE_THIRD_PARTY_ACCESS_URL, "_blank", "noopener,noreferrer");
     expect(GOOGLE_THIRD_PARTY_ACCESS_URL).toBe("https://myaccount.google.com/connections");
+  });
+  it("says access was ended but asks to check when the Google account cannot be confirmed", () => {
+    const notice = googleAccessRemovalNotice({ provider: "google", result: "ended_unconfirmed", outcomes: ["other_connections_remain", "revoked"] });
+    expect(notice?.tone).toBe("info");
+    expect(notice?.body).toBe("Paperclip's access was ended at Google. If more than one Google account was connected here, check your Google account's third-party connections to be sure.");
+    expect(notice?.action?.label).toBe("Open Google account connections");
+  });
+
+  it("builds the removal toast with or without a Google outcome", () => {
+    expect(connectionRemovalToast({ title: "Connection removed", body: "Removed.", providerAccess: undefined }))
+      .toEqual({ title: "Connection removed", body: "Removed.", tone: "success" });
+    expect(connectionRemovalToast({ title: "Connection removed", body: "Removed.", providerAccess: { provider: "google", result: "ended", outcomes: ["revoked"] } }))
+      .toEqual({ title: "Connection removed", body: "Removed. Paperclip's access to this Google account was also ended at Google.", tone: "success" });
   });
 });
