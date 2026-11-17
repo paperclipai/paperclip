@@ -8,6 +8,7 @@ export const WORKTREE_SEED_MODES = ["minimal", "full"] as const;
 export const WORKTREE_SEED_MANIFEST = "seed-manifest.json";
 export const WORKTREE_SEED_PENDING_MARKER = "seed-pending";
 export const WORKTREE_SEED_COMPLETE_MARKER = "seed-complete";
+export const WORKTREE_SEED_EMPTY_MARKER = "seed-empty";
 export const WORKTREE_SEED_LOCK_MARKER = "seed.lock";
 
 export type WorktreeSeedMode = (typeof WORKTREE_SEED_MODES)[number];
@@ -58,6 +59,7 @@ export type WorktreeSeedPlan = {
 };
 
 const MINIMAL_WORKTREE_EXCLUDED_TABLES = [
+  "agent_identity_keys",
   "activity_log",
   "agent_runtime_state",
   "agent_task_sessions",
@@ -97,6 +99,7 @@ export type WorktreeSeedMarkerPaths = {
   manifest: string;
   pending: string;
   complete: string;
+  empty: string;
   lock: string;
 };
 
@@ -106,6 +109,7 @@ export function resolveWorktreeSeedMarkerPaths(configPath: string): WorktreeSeed
     manifest: path.resolve(configDir, WORKTREE_SEED_MANIFEST),
     pending: path.resolve(configDir, WORKTREE_SEED_PENDING_MARKER),
     complete: path.resolve(configDir, WORKTREE_SEED_COMPLETE_MARKER),
+    empty: path.resolve(configDir, WORKTREE_SEED_EMPTY_MARKER),
     lock: path.resolve(configDir, WORKTREE_SEED_LOCK_MARKER),
   };
 }
@@ -118,7 +122,7 @@ export function resolveWorktreeSeedPlan(mode: WorktreeSeedMode): WorktreeSeedPla
   if (mode === "full") {
     return {
       mode,
-      excludedTables: [],
+      excludedTables: ["agent_identity_keys"],
       nullifyColumns: {},
     };
   }

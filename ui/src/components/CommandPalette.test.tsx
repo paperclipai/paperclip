@@ -346,7 +346,7 @@ describe("CommandPalette", () => {
     const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
       // Seed the caches so the already-loaded data is available synchronously —
       // this harness's flush model doesn't reliably propagate fresh async fetches.
-      queryClient.setQueryData(queryKeys.projects.list("company-1"), projects);
+      queryClient.setQueryData(queryKeys.projects.list("company-1", { includeArchived: true }), projects);
       queryClient.setQueryData(queryKeys.issues.search("company-1", "mob", undefined, 10), [
         { id: "i1", identifier: "ENG-9", title: "Fix login" },
       ]);

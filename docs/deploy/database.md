@@ -56,13 +56,24 @@ For production, use a hosted provider like [Supabase](https://supabase.com/).
 
 Use the **direct connection** (port 5432) for migrations and the **pooled connection** (port 6543) for the application.
 
-If using connection pooling (transaction mode), disable prepared statements via the environment — no source edits needed:
+If your transaction-mode pooler does not support protocol-level named prepared statements, disable them via the environment:
 
 ```sh
 DATABASE_PREPARED_STATEMENTS=false
 ```
 
-Related optional client tuning: `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_MAX_LIFETIME_SECONDS`, `DATABASE_APPLICATION_NAME`. Driver defaults apply when unset, except that idle pooled connections close after 60 seconds (`DATABASE_IDLE_TIMEOUT_SECONDS=0` keeps them open) and the pool reports `application_name=paperclip`. See [Connection pool settings](#connection-pool-settings).
+For a direct connection or a pooler that supports named prepared statements,
+`DATABASE_PREPARED_STATEMENTS=true` also prepares parameterized ORM queries and
+queries inside transactions and reserved or dedicated connections. Check the
+provider's configuration before you enable it. Preparation caches statement
+metadata, not query results. Unset preserves the existing ORM behavior and the
+driver default for tagged SQL. Explicit per-query options still apply.
+Each database client prepares at most 1,000 distinct statements and skips
+statements longer than 8 KB. If a prepared statement fails because the pooler's copy is
+stale after a schema change or was lost, Paperclip stops preparing that
+statement and retries it once unprepared.
+
+Related optional client tuning: `DATABASE_POOL_MAX`, `DATABASE_IDLE_TIMEOUT_SECONDS`, `DATABASE_CONNECT_TIMEOUT_SECONDS`, `DATABASE_MAX_LIFETIME_SECONDS`, `DATABASE_APPLICATION_NAME`. Driver defaults apply when unset, except that idle pooled connections close after 60 seconds (`DATABASE_IDLE_TIMEOUT_SECONDS=0` keeps them open) and the server's main pool reports `application_name=paperclip:<boot id>` (other pools use names that start with `paperclip`). See [Connection pool settings](#connection-pool-settings).
 
 ## Connection Pool Settings
 
@@ -74,10 +85,12 @@ The server opens one postgres.js pool for its own queries (and a second one when
 | `DATABASE_IDLE_TIMEOUT_SECONDS` | `60` | Close a pooled connection after this much idle time. `0` keeps idle connections open forever (the driver default). |
 | `DATABASE_CONNECT_TIMEOUT_SECONDS` | `30` (driver) | Give up on a connection attempt after this long. |
 | `DATABASE_MAX_LIFETIME_SECONDS` | 30–60 min, randomized (driver) | Recycle a pooled connection once it is this old. |
-| `DATABASE_APPLICATION_NAME` | `paperclip` | Value of `application_name` in `pg_stat_activity`, so you can find Paperclip's backends: `SELECT * FROM pg_stat_activity WHERE application_name = 'paperclip';` |
-| `DATABASE_PREPARED_STATEMENTS` | `true` (driver) | Set `false` behind a transaction-mode pooler (see above). |
+| `DATABASE_APPLICATION_NAME` | `paperclip:<boot id>` (server main pool) | Value of `application_name` in `pg_stat_activity`. The boot id tells the sessions of each server process apart after a restart. Find Paperclip's backends with `SELECT * FROM pg_stat_activity WHERE application_name LIKE 'paperclip%';` |
+| `DATABASE_DEDICATED_CONNECTION_MAX` | `24` | Dedicated lock connections in use at once per process before new callers wait. Nested callers do not wait. |
+| `DATABASE_DEDICATED_CONNECTION_WAIT_MS` | `30000` | After this wait, a queued caller gets a dedicated connection over the limit. |
+| `DATABASE_PREPARED_STATEMENTS` | Unset | `true` opts parameterized ORM queries into preparation. `false` disables preparation. Use `false` when the pooler does not support named statements. Unset preserves existing behavior. |
 
-The server ends its pools during shutdown (SIGINT/SIGTERM) and when startup fails after the pool was opened, so a restarting server does not leave idle backends behind. Size `max_connections` on the PostgreSQL side for at least `DATABASE_POOL_MAX` per server process plus your other clients.
+The server ends its pools during shutdown (SIGINT/SIGTERM) and when startup fails after the pool was opened, so a restarting server does not leave idle backends behind. Size `max_connections` on the PostgreSQL side for at least `DATABASE_POOL_MAX` per server process plus your other clients. Each server process also opens private pools and dedicated lock connections. With the defaults, one process can open up to 73 connections: `DATABASE_POOL_MAX` (10), 9 in private pools (lease renewal, checkpoints, file storage), 2 notification listeners, and up to 52 dedicated lock connections (`application_name=paperclip-workspace-finalization-lock`). `DATABASE_DEDICATED_CONNECTION_MAX` (default 24) bounds the dedicated connections in use; the worst case is twice that value plus 4 idle. Count all of these per process when you size `max_connections`, or lower `DATABASE_DEDICATED_CONNECTION_MAX` to fit.
 
 ## Switching Between Modes
 

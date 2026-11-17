@@ -1,0 +1,134 @@
+{
+  "schema": "paperclip.pi-provider-pack-offline-proof.v1",
+  "recordedAt": "2026-09-28T21:14:07.293Z",
+  "classification": "offline_candidate_admission",
+  "source": {
+    "runnerRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+    "distDigest": "sha256:8e338aeae5f127fce97e55cc17e315a995ae0c9dc04592c3632335caa3b18ee7",
+    "bridgeDigest": "sha256:7d0e7ea882992dd3b8b713ff370de95178d70cc96c7e8a67a254b54cef6c8dd3",
+    "productionLockDigest": "sha256:2c46a68811ba1d504a41b6f4d3f642bc93f4a1c615097754c9c6486881dba8e6",
+    "note": "Built with the Pi version 3 authenticated MCP error and standard Bash output fixes, shared version 3 profile admission, and bounded immutable snapshot copying. This probe executed the deployed generic installation registry and immutable snapshot. Every capability field below was read and asserted from this actual initialize response. No prompt was sent.",
+    "executionTrees": {
+      "packages/paperclip-runner/src": "7df6b47574e6838e63a7d13c403c615a749702db",
+      "packages/paperclip-runner/scripts": "f845a2dd5b1ac2f1a4ef8d95db8fba2daea9999f",
+      "packages/paperclip-runner/runner": "9c595f7eae18197bb5cfd61c1af463df0a8741cd",
+      "packages/paperclip-runner/protocol": "1d50458fb572d0c75f9a398f419209c52c23ba6f",
+      "patches": "784152935b091eed6ea1795d39c23cfbbd154ab7",
+      "server/src": "b267adc1e0ad36955b68314829cfd4256ab88d37",
+      "tests/runner-e2e": "5ff4b8a85a14e3e005e3e240c145899c0bc742b5"
+    },
+    "runtimeCodeRevision": "06cf356a8bc94f709fcd15606fe05e17933fe3b2",
+    "runtimeTreeEquality": "7710736ca adds only the capability report and Pi evidence JSON after06cf356a8; all listed execution trees match."
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "nodeVersion": "24.19.0",
+    "execution": "local macOS ARM64; immutable guarded provider snapshot",
+    "packageManager": "pnpm@9.15.4"
+  },
+  "candidate": {
+    "agent": "pi",
+    "qualification": "pending",
+    "agentProfileVersion": 3,
+    "declaredModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "reportedModelId": null,
+    "modelVerification": "not_performed_authentication_missing",
+    "wrapperVersion": "0.0.33",
+    "runtimeVersion": "0.84.2",
+    "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+    "closureDigest": "sha256:a523fa338cef7db88a42b81e2dc8a5cc41b78775aed1be0a9439f6622ea8a710",
+    "assetTreeDigest": "sha256:af5213260863e4618a7137d8b647a19ae2e1916a40993ada6ee6ade659ae991b",
+    "distributionManifestDigest": "sha256:a31cd4912a2dccbf8d2b66794bfeb7f27aeb68ee3d2456359a9d326afacd2378",
+    "wrapperDigest": "sha256:df6b6270d95154aef058e3dacb766d0f0ca0d26fbfaccc4c804cdb088fd89e1e",
+    "helperDigest": "sha256:4333d284ff06ab1195e49630041f0b03a486a92fc678100525ad107e0982dba1",
+    "extensionDigest": "sha256:55d898be2c0a5ba7ff6abdcd33b83dd4af8e2a9c0561fd0f0460ee78925f4b87"
+  },
+  "providerPack": {
+    "manifestDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+    "portableNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "piNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "acpxSidecarDigest": "sha256:37e3d1234c5f81b4257fdf3a1074c97fff42625e84b10a6418721fec4d3670e0"
+  },
+  "observed": {
+    "closedSnapshotLaunch": true,
+    "acpInitialize": "passed",
+    "authMethods": [],
+    "capabilities": {
+      "version": 1,
+      "steering": true,
+      "queuedFollowUp": true,
+      "questions": [
+        "select",
+        "confirm",
+        "input",
+        "editor"
+      ],
+      "nativePermissions": true,
+      "promptUsage": true,
+      "nativePlan": false,
+      "pendingRequestRecovery": "live-process-only"
+    },
+    "sessionNew": "rejected_authentication_missing",
+    "expectedError": "Bind the configured OpenRouter API credential to this Paperclip runtime.",
+    "missingCredentialRejected": true,
+    "capabilityProvenance": "Read and asserted in full from this pack launch.",
+    "rpcMethods": [
+      "initialize",
+      "session/new"
+    ],
+    "fullRunnerSessionOpen": {
+      "status": "typed_rejection_without_prompt",
+      "classification": "session_ensure_failed",
+      "durationIncludingCloseMs": 12111,
+      "configuredSessionOpenDeadlineMs": 30000,
+      "authenticatedSuccess": false
+    }
+  },
+  "usage": {
+    "providerCalls": 0,
+    "promptRequests": 0,
+    "paidProviderCalls": 0,
+    "credentials": "none",
+    "spentUsd": 0
+  },
+  "limitations": [
+    "No provider authentication, model prompt, or reported currentModelId was verified.",
+    "Native tool execution, permissions, questions, and semantic MCP calls were not exercised by this pack-launch probe.",
+    "Linux x64, macOS x64, and Daytona execution were not exercised.",
+    "Production qualification remains pending."
+  ],
+  "runnerd": {
+    "sourceRevision": "06cf356a8bc94f709fcd15606fe05e17933fe3b2",
+    "rustTree": "9c595f7eae18197bb5cfd61c1af463df0a8741cd",
+    "sha256": "2c8efdc99f988b1c8ab0e270677a3321af0fd6d5789dbf1b671faa921031b42f",
+    "profileVersion": 3,
+    "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472"
+  },
+  "verification": {
+    "typescriptBuild": "passed",
+    "releaseRunnerBuild": "passed",
+    "focusedVitest": {
+      "files": 7,
+      "passed": 95,
+      "skipped": 0,
+      "actualDistributionInstallationIncluded": true
+    },
+    "installedPackageChecksPassed": 25,
+    "nativeProviderRustTestsPassed": 16,
+    "cleanLock": {
+      "sha256": "2c46a68811ba1d504a41b6f4d3f642bc93f4a1c615097754c9c6486881dba8e6",
+      "independentResolutions": 2,
+      "arguments": [
+        "--resolution-only",
+        "--ignore-scripts",
+        "--no-frozen-lockfile"
+      ],
+      "trackedLockChanged": false
+    },
+    "failedBeforeRepair": {
+      "mcpValidationErrorCases": 1,
+      "bashStructuredOutputCases": 3
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import { isPassiveSlackAction, normalizeSlackSelectionAction, slackSelectionValues } from "./chat-channels/slack/cards.js";
 import { PhotonChatAdapter, parsePhotonThreadId } from "./photon/adapter.js";
 import { PhotonLineAuthentication } from "./photon/cloud.js";
 import { PhotonState } from "./photon/state.js";
@@ -14,10 +15,10 @@ import {
   type DiscordAdapter,
   type DiscordAdapterConfig,
 } from "@chat-adapter/discord";
-import {
-  createSlackAdapter,
-  type SlackAdapterConfig,
-} from "@chat-adapter/slack";
+import type { SlackAdapterConfig } from "@chat-adapter/slack";
+import { PaperclipSlackAdapter } from "./chat-channels/slack/adapter.js";
+import { verifySlackSignature } from "@chat-adapter/slack/webhook";
+import { slackCloudAcceptedAt } from "./chat-channels/slack/cloud-event.js";
 import {
   createTeamsAdapter,
   type TeamsAdapter,
@@ -409,6 +410,8 @@ export interface ChatSdkMessageUpdatedCallbackEvent {
 export interface ChatSdkCallbackEvent<T> {
   endpointId: string;
   event: T;
+  /** Provider-normalized selected opaque values from an explicit message submit. */
+  selectionValues?: string[];
   provider: ChatSdkProvider;
   /** Runtime-assigned ingress context; never read from provider payloads. */
   transport?: "discord_gateway";
@@ -1360,6 +1363,13 @@ function createProviderAdapter(
     case "slack": {
       const adapterConfig: SlackAdapterConfig = {
         ...config.credentials,
+        webhookVerifier: async (request, body) => {
+          await verifySlackSignature(body, request.headers, {
+            signingSecret: config.credentials.signingSecret,
+            now: () => slackCloudAcceptedAt(request) ?? Date.now(),
+          });
+          return true;
+        },
         logger: resolvedLogger,
         mode: "webhook",
         nativeStreaming: true,
@@ -1374,7 +1384,7 @@ function createProviderAdapter(
           timeout: SLACK_WEB_API_TIMEOUT_MS,
         },
       };
-      const adapter = createSlackAdapter(adapterConfig);
+      const adapter = new PaperclipSlackAdapter(adapterConfig);
       (
         adapter as unknown as SlackAdapterInternals
       ).paperclipFileUploadReceiptContext = new AsyncLocalStorage<
@@ -1919,7 +1929,10 @@ function registerCallbacks(
     });
   }
   if (callbacks.onAction) {
-    chat.onAction(async (event) => {
+    chat.onAction(async (sourceEvent) => {
+      if (provider === "slack" && isPassiveSlackAction(sourceEvent)) return;
+      const event = provider === "slack" ? normalizeSlackSelectionAction(sourceEvent) : sourceEvent;
+      const selectionValues = provider === "slack" ? slackSelectionValues(sourceEvent) : undefined;
       const transport = actionTransport();
       if (!acceptsProviderScope(event.raw)) {
         if (transport === "discord_gateway") {
@@ -1939,6 +1952,7 @@ function registerCallbacks(
             provider,
             event,
             ...(transport ? { transport } : {}),
+            ...(selectionValues ? { selectionValues } : {}),
             ...(telegramCallback(event.raw)
               ? { telegramCallback: telegramCallback(event.raw) }
               : {}),
@@ -3188,6 +3202,11 @@ export class ChatSdkRuntime {
   list(): ChatSdkEndpointRuntime[] {
     if (this.shuttingDown) return [];
     return [...this.endpoints.values()];
+  }
+
+  /** Retirement failures retain their owner even after get/list hide it. */
+  hasUnsettledLifecycle(): boolean {
+    return this.retiringEndpoints.size > 0 || this.lifecycleTails.size > 0;
   }
 
   private enqueueLifecycle<T>(

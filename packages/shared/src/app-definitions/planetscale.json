@@ -59,7 +59,12 @@
         "organization",
         "database",
         "branch"
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Query and change the databases you authorize in PlanetScale."
+      }
     },
     {
       "key": "mcp-insights-only",
@@ -85,7 +90,12 @@
         "organization",
         "database",
         "branch"
-      ]
+      ],
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Inspect database performance with the insights-only server."
+      }
     }
   ]
 }

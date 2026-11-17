@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { IsolatedWorkspacesRouteGate } from "./IsolatedWorkspacesRouteGate";
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -86,5 +87,19 @@ describe("IsolatedWorkspacesRouteGate", () => {
 
     expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
     expect(container.querySelector('[data-testid="workspace-route"]')).toBeNull();
+  });
+
+  it("shows readable copy with Retry instead of redirecting when the flag cannot be read", async () => {
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(
+      new ApiError("Too many requests", 429, { error: "rate_limited" }),
+    );
+    await renderGate();
+
+    expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workspace-route"]')).toBeNull();
+    const alert = container.querySelector('[data-query-view="error"]');
+    expect(alert).not.toBeNull();
+    expect(alert?.textContent).not.toContain("rate_limited");
+    expect(alert?.querySelector("button")?.textContent).toContain("Retry");
   });
 });

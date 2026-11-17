@@ -1,3 +1,4 @@
+import { AlertTriangle, Info } from "lucide-react";
 import { describe, expect, it } from "vitest";
 import { completedActivitySummary } from "./completed-activity-summary";
 import type {
@@ -140,5 +141,80 @@ describe("completedActivitySummary", () => {
     expect(
       completedActivitySummary([tool("mcp__github__get_pull_request")]).label,
     ).toBe("Used connected tools");
+  });
+  it("shows the preserved pricing estimate as informational, not a billing receipt", () => {
+    const summary = "Pi estimates this turn at $0.000617 from its model prices. Billing cost is unverified.";
+    expect(completedActivitySummary([{
+      ...provider("provider_notice", "informational"), summary,
+      details: [{ label: "Severity", value: "info" }],
+    }])).toEqual({ label: summary, fullLabel: summary, icon: Info });
+  });
+  it.each(["warning", "error", undefined])("retains warning/error icons and safe notice text (%s)", (severity) => {
+    const summary = "Provider request needs attention.";
+    const result = completedActivitySummary([{
+      ...provider("provider_notice", severity === "error" ? "failed" : "informational"),
+      details: [
+        { label: "Summary", value: summary },
+        ...(severity ? [{ label: "Severity", value: severity }] : []),
+      ],
+    }]);
+    expect(result).toEqual({ label: summary, fullLabel: summary, icon: AlertTriangle });
+  });
+  it("uses a generic fallback without promoting arbitrary detail fields", () => {
+    expect(completedActivitySummary([{
+      ...provider("provider_notice", "informational"), summary: "  ",
+      details: [{ label: "Raw input", value: "private-command-or-path" }],
+    }]).label).toBe("Received a provider update");
+  });
+  it("does not hide a failed notice behind informational metadata", () => {
+    expect(completedActivitySummary([{
+      ...provider("provider_notice", "failed"), summary: "Provider failed.",
+      details: [{ label: "Severity", value: "info" }],
+    }]).icon).toBe(AlertTriangle);
+  });
+
+  it("groups distinct notices and keeps a later error visible beside actual work", () => {
+    const notices = ["info", "info", "warning", "error"].map((severity, index) => ({
+      ...provider("provider_notice", "informational"),
+      id: `notice-${index}`,
+      summary: `Distinct provider message ${index}`,
+      details: [{ label: "Severity", value: severity }],
+    }));
+    const result = completedActivitySummary([tool("bash"), ...notices]);
+    expect(result.label).toBe("Provider error reported, ran commands");
+    expect(result.fullLabel).toBe(result.label);
+    expect(result.label).not.toContain("Distinct provider message");
+  });
+
+  it("leads with a failed check and names model switches", () => {
+    const route = { ...provider("model_identity"), eventType: "model.route.changed" };
+    const passed = { ...provider("verification"), id: "check-1" };
+    const failed = { ...provider("verification", "failed"), id: "check-2" };
+    expect(completedActivitySummary([route, passed]).fullLabel).toBe("Switched models, ran checks");
+    expect(completedActivitySummary([route, passed, failed]).fullLabel).toBe("Check failed, switched models, ran checks");
+    const skipped = { ...provider("verification", "informational"), id: "check-3", details: [{ label: "Status", value: "not_run" }] };
+    expect(completedActivitySummary([skipped]).fullLabel).toBe("Skipped checks");
+  });
+});
+
+describe("completedActivitySummary governance", () => {
+  const hook = (outcome: string, status: TaskChatProviderActivityItem["status"] = "completed"): TaskChatProviderActivityItem => ({
+    ...provider("hook", status),
+    id: `hook-${outcome}`,
+    details: [
+      { label: "Event", value: "preToolUse" },
+      { label: "Outcome", value: outcome },
+    ],
+  });
+
+  it("leads with a hook that blocked an action", () => {
+    expect(completedActivitySummary([tool("Bash"), hook("passed"), hook("blocked")]).label)
+      .toBe("PreToolUse hook blocked a tool call, ran commands");
+  });
+
+  it("keeps routine hook passes out of a summary that has other work", () => {
+    expect(completedActivitySummary([hook("passed"), tool("Bash"), hook("passed")]).label).toBe("Ran commands");
+    expect(completedActivitySummary([hook("passed")]).label).toBe("PreToolUse hook ran");
+    expect(completedActivitySummary([hook("passed"), hook("context")]).label).toBe("Ran hooks");
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyWorkspaceRestoreFailure, withWorkspaceRestore } from "./workspace-restore-result.js";
 import type { AdapterExecutionResult } from "./types.js";
+import { withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep, withWorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
 
 const completed: AdapterExecutionResult = {
   exitCode: 0, signal: null, timedOut: false,
@@ -10,6 +11,34 @@ const completed: AdapterExecutionResult = {
 const unsafe = new Error("Daytona syncOut refusing tarball link whose target escapes the extraction dir: .claude/skills/paperclip -> /tmp/private-clone/secret-key");
 
 describe("workspace restore settlement", () => {
+  it("retains only the safe failed restore step alongside the original completed turn", async () => {
+    const error = Object.assign(new Error("private-restore-path and command"), { code: 1, stderr: "private-restore-output" });
+    const result = await withWorkspaceRestore(async () => completed, () => withWorkspaceRestoreDiagnostics("workspace", () =>
+      withWorkspaceRestoreStep("index_reset", async () => { throw error; })));
+    expect(result.resultJson).toMatchObject({
+      workspaceRestoreFailure: "restore_failed",
+      workspaceRestoreDiagnostic: { phase: "workspace", step: "index_reset", errorCode: "unknown", exitCode: 1 },
+      executionBeforeRestore: { exitCode: 0, timedOut: false, errorCode: null },
+    });
+    expect(JSON.stringify(result)).not.toContain("private-restore-");
+  });
+
+  it("persists only bounded Git evidence without replacing the completed model result", async () => {
+    const error = Object.assign(new Error("private-git-command /private/workspace"), {
+      code: 1, stdout: "a".repeat(40) + "\nprivate-git-file contents", stderr: "private-git-refs",
+    });
+    const result = await withWorkspaceRestore(async () => completed, () => withWorkspaceRestoreDiagnostics("workspace", () =>
+      withWorkspaceRestoreStep("git_integration", () => withWorkspaceRestoreGitCommand("merge_tree", async () => { throw error; }))));
+    expect(result).toMatchObject({
+      errorCode: "workspace_restore_failed", exitCode: completed.exitCode, summary: completed.summary, usage: completed.usage,
+      resultJson: { requestId: "request", workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreDiagnostic: { phase: "workspace", step: "git_integration", errorCode: "unknown", exitCode: 1,
+          gitCommand: "merge_tree", gitFailureKind: "merge_conflict" },
+        executionBeforeRestore: { exitCode: 0, timedOut: false, errorCode: null } },
+    });
+    expect(JSON.stringify(result)).not.toContain("private-git-");
+  });
+
   it("retains the completed result and safe member while excluding the unsafe target", async () => {
     const result = await withWorkspaceRestore(async () => completed, async () => { throw unsafe; });
     expect(result).toMatchObject({

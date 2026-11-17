@@ -31,7 +31,7 @@ describe("resolvePaperclipRunnerTransitionModel", () => {
 
   it("uses the current Codex default when the source model is blank", () => {
     expect(resolvePaperclipRunnerTransitionModel("codex_local", ""))
-      .toBe("gpt-5.6-sol");
+      .toBe("gpt-6.1-sol");
   });
 });
 

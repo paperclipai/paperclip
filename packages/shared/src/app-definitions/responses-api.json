@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "slug": "responses-api",
+  "name": "Responses API",
+  "description": "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/api-key-generic.svg"
+  },
+  "urlPatterns": [],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "Responses API API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "openai",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "OPENAI_API_KEY"
+      }
+    }
+  ],
+  "tags": [
+    "model-provider"
+  ]
+}

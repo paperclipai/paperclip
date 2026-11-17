@@ -106,6 +106,7 @@ export interface ChatPublicationProjectionInput {
       title: string;
       body?: string | null;
       actions?: readonly SafeExternalChatCardAction[] | null;
+      selection?: SafeExternalChatCard["selection"];
     };
   } | null;
 }
@@ -323,6 +324,24 @@ function projectCard(
     );
   }
 
+  const selection = input.card.selection;
+  if (selection && (typeof selection.actionId !== "string" || !SAFE_IDENTIFIER_RE.test(selection.actionId) ||
+    !Array.isArray(selection.options) || selection.options.length < 1 || selection.options.length > 100 ||
+    selection.options.some(option => !option || typeof option.actionId !== "string" || !SAFE_IDENTIFIER_RE.test(option.actionId)) ||
+    new Set(selection.options.map(option => option.actionId)).size !== selection.options.length)) {
+    throw new UnsafeChatPublicationError("External chat selection is invalid");
+  }
+  const safeSelection = selection ? {
+    actionId: selection.actionId,
+    ...(selection.multiple ? { multiple: true, submitLabel: truncateByCodePoint(projectSafeChatPublicationText(selection.submitLabel ?? "Submit"), 75) } : {}),
+    label: truncateByCodePoint(projectSafeChatPublicationText(selection.label), 150),
+    options: selection.options.map(option => ({
+      ...(option.selected === true ? { selected: true } : {}),
+      actionId: option.actionId,
+      label: truncateByCodePoint(projectSafeChatPublicationText(option.label), 75),
+      ...(option.description ? { description: truncateByCodePoint(projectSafeChatPublicationText(option.description), 75) } : {}),
+    })),
+  } : undefined;
   const actions: SafeExternalChatCardAction[] = [];
   for (const action of rawActions) {
     const label = truncateByCodePoint(
@@ -368,6 +387,7 @@ function projectCard(
       title,
       ...(body ? { body } : {}),
       ...(actions.length ? { actions } : {}),
+      ...(safeSelection ? { selection: safeSelection } : {}),
     },
   };
 }

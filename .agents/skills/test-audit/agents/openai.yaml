@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Audit"
+  short_description: "Prune redundant tests while preserving useful coverage"
+  default_prompt: "Use $test-audit to garden this test suite and remove well-supported redundancy while preserving meaningful regression coverage."

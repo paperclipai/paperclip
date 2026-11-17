@@ -1,0 +1,55 @@
+{
+  "schema": "paperclip.native-completion-terminal-carrier.fixture.v1",
+  "cases": [
+    {
+      "name": "paperclip_finish",
+      "providerInput": {
+        "item": {
+          "id": "terminal-call",
+          "type": "tool_call",
+          "name": "paperclip_finish",
+          "status": "inProgress",
+          "arguments": {
+            "secret": "not-for-the-log"
+          }
+        }
+      },
+      "normalizedPayload": {
+        "provider": "codex",
+        "itemId": "terminal-call",
+        "kind": "tool_call",
+        "status": "running",
+        "channel": "detail",
+        "text": null,
+        "item": {
+          "name": "paperclip_finish"
+        }
+      }
+    },
+    {
+      "name": "paperclip_block",
+      "providerInput": {
+        "item": {
+          "id": "terminal-call",
+          "type": "tool_call",
+          "name": "paperclip_block",
+          "status": "inProgress",
+          "arguments": {
+            "secret": "not-for-the-log"
+          }
+        }
+      },
+      "normalizedPayload": {
+        "provider": "codex",
+        "itemId": "terminal-call",
+        "kind": "tool_call",
+        "status": "running",
+        "channel": "detail",
+        "text": null,
+        "item": {
+          "name": "paperclip_block"
+        }
+      }
+    }
+  ]
+}

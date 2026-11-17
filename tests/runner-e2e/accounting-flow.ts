@@ -63,10 +63,10 @@ export async function runAccountingFlow(input: {
   try {
     if (execution.profile.generation === "legacy") await prepareLegacyContinuationSkill(api, fixtures.company.id, fixtures.agent.id);
     await api.patch("/api/instance/settings/experimental", { enableClassicTaskInterface: false });
-    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name,
+    const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name,
       title: execution.task.buildTitle(nonce), prompt: execution.task.buildPrompt(nonce), workMode: "standard" });
     issue = await pollUntil({ label: "accounting task creation", deadlineAt: input.deadlineAt,
-      load: async () => (await api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)).find(i => i.title === execution.task.buildTitle(nonce)), accept: Boolean });
+      load: async () => (await api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)).find(i => i.id === createdTask.issueId), accept: Boolean });
     if (!issue) throw new Error("Missing created accounting task");
     if (probe.kind === "productive") {
       for (let step = 1; step <= 5; step++) {
