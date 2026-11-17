@@ -470,10 +470,13 @@ tools?: Array<{
   displayName: string;
   description: string;
   parametersSchema: JsonSchema;
+  riskLevel?: "read" | "write" | "destructive";
 }>;
 ```
 
 Tool names are automatically namespaced by plugin ID at runtime (e.g. `linear:search-issues`), so plugins cannot shadow core tools or each other's tools.
+
+Declare `riskLevel` for tools whose effects are not clear from their names. For example, a tool that starts a conversation or saves a watch must declare `"write"`. The gateway uses the higher of the declared risk and the risk inferred from the name. A declaration cannot downgrade an inferred write or destructive action. Tools without this field retain name-based inference. Risk metadata does not grant access; company policies and approval gates still apply.
 
 ### 11.2 Tool Execution
 

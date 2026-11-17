@@ -67,6 +67,7 @@ export interface RegisteredTool {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: Record<string, unknown>;
+  riskLevel?: PluginToolDeclaration["riskLevel"];
 }
 
 /**
@@ -268,6 +269,7 @@ export function createPluginToolRegistry(
       displayName: decl.displayName,
       description: decl.description,
       parametersSchema: decl.parametersSchema,
+      ...(decl.riskLevel ? { riskLevel: decl.riskLevel } : {}),
     };
 
     byNamespace.set(namespacedName, entry);
