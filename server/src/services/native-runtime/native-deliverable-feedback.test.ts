@@ -147,6 +147,7 @@ describe("explicit file output requirements", () => {
     "Write the summary from the log as the file shows it.",
     "Save this issue's document exactly as the file reads.",
     "Save this issue's document exactly as the file read before the last update.",
+    "Save this issue's document exactly as the file reads from the log.",
     "Save this issue's document exactly as the files are.",
     "Save this issue's document exactly as the file actually reads.",
     "Save this issue's document exactly as the file really reads.",
