@@ -1,6 +1,8 @@
 // Type-only: the server loads this module at startup, before the runner package is built.
 import type { RunnerConfinementMode, RunnerConfinementPolicy } from "@paperclipai/paperclip-runner/live";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "../../paths.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { resolveMasterKeyFilePath } from "../../secrets/local-encrypted-provider.js";
 import { loadStorageConfig } from "../../storage/config.js";
@@ -40,9 +42,15 @@ export function resolveLocalRunnerConfinementMode(env: NodeJS.ProcessEnv = proce
 function privatePaths(env: NodeJS.ProcessEnv) {
   if (configuredPrivatePaths === null) {
     const storage = loadStorageConfig(undefined, env);
+    // The configuration and environment files the server read can hold
+    // instance-wide credentials (provider keys, database connection strings).
+    const workingDirectoryEnv = resolve(process.cwd(), ".env");
     configuredPrivatePaths = [
       ...(storage.storageProvider === "local_disk" ? [storage.storageLocalDiskBaseDir] : []),
       resolveMasterKeyFilePath(env),
+      resolvePaperclipConfigPath(),
+      resolvePaperclipEnvPath(),
+      ...(existsSync(workingDirectoryEnv) ? [workingDirectoryEnv] : []),
     ].map((path) => resolve(path));
   }
   return [...configuredPrivatePaths, ...(embeddedDatabase ? [resolve(embeddedDatabase.dataDir)] : [])];

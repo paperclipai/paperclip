@@ -38,9 +38,10 @@ describe("localRunnerConfinementPolicy", () => {
     vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
     vi.stubEnv("PAPERCLIP_STORAGE_LOCAL_DIR", "/data/storage");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", "/keys/master.key");
+    vi.stubEnv("PAPERCLIP_CONFIG", "/etc/paperclip/config.json");
     const policy = localRunnerConfinementPolicy("company-1");
     expect(policy.sessionStateRoots).toEqual(["/data/runner-state"]);
-    expect(policy.privatePaths).toEqual(expect.arrayContaining(["/data/storage", "/keys/master.key"]));
+    expect(policy.privatePaths).toEqual(expect.arrayContaining(["/data/storage", "/keys/master.key", "/etc/paperclip/config.json", "/etc/paperclip/.env"]));
   });
 
   it("follows the operator's confinement mode and an external database", () => {

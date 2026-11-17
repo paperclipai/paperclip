@@ -8,6 +8,7 @@ import { spawnRunner, waitForProcess } from "./durable-prp-control-plane.js";
 import {
   RUNNER_CONFINEMENT_UNAVAILABLE,
   confineRunnerLaunch,
+  ensureRunnerConfinementProbe,
   instanceSessionStatePaths,
   landlockTemporaryConflict,
   resetRunnerConfinementAvailability,
@@ -124,6 +125,25 @@ describe("runnerConfinementUnavailableReason", () => {
   });
 });
 
+describe("ensureRunnerConfinementProbe", () => {
+  it.skipIf(process.platform !== "darwin" && process.platform !== "linux")("probes without blocking the event loop and shares one probe", async () => {
+    resetRunnerConfinementAvailability();
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 0);
+    try {
+      const first = ensureRunnerConfinementProbe();
+      expect(ensureRunnerConfinementProbe()).toBe(first);
+      const reason = await first;
+      // The event loop kept running while the probe process ran.
+      expect(ticks).toBeGreaterThan(0);
+      // A later launch reads the cached result without probing again.
+      expect(runnerConfinementUnavailableReason()).toBe(reason);
+    } finally {
+      clearInterval(timer);
+    }
+  });
+});
+
 describe("confineRunnerLaunch", () => {
   it("launches unconfined when turned off", () => {
     expect(confineRunnerLaunch({ policy: { mode: "off", instanceRoot: root }, command: "/bin/x", args: [], environment: {} })).toBeNull();
@@ -176,6 +196,8 @@ r() { if cat "$2" >/dev/null 2>&1; then echo "$1=readable"; else echo "$1=denied
   if mkdir -p "$state/nested/dir" 2>/dev/null; then echo ownStateMkdirP=allowed; else echo ownStateMkdirP=denied; fi
   if ls "$INSTANCE/runtime/paperclip-runner/durable-sessions" >/dev/null 2>&1; then echo sessionListing=listable; else echo sessionListing=denied; fi
   r ownOpencodeSession "$INSTANCE/runtime/paperclip-runner/opencode/own-session/config.json"
+  saved="$INSTANCE/runtime/paperclip-runner/durable-sessions/own-scope/opencode/own-session/data/opencode/opencode.db"
+  if cat "$saved" >/dev/null 2>&1 && echo resumed >> "$saved" 2>/dev/null; then echo savedProviderState=usable; else echo savedProviderState=unusable; fi
   if [ -n "$PAPERCLIP_PROVIDER_TRACE_PATH" ]; then if echo frame >> "$PAPERCLIP_PROVIDER_TRACE_PATH" 2>/dev/null; then echo ownNestedTrace=writable; else echo ownNestedTrace=denied; fi; fi
   if [ -n "$DB_PORT" ]; then if nc -z -w 2 127.0.0.1 "$DB_PORT" >/dev/null 2>&1; then echo database=reachable; else echo database=blocked; fi; fi
 } > "$state/probe.txt"
@@ -201,6 +223,8 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
     writeFixture(paths.environmentFile);
     writeFixture(join(instance, "companies", "c", "agents", "a", "notes.md"), "shared\n");
     writeFixture(join(instance, "companies", "other", "agents", "b", "notes.md"));
+    // Provider state saved by an earlier launch (or an earlier release) of this session.
+    writeFixture(join(paths.durableSessions, "own-scope", "opencode", "own-session", "data", "opencode", "opencode.db"), "saved\n");
     const ownState = join(paths.durableSessions, "own-scope", "runner");
     mkdirSync(ownState, { recursive: true, mode: 0o700 });
     const runnerd = join(root, "paperclip-runnerd");
@@ -258,6 +282,7 @@ describe.skipIf(!confinementAvailable)("a confined local runnerd launch", () => 
       sessionRootStat: "allowed",
       ownStateMkdirP: "allowed",
       ownNestedTrace: "writable",
+      savedProviderState: "usable",
       ownOpencodeSession: "readable",
     });
   }, 60_000);

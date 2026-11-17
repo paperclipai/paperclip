@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -353,48 +353,112 @@ export function landlockInvocation(scope: RunnerConfinementScope, python: string
 export const RUNNER_CONFINEMENT_PROBE_RETRY_MS = 60_000;
 const availability = new Map<string, { reason: string | null; retryAt: number | null }>();
 
+type ProbePlan =
+  | { reason: string }
+  | { command: string; args: string[]; timeout: number; cleanup?: () => void };
+
 /**
- * Proves once per process that this host can apply confinement. A server that
- * already runs inside a sandbox cannot nest one, so the probe uses the same
- * mechanism as a launch. Returns null when available, or the reason.
+ * The probe uses the same mechanism as a launch, so a server that already runs
+ * inside a sandbox (which cannot nest one) is detected.
  */
-export function runnerConfinementUnavailableReason(platform: NodeJS.Platform = process.platform): string | null {
-  const cached = availability.get(platform);
-  if (cached !== undefined && (cached.retryAt === null || Date.now() < cached.retryAt)) return cached.reason;
-  let reason: string | null = null;
+function probePlan(platform: NodeJS.Platform): ProbePlan {
+  if (platform === "darwin") {
+    if (!existsSync("/usr/bin/sandbox-exec")) return { reason: "sandbox-exec is not installed" };
+    return { command: "/usr/bin/sandbox-exec", args: ["-p", "(version 1)(allow default)", "/usr/bin/true"], timeout: 10_000 };
+  }
+  if (platform !== "linux") return { reason: `confinement is not supported on ${platform}` };
+  const python = pythonExecutable();
+  if (!python) return { reason: "python3 is not installed" };
+  // Apply a real domain shaped like a launch: a hidden directory with an
+  // exposed child. A host that passes runs every launch fail-closed.
+  const probeRoot = mkdtempSync(join(tmpdir(), "paperclip-confinement-probe-"));
+  mkdirSync(join(probeRoot, "hidden", "own"), { recursive: true });
+  return {
+    command: python,
+    args: ["-I", "-S", "-c", LANDLOCK_HELPER, "--required",
+      "--hide", join(probeRoot, "hidden"), "--expose", join(probeRoot, "hidden", "own"),
+      "--", "/bin/sh", "-c", 'ls "$1" >/dev/null 2>&1 && exit 3; ls "$2" >/dev/null', "sh", join(probeRoot, "hidden"), join(probeRoot, "hidden", "own")],
+    timeout: 30_000,
+    cleanup: () => rmSync(probeRoot, { recursive: true, force: true }),
+  };
+}
+
+function recordProbe(platform: NodeJS.Platform, error: unknown, reason: string | null = null) {
   let transient = false;
-  try {
-    if (platform === "darwin") {
-      if (!existsSync("/usr/bin/sandbox-exec")) reason = "sandbox-exec is not installed";
-      else execFileSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], { stdio: "ignore", timeout: 10_000 });
-    } else if (platform === "linux") {
-      const python = pythonExecutable();
-      if (!python) reason = "python3 is not installed";
-      else {
-        // Apply a real domain shaped like a launch: a hidden directory with an
-        // exposed child. A host that passes runs every launch fail-closed.
-        const probeRoot = mkdtempSync(join(tmpdir(), "paperclip-confinement-probe-"));
-        try {
-          mkdirSync(join(probeRoot, "hidden", "own"), { recursive: true });
-          execFileSync(python, ["-I", "-S", "-c", LANDLOCK_HELPER, "--required",
-            "--hide", join(probeRoot, "hidden"), "--expose", join(probeRoot, "hidden", "own"),
-            "--", "/bin/sh", "-c", 'ls "$1" >/dev/null 2>&1 && exit 3; ls "$2" >/dev/null', "sh", join(probeRoot, "hidden"), join(probeRoot, "hidden", "own")],
-          { stdio: "ignore", timeout: 30_000 });
-        } finally {
-          rmSync(probeRoot, { recursive: true, force: true });
-        }
-      }
-    } else {
-      reason = `confinement is not supported on ${platform}`;
-    }
-  } catch (error) {
+  if (error !== undefined) {
     reason = `confinement probe failed: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`;
     // A probe that ran and exited non-zero is a definitive answer about this host.
     // Anything else (a timeout, a spawn or disk error) may pass on a later launch.
-    transient = !(typeof (error as { status?: unknown }).status === "number") || (error as { signal?: unknown }).signal != null;
+    const failure = error as { status?: unknown; code?: unknown; signal?: unknown; killed?: unknown };
+    const exited = typeof failure.status === "number" || typeof failure.code === "number";
+    transient = !exited || failure.signal != null || failure.killed === true;
   }
   availability.set(platform, { reason, retryAt: transient ? Date.now() + RUNNER_CONFINEMENT_PROBE_RETRY_MS : null });
   return reason;
+}
+
+function cachedReason(platform: NodeJS.Platform): { reason: string | null } | null {
+  const cached = availability.get(platform);
+  return cached !== undefined && (cached.retryAt === null || Date.now() < cached.retryAt) ? { reason: cached.reason } : null;
+}
+
+const pendingProbes = new Map<string, Promise<string | null>>();
+
+/**
+ * Proves, without blocking the event loop, that this host can apply
+ * confinement. Concurrent launches share one probe. Launch paths await this
+ * before `spawnRunner`, so the launch itself reads the cached result.
+ */
+export function ensureRunnerConfinementProbe(platform: NodeJS.Platform = process.platform): Promise<string | null> {
+  const cached = cachedReason(platform);
+  if (cached) return Promise.resolve(cached.reason);
+  const pending = pendingProbes.get(platform);
+  if (pending) return pending;
+  const probe = (async () => {
+    let plan: ProbePlan;
+    try {
+      plan = probePlan(platform);
+    } catch (error) {
+      return recordProbe(platform, error);
+    }
+    if ("reason" in plan) return recordProbe(platform, undefined, plan.reason);
+    try {
+      await new Promise<void>((resolveProbe, rejectProbe) => {
+        execFile(plan.command, plan.args, { timeout: plan.timeout }, (error) => (error ? rejectProbe(error) : resolveProbe()));
+      });
+      return recordProbe(platform, undefined, null);
+    } catch (error) {
+      return recordProbe(platform, error);
+    } finally {
+      plan.cleanup?.();
+    }
+  })().finally(() => pendingProbes.delete(platform));
+  pendingProbes.set(platform, probe);
+  return probe;
+}
+
+/**
+ * The cached probe result, or a synchronous probe for a caller that did not
+ * await `ensureRunnerConfinementProbe`. Returns null when available, or the reason.
+ */
+export function runnerConfinementUnavailableReason(platform: NodeJS.Platform = process.platform): string | null {
+  const cached = cachedReason(platform);
+  if (cached) return cached.reason;
+  let plan: ProbePlan;
+  try {
+    plan = probePlan(platform);
+  } catch (error) {
+    return recordProbe(platform, error);
+  }
+  if ("reason" in plan) return recordProbe(platform, undefined, plan.reason);
+  try {
+    execFileSync(plan.command, plan.args, { stdio: "ignore", timeout: plan.timeout });
+    return recordProbe(platform, undefined, null);
+  } catch (error) {
+    return recordProbe(platform, error);
+  } finally {
+    plan.cleanup?.();
+  }
 }
 
 /** Test seam: forget probe results. */
