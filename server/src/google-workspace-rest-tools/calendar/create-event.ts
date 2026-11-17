@@ -181,6 +181,7 @@ export const createEvent = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   args,
+  whenTooLarge: "The event was created, but its details are too large to return. Find it with list_events.",
   async run(input, http) {
     assertTimeZone(input.timeZone);
     parseTimeInput(input.startTime, "startTime");

@@ -77,6 +77,7 @@ export const insertDimension = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   args,
+  whenTooLarge: "The rows or columns were inserted, but Google's reply is too large to return. Read the spreadsheet again with get_spreadsheet.",
   async run(input, http) {
     return insertDimensionResult(input, await http.send<BatchUpdateResponse>(insertDimensionRequest(input)));
   },

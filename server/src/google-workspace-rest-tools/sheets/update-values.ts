@@ -27,6 +27,7 @@ export const updateValues = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   args,
+  whenTooLarge: "The change was made, but Google's reply is too large to return. Read the range again with get_values.",
   async run(input, http) {
     return runValuesUpdate(http, input.spreadsheetId, input.range, input.values, "RAW");
   },

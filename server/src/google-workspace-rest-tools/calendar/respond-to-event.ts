@@ -72,6 +72,7 @@ export const respondToEvent = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Your response was saved, but the event is too large to return.",
   async run(input, http) {
     const current = await http.send<RestEvent>(getEventRequest(input.calendarId, input.eventId));
     return respondToEventResult(await http.send<RestEvent>(respondToEventRequest(input, current)));

@@ -108,7 +108,7 @@ describe("search_files tool", () => {
     const { fetch } = fakeGoogle(() => json({ files }));
     const result = await searchFiles.call({ pageSize: 100 }, createGoogleHttp({ accessToken: "t", fetch }));
     expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toMatch(/more than the 250000 bytes this tool returns, so nothing was returned\. Ask for fewer files with a smaller pageSize/);
+    expect((result.content[0] as { text: string }).text).toMatch(/more than the 250,000 bytes this tool can return, so it was not returned\. Ask for fewer files with a smaller pageSize/);
   });
 
   it("returns an empty list when nothing matches", async () => {

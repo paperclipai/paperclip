@@ -149,6 +149,7 @@ export const createFile = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   args,
+  whenTooLarge: "The file was created, but its details are too large to return. Find it with search_files.",
   async run(input, http) {
     const request = createFileRequest(createPlan(input), randomBytes(16).toString("hex"));
     try {

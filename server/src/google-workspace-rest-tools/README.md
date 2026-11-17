@@ -121,7 +121,8 @@ plain constant: no environment variable, instance setting or database row.
 - **Adapter.** `server/src/services/google-workspace-rest-dispatch.ts` is the
   only server file that imports this folder. It takes the gateway's resolved
   credential headers (it keeps only the bearer token), the call's cancellation
-  signal and the gateway's egress-guarded fetch, and returns either the MCP
+  signal, the gateway's egress-guarded fetch and the gateway's result limit
+  (see "Result size"), and returns either the MCP
   result or a token problem (`unauthenticated` or `insufficient_scope`).
 - **Calls.** `executeRemoteHttpTool()` in `server/src/services/tool-gateway.ts`.
   The REST branch runs after everything the MCP path runs first: the
@@ -175,6 +176,53 @@ MCP Tasks, MCP resources and elicitation only exist on the `google_mcp` path.
 Measured with a stubbed fetch, the adapter adds about 15 µs per call. A full
 `gmail__get_message` through `executeTool` (policy, records, screening) took a
 median of 18.2 ms on either transport.
+
+### Result size
+
+The caller sets the size limit. `callGoogleWorkspaceRestTool` takes
+`maxResultBytes`, and every tool in all six services checks it the same way:
+`defineTool` in `tool.ts` measures the final serialized `CallToolResult` once
+(`withinResultBudget`) after the tool has built it. A result over the limit is
+replaced by a tool error that gives its size and the limit, says it was not
+returned, and says how to ask for less. Each tool states that advice in
+`whenTooLarge`: a smaller `pageSize` for list tools, a lighter
+`messageFormat` or view for Gmail, a narrower range for Sheets, `fields` for
+Slides. For a write, the advice says that the change was made and how to read
+the result. Nothing is ever cut short. Drive downloads also stop reading at the
+limit, since larger content could never fit.
+
+`FALLBACK_MAX_RESULT_BYTES` (250,000) in `tool.ts` applies only when a direct
+caller passes no limit (tests, or `createGoogleWorkspaceRestServer` without the
+option). This folder does not know Paperclip's limits.
+
+The gateway passes `GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES` from
+`server/src/services/tool-gateway.ts`: the gateway's limit on a response from a
+remote MCP server (`MAX_REMOTE_MCP_RESPONSE_BYTES`, 1,000,000 bytes) less the
+JSON-RPC and event-stream framing around the result, so 999,885 bytes. A
+result Google's own MCP server could deliver through the gateway is also
+delivered over REST, and the reverse. The gateway wraps the result for the
+agent and repeats the payload, so the delivered result is up to twice as large
+(measured 1.50 times for a plain-text email). The agent runner saves a
+delivered result over 500,000 bytes as an artifact and gives the agent a
+pointer it reads with `read_tool_result`, so a result near the limit is still
+delivered in full.
+
+Practical limits at that budget, measured with plain ASCII text (characters
+that JSON escapes, and non-ASCII characters, count more):
+
+| Service | Largest content one call returns |
+| --- | --- |
+| Gmail `get_message` | about 500 KB of plain-text body, or about 250 KB each when the message has both plain and HTML bodies |
+| Gmail lists | the whole page must fit; lower `pageSize` |
+| Calendar `get_event` | about 500 KB of description |
+| Drive `read_file_content` | about 500 KB of text |
+| Drive `download_file_content` | about 375 KB of file bytes (base64 adds a third) |
+| Docs `read_doc` | about 240 KB of document text (the text and the edit structure both carry it) |
+| Slides `read_presentation` | about 250 KB of slide text; use `fields` for more |
+| Sheets `get_values` | about 500 KB of cell text, and at most 50,000 cells |
+
+The check costs one `JSON.stringify` of the result: about 5 µs for a 4 KB
+result and 0.24 ms for a 700 KB one.
 
 ### Flipping a service
 
@@ -564,15 +612,12 @@ type of the returned bytes (the export format for Google files).
 true`, the field Google's result has for this case. Text that is not valid
 UTF-8 is also not supported.
 
-**Size cap.** Every Drive read bounds its final serialized result (the whole
-`CallToolResult`, which carries the payload twice: as `structuredContent` and
-as its JSON text) to 250,000 bytes (the folder's shared `MAX_RESULT_BYTES`,
-checked by `boundedStructuredResult`, both in `tool.ts`). That is about 90 KB of file
-bytes for `download_file_content` (base64 adds a third) and about 120 KB of
-plain text for `read_file_content`. Content is also never read past 250,000
-bytes (`MAX_CONTENT_BYTES`), since more could never fit: a stored file whose
-metadata size is larger is refused before any download, and exports and
-revisions are read through `GoogleHttp.download`, which stops at the cap. Both
+**Size cap.** Every Drive tool is bound by the caller's result limit (see
+"Result size"). The result carries the payload twice, as `structuredContent`
+and as its JSON text. Content is also never read past the limit, since more
+could never fit: a stored file whose metadata size is larger is refused before
+any download, and exports and revisions are read through
+`GoogleHttp.download`, which stops at the limit. Both
 limits are far under Google's 10 MB export limit
 (<https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export>)
 and the 20 MB `MAX_RESPONSE_BYTES`. A refused result is an error that says
@@ -752,15 +797,11 @@ Formatting other than headings, lists and links (bold, colors, fonts, sizes)
 is not in `text`. Checklist items render as plain list items: the Docs API
 does not say whether a box is ticked.
 
-A result over 250,000 bytes is refused with an error that gives the size and
-returns nothing; it is never cut short. It is the folder's one limit,
-`MAX_RESULT_BYTES` in `tool.ts`, checked by `boundedStructuredResult` (which
-`sizedResult` in `documents-shared.ts` calls) on the final serialized MCP
-result, which carries the content twice (as
-JSON text and as structured content), so the content itself is limited to
-about 125,000 bytes. Paperclip delivers tool results over 500,000 bytes as a
-pointer instead of content; the lower limit keeps every read inline with
-room to spare. To read a
+A result over the caller's limit (see "Result size") is refused with an error
+that gives the size and returns nothing; it is never cut short. The final
+serialized MCP result carries the content twice (as JSON text and as
+structured content), and `read_doc` also repeats each paragraph's text in its
+edit structure. To read a
 large presentation in parts, pass `fields`, for example
 `["slides(objectId,pageElements(objectId,shape.text))"]`. `read_doc` has no
 way to read part of a document, since Google's tool has no such input and
@@ -943,15 +984,9 @@ made" warning.
   Reads count the cells Google returns (`values` rows, or `rowData` values in
   grid data); writes count the cells sent (`values`/`formulas`, or the rows of
   `updateCells` and `appendCells`).
-- A read's whole tool result is at most **250,000 bytes** of UTF-8 JSON
-  (`MAX_RESULT_BYTES`, checked by `boundedStructuredResult` in `tool.ts`). The
-  measure is this folder's own result, which carries the value twice (as
-  `structuredContent` and as JSON text, since MCP clients read either). This
-  is a conservative default, not a measured fit: how a caller wraps and
-  delivers the result, and its byte budget, are the caller's business and are
-  not modeled here. The caller, which knows its own delivery budget, is
-  expected to supply the exact limit in a follow-up that applies one rule to
-  every service in this folder.
+- A tool's whole result is bound by the caller's limit (see "Result size"),
+  measured on this folder's own result, which carries the value twice (as
+  `structuredContent` and as JSON text, since MCP clients read either).
   A write request body is at most 1,000,000 characters.
 - Over a limit, a read returns an error that starts with the size and asks for
   a narrower range, fewer or narrower `ranges`, or fewer `fields`, to read in
@@ -1045,7 +1080,8 @@ says `false`.
 2. Delete this folder, `server/src/google-workspace-rest-tools/`.
 3. Delete `server/src/services/google-workspace-rest-dispatch.ts` and its
    test, and the two call sites: the `paperclip_rest` branch in
-   `executeRemoteHttpTool` (`server/src/services/tool-gateway.ts`) and
+   `executeRemoteHttpTool` (`server/src/services/tool-gateway.ts`), with
+   `GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES` there, and
    `googleWorkspaceRestTools` in
    `server/src/services/tool-access/catalog/discovery.ts`. Delete
    `server/src/__tests__/google-workspace-rest-transport.test.ts`.

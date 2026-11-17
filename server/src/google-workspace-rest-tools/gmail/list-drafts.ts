@@ -76,6 +76,7 @@ export const listDrafts = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer drafts with a smaller pageSize, or use view DRAFT_VIEW_METADATA_ONLY, then read single drafts with get_draft.",
   async run(input, http) {
     const list = await http.send<GmailDraftList>(listDraftsRequest(input));
     const drafts = await readDrafts(draftIds(list), input.view, http);

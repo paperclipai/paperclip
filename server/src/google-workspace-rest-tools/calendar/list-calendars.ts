@@ -72,6 +72,7 @@ export const listCalendars = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer calendars with a smaller pageSize.",
   async run(input, http) {
     return listCalendarsResult(await http.send<RestCalendarList>(listCalendarsRequest(input)));
   },

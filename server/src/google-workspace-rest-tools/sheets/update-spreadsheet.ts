@@ -233,6 +233,7 @@ export const updateSpreadsheet = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   args,
+  whenTooLarge: "The change was made, but Google's reply is too large to return. Read the spreadsheet again with get_spreadsheet.",
   async run(input, http) {
     return updateSpreadsheetResult(input, await http.send<BatchUpdateResponse>(updateSpreadsheetRequest(input)));
   },

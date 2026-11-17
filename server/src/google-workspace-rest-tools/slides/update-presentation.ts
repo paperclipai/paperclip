@@ -76,6 +76,7 @@ export const updatePresentation = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   },
   args,
+  whenTooLarge: "The edit was applied, but Google's reply is too large to return. Read the presentation again with read_presentation.",
   async run(input, http) {
     const request = updatePresentationRequest(input);
     return updatePresentationResult(await sendBatchUpdate<RestBatchUpdateResponse>(http, request, "presentation", "read_presentation"));

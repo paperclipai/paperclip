@@ -66,6 +66,7 @@ export const deleteEvent = defineTool({
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "The event was deleted, but its details are too large to return.",
   async run(input, http) {
     const current = await http.send<RestEvent>(getEventRequest(input.calendarId, input.eventId));
     assertSingleEvent(current);
