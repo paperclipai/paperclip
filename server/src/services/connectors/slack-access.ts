@@ -11,7 +11,7 @@ import {
 
 type Api = ReturnType<typeof slackClient>;
 export type SlackChannelAuthorizationOptions = {
-  /** Proactive DMs is enabled: a DM with another active workspace member may be read and written. */
+  /** Outbound DMs: a DM with another active workspace member may be read and written (outbound DMs are standard, no Proactive DMs group exists). */
   allowOtherUserDm?: boolean;
 };
 

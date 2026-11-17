@@ -8109,8 +8109,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
         // The reinstall for a new group comes back without the scope Slack
         // granted before (the approver declined it this time).
-        await f.service.update(f.endpoint.id, { slackOptInScopeGroups: ["file_upload", "proactive_dms"] }, actor.userId);
-        f.state.grantedScopes = slackBotScopes(["proactive_dms"]);
+        await f.service.update(f.endpoint.id, { slackOptInScopeGroups: ["file_upload", "channel_management"] }, actor.userId);
+        f.state.grantedScopes = slackBotScopes(["channel_management"]);
         await f.provision();
         const declined = await setupOf(f, f.endpoint.id);
         expect(declined.slackRegistration).toMatchObject({ status: "credentials_saved", errorCode: "slack_install_scopes_missing" });
@@ -8122,9 +8122,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(message).toMatch(/turn off/i);
 
         // Not a deadlock: dropping the declined group lets the next reinstall complete.
-        await f.service.update(f.endpoint.id, { slackOptInScopeGroups: ["proactive_dms"] }, actor.userId);
+        await f.service.update(f.endpoint.id, { slackOptInScopeGroups: ["channel_management"] }, actor.userId);
         await f.provision();
-        expect(await setupOf(f, f.endpoint.id)).toMatchObject({ slackRegistration: { status: "configured", errorCode: null }, slackOptInScopeGroups: ["proactive_dms"], slackInstalledOptInScopeGroups: ["proactive_dms"] });
+        expect(await setupOf(f, f.endpoint.id)).toMatchObject({ slackRegistration: { status: "configured", errorCode: null }, slackOptInScopeGroups: ["channel_management"], slackInstalledOptInScopeGroups: ["channel_management"] });
       });
 
       it("adds and then removes an opt-in group end-to-end through the own-app manifest update, OAuth and resume", async () => {
@@ -8322,6 +8322,188 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect(await slackLegacyInstall(db, { companyId: f.companyId, endpointId: f.endpoint.id })).toBe(false);
           expect((await setupOf(f, f.endpoint.id)).slackOptInScopeGroups ?? []).toEqual([]);
         }
+      });
+
+      it("succeeds with slack_open_dm on full modern grant without any opt-ins enabled", async () => {
+        const { resolveConnectorAssignments, executeConnectorTool } = await import("../services/connector-runtime.js");
+        await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+        const fixture = await seedCompany();
+        const { endpoint, service } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+        void service;
+        const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: "UMODERN" }).returning();
+        await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: "owner-user", status: "linked", confirmedAt: new Date() });
+        const [issue] = await db.insert(issues).values({ companyId: fixture.companyId, title: "Modern DM", status: "todo", assigneeAgentId: fixture.assignedAgentId, responsibleUserId: "owner-user" }).returning();
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId, status: "running", responsibleUserId: "owner-user", contextSnapshot: { issueId: issue.id, source: "routine" } });
+        await initializeRunIdentity(db, { companyId: fixture.companyId, runId, issueId: issue.id, responsibleUserId: "owner-user", cause: "routine" });
+        await db.update(chatEndpoints).set({ status: "active", setup: { slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] } }).where(eq(chatEndpoints.id, endpoint.id));
+        const binding = { companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId, issueId: issue.id, endpointId: endpoint.id };
+        const assignments = await resolveConnectorAssignments(db, binding);
+        expect(assignments[0].tools.some(tool => tool.name === "slack_open_dm")).toBe(true);
+
+        const upstream = vi.fn(async (input: RequestInfo | URL) => {
+          const method = String(input).split("/").at(-1);
+          if (method === "users.info") return new Response(JSON.stringify({ ok: true, user: { id: "UMODERN", team_id: "T-PAPERCLIP" } }), { headers: { "x-oauth-scopes": SLACK_DEFAULT_BOT_SCOPES.join(",") } });
+          if (method === "conversations.open") return Response.json({ ok: true, channel: { id: "DMODERN" } });
+          throw new Error(`Unexpected Slack operation ${method}`);
+        });
+        vi.stubGlobal("fetch", upstream);
+        try {
+          await expect(executeConnectorTool(db, binding, "slack_open_dm", { idempotencyKey: randomUUID() }))
+            .resolves.toMatchObject({ status: "completed", result: { data: { channel: "DMODERN" } } });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it("reports dmReconnectRequired and missingScopes containing im:write when grantedScopes=SLACK_CHAT_BOT_SCOPES, and dispatch returns slack_dm_scope_missing", async () => {
+        const { slackCapabilities } = await import("../services/connectors/slack-capabilities.js");
+        const { executeConnectorTool } = await import("../services/connector-runtime.js");
+        await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+        const fixture = await seedCompany();
+        const { endpoint, service } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+        void service;
+        const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: "UCHATFLOOR" }).returning();
+        await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: "owner-user", status: "linked", confirmedAt: new Date() });
+        const [issue] = await db.insert(issues).values({ companyId: fixture.companyId, title: "Chat floor DM", status: "todo", assigneeAgentId: fixture.assignedAgentId, responsibleUserId: "owner-user" }).returning();
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId, status: "running", responsibleUserId: "owner-user", contextSnapshot: { issueId: issue.id, source: "routine" } });
+        await initializeRunIdentity(db, { companyId: fixture.companyId, runId, issueId: issue.id, responsibleUserId: "owner-user", cause: "routine" });
+        await db.update(chatEndpoints).set({ status: "active", setup: { slackOptInScopeGroups: [], slackInstalledOptInScopeGroups: [] } }).where(eq(chatEndpoints.id, endpoint.id));
+        const binding = { companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId, issueId: issue.id, endpointId: endpoint.id };
+
+        const upstream = vi.fn(async (input: RequestInfo | URL) => {
+          const method = String(input).split("/").at(-1);
+          if (method === "auth.test") return new Response(JSON.stringify({ ok: true, team_id: "T-PAPERCLIP", user_id: "UBOT", user: "maya" }), { headers: { "x-oauth-scopes": SLACK_CHAT_BOT_SCOPES.join(",") } });
+          if (method === "users.info") return new Response(JSON.stringify({ ok: true, user: { id: "UCHATFLOOR", team_id: "T-PAPERCLIP" } }), { headers: { "x-oauth-scopes": SLACK_CHAT_BOT_SCOPES.join(",") } });
+          throw new Error(`Unexpected Slack operation ${method}`);
+        });
+        vi.stubGlobal("fetch", upstream);
+        try {
+          const caps = await slackCapabilities(db, fixture.companyId, endpoint.id);
+          expect(caps.dmReconnectRequired).toBe(true);
+          expect(caps.missingScopes).toContain("im:write");
+          await expect(executeConnectorTool(db, binding, "slack_open_dm", { idempotencyKey: randomUUID() }))
+            .rejects.toMatchObject({ details: { code: "slack_dm_scope_missing" } });
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it("rewrites stored manifest on refresh and is idempotent on second read", async () => {
+        const { ensureSlackManifestScopesCurrent } = await import("../services/connectors/slack/setup/opt-in-manifest.js");
+        const f = await managedFixture();
+        await f.provision();
+        const [regBefore] = await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+        expect(regBefore).toBeDefined();
+
+        // Stash an older manifest lacking im:write
+        const oldBotScopes = SLACK_CHAT_BOT_SCOPES;
+        await db.update(chatSlackRegistrations)
+          .set({ manifest: sql`jsonb_set(${chatSlackRegistrations.manifest}, '{oauth_config,scopes,bot}', ${JSON.stringify(oldBotScopes)}::jsonb)` })
+          .where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+
+        const endpointRow = (await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id)))[0]!;
+        await ensureSlackManifestScopesCurrent(db, {
+          endpointId: f.endpoint.id,
+          companyId: f.companyId,
+          agentName: "Maya",
+          app: endpointRow.setup.slackApp,
+          setup: endpointRow.setup,
+        });
+
+        const [regAfter] = await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+        const scopesAfter = (regAfter.manifest as any).oauth_config.scopes.bot;
+        expect(scopesAfter).toContain("im:write");
+        expect(regAfter.errorCode).toBe("slack_permissions_update_pending");
+
+        // Second call with same inputs: idempotent (updatedAt and errorCode unchanged)
+        const updatedAtFirst = regAfter.updatedAt;
+        await ensureSlackManifestScopesCurrent(db, {
+          endpointId: f.endpoint.id,
+          companyId: f.companyId,
+          agentName: "Maya",
+          app: endpointRow.setup.slackApp,
+          setup: endpointRow.setup,
+        });
+        const [regSecond] = await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+        expect(regSecond.updatedAt).toEqual(updatedAtFirst);
+        expect(regSecond.manifestHash).toEqual(regAfter.manifestHash);
+      });
+
+      it("capabilities reporting does not rewrite a drifted managed manifest", async () => {
+        const { slackCapabilities } = await import("../services/connectors/slack-capabilities.js");
+        const f = await managedFixture();
+        await f.provision();
+        // Stash an older manifest lacking im:write, as a pre-TECH-8783 install
+        // would hold, and note the registration's exact stored state.
+        await db.update(chatSlackRegistrations)
+          .set({ manifest: sql`jsonb_set(${chatSlackRegistrations.manifest}, '{oauth_config,scopes,bot}', ${JSON.stringify(SLACK_CHAT_BOT_SCOPES)}::jsonb)` })
+          .where(eq(chatSlackRegistrations.endpointId, f.endpoint.id));
+        const before = (await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id)))[0]!;
+
+        // A capabilities read observes the live grant without im:write.
+        const upstream = async () => new Response(
+          JSON.stringify({ ok: true, team_id: "TAUTO", user_id: f.botId, user: "maya" }),
+          { headers: { "x-oauth-scopes": SLACK_CHAT_BOT_SCOPES.join(",") } },
+        );
+        vi.stubGlobal("fetch", upstream);
+        let capabilities: Awaited<ReturnType<typeof slackCapabilities>>;
+        try {
+          capabilities = await slackCapabilities(db, f.companyId, f.endpoint.id);
+        } finally {
+          vi.unstubAllGlobals();
+        }
+        expect(capabilities.dmReconnectRequired).toBe(true);
+        expect(capabilities.missingScopes).toContain("im:write");
+
+        // The read must not mutate the stored registration: any manifest
+        // refresh belongs to the privileged reconnect lifecycle, never a
+        // capabilities GET (TECH-8783).
+        const after = (await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id)))[0]!;
+        expect(after.manifestHash).toBe(before.manifestHash);
+        expect(after.errorCode).toBe(before.errorCode);
+        expect(after.updatedAt).toEqual(before.updatedAt);
+        expect((after.manifest as { oauth_config?: { scopes?: { bot?: string[] } } }).oauth_config?.scopes?.bot).not.toContain("im:write");
+      });
+
+      it("handles a legacy row with proactive_dms in both fields without throwing or requiring SQL backfill", async () => {
+        const { resolveConnectorAssignments } = await import("../services/connector-runtime.js");
+        await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+        const fixture = await seedCompany();
+        const { endpoint, service } = await configuredSlackEndpoint(fixture, { allowUnlinkedPeople: false });
+        void service;
+        await db.update(chatEndpoints).set({
+          status: "active",
+          setup: sql`${chatEndpoints.setup} || ${JSON.stringify({ slackOptInScopeGroups: ["proactive_dms"], slackInstalledOptInScopeGroups: ["proactive_dms"] })}::jsonb`,
+        }).where(eq(chatEndpoints.id, endpoint.id));
+
+        const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: fixture.companyId, provider: "slack", providerAccountId: "T-PAPERCLIP", externalId: "ULEGACYROW" }).returning();
+        await db.insert(chatIdentityLinks).values({ companyId: fixture.companyId, endpointId: endpoint.id, principalId: principal.id, paperclipUserId: "owner-user", status: "linked", confirmedAt: new Date() });
+        const [issue] = await db.insert(issues).values({ companyId: fixture.companyId, title: "Legacy row test", status: "todo", assigneeAgentId: fixture.assignedAgentId, responsibleUserId: "owner-user" }).returning();
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId, status: "running", responsibleUserId: "owner-user", contextSnapshot: { issueId: issue.id, source: "routine" } });
+        await initializeRunIdentity(db, { companyId: fixture.companyId, runId, issueId: issue.id, responsibleUserId: "owner-user", cause: "routine" });
+        const binding = { companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId, issueId: issue.id, endpointId: endpoint.id };
+
+        const assignments = await resolveConnectorAssignments(db, binding);
+        expect(assignments[0].tools.some(tool => tool.name === "slack_open_dm")).toBe(true);
+      });
+
+      it("writes installed snapshot naming no DM grant when legacy install patches slackOptInScopeGroups", async () => {
+        const f = await managedFixture();
+        await f.provision();
+        // Legacy install with neither opt-in field
+        await db.update(chatEndpoints).set({
+          setup: sql`(${chatEndpoints.setup} - 'slackOptInScopeGroups') - 'slackInstalledOptInScopeGroups'`,
+        }).where(eq(chatEndpoints.id, f.endpoint.id));
+
+        await f.service.update(f.endpoint.id, { slackOptInScopeGroups: ["file_upload"] }, actor.userId);
+        const setup = await setupOf(f, f.endpoint.id);
+        expect(setup.slackOptInScopeGroups).toEqual(["file_upload"]);
+        // Installed snapshot captured the legacy full grant, which now excludes proactive_dms / DM grant!
+        expect(setup.slackInstalledOptInScopeGroups).toEqual(["channel_management", "file_upload"]);
+        expect(setup.slackInstalledOptInScopeGroups).not.toContain("proactive_dms");
       });
     });
     describe("saved Slack configuration credentials", () => {

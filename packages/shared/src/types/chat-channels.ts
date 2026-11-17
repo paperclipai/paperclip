@@ -217,6 +217,11 @@ export interface ChatEndpointSetupState {
    * a tool Slack has not granted.
    */
   slackInstalledOptInScopeGroups?: import("../slack-scopes.js").SlackOptInScopeGroup[];
+  /**
+   * Snapshot of default bot scopes granted by Slack at the last completed install.
+   * Missing means unknown (e.g. legacy install prior to this snapshot).
+   */
+  slackInstalledDefaultScopes?: string[];
   slackOAuthCallbackUri?: string | null;
   github?: {
     stage: "setup" | "connect" | "install" | "repositories" | "verify" | "identity" | "behavior" | "test";

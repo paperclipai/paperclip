@@ -31,6 +31,17 @@ import {
   slackEndpointOptInsForGating,
   type SlackSetupOptIns,
 } from "./slack-opt-ins.js";
+/**
+ * TECH-8783: The exact definition hash of `slack_open_dm` before direct messages
+ * became standard. Used exclusively to identify rows that were automatically
+ * set to `removed` by the pre-TECH-8783 opt-in sync (because Proactive DMs was
+ * off by default) so they can be revived to `active` when the tool became ungated,
+ * without resurrecting operator-removed tools or reviving when all sibling tools
+ * were connection-wide removed.
+ */
+export const LEGACY_OPEN_DM_PRE_RELEASE_HASH =
+  "6633e05f3435459ee4e34b8f59a246b684ada735282a80e1c4ad381e166bf0d5";
+
 const catalogDefinitions = SLACK_TOOLS.map(tool => ({
   tool,
   hash: createHash("sha256").update(JSON.stringify({
@@ -203,7 +214,17 @@ export async function syncSlackBotTools(
     // enabling or dropping a group flips it even when the definition hash is
     // unchanged. Operator-disabled/quarantined entries and ungated tools keep
     // their own status.
-    if (existing?.versionHash === hash && (!gated || existing.status === values.status))
+    const revivesLegacySystemRemovedDm =
+      tool.name === "slack_open_dm" &&
+      existing?.status === "removed" &&
+      existing.versionHash === LEGACY_OPEN_DM_PRE_RELEASE_HASH &&
+      activated &&
+      existingEntries.some((e) => e.name !== `slack_bot:${tool.name}` && e.status !== "removed");
+    if (
+      existing?.versionHash === hash &&
+      (!gated || existing.status === values.status) &&
+      !revivesLegacySystemRemovedDm
+    )
       continue;
     await measureRunPhase("connectors.slack.catalog.write", () => tx
       .insert(toolCatalogEntries)
@@ -214,7 +235,7 @@ export async function syncSlackBotTools(
           ...values,
           ...(existing
             ? {
-                status: gated ? values.status : existing.status,
+                status: gated || revivesLegacySystemRemovedDm ? values.status : existing.status,
                 reviewedByUserId: existing.reviewedByUserId,
                 reviewedAt: existing.reviewedAt,
               }

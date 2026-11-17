@@ -119,9 +119,11 @@ describe("connector assignment preparation", () => {
     const names = assignments[0].tools.map(tool => tool.name);
     expect(names.includes("slack_upload_file")).toBe(mode === "upload");
     expect(names).not.toContain("slack_create_channel");
-    expect(names).not.toContain("slack_open_dm");
     if (mode === "empty" || mode === "error") expect(names).toEqual([]);
-    else expect(names).toContain("slack_history");
+    else {
+      expect(names).toContain("slack_history");
+      expect(names).toContain("slack_open_dm");
+    }
   });
 
   it("keeps a requested-but-not-installed group gated", async () => {
@@ -165,9 +167,9 @@ describe("connector tool definitions fail closed", () => {
     expect(names).not.toContain("slack_upload_file");
     expect(names).not.toContain("slack_create_channel");
     expect(names).not.toContain("slack_invite");
-    expect(names).not.toContain("slack_open_dm");
     // Ungated Slack tools are unaffected.
     expect(names).toContain("slack_history");
+    expect(names).toContain("slack_open_dm");
   });
 
   it("includes a gated tool once the enabled set names it", () => {

@@ -1,8 +1,10 @@
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type {
-  SlackSearchStatus,
-  SlackToolCapabilities,
+import {
+  isProvisionedSlackSetup,
+  type SlackSearchStatus,
+  type SlackSetupMethod,
+  type SlackToolCapabilities,
 } from "@paperclipai/shared";
 import { slackToolsApi } from "@/api/slackTools";
 import { Button } from "@/components/ui/button";
@@ -11,10 +13,18 @@ import { Input } from "@/components/ui/input";
 export function SlackCapabilitiesView({
   capabilities,
   error,
+  setupMethod,
+  onReconnect,
 }: {
   capabilities?: SlackToolCapabilities;
   error?: string;
+  setupMethod?: SlackSetupMethod;
+  onReconnect?: () => void;
 }) {
+  const isProvisioned = isProvisionedSlackSetup(setupMethod);
+  const missingScopes = isProvisioned
+    ? capabilities?.missingScopes.filter((scope) => scope !== "im:write") ?? []
+    : capabilities?.missingScopes ?? [];
   return (
     <section className="space-y-3">
       <p className="text-sm text-muted-foreground">
@@ -32,6 +42,22 @@ export function SlackCapabilitiesView({
       )}
       {capabilities && (
         <>
+          {isProvisioned && capabilities.dmReconnectRequired && (
+            <div className="rounded-lg border border-border bg-muted p-3 space-y-2">
+              <p className="text-sm font-medium">
+                Reconnect Slack to grant DM permission
+              </p>
+              <p className="text-sm">
+                This agent&apos;s Slack app was installed before direct messages became
+                standard, so slack_open_dm will fail until you reconnect.
+              </p>
+              {onReconnect && (
+                <Button type="button" size="sm" variant="outline" onClick={onReconnect}>
+                  Reconnect Slack
+                </Button>
+              )}
+            </div>
+          )}
           {capabilities.missingGroups && capabilities.missingGroups.length > 0 && (
             <div className="rounded-lg border border-border bg-muted p-3 space-y-2">
               <p className="text-sm font-medium">
@@ -60,7 +86,7 @@ export function SlackCapabilitiesView({
               </ul>
             </div>
           )}
-          {capabilities.missingScopes.length > 0 && (
+          {missingScopes.length > 0 && (
             <div className="rounded-lg border border-border bg-muted p-3 space-y-2">
               <p className="text-sm font-medium">
                 Add permissions to unlock more tools
@@ -79,7 +105,7 @@ export function SlackCapabilitiesView({
                 Token Scopes, then reinstall the app to your workspace.
               </p>
               <p className="text-xs font-mono break-words">
-                {capabilities.missingScopes.join(", ")}
+                {missingScopes.join(", ")}
               </p>
             </div>
           )}
@@ -227,9 +253,13 @@ export function SlackSearchView({
 export function SlackToolsSettings({
   companyId,
   endpointId,
+  setupMethod,
+  onReconnect,
 }: {
   companyId: string;
   endpointId: string;
+  setupMethod?: SlackSetupMethod;
+  onReconnect?: () => void;
 }) {
   const query = useQuery({
     queryKey: ["slack-capabilities", companyId, endpointId],
@@ -241,6 +271,8 @@ export function SlackToolsSettings({
       <SlackCapabilitiesView
         capabilities={query.data}
         error={query.error?.message}
+        setupMethod={setupMethod}
+        onReconnect={onReconnect}
       />
 
     </div>

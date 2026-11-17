@@ -36,7 +36,7 @@ import {
 import {
   assertSlackToolEnabledForSetup,
   slackEndpointOptInsForGating,
-  slackOtherUserDmsEnabled,
+  SLACK_OTHER_USER_DM_OPTIONS,
 } from "./slack-opt-ins.js";
 
 async function slackAssignedEndpoint(
@@ -214,9 +214,7 @@ export async function executeSlackTool(
     return executeSlackWrite(db, binding, name, args, invocationId, fetchImpl);
   if (name === "slack_delivery")
     return slackDelivery(db, binding, authority, api, String(args.actionId));
-  const dmOptions = {
-    allowOtherUserDm: await slackOtherUserDmsEnabled(db, authority.endpoint),
-  };
+  const dmOptions = SLACK_OTHER_USER_DM_OPTIONS;
   const readable = async (id: string) => {
     const channel = await authorizeSlackChannel(authority, api, id, dmOptions);
     await recordSlackPrivateRead(db, authority, channel);

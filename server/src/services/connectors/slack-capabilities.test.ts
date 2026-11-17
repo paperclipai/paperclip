@@ -47,4 +47,25 @@ describe("Slack capabilities runtime agreement", () => {
     const result = await slackCapabilities(fixture(null), "company", "endpoint");
     expect(result.missingGroups?.find(group => group.group === "file_upload")?.action).toBe("enable");
   });
+
+  describe("dmReconnectRequired", () => {
+    it("reports dmReconnectRequired=false when im:write is present in grantedScopes", async () => {
+      auth.mockResolvedValue({ grantedScopes: ["chat:write", "im:write"] });
+      const result = await slackCapabilities(fixture({}), "company", "endpoint");
+      expect(result.dmReconnectRequired).toBe(false);
+    });
+
+    it("reports dmReconnectRequired=true when im:write is absent from grantedScopes", async () => {
+      auth.mockResolvedValue({ grantedScopes: ["chat:write"] });
+      const result = await slackCapabilities(fixture({}), "company", "endpoint");
+      expect(result.dmReconnectRequired).toBe(true);
+    });
+
+    it("reports dmReconnectRequired=false when live scopes are null / unknown", async () => {
+      auth.mockResolvedValue({});
+      const result = await slackCapabilities(fixture({}), "company", "endpoint");
+      expect(result.grantedScopes).toBeNull();
+      expect(result.dmReconnectRequired).toBe(false);
+    });
+  });
 });

@@ -164,11 +164,11 @@ describe("Slack opt-ins on the Choose-agent step", () => {
     await vi.waitFor(() => expect(serverGroups).toEqual(finalOn ? ["file_upload"] : []));
     expect(api.update.mock.calls.at(-1)![1].slackOptInScopeGroups).toEqual(finalOn ? ["file_upload"] : []);
   });
-  it("shows all three groups off for a new agent", async () => {
+  it("shows both opt-in groups off for a new agent", async () => {
     await render();
     await openAgentStep();
     expect(container.textContent).toContain("Extra Slack permissions");
-    for (const label of ["Channel management", "Proactive DMs", "File upload"]) {
+    for (const label of ["Channel management", "File upload"]) {
       expect(optInCheckbox(label).getAttribute("aria-checked")).toBe("false");
     }
   });
@@ -203,9 +203,9 @@ describe("Slack opt-ins on the Choose-agent step", () => {
     api.get.mockResolvedValue(draft({ id: "endpoint-a" }));
     await render("provider=slack&purpose=chat&resume=endpoint-a&agentId=agent-a");
     await openAgentStep();
-    await act(async () => optInCheckbox("Proactive DMs").click());
+    await act(async () => optInCheckbox("Channel management").click());
     await vi.waitFor(() =>
-      expect(api.update).toHaveBeenCalledWith("endpoint-a", { slackOptInScopeGroups: ["proactive_dms"] }));
+      expect(api.update).toHaveBeenCalledWith("endpoint-a", { slackOptInScopeGroups: ["channel_management"] }));
     // The app-details save path must never carry opt-ins.
     for (const [, payload] of api.update.mock.calls) {
       if (payload.slackApp) expect(payload.slackOptInScopeGroups).toBeUndefined();
@@ -217,14 +217,14 @@ describe("Slack opt-ins on the Choose-agent step", () => {
     await render("provider=slack&purpose=chat&resume=endpoint-a&agentId=agent-a");
     await openAgentStep();
     await act(async () => optInCheckbox("File upload").click());
-    await act(async () => optInCheckbox("Proactive DMs").click());
+    await act(async () => optInCheckbox("Channel management").click());
     await vi.waitFor(() => expect(api.update).toHaveBeenCalled());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 40)); });
     const optInCalls = api.update.mock.calls.filter(
       ([, payload]) => payload.slackOptInScopeGroups !== undefined,
     );
     expect(optInCalls.at(-1)![1].slackOptInScopeGroups)
-      .toEqual(["proactive_dms", "file_upload"]);
+      .toEqual(["channel_management", "file_upload"]);
     for (const call of optInCalls) {
       expect(Object.keys(call[1])).toEqual(["slackOptInScopeGroups"]);
     }

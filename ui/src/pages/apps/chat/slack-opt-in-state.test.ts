@@ -45,7 +45,7 @@ describe("Slack opt-in UI state", () => {
     const state = slackOptInUiState({
       botExternalId: "B123",
       setup: {
-        slackOptInScopeGroups: ["file_upload", "proactive_dms"],
+        slackOptInScopeGroups: ["file_upload", "channel_management"],
         slackInstalledOptInScopeGroups: ["file_upload"],
       },
     });
@@ -56,7 +56,9 @@ describe("Slack opt-in UI state", () => {
     // botExternalId set, neither opt-in field present: the legacy shape.
     const state = slackOptInUiState({ botExternalId: "B123", setup: { step: "complete" } });
     expect(state.legacyInstall).toBe(true);
-    expect(state.requested).toEqual(all);
+    expect(state.requested).toHaveLength(2);
+    expect(state.requested).toEqual(["channel_management", "file_upload"]);
+    expect(state.requested).not.toContain("proactive_dms");
     expect(state.installed).toEqual(all);
     // No false "reinstall to apply" prompt for an untouched legacy install.
     expect(state.pendingChange).toBe(false);
@@ -90,14 +92,14 @@ describe("Slack opt-in UI state", () => {
 
 describe("Slack opt-in group set comparison", () => {
   it("ignores order", () => {
-    expect(sameSlackOptInGroupSet(["file_upload", "proactive_dms"], ["proactive_dms", "file_upload"]))
+    expect(sameSlackOptInGroupSet(["file_upload", "channel_management"], ["channel_management", "file_upload"]))
       .toBe(true);
   });
 
   it("detects a difference in either direction", () => {
     expect(sameSlackOptInGroupSet(["file_upload"], [])).toBe(false);
     expect(sameSlackOptInGroupSet([], ["file_upload"])).toBe(false);
-    expect(sameSlackOptInGroupSet(["file_upload"], ["proactive_dms"])).toBe(false);
+    expect(sameSlackOptInGroupSet(["file_upload"], ["channel_management"])).toBe(false);
   });
 
   it("treats both empty lists as equal", () => {

@@ -58,41 +58,40 @@ describe("SlackScopeOptIns", () => {
     await render({ idPrefix: prefix("off") });
     expect(container.textContent).toContain("Extra Slack permissions");
     const boxes = checkboxes("off");
-    expect(boxes).toHaveLength(3);
+    expect(boxes).toHaveLength(2);
     expect(boxes.every((box) => box.getAttribute("aria-checked") === "false")).toBe(true);
-    expect(statuses("off")).toEqual(["off", "off", "off"]);
+    expect(statuses("off")).toEqual(["off", "off"]);
     const helps = [...container.querySelectorAll('[id^="t-off-"][id$="-help"]')]
       .map((node) => node.textContent ?? "");
-    expect(helps).toHaveLength(3);
+    expect(helps).toHaveLength(2);
     // Each group's real grant is spelled out, not just its label.
     expect(helps[0]).toContain("channels:manage");
     expect(helps[0]).toContain("groups:write");
-    expect(helps[1]).toContain("im:write");
-    expect(helps[2]).toContain("files:write");
+    expect(helps[1]).toContain("files:write");
+    expect(container.textContent).not.toContain("Proactive DMs");
   });
 
-  it("states that enabling a group needs admin approval and states the default scope count", async () => {
+  it("states that enabling a group may need admin approval and states the default scope count without low-risk-only claim", async () => {
     await render({ idPrefix: prefix("review") });
-    expect(container.textContent).toContain("28 low-risk scopes");
-    expect(container.textContent).toContain("approve");
-    // Each group is above Low risk, so the copy must say so plainly.
-    expect(container.textContent).toContain("not Low risk");
-    expect(container.textContent).toContain("admin review");
+    expect(container.textContent).toContain("29 scopes");
+    expect(container.textContent).toContain("admin approval");
+    expect(container.textContent).toContain("direct messages");
+    expect(container.textContent).not.toContain("low-risk scopes, which your workspace can auto-approve");
   });
 
   it("adds a group on check and removes it on uncheck without touching the others", async () => {
     const onChange = await render({
       idPrefix: prefix("toggle"),
-      value: ["proactive_dms"],
+      value: ["file_upload"],
     });
     const boxes = checkboxes("toggle");
     expect(boxes[1]!.getAttribute("aria-checked")).toBe("true");
     await act(async () => boxes[0]!.click());
-    expect(onChange).toHaveBeenLastCalledWith(["channel_management", "proactive_dms"]);
+    expect(onChange).toHaveBeenLastCalledWith(["channel_management", "file_upload"]);
     // Controlled: re-render with the parent's next value, then uncheck.
     await render({
       idPrefix: prefix("toggle"),
-      value: ["channel_management", "proactive_dms"],
+      value: ["channel_management", "file_upload"],
       onChange,
     });
     await act(async () => checkboxes("toggle")[1]!.click());
@@ -102,10 +101,10 @@ describe("SlackScopeOptIns", () => {
   it("shows requested, enabled, and still-installed states per group", async () => {
     await render({
       idPrefix: prefix("states"),
-      value: ["channel_management", "file_upload"],
-      installed: ["file_upload", "proactive_dms"],
+      value: ["channel_management"],
+      installed: ["file_upload"],
     });
-    expect(statuses("states")).toEqual(["requested", "installed", "enabled"]);
+    expect(statuses("states")).toEqual(["requested", "installed"]);
     expect(container.textContent).toContain("Not active yet");
     expect(container.textContent).toContain("Still active because the app is installed");
   });
@@ -114,11 +113,11 @@ describe("SlackScopeOptIns", () => {
     const onReconnect = vi.fn();
     await render({
       idPrefix: prefix("legacy"),
-      value: ["channel_management", "proactive_dms", "file_upload"],
-      installed: ["channel_management", "proactive_dms", "file_upload"],
+      value: ["channel_management", "file_upload"],
+      installed: ["channel_management", "file_upload"],
       onReconnect,
     });
-    expect(statuses("legacy")).toEqual(["enabled", "enabled", "enabled"]);
+    expect(statuses("legacy")).toEqual(["enabled", "enabled"]);
     expect(container.textContent).not.toContain("differs from what Slack granted");
     expect(button("Reinstall in Slack")).toBeUndefined();
   });
@@ -126,7 +125,7 @@ describe("SlackScopeOptIns", () => {
   it("describes each checkbox with its current dynamic status and scope help", async () => {
     for (const installed of [[], ["file_upload"]] as SlackOptInScopeGroup[][]) {
       await render({ idPrefix: prefix("accessible"), value: ["file_upload"], installed });
-      const box = checkboxes("accessible")[2]!;
+      const box = checkboxes("accessible")[1]!;
       const descriptions = box.getAttribute("aria-describedby")!.split(" ")
         .map(id => document.getElementById(id)?.textContent).join(" ");
       expect(descriptions).toContain("files:write");
@@ -175,7 +174,7 @@ describe("SlackScopeOptIns", () => {
       installed: undefined,
       setupMethod: "managed",
     });
-    expect(statuses("draft")).toEqual(["off", "off", "requested"]);
+    expect(statuses("draft")).toEqual(["off", "requested"]);
     expect(container.querySelector('[role="status"]')).toBeNull();
   });
 

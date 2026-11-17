@@ -37,13 +37,14 @@ export type SlackOptInUiState = {
 };
 
 /**
- * TECH-7988: derive what the opt-in controls show.
+ * TECH-7988 / TECH-8783: derive what the opt-in controls show.
  *
  * A pre-TECH-7988 installation holds the full grant and has no saved request.
  * Showing it as "all off, reconnect to change" would be false: nothing is
  * pending until an operator actually edits the groups, and every group is
  * already enabled. Both sets therefore start at the full grant for a legacy
- * installation, which also makes the first edit a real, explicit choice.
+ * installation (now the remaining opt-in groups, with direct messages standard
+ * in default scopes), which also makes the first edit a real, explicit choice.
  */
 export function slackOptInUiState(
   endpoint: SlackOptInEndpointLike | null | undefined,
