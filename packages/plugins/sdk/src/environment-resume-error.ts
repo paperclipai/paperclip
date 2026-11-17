@@ -13,7 +13,7 @@ const SCHEMA = "paperclip/environment-resume-error/v1";
 // Closed errno-style set. Provider text and identifiers never cross.
 const ERROR_CODES = new Set([
   "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH",
-  "ABORT_ERR", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
+  "ABORT_ERR", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "CONNECTION_FAILED",
 ]);
 
 function field(value: unknown, key: string): unknown {

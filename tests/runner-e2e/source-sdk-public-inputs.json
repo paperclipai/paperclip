@@ -8,7 +8,7 @@
     "packages/plugins/sdk/src/dev-server.ts": "2eadff81b74ca0706aec53aaf8637797fe4b4093",
     "packages/plugins/sdk/src/environment-acquire-error.ts": "50a74c3d1f83150f4215d44a763aa8ce4d9469c2",
     "packages/plugins/sdk/src/environment-creation-cleanup.ts": "35f23cd19ab0dd4148731846419a1c9b9942786b",
-    "packages/plugins/sdk/src/environment-resume-error.ts": "7d52cdaba318b633b058f6506fb110795d063b29",
+    "packages/plugins/sdk/src/environment-resume-error.ts": "e628864e37c649ede89052e723e3a9dace352716",
     "packages/plugins/sdk/src/environment-runner-ingress-error.ts": "fdb47797c2a1d2df82390e42b9593d4fa4cf49e7",
     "packages/plugins/sdk/src/environment-stop-error.ts": "b0e03f8aa2b2170ba095da5c7138050fced3f3cb",
     "packages/plugins/sdk/src/environment-sync-error.ts": "7d6a51a95da49a7da4525aebbab6382dc5c44ae8",
