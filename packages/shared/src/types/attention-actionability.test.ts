@@ -11,7 +11,7 @@ describe("inbox actionability", () => {
     expect(isActionableAttention(approval)).toBe(true);
   });
   it.each([
-    "native_session_cleanup_quarantined", "native_workspace_sync_out_retry_exhausted", "native_workspace_sync_out_unrecoverable",
+    "native_session_cleanup_quarantined", "native_workspace_sync_out_retry_exhausted", "native_workspace_sync_out_unrecoverable", "native_finalization_retry_exhausted",
     "native_workspace_sync_out_unsafe_archive", "native_workspace_finalization_owner_unverified",
     "ownership_owner_unprovable", "native_controller_host_unverified",
   ])("does not advertise unsupported resolution controls for %s", cause => {
