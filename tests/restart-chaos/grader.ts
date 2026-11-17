@@ -1,12 +1,14 @@
 import { UI_RETRY_BLOCKED_BY_MODAL, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
 import { gradeDiskFullRetry, isDiskFullFault } from "./disk-full-faults.js";
-import { enforcedUniversalFailures, gradeUniversal, type UniversalDbEvidence } from "./universal.js";
+import { enforcedUniversalFailures, gradeUniversal, type SlotFree, type UniversalBounds, type UniversalDbEvidence } from "./universal.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
 
 export const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
 export const STALL_LIMIT_MS = 3 * 60_000;
+export const PROVIDER_TURN_LIMIT_MS = 10 * 60_000;
+export const PREPARATION_LIMIT_MS = 10 * 60_000;
 const REST_STATUSES_WITH_WORK = new Set(["todo", "in_progress"]);
 
 const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
@@ -192,7 +194,7 @@ export function gradeR4(record: TaskRecord): RuleResult {
 
 function namedWait(sample: TaskSample): boolean {
   const interruption = sample.interruption;
-  return Boolean(sample.executionBlocker || sample.scheduledRetry || sample.activeRecoveryAction || interruption?.retryWait
+  return Boolean(sample.executionBlocker || sample.scheduledRetry || sample.activeRecoveryAction || sample.waitingOnChildren || interruption?.retryWait
     || interruption?.state === "retry_scheduled" || interruption?.canRetry
     || (interruption && ["failed", "waiting_for_user"].includes(interruption.state)));
 }
@@ -210,8 +212,9 @@ export function deadRunningRun(sample: TaskSample, readySince: number): { id: st
     if (run.status !== "running") continue;
     // Quiet is not dead while a tool is still in flight or the run's process is verifiably alive.
     if (run.toolInFlight || run.processAlive) continue;
+    const limit = run.preparing ? PREPARATION_LIMIT_MS : run.providerTurnActive ? PROVIDER_TURN_LIMIT_MS : STALL_LIMIT_MS;
     const evidence = Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0, readySince);
-    if (sample.at - evidence > STALL_LIMIT_MS) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
+    if (sample.at - evidence > limit) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
   }
   return null;
 }
@@ -250,7 +253,7 @@ export function gradeR6(record: TaskRecord): RuleResult {
 }
 
 export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult,
-  universalDb?: UniversalDbEvidence): TaskGrade {
+  universalDb?: UniversalDbEvidence, queue: { bounds?: UniversalBounds; slotFree?: SlotFree } = {}): TaskGrade {
   const crossing = crossingFaults(record, faults);
   const rules: Record<RuleId, RuleResult> = {
     R1: gradeR1(record, budgetMs, faults),
@@ -262,7 +265,7 @@ export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], b
   };
   const failed = (Object.entries(rules) as Array<[RuleId, RuleResult]>).find(([, rule]) => rule.verdict === "fail");
   // Universal checks run on every task whatever its workload; only enforced ones fail it (universal.ts).
-  const universal = gradeUniversal(record, universalDb ? { db: universalDb } : {});
+  const universal = gradeUniversal(record, { ...(universalDb ? { db: universalDb } : {}), ...queue });
   const [universalFailure] = enforcedUniversalFailures(universal);
   const pass = !failed && oracle.verdict === "pass" && !universalFailure;
   let signature: string | null = null;

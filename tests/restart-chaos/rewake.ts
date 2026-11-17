@@ -1,5 +1,5 @@
 /**
- * W2, W2Q, W2C: the same task woken again right after a run of it finished (README "Re-wake after success").
+ * W2, W2Q, W2C: the same task woken again right after a run of it finished (SCENARIOS.md "Re-wake after success").
  *
  * On staging, 20 of 25 failures in one 8-hour window happened with no restart at all. Ten or more runs of
  * one agent ran at once on reused (warm) sandboxes, and 30–60 s after a long run of a task succeeded, an
@@ -188,7 +188,8 @@ export async function rewakeStep(input: RewakeStepInput): Promise<void> {
     const idleTimeoutMs = rewakeIdleTimeoutMs(plan.index);
     const change: NonNullable<RewakeRecord["configChange"]> = { at: now, idleTimeoutMs, httpStatus: null, error: null };
     try {
-      await input.api.patch(`/api/agents/${input.agentId}`, { adapterConfig: { idleTimeoutMs } });
+      const agent = await input.api.get<{ adapterConfig?: Record<string, unknown> | null }>(`/api/agents/${input.agentId}`);
+      await input.api.patch(`/api/agents/${input.agentId}`, { adapterConfig: { ...(agent.adapterConfig ?? {}), idleTimeoutMs }, replaceAdapterConfig: true });
       change.httpStatus = 200;
     } catch (error) {
       change.httpStatus = statusOf(error);

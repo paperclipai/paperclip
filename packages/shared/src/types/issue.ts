@@ -899,6 +899,11 @@ export type IssueSummary = Pick<
   externalConversationState: "active" | "waiting" | null;
   /** Present for blocked tasks so summary views resolve the same status glyph as detail views. */
   blockerAttention?: IssueBlockerAttention;
+  /** Navigation-only projection. Counts include only readable direct children. */
+  parentId?: string | null;
+  isUnreadForMe?: boolean;
+  subtaskCount?: number;
+  unreadSubtaskCount?: number;
 };
 
 export interface Issue {
@@ -1001,6 +1006,8 @@ export interface Issue {
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
+  /** Descendants whose run started; excludes runs still waiting for an agent slot. */
+  runningDescendantCount?: number;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -1076,6 +1083,8 @@ export type CompactIssue = Pick<
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
+  /** Descendants whose run started; excludes runs still waiting for an agent slot. */
+  runningDescendantCount?: number;
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
@@ -1342,6 +1351,9 @@ export interface ConversationTaskHandoff {
   sourceRunId: string | null;
   /** When present, the accepted suggestion already renders this task card. */
   suggestionInteractionId: string | null;
+  /** The conversation reply that reported this task's latest completion, once the server
+   * settled that completion delivery; null while it is still owed. */
+  completionReportCommentId?: string | null;
 }
 
 export interface ConversationTaskHandoffPage {

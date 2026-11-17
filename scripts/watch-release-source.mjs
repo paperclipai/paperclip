@@ -2,6 +2,7 @@ import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createActionsReader, readSourceVerification, SourceVerificationFailed, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 import { requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
+import { createRunnerLossRetry } from "./cloud-readiness-runner-loss.mjs";
 
 const repository = "paperclipai/paperclip";
 
@@ -35,7 +36,7 @@ async function cancelFailedVerification({ api, cancel, sha }, failure) {
   if (run.status !== "completed") await cancel(`/repos/${repository}/actions/runs/${failure.runId}/cancel`);
 }
 
-export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, now = Date.now,
+export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, retryRunnerLoss, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = console.log,
   timeoutMs = 40 * 60_000, intervalMs = 30_000, requireProof = false, summary = async () => {} }) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "") || !Number.isSafeInteger(runId) || runId < 1 ||
@@ -68,6 +69,10 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
     } catch (error) {
       if (error instanceof SourceVerificationDeferred && rerun) {
         await requestDeferredProducer({ file: "cloud-readiness.yml", sha, admissionJob: sourceAdmissionJob, api, rerun, requested });
+      } else if (error instanceof SourceVerificationFailed && retryRunnerLoss &&
+        await retryRunnerLoss({ sha, failure: error, api }) === "retrying") {
+        // A reclaimed Spot worker is retried, not treated as a failed source:
+        // keep this image attempt alive for the retried proof.
       } else {
         if (error instanceof SourceVerificationFailed) {
           await cancelFailedVerification({ api, cancel, sha }, error);
@@ -95,6 +100,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const proof = checkProof ? await readSourceVerification(process.env.GITHUB_SHA, api, { failFast: true }) : await watchReleaseSource({ requireProof, sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
     api,
     rerun: createReleaseRerunner(token),
+    retryRunnerLoss: createRunnerLossRetry({ token }),
     cancel: async path => {
       const response = await fetch(`https://api.github.com${path}`, { method: "POST", redirect: "error",
         headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(30_000) });

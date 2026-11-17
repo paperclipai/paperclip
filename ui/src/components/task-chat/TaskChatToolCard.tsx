@@ -13,6 +13,9 @@ import { toolTaxonomy } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
+import { ProviderToolIcon, useProviderToolIcons } from "@/components/ProviderToolIcon";
+import type { ToolCallProgressSnapshot } from "@paperclipai/shared";
+import { TaskChatToolProgress, useToolCallProgress } from "./tool-call-progress";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -47,10 +50,18 @@ function TaskReferenceToolTarget({ taskRefId, target }: { taskRefId: string; tar
  * inset). An edit row carries its `+N −M` counts and opens to a compact,
  * height-capped diff of that one edit.
  */
-export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
+export function TaskChatToolCard({ item, progress: givenProgress }: {
+  item: TaskChatToolItem;
+  /** A fixed progress state (stories); otherwise a running call's live progress is shown. */
+  progress?: ToolCallProgressSnapshot | null;
+}) {
   const { Icon, spin, tone } = STATUS_ICON[item.status];
+  const liveProgress = useToolCallProgress(item);
+  // Progress belongs to the running call only; a finished row drops it.
+  const progress = item.status === "in_progress" ? (givenProgress !== undefined ? givenProgress : liveProgress) : null;
   const shimmer = useTaskChatShimmer(item.id);
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
+  const providerIcons = useProviderToolIcons(item.rawName ?? item.name);
   const [showDetail, setShowDetail] = useTaskChatExpansion(item.id, false);
   const expandable = Boolean(item.target || item.detail || item.diff);
 
@@ -68,10 +79,11 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
         )}
       >
         <span className="flex w-5 shrink-0 items-center justify-center">
-          <RowIcon
+          <ProviderToolIcon
+            icons={providerIcons}
+            fallback={RowIcon}
             className="h-3.5 w-3.5 shrink-0"
-            aria-hidden
-            data-testid="task-chat-tool-icon"
+            testId="task-chat-tool-icon"
           />
         </span>
         <span data-conversation-tool-running={item.status === "in_progress" && shimmer ? "true" : undefined} className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
@@ -127,6 +139,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           ) : null}
         </span>
       </button>
+      {progress ? <TaskChatToolProgress progress={progress} /> : null}
       {item.target && showDetail && !item.diff?.lines?.length ? (
         <div
           className="task-chat-expanded-line-wrap ml-1.5 mt-0.5 min-w-0 max-w-full overflow-hidden border-l-2 border-border py-1 pl-2.5 font-mono text-(length:--text-micro) leading-relaxed text-muted-foreground"

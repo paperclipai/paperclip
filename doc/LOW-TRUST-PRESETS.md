@@ -126,8 +126,7 @@ company-boundary checks.
 
 ## Child→Parent Reporting Under Containment
 
-The direct-parent report comment (`doc/execution-semantics.md` §6, "Child→Parent
-Reporting") is **off by default** for `low_trust_review`: a contained run reads
+The direct-parent report comment is **off by default** for `low_trust_review`: a contained run reads
 untrusted input, so a free-prose comment into the higher-trust parent thread is
 a prompt-injection promotion path. Contained reviewers report by completing
 their own review issue (`done` — the verdict is the deliverable; the
