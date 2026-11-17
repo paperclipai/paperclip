@@ -671,8 +671,12 @@ describe("Routines page", () => {
     await act(async () => { root.unmount(); });
   });
 
-  it("keeps routines readable without invented folder state after a folder read fails, then retries", async () => {
-    routinesListMock.mockResolvedValue([createRoutine({ title: "Filed routine", folderId: "folder-1" })]);
+  it.each(["all", "folder-1", "unfiled"])("keeps routines readable after a folder read fails, then restores the %s filter on retry", async (selection) => {
+    currentSearch = selection === "all" ? "" : `folder=${selection}`;
+    routinesListMock.mockResolvedValue([
+      createRoutine({ title: "Filed routine", folderId: "folder-1" }),
+      createRoutine({ id: "routine-2", title: "Loose routine", folderId: null }),
+    ]);
     foldersListMock.mockRejectedValueOnce(new Error("Folder read failed"));
     const root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -684,6 +688,7 @@ describe("Routines page", () => {
       });
       await act(async () => { await flush(); });
       expect(container.textContent).toContain("Filed routine");
+      expect(container.textContent).toContain("Loose routine");
       expect(container.querySelector('[role="alert"]')).not.toBeNull();
       expect(container.textContent).not.toContain("Unknown folder");
       expect(container.textContent).not.toContain("Create your first folder");
@@ -691,7 +696,7 @@ describe("Routines page", () => {
       expect(container.textContent).not.toContain("All routines");
 
       foldersListMock.mockResolvedValue({
-        kind: "routine", allCount: 1, unfiledCount: 0,
+        kind: "routine", allCount: 2, unfiledCount: 1,
         folders: [{
           id: "folder-1", companyId: "company-1", kind: "routine", parentId: null,
           name: "Reporting", slug: "reporting", systemKey: null, path: "reporting",
@@ -706,7 +711,16 @@ describe("Routines page", () => {
       expect(container.querySelector('[role="alert"]')).toBeNull();
       expect(container.querySelector('nav[aria-label="routines folders"]')).not.toBeNull();
       expect(container.textContent).toContain("Reporting");
-      expect(container.textContent).toContain("Filed routine");
+      if (selection === "unfiled") {
+        expect(container.textContent).not.toContain("Filed routine");
+      } else {
+        expect(container.textContent).toContain("Filed routine");
+      }
+      if (selection === "folder-1") {
+        expect(container.textContent).not.toContain("Loose routine");
+      } else {
+        expect(container.textContent).toContain("Loose routine");
+      }
     } finally {
       await act(() => root.unmount());
       queryClient.clear();

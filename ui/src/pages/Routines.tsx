@@ -16,6 +16,7 @@ import { useToastActions } from "../context/ToastContext";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
+import { retryTransientOnly } from "../lib/query-client";
 import { groupBy } from "../lib/groupBy";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
@@ -378,7 +379,8 @@ export function Routines() {
   const foldersQuery = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId!, "routine"),
     queryFn: ({ signal }) => foldersApi.list(selectedCompanyId!, "routine", { signal, timeoutMs: 15_000 }),
-    retry: false,
+    // Keep first reveal bounded by the request deadline; the page offers Retry.
+    retry: retryTransientOnly(0),
     enabled: !!selectedCompanyId,
   });
   const { data: routineFolders, isLoading: foldersLoading } = foldersQuery;
@@ -668,11 +670,11 @@ export function Routines() {
     });
   }
   const folderFilteredRoutines = useMemo(() => {
-    if (routineViewState.groupBy !== "folder") return visibleRoutines;
+    if (routineViewState.groupBy !== "folder" || !routineFolders) return visibleRoutines;
     if (folderSelection === "all") return visibleRoutines;
     if (folderSelection === "unfiled") return visibleRoutines.filter((routine) => !routine.folderId);
     return visibleRoutines.filter((routine) => routine.folderId === folderSelection);
-  }, [folderSelection, routineViewState.groupBy, visibleRoutines]);
+  }, [folderSelection, routineFolders, routineViewState.groupBy, visibleRoutines]);
   // Rail counts reflect the page's visible scope (archived hidden), not raw DB
   // counts (ux-spec §5.3).
   const railFolderResult = useMemo(() => {
