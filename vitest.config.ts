@@ -15,6 +15,7 @@ export default defineConfig({
     projects: [
       "packages/shared",
       "packages/skills-catalog",
+      "packages/google-workspace-rest-tools",
       "packages/db",
       "packages/adapter-utils",
       "packages/adapters/claude-local",
