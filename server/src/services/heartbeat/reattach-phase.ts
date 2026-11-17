@@ -1,5 +1,6 @@
-import { and, eq, inArray, isNotNull, isNull, ne, notLike, or, sql } from "drizzle-orm";
-import { dedicatedDbConnectionStats, heartbeatRuns, livenessDb, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNotNull, isNull, ne, notLike, or } from "drizzle-orm";
+import { dedicatedDbConnectionStats, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { readDatabaseSessionWaits } from "../database-session-waits.js";
 import { logger } from "../../middleware/logger.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -20,6 +21,8 @@ import {
   type ReattachClaimableReason,
   type ReattachPhaseSummary,
 } from "./run-admission.js";
+
+export { readDatabaseSessionWaits, type DatabaseSessionWait } from "../database-session-waits.js";
 
 export const REATTACH_PHASE_DEFAULT_CAP_MS = 180_000;
 export const REATTACH_PHASE_MIN_CAP_MS = 5_000;
@@ -244,52 +247,6 @@ export function registerReattachPhaseWork(
     onStop: release,
   });
   return current.worker;
-}
-
-export type DatabaseSessionWait = {
-  pid: number;
-  applicationName: string | null;
-  state: string | null;
-  waitEventType: string | null;
-  waitEvent: string | null;
-  blockedBy: number[];
-  transactionSeconds: number | null;
-  stateSeconds: number | null;
-  query: string | null;
-};
-
-export async function readDatabaseSessionWaits(db: Db): Promise<DatabaseSessionWait[]> {
-  return livenessDb(db).transaction(async tx => {
-    await tx.execute(sql`select set_config('statement_timeout', '5000', true)`);
-    const rows = await tx.execute<Record<string, unknown>>(sql`
-      with sessions as (
-        select pid, application_name, state, wait_event_type, wait_event, pg_blocking_pids(pid) as blocked_by,
-          xact_start, state_change, query
-        from pg_stat_activity
-        where datname = current_database() and pid <> pg_backend_pid() and backend_type = 'client backend'
-      ), blockers as (select distinct unnest(blocked_by) as pid from sessions)
-      select pid, application_name, state, wait_event_type, wait_event, blocked_by,
-        extract(epoch from clock_timestamp() - xact_start)::int as transaction_seconds,
-        extract(epoch from clock_timestamp() - state_change)::int as state_seconds,
-        left(regexp_replace(regexp_replace(query, '''(?:[^'']|'''')*''', '?', 'g'), '\\m[0-9][0-9.]*\\M', '?', 'g'), 160) as query
-      from sessions
-      where cardinality(blocked_by) > 0 or pid in (select pid from blockers)
-        or state like 'idle in transaction%'
-        or (xact_start is not null and clock_timestamp() - xact_start > interval '30 seconds')
-      order by xact_start nulls last
-      limit 50`);
-    return rows.map(row => ({
-      pid: Number(row.pid),
-      applicationName: (row.application_name as string | null) ?? null,
-      state: (row.state as string | null) ?? null,
-      waitEventType: (row.wait_event_type as string | null) ?? null,
-      waitEvent: (row.wait_event as string | null) ?? null,
-      blockedBy: Array.isArray(row.blocked_by) ? row.blocked_by.map(Number) : [],
-      transactionSeconds: row.transaction_seconds === null ? null : Number(row.transaction_seconds),
-      stateSeconds: row.state_seconds === null ? null : Number(row.state_seconds),
-      query: (row.query as string | null) ?? null,
-    }));
-  });
 }
 
 function authenticatedButUnreached(summary: ReattachPhaseSummary): string[] {
