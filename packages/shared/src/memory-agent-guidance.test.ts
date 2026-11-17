@@ -338,6 +338,11 @@ describe("Claude and Codex memory guidance (TECH-8832)", () => {
     expect(guidance).not.toContain("Mem0:");
   });
 
+  it("tells the agent to search before retrying a timed-out memory_add", () => {
+    expect(text({ memoryTools: true })).toContain("If `memory_add` reports a timeout, search before retrying");
+    expect(text({ memoryTools: false })).not.toContain("If `memory_add` reports a timeout");
+  });
+
   it("claims capture only when it is on", () => {
     expect(text({ memoryTools: true, captureOn: true })).toContain("do not re-save what you just said");
     expect(text({ memoryTools: true, captureOn: false })).not.toContain("captured automatically");

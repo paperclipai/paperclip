@@ -256,6 +256,11 @@ export const MAX_TOOL_TIMEOUT_MS = 60_000;
 export const ARGUS_REVIEW_TOOL_TIMEOUT_MS = 30_000;
 /** The async comps verbs are the same thin api-main wrappers as the Argus ones, so they get the same 30 s (TECH-8433). */
 export const COMPS_TOOL_TIMEOUT_MS = ARGUS_REVIEW_TOOL_TIMEOUT_MS;
+/**
+ * Memory service tool budgets (TECH-8832). A cold `memory_add` runs LLM extraction and took ~10.5 s on dev, which the 10 s
+ * default reports as a failure although the row was stored (a retry would then save the fact twice).
+ */
+export const AGENT_MEMORY_TOOL_TIMEOUT_MS = { memory_add: 45_000, memory_delete: 20_000, memory_search: 15_000 } as const;
 
 /** Fixed, unforgeable uid of the Paperclip-created static Arcana template (client uids always carry a random suffix). */
 export const ARCANA_STATIC_TEMPLATE_UID = "rh-arcana-brain/default-mcp-template";
@@ -532,6 +537,7 @@ export const DEFAULT_MCP_SPEC: readonly DefaultMcpEntrySpec[] = [
       },
     },
     reviewedTools: { version: 1, allow: ["memory_search", "memory_add", "memory_delete"] },
+    toolTimeoutMs: AGENT_MEMORY_TOOL_TIMEOUT_MS,
   },
   {
     // Argus review service (TECH-7792). An ORDINARY (non-dedicated) entry: the company's operator-authored
@@ -925,13 +931,22 @@ export function commsReviewedAllowlist(connection: { name: string; config: unkno
   return new Set(entry.reviewedTools.allow);
 }
 
+const DEDICATED_CLONE_SUFFIX = /:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A per-agent clone is named `<template name>:<agent uuid>` (see `dedicatedConnectionName`); map it back to its entry's name. */
+function dedicatedTemplateName(connectionName: string, spec: readonly DefaultMcpEntrySpec[]): string {
+  if (spec.some((entry) => entry.connectionName === connectionName)) return connectionName;
+  const base = connectionName.replace(DEDICATED_CLONE_SUFFIX, "");
+  return base !== connectionName && spec.some((entry) => entry.connectionName === base) ? base : connectionName;
+}
+
 /** The spec-declared timeout for one tool of a default-MCP connection, clamped to the ceiling; undefined = gateway default. */
 export function defaultToolTimeoutMs(
   connectionName: string,
   toolName: string,
   spec: readonly DefaultMcpEntrySpec[] = DEFAULT_MCP_SPEC,
 ): number | undefined {
-  const timeouts = spec.find((entry) => entry.connectionName === connectionName)?.toolTimeoutMs;
+  const timeouts = spec.find((entry) => entry.connectionName === dedicatedTemplateName(connectionName, spec))?.toolTimeoutMs;
   const value = timeouts && Object.hasOwn(timeouts, toolName) ? timeouts[toolName] : undefined;
   if (value === undefined || !Number.isFinite(value)) return undefined;
   return Math.max(1, Math.min(MAX_TOOL_TIMEOUT_MS, Math.floor(value)));

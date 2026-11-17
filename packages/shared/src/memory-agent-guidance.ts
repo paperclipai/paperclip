@@ -107,7 +107,7 @@ export function buildMemoryAgentGuidance(ctx: MemoryAgentGuidanceContext): strin
     const { memoryTools, captureOn } = ctx.capabilities;
     if (memoryTools === true) {
       lines.push(
-        "- Memory tools `memory_search` (your own query), `memory_add` (one durable fact or decision, with the why) and `memory_delete` (remove a wrong or outdated memory; search first to get its id). Save only lasting decisions, preferences and corrections, never status updates, run or issue ids, or URLs. Search before asking again.",
+        "- Memory tools `memory_search` (your own query), `memory_add` (one durable fact or decision, with the why) and `memory_delete` (remove a wrong or outdated memory; search first to get its id). Save only lasting decisions, preferences and corrections, never status updates, run or issue ids, or URLs. Search before asking again. If `memory_add` reports a timeout, search before retrying so you do not save the same fact twice.",
       );
       lines.push(`- Relevant memories are also recalled automatically before each prompt. ${recallHint}`);
       if (captureOn) lines.push("- The end of each turn is also captured automatically; do not re-save what you just said.");

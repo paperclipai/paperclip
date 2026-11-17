@@ -17,6 +17,7 @@ import {
   COMMS_BOARD_TEMPLATE_TOKEN_SCOPES,
 } from "../services/comms-board-provisioner-client.js";
 import {
+  AGENT_MEMORY_TOOL_TIMEOUT_MS,
   ARGUS_REVIEW_TOOL_TIMEOUT_MS,
   RH_MCP_SERVICE_TOOLS_BY_SCOPE,
   COMPS_TOOL_TIMEOUT_MS,
@@ -569,9 +570,29 @@ describe("per-tool timeout (argus-review)", () => {
     expect(defaultToolTimeoutMs("rh-mcp-argus-review", "toString")).toBeUndefined();
     expect(defaultToolTimeoutMs("rh-mcp", "argus_start_review")).toBeUndefined();
     expect(defaultToolTimeoutMs("some-other-connection", "argus_start_review")).toBeUndefined();
-    for (const entry of DEFAULT_MCP_SPEC.filter((candidate) => candidate.key !== "argus-review" && candidate.key !== "rh-mcp-service")) {
+    for (const entry of DEFAULT_MCP_SPEC.filter((candidate) => !["argus-review", "rh-mcp-service", "agent-memory-tools"].includes(candidate.key))) {
       expect(entry.toolTimeoutMs).toBeUndefined();
     }
+  });
+
+  it("gives the memory tools budgets above a cold memory_add (TECH-8832)", () => {
+    expect(AGENT_MEMORY_TOOL_TIMEOUT_MS).toEqual({ memory_add: 45_000, memory_delete: 20_000, memory_search: 15_000 });
+    const entry = DEFAULT_MCP_SPEC.find((candidate) => candidate.key === "agent-memory-tools")!;
+    expect(Object.keys(entry.toolTimeoutMs ?? {}).sort()).toEqual([...entry.reviewedTools!.allow].sort());
+    expect(defaultToolTimeoutMs("rh-agent-memory-tools", "memory_add")).toBe(45_000);
+    expect(defaultToolTimeoutMs("rh-agent-memory-tools", "memory_delete")).toBe(20_000);
+    expect(defaultToolTimeoutMs("rh-agent-memory-tools", "memory_search")).toBe(15_000);
+    expect(defaultToolTimeoutMs("rh-agent-memory-tools", "memory_purge_agent")).toBeUndefined();
+  });
+
+  it("resolves the per-agent clone `<template>:<agent uuid>` to its entry's timeouts", () => {
+    const agentId = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+    expect(defaultToolTimeoutMs(`rh-agent-memory-tools:${agentId}`, "memory_add")).toBe(45_000);
+    expect(defaultToolTimeoutMs(`rh-agent-memory-tools:${agentId.toUpperCase()}`, "memory_search")).toBe(15_000);
+    // Only a uuid suffix maps back; anything else, and unrelated connections, keep the gateway default.
+    expect(defaultToolTimeoutMs("rh-agent-memory-tools:not-a-uuid", "memory_add")).toBeUndefined();
+    expect(defaultToolTimeoutMs(`some-other-connection:${agentId}`, "memory_add")).toBeUndefined();
+    expect(defaultToolTimeoutMs(`rh-mcp-argus-review:${agentId}`, "argus_start_review")).toBe(30_000);
   });
 
   it("clamps values above 60 s, and ignores non-finite values", () => {
