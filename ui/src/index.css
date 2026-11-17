@@ -392,7 +392,6 @@
   --folder-color-cyan: #06b6d4;
   --folder-color-amber: #f59e0b;
   --folder-color-slate: #64748b;
-  --gtc-folder-row: 1rem minmax(0, 1fr) auto;
   --gtc-folder-row-actions: 1rem minmax(0, 1fr) auto auto;
   --sz-folder-rail: 13.25rem;
   --sz-folder-sheet-max: 80dvh;
