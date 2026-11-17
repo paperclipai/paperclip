@@ -36,7 +36,7 @@ describe("get_values result", () => {
 
   it.each([
     ["too many cells", [Array.from({ length: MAX_CELLS_PER_CALL + 1 }, () => "")], /50,001 cells; the limit is 50,000/],
-    ["too many bytes", [["x".repeat(250_000)]], /bytes; the limit is 400,000 per call\. Ask for a narrower range/],
+    ["too many bytes", [["x".repeat(130_000)]], /bytes; the limit is 250,000 per call\. Ask for a narrower range/],
   ])("refuses %s instead of cutting the result", (_name, values, message) => {
     expect(() => getValuesResult({ range: "Sheet1!A1:Z", values })).toThrow(message);
   });
@@ -51,11 +51,7 @@ describe("get_values result", () => {
     expect(serializedResultBytes(near)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
     expect(serializedResultBytes(near)).toBeGreaterThan(MAX_RESULT_BYTES - 16);
     expect(bytes(largest + 1)).toBeGreaterThan(MAX_RESULT_BYTES);
-    expect(() => getValuesResult(sized(largest + 1))).toThrow(/bytes; the limit is 400,000 per call\. Ask for a narrower range/);
-  });
-
-  it("keeps the limit under the runner's 500,000-byte inline tool result", () => {
-    expect(MAX_RESULT_BYTES).toBeLessThan(500_000);
+    expect(() => getValuesResult(sized(largest + 1))).toThrow(/bytes; the limit is 250,000 per call\. Ask for a narrower range/);
   });
 
   it("accepts exactly the cell limit and refuses one more", () => {

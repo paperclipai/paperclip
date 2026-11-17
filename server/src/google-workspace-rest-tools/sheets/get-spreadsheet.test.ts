@@ -77,9 +77,9 @@ describe("get_spreadsheet result", () => {
 
   it("bounds the whole serialized result in bytes and asks for fewer or narrower ranges", () => {
     const sheet = (note: string) => ({ properties: { title: note } });
-    const near = getSpreadsheetResult({ sheets: [sheet("x".repeat(199_900))] });
+    const near = getSpreadsheetResult({ sheets: [sheet("x".repeat(124_900))] });
     expect(serializedResultBytes(near)).toBeLessThanOrEqual(MAX_RESULT_BYTES);
-    expect(() => getSpreadsheetResult({ sheets: [sheet("x".repeat(200_000))] })).toThrow(/bytes; the limit is 400,000 per call\. Pass fewer or narrower ranges/);
+    expect(() => getSpreadsheetResult({ sheets: [sheet("x".repeat(125_000))] })).toThrow(/bytes; the limit is 250,000 per call\. Pass fewer or narrower ranges/);
   });
 
   it("refuses a result over the cell limit instead of cutting it", () => {

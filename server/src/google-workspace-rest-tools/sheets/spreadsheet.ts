@@ -8,7 +8,7 @@ import { checkSheetRange } from "./range.js";
 export const SHEETS_HOST = "sheets.googleapis.com" as const;
 export const SHEETS_BASE = "/v4/spreadsheets";
 export const MAX_CELLS_PER_CALL = 50_000;
-export const MAX_RESULT_BYTES = 400_000;
+export const MAX_RESULT_BYTES = 250_000;
 export const MAX_REQUEST_CHARS = 1_000_000;
 
 const formatCount = (value: number) => value.toLocaleString("en-US");
