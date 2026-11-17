@@ -1,25 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mockOnboardingLocalAiConnection } from "./helpers/onboarding-ai-connection";
 import {
-  expectLandsOnFirstTaskWithoutDashboardBounce,
+  expectLandsOnChatWithoutDashboardBounce,
   instrumentNavLog,
 } from "./helpers/onboarding-landing";
 
-/**
- * E2E: post-wizard onboarding launch.
- *
- * Completing the onboarding wizard now creates the first assigned task and
- * drops the user straight onto that task's detail page (not the dashboard),
- * so they land in the conversation the agent will start in. The chat intro
- * still has unit coverage in BoardChat tests.
- *
- * PAP-404: onboarding used to intermittently bounce to the company dashboard.
- * The bounce only reproduces when the instance already has ≥1 company (the
- * board's test ports), so the second test seeds a company first to exercise
- * exactly that failing condition.
- */
-
-const FIRST_TASK_TITLE = "Paperclip onboarding";
+/** Post-wizard onboarding opens the standing chat without execution work.
+ * PAP-404: company page memory must not bounce the new chat to the dashboard. */
 
 /**
  * Intercept authentication, environment checks, and hiring so no real CLI check
@@ -28,6 +15,13 @@ const FIRST_TASK_TITLE = "Paperclip onboarding";
  */
 async function installLaunchIntercepts(page: Page, baseURL?: string) {
   await mockOnboardingLocalAiConnection(page);
+  // Keep the inert provider from starting; verify the welcome is requested only
+  // after navigation and the conversation composer are visible.
+  await page.route("**/onboarding/greeting", async route => {
+    await expect(page).toHaveURL(/\/chats\/[^/]+$/);
+    await expect(page.getByTestId("task-chat-composer-add")).toBeVisible();
+    await route.fulfill({ json: { started: false } });
+  });
   await page.route("**/test-environment", (route) =>
     route.fulfill({
       contentType: "application/json",
@@ -104,14 +98,13 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   await expect(connectNext).toBeEnabled({ timeout: 30_000 });
   await connectNext.click();
 
-  // Step 5: review → Get started creates the first task and opens its
-  // detail page.
+  // Step 5: review → Get started opens the standing chat.
   const getStarted = page.getByRole("button", { name: /Get started/ });
   await getStarted.waitFor({ timeout: 20_000 });
   await getStarted.click();
 }
 
-async function assertFirstTaskExists(page: Page, companyName: string) {
+async function assertOnlyChatExists(page: Page, companyName: string) {
   const companiesRes = await page.request.get("/api/companies");
   expect(companiesRes.ok()).toBe(true);
   const companies = await companiesRes.json();
@@ -123,32 +116,36 @@ async function assertFirstTaskExists(page: Page, companyName: string) {
   const issuesRes = await page.request.get(`/api/companies/${company.id}/issues`);
   expect(issuesRes.ok()).toBe(true);
   const issues = await issuesRes.json();
-  const firstTask = issues.find(
-    (candidate: { title: string }) => candidate.title === FIRST_TASK_TITLE,
-  );
-  expect(firstTask).toBeTruthy();
-  await expect(page.getByText(FIRST_TASK_TITLE).first()).toBeVisible({
-    timeout: 15_000,
-  });
+  expect(issues).toEqual([]);
+  const projectsRes = await page.request.get(`/api/companies/${company.id}/projects`);
+  expect(projectsRes.ok()).toBe(true);
+  expect(await projectsRes.json()).toEqual([]);
+  const chatsRes = await page.request.get(`/api/companies/${company.id}/chats`);
+  expect(chatsRes.ok()).toBe(true);
+  const chats = await chatsRes.json();
+  expect(chats).toHaveLength(1);
+  expect(chats[0]).toMatchObject({ originKind: "onboarding_chat", projectId: null });
+  await expect(page.getByTestId("task-chat-composer-add")).toBeVisible();
 }
 
-test.describe("First-task launch after onboarding wizard", () => {
-  test("creates the first task and opens its detail page", async ({ page, baseURL }) => {
+test.describe("Chat launch after onboarding wizard", () => {
+  test("opens chat without creating a task or project", async ({ page, baseURL }) => {
     await instrumentNavLog(page);
     await installLaunchIntercepts(page, baseURL);
 
     const companyName = `E2E-TypingIntro-${Date.now()}`;
     await runOnboardingWizard(page, companyName);
 
-    await expectLandsOnFirstTaskWithoutDashboardBounce(page);
-    await assertFirstTaskExists(page, companyName);
+    await expectLandsOnChatWithoutDashboardBounce(page);
+    await assertOnlyChatExists(page, companyName);
+    await page.screenshot({ path: test.info().outputPath("onboarding-chat.png"), fullPage: true });
   });
 
   // PAP-404 regression: the dashboard bounce only fires when the instance
   // already has a company for the route-sync effect to reset selection to.
   // Seed one first, then onboard a brand-new company and assert we still land
-  // on the first task without a dashboard bounce.
-  test("lands on the first task even when a company already exists", async ({
+  // in chat without a dashboard bounce.
+  test("lands on chat even when a company already exists", async ({
     page,
     baseURL,
   }) => {
@@ -165,7 +162,7 @@ test.describe("First-task launch after onboarding wizard", () => {
     const companyName = `E2E-TypingIntro-Existing-${Date.now()}`;
     await runOnboardingWizard(page, companyName);
 
-    await expectLandsOnFirstTaskWithoutDashboardBounce(page);
-    await assertFirstTaskExists(page, companyName);
+    await expectLandsOnChatWithoutDashboardBounce(page);
+    await assertOnlyChatExists(page, companyName);
   });
 });

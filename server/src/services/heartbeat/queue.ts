@@ -2805,6 +2805,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
+      (reason === "onboarding_chat_greeting" && opts.manualUserWake === true
+        && opts.requestedByActorType === "user" && source === "on_demand") ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
       reason === CHAT_COMPLETION_WAKE_REASON || isManualContextCompactionWake(),
     );
@@ -2862,6 +2864,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (taskRetryActorId && conversation) await assertTaskRetryConversationAllowed(db, conversation, taskRetryActorId);
       if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
       if (isConversation(conversation)) {
+        if (reason === "onboarding_chat_greeting" && (conversation?.originKind !== "onboarding_chat"
+          || conversation.conversationUserId !== opts.requestedByActorId)) return null;
         if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
           throw new HttpError(403, "Only the conversation owner can start a chat run");
         }

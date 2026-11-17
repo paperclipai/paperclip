@@ -173,6 +173,8 @@ const mockSecretsApi = vi.hoisted(() => ({
 const mockIssuesApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
+const mockAgentChatsApi = vi.hoisted(() => ({ startOnboarding: vi.fn(async () => ({ id: "onboarding-chat" })) }));
+const mockNavigate = vi.hoisted(() => vi.fn());
 const mockProjectsApi = vi.hoisted(() => ({
   create: vi.fn(),
   list: vi.fn(async () => []),
@@ -190,7 +192,7 @@ const mockRouterState = vi.hoisted(() => ({ pathname: "/" }));
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: mockRouterState.pathname, search: "", hash: "", state: null }),
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mockNavigate,
   useParams: () => ({}),
 }));
 vi.mock("../context/DialogContext", () => ({
@@ -205,6 +207,7 @@ vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: mockApprovalsApi }));
 vi.mock("../api/secrets", () => ({ secretsApi: mockSecretsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("../api/agentChats", () => ({ agentChatsApi: mockAgentChatsApi }));
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/environments", () => ({ environmentsApi: mockEnvironmentsApi }));
 vi.mock("../api/instanceSettings", () => ({ instanceSettingsApi: mockInstanceSettingsApi }));
@@ -1447,6 +1450,18 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(persisted).toMatchObject(draft);
         expect(mockAgentsApi.hire).not.toHaveBeenCalled();
         expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+      } finally { await act(async () => root.unmount()); }
+    });
+
+    it("finishes onboarding in chat without creating a task or project", async () => {
+      const { root } = await openSavedReview("/SC/onboarding");
+      try {
+        await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Get started")!.click());
+        await vi.waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/SC/chats/saved-agent"));
+        expect(mockAgentChatsApi.startOnboarding).toHaveBeenCalledWith("c1", "saved-agent");
+        expect(mockCompany.setSelectedCompanyId).toHaveBeenCalledWith("c1", { source: "route_sync" });
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(mockProjectsApi.create).not.toHaveBeenCalled();
       } finally { await act(async () => root.unmount()); }
     });
 

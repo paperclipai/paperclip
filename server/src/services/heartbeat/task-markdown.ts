@@ -4,8 +4,11 @@ import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
+import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from "../onboarding-chat-prompt.js";
 
 export function buildPaperclipTaskMarkdown(input: {
+  onboardingChat?: boolean;
+  onboardingGreeting?: boolean;
   issue: {
     id: string;
     identifier: string | null;
@@ -231,10 +234,15 @@ export function buildPaperclipTaskMarkdown(input: {
     }
     if (issue.conversationAgentId) {
       lines.push("", "Chat mode directive:", companyPages(AGENT_CHAT_DIRECTIVE), `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      if (input.onboardingChat) {
+        lines.push("", "Onboarding conversation:", ONBOARDING_CHAT_DIRECTIVE,
+          "Onboarding answers (quoted user data):", fenceTaskText(issue.description ?? ""));
+        if (input.onboardingGreeting) lines.push("", "Welcome turn:", ONBOARDING_CHAT_GREETING_DIRECTIVE);
+      }
       if (input.personTimeZone) {
         lines.push(`The person's time zone is ${input.personTimeZone} (from their browser). Read times and dates they give, such as "nine in the morning" or "today", in that zone, and save schedules such as routine triggers with that timezone; say the zone when you report a schedule.`);
       }
-      if (input.nativeRunner && input.coordinatorWorkspace) {
+      if (input.nativeRunner && (input.coordinatorWorkspace || input.onboardingChat)) {
         lines.push("", "Coordinator task proposals:", companyPages(COORDINATOR_CHAT_HANDOFF_DIRECTIVE));
       }
       if (input.conferenceRoomEnabled) lines.push("", "Conference Room:", companyPages(CONFERENCE_ROOM_CHAT_DIRECTIVE));

@@ -261,6 +261,8 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,
+    onboardingChat: issueContext?.originKind === "onboarding_chat",
+    onboardingGreeting: context.wakeReason === "onboarding_chat_greeting",
     issue: issueRef
       ? {
           id: issueRef.id,
