@@ -24,7 +24,7 @@ import { responsibilityRoutes } from "../routes/responsibilities.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { loadResponsibilityBarGuidance } from "../services/responsibility-bar-guidance.js";
-import { primaryReadings } from "../services/responsibility-metrics.js";
+import { primaryReadings, responsibilityMetricService } from "../services/responsibility-metrics.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -258,6 +258,22 @@ describeEmbeddedPostgres("responsibility metric sets", () => {
       const after = await read(seeded.app, seeded.id);
       expect(after.body.metrics.find((metric: { id: string }) => metric.id === meetings.id).readings.map((reading: { value: number }) => reading.value)).toEqual([1, 2, 5]);
       expect(after.body.metrics.find((metric: { id: string }) => metric.id === share.id).latest.value).toBe(82);
+    });
+
+    it("keeps the newest number when an older report commits after it", async () => {
+      const seeded = await seed();
+      const [stale] = await db.select().from(responsibilities).where(eq(responsibilities.id, seeded.id));
+      const staleAt = new Date(stale!.metricUpdatedAt!).getTime();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect((await record(seeded.app, seeded.id, "primary", { value: 13 })).status).toBe(201);
+      const late = await responsibilityMetricService(db).record(
+        stale!, "primary", { value: 4, recordedAt: new Date(staleAt + 5).toISOString() }, { type: "board", userId: OWNER },
+      );
+      expect(late).toMatchObject({ backfilled: true, updated: null });
+      const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, seeded.id));
+      expect(row!.metricCurrent).toBe(13);
+      const readings = await read(seeded.app, seeded.id);
+      expect(readings.body.metrics[0].readings.map((reading: { value: number }) => reading.value)).toEqual([9, 4, 13]);
     });
   });
 

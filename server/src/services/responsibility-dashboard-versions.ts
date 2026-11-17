@@ -330,6 +330,11 @@ export function responsibilityDashboardVersionService(db: Db) {
 
     // Responsibilities in the snapshot: put each back.
     const ownById = new Map(ownRows.map((row) => [row.id, row]));
+    // A deleted one comes back under its saved id, so restoring the same version again finds it
+    // instead of making another copy. Its id is reused only while no other row holds it.
+    const missingIds = targetItemIds.filter((id) => !ownById.has(id));
+    const takenIds = new Set(missingIds.length === 0 ? [] : (await tx.select({ id: responsibilities.id }).from(responsibilities)
+      .where(inArray(responsibilities.id, missingIds))).map((row) => row.id));
     const touchedAreas = new Set<string>();
     for (const want of target.responsibilities) {
       const areaId = want.areaId ? areaFor.get(want.areaId) ?? null : null;
@@ -337,6 +342,7 @@ export function responsibilityDashboardVersionService(db: Db) {
       if (!row) {
         // Deleted since: it comes back with its sentence (what was filed under it went with it).
         const [created] = await tx.insert(responsibilities).values({
+          ...(takenIds.has(want.id) ? {} : { id: want.id }),
           companyId,
           ownerUserId,
           areaId,

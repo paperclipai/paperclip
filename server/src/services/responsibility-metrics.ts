@@ -553,13 +553,16 @@ export function responsibilityMetricService(db: Db) {
             return { metricId: mirror!.id, metricTitle: bar.title, primary: true, value, recordedAt, corrected: false, backfilled: true, updated: null };
           });
         }
-        const { responsibility: updated } = await responsibilitiesSvc.update(
+        const { responsibility: updated, olderReading } = await responsibilitiesSvc.update(
           row,
           { metricCurrent: input.value },
           recorder.type === "agent" ? { type: "agent", agentId: recorder.agentId, scope: recorder.scope } : { type: "board", userId: recorder.userId },
           { readingAt: recordedAt, readingNote: note },
         );
-        return { metricId: null, metricTitle: bar.title, primary: true, value, recordedAt, corrected: false, backfilled: false, updated };
+        return {
+          metricId: null, metricTitle: bar.title, primary: true, value, recordedAt, corrected: false,
+          backfilled: olderReading, updated: olderReading ? null : updated,
+        };
       }
 
       const metric = await supportingMetric(db, row, metricRef);

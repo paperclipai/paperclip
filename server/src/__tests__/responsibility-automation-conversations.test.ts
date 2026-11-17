@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -26,7 +26,7 @@ import { buildAutomationConversationGuidance, loadAutomationConversationGuidance
 import { instanceSettingsService } from "../services/instance-settings.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
-import { buildStandingCheckGuidance, loadStandingCheckGuidance } from "../services/routine-standing-checks.js";
+import { buildStandingCheckGuidance, loadStandingCheckGuidance, standingCheckService } from "../services/routine-standing-checks.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -453,6 +453,20 @@ describeEmbeddedPostgres("automation conversations and standing checks", () => {
       });
       const guidance = (await loadStandingCheckGuidance(db, { companyId: seeded.company.id, agentId: seeded.agents.watcher.id }))!;
       expect(guidance).toContain("acted (Reminded two customers)");
+    });
+
+    it("leave out a linked task the reader cannot see", async () => {
+      const seeded = await seed();
+      const routine = await standingCheck(seeded);
+      const reported = await request(createApp(agentActor(seeded.company.id, seeded.agents.watcher.id)))
+        .post(`/api/routines/${routine.id}/standing-check-results`)
+        .send({ outcome: "acted", note: "Reminded two customers", issueId: seeded.tasks.invoices.id });
+      expect(reported.status).toBe(201);
+      const checks = standingCheckService(db);
+      const visible = await checks.lastResults(seeded.company.id, [routine.id], sql<boolean>`true`);
+      expect(visible.get(routine.id)?.issue).toMatchObject({ id: seeded.tasks.invoices.id, title: "Follow up on overdue invoices" });
+      const hidden = await checks.lastResults(seeded.company.id, [routine.id], sql<boolean>`false`);
+      expect(hidden.get(routine.id)).toMatchObject({ outcome: "acted", note: "Reminded two customers", issue: null });
     });
 
     it("refuse reports while paused, and a person can pause one", async () => {

@@ -650,8 +650,12 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       expect(fundraising[0]!.id).not.toBe(seeded.areas.Fundraising);
       const deck = rows.find((row) => row.title === "The deck is always current.")!;
       expect(deck).toMatchObject({ status: "active", areaId: fundraising[0]!.id });
-      expect(deck.id).not.toBe(seeded.items.deck);
+      expect(deck.id).toBe(seeded.items.deck);
       expect(rows.find((row) => row.id === seeded.items.lps)).toMatchObject({ areaId: fundraising[0]!.id });
+      // Restoring the same version again keeps that responsibility rather than making another copy.
+      expect((await request(seeded.app).post(`/api/responsibility-dashboard-versions/${first.row.id}/restore`).send({})).status).toBe(200);
+      const decks = (await ownRows(seeded)).filter((row) => row.title === "The deck is always current.");
+      expect(decks.map((row) => [row.id, row.status])).toEqual([[seeded.items.deck, "active"]]);
       // Its old name is now another area's: the pipeline goes there and "Talent" keeps its name.
       expect(rows.find((row) => row.id === seeded.items.pipeline)).toMatchObject({ areaId: newHiring.body.id, metricName: "Qualified candidates", standard: "Every open role has three qualified candidates." });
       expect(areas.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ title: "Talent", status: "archived" });

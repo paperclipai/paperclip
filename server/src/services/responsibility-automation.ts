@@ -95,7 +95,7 @@ export function responsibilityAutomationService(
         interactions.routineSuggestionsForIssues(companyId, taskIds),
         conversations.conversationsForTasks(companyId, taskIds),
         conversations.companyAgents(companyId),
-        standingChecks.lastResults(companyId, routineIds),
+        standingChecks.lastResults(companyId, routineIds, opts.scope.issueReadCondition),
       ]);
       const waking = new Set(agents.rows.filter(agentWakesOnItsOwn).map((agent) => agent.id));
       const firstAssignable = agents.rows.find((agent) => agents.usable.has(agent.id))?.id ?? null;

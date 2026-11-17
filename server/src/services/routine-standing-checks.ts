@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, issues, routineRuns, routineTriggers, routines } from "@paperclipai/db";
 import {
@@ -54,8 +54,15 @@ function iso(value: Date | string | null | undefined): string | null {
 }
 
 export function standingCheckService(db: Db) {
-  /** The latest reported result for each routine, one query whatever the count. */
-  async function lastResults(companyId: string, routineIds: readonly string[]): Promise<Map<string, StandingCheckLastResult>> {
+  /**
+   * The latest reported result for each routine, one query whatever the count.
+   * With `issueReadCondition`, a linked task the reader cannot see is left out.
+   */
+  async function lastResults(
+    companyId: string,
+    routineIds: readonly string[],
+    issueReadCondition?: SQL<boolean>,
+  ): Promise<Map<string, StandingCheckLastResult>> {
     const results = new Map<string, StandingCheckLastResult>();
     if (routineIds.length === 0) return results;
     const rows = await db
@@ -63,12 +70,16 @@ export function standingCheckService(db: Db) {
         routineId: routineRuns.routineId,
         triggeredAt: routineRuns.triggeredAt,
         payload: routineRuns.triggerPayload,
-        issueId: routineRuns.linkedIssueId,
+        issueId: issues.id,
         issueIdentifier: issues.identifier,
         issueTitle: issues.title,
       })
       .from(routineRuns)
-      .leftJoin(issues, eq(issues.id, routineRuns.linkedIssueId))
+      .leftJoin(issues, and(
+        eq(issues.id, routineRuns.linkedIssueId),
+        eq(issues.companyId, routineRuns.companyId),
+        ...(issueReadCondition ? [isNull(issues.hiddenAt), issueReadCondition] : []),
+      ))
       .where(and(
         eq(routineRuns.companyId, companyId),
         inArray(routineRuns.routineId, [...new Set(routineIds)]),

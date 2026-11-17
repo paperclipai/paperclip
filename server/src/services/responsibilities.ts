@@ -1418,14 +1418,16 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
      * `opts.readingAt` dates a reading in `metricCurrent` (the owner recording
      * a past reading through the metrics endpoint); every reading is also kept
      * in the metric's history unless `opts.recordHistory` is false (a
-     * correction of a reading already there).
+     * correction of a reading already there). A reading older than the one the
+     * row shows, checked under the row lock, only joins the history
+     * (`olderReading`), so concurrent reports cannot replace a newer number.
      */
     async update(
       existing: ResponsibilityRow,
       patch: UpdateResponsibility,
       actor: { type: "board"; userId?: string | null } | { type: "agent"; agentId: string; scope: ResponsibilityReadScope },
       opts: { readingAt?: Date; readingNote?: string | null; recordHistory?: boolean } = {},
-    ): Promise<{ responsibility: ResponsibilityRow; activatedArea: ResponsibilityArea | null }> {
+    ): Promise<{ responsibility: ResponsibilityRow; activatedArea: ResponsibilityArea | null; olderReading: boolean }> {
       if (actor.type === "agent") {
         if (existing.status === "active") {
           const keys = Object.keys(patch);
@@ -1480,6 +1482,18 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
       }
       if (patch.status === "active" && !existing.confirmedAt) set.confirmedAt = new Date();
       return db.transaction(async (tx) => {
+        const [locked] = await tx.select({ metricCurrent: responsibilities.metricCurrent, metricUpdatedAt: responsibilities.metricUpdatedAt })
+          .from(responsibilities)
+          .where(and(eq(responsibilities.id, existing.id), eq(responsibilities.companyId, existing.companyId)))
+          .for("update");
+        if (!locked) throw notFound("Responsibility not found");
+        const olderReading = patch.metricCurrent !== undefined && patch.metricCurrent !== null
+          && locked.metricCurrent !== null && locked.metricUpdatedAt !== null
+          && new Date(locked.metricUpdatedAt).getTime() > readingAt.getTime();
+        if (olderReading) {
+          delete set.metricCurrent;
+          delete set.metricUpdatedAt;
+        }
         const [row] = await tx.update(responsibilities).set(set)
           .where(and(eq(responsibilities.id, existing.id), eq(responsibilities.companyId, existing.companyId)))
           .returning();
@@ -1495,7 +1509,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
           });
         }
         const activatedArea = await activateAreaFor(tx, row);
-        return { responsibility: row, activatedArea };
+        return { responsibility: row, activatedArea, olderReading };
       });
     },
 
