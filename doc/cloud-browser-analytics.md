@@ -78,6 +78,11 @@ Masking is deny by default. A surface that nobody marked stays masked.
   `maskReplayText` in `ui/src/lib/analytics/privacy.ts` shows text only inside
   elements with `ANALYTICS_UNMASK_PROPS`. The shared `Button`, `Label`,
   `TabsTrigger`, `SidebarNavItem` and `EmptyState` components carry it.
+- Replay also masks attribute values (`maskReplayAttribute`): only layout
+  attributes (`class`, `style`, `role`, `data-state`, SVG geometry and similar),
+  rrweb metadata, stylesheets and links outside customer content keep their
+  values. `title`, `aria-label`, `alt`, `placeholder`, `src` and `data-*` values
+  are always masked, even on unmasked chrome, so images record as empty boxes.
 - `ANALYTICS_MASK_CLASS` keeps customer content masked even inside unmasked
   chrome: rendered markdown (task bodies, comments, chat messages, documents),
   task and issue chat threads, the comment timeline, the rich editor and the
@@ -85,6 +90,8 @@ Masking is deny by default. A surface that nobody marked stays masked.
 - `ANALYTICS_NO_CAPTURE_CLASS` replaces secrets with a blank box in replays:
   every password-type `Input`, environment variable values and new secret
   values.
+- Events never carry the page title (`before_send` drops `title`), because
+  Paperclip page titles name the task and the organization.
 - Autocapture never records element text or attribute values
   (`mask_all_text`, `mask_all_element_attributes`). It keeps the click, the
   element tree and the page.

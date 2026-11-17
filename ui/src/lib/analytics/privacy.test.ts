@@ -5,6 +5,7 @@ import {
   ANALYTICS_MASK_CLASS,
   ANALYTICS_NO_CAPTURE_CLASS,
   ANALYTICS_UNMASK_ATTRIBUTE,
+  maskReplayAttribute,
   maskReplayText,
 } from "./privacy";
 
@@ -42,5 +43,42 @@ describe("session replay text masking", () => {
     expect(maskReplayText("Customer secret", el("c"))).toBe("******** ******");
     expect(maskReplayText("Draft", el("e"))).toBe("*****");
     expect(maskReplayText("sk-123", el("k"))).toBe("******");
+  });
+});
+
+describe("session replay attribute masking", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("masks free-text attributes that carry customer data, such as an organization switcher label", () => {
+    const el = render(
+      `<button ${ANALYTICS_UNMASK_ATTRIBUTE} id="b" aria-label="Open Verify Co organization switcher" title="Verify Co">`
+      + `<span class="${ANALYTICS_MASK_CLASS}" id="n" title="Verify Co">Verify Co</span></button>`
+      + `<span id="t" title="Customer task title">Customer task title</span>`
+      + `<img id="i" src="/api/attachments/1" alt="Quarterly plan">`,
+    );
+    expect(maskReplayAttribute("aria-label", "Open Verify Co organization switcher", el("b")))
+      .toBe("**** ****** ** ************ ********");
+    expect(maskReplayAttribute("title", "Verify Co", el("b"))).toBe("****** **");
+    expect(maskReplayAttribute("title", "Verify Co", el("n"))).toBe("****** **");
+    expect(maskReplayAttribute("title", "Customer task title", el("t"))).toBe("******** **** *****");
+    expect(maskReplayAttribute("src", "/api/attachments/1", el("i"))).toBe("******************");
+    expect(maskReplayAttribute("alt", "Quarterly plan", el("i"))).toBe("********* ****");
+    expect(maskReplayAttribute("data-anything", "secret", el("t"))).toBe("******");
+  });
+
+  it("keeps layout attributes and masks labels even on opted-in chrome", () => {
+    const el = render(`<button ${ANALYTICS_UNMASK_ATTRIBUTE} id="b" aria-label="New task" class="btn" data-state="open">New task</button>`);
+    expect(maskReplayAttribute("aria-label", "New task", el("b"))).toBe("*** ****");
+    expect(maskReplayAttribute("class", "btn", el("b"))).toBe("btn");
+    expect(maskReplayAttribute("data-state", "open", el("b"))).toBe("open");
+    expect(maskReplayAttribute("rr_width", "10px", el("b"))).toBe("10px");
+  });
+
+  it("keeps in-app links but masks links inside customer content", () => {
+    const el = render(`<a id="nav" href="/VER/issues">Tasks</a><div class="${ANALYTICS_MASK_CLASS}"><a id="c" href="https://example.com/private">x</a></div>`);
+    expect(maskReplayAttribute("href", "/VER/issues", el("nav"))).toBe("/VER/issues");
+    expect(maskReplayAttribute("href", "https://example.com/private", el("c"))).toBe("***************************");
   });
 });

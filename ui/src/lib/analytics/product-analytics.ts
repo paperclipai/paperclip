@@ -17,9 +17,9 @@
 // Product events that the server already sends (`PAPERCLIP_EVENTS`) must never
 // be captured here; `product-analytics-events.test.ts` enforces that.
 
-import type { PostHog, PostHogConfig } from "posthog-js";
+import type { CaptureResult, PostHog, PostHogConfig } from "posthog-js";
 import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
-import { ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS, maskReplayText } from "./privacy";
+import { ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS, maskReplayAttribute, maskReplayText } from "./privacy";
 
 export type ProductAnalyticsClient = Pick<
   PostHog,
@@ -49,6 +49,20 @@ async function loadPostHog(): Promise<ProductAnalyticsClient> {
   return module.default;
 }
 
+/**
+ * Last step before an event leaves the browser. posthog-js copies
+ * `document.title` into page views, and Paperclip titles name the task and
+ * the organization, so the title never leaves.
+ */
+export function scrubCapturedEvent(event: CaptureResult | null): CaptureResult | null {
+  if (!event?.properties) return event;
+  if (!("title" in event.properties) && !("$title" in event.properties)) return event;
+  const properties = { ...event.properties };
+  delete properties.title;
+  delete properties.$title;
+  return { ...event, properties };
+}
+
 export function buildPostHogInitOptions(
   config: BrowserAnalyticsConfig,
   apiHostname: string,
@@ -72,6 +86,8 @@ export function buildPostHogInitOptions(
       maskAllInputs: true,
       maskTextSelector: ANALYTICS_MASK_TEXT_SELECTOR,
       maskTextFn: maskReplayText,
+      // Attributes too (title, aria-label, alt, src, ...): deny by default.
+      maskAttributeFn: maskReplayAttribute,
       blockClass: ANALYTICS_NO_CAPTURE_CLASS,
     },
     // Links browser sessions to server events (X-POSTHOG-SESSION-ID and
@@ -79,6 +95,7 @@ export function buildPostHogInitOptions(
     tracing_headers: [apiHostname],
     // Advertising click IDs in URLs are personal data.
     mask_personal_data_properties: true,
+    before_send: scrubCapturedEvent,
     // Features we do not use. Off, so posthog-js only calls the endpoints the
     // server proxy allows (server/src/routes/posthog-proxy.ts).
     disable_surveys: true,

@@ -16,6 +16,7 @@
 
 import http from "node:http";
 import https from "node:https";
+import { pipeline } from "node:stream";
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { Router, type Request, type Response } from "express";
 import { logger } from "../middleware/logger.js";
@@ -130,7 +131,12 @@ export function posthogProxyRoutes(ingestHost: string) {
         if (value !== undefined && !DROPPED_RESPONSE_HEADERS.has(name)) headers[name] = value;
       }
       res.writeHead(upstreamRes.statusCode ?? 502, headers);
-      upstreamRes.pipe(res);
+      // pipeline() handles an error on either side (PostHog closing the
+      // connection mid-response, the browser going away) by destroying both
+      // streams, so no stream error goes unhandled.
+      pipeline(upstreamRes, res, (err) => {
+        if (err) logger.debug({ err, path: target.pathname }, "PostHog proxy response ended early");
+      });
     });
     upstreamReq.on("timeout", () => {
       upstreamReq.destroy(new Error("posthog_proxy_timeout"));
@@ -148,7 +154,9 @@ export function posthogProxyRoutes(ingestHost: string) {
       if (!res.writableFinished) upstreamReq.destroy();
     });
 
-    req.pipe(upstreamReq);
+    // An aborted browser upload destroys the upstream request, whose error
+    // listener above answers or closes the browser response.
+    pipeline(req, upstreamReq, () => {});
   });
 
   return router;

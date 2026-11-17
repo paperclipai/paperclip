@@ -194,4 +194,44 @@ describe("PostHog proxy forwarding", () => {
     const res = await request(app).get("/_ph/static/array.js");
     expect(res.status).toBe(502);
   });
+
+  it("survives PostHog closing the connection partway through a response", async () => {
+    const broken = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/javascript", "content-length": "100000" });
+      res.write("partial");
+      setTimeout(() => res.socket?.destroy(), 20);
+    });
+    await new Promise<void>((resolve) => broken.listen(0, "127.0.0.1", resolve));
+    const brokenUrl = `http://127.0.0.1:${(broken.address() as AddressInfo).port}`;
+    const errors: unknown[] = [];
+    const onUncaught = (err: unknown) => errors.push(err);
+    process.on("uncaughtException", onUncaught);
+    try {
+      const mount = resolvePostHogProxyMount({ ...CLOUD, ...TOKEN, ...BROWSER, PAPERCLIP_POSTHOG_HOST: brokenUrl });
+      const app = express();
+      app.use(mount!.path, mount!.router);
+      const server = app.listen(0, "127.0.0.1");
+      await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+      const port = (server.address() as AddressInfo).port;
+      const outcome = await new Promise<string>((resolve) => {
+        http.get(`http://127.0.0.1:${port}/_ph/static/recorder.js`, (res) => {
+          res.on("data", () => {});
+          res.on("end", () => resolve("end"));
+          res.on("error", () => resolve("error"));
+          res.on("aborted", () => resolve("aborted"));
+        }).on("error", () => resolve("error"));
+      });
+      // The browser sees a cut-off response, not a complete one.
+      expect(outcome).not.toBe("end");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The proxy keeps serving after the broken response.
+      const health = await request(server).put("/_ph/e/");
+      expect(health.status).toBe(404);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    } finally {
+      process.off("uncaughtException", onUncaught);
+      await new Promise<void>((resolve) => broken.close(() => resolve()));
+    }
+    expect(errors).toEqual([]);
+  });
 });

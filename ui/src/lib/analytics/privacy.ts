@@ -49,3 +49,38 @@ export function isReplayTextRevealed(element: Element | null | undefined): boole
 export function maskReplayText(text: string, element?: HTMLElement | null): string {
   return isReplayTextRevealed(element) ? text : text.replace(/\S/g, "*");
 }
+
+/**
+ * Attributes that only describe layout, state or structure. Every other
+ * attribute (title, alt, aria-label, placeholder, value, src, data-* and so
+ * on) can carry customer text, so replay masks it.
+ */
+const LAYOUT_ATTRIBUTES = new Set([
+  "class", "id", "style", "type", "role", "tabindex", "disabled", "checked", "selected", "hidden",
+  "open", "dir", "lang", "rel", "target", "for", "colspan", "rowspan", "width", "height",
+  "viewbox", "xmlns", "d", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin",
+  "x", "y", "x1", "x2", "y1", "y2", "cx", "cy", "r", "rx", "ry", "points", "transform", "opacity",
+  "aria-hidden", "aria-expanded", "aria-selected", "aria-checked", "aria-current", "aria-disabled",
+  "aria-orientation", "aria-haspopup", "aria-controls", "aria-labelledby", "aria-describedby",
+  "aria-modal", "aria-pressed", "aria-invalid", "aria-live", "aria-busy",
+  "data-slot", "data-state", "data-side", "data-align", "data-orientation", "data-variant",
+  "data-size", "data-disabled", "data-highlighted", "data-placeholder", ANALYTICS_UNMASK_ATTRIBUTE,
+]);
+
+/**
+ * Session replay `maskAttributeFn`. Deny by default: only layout attributes,
+ * rrweb's own metadata, stylesheets and links outside customer content keep
+ * their values. Free-text attributes stay masked even on opted-in chrome,
+ * because labels such as `aria-label` often name customer data (for example
+ * the organization switcher's "Open <name> switcher").
+ */
+export function maskReplayAttribute(name: string, value: string, element?: Element | null): string {
+  const key = name.toLowerCase();
+  // rrweb's own serialized metadata (`rr_width`, `_cssText`, ...).
+  if (key.startsWith("rr_") || key.startsWith("_")) return value;
+  if (LAYOUT_ATTRIBUTES.has(key)) return value;
+  const tag = element?.tagName?.toLowerCase();
+  // Stylesheets and in-app links render the page; customer-content links do not leave.
+  if (key === "href" && (tag === "link" || !element?.closest?.(FORCED_MASK_SELECTOR))) return value;
+  return value.replace(/\S/g, "*");
+}

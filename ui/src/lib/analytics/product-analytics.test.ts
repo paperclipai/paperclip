@@ -6,6 +6,7 @@ import {
   buildPostHogInitOptions,
   cancelPendingProductAnalytics,
   resetProductAnalyticsForTest,
+  scrubCapturedEvent,
   setProductAnalyticsUser,
   startProductAnalytics,
   type ProductAnalyticsClient,
@@ -146,7 +147,19 @@ describe("product analytics", () => {
     // Replay masks every text node; maskTextFn reveals only opted-in chrome.
     expect(options.session_recording?.maskTextSelector).toBe("*");
     expect(options.session_recording?.maskTextFn).toBeTypeOf("function");
+    expect(options.session_recording?.maskAttributeFn).toBeTypeOf("function");
     expect(options).toMatchObject({ disable_surveys: true, disable_product_tours: true, disable_web_experiments: true, disable_conversations: true });
     expect(buildPostHogInitOptions({ ...config, replayEnabled: false }, "x").disable_session_recording).toBe(true);
+  });
+
+  it("drops the page title, which names tasks and organizations, from every event", () => {
+    const event = {
+      uuid: "u",
+      event: "$pageview",
+      properties: { title: "Customer task title · Verify Co", $title: "x", $current_url: "https://acme.paperclip.app/VER/issues/VER-1" },
+    } as unknown as Parameters<typeof scrubCapturedEvent>[0];
+    expect(scrubCapturedEvent(event)?.properties).toEqual({ $current_url: "https://acme.paperclip.app/VER/issues/VER-1" });
+    expect(buildPostHogInitOptions(config, "x").before_send).toBe(scrubCapturedEvent);
+    expect(scrubCapturedEvent(null)).toBeNull();
   });
 });
