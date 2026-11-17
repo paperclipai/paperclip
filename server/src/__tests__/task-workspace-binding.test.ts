@@ -13,7 +13,7 @@ import request from "supertest";
 import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/error-handler.js";
-import { agents, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaceRepositories, executionWorkspaceRepositoryAccess, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, principalPermissionGrants, projectAccessMembers, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, completionContracts, createDb, environmentLeases, executionWorkspaceRepositories, executionWorkspaceRepositoryAccess, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints, workspaceOperations, principalPermissionGrants, projectAccessMembers, projects, projectWorkspaces } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { authorizationService, canActorReadExecutionWorkspace } from "../services/authorization.js";
 import { assertChatExecutionDefaultsAccess } from "../services/chat-execution-defaults.js";
@@ -426,6 +426,50 @@ const support = await getEmbeddedPostgresTestSupport();
         expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: null, bindingRevision: entryPoint === "pending selection" ? 3 : 2 });
       }
     });
+
+    async function legacyPreSessionTask(acceptedResult = false) {
+      const f = await settledNativeTask("native_session_interrupted", acceptedResult);
+      await db.update(heartbeatRuns).set({ status: "failed", resultJson: {} }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(nativeRunFinalizations).set({ failureDetail: {
+        recoveryMode: "ambiguous_state", providerSessionEstablished: false, providerEventsExist: false, checkpointExists: false,
+      } }).where(eq(nativeRunFinalizations.runId, f.run.id));
+      await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.run.agentId,
+        runId: f.run.id, seq: 1, eventType: "native.local_process_stopped", stream: "system", payload: { basis: "unidentified_runner_absent" } });
+      await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
+        heartbeatRunId: f.run.id, executionWorkspaceId: f.workspaceId, phase: "workspace_finalize", status: "failed" });
+      return f;
+    }
+
+    it("allows a stopped legacy pre-session failure without rewriting its history", async () => {
+      const f = await legacyPreSessionTask();
+      await f.change();
+      expect(await f.svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).toMatchObject({ workspace: null, pendingSelection: null });
+      expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, f.run.id)))[0])
+        .toMatchObject({ status: "failed" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toMatchObject({ resultJson: {} });
+    });
+
+    it.each(["unknown startup", "provider event", "new launch", "untrusted stop", "checkpoint", "unlinked result",
+      "remote lease", "pending cleanup", "sync descriptor", "saved checkpoint", "operator stop", "ordinary stop"] as const)(
+      "keeps legacy pre-session failure with %s fenced", async obligation => {
+        const f = await legacyPreSessionTask(obligation === "unlinked result");
+        if (obligation === "unlinked result") await db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, f.run.id));
+        if (obligation === "unknown startup") await db.update(nativeRunFinalizations).set({ failureDetail: {} }).where(eq(nativeRunFinalizations.runId, f.run.id));
+        if (obligation === "provider event" || obligation === "new launch") await db.insert(heartbeatRunEvents).values({
+          companyId: f.companyId, agentId: f.run.agentId, runId: f.run.id, seq: 2, stream: "system", payload: {},
+          eventType: obligation === "provider event" ? "turn.started" : "native.process_start_requested" });
+        if (obligation === "operator stop" || obligation === "ordinary stop") await db.update(heartbeatRunEvents).set({
+          payload: obligation === "operator stop" ? { basis: "operator_attested" } : {},
+        }).where(eq(heartbeatRunEvents.runId, f.run.id));
+        if (obligation === "untrusted stop") await db.update(heartbeatRunEvents).set({ sourceEventId: "provider-stop" }).where(eq(heartbeatRunEvents.runId, f.run.id));
+        if (obligation === "checkpoint") await db.insert(nativeRunnerCheckpoints).values({ companyId: f.companyId, issueId: f.issueId, runId: f.run.id, part: "header", material: {} });
+        if (obligation === "remote lease") await db.update(environmentLeases).set({ provider: "daytona" }).where(eq(environmentLeases.id, f.lease.id));
+        if (obligation === "pending cleanup") await db.update(environmentLeases).set({ status: "pending_cleanup" }).where(eq(environmentLeases.id, f.lease.id));
+        if (obligation === "sync descriptor" || obligation === "saved checkpoint") await db.update(heartbeatRuns).set({
+          runnerProfileJson: obligation === "sync descriptor" ? { nativeWorkspaceSync: { state: "prepared" } } : { sessionCheckpoint: { cursor: 1 } },
+        }).where(eq(heartbeatRuns.id, f.run.id));
+        await expect(f.change()).rejects.toThrow(/workspace|Previous task run/);
+      });
 
     it("allows a workspace change after a settled bootstrap failure with no provider work", async () => {
       const f = await settledNativeTask("native_continuation_requires_reconciliation");
