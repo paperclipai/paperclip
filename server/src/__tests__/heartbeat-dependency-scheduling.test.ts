@@ -18,6 +18,7 @@ import {
   authUsers,
   companyMemberships,
   createDb,
+  closeRegisteredClients,
   documentRevisions,
   documents,
   environmentLeases,
@@ -191,6 +192,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   afterAll(async () => {
     await db?.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
     await db?.$client.end();
+    if (external) await closeRegisteredClients(external, { scope: "database" });
     await tempDb?.cleanup();
   });
 
