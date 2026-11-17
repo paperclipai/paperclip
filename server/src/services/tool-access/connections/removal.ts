@@ -288,8 +288,8 @@ async function removeConnection(
     const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantRows, actor, {
       removingConnection: true,
       canRemoveSecret: async (secretId) => (await classifyConnectionSecrets(connection, [secretId])).owned.includes(secretId),
-      removeSecret: async (secretId) => {
-        if (await secrets.remove(secretId)) secretsRevoked += 1;
+      removeSecret: async (secretId, expectedVersion) => {
+        if (await secrets.remove(secretId, { expectedVersion })) secretsRevoked += 1;
       },
     });
     if (grantsToRevoke.length > 0) {

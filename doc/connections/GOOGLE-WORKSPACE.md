@@ -264,15 +264,14 @@ Order for removing one grant: read the token, commit the grant revocation,
 call the broker, then delete the grant's refresh-token secret.
 
 Deletion is compare-and-delete. Whether the connection owns the secret is
-checked first, outside any transaction. Then one short transaction locks the
-grant row (the lock the managed sign-in callback takes before it writes a
-token) and the secret row, and marks the secret deleted only if the grant is
-still revoked and the secret still has the `latestVersion` that was read. That
-transaction runs only its own queries. After it commits, the secret store
-finishes the deletion. The broker call never runs inside a transaction or
-while a row lock is held. A sign-in that finishes
-during the broker call re-activates the grant and writes a new version, so its
-token is kept, and a later removal sends that new token. During a whole-
+checked first. Then `secrets.remove(secretId, { expectedVersion })` claims the
+row in one statement only if it is not deleted and its `latestVersion` still
+equals the version that was read, and only then runs the usual provider-side
+deletion and row removal. No caller transaction or row lock is held, and the
+broker call never runs inside a transaction. A sign-in that finishes during the
+call either writes a new version of the refresh token or, when Google returns
+none, drops the old secret from the grant; either way the new sign-in's token
+is never deleted, and a later removal sends that new token. During a whole-
 connection removal a sign-in cannot complete after the teardown: the teardown
 deletes the connection's OAuth states, and the callback must consume its state
 in its own transaction. An organization

@@ -27,7 +27,7 @@ export type GoogleAccessRemovalScope = {
   grantId?: string;
   removingConnection: boolean;
   canRemoveSecret?(secretId: string): Promise<boolean>;
-  removeSecret(secretId: string): Promise<unknown>;
+  removeSecret(secretId: string, expectedVersion: number): Promise<unknown>;
 };
 
 function refreshSecretId(grant: RemovedGrant): string | null {
@@ -173,31 +173,12 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
   async function deleteSentSecrets(
     connection: typeof toolConnections.$inferSelect,
     scope: GoogleAccessRemovalScope,
-    sent: Array<{ secretId: string; grantId: string; version: number }>,
+    sent: Array<{ secretId: string; version: number }>,
   ) {
-    for (const { secretId, grantId, version } of sent) {
+    for (const { secretId, version } of sent) {
       try {
         if (scope.canRemoveSecret && !(await scope.canRemoveSecret(secretId))) continue;
-        const claimed = await db.transaction(async (tx) => {
-          const [grant] = await tx.select({ status: connectionGrants.status }).from(connectionGrants)
-            .where(and(eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.id, grantId)))
-            .for("update");
-          const [secret] = await tx.select({ key: companySecrets.key, name: companySecrets.name, latestVersion: companySecrets.latestVersion })
-            .from(companySecrets)
-            .where(and(eq(companySecrets.companyId, connection.companyId), eq(companySecrets.id, secretId), isNull(companySecrets.deletedAt)))
-            .for("update");
-          if (!secret || secret.latestVersion !== version || grant?.status !== "revoked") return false;
-          const now = new Date();
-          await tx.update(companySecrets).set({
-            key: `${secret.key}__deleted__${secretId}`,
-            name: `${secret.name}__deleted__${secretId}`,
-            status: "deleted",
-            deletedAt: now,
-            updatedAt: now,
-          }).where(eq(companySecrets.id, secretId));
-          return true;
-        });
-        if (claimed) await scope.removeSecret(secretId);
+        await scope.removeSecret(secretId, version);
       } catch (error) {
         logger.warn(
           { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
@@ -232,7 +213,7 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
       const held = await secretsHeldElsewhere(connection, grants, candidateSecretIds, scope.removingConnection);
       const seen = new Set<string>();
       const revocations: PreparedRevocation[] = [];
-      const sentSecrets: Array<{ secretId: string; grantId: string; version: number }> = [];
+      const sentSecrets: Array<{ secretId: string; version: number }> = [];
       for (const grant of grants) {
         const secretId = refreshSecretId(grant);
         const refreshRef = (grant.credentialSecretRefs ?? []).find((ref) => ref.configPath === "oauth.refresh_token");
@@ -253,7 +234,7 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
             actorId: actor?.actorId ?? null,
           });
           revocations.push({ kind: "call", subject, token: value });
-          sentSecrets.push({ secretId, grantId: grant.id, version: latestVersion });
+          sentSecrets.push({ secretId, version: latestVersion });
         } catch {
           revocations.push({ kind: "skip", outcome: "credential_unavailable" });
         }

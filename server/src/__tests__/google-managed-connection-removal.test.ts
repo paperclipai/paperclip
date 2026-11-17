@@ -36,6 +36,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { errorHandler } from "../middleware/index.js";
 import { logger } from "../middleware/logger.js";
 import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -492,6 +493,25 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     });
   }
 
+  it.each(["connection", "grant"] as const)("deletes the sent token at the secret provider on %s removal", async (path) => {
+    const fixture = await connectManagedGmail();
+    const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
+    const [refresh] = await db.select({ key: companySecrets.key, provider: companySecrets.provider }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+    expect(refresh!.provider).toBe("local_encrypted");
+    const providerDelete = vi.spyOn(localEncryptedProvider, "deleteOrArchive");
+
+    const response = await request(fixture.app).delete(path === "connection"
+      ? `/api/tool-connections/${fixture.connectionId}`
+      : `/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    const deletedKeys = providerDelete.mock.calls.map(([input]) => (input as { context: { secretKey: string } }).context.secretKey);
+    expect(deletedKeys.filter((key) => key.startsWith(refresh!.key))).toHaveLength(1);
+    const [row] = await db.select({ id: companySecrets.id }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+    expect(row).toBeUndefined();
+    if (path === "connection") expect(response.body.removal.secretsRevoked).toBe(2);
+  });
+
   it.each(["connection", "grant"] as const)("completes a %s removal on a database pool of one connection", async (path) => {
     const fixture = await connectManagedGmail();
     const single = createDb(tempDb!.connectionString, { maxConnections: 1 });
@@ -581,16 +601,12 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(fixture.connector.revoke).toHaveBeenCalledWith(expect.objectContaining({ token: "renewed-refresh-token-do-not-log" }));
   });
 
-  it.each(["the grant is signed in again", "the token is replaced"] as const)("keeps the refresh token when %s while Paperclip Cloud answers", async (race) => {
+  it("keeps the refresh token when its version changes while Paperclip Cloud answers", async () => {
     const fixture = await connectManagedGmail();
     const refreshSecretId = fixture.grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!.secretId;
     fixture.connector.revoke.mockImplementation(async () => {
-      if (race === "the grant is signed in again") {
-        await db.update(connectionGrants).set({ status: "active", revokedAt: null }).where(eq(connectionGrants.id, fixture.grant.id));
-      } else {
-        const [row] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
-        await db.update(companySecrets).set({ latestVersion: row!.latestVersion + 1 }).where(eq(companySecrets.id, refreshSecretId));
-      }
+      const [row] = await db.select({ latestVersion: companySecrets.latestVersion }).from(companySecrets).where(eq(companySecrets.id, refreshSecretId));
+      await db.update(companySecrets).set({ latestVersion: row!.latestVersion + 1 }).where(eq(companySecrets.id, refreshSecretId));
       return { outcome: "revoked" };
     });
 

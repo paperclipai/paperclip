@@ -1,5 +1,5 @@
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
-import { secretService } from "../../secrets.js";
+import type { secretService } from "../../secrets.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
 import { toConnectionGrant } from "./projection.js";
@@ -21,9 +21,10 @@ type GrantDependencies = {
   assertSecretRefs: ReturnType<typeof createConnectionCredentialValidation>;
   vercelConnect: VercelConnectClient | null;
   currentCloudConnector: () => PaperclipCloudConnector | null;
+  secrets: Pick<ReturnType<typeof secretService>, "remove">;
 };
 
-export function createConnectionGrants(db: Db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector }: GrantDependencies) {
+export function createConnectionGrants(db: Db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets }: GrantDependencies) {
   const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
   return {
     listConnectionGrants: async (idOrUid: string, companyId?: string) => {
@@ -511,7 +512,7 @@ replaceConnectionGrantMembers: async (
       const providerAccessRemoval = await managedGoogleAccess.prepare(connection, [currentGrant], actor, {
         grantId: currentGrant.id,
         removingConnection: false,
-        removeSecret: (secretId) => secretService(db).remove(secretId),
+        removeSecret: (secretId, expectedVersion) => secrets.remove(secretId, { expectedVersion }),
       });
       if (
         connection.credentialSource === "vercel_connect" &&
