@@ -9,6 +9,8 @@ import type {
   ToolConnectionInstall,
   ToolConnectionInstallSnapshot,
   ToolConnectionRemovalSummary,
+  ToolConnectionContentDeletion,
+  ToolConnectionStoredContent,
   ConnectToolAppResult,
   ConnectToolApp,
   FinishToolAppResult,
@@ -429,10 +431,16 @@ export const toolsApi = {
     api.post<RailwaySshSetup | null>(`/tool-connections/${connectionId}/railway/ssh`, input),
   // Removal is a credential-revoking teardown (PAP-17119), so the response
   // carries the cleanup receipt alongside the archived connection.
-  archiveConnection: (connectionId: string) =>
-    api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary }>(
-      `/tool-connections/${connectionId}`,
+  archiveConnection: (connectionId: string, options: { deleteStoredContent?: boolean } = {}) =>
+    api.delete<ToolConnection & { removal: ToolConnectionRemovalSummary; contentDeletion?: ToolConnectionContentDeletion }>(
+      `/tool-connections/${connectionId}${options.deleteStoredContent ? "?deleteStoredContent=true" : ""}`,
     ),
+  getStoredContent: (connectionId: string) =>
+    api.get<ToolConnectionStoredContent>(`/tool-connections/${connectionId}/stored-content`),
+  deleteStoredContent: (connectionId: string) =>
+    api.post<{ deletion: ToolConnectionContentDeletion }>(`/tool-connections/${connectionId}/stored-content/deletion`, {}),
+  getStoredContentDeletion: (connectionId: string) =>
+    api.get<{ deletion: ToolConnectionContentDeletion | null }>(`/tool-connections/${connectionId}/stored-content/deletion`),
   checkConnectionHealth: (connectionId: string) =>
     api.post<ToolConnectionHealthCheckResult>(`/tool-connections/${connectionId}/health-check`, {}),
   reconnectConnection: (connectionId: string, credentialValues: Record<string, string>) =>

@@ -969,10 +969,11 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     { fromDefault: false, mode: "isolated_workspace" as const, fresh: false, portable: true, verify: true },
     { fromDefault: false, mode: "isolated_workspace" as const, fresh: false, portable: true, verify: true, refuse: true },
     { fromDefault: false, mode: "isolated_workspace" as const, fresh: false, portable: true, verify: true, restart: true },
-  ])("prepares managed storage with the selected Launcher (fromDefault: $fromDefault, mode: $mode, fresh: $fresh, portable: $portable, replace: $replace, replaceAfterPrepare: $replaceAfterPrepare, verify: $verify, refuse: $refuse, restart: $restart)", async ({ fromDefault, mode: defaultMode, fresh, portable, replace, replaceAfterPrepare, verify, refuse, restart }) => {
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: false, portable: false, environmentDrift: true },
+  ])("prepares managed storage with the selected Launcher (fromDefault: $fromDefault, mode: $mode, fresh: $fresh, portable: $portable, replace: $replace, replaceAfterPrepare: $replaceAfterPrepare, verify: $verify, refuse: $refuse, restart: $restart, environmentDrift: $environmentDrift)", async ({ fromDefault, mode: defaultMode, fresh, portable, replace, replaceAfterPrepare, verify, refuse, restart, environmentDrift }) => {
     const { input, source, issue } = await fixture(true);
     if (portable) input.agent.adapterType = "paperclip_runner";
-    const pluginKey = `test.managed-storage-${fromDefault}-${defaultMode}-${fresh}-${portable}${replace ? "-replacement" : replaceAfterPrepare ? "-late-replacement" : refuse ? "-refuse" : restart ? "-restart" : verify ? "-verify" : ""}`;
+    const pluginKey = `test.managed-storage-${fromDefault}-${defaultMode}-${fresh}-${portable}${replace ? "-replacement" : replaceAfterPrepare ? "-late-replacement" : refuse ? "-refuse" : restart ? "-restart" : verify ? "-verify" : environmentDrift ? "-environment-drift" : ""}`;
     const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: "test-storage", version: "1.0.0", apiVersion: 1, status: "ready", categories: ["workspace"],
       manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Test", categories: ["workspace"],
         workspaceProvider: { freshWorkspaceVersion: 1, finalizationVersion: 1, workspaceVerificationVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(fromDefault ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe", "environment.drivers.register"],
@@ -1195,6 +1196,27 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
     expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : fromDefault ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
+    if (environmentDrift) {
+      const fingerprintOf = (row: typeof workspace) => (row.metadata?.configFingerprint as { workspaceHash: string }).workspaceHash;
+      const freshnessFor = async (runId: string) => (await db.select().from(workspaceOperations)
+        .where(eq(workspaceOperations.heartbeatRunId, runId))).filter(operation => operation.phase === "workspace_config_freshness");
+      await db.update(environments).set({ config: { pluginKey, driverKey: "tasks", driverConfig: { template: "next" } } })
+        .where(eq(environments.id, environment.id));
+      input.environment.selectedEnvironmentForConfig = await environmentService(db).getById(environment.id);
+      await reuse(input, toExecutionWorkspace(workspace));
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached execution handoff");
+      const drifted = await freshnessFor(input.run.id);
+      expect(drifted).toHaveLength(1);
+      expect(drifted[0].metadata).toMatchObject({ action: "refresh", changedCategories: ["environment"], workspaceReused: true });
+      const [refreshed] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+      expect(fingerprintOf(refreshed)).not.toBe(fingerprintOf(workspace));
+      await reuse(input, toExecutionWorkspace(refreshed));
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("reached execution handoff");
+      expect(await freshnessFor(input.run.id)).toEqual([]);
+      const [settled] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+      expect(fingerprintOf(settled)).toBe(fingerprintOf(refreshed));
+      return;
+    }
     if (portable) {
       const finalization = { runId: input.run.id, agentId: input.agent.id };
       const plan = await resolvePluginWorkspaceFinalization(db, workspace, finalization);

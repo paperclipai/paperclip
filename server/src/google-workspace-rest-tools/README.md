@@ -9,7 +9,8 @@ the server package. It is not a separate npm package, so nothing new is
 published.
 
 This release has three Gmail tools: `get_message`, `search_threads` and
-`create_draft`. There is no send tool, and none may be added.
+`create_draft`. There is no send tool, and none may be added. It also has all
+nine allowlisted Calendar tools (see "Calendar tools" below).
 
 ## Why this exists, and why it is temporary
 
@@ -51,8 +52,11 @@ so they can be deleted cleanly when that happens.
   error or HTTP 502/503/504. **It never retries a write.** A write that fails
   after it was sent (network error, dropped connection, timeout, caller
   cancellation, HTTP 5xx, or a success answer that is too large or not JSON)
-  says that the change may or may not have been made.
-- **One tool, one file.** Each tool in `gmail/` is a set of pure functions
+  says that the change may or may not have been made. Every method other than
+  GET (POST, PATCH, PUT, DELETE) is a write; the only exception is a POST the
+  request marks `readOnly` (Calendar's free/busy query). `www.googleapis.com`
+  is allowed only under `/calendar/v3/`, checked after URL normalization.
+- **One tool, one file.** Each tool in `gmail/` and `calendar/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
 - **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
@@ -244,6 +248,146 @@ names and scopes and needs no change.
   messages, not Google's raw error text (except for 400 and 403 messages,
   trimmed to one line).
 
+## Calendar tools
+
+Names, input fields, enums, result shapes and annotations come from Google's
+Calendar MCP reference
+(<https://developers.google.com/workspace/calendar/api/v3/reference/mcp>,
+recorded 2026-11-17). All calls go to the Calendar REST API v3 at
+`https://www.googleapis.com/calendar/v3/`. Scopes below are the narrowest
+one each REST call accepts among those `toolScopes.calendar` allows.
+
+| Tool | REST calls | Works with |
+| --- | --- | --- |
+| `list_calendars` | `calendarList.list` | `calendar.calendarlist.readonly` |
+| `get_event` | `events.get` | `calendar.events.readonly` or `calendar.events` |
+| `list_events` | `events.list` (plus a one-field `events.list` for the calendar's time zone when a time has no offset and no `timeZone` is given) | `calendar.events.readonly` or `calendar.events` |
+| `search_events` | `events.list` with `q` on `primary` | `calendar.events.readonly` or `calendar.events` |
+| `suggest_time` | `freeBusy.query`; without the free/busy permission, `events.list` on each attendee's calendar; a one-field `events.list` on `primary` for the time zone when none is given | `calendar.events.freebusy`, or `calendar.events.readonly` / `calendar.events` with the fallback |
+| `create_event` | `events.insert` (plus the time zone read for a timed event without `timeZone`) | `calendar.events` |
+| `update_event` | `events.get`, then `events.patch` with `If-Match` | `calendar.events` |
+| `delete_event` | `events.get`, then `events.delete` | `calendar.events` |
+| `respond_to_event` | `events.get`, then `events.patch` of `attendees` with `If-Match` | `calendar.events` |
+
+`events.list` and `events.get` accept `calendar.events.freebusy`,
+`calendar.events.readonly` and `calendar.events`, so the time zone read works
+for every grant. `freeBusy.query` does not accept `calendar.events`, which is
+why `suggest_time` has a fallback (see open questions). Google's reference
+for `freeBusy.query`
+(<https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query>,
+recorded 2026-11-17) says: "This request allows authorization with at least
+one of the following scopes:" and lists only
+`https://www.googleapis.com/auth/calendar.readonly`,
+`https://www.googleapis.com/auth/calendar`,
+`https://www.googleapis.com/auth/calendar.events.freebusy` and
+`https://www.googleapis.com/auth/calendar.freebusy`.
+
+### Time handling
+
+- Times without an offset are read in `timeZone` when given, otherwise in the
+  event's own time zone (`update_event`), otherwise in the calendar's time zone
+  read from Google. A time zone is never guessed, and the server's own zone is
+  never used. Unknown or non-IANA names (including `+05:00`) are refused.
+- A stated offset (`Z`, `-07:00`) is always used as given.
+- A local time that does not exist (DST spring forward) moves forward by the
+  gap; a repeated local time (DST fall back) takes the first occurrence. This
+  is the same rule as JavaScript Temporal's `compatible`.
+- Timed events are sent as `dateTime` with an explicit offset plus `timeZone`,
+  so Google never has to resolve a local time. Arithmetic uses `Intl` only; no
+  date library.
+- All-day events (`allDay: true`) use only the dates. The end is exclusive, as
+  in Google Calendar: an end on the start date, or an end at midnight, means
+  through the day before; an end later in a day includes that day.
+- `list_events` defaults to now through 7 local days later (7 × 24 hours when
+  no time zone was needed). Recurring events are expanded into occurrences
+  (`singleEvents=true`).
+- `update_event`: changing only the start keeps the elapsed duration; changing
+  only `timeZone` keeps the same moment and shows it in the new zone; changing
+  only the start of an all-day event keeps its number of days.
+
+### Notifications
+
+Write tools follow the defaults Google's MCP reference documents:
+`create_event`, `update_event` and `delete_event` default to `ALL` (Google
+emails every attendee); `respond_to_event` defaults to `EXTERNAL_ONLY`.
+`NOTIFICATION_LEVEL_UNSPECIFIED` means the same default. `NONE`,
+`EXTERNAL_ONLY` and `ALL` map to REST `sendUpdates=none|externalOnly|all`,
+and `sendUpdates` is always sent explicitly. Each tool description says what
+its default sends.
+
+### How `suggest_time` works
+
+1. Resolve the time zone (see above) and the range; at most 62 days.
+2. Read busy times for every attendee with one `freeBusy.query` (a read, so it
+   may be retried once). If Google answers that the grant lacks the free/busy
+   permission, read each attendee's calendar with `events.list` instead,
+   counting events that are not cancelled, not marked free, and not declined
+   by the calendar's owner; all-day events count from midnight to midnight in
+   that calendar's zone.
+3. If any attendee's availability cannot be read (free/busy errors, not
+   shared, not found), return an error naming them. It never suggests a time
+   from partial data.
+4. Merge all busy times, take the free gaps inside the range, and intersect
+   them with the allowed daily windows: `startHour` to `endHour` local time
+   (default the whole day; `24:00` means midnight), skipping Saturdays and
+   Sundays when `excludeWeekends` is set. `endHour` must be later than
+   `startHour`; overnight windows are not supported.
+5. Return free periods at least `durationMinutes` long (default 30), earliest
+   first, at most `preferences.pageSize` (default 5, at most 50). Each slot is
+   a whole free period, not split into meeting-length pieces, and its
+   `start`/`end` are in the resolved zone.
+
+Limits: attendees whose calendars are not shared with the user at all make the
+call fail rather than be ignored; there is no ranking by preference beyond
+earliest first; working hours and out-of-office settings are not read.
+
+### Differences from Google's Calendar MCP tools
+
+- **Time zone when none is given.** Google says its server resolves the
+  user's time zone. Here it is the target calendar's time zone (the primary
+  calendar for `suggest_time`), read from `events.list`, since the user
+  settings API needs a scope outside the allowlist.
+- **`search_events`** is keyword search (REST `q`: title, description,
+  location, attendees, organizer, every term must match) on the primary
+  calendar across all dates, not semantic search. A recurring series is
+  returned once, as the series. Default page size 25.
+- **`list_events` `orderBy: startTimeDesc`.** REST only sorts ascending, so
+  this reads every matching page (up to 2,000 events; more is an error asking
+  for a narrower range), reverses it, and pages by offset.
+- **`list_events` page tokens** are ours (`pc1.` plus base64url JSON). They
+  carry the first page's resolved time range, so later pages use the same
+  range even when it defaulted to "now", plus Google's page token or the
+  newest-first offset. A token from another order, or a raw Google token, is
+  refused.
+- **`create_event`** does not add the signed-in user as an attendee when
+  others are invited (Google's tool does on the primary calendar); learning
+  the user's address needs a scope outside the allowlist.
+- **`delete_event` refuses a whole recurring series (deliberate).** REST
+  `events.delete` and Google's tool delete the whole series when given the
+  series' ID. Here, if the event read before deletion has `recurrence` and no
+  `recurringEventId`, the tool returns an error asking for one occurrence's
+  ID (from `list_events`) and sends no delete. The person approving the call
+  sees only an event ID, and a whole series is a much larger change than it
+  looks. Single events and single occurrences are deleted as usual, one ID per
+  call, and the result is the event as read before deleting, with
+  `status: cancelled`.
+- **`update_event` and `respond_to_event` on a recurring event.** A series'
+  ID changes (or responds for) the whole series; one occurrence's ID changes
+  only that occurrence. Both descriptions say so, and the result shows which:
+  a series has `recurrence` and no `recurringEventId`; an occurrence has
+  `recurringEventId`.
+- **`update_event` and `respond_to_event`** read the event first and patch
+  with `If-Match`. If the event changed in between, nothing is changed and the
+  tool says so. `update_event` with no changes returns the event without
+  writing.
+- **`respond_to_event`** needs the user to be an attendee on that calendar's
+  copy (`self: true`); otherwise it refuses without writing.
+- **`googleMeetUrl`** accepts only `https://meet.google.com/xxx-xxxx-xxx` links
+  or bare meeting IDs.
+- **Event results** omit `label` and `taskId` (not in REST). `availability`
+  comes from REST `transparency`; `conferenceUrl` from `hangoutLink` or the
+  video entry point.
+
 ## Open questions
 
 - The Gmail allowlist in `toolScopes` names `get_draft`, `list_threads` and
@@ -258,6 +402,15 @@ names and scopes and needs no change.
   Without that, calls return the `api_disabled` tool error.
 - With `paperclip_rest`, `tools/list` no longer proves the token works. A live
   health check needs a cheap REST probe (for example Gmail `users.getProfile`).
+  Calendar has `probeCalendar()` in `calendar/index.ts` (one
+  `calendarList.list` with `maxResults=1`), not yet exported from `index.ts`.
+- `freeBusy.query` does not accept `calendar.events`, and the read & write
+  Calendar selection grants `calendar.calendarlist.readonly` and
+  `calendar.events` only (the `calendar.events` → `calendar.events.freebusy`
+  implication in `googleWorkspaceEffectiveScopes` is ours, not Google's). Those
+  users get the `events.list` fallback, which cannot see coworkers who share
+  only free/busy. Adding `calendar.events.freebusy` (already one of the 14
+  submitted scopes) to the `calendar.write` profile would fix that.
 
 ## Removal procedure
 
@@ -274,5 +427,5 @@ names and scopes and needs no change.
 cd server && npx vitest run src/google-workspace-rest-tools
 ```
 
-Test fixtures in `fixtures/` and `gmail/fixtures/` are synthetic, in the shape
+Test fixtures in `fixtures/`, `gmail/fixtures/` and `calendar/fixtures/` are synthetic, in the shape
 of Google's REST responses. They contain no real mail, addresses or IDs.

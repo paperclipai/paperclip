@@ -18,6 +18,7 @@ import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation
 import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
 import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
+import { registerToolConnectionContentDeletionWork } from "./services/tool-connection-content-deletion-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
 import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
@@ -1446,6 +1447,10 @@ async function startServerWithDatabaseTeardown(
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   trackHeartbeatSchedulerWork(providerTraceRetentionWork.ready);
   server.on("close", providerTraceRetentionWork.stop);
+  const toolConnectionContentDeletionWork = registerToolConnectionContentDeletionWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isWarmStandby());
+  trackHeartbeatSchedulerWork(toolConnectionContentDeletionWork.ready);
+  server.on("close", toolConnectionContentDeletionWork.stop);
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
   const nativeRunnerEvidenceRetentionWorker = config.nativeHarnessBackupExpirationEnabled
@@ -2276,6 +2281,7 @@ async function startServerWithDatabaseTeardown(
       await runEvidenceMigrationWork?.stop();
     });
     await preDrain.run("provider_trace_retention_stop", () => providerTraceRetentionWork.stop());
+    await preDrain.run("tool_connection_content_deletion_stop", () => toolConnectionContentDeletionWork.stop());
     await preDrain.run("skill_version_retention_dispose", async () => {
       await skillVersionRetentionWorker?.dispose();
     });

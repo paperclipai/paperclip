@@ -291,3 +291,4 @@ export { budgetEvaluationWork } from "./budget_evaluation_work.js";
 export { tailscaleConnections } from "./tailscale_connections.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";
 export { linkPreviews } from "./link_previews.js";
+export { toolConnectionContentDeletions } from "./tool_connection_content_deletions.js";

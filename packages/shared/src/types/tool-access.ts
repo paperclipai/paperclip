@@ -113,6 +113,7 @@ export interface ToolRedactedValueSummary {
   sha256?: string | null;
   redactedFields?: string[];
   artifactId?: string | null;
+  contentDeletedAt?: string;
 }
 
 export type VercelConnectPrincipalMode = "app" | "user";
@@ -431,6 +432,40 @@ export interface ToolConnectionRemovalSummary {
 export interface ToolConnectionRemovalResult {
   connection: ToolConnection;
   removal: ToolConnectionRemovalSummary;
+}
+
+export interface ToolConnectionStoredContentCounts {
+  toolCalls: number;
+  approvals: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+}
+
+export interface ToolConnectionContentDeletionCounts {
+  toolCalls: number;
+  approvals: number;
+  auditEvents: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+  itemsInProgress: number;
+}
+
+export type ToolConnectionContentDeletionStatus = "pending" | "completed";
+
+export interface ToolConnectionContentDeletion {
+  id: string;
+  status: ToolConnectionContentDeletionStatus;
+  requestedAt: string;
+  completedAt: string | null;
+  retrying: boolean;
+  counts: ToolConnectionContentDeletionCounts;
+}
+
+export interface ToolConnectionStoredContent {
+  stored: ToolConnectionStoredContentCounts;
+  deletion: ToolConnectionContentDeletion | null;
 }
 
 export type ConnectionTokenScope = string | string[];
