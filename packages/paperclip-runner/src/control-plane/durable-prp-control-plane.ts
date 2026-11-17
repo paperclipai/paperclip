@@ -2864,23 +2864,25 @@ export class DurablePrpControlPlane {
   acceptRelaunchedRunner(
     bootstrapTicket: string,
     runner: { version: string; digest: string },
-    parked: { version: string; digest: string } = { version: this.#expectedRunnerVersion, digest: this.#expectedRunnerDigest },
+    parked: { version: string; digest: string } | null = { version: this.#expectedRunnerVersion, digest: this.#expectedRunnerDigest },
   ): void {
     this.#store.assertWritable();
+    const expected = runner.version === this.#expectedRunnerVersion && runner.digest === this.#expectedRunnerDigest;
     if (!stableIdPattern.test(runner.version) || !runnerDigestPattern.test(runner.digest)
-      || !runnerVersionCanResume(runner.version, parked.version)) {
+      || (parked === null ? !expected : !runnerVersionCanResume(runner.version, parked.version))) {
       throw new Error("native_runner_relaunched_build_unaccepted");
     }
-    if (runner.version === this.#expectedRunnerVersion && runner.digest === this.#expectedRunnerDigest) return;
-    const ticket = this.#store.state.tickets[credentialMaterial(bootstrapTicket).credentialId];
-    if (this.#connections.size !== 0 || !ticket || ticket.usedAt !== null
+    if (expected) return;
+    const credentialId = credentialMaterial(bootstrapTicket).credentialId;
+    const ticket = this.#store.state.tickets[credentialId];
+    if (this.activeRunnerConnectionCount() !== 0 || !ticket || ticket.usedAt !== null
       || canonicalJson(ticket.identity) !== canonicalJson(this.#identity)
       || ticket.runnerVersion !== this.#expectedRunnerVersion || ticket.runnerDigest !== this.#expectedRunnerDigest) {
       throw new Error("native_runner_relaunched_build_unaccepted");
     }
-    ticket.runnerVersion = runner.version;
-    ticket.runnerDigest = runner.digest;
-    this.#store.save();
+    const candidate = structuredClone(this.#store.state);
+    candidate.tickets[credentialId] = { ...ticket, runnerVersion: runner.version, runnerDigest: runner.digest };
+    this.#store.commit(candidate);
     this.#expectedRunnerVersion = runner.version;
     this.#expectedRunnerDigest = runner.digest;
   }

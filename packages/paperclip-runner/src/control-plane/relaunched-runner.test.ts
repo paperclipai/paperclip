@@ -79,3 +79,11 @@ it("checks a reported build against the parked build, not only the build Core ex
   core.acceptRelaunchedRunner(ticket, relaunched, newerParked);
   expect(ticketRecord(core)).toMatchObject({ runnerVersion: relaunched.version, runnerDigest: relaunched.digest });
 }));
+
+it("accepts only the build Core already expects when the parked build is unknown", async () => withCore(async core => {
+  const ticket = core.issueBootstrapTicket();
+  core.acceptRelaunchedRunner(ticket, parked, null);
+  expect(() => core.acceptRelaunchedRunner(ticket, { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` }, null))
+    .toThrow("native_runner_relaunched_build_unaccepted");
+  expect(ticketRecord(core)).toMatchObject({ runnerVersion: parked.version, runnerDigest: parked.digest });
+}));

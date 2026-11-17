@@ -5009,14 +5009,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         if (outcome === "unavailable") throw new Error("native_runner_reuse_unavailable");
         if (relaunched) {
           try {
-            if (episode.parked === null) throw new Error("native_runner_relaunched_build_unaccepted");
             core.acceptRelaunchedRunner(episode.ticket!, relaunched, episode.parked);
-          } catch {
-            throw new Error("native_runner_reuse_unavailable");
+            this.#relaunchedRunnerArtifact = structuredClone(relaunched);
+            await Promise.race([core.flushCheckpoint(), deadline, closed]);
+            await Promise.race([settled?.(), deadline, closed]);
+          } catch (error) {
+            if (error instanceof Error && error.message === "native_runner_relaunched_build_unaccepted") {
+              throw new Error("native_runner_reuse_unavailable");
+            }
+            assertPending();
+            if (error === expired) throw error;
+            await Promise.race([new Promise(resolve => setTimeout(resolve, 250)), deadline, closed]);
+            continue;
           }
-          this.#relaunchedRunnerArtifact = structuredClone(relaunched);
-          await Promise.race([core.flushCheckpoint(), deadline, closed]);
-          await Promise.race([settled?.(), deadline, closed]);
         }
         episode.claimed = true;
       }

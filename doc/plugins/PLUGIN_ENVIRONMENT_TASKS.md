@@ -150,7 +150,9 @@ Report that build as `runner: { version, digest }` on the `resumed` result.
 Core accepts the build only when its version can read the parked state. Core
 then expects that build when the Runner authenticates. Core treats any other
 build as `unavailable`. Without `relaunchedRunnerVersion`, start the Runner
-again only on the parked build, and do not add `runner` to the result.
+again only on the parked build, and do not add `runner` to the result. Older
+strict Core schemas reject `resumeRelaunchedRunnerVersion` in a description, so
+advertise it only to a Core version that supports it.
 
 The `resume` result has a closed `outcome`:
 

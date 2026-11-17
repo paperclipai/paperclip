@@ -11243,7 +11243,10 @@ async function executePaperclipNativeSessionAttempt(
       if (remoteWarmRecovery) {
         remoteWarmRecovery.releasedSource = releasedSource;
         if (releasedSource) {
-          const header = await loadNativeRunnerCheckpointHeader(input.db, remoteWarmRecovery.previousExecution.binding).catch(() => null);
+          const header = await loadNativeRunnerCheckpointHeader(input.db, remoteWarmRecovery.previousExecution.binding).catch((error: unknown) => {
+            if (error instanceof Error && error.message === "native_runner_checkpoint_retired") return null;
+            throw error;
+          });
           remoteWarmRecovery.releasedSourceRunner = header ? inspectDurablePrpCheckpointRunner(header) ?? undefined : undefined;
         }
       }
