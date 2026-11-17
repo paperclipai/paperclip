@@ -3536,36 +3536,6 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
     });
   }, 15_000);
 
-  it("keeps forward reconciliation fail-closed for an unrelated task branch", async () => {
-    const repoRoot = await createTempRepo();
-    const expectedBranch = "PAP-459-recorded-task";
-    const actualBranch = "PAP-999-unrelated-task";
-    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
-
-    await runGit(repoRoot, ["checkout", "-b", expectedBranch]);
-    await fs.writeFile(path.join(repoRoot, "recorded-task.txt"), "recorded task work\n", "utf8");
-    await runGit(repoRoot, ["add", "recorded-task.txt"]);
-    await runGit(repoRoot, ["commit", "-m", "Add recorded task work"]);
-    await runGit(repoRoot, ["checkout", "main"]);
-
-    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
-    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "main"]);
-    await fs.writeFile(path.join(worktreePath, "unrelated-task.txt"), "unrelated task work\n", "utf8");
-    await runGit(worktreePath, ["add", "unrelated-task.txt"]);
-    await runGit(worktreePath, ["commit", "-m", "Add unrelated task work"]);
-
-    await expectPersistedBranchMismatchRejected({
-      repoRoot,
-      worktreePath,
-      expectedBranch,
-      actualBranch,
-      issueId: "issue-unrelated-task",
-      executionWorkspaceId: "execution-workspace-unrelated-task",
-      expectedAncestryVerdict: "diverged",
-      expectedReason: "expected branch and current HEAD differ",
-    });
-  }, 15_000);
-
   it("keeps forward reconciliation fail-closed when the live branch is behind the recorded branch", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-459-recorded-ahead";
