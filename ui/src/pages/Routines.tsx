@@ -60,7 +60,6 @@ import {
   FolderChip,
   FolderFormDialog,
   FolderRail,
-  FolderSwatch,
   MobileFolderSheet,
   MoveToMenu,
   folderSearchValue,
@@ -378,7 +377,8 @@ export function Routines() {
   const routinesView = useQueryView(routinesQuery);
   const foldersQuery = useQuery({
     queryKey: queryKeys.folders.list(selectedCompanyId!, "routine"),
-    queryFn: () => foldersApi.list(selectedCompanyId!, "routine"),
+    queryFn: ({ signal }) => foldersApi.list(selectedCompanyId!, "routine", { signal, timeoutMs: 15_000 }),
+    retry: false,
     enabled: !!selectedCompanyId,
   });
   const { data: routineFolders, isLoading: foldersLoading } = foldersQuery;
@@ -704,9 +704,12 @@ export function Routines() {
     },
     [folderFilteredRoutines, query, routineViewState.sortDir, routineViewState.sortField],
   );
+  // A failed initial folder read is not an empty folder collection. Keep
+  // routine rows usable without inventing folder names or changing the saved view.
+  const effectiveGroupBy = routineViewState.groupBy === "folder" && !routineFolders ? "none" : routineViewState.groupBy;
   const routineSections = useMemo(
-    () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById, folderById),
-    [agentById, folderById, projectById, routineViewState.groupBy, sortedRoutines],
+    () => buildRoutineSections(sortedRoutines, effectiveGroupBy, projectById, agentById, folderById),
+    [agentById, folderById, projectById, effectiveGroupBy, sortedRoutines],
   );
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
@@ -837,7 +840,7 @@ export function Routines() {
         sortField={routineViewState.sortField} sortDir={routineViewState.sortDir} groupBy={routineViewState.groupBy}
         onSortChange={(sortField, sortDir) => updateRoutineView({ sortField, sortDir })}
         onGroupChange={groupBy => updateRoutineView({ groupBy, collapsedGroups: [] })}
-        onNewFolder={routineViewState.groupBy === "folder" && !hasRoutineFolders ? () => openCreateFolder() : undefined}
+        onNewFolder={routineViewState.groupBy === "folder" && routineFolders && !hasRoutineFolders ? () => openCreateFolder() : undefined}
         onCreateRoutine={openCreateRoutine}
         tasksHref="/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc"
       />
@@ -856,7 +859,7 @@ export function Routines() {
         </Tabs>
       ) : null}
 
-      {routineViewState.groupBy === "folder" ? (
+      {routineViewState.groupBy === "folder" && routineFolders ? (
         <div className="md:hidden">
           <FolderChip
             result={railFolderResult}
@@ -1175,7 +1178,7 @@ export function Routines() {
             />
           ) : null}
           <div className="min-w-0 flex-1">
-          {routineViewState.groupBy === "folder" && !hasRoutineFolders && !foldersLoading && visibleRoutines.length > 0 ? (
+          {routineViewState.groupBy === "folder" && routineFolders && !hasRoutineFolders && !foldersLoading && visibleRoutines.length > 0 ? (
             <AllUnfiledBanner
               storageKey={`paperclip:routines-folder-nudge:${selectedCompanyId ?? "none"}`}
               itemLabelPlural="routines"
