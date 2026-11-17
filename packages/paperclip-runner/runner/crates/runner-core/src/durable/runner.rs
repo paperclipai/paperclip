@@ -11,7 +11,7 @@ use super::state::{
 };
 use super::transport::{
     current_unix_ms, validate_control_identity, AuthenticatedTransport, ConnectionMetadata,
-    LeaseCredential, RunnerTransportEndpoint, LISTENER_CONTROLLER_SILENCE,
+    LeaseCredential, RunnerTransportEndpoint,
 };
 use super::{BootstrapTicket, DurableRunnerConfig, DurableRunnerError, PROTOCOL};
 
@@ -1208,14 +1208,6 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 transport.receive_queued_json()
             } else {
                 transport.receive_json()
-            };
-            let control_message = match control_message {
-                Ok(None) if transport.listener_controller_silent_for(LISTENER_CONTROLLER_SILENCE) => {
-                    Err(DurableRunnerError::invalid(
-                        "controller sent no frame within the liveness window; listening for a new connection",
-                    ))
-                }
-                other => other,
             };
             control_frame_consumed = matches!(control_message, Ok(Some(_)));
             let source_seq_before_poll = state.highest_source_seq();
@@ -3141,6 +3133,7 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
             turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 

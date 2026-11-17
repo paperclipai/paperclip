@@ -29,6 +29,7 @@ pub const PROTOCOL: &str = "paperclip.runner";
 pub const PROTOCOL_MIN_VERSION: u64 = 1;
 pub const PROTOCOL_VERSION: u64 = 3;
 pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
+pub const DEFAULT_CONTROLLER_SILENCE: Duration = Duration::from_secs(90);
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
@@ -259,6 +260,7 @@ pub struct DurableRunnerConfig {
     /// per_turn`): the process exits with its run, so nothing reuses a provider
     /// generation prepared after its turn settles.
     pub turn_scoped: bool,
+    pub controller_silence: Duration,
 }
 
 impl DurableRunnerConfig {
@@ -440,6 +442,7 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
             turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 

@@ -781,6 +781,7 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         reconnect_grace: None,
         max_runtime: std::time::Duration::from_secs(5),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     }
 }
 
