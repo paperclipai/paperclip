@@ -1,6 +1,7 @@
 import { and, eq, or, sql } from "drizzle-orm";
 import { environmentLeases } from "@paperclipai/db";
 import { notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { notifyNativeEnvironmentSettlement, type NativeEnvironmentSettlementScope } from "./native-environment-settlement-notifications.js";
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -37,6 +38,7 @@ export async function notifyEnvironmentCleanup(transaction: object, scope?: Envi
     await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionFinalization);
     await notifyDeliveryWork(transaction, DELIVERY_QUEUES.executionReplacement);
   }
+  if (scope) await notifyDeferredExecutionWork(transaction, scope);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.environmentCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);
 }
