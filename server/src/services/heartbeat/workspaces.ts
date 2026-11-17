@@ -3034,11 +3034,6 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
   existingWorkspaceMetadata: Record<string, unknown> | null | undefined;
   inferredMetadata?: EffectiveRunWorkspaceConfigMetadata | null;
   nextMetadata: EffectiveRunWorkspaceConfigMetadata | null;
-  /**
-   * A workspace-provider plugin owns the workspace's files, so the run
-   * environment only decides where the runner executes. Environment drift then
-   * cannot invalidate the workspace and is recorded as a refresh.
-   */
   providerOwnedStorage?: boolean;
 }): ExecutionWorkspaceConfigFreshnessDecision {
   if (!input.hasExistingWorkspace) {

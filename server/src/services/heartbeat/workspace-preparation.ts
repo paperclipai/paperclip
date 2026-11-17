@@ -1184,8 +1184,6 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       );
     }
   }
-  // The provider's row still carries the fingerprint it was prepared with;
-  // Core's freshness decision owns this key.
   const coreConfigFingerprint = baseExecutionWorkspaceMetadata?.[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY];
   const nextExecutionWorkspaceMetadata = {
     ...baseExecutionWorkspaceMetadata,

@@ -1197,8 +1197,6 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
     expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : fromDefault ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
     if (environmentDrift) {
-      // The provider owns these files, so a changed environment config is
-      // recorded once and the next run sees no drift.
       const fingerprintOf = (row: typeof workspace) => (row.metadata?.configFingerprint as { workspaceHash: string }).workspaceHash;
       const freshnessFor = async (runId: string) => (await db.select().from(workspaceOperations)
         .where(eq(workspaceOperations.heartbeatRunId, runId))).filter(operation => operation.phase === "workspace_config_freshness");
