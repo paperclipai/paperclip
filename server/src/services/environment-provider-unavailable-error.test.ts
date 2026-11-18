@@ -22,7 +22,7 @@ describe("readTransientEnvironmentProviderFailure", () => {
   });
 
   it.each(["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENETUNREACH",
-    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET"])("treats errno %s as transient", (code) => {
+    "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "CONNECTION_FAILED"])("treats errno %s as transient", (code) => {
     expect(readTransientEnvironmentProviderFailure(Object.assign(new Error("closed"), { code })))
       .toEqual({ errorCode: code });
   });
@@ -177,6 +177,13 @@ describe("readTransientLeaseAcquisitionFailure", () => {
   it("does not retry a definite non-transient status, even with other evidence", () => {
     const refused = Object.assign(new Error("unauthorized", { cause: creationFailure(300_000) }), { status: 401 });
     expect(readTransientLeaseAcquisitionFailure(refused, run)).toBeNull();
+  });
+
+  it("retries a provider connection failure reported across the worker RPC", () => {
+    const rpcError = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "read EADDRNOTAVAIL",
+      data: { schema: "paperclip/environment-acquire-error/v1", providerDiagnostic: { errorCode: "CONNECTION_FAILED" } } });
+    expect(readTransientLeaseAcquisitionFailure(new Error("lease", { cause: rpcError }), run))
+      .toEqual({ errorCode: "CONNECTION_FAILED" });
   });
 
   it("does not retry an error without structured evidence", () => {

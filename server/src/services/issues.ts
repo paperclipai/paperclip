@@ -11023,29 +11023,34 @@ export function issueService(db: Db) {
             executionWorkspaceSettings: issueData.executionWorkspaceSettings,
           });
         }
-        // Self-correcting counter: use MAX(issue_number) + 1 if the counter
-        // has drifted below the actual max, preventing identifier collisions.
-        const [maxRow] = await tx
-          .select({
-            maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)`,
-          })
-          .from(issues)
-          .where(eq(issues.companyId, companyId));
-        const currentMax = maxRow?.maxNum ?? 0;
+        // Standing chats use UUIDs and do not consume execution task numbers.
+        let issueNumber: number | null = null;
+        let identifier: string | null = null;
+        if (!issueData.conversationAgentId) {
+          // Self-correcting counter: use MAX(issue_number) + 1 if the counter
+          // has drifted below the actual max, preventing identifier collisions.
+          const [maxRow] = await tx
+            .select({
+              maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)`,
+            })
+            .from(issues)
+            .where(eq(issues.companyId, companyId));
+          const currentMax = maxRow?.maxNum ?? 0;
 
-        const [company] = await tx
-          .update(companies)
-          .set({
-            issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
-          })
-          .where(eq(companies.id, companyId))
-          .returning({
-            issueCounter: companies.issueCounter,
-            issuePrefix: companies.issuePrefix,
-          });
+          const [company] = await tx
+            .update(companies)
+            .set({
+              issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
+            })
+            .where(eq(companies.id, companyId))
+            .returning({
+              issueCounter: companies.issueCounter,
+              issuePrefix: companies.issuePrefix,
+            });
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+          issueNumber = company.issueCounter;
+          identifier = `${company.issuePrefix}-${issueNumber}`;
+        }
         const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
           tx,
           companyId,
@@ -13698,9 +13703,6 @@ export function issueService(db: Db) {
 
       if (!issue) throw notFound("Issue not found");
 
-      if (issue.conversationAgentId && actor.userId && !(await instanceSettingsService(dbOrTx).getExperimental()).enableAgentChat) {
-        throw unprocessable("Agent Chat is disabled in Experimental settings");
-      }
       await assertAgentInteraction(dbOrTx, {
         companyId: issue.companyId, actorAgentId: actor.agentId, operation: "comment",
         issueId, texts: [body], lock: true,

@@ -22,7 +22,8 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { confirmSandboxRecoveryRestart, hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, prepareStoppedSandboxForRecovery, restoreSandboxStopAfterFailedRestart, settleAbsentSandbox, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { requestSandboxAbsenceProof } from "./sandbox-absence-proof.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
-import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
+import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { TRANSIENT_WORKSPACE_PREPARATION_CODES } from "./failed-preparation-retry.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery, type WorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference, readNativeWorkspaceSyncLocalCwd, resumeNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
@@ -630,7 +631,8 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     and ${agentWakeupRequests.payload}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
   const interruptedPreparation = sql`(${heartbeatRuns.runtimeMode} = 'legacy'
     and (${heartbeatRuns.status} = 'interrupted' or (${heartbeatRuns.status} = 'failed'
-      and ${heartbeatRuns.errorCode} = 'process_lost'
+      and (${heartbeatRuns.errorCode} = 'process_lost' or (${inArray(heartbeatRuns.errorCode, [...TRANSIENT_WORKSPACE_PREPARATION_CODES])}
+        and ${heartbeatRuns.resultJson}#>>'{workspaceRestoreRecovery,schema}' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}))
       and ${heartbeatRuns.resultJson}#>>'{executionRecovery,kind}' = 'bootstrap'
       and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb))
     and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'

@@ -5,6 +5,7 @@ import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
 import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
 import { refreshRecentSubtasks, refreshRecentTaskSummaries } from "../lib/recent-subtasks-refresh";
+import { invalidateInteractionRecordViews } from "../lib/attention-record-views";
 import {
   createContext,
   useCallback,
@@ -1642,6 +1643,9 @@ function invalidateActivityQueries(
       void queryClient.resetQueries({ queryKey });
     }
   } else if (decisionProjectionChanged) {
+    if (action?.startsWith("issue.thread_interaction_")) {
+      invalidateInteractionRecordViews(queryClient, companyId);
+    }
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
     queryClient.invalidateQueries({ queryKey: ["decisions", companyId] });
     queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(companyId) });
