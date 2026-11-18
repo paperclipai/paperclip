@@ -82,6 +82,7 @@ try {
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
     const executable = path.basename(commands[1] ?? "");
+    if (executable === "env") fail("env wrappers are unsupported; invoke the selected native command directly");
     const directEntry = commands.findIndex((value,index) => index > 1 && [path.join(repository,"cli/src/index.ts"),path.join(repository,"cli/dist/index.js")].includes(path.resolve(repository,value)));
     const cliIndex = ["paperclip", "paperclipai"].includes(executable) ? 1
       : ["pnpm", "npm", "npx"].includes(executable) ? commands.findIndex((value, index) => index > 1 && ["paperclip", "paperclipai"].includes(value)) : ["node", "tsx"].includes(executable) ? directEntry : -1;

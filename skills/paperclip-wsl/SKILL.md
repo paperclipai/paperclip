@@ -47,7 +47,10 @@ node skills/paperclip-wsl/scripts/paperclip-wsl.mjs exec pnpm verify
 On Windows, the helper only launches the selected Linux checkout through WSL.
 On Linux, it verifies the checkout, user, instance, native executables and free
 host storage before running the command. Arguments are passed directly,
-including spaces and Unicode. Run Git, installs, builds, database migrations,
+including spaces and Unicode. Invoke native commands directly; inline `env`
+wrappers are rejected because they can override the checked instance selection.
+The helper checks launch configuration; arbitrary trusted programs still own
+their behavior and are not sandboxed. Run Git, installs, builds, database migrations,
 tests and provider processes inside Linux. A Windows editor may edit files.
 When handing off existing edits in a Windows worktree, commit those edits with
 Windows Git. Use Linux Git for the configured Linux checkout.
