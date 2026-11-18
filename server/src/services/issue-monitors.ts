@@ -1,12 +1,53 @@
-import { issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
-import type { issues } from "@paperclipai/db";
+import { isUuidLike, issueExecutionMonitorPolicySchema, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { forbidden, unprocessable } from "../errors.js";
 import type { accessService } from "./access.js";
 import { authorizationDeniedDetails, type AuthorizationActor } from "./authorization.js";
-import { applyIssueMonitorPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, redactIssueMonitorExternalRef, setIssueExecutionPolicyMonitorScheduledBy } from "./issue-execution-policy.js";
+import { applyIssueMonitorPolicyTransition, buildIssueMonitorClearedPatch, normalizeIssueExecutionPolicy, parseIssueExecutionState, redactIssueMonitorExternalRef, setIssueExecutionPolicyMonitorScheduledBy } from "./issue-execution-policy.js";
+import { persistActivity } from "./activity-log.js";
+import { parseObject } from "../adapters/utils.js";
 
 type NormalizedExecutionPolicy = ReturnType<typeof normalizeIssueExecutionPolicy>;
+
+export async function clearSupersededProviderQuotaMonitor(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+  const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
+  if (run.status !== "running" || !run.startedAt || typeof issueId !== "string" || !isUuidLike(issueId)) return null;
+  const [issue] = await db.select().from(issues).where(and(
+    eq(issues.id, issueId), eq(issues.companyId, run.companyId),
+    sql`${issues.executionPolicy}->'monitor'->>'serviceName' = ${PROVIDER_QUOTA_MONITOR_SERVICE_NAME}`,
+  )).for("update");
+  if (!issue) return null;
+  const policy = normalizeIssueExecutionPolicy(issue.executionPolicy);
+  const sourceRunId = parseObject(parseObject(issue.executionPolicy).monitor).externalRef;
+  if (typeof sourceRunId !== "string" || !isUuidLike(sourceRunId) || sourceRunId === run.id) return null;
+  const [source] = await db.select({
+    status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt,
+    issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, run.companyId),
+    eq(heartbeatRuns.agentId, run.agentId),
+  ));
+  if (!source || source.issueId !== issue.id || source.createdAt >= run.createdAt ||
+      !["failed", "timed_out", "interrupted", "cancelled"].includes(source.status)) return null;
+
+  const storedPolicy = { ...issue.executionPolicy };
+  delete storedPolicy.monitor;
+  await db.update(issues).set({
+    ...buildIssueMonitorClearedPatch({ issue, policy, clearReason: "triggered", clearedAt: run.startedAt }),
+    executionPolicy: Object.keys(storedPolicy).length ? storedPolicy : null,
+    updatedAt: run.startedAt,
+  }).where(and(eq(issues.id, issue.id), eq(issues.companyId, run.companyId)));
+  const { publication } = await persistActivity(db, {
+    companyId: run.companyId, actorType: "system", actorId: "heartbeat",
+    agentId: run.agentId, runId: run.id, entityType: "issue", entityId: issue.id,
+    action: "issue.monitor_cleared",
+    details: { reason: "superseded_by_run", sourceRunId },
+    responsibleUserIdOverride: run.responsibleUserId,
+  });
+  return publication;
+}
 
 export function monitorPoliciesEqual(
   left: NormalizedExecutionPolicy | null,
