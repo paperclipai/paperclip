@@ -1,7 +1,8 @@
 import { randomUUID, createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -141,6 +142,34 @@ describe.skipIf(process.platform !== "linux")("native authenticated artifact ins
       }
       expect(signals).toHaveLength(2);
       expect(signals.every(signal => signal.aborted)).toBe(true);
+      expect(await readdir(root)).toEqual([]);
+
+      // Local disk opens its stream with the request signal. A reply that
+      // arrives after the deadline gets an aborted stream, which emits AbortError.
+      const source = join(await mkdtemp(join(tmpdir(), "native-artifact-late-source-")), "late.bin");
+      await writeFile(source, bytes);
+      const lateReply = vi.fn(async (_companyId: string, _key: string, options?: { signal?: AbortSignal }) => {
+        await new Promise(resolve => options!.signal!.addEventListener("abort", resolve, { once: true }));
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return { stream: createReadStream(source, { signal: options!.signal }) };
+      });
+      const uncaught: unknown[] = [];
+      const onUncaught = (error: unknown) => { uncaught.push(error); };
+      process.on("uncaughtException", onUncaught);
+      try {
+        const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workspaceRoot: root, apiToolsEnabled: true,
+          storage: { getObject: lateReply } as unknown as StorageService, storageReadTimeoutMs: 50 });
+        await expect(authority.execute({ tool: "download_artifact", callId: "stall-late-reply",
+          arguments: { artifactId, destination: "stalled.bin", byteSize: bytes.length, sha256 } })).rejects.toThrow(/did not finish.*retry/i);
+        expect(lateReply).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(lateReply.mock.results[0]?.type).toBe("return"));
+        await lateReply.mock.results[0]!.value;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      } finally {
+        process.off("uncaughtException", onUncaught);
+        await rm(dirname(source), { recursive: true, force: true });
+      }
+      expect(uncaught).toEqual([]);
       expect(await readdir(root)).toEqual([]);
     } finally { await rm(root, { recursive: true, force: true }); }
   }, 15_000);

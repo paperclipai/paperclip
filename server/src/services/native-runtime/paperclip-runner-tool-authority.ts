@@ -1749,6 +1749,9 @@ export class PaperclipRunnerToolAuthority {
       try {
         await Promise.race([aborted, (async () => {
           const opened = await (this.binding.storage ?? getStorageService()).getObject(this.binding.companyId, asset.objectKey, { signal });
+          // A reply after the deadline can carry a stream opened with the
+          // aborted signal. Its AbortError must never become uncaught.
+          opened.stream.on("error", () => undefined);
           if (signal.aborted) { opened.stream.destroy(); return; }
           object = opened;
           let length = 0;
