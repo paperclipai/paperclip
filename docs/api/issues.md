@@ -343,6 +343,36 @@ GET /api/issues/{issueId}/documents
 GET /api/issues/{issueId}/documents/{key}
 ```
 
+### Bulk Get By Key
+
+```
+GET /api/companies/{companyId}/issue-documents?key=sentry-case&issueIds={uuid1},{uuid2}
+```
+
+Read one document key across 1–200 task UUIDs. Items follow the requested order;
+duplicate IDs appear once. The result is `{ key, items: [{ issueId, document }] }`.
+Each document has the same body and revision metadata as Get By Key. A readable
+task without the key returns `document: null`. Missing, hidden, foreign-company,
+and unreadable tasks are omitted without revealing whether they exist. Callers
+must check that every requested ID is present before treating a scan as complete.
+Task bridge keys cannot use this company-wide route. Break-glass reads are not supported.
+
+Use `includeBody=false` for current revision IDs, revision numbers, and update
+times without loading document bodies. A helper with cached documents can compare
+their revisions, then fetch bodies only for changed or newly added documents.
+Task-row timestamps alone do not prove that a document is unchanged.
+
+Responses use `Cache-Control: private, no-store`. A response over 8 MiB returns
+`413`; split the IDs into smaller requests. The response is never truncated.
+Body sizes are checked in the database before loading them. Reads use one
+snapshot so a concurrent edit cannot grow an admitted body set. At most two
+reads per actor and eight per server instance can run at once; extra reads
+return `429` with `Retry-After: 1`.
+Native agents can discover this GET with `search_api`, save the whole batch with
+one `save_api_response`, and transfer it with one `download_artifact`. The saved
+artifact supplies its exact `artifactId`, `byteSize`, and `sha256` for the download.
+This replaces per-task document relays; helpers must consume the batch result.
+
 ### Create Or Update
 
 ```
