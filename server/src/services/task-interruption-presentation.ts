@@ -1,3 +1,4 @@
+import { ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, environmentProviderWaitMessage } from "./environment-provider-wait.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { AGENT_DIRECTORY_WAIT_RETRY_REASON, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
@@ -59,6 +60,7 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode" | "startedAt"
     | "scheduledRetryReason" | "createdAt" | "finishedAt" | "processPid" | "processGroupId">> & {
+  environmentProviderWaitName?: string | null;
   /** Due time of the native coordinator's own same-run resume, if one is pending. */
   nativeResumeAt?: Date | null;
   /** When the native coordinator saved this run's terminal failure, if it did. */
@@ -346,6 +348,9 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
       return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
     if (!pending) return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
   }
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON && !system)
+    return { ...base, state: "working", canRetry: false, retryWait: { reason: ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON,
+      message: environmentProviderWaitMessage(run.environmentProviderWaitName ?? null) } };
   if (run.status === "scheduled_retry" && resourceWaitRetryReasons.has(run.scheduledRetryReason ?? "") && !system)
     return { ...base, state: "working" };
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON && !system
@@ -482,6 +487,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       rejectedModel: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
         then ${boundedJsonString(sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'provider'->'model'`, 200)} end`,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      environmentProviderWaitName: sql<string | null>`case when ${heartbeatRuns.scheduledRetryReason} = ${ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON}
+        then ${boundedJsonString(sql`${heartbeatRuns.contextSnapshot}->${ENVIRONMENT_PROVIDER_WAIT_KEY}->'environmentName'`, 200)} end`,
       // Candidate only: the coordinator also pushes nextAttemptAt forward while
       // it defers an ineligible run. The scheduler's own admission check below
       // decides whether this resume is real.
