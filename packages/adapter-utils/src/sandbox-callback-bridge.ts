@@ -90,6 +90,33 @@ const MAX_TRANSIENT_ITERATION_BACKOFF_MS = 5_000;
 // slow route cannot hold the poll loop. This caps those concurrent reads: each
 // one is a sandbox exec, and a full queue must not open dozens at once.
 const BRIDGE_INTAKE_CONCURRENCY = 4;
+// Blocking wait (TECH-9007). When the queue client can wait inside the sandbox,
+// the listing exec blocks there until a new request file appears, up to this
+// window, instead of the host listing every poll interval. One exec then covers
+// up to 5 s of an idle run instead of about 15. The window is also capped well
+// under the iteration timeout and the watchdog, so a healthy wait trips neither.
+const BRIDGE_IDLE_WAIT_MS = 5_000;
+// How often the in-sandbox wait loop checks the request directory. This is
+// pod-local work (a shell glob and a `sleep`), not a host exec, so it can be
+// faster than the host poll interval: an idle run sees a new request within
+// about 50 ms plus the exec return.
+const BRIDGE_IN_SANDBOX_WAIT_STEP_MS = 50;
+
+// Sandbox providers whose bridge control commands each run as an independent
+// exec, so a control command that blocks for seconds holds up nothing else.
+// Kubernetes opens one exec WebSocket per command. Providers outside this set
+// keep the list-and-sleep poll: Cloudflare, for example, routes every bridge
+// command to one named session, where a 5 s wait could delay request reads and
+// response writes queued behind it.
+const SANDBOX_BLOCKING_WAIT_PROVIDER_KEYS: ReadonlySet<string> = new Set(["kubernetes"]);
+
+/**
+ * Whether the file bridge and the run-log tail should wait inside the sandbox
+ * (TECH-9007) for this provider, instead of polling from the host.
+ */
+export function sandboxProviderSupportsBlockingBridgeWait(providerKey: string | null | undefined): boolean {
+  return typeof providerKey === "string" && SANDBOX_BLOCKING_WAIT_PROVIDER_KEYS.has(providerKey);
+}
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 export const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -410,6 +437,16 @@ export interface SandboxCallbackBridgeQueueClient {
   // external implementation stays compatible without a change.
   makeDirs?(remotePaths: string[]): Promise<void>;
   listJsonFiles(remotePath: string): Promise<string[]>;
+  // Optional blocking listing (TECH-9007). Wait inside the sandbox until a
+  // `.json` file that is not in `ignore` appears, or `waitMs` passes, then
+  // return the same sorted listing `listJsonFiles` returns. One exec then
+  // covers a whole idle window instead of one exec per poll interval. A client
+  // without it keeps the list-and-sleep loop. The command-managed client adds
+  // it only when created with `waitInSandbox: true`.
+  waitForJsonFiles?(
+    remotePath: string,
+    options: { waitMs: number; ignore?: readonly string[] },
+  ): Promise<string[]>;
   fileSize?(remotePath: string): Promise<number>;
   readTextFile(remotePath: string, maxBytes?: number): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
@@ -772,11 +809,28 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   remoteCwd: string;
   timeoutMs?: number | null;
   shellCommand?: "bash" | "sh" | null;
+  // Add `waitForJsonFiles` (TECH-9007). Set it only for a provider whose
+  // control commands run independently; see
+  // `sandboxProviderSupportsBlockingBridgeWait`.
+  waitInSandbox?: boolean;
 }): SandboxCallbackBridgeQueueClient {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
   const shellCommand = preferredShellForSandbox(input.shellCommand);
   const runChecked = async (action: string, script: string) =>
     requireSuccessfulResult(action, await runShell(input.runner, input.remoteCwd, script, timeoutMs, shellCommand));
+  const listScript = (remotePath: string) => [
+    `if [ -d ${shellQuote(remotePath)} ]; then`,
+    `  for file in ${shellQuote(remotePath)}/*.json; do`,
+    `    [ -f "$file" ] || continue`,
+    "    basename \"$file\"",
+    "  done",
+    "fi",
+  ];
+  const parseListing = (stdout: string) => stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .sort((left, right) => left.localeCompare(right));
 
   return {
     makeDir: async (remotePath) => {
@@ -793,23 +847,48 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       const result = await runShell(
         input.runner,
         input.remoteCwd,
-        [
-          `if [ -d ${shellQuote(remotePath)} ]; then`,
-          `  for file in ${shellQuote(remotePath)}/*.json; do`,
-          `    [ -f "$file" ] || continue`,
-          "    basename \"$file\"",
-          "  done",
-          "fi",
-        ].join("\n"),
+        listScript(remotePath).join("\n"),
         timeoutMs,
         shellCommand,
       );
       requireSuccessfulResult(`list ${remotePath}`, result);
-      return result.stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0)
-        .sort((left, right) => left.localeCompare(right));
+      return parseListing(result.stdout);
+    },
+    waitForJsonFiles: input.waitInSandbox !== true ? undefined : async (remotePath, options) => {
+      // Keep the wait well inside the exec timeout, so a healthy wait never
+      // times out on the host.
+      const waitMs = Math.max(0, Math.min(Math.trunc(options.waitMs), Math.floor(timeoutMs / 2)));
+      const rounds = Math.floor(waitMs / BRIDGE_IN_SANDBOX_WAIT_STEP_MS);
+      const ignore = ` ${(options.ignore ?? []).join(" ")} `;
+      const result = await runShell(
+        input.runner,
+        input.remoteCwd,
+        [
+          `dir=${shellQuote(remotePath)}`,
+          `ignore=${shellQuote(ignore)}`,
+          "n=0",
+          `while [ "$n" -lt ${rounds} ]; do`,
+          "  found=0",
+          "  for file in \"$dir\"/*.json; do",
+          "    [ -f \"$file\" ] || continue",
+          "    name=${file##*/}",
+          "    case \"$ignore\" in *\" $name \"*) continue ;; esac",
+          "    found=1",
+          "    break",
+          "  done",
+          "  [ \"$found\" = 1 ] && break",
+          // A `sleep` without fractional seconds fails at once: fall back to
+          // whole seconds and count them as 20 rounds, so the loop stays bounded
+          // and never spins.
+          `  if sleep ${BRIDGE_IN_SANDBOX_WAIT_STEP_MS / 1000} 2>/dev/null; then n=$((n + 1)); else sleep 1; n=$((n + ${Math.round(1000 / BRIDGE_IN_SANDBOX_WAIT_STEP_MS)})); fi`,
+          "done",
+          ...listScript(remotePath),
+        ].join("\n"),
+        timeoutMs,
+        shellCommand,
+      );
+      requireSuccessfulResult(`wait for ${remotePath}`, result);
+      return parseListing(result.stdout);
     },
     fileSize: async (remotePath) => {
       const result = await runChecked(`size ${remotePath}`, `wc -c < ${shellQuote(remotePath)}`);
@@ -1084,6 +1163,18 @@ export async function startSandboxCallbackBridgeWorker(input: {
   }
 
   let stopping = false;
+  // Set while the loop is in a blocking wait. `stop()` calls it, so the wait
+  // does not hold the drain.
+  let wakeForStop: (() => void) | null = null;
+  // Blocking wait window (TECH-9007): 0 when the client cannot wait in the
+  // sandbox, which keeps the list-and-sleep loop.
+  const idleWaitMs = input.client.waitForJsonFiles
+    ? Math.min(
+        BRIDGE_IDLE_WAIT_MS,
+        Math.floor(iterationTimeoutMs / 2),
+        Math.floor(watchdogTimeoutMs / 4),
+      )
+    : 0;
   let inFlight = 0;
   let settled = false;
   let stopDeadline = Number.POSITIVE_INFINITY;
@@ -1882,12 +1973,44 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let consecutivePollFailures = 0;
       while (true) {
         let fileNames: string[];
+        // Wait in the sandbox while the run is live. During the stop drain use
+        // plain listings, so the drain timing stays exactly as before.
+        // After a failed iteration, probe with plain listings until one
+        // succeeds, so recovery and the watchdog behave as before.
+        const waiting = idleWaitMs > 0 && !stopping && consecutivePollFailures === 0;
+        const listStartedAt = Date.now();
         try {
-          fileNames = await withTimeout(
-            input.client.listJsonFiles(directories.requestsDir),
-            iterationTimeoutMs,
-            "Sandbox callback bridge list requests",
-          );
+          if (waiting && input.client.waitForJsonFiles) {
+            // Files that already have an attempt stay in the queue until their
+            // response is written. Ignore them, or the wait returns at once.
+            const ignore = [...new Set([...inFlightRequestGuards.keys(), ...dispatchedFiles])];
+            // The exec gets the same overhead budget as a plain listing on top
+            // of the wait window.
+            const waitCall = withTimeout(
+              input.client.waitForJsonFiles(directories.requestsDir, { waitMs: idleWaitMs, ignore }),
+              idleWaitMs + iterationTimeoutMs,
+              "Sandbox callback bridge wait for requests",
+            );
+            const woke = await new Promise<string[] | null>((resolve, reject) => {
+              wakeForStop = () => resolve(null);
+              waitCall.then(resolve, reject);
+            }).finally(() => {
+              wakeForStop = null;
+            });
+            if (woke === null) {
+              // `stop()` started. Abandon the wait (its exec ends by itself
+              // within the window) and drain with plain listings.
+              waitCall.catch(() => undefined);
+              continue;
+            }
+            fileNames = woke;
+          } else {
+            fileNames = await withTimeout(
+              input.client.listJsonFiles(directories.requestsDir),
+              iterationTimeoutMs,
+              "Sandbox callback bridge list requests",
+            );
+          }
           consecutivePollFailures = 0;
         } catch (error) {
           if (stopping) {
@@ -1924,7 +2047,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
           if (stopping) {
             break;
           }
-          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+          // A wait that ran its window already spaced the execs. Sleep only
+          // when the listing came back fast with nothing to do (a plain
+          // listing, or a wait woken by a file this loop cannot act on), so
+          // the worst case is the old poll interval, never a busy loop.
+          if (!waiting || Date.now() - listStartedAt < pollIntervalMs) {
+            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+          }
           continue;
         }
         for (const fileName of actionableFileNames) {
@@ -1981,9 +2110,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
         if (stopping && Date.now() >= stopDeadline) {
           break;
         }
-        if (tracked) {
+        if (tracked && !waiting) {
           // The attempts run on their own, so wait a poll interval before the
-          // next listing instead of re-listing in a tight loop.
+          // next listing instead of re-listing in a tight loop. A blocking wait
+          // ignores the dispatched files, so it needs no extra sleep.
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
         }
       }
@@ -2011,6 +2141,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   return {
     stop: async (options = {}) => {
       stopping = true;
+      wakeForStop?.();
       // With route policies the default drain is the longest route deadline, so a
       // slow relayed call (a memory save at the end of the last turn) finishes
       // and delivers its response before the pod goes away.

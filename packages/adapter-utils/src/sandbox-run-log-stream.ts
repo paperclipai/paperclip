@@ -16,6 +16,8 @@ const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
 const DEFAULT_TAIL_POLL_INTERVAL_MS = 250;
+// How often the in-sandbox wait checks the log sizes. Pod-local work only.
+const TAIL_IN_SANDBOX_WAIT_STEP_MS = 200;
 const DEFAULT_TAIL_MAX_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_TAIL_TICK_TIMEOUT_MS = 15_000;
 const DEFAULT_TAIL_MAX_CONSECUTIVE_FAILURES = 3;
@@ -61,6 +63,14 @@ export interface SandboxRunLogTailFactoryOptions {
   maxChunkBytesPerTick?: number | null;
   tickTimeoutMs?: number | null;
   maxConsecutiveFailures?: number | null;
+  /**
+   * Blocking wait (TECH-9007): the longest time each tail exec first waits
+   * inside the sandbox for a log to grow past the streamed offset or for the
+   * command to end. Capped at a third of the tick timeout. Absent or 0 keeps
+   * the plain poll. Set it only for a provider whose control commands run
+   * independently (`sandboxProviderSupportsBlockingBridgeWait`).
+   */
+  idleWaitMs?: number | null;
 }
 
 function normalizePositiveInt(value: number | null | undefined, fallback: number): number {
@@ -94,6 +104,9 @@ export function createSandboxRunLogTailFactory(
     DEFAULT_TAIL_MAX_CONSECUTIVE_FAILURES,
   );
 
+  const idleWaitMs = Math.min(normalizePositiveInt(options.idleWaitMs, 0), Math.floor(tickTimeoutMs / 3));
+  const waitRounds = Math.floor(idleWaitMs / TAIL_IN_SANDBOX_WAIT_STEP_MS);
+
   let sequence = 0;
 
   function createHandle(): SandboxRunLogTailHandle {
@@ -113,6 +126,7 @@ export function createSandboxRunLogTailFactory(
     let degraded = false;
     let loopPromise: Promise<void> | null = null;
     let wakeSleep: (() => void) | null = null;
+    let wakeTick: (() => void) | null = null;
 
     function sleep(ms: number): Promise<void> {
       return new Promise((resolve) => {
@@ -128,8 +142,29 @@ export function createSandboxRunLogTailFactory(
       });
     }
 
+    // Wait in the sandbox until either log grew past the streamed offset or the
+    // status file exists (the command ended), up to the wait window. A `sleep`
+    // without fractional seconds fails at once: fall back to whole seconds, so
+    // the loop stays bounded.
+    function buildWaitScript(): string[] {
+      if (waitRounds <= 0) return [];
+      const step = TAIL_IN_SANDBOX_WAIT_STEP_MS / 1000;
+      const roundsPerSecond = Math.round(1000 / TAIL_IN_SANDBOX_WAIT_STEP_MS);
+      return [
+        "n=0",
+        `while [ "$n" -lt ${waitRounds} ]; do`,
+        `  [ -f ${shellQuote(statusFile)} ] && break`,
+        `  out_size=$(wc -c 2>/dev/null < ${shellQuote(streams[0].logFile)} || echo 0)`,
+        `  [ \${out_size:-0} -gt ${streams[0].offset} ] 2>/dev/null && break`,
+        `  err_size=$(wc -c 2>/dev/null < ${shellQuote(streams[1].logFile)} || echo 0)`,
+        `  [ \${err_size:-0} -gt ${streams[1].offset} ] 2>/dev/null && break`,
+        `  if sleep ${step} 2>/dev/null; then n=$((n + 1)); else sleep 1; n=$((n + ${roundsPerSecond})); fi`,
+        "done",
+      ];
+    }
+
     function buildTickScript(): string {
-      const lines: string[] = [`printf '%s\\n' ${shellQuote(TAIL_MARKER_STDOUT)}`];
+      const lines: string[] = [...buildWaitScript(), `printf '%s\\n' ${shellQuote(TAIL_MARKER_STDOUT)}`];
       for (const state of streams) {
         if (state.stream === "stderr") {
           lines.push(`printf '%s\\n' ${shellQuote(TAIL_MARKER_STDERR)}`);
@@ -165,14 +200,28 @@ export function createSandboxRunLogTailFactory(
       }
     }
 
-    async function tick(): Promise<void> {
-      const result = await options.runner.execute({
+    // Run one tail exec. Resolve `null` when the loop stops first: the pending
+    // exec is abandoned (it ends by itself within the wait window), and its
+    // bytes are not emitted, because `finish` emits everything past the
+    // streamed offset from the final batch.
+    async function tick(): Promise<{ stdout: Buffer; stderr: Buffer } | null> {
+      const execution = options.runner.execute({
         command: shellCommand,
         args: shellCommandArgs(buildTickScript()),
         cwd: options.remoteCwd,
         env: { [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE },
         timeoutMs: tickTimeoutMs,
       });
+      const result = await new Promise<Awaited<typeof execution> | null>((resolve, reject) => {
+        wakeTick = () => resolve(null);
+        execution.then(resolve, reject);
+      }).finally(() => {
+        wakeTick = null;
+      });
+      if (result === null) {
+        execution.catch(() => undefined);
+        return null;
+      }
       if (result.timedOut || (result.exitCode ?? 1) !== 0) {
         throw new Error(
           `Run log tail tick failed (exit ${result.exitCode ?? "null"}${result.timedOut ? ", timed out" : ""}).`,
@@ -182,8 +231,7 @@ export function createSandboxRunLogTailFactory(
       if (!sections) {
         throw new Error("Run log tail tick returned unparseable output.");
       }
-      await emitBytes(streams[0], sections.stdout);
-      await emitBytes(streams[1], sections.stderr);
+      return sections;
     }
 
     async function loop(): Promise<void> {
@@ -192,7 +240,10 @@ export function createSandboxRunLogTailFactory(
         await sleep(pollIntervalMs);
         if (stopped) break;
         try {
-          await tick();
+          const sections = await tick();
+          if (stopped || !sections) break;
+          await emitBytes(streams[0], sections.stdout);
+          await emitBytes(streams[1], sections.stderr);
           consecutiveFailures = 0;
         } catch {
           consecutiveFailures += 1;
@@ -207,6 +258,7 @@ export function createSandboxRunLogTailFactory(
     async function stopLoop(): Promise<void> {
       stopped = true;
       wakeSleep?.();
+      wakeTick?.();
       if (loopPromise) {
         await loopPromise.catch(() => undefined);
         loopPromise = null;

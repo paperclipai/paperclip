@@ -76,6 +76,14 @@ any new fork patch; remove one when the patch is upstreamed.
 - `server/src/services/heartbeat/runtime-execution.ts` agent identity withheld from remote targets
 - `server/src/services/heartbeat.ts` broker token capped for remote targets
 
+## Sandbox file bridge waits in the pod (TECH-9007)
+
+- `packages/adapter-utils/src/sandbox-callback-bridge.ts` blocking queue wait instead of a 100 ms host poll
+- `packages/adapter-utils/src/sandbox-run-log-stream.ts` run-log tail waits for new output
+- `packages/adapter-utils/src/execution-target.ts` blocking wait enabled for Kubernetes only (TECH-9007 hunk)
+- `packages/adapter-utils/src/sandbox-callback-bridge-idle-wait.test.ts`
+- `doc/plans/2026-11-18-sandbox-bridge-idle-wait.md`
+
 ## Slack file text extraction (TECH-8958)
 
 - `server/src/services/connectors/slack-file-content.ts`

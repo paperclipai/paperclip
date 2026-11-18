@@ -45,6 +45,7 @@ import {
   SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT,
   SANDBOX_CALLBACK_BRIDGE_HTTP2_MODE,
   sandboxCallbackBridgeDirectories,
+  sandboxProviderSupportsBlockingBridgeWait,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
   syncRemoteTextFileWithHashSkip,
@@ -700,6 +701,10 @@ type AdapterCommandCapableExecutionTarget = AdapterSshExecutionTarget | AdapterS
 // own local constant, independent of the bridge body limit, so a later
 // bridge limit change never resizes this buffer as a side effect.
 const SSH_COMMAND_MAX_BUFFER_BYTES = 1024 * 1024;
+// TECH-9007 run-log tail on providers that support a blocking wait: one exec
+// waits up to 5 s for new output, and tail execs stay at least 500 ms apart.
+const SANDBOX_RUN_LOG_IDLE_WAIT_MS = 5_000;
+const SANDBOX_RUN_LOG_ACTIVE_POLL_MS = 500;
 
 function adapterExecutionTargetCommandRunner(target: AdapterCommandCapableExecutionTarget): CommandManagedRuntimeRunner {
   if (target.transport === "ssh") {
@@ -4458,6 +4463,11 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     ? [...HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST, ...sandboxBridgeRelayRouteRules(relayRoutes)]
     : HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST;
   const shellCommand = adapterExecutionTargetShellCommand(target);
+  // TECH-9007: on providers whose control commands run as independent execs
+  // (Kubernetes), the file bridge and the run-log tail wait inside the sandbox
+  // instead of polling from the host every 100 ms / 250 ms.
+  const waitInSandbox = target.transport === "sandbox" &&
+    sandboxProviderSupportsBlockingBridgeWait(target.providerKey);
   const runner = adapterExecutionTargetCommandRunner(target);
   const bridgeTimeoutMs =
     typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
@@ -4951,6 +4961,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       remoteCwd: target.remoteCwd,
       timeoutMs: bridgeTimeoutMs,
       shellCommand,
+      waitInSandbox,
     });
     // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
     // setup on the active `bridge.paperclip` step, and runs each request under
@@ -5002,6 +5013,9 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       remoteCwd: target.remoteCwd,
       logsDir: sandboxCallbackBridgeDirectories(queueDir).logsDir,
       shellCommand,
+      // Wait up to 5 s in the sandbox for new output; space tail execs at
+      // least 500 ms apart while output flows.
+      ...(waitInSandbox ? { idleWaitMs: SANDBOX_RUN_LOG_IDLE_WAIT_MS, pollIntervalMs: SANDBOX_RUN_LOG_ACTIVE_POLL_MS } : {}),
     });
     await onLog("stdout", "[paperclip] Sandbox run log streaming enabled for this run.\n");
   }
