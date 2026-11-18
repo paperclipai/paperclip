@@ -74,6 +74,12 @@ const payload = {
   claudeConfigEntries: process.env.CLAUDE_CONFIG_DIR && fs.existsSync(process.env.CLAUDE_CONFIG_DIR)
     ? fs.readdirSync(process.env.CLAUDE_CONFIG_DIR).sort()
     : [],
+  userSkillEntries: process.env.CLAUDE_CONFIG_DIR && fs.existsSync(path.join(process.env.CLAUDE_CONFIG_DIR, "skills"))
+    ? fs.readdirSync(path.join(process.env.CLAUDE_CONFIG_DIR, "skills")).sort()
+    : [],
+  userSkillReadable: process.env.CLAUDE_CONFIG_DIR
+    ? fs.existsSync(path.join(process.env.CLAUDE_CONFIG_DIR, "skills", "paperclip", "SKILL.md"))
+    : false,
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
@@ -495,6 +501,53 @@ describe("claude execute", () => {
       expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
     } finally {
       restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("links enabled skills into the managed connection config dir for --setting-sources user runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-managed-skills-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    const managedConfigDir = path.join(root, "managed-connection", "provider");
+    await fs.mkdir(managedConfigDir, { recursive: true });
+    try {
+      const run = async (managedAiConnection: boolean, configDir: string) => {
+        await execute({
+          runId: `run-${managedAiConnection ? "managed" : "host"}`,
+          agent: { id: "agent-1", companyId: "co-1", name: "Agent", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: {
+            engine: "cli",
+            command: commandPath,
+            cwd: workspace,
+            managedAiConnection,
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, CLAUDE_CONFIG_DIR: configDir },
+            promptTemplate: "Do work.",
+          },
+          context: {},
+          authToken: "tok",
+          onLog: async () => {},
+        });
+        return JSON.parse(await fs.readFile(capturePath, "utf8"));
+      };
+
+      const managed = await run(true, managedConfigDir);
+      expect(managed.argv).toEqual(expect.arrayContaining(["--setting-sources", "user"]));
+      expect(managed.skillEntries).toContain("paperclip");
+      expect(managed.userSkillEntries).toEqual(managed.skillEntries);
+      expect(managed.userSkillReadable).toBe(true);
+
+      const hostConfigDir = path.join(root, "host-claude");
+      await fs.mkdir(hostConfigDir, { recursive: true });
+      const host = await run(false, hostConfigDir);
+      expect(host.argv).not.toContain("--setting-sources");
+      expect(host.userSkillEntries).toEqual([]);
+    } finally {
+      restore();
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

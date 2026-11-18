@@ -172,3 +172,27 @@ export async function prepareClaudePromptBundle(input: {
     instructionsFilePath,
   };
 }
+
+export async function linkClaudePromptBundleSkillsIntoConfigDir(input: {
+  bundle: ClaudePromptBundle;
+  configDir: string;
+  skills: SkillEntry[];
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const { bundle, configDir, skills, onLog } = input;
+  if (skills.length === 0) return;
+  const bundleSkillsHome = path.join(bundle.addDir, ".claude", "skills");
+  const userSkillsHome = path.join(configDir, "skills");
+  await fs.mkdir(userSkillsHome, { recursive: true });
+  for (const entry of skills) {
+    const target = path.join(userSkillsHome, entry.runtimeName);
+    try {
+      await ensurePaperclipSkillSymlink(path.join(bundleSkillsHome, entry.runtimeName), target);
+    } catch (err) {
+      await onLog(
+        "stderr",
+        `[paperclip] Failed to link Claude skill "${entry.key}" into ${userSkillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+}
