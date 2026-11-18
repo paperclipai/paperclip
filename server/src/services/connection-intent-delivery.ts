@@ -247,7 +247,8 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     }
     if (fanOut) {
       await wakeLinkedAiRepairTasks(interaction, interaction.status === "accepted" || retiredForAvailableConnection);
-      if (ownerStale) {
+      // A waiting owner is only retired by reconciliation, never resumed by it.
+      if (ownerStale || (retiredForAvailableConnection && ["backlog", "todo"].includes(loaded.issue.status))) {
         await settle();
         return;
       }

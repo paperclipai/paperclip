@@ -2400,6 +2400,22 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, held!.issueId)).toMatchObject({ cause: "configuration_incomplete" });
     });
 
+    it.each(["todo", "backlog"] as const)("settles the shared card's delivery after waking its linked tasks while the owner task is %s", async (status) => {
+      const f = await latchedFleet(`linked-owner-${status}`, 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const linked = f.tasks.filter(task => task.issueId !== card!.issueId);
+      await db.update(issues).set({ status }).where(eq(issues.id, card!.issueId));
+      await f.reconnect();
+      await sweepAll();
+      expect((await f.cardsFor([card!.issueId]))[0]!.status).toBe("expired");
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup.mock.calls.map(([agentId]) => agentId).sort()).toEqual(linked.map(task => task.agentId).sort());
+      const [receipt] = await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, card!.id));
+      expect(receipt!.deliveredAt).not.toBeNull();
+      expect((await db.select().from(issues).where(eq(issues.id, card!.issueId)))[0]!.status).toBe(status);
+    });
+
     it.each(["todo", "backlog"] as const)("retires the AI repair card on a %s owner task without waking it", async (status) => {
       const f = await latchedFleet(`waiting-${status}`, 1);
       const [task] = f.tasks;
