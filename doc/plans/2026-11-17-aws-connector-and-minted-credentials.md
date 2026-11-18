@@ -271,14 +271,14 @@ temporary public HTTPS tunnel. All spike resources were deleted afterwards.
 | AWS accepts a Paperclip-signed connection token (`AssumeRoleWithWebIdentity`) | Yes. The role session appears as `assumed-role/<role>/<session name>`. |
 | Another connection's token assumes this connection's role | No: `AccessDenied`. The `sub` condition isolates connections. |
 | Role credentials to an AWS MCP bearer token (`CreateOAuth2TokenWithIAM`, `client_credentials`, resource `aws-mcp.amazonaws.com`) | Yes. The token lasts 3,599 seconds and has no refresh token. |
-| MCP `initialize` and `tools/list` with that bearer | Yes. 8 tools: `aws___run_script` (write), `aws___get_presigned_url` (write), and read tools for documentation, skills, regions, regional availability and task status. **No `aws___call_aws`.** |
+| MCP `initialize` and `tools/list` with that bearer | Yes. 8 tools. Writes: `aws___run_script`, `aws___get_presigned_url`. Reads: `aws___search_documentation`, `aws___read_documentation`, `aws___retrieve_skill`, `aws___list_regions`, `aws___get_regional_availability`, `aws___get_tasks`. **No `aws___call_aws`.** |
 | Read through `run_script` (`sts:GetCallerIdentity`) | Success |
 | Write through `run_script` (`s3:CreateBucket`) | Success with a full-scope token |
 | Read-only session policy | `ListBuckets` succeeds. `DeleteBucket` is refused by AWS: "no session policy allows the s3:DeleteBucket action". |
 | Read-only session policy with only `ReadOnlyAccess` | The token exchange fails: `signin:CreateOAuth2Token` is not allowed. Add `AWSMCPSignInOAuthAccessPolicy` too. |
 | Access-key method: the key directly, then the token exchange | Yes |
 | Access-key method: `GetFederationToken` with read-only session policies, then the token exchange | Yes |
-| Paperclip Cloud front door forwards the issuer paths | Yes, after paperclipai/paperclip-cloud#1646. Staging returns the app's 404 for a company without a key. |
+| Paperclip Cloud front door forwards the issuer paths | Yes, after the Paperclip Cloud gateway added `GET`/`HEAD` on these two paths for a lowercase company UUID to its anonymous allowlist (2026-11-18). Staging returns the app's 404 for a company without a key, and other `/oidc` paths still get 401. |
 
 Timings (ms, from a laptop to us-east-1):
 
