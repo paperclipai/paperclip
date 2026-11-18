@@ -94,7 +94,7 @@ Decisions and the details behind them are kept in the
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [x] `googletester.staging.paperclip.app` created (Nov 18).
-- [ ] Staging tester wired to the new Google app.
+- [x] Staging tester wired to the new Google app (Nov 18).
 
 ## 3. Policy and privacy
 
