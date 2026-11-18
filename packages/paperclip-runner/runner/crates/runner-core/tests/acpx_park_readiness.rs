@@ -86,6 +86,7 @@ fn fixture(
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
