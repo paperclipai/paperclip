@@ -134,6 +134,15 @@ describe("native run that reports a task-wide blocker it owns", () => {
     expect(await ownerWakes(issueId)).toEqual([]);
   }, 120_000);
 
+  it("hands a system blocker that needs a credential to a person without automatic retries", async () => {
+    const issueId = await createTask();
+    const blocked = await runTurn(issueId, { blocker: { ...toolOutputBlocker, reasonCode: "credential_missing",
+      unblockAction: "Connect the deploy account." } });
+    expect(blocked.decision.reasonCode).toBe(NATIVE_AGENT_BLOCKER_HANDOFF_CODE);
+    expect(blocked.retries).toHaveLength(0);
+    expect(blocked.issue).toMatchObject({ status: "blocked", unblockDescriptor: { owner: "board", action: "Connect the deploy account." } });
+  }, 120_000);
+
   it("hands a blocker that only a person can resolve to the board with a Retry that starts the task again", async () => {
     const issueId = await createTask();
     const blocked = await runTurn(issueId, { blocker: { ...selfBlocker, owner: { kind: "external", name: "deploy key holder" },

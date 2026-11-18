@@ -12,6 +12,7 @@ export const NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION =
   "The agent still reported its execution environment unavailable after Paperclip continued the task in fresh sessions. The saved work is kept. Comment on the task when the agent should continue.";
 
 const ENVIRONMENT_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["environment_unavailable", "tool_unavailable"]);
+const PERSON_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["permission_denied", "credential_missing", "policy_restricted", "budget_exhausted"]);
 
 export function isNativeEnvironmentBlocker(result: {
   reportedWorkDisposition?: unknown;
@@ -19,6 +20,7 @@ export function isNativeEnvironmentBlocker(result: {
 }) {
   if (result.reportedWorkDisposition !== "blocked") return false;
   const ownerKind = result.blocker?.owner?.kind;
-  return ownerKind === "system" || (ownerKind === "agent" && typeof result.blocker?.reasonCode === "string"
-    && ENVIRONMENT_BLOCKER_REASON_CODES.has(result.blocker.reasonCode));
+  const reasonCode = typeof result.blocker?.reasonCode === "string" ? result.blocker.reasonCode : "";
+  return (ownerKind === "system" && !PERSON_BLOCKER_REASON_CODES.has(reasonCode))
+    || (ownerKind === "agent" && ENVIRONMENT_BLOCKER_REASON_CODES.has(reasonCode));
 }

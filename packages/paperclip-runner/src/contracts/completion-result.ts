@@ -18,6 +18,7 @@ export const PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE = PRP_BLOCKER_ALRE
   " Paperclip continues this environment or tool blocker automatically in a fresh session that checks the saved work.";
 
 const PRP_ENVIRONMENT_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["environment_unavailable", "tool_unavailable"]);
+const PRP_PERSON_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["permission_denied", "credential_missing", "policy_restricted", "budget_exhausted"]);
 
 /** Feedback for a later report in a turn that already committed a different one. */
 export function prpSemanticResultConflictMessage(committed: {
@@ -25,7 +26,9 @@ export function prpSemanticResultConflictMessage(committed: {
   blocker?: { owner?: { kind?: string } | null; reasonCode?: string } | null;
 } | null | undefined): string {
   if (committed?.reportedWorkDisposition !== "blocked") return PRP_RESULT_ALREADY_ACCEPTED_MESSAGE;
-  return committed.blocker?.owner?.kind === "system" && PRP_ENVIRONMENT_BLOCKER_REASON_CODES.has(committed.blocker.reasonCode ?? "")
+  const ownerKind = committed.blocker?.owner?.kind, reasonCode = committed.blocker?.reasonCode ?? "";
+  return (ownerKind === "system" && !PRP_PERSON_BLOCKER_REASON_CODES.has(reasonCode))
+    || (ownerKind === "agent" && PRP_ENVIRONMENT_BLOCKER_REASON_CODES.has(reasonCode))
     ? PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE : PRP_BLOCKER_ALREADY_REPORTED_MESSAGE;
 }
 export const PRP_SEMANTIC_TOOL_NAMES = [
