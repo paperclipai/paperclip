@@ -84,10 +84,11 @@ export async function readProviderPackLayers(root: string, expectedDigest: strin
   return { kind: "layers", sourceRoot, overlay: receipt.overlay, files: receipt.files };
 }
 
-// Copy first, then hash the private copy: no shared hardlinks, no mutation of
-// the older image, and no time-of-check/time-of-use trust in its contents.
-// The runner requires its pack to be physical files inside the pack, so image
-// bytes are never linked. `providerPackReusePlan` decides how repeated bytes
+// Copy first, then hash the private copy: no mutation of the older image, and
+// no time-of-check/time-of-use trust in its contents. Image bytes are never
+// linked, because the runner requires its pack to be physical files inside the
+// pack. Only verified private copies inside the pack are hardlinked, and only
+// to files with the same digest and mode. `providerPackReusePlan` decides how repeated bytes
 // are stored once; this program only follows that plan.
 const reuseScript = `
 (async()=>{
@@ -95,7 +96,7 @@ const reuseScript = `
  const spec=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'));
  const f=fs.promises;await f.mkdir(p.dirname(spec.target),{recursive:true,mode:448});
  await f.mkdir(spec.target,{mode:448});
- const missing=[],copied=new Set();
+ const missing=[],anchors=new Map();
  const regularPath=async(root,relative)=>{
    let current=root;if(!(await f.lstat(current)).isDirectory())return false;
    const parts=relative.split('/');
@@ -105,9 +106,9 @@ const reuseScript = `
  };
  for(const [index,entry] of spec.files.entries()){
    const target=p.join(spec.target,entry.path);let reused=false;
-   const linkTo=entry.linkTo.find(earlier=>copied.has(earlier));
-   if(linkTo!==undefined){try{
-     await f.mkdir(p.dirname(target),{recursive:true,mode:448});await f.link(p.join(spec.target,spec.files[linkTo].path),target);continue;
+   const anchor=anchors.get(entry.group);
+   if(anchor!==undefined){try{
+     await f.mkdir(p.dirname(target),{recursive:true,mode:448});await f.link(anchor,target);continue;
    }catch{await f.unlink(target).catch(()=>{});}}
    for(const root of spec.roots){for(const relative of entry.sources){try{
      if(!await regularPath(root,relative))continue;
@@ -121,7 +122,7 @@ const reuseScript = `
      if(!matches)throw Error('digest mismatch');
      await f.chmod(target,entry.mode);reused=true;break;
    }catch{await f.unlink(target).catch(()=>{});}}if(reused)break;}
-   if(reused)copied.add(index);
+   if(reused)anchors.set(entry.group,target);
    else missing.push(index);
  }
  console.log(JSON.stringify(missing));
@@ -131,8 +132,8 @@ const reuseScript = `
 export type ProviderPackReuseStep = {
   /** Image paths to copy these bytes from, own path first, then other paths with the same bytes. */
   sources: string[];
-  /** Earlier entries with the same bytes and mode; hardlink to the first that was copied privately. */
-  linkTo: number[];
+  /** Files with the same bytes and mode share a group; later files hardlink to the group's first private copy. */
+  group: number;
 };
 
 /** Store repeated bytes once: the first private copy of each digest and mode is
@@ -140,12 +141,11 @@ export type ProviderPackReuseStep = {
 export function providerPackReusePlan(files: readonly Pick<FileLayer, "path" | "sha256" | "mode">[]): ProviderPackReuseStep[] {
   const pathsBySha = new Map<string, string[]>();
   for (const file of files) pathsBySha.set(file.sha256, [...(pathsBySha.get(file.sha256) ?? []), file.path]);
-  const earlierByShaAndMode = new Map<string, number[]>();
-  return files.map((file, index) => {
+  const groups = new Map<string, number>();
+  return files.map(file => {
     const key = `${file.sha256}:${file.mode}`;
-    const linkTo = [...(earlierByShaAndMode.get(key) ?? [])];
-    earlierByShaAndMode.set(key, [...linkTo, index]);
-    return { sources: [file.path, ...pathsBySha.get(file.sha256)!.filter(path => path !== file.path)], linkTo };
+    if (!groups.has(key)) groups.set(key, groups.size);
+    return { sources: [file.path, ...pathsBySha.get(file.sha256)!.filter(path => path !== file.path)], group: groups.get(key)! };
   });
 }
 

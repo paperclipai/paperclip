@@ -167,11 +167,11 @@ it("plans one private copy per digest and mode, with same-bytes twins as copy so
     { path: "four", sha256: a, mode: 0o644 },
     { path: "other", sha256: b, mode: 0o755 },
   ])).toEqual([
-    { sources: ["one", "two", "three", "four"], linkTo: [] },
-    { sources: ["two", "one", "three", "four"], linkTo: [] },
-    { sources: ["three", "one", "two", "four"], linkTo: [0] },
-    { sources: ["four", "one", "two", "three"], linkTo: [1] },
-    { sources: ["other"], linkTo: [] },
+    { sources: ["one", "two", "three", "four"], group: 0 },
+    { sources: ["two", "one", "three", "four"], group: 1 },
+    { sources: ["three", "one", "two", "four"], group: 0 },
+    { sources: ["four", "one", "two", "three"], group: 1 },
+    { sources: ["other"], group: 2 },
   ]);
 });
 
