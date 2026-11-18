@@ -15,6 +15,7 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { isProvenTurnSettlement, TURN_SETTLED_EVENTS, TURN_STARTED_EVENTS } from "../heartbeat/restart-interrupted-turn.js";
 import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { requestTaskRetry } from "../task-retry.js";
 
 /** The chat service's Retry callback, which a connected conversation's Retry needs. */
@@ -51,12 +52,16 @@ export type ProviderLimitReset = {
   resetAt: Date; observedAt: Date;
   /** False for a reset further out than Paperclip waits by itself (a monthly limit). */
   withinAutomaticWait: boolean;
+  /** True when the provider reported no reset and Paperclip waits its default cooldown. */
+  estimated?: true;
 };
 
 /**
  * When the provider said the usage limit resets, from the run's own durable
  * events. Null unless the last turn event is a provider-observed settlement
- * reporting an exhausted allowance with a reset after it.
+ * reporting an exhausted allowance with a reset after it. A rate limit that
+ * names no reset (Claude's "try again later") waits the default cooldown, the
+ * same wait that holds the agent's new work, so the task is not stranded.
  */
 export async function readNativeUsageLimitReset(
   db: Pick<Db, "select">,
@@ -74,10 +79,14 @@ export async function readNativeUsageLimitReset(
   if (!failure || !LIMIT_CATEGORIES.includes(failure.category)) return null;
   const observedAt = lastTurn.createdAt;
   const typed = failure.retryAt ? new Date(failure.retryAt) : null;
-  const resetAt = typed && Number.isFinite(typed.getTime()) ? typed : parseProviderQuotaClockReset(failure.message, observedAt);
+  const reported = typed && Number.isFinite(typed.getTime()) ? typed : parseProviderQuotaClockReset(failure.message, observedAt);
+  // An exhausted allowance without a reset still needs a person; a rate limit passes by itself.
+  const estimated = !reported && failure.category === "rate_limit";
+  const resetAt = estimated ? new Date(observedAt.getTime() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS) : reported;
   if (!resetAt || resetAt.getTime() <= observedAt.getTime()) return null;
   return { resetAt, observedAt,
-    withinAutomaticWait: resetAt.getTime() - observedAt.getTime() <= PROVIDER_LIMIT_RESUME_MAX_WAIT_MS };
+    withinAutomaticWait: resetAt.getTime() - observedAt.getTime() <= PROVIDER_LIMIT_RESUME_MAX_WAIT_MS,
+    ...(estimated ? { estimated: true as const } : {}) };
 }
 
 /** The user whose authority Retry uses: the requester, else the run's accountable user. */
@@ -90,8 +99,8 @@ async function accountableUser(db: Pick<Db, "select">, run: typeof heartbeatRuns
 }
 
 export type ProviderLimitResumePlan =
-  | { automatic: true; resetAt: Date; actorId: string }
-  | { automatic: false; resetAt: Date | null };
+  | { automatic: true; resetAt: Date; actorId: string; estimated?: true }
+  | { automatic: false; resetAt: Date | null; estimated?: true };
 
 /** Whether this failed run's task continues by itself once the limit resets. */
 export async function planProviderLimitResume(db: Pick<Db, "select">, runId: string): Promise<ProviderLimitResumePlan> {
@@ -101,10 +110,18 @@ export async function planProviderLimitResume(db: Pick<Db, "select">, runId: str
   if (!reset) return { automatic: false, resetAt: null };
   // A reset beyond the bounded wait is still reported; only the automatic Retry is bounded.
   const actorId = reset.withinAutomaticWait ? await accountableUser(db, run) : null;
-  return actorId ? { automatic: true, resetAt: reset.resetAt, actorId } : { automatic: false, resetAt: reset.resetAt };
+  const estimated = reset.estimated ? { estimated: true as const } : {};
+  return actorId ? { automatic: true, resetAt: reset.resetAt, actorId, ...estimated }
+    : { automatic: false, resetAt: reset.resetAt, ...estimated };
 }
 
 export function providerLimitNextAction(plan: ProviderLimitResumePlan) {
+  if (plan.estimated && plan.resetAt) {
+    const unreported = "The provider did not report when its rate limit resets.";
+    return plan.automatic
+      ? `${unreported} Paperclip will retry this task at ${plan.resetAt.toISOString()}; Retry starts it sooner if usage capacity is already restored.`
+      : `${unreported} Retry the task after ${plan.resetAt.toISOString()}, or sooner if usage capacity is restored.`;
+  }
   if (plan.automatic) {
     return `The provider usage limit resets at ${plan.resetAt.toISOString()}. Paperclip will retry this task then; Retry starts it sooner if usage capacity is already restored.`;
   }
@@ -187,7 +204,8 @@ export async function requestProviderLimitResumeRetry(db: Db, input: {
       const actorId = await accountableUser(db, run);
       await db.update(issueRecoveryActions).set({
         nextAction: providerLimitNextAction(actorId
-          ? { automatic: true, resetAt: reset.resetAt, actorId } : { automatic: false, resetAt: reset.resetAt }),
+          ? { automatic: true, resetAt: reset.resetAt, actorId, estimated: reset.estimated }
+          : { automatic: false, resetAt: reset.resetAt, estimated: reset.estimated }),
         evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResetAt', ${reset.resetAt.toISOString()}::text)`,
         updatedAt: now,
       }).where(and(eq(issueRecoveryActions.id, action.id), eq(issueRecoveryActions.status, "active")));
