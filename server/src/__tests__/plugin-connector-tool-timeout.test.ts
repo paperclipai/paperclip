@@ -178,7 +178,11 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.workers.calls.at(-1)).toMatchObject({ timeoutMs: 61_000 });
   });
 
-  it("keeps the 10 s default for legacy plugin tools", async () => {
+  // Legacy top-level plugin tools (provider `paperclip_plugin`) are not plugin
+  // connections: declared connector timeouts and the 30 s connector default do
+  // not reach them. Their own default is out of scope here (see #20746), so
+  // this pins only the behavior both agree on: a caller deadline applies.
+  it("leaves legacy plugin tools on their own deadline path", async () => {
     const legacyManifest = pluginManifestV1Schema.parse({
       id: "example.legacy-slow", apiVersion: 1, version: "1.0.0", displayName: "Legacy slow", description: "Legacy tools", author: "Tests",
       categories: ["connector"], capabilities: ["agent.tools.register"], entrypoints: { worker: "worker.js" },
@@ -205,7 +209,10 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await completeLegacyPluginToolAccess(db)).toBe(1);
     const tool = (await f.gateway.listToolsForSession(f.token)).find(candidate => candidate.name === "example.legacy-slow:read-status")!;
     expect(tool.providerType).toBe("paperclip_plugin");
-    const call = await settleAfter({ workers: { calls: dispatched } }, () => f.gateway.executeTool({ sessionToken: f.token, tool: tool.name, parameters: {}, idempotencyKey: randomUUID() }), 10_000);
+    const call = await settleAfter({ workers: { calls: dispatched } }, () => f.gateway.executeTool({ sessionToken: f.token, tool: tool.name, parameters: {},
+      timeoutMs: 5_000, idempotencyKey: randomUUID() }), 5_000);
     expect(call).toMatchObject(timedOut);
+    // The connector runtime never saw the call, so no connector timeout applied.
+    expect(f.workers.calls).toEqual([]);
   });
 });
