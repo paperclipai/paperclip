@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { enforceClaudeExtensionPolicy } from "./claude-extension-policy.js";
 
 describe("Claude marketplace admission", () => {
-  it.each(["session/new", "session/load", "session/fork"])("blocks marketplace sources on %s while preserving tools and other policy", method => {
+  it.each(["session/new", "session/load", "session/resume", "session/fork"])("blocks marketplace sources on %s while preserving tools and other policy", method => {
     const request = { method, params: { cwd: "/workspace", _meta: { kept: true, claudeCode: { options: {
       mcpServers: { paperclip: { type: "http", url: "http://localhost/tools" } },
       managedSettings: { strictKnownMarketplaces: [{ source: "github", repo: "other/market" }], disableAllHooks: true },

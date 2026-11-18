@@ -3,7 +3,7 @@ const record = (value: unknown): Record<string, unknown> => value !== null && ty
 export function enforceClaudeExtensionPolicy(direction: "inbound" | "outbound", message: unknown): void {
   if (direction !== "outbound") return;
   const request = record(message);
-  if (!["session/new", "session/load", "session/fork"].includes(String(request.method))) return;
+  if (!["session/new", "session/load", "session/resume", "session/fork"].includes(String(request.method))) return;
   const params = record(request.params);
   const meta = record(params._meta);
   const claude = record(meta.claudeCode);
