@@ -17,7 +17,7 @@ Windows instance (`C:\.paperclip`, 2026-11-18), 243 sessions, 39 GB:
 | `skills/` | up to 349 MB | 7.9 GB | the session's assigned skills, copied from their bundles |
 | `sessions/`, sqlite | ~2–10 MB | — | the actual conversation |
 
-WSL Linux instance (`/home/csteeg/.local/share/paperclip`, 2026-11-18), the
+WSL Linux instance (2026-11-18), the
 target platform: 274 sessions, `skills/` = 9.2 GB in total, but only **30 distinct
 skill sets**; one copy of each set is 2.0 GB. The server's existing bundle store
 (`runtime-context-assets/`, all bundles and instructions) is 2.5 GB.
@@ -234,7 +234,7 @@ Red/green tests:
 - Windows and preconfigured homes still copy into `CODEX_HOME/skills`.
 - Resume an old-layout session and invoke one of its skills.
 
-Measured on WSL Linux (`/home/csteeg/Projects/paperclip`), same skill set, before
+Measured on WSL Linux, same skill set, before
 and after:
 
 - disk: per-session `codex-home` size, and total bytes for two sessions;
