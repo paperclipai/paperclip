@@ -164,6 +164,18 @@ describe("online durable-data migration pass", () => {
     expect(second.deferred).not.toHaveProperty("skill_versions:skill_package_not_durable");
   });
 
+  it("keeps a qualified owner code such as a missing runtime skill source", async () => {
+    const fixture = owners({ runtimeSkillAssets: async () => { throw new Error("runtime_skill_source_absent:missing"); } });
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+    expect(result.deferred).toMatchObject({ "runtime_skill_assets:runtime_skill_source_absent:missing": 1 });
+  });
+
+  it("passes the page size to the skill object copy so a slow page can shrink", async () => {
+    const skillObjects = vi.fn(async () => ({ inspected: 0, migrated: 0, busy: 0, after: null }));
+    await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, owners({ skillObjects }).owners);
+    expect(skillObjects).toHaveBeenCalledWith(db, expect.objectContaining({ limit: 50, online: true }));
+  });
+
   it("names an unexpected owner error without echoing its message", async () => {
     const fixture = owners({ skillObjects: async () => { throw new Error("connect ECONNREFUSED 10.0.0.1:5432 secret"); } });
     const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);

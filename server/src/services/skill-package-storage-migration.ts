@@ -12,14 +12,14 @@ import { boundedHashStream } from "./skill-package-files.js";
 import { skillPackageStore } from "./skill-package-store.js";
 
 export async function migrateLocalSkillPackageObjects(db: Db, input: {
-  source: StorageService; destination: StorageService; writersStopped: boolean; online?: boolean; signal: AbortSignal; after?: string;
+  source: StorageService; destination: StorageService; writersStopped: boolean; online?: boolean; signal: AbortSignal; after?: string; limit?: number;
 }) {
   const offline = input.writersStopped && process.env.PAPERCLIP_EPHEMERAL_MIGRATION === "true";
   if ((!offline && input.online !== true)
     || input.source.provider !== "local_disk" || input.destination.provider !== "s3") throw new Error("offline_skill_object_migration_required");
   const rows = await db.select({ id: snapshots.id, companyId: snapshots.companyId, storage: snapshots.storage })
     .from(snapshots).where(and(sql`${snapshots.storage}->>'provider' = 'local_disk'`,
-      input.after ? gt(snapshots.id, input.after) : undefined)).orderBy(asc(snapshots.id)).limit(50);
+      input.after ? gt(snapshots.id, input.after) : undefined)).orderBy(asc(snapshots.id)).limit(Math.max(1, Math.min(50, input.limit ?? 50)));
   const source = skillPackageStore(db, input.source);
   let busy = 0;
   for (const row of rows) {

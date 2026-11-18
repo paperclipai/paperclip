@@ -72,7 +72,7 @@ type Phase = typeof PHASES[number];
 let running: Promise<OnlineDurableDataMigrationResult> | null = null;
 type Progress = { phase: number; after?: string; limit?: number; timeouts?: number };
 let progress: Progress = { phase: 0 };
-const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 5, skill_objects: 1, skill_snapshots: 50, skill_versions: 50,
+const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 5, skill_objects: 50, skill_snapshots: 50, skill_versions: 50,
   skill_installations: 50, runtime_skill_assets: 50 };
 
 export function resetOnlineDurableDataMigrationProgressForTests() {
@@ -123,10 +123,10 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           return result.next ?? null;
         }
         case "skill_objects": {
-          const result = await owners.skillObjects(db, { source: localSkills, destination: storage, writersStopped: false, online: true, signal, after });
+          const result = await owners.skillObjects(db, { source: localSkills, destination: storage, writersStopped: false, online: true, signal, after, limit });
           add(counts, "skillObjects", result.migrated);
           add(deferred, "skill_objects:owner_busy", result.busy);
-          return result.inspected < 50 || !result.after ? null : result.after;
+          return result.inspected < limit || !result.after ? null : result.after;
         }
         case "skill_snapshots":
         case "skill_versions": {
@@ -173,7 +173,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
         next = await page(phase, progress.after, progress.limit ?? DEFAULT_LIMITS[phase] ?? 1);
       } catch (error) {
         if (signal.reason instanceof BudgetSpent) throw error;
-        const code = error instanceof Error && /^[a-z_]{1,60}$/.test(error.message) ? error.message : "owner_failed";
+        const code = error instanceof Error && /^[a-z_]{1,60}(?::[a-z_]{1,40})?$/.test(error.message) ? error.message : "owner_failed";
         add(deferred, `${phase}:${code}`);
         next = null;
       }
