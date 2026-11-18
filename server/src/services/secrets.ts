@@ -985,6 +985,7 @@ function assertSelectableProviderConfig(config: {
 export type RemoveSecretOptions = {
   /** Runs after the secret is marked deleted and before its row is removed. */
   beforeDelete?: (secret: typeof companySecrets.$inferSelect) => Promise<void>;
+  expectedVersion?: number;
 };
 
 export function secretService(db: Db | DbTransaction) {
@@ -3453,9 +3454,28 @@ export function secretService(db: Db | DbTransaction) {
   async function removeSecretInternal(secretId: string, options: RemoveSecretOptions = {}) {
     const preCheckSecret = await getById(secretId);
     if (!preCheckSecret) return null;
-    return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, () =>
-      removeSecretUnlocked(secretId, options),
-    );
+    return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, async () => {
+      if (options.expectedVersion !== undefined) {
+        const now = new Date();
+        const claimed = await db
+          .update(companySecrets)
+          .set({
+            key: sql`${companySecrets.key} || '__deleted__' || ${companySecrets.id}`,
+            name: sql`${companySecrets.name} || '__deleted__' || ${companySecrets.id}`,
+            status: "deleted",
+            deletedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(companySecrets.id, secretId),
+            isNull(companySecrets.deletedAt),
+            eq(companySecrets.latestVersion, options.expectedVersion),
+          ))
+          .returning({ id: companySecrets.id });
+        if (claimed.length === 0) return null;
+      }
+      return removeSecretUnlocked(secretId, options);
+    });
   }
 
   // The body of `removeSecretInternal` above, unchanged. Extracted to a named

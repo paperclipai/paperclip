@@ -329,7 +329,7 @@ async function commandIsResolvable(
         token,
         target,
         resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        process.env,
+        target.transport === "ssh" ? { PATH: process.env.PATH } : {},
       );
       return true;
     } catch {
@@ -360,11 +360,13 @@ async function geminiAcpUnavailableReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+  const managedSsh = target?.kind === "remote" && target.transport === "ssh"
+    && target.spec.useHostAuth === false && Boolean(input.config.managedAiConnection);
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target) && !managedSsh) {
     if (target.transport === "sandbox") {
       return "Gemini ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
     }
-    return "Gemini ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
+    return "Gemini ACP requires an agent-managed SSH account; host authentication is supported by the CLI engine.";
   }
   if (!nodeVersionMeetsGeminiAcpMinimum()) {
     return `Node ${process.version} (${process.execPath}) does not satisfy Gemini ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;

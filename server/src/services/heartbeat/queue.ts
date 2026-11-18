@@ -59,6 +59,8 @@ import {
   isConversationExecutionWake,
   isWaitingConversation,
 } from "../agent-conversations.js";
+import { onboardingGreetingNeeded } from "../onboarding-chat.js";
+import { ONBOARDING_CHAT_GREETING_REASON } from "../onboarding-chat-prompt.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
 import {
   admitExplicitNativeContinuation,
@@ -1036,6 +1038,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const runContext = parseObject(run.contextSnapshot);
     const systemContinuationReason = readNonEmptyString(runContext.wakeReason);
     const continuedIssueId = readNonEmptyString(runContext.issueId);
+    if (systemContinuationReason === ONBOARDING_CHAT_GREETING_REASON && !run.startedAt) {
+      const [chat] = continuedIssueId ? await db.select().from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, continuedIssueId))) : [];
+      if (!chat || !(await onboardingGreetingNeeded(db, chat))) {
+        const errorCode = "onboarding_welcome_superseded";
+        const cancelled = await cancelRunIfStillQueued(run.id, { finishedAt: new Date(), errorCode,
+          error: "The conversation no longer needs an opening welcome." });
+        if (cancelled) {
+          await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: cancelled.finishedAt!, error: errorCode });
+          await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true, deferredPostCommitEffects });
+        }
+        return null;
+      }
+    }
     if (systemContinuationReason && SYSTEM_CONTINUATION_WAKE_REASONS.has(systemContinuationReason) && continuedIssueId
       && runContext.onboardingCompletion !== true) {
       const [target] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
@@ -2805,6 +2821,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     );
     const hasIndependentConversationWakeCause = () => Boolean(
       wakeCommentId || opts.taskRetryRequestId ||
+      (reason === "onboarding_chat_greeting" && opts.manualUserWake === true
+        && opts.requestedByActorType === "user" && source === "on_demand") ||
       hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
       reason === CHAT_COMPLETION_WAKE_REASON || isManualContextCompactionWake(),
     );
@@ -2859,15 +2877,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     if (reason === "issue_comment_mentioned" || enrichedContextSnapshot.wakeReason === "issue_comment_mentioned") return null;
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
-      if (taskRetryActorId && conversation) await assertTaskRetryConversationAllowed(db, conversation, taskRetryActorId);
+      if (taskRetryActorId && conversation) assertTaskRetryConversationAllowed(conversation, taskRetryActorId);
       if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
       if (isConversation(conversation)) {
+        if (reason === "onboarding_chat_greeting" && (conversation?.originKind !== "onboarding_chat"
+          || conversation.conversationUserId !== opts.requestedByActorId)) return null;
         if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
           throw new HttpError(403, "Only the conversation owner can start a chat run");
         }
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
         if (isWaitingConversation(conversation) && !hasIndependentConversationWakeCause()) return null;
       }
     }
@@ -3825,7 +3844,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           }
 
           if (taskRetryActorId) {
-            await assertTaskRetryConversationAllowed(tx as unknown as Db, issue, taskRetryActorId);
+            assertTaskRetryConversationAllowed(issue, taskRetryActorId);
             if (await retireSupersededTaskRetry(tx as unknown as Db, {
               companyId: issue.companyId, issueId: issue.id, requestId: opts.taskRetryRequestId!,
               sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId)!,

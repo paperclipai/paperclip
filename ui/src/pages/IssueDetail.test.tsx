@@ -51,7 +51,7 @@ import {
   readIssueDetailBreadcrumb,
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
-import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
+import { getRecentTasksStorageKey, readRecentTasks, recordRecentTask } from "../lib/recent-tasks";
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { ApiError } from "../api/client";
 import type { issuesApi } from "../api/issues";
@@ -3145,7 +3145,7 @@ describe("IssueDetail", () => {
     expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
   });
 
-  it("uses task activity for recency and ignores passive revisits", async () => {
+  it("refreshes task snapshots without promoting background activity or passive revisits", async () => {
     const authRequest = createDeferred<{
       session: { userId: string };
       user: { id: string };
@@ -3185,7 +3185,7 @@ describe("IssueDetail", () => {
           id: "issue-1",
           title: "Initial recent title",
           status: "todo",
-          recordedAt: 100,
+          recordedAt: 0,
         }),
       ]);
     });
@@ -3208,8 +3208,40 @@ describe("IssueDetail", () => {
     ).toMatchObject({
       title: "Snapshot refresh title",
       status: "in_progress",
-      recordedAt: 200,
+      recordedAt: 0,
     });
+  });
+
+  it.each(["reassignment", "run settings"])("advances recency only after a comment with %s saves", async (mode) => {
+    const issue = createIssue({ updatedAt: new Date(10) });
+    const comment = createIssueComment({ createdAt: new Date(30) });
+    const save = createDeferred<Issue & { comment: IssueComment }>();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getCore.mockResolvedValue(issue);
+    mockIssuesApi.update.mockReturnValue(save.promise);
+    recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(createIssue({ id: "newer-work" }), "user-1", 20);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = props.onAdd(comment.body, false,
+        mode === "reassignment" ? { assigneeAgentId: "agent-1", assigneeUserId: null } : undefined,
+        undefined, "recency-comment",
+        mode === "run settings" ? { model: "gpt-6-astra", effort: "high", fast: false } : undefined);
+    });
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalled());
+    const entries = () => readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
+    expect(entries().map(entry => entry.id)).toEqual(["newer-work", issue.id]);
+    await act(async () => {
+      save.resolve({ ...issue, updatedAt: new Date(15), comment });
+      await pending;
+    });
+    expect(entries().map(entry => entry.id)).toEqual([issue.id, "newer-work"]);
+    expect(entries()[0]?.recordedAt).toBe(30);
   });
 
   it.each([false, true])("renders a linked Decisions-v1 record in task context (Coordinator %s)", async (enabled) => {

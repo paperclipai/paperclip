@@ -247,12 +247,13 @@ deletes the ciphertext on expiry and excludes it from long-term backups. Refresh
 and supported revoke operations handle plaintext only in memory for one bounded
 request.
 
-Removing one managed Google profile revokes only the local Paperclip grant.
-Paperclip does not call Google's token revocation endpoint for that action.
-Google treats revocation as client-wide for the user, so a provider-side revoke
-could also invalidate the user's other managed Gmail, Drive, and Calendar
-profiles. A future provider-level disconnect must present that all-profiles
-effect explicitly.
+Removing a managed Google profile asks Paperclip Cloud to revoke the grant.
+Google treats revocation as client-wide for the user, so the broker revokes at
+Google only when no other live binding it knows of could share the grant, and
+otherwise reports that other connections remain. Paperclip commits the local
+removal first and calls the broker only after that; the answer never changes
+the local result. See "Removing a managed Google connection" in
+[GOOGLE-WORKSPACE.md](GOOGLE-WORKSPACE.md).
 
 ### Configure each originating Paperclip instance
 

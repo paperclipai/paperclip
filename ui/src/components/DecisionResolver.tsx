@@ -13,6 +13,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { NeedsYouPanel, NeedsYouPanelNote } from "./coordinator/NeedsYouCardKit";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 interface DecisionResolverProps {
   companyId: string;
@@ -91,7 +92,7 @@ function CompactDecision({ decision, resolveIssue, targetChanged, busy, errorMes
     .some((effect) => effect.staleness === "strict" && decisionEffectTargetIssueIds(effect).some((target) => stale.has(target))) ?? false;
   const body = decision.body?.trim();
   return (
-    <div className="space-y-4" data-decision-state="pending">
+    <div className={cn("space-y-4", ANALYTICS_MASK_CLASS)} data-decision-state="pending">
       <div className="space-y-3">
         <h2 data-decision-prompt className="text-base font-medium">{decision.title}</h2>
         {body ? <div className="text-sm text-muted-foreground"><MarkdownBody className="paperclip-markdown-on-accent">{body}</MarkdownBody></div> : null}

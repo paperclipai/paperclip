@@ -20,18 +20,17 @@ type RecentTaskGroupProps = {
   selectedChild?: RecentTaskEntry;
   children: ReactNode;
   className?: string;
-  rail?: boolean;
   renderChild?: (task: RecentTaskEntry) => ReactNode;
   /** Invalid cyclic ancestry remains reachable as plain task rows. */
   flattened?: boolean;
 };
 
 export function RecentTaskGroup(props: RecentTaskGroupProps) {
-  if (!props.task.subtaskCount || props.rail || props.flattened) return <>{props.children}</>;
+  if (!props.task.subtaskCount || props.flattened) return <>{props.children}</>;
   return <ExpandableRecentTaskGroup {...props} />;
 }
 
-function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, className, rail = false, renderChild }: RecentTaskGroupProps) {
+function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, className, renderChild }: RecentTaskGroupProps) {
   const [expanded, setExpanded] = useState(true);
   const [showAllLoaded, setShowAllLoaded] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
@@ -49,8 +48,8 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
     });
     observer.observe(anchor.current);
     return () => observer.disconnect();
-  }, [count, rail]);
-  const enabled = count > 0 && expanded && visible && !rail;
+  }, [count]);
+  const enabled = count > 0 && expanded && visible;
   const query = useInfiniteQuery({
     queryKey,
     queryFn: ({ pageParam, signal }) => readRecentSubtasks(signal, () => issuesApi.listCompact(task.companyId, {
@@ -91,7 +90,7 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
   const childRow = (child: RecentTaskEntry) => renderChild ? renderChild(child)
     : <RecentTaskNavItem task={child} label={child.title} className={className} iconNode={<StatusIcon {...taskStatusIconProps(child)} />} />;
 
-  if (!count || rail) return <>{children}</>;
+  if (!count) return <>{children}</>;
   return <div ref={anchor} className="min-w-0">
     <div className="flex min-w-0 items-center">
       <div className="min-w-0 flex-1">{children}</div>

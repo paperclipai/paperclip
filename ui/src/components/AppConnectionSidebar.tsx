@@ -24,6 +24,8 @@ import {
   type AppGalleryDisplayEntry,
 } from "@/pages/apps/app-definition-display";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 type AppDetailSidebarProps =
   | { kind: "connection"; connectionId: string }
@@ -103,7 +105,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
             darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
             size={28}
           />
-          <span className="flex-1 truncate text-sm font-bold text-foreground">{appName}</span>
+          <span className={cn("flex-1 truncate text-sm font-bold text-foreground", ANALYTICS_MASK_CLASS)}>{appName}</span>
         </div>
       </div>
 

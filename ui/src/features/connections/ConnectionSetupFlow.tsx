@@ -72,6 +72,7 @@ import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { appCopyFor, credentialFieldLabel } from "@/lib/app-gallery-copy";
+import { JsonSchemaForm, validateJsonSchemaForm, type JsonSchemaNode } from "@/components/JsonSchemaForm";
 import { AgentMultiSelect, type AgentMultiSelectOption } from "@/components/AgentMultiSelect";
 import { describeError } from "@/api/errors";
 import { InlineBanner } from "@/components/InlineBanner";
@@ -762,6 +763,7 @@ function StandardConnectionSetupFlow({
   const [connectionMethodKey, setConnectionMethodKey] = useState(aiConnection && aiConnection.mode !== "responsible_user" ? `ai-${aiConnection.method}` : "");
   const [instructionDraft, setInstructionDraft] = useState<{ slug: string; value: ConnectionAgentInstructions } | null>(null);
   const [configValues, setConfigValues] = useState<Record<string, string | boolean>>({});
+  const [pluginSettings, setPluginSettings] = useState<Record<string, unknown>>({});
   const [googleSheetsLinks, setGoogleSheetsLinks] = useState("");
   const [googleSheetsError, setGoogleSheetsError] = useState<string | null>(null);
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
@@ -1508,6 +1510,7 @@ function StandardConnectionSetupFlow({
           name: connectionName,
           credentialSource,
           ...(credentialSource === "paperclip_vault" ? { credentialValues: credentials } : {}),
+          ...(selectedMethod?.settingsSchema ? { settings: pluginSettings } : {}),
           ...(credentialSource === "vercel_connect"
             ? { vercelConnect: { connector: vercelConnector.trim() } }
             : {}),
@@ -1898,6 +1901,10 @@ function StandardConnectionSetupFlow({
           ),
         ),
       });
+      // A plugin connector's saved settings come back for resume and reconnect.
+      if (resumedMethod.settingsSchema && storedConfig.settings && typeof storedConfig.settings === "object" && !Array.isArray(storedConfig.settings)) {
+        setPluginSettings(storedConfig.settings as Record<string, unknown>);
+      }
     }
     const storedOAuth = storedConfig.oauth && typeof storedConfig.oauth === "object"
       ? storedConfig.oauth as Record<string, unknown>
@@ -2727,9 +2734,12 @@ function StandardConnectionSetupFlow({
             setCuratedOAuthClientSecret("");
             setVercelConnector("");
             setConfigValues(defaultMethodConfig(nextMethod));
+            setPluginSettings({});
           }}
           configValues={configValues}
           onConfigChange={setConfigValues}
+          pluginSettings={pluginSettings}
+          onPluginSettingsChange={setPluginSettings}
           googleSheetsLinks={googleSheetsLinks}
           googleSheetsError={googleSheetsError}
           onGoogleSheetsLinksChange={(next) => {
@@ -3375,6 +3385,8 @@ function KeyStep({
   onMethodChange,
   configValues,
   onConfigChange,
+  pluginSettings = {},
+  onPluginSettingsChange,
   googleSheetsLinks,
   googleSheetsError,
   onGoogleSheetsLinksChange,
@@ -3406,6 +3418,9 @@ function KeyStep({
   onMethodChange: (method: ConnectionMethodDef | null) => void;
   configValues: Record<string, string | boolean>;
   onConfigChange: (next: Record<string, string | boolean>) => void;
+  /** Settings of a plugin-served connector, rendered from its `settingsSchema`. */
+  pluginSettings?: Record<string, unknown>;
+  onPluginSettingsChange?: (next: Record<string, unknown>) => void;
   googleSheetsLinks: string;
   googleSheetsError: string | null;
   onGoogleSheetsLinksChange: (next: string) => void;
@@ -3495,7 +3510,11 @@ function KeyStep({
   const configFields = allConfigFields.filter((field) => !field.hidden);
   const standardConfigFields = configFields.filter((field) => field.advanced !== true);
   const advancedConfigFields = configFields.filter((field) => field.advanced === true);
-  const configFilled = allConfigFields.every((field) => {
+  const pluginSettingsErrors = method?.settingsSchema
+    ? validateJsonSchemaForm(method.settingsSchema as JsonSchemaNode, pluginSettings)
+    : {};
+  const pluginSettingsValid = Object.keys(pluginSettingsErrors).length === 0;
+  const configFilled = pluginSettingsValid && allConfigFields.every((field) => {
     if (!field.required) return true;
     const value = configValues[field.key];
     return typeof value === "boolean" || (typeof value === "string" && value.trim().length > 0);
@@ -3740,6 +3759,16 @@ function KeyStep({
         ) : null}
 
         {error ? <div role="alert"><InlineBanner tone="danger">{error}</InlineBanner></div> : null}
+
+        {method?.settingsSchema && onPluginSettingsChange ? (
+          <JsonSchemaForm
+            schema={method.settingsSchema as JsonSchemaNode}
+            values={pluginSettings}
+            onChange={onPluginSettingsChange}
+            errors={pluginSettingsErrors}
+            disabled={submitting}
+          />
+        ) : null}
 
         {standardConfigFields.map((field) => (
           <MethodConfigField

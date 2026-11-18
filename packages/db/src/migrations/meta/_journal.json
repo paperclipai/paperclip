@@ -3417,6 +3417,69 @@
       "when": 1794841384470,
       "tag": "0489_real_sage",
       "breakpoints": true
+    },
+    {
+      "idx": 490,
+      "version": "7",
+      "when": 1794923393849,
+      "tag": "0490_nappy_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 491,
+      "version": "7",
+      "when": 1794935383823,
+      "tag": "0491_common_gambit",
+      "breakpoints": true
+    },
+    {
+      "idx": 492,
+      "version": "7",
+      "when": 1794945751009,
+      "tag": "0492_hesitant_ultimo",
+      "breakpoints": true
+    },
+    {
+      "idx": 493,
+      "version": "7",
+      "when": 1794945752009,
+      "tag": "0493_chilly_jamie_braddock",
+      "breakpoints": true
+    },
+    {
+      "idx": 494,
+      "version": "7",
+      "when": 1794945753009,
+      "tag": "0494_misty_squadron_sinister",
+      "breakpoints": true
+    },
+    {
+      "idx": 495,
+      "version": "7",
+      "when": 1794945754009,
+      "tag": "0495_tiny_rage",
+      "breakpoints": true
+    },
+    {
+      "idx": 496,
+      "version": "7",
+      "when": 1794945755009,
+      "tag": "0496_broken_dorian_gray",
+      "breakpoints": true
+    },
+    {
+      "idx": 497,
+      "version": "7",
+      "when": 1794945756009,
+      "tag": "0497_purple_lady_bullseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 498,
+      "version": "7",
+      "when": 1794977210244,
+      "tag": "0498_quiet_hardball",
+      "breakpoints": true
     }
   ]
 }

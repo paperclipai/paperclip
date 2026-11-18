@@ -81,6 +81,7 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let mut descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -241,6 +242,7 @@ fn reopens_the_conversation_for_a_turn_after_a_suspension_stop() {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -359,6 +361,7 @@ fn only_a_restored_session_with_an_active_turn_polls_as_live() {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -444,6 +447,7 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -587,6 +591,7 @@ fn restores_a_turn_lost_to_a_runner_upgrade_under_the_new_launch_profile() {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -714,6 +719,7 @@ fn continues_a_settled_conversation_in_the_next_run_after_a_runner_upgrade() {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let mut descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
@@ -845,6 +851,7 @@ fn a_lost_cancellation_reply_still_settles_the_turn_and_suspends_the_runner() {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(60),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
