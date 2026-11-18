@@ -56,6 +56,7 @@ try {
     if (os.userInfo().username !== config.user) fail("different Linux user selected");
     if (process.env.WSL_DISTRO_NAME && process.env.WSL_DISTRO_NAME !== config.distro) fail("different WSL distribution selected");
     const instance = path.join(config.paperclipHome, "instances", config.instanceId);
+    if (!nativePath(instance)) fail("instance must be a native Linux path");
     const selectedConfig = path.join(instance, "config.json");
     const settings = JSON.parse(fs.readFileSync(selectedConfig, "utf8"));
     if ((settings.server?.port ?? 3100) !== config.port) fail("instance port differs from the local profile");
@@ -88,6 +89,7 @@ try {
       const selected = optionValue(name,short);
       if (selected !== undefined && path.resolve(repository,selected) !== expected) fail(name + " selects another instance");
     }
+    if (optionValue("--instance","-i") !== undefined && optionValue("--instance","-i") !== config.instanceId) fail("--instance selects another instance");
     let contextPath = path.join(config.paperclipHome, "context.json");
     for (let directory = repository;; directory = path.dirname(directory)) {
       const candidate = path.join(directory, ".paperclip", "context.json");
@@ -107,7 +109,12 @@ try {
       if (target) validateApiBase(target);
     }
     if (optionValue("--api-base")) validateApiBase(optionValue("--api-base"));
+    if (optionValue("--paperclip-url")) validateApiBase(optionValue("--paperclip-url"));
     const validateEnvironment = source => {
+      for (const key of Object.keys(source)) if (["PAPERCLIP_AGENT_JWT_SECRET","BETTER_AUTH_SECRET","PAPERCLIP_TOOL_ACTION_SIGNING_SECRET","PAPERCLIP_SECRETS_MASTER_KEY"].includes(key) || key.startsWith("PAPERCLIP_SECRETS_AWS_")) {
+        if (source[key] !== instanceEnvironment[key]) fail(key + " differs from the selected instance");
+      }
+      if (source.PAPERCLIP_RUNNER_BINARY !== undefined && !nativePath(source.PAPERCLIP_RUNNER_BINARY)) fail("PAPERCLIP_RUNNER_BINARY must be a native Linux path");
       for (const [key, expected] of [["PAPERCLIP_HOME", config.paperclipHome], ["PAPERCLIP_INSTANCE_ID", config.instanceId]]) {
         if (source[key] !== undefined && source[key] !== expected) fail(key + " selects another instance");
       }
@@ -144,9 +151,14 @@ try {
     }
     if (process.env.WSL_DISTRO_NAME && !config.capacityPath) fail("capacityPath must select the Windows volume that contains the WSL virtual disk");
     if (config.capacityPath !== undefined && (!config.capacityPath.startsWith("/mnt/") || !/^[a-z]$/.test(config.capacityPath.split("/")[2]))) fail("capacityPath must select a Windows host volume");
+    const capacityPath = fs.realpathSync(config.capacityPath ?? config.paperclipHome);
+    if (config.capacityPath) {
+      const mount = fs.realpathSync("/mnt/" + config.capacityPath.split("/")[2]);
+      if (capacityPath !== mount && !capacityPath.startsWith(mount + "/")) fail("capacityPath resolves outside the selected Windows host volume");
+    }
     const environment = { ...process.env, PATH: bins.join(":"), PAPERCLIP_HOME: config.paperclipHome, PAPERCLIP_INSTANCE_ID: config.instanceId, PAPERCLIP_CONFIG: selectedConfig, PAPERCLIP_DISABLE_CWD_ENV_FILE: "true", PAPERCLIP_CONTEXT: contextPath, PAPERCLIP_AUTH_STORE: path.join(config.paperclipHome, "auth.json") };
     for (const key of ["CARGO_HOME", "RUSTUP_HOME"]) if (config[key]) { if (!nativePath(config[key])) fail("invalid " + key); environment[key] = config[key]; }
-    const capacity = fs.statfsSync(config.capacityPath ?? config.paperclipHome);
+    const capacity = fs.statfsSync(capacityPath);
     const availableBytes = capacity.bavail * capacity.bsize;
     if (availableBytes < (config.minimumFreeBytes ?? 10 * 1024 ** 3)) fail("insufficient free host storage");
     const run = (command, parameters, stdio = "pipe") => {
@@ -173,6 +185,24 @@ try {
         paperclipRunnerSupportsPlatform("codex_local", process.platform, process.arch, "glibc", libcVersion[1]);
       if (commands.includes("--runner") && !runnerSupported) fail(`Paperclip Runner requires a supported Linux platform and glibc ${PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION} or newer`);
       if (commands.includes("--health")) {
+        const sockets = new Set(fs.readFileSync("/proc/net/tcp","utf8").trim().split("\n").slice(1).flatMap(line => {
+          const fields = line.trim().split(/\s+/);
+          const [address,port] = fields[1].split(":");
+          return fields[3] === "0A" && ["0100007F","00000000"].includes(address) && parseInt(port,16) === config.port ? ["socket:[" + fields[9] + "]"] : [];
+        }));
+        let ownsListener = false;
+        for (const pid of fs.readdirSync("/proc").filter(value => /^\d+$/.test(value))) {
+          try {
+            if (fs.statSync("/proc/" + pid).uid !== process.getuid()) continue;
+            if (!fs.readdirSync("/proc/" + pid + "/fd").some(fd => {
+              try { return sockets.has(fs.readlinkSync("/proc/" + pid + "/fd/" + fd)); } catch { return false; }
+            })) continue;
+            const values = Object.fromEntries(fs.readFileSync("/proc/" + pid + "/environ","utf8").split("\0").filter(Boolean).map(value => { const index = value.indexOf("="); return [value.slice(0,index),value.slice(index+1)]; }));
+            ownsListener = values.PAPERCLIP_CONFIG === selectedConfig && values.PAPERCLIP_HOME === config.paperclipHome && values.PAPERCLIP_INSTANCE_ID === config.instanceId;
+            if (ownsListener) break;
+          } catch {}
+        }
+        if (!ownsListener) fail("health listener does not belong to the selected instance");
         const response = await fetch(`http://127.0.0.1:${config.port}/api/health`, { signal: AbortSignal.timeout(5000) });
         if (!response.ok || (await response.json()).status !== "ok") fail("selected instance is not healthy");
       }

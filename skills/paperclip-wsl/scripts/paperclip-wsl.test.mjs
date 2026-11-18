@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, copyFile, writeFile, readFile, chmod, rm } from 'node:f
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const enabled = process.platform === 'linux';
 let root;
@@ -19,6 +19,8 @@ before(async () => {
   await mkdir(path.dirname(script), { recursive: true });
   await mkdir(path.join(repo, '.paperclip'), { recursive: true });
   await mkdir(instance, { recursive: true });
+  await mkdir(path.join(repo,'packages/shared/src'),{recursive:true});
+  await writeFile(path.join(repo,'packages/shared/src/agent-runner.ts'),'export const paperclipRunnerSupportsPlatform=()=>true; export const PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION="2.39";');
   await copyFile(fileURLToPath(new URL('./paperclip-wsl.mjs', import.meta.url)), script);
   const bins = [path.dirname(process.execPath), '/usr/local/bin', '/usr/bin', '/bin'];
   const home = path.join(root, 'data');
@@ -217,4 +219,16 @@ test('accepts the default server port when omitted by the config', {skip:!enable
 test('rejects a conflicting inherited secrets key without exposing either value',{skip:!enabled},async()=>{
   const file=path.join(root,'data','instances','default','.env');await writeFile(file,'PAPERCLIP_SECRETS_MASTER_KEY=selected-test-key\n');
   try{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")'],{PAPERCLIP_SECRETS_MASTER_KEY:'wrong-test-key'});assert.equal(result.status,1);assert.match(result.stderr,/PAPERCLIP_SECRETS_MASTER_KEY/);assert.doesNotMatch(result.stderr,/selected-test-key|wrong-test-key/);}finally{await rm(file);}
+});
+
+for(const key of ['PAPERCLIP_AGENT_JWT_SECRET','BETTER_AUTH_SECRET','PAPERCLIP_TOOL_ACTION_SIGNING_SECRET','PAPERCLIP_SECRETS_AWS_REGION','PAPERCLIP_SECRETS_AWS_PREFIX']) test('rejects another instance identity: '+key,{skip:!enabled},()=>{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")'],{[key]:'other-instance-value'});assert.equal(result.status,1);assert.match(result.stderr,new RegExp(key));assert.doesNotMatch(result.stderr,/other-instance-value/);});
+for(const args of [['company','import','--paperclip-url','https://other.invalid'],['service','stop','--instance','other'],['service','uninstall','-iother']]) test('rejects CLI alias '+args.join(' '),{skip:!enabled},()=>{const result=invoke(['exec','pnpm','paperclipai',...args]);assert.equal(result.status,1);assert.match(result.stderr,/another instance/);});
+test('rejects a Windows Runner binary override',{skip:!enabled},()=>{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")'],{PAPERCLIP_RUNNER_BINARY:'/mnt/c/runner.exe'});assert.equal(result.status,1);assert.match(result.stderr,/PAPERCLIP_RUNNER_BINARY/);});
+test('rejects capacity escaping the selected host mount',{skip:!enabled||!process.env.WSL_DISTRO_NAME},async()=>{const file=path.join(root,'repo','.paperclip','wsl.local.json');const saved=await readFile(file,'utf8');await writeFile(file,JSON.stringify({...JSON.parse(saved),capacityPath:'/mnt/c/..'}));try{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")']);assert.equal(result.status,1);assert.match(result.stderr,/capacityPath resolves outside/);}finally{await writeFile(file,saved);}});
+for(const selected of [false,true]) test('verifies the actual health listener identity ('+selected+')',{skip:!enabled},async()=>{
+ const profileFile=path.join(root,'repo','.paperclip','wsl.local.json'),configFile=path.join(root,'data','instances','default','config.json');
+ const savedProfile=await readFile(profileFile,'utf8'),savedConfig=await readFile(configFile,'utf8');
+ const child=spawn(process.execPath,['-e','const server=require("node:http").createServer((req,res)=>{res.setHeader("content-type","application/json");res.end(JSON.stringify({status:"ok"}));});server.listen(0,"127.0.0.1",()=>console.log(server.address().port));'],{env:{...environment,PAPERCLIP_HOME:selected?path.join(root,'data'):'/tmp/other-instance',PAPERCLIP_INSTANCE_ID:'default',PAPERCLIP_CONFIG:configFile},stdio:['ignore','pipe','pipe']});
+ try{const port=await new Promise((resolve,reject)=>{child.stdout.once('data',data=>resolve(Number(String(data).trim())));child.once('error',reject);child.once('exit',()=>reject(Error('listener exited before readiness')));});await writeFile(profileFile,JSON.stringify({...JSON.parse(savedProfile),port}));await writeFile(configFile,JSON.stringify({server:{port}}));const result=invoke(['preflight','--health']);assert.equal(result.status,selected?0:1,result.stderr);if(!selected)assert.match(result.stderr,/health listener does not belong/);
+ }finally{child.kill();await writeFile(profileFile,savedProfile);await writeFile(configFile,savedConfig);}
 });
