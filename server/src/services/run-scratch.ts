@@ -1,5 +1,7 @@
 import type { Dirent } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { retainedAiCredentialCleanupHomeInside } from "./retained-ai-credential-cleanup.js";
@@ -184,7 +186,12 @@ export function buildHeartbeatRunScratchEnv(
   return { env, tempKeysApplied };
 }
 
-type LstatFn = (p: string) => Promise<{ isDirectory: () => boolean; isSymbolicLink: () => boolean; dev: number; ino: number }>;
+type PathStatLike = {
+  isDirectory(): boolean;
+  isSymbolicLink(): boolean;
+  dev: number;
+  ino: number;
+};
 
 interface TreeIdentity {
   dev: number;
@@ -195,184 +202,374 @@ function identityOf(stats: { dev: number; ino: number }): TreeIdentity {
   return { dev: stats.dev, ino: stats.ino };
 }
 
-/** The path still resolves to the exact directory inode last seen there. */
-async function directoryIdentityMatches(p: string, expected: TreeIdentity, lstat: LstatFn): Promise<boolean> {
-  let stats;
-  try {
-    stats = await lstat(p);
-  } catch {
-    return false;
-  }
-  return !stats.isSymbolicLink() && stats.isDirectory() && stats.dev === expected.dev && stats.ino === expected.ino;
+/** Anchor for directory-entry operations: resolves inside the fd's directory. */
+const PROC_SELF_FD = "/proc/self/fd";
+
+function anchoredDirPath(fd: number): string {
+  return `${PROC_SELF_FD}/${fd}`;
 }
 
-/** The path still resolves to the exact entry (of any type) last seen there. */
-async function entryIdentityMatches(p: string, expected: TreeIdentity, lstat: LstatFn): Promise<boolean> {
-  let stats;
-  try {
-    stats = await lstat(p);
-  } catch {
-    return false;
+function anchoredEntryPath(fd: number, name: string): string {
+  return `${PROC_SELF_FD}/${fd}/${name}`;
+}
+
+/**
+ * Operations of the anchored removal walker. Directories are opened once and
+ * every entry operation then goes through `/proc/self/fd/<fd>/<name>`
+ * (openat-style semantics): the lookup resolves inside the directory the fd
+ * refers to, so no path component the walker does not hold open — including
+ * the scratch root itself — can be swapped for a symlink to redirect a
+ * deletion into a foreign tree. Platforms without `/proc/self/fd` make every
+ * walk fail closed (the directory is kept).
+ */
+export interface RunScratchWalkerOps {
+  /** Open a directory; a symlinked final component is refused unless `follow`. */
+  openDir(p: string, opts?: { follow?: boolean }): Promise<number>;
+  /** Identity of the directory held by `fd`. */
+  statDir(fd: number): Promise<TreeIdentity>;
+  /** `lstat` a path without following the final component. */
+  lstatPath(p: string): Promise<PathStatLike>;
+  /** `stat` a path, following symlinks. */
+  statPath(p: string): Promise<PathStatLike>;
+  /** Entries of the directory held by `fd`. */
+  listDir(fd: number): Promise<Dirent[]>;
+  unlink(p: string): Promise<void>;
+  rmdir(p: string): Promise<void>;
+  writeFile(p: string, data: string, options?: { mode?: number }): Promise<void>;
+  closeDir(fd: number): Promise<void>;
+}
+
+export function createDefaultRunScratchWalkerOps(): RunScratchWalkerOps {
+  const handles = new Map<number, FileHandle>();
+  return {
+    async openDir(p, opts) {
+      const handle = await fs.open(
+        p,
+        fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | (opts?.follow ? 0 : fsConstants.O_NOFOLLOW),
+      );
+      handles.set(handle.fd, handle);
+      return handle.fd;
+    },
+    async statDir(fd) {
+      const handle = handles.get(fd);
+      if (!handle) throw new Error(`run scratch walker fd ${fd} is not open`);
+      return identityOf(await handle.stat());
+    },
+    lstatPath: (p) => fs.lstat(p),
+    statPath: (p) => fs.stat(p),
+    listDir: (fd) => fs.readdir(anchoredDirPath(fd), { withFileTypes: true }),
+    unlink: (p) => fs.unlink(p),
+    rmdir: (p) => fs.rmdir(p),
+    writeFile: (p, data, options) => fs.writeFile(p, data, { mode: options?.mode }),
+    async closeDir(fd) {
+      const handle = handles.get(fd);
+      handles.delete(fd);
+      await handle?.close();
+    },
+  };
+}
+
+/**
+ * Test overrides either replace operations outright or wrap the same base
+ * instance the walker uses, so wrappers observe and delegate with one shared
+ * set of open directory handles.
+ */
+export type RunScratchWalkerOpsOverride =
+  | Partial<RunScratchWalkerOps>
+  | ((base: RunScratchWalkerOps) => Partial<RunScratchWalkerOps>);
+
+function resolveWalkerOps(overrides?: RunScratchWalkerOpsOverride): RunScratchWalkerOps {
+  const base = createDefaultRunScratchWalkerOps();
+  const partial = typeof overrides === "function" ? overrides(base) : overrides;
+  return { ...base, ...partial };
+}
+
+function direntType(entry: Dirent): "dir" | "link" | "other" | "unknown" {
+  if (entry.isDirectory()) return "dir";
+  if (entry.isSymbolicLink()) return "link";
+  if (
+    entry.isFile() || entry.isFIFO() || entry.isSocket() ||
+    entry.isBlockDevice() || entry.isCharacterDevice()
+  ) {
+    return "other";
   }
-  return stats.dev === expected.dev && stats.ino === expected.ino;
+  return "unknown";
 }
 
 interface WalkResult {
   complete: boolean;
-  /** Some path no longer resolved to the inode the walk had verified. */
+  /** Some listed name no longer matched what the anchored stat saw. */
   unstable: boolean;
 }
 
 async function removeEntriesWithinDevice(
-  dir: string,
-  dirIdentity: TreeIdentity,
+  dirFd: number,
   rootDevice: number,
-  lstat: LstatFn,
+  ops: RunScratchWalkerOps,
   skipTopNames?: Set<string>,
 ): Promise<WalkResult> {
-  let complete = true;
-  let unstable = false;
   let entries: Dirent[];
   try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
+    entries = await ops.listDir(dirFd);
   } catch {
     return { complete: false, unstable: false };
   }
-  // The listing must belong to the directory inode whose identity was verified
-  // before the descent: a path swapped for a symlink between the check and this
-  // readdir would make every unlink below act on a foreign tree.
-  if (!(await directoryIdentityMatches(dir, dirIdentity, lstat))) return { complete: false, unstable: true };
+  let complete = true;
+  let unstable = false;
   for (const entry of entries) {
     if (skipTopNames?.has(entry.name)) continue;
-    const entryPath = path.join(dir, entry.name);
-    let stats;
-    try {
-      stats = await lstat(entryPath);
-    } catch {
+    const entryPath = anchoredEntryPath(dirFd, entry.name);
+    // The anchored lstat resolves the name inside the directory the verified
+    // fd holds open: a directory swapped for a symlink anywhere between the
+    // root and here cannot redirect this lookup into a foreign tree.
+    const stats = await ops.lstatPath(entryPath).catch(() => null);
+    if (!stats) continue; // gone since the listing: nothing to remove
+    const statIsDirectory = stats.isDirectory() && !stats.isSymbolicLink();
+    const listedType = direntType(entry);
+    if (listedType !== "unknown" && (listedType === "dir") !== statIsDirectory) {
+      // The name changed type since the listing (for example a child
+      // directory swapped for a symlink): keep the tree and retry later.
+      complete = false;
+      unstable = true;
       continue;
     }
-    const identity = identityOf(stats);
-    // Symlinks are unlinked, never followed; regular files are unlinked. The
-    // identity re-check immediately before the unlink leaves a path swapped
-    // after the first lstat for a later pass instead of deleting the newcomer.
-    if (stats.isSymbolicLink() || !stats.isDirectory()) {
-      if (!(await entryIdentityMatches(entryPath, identity, lstat))) {
+    if (!statIsDirectory) {
+      // Files and symlinks are unlinked by name through the anchored path.
+      // unlink never follows a symlink and the anchored path cannot leave
+      // the verified directory: the worst outcome is unlinking a
+      // concurrently replaced name inside this same directory.
+      await ops.unlink(entryPath).catch(() => {
         complete = false;
-        unstable = true;
-        continue;
-      }
-      await fs.unlink(entryPath).catch(() => undefined);
+      });
       continue;
     }
-    // A different device is a mount point: keep it and everything below it.
-    if (stats.dev !== rootDevice) {
-      complete = false;
-      continue;
-    }
-    const child = await removeEntriesWithinDevice(entryPath, identity, rootDevice, lstat);
-    if (!child.complete) {
-      complete = false;
-      unstable = unstable || child.unstable;
-      continue;
-    }
-    // The directory may have been swapped while it was being emptied: only
-    // remove the exact inode that was recursed into.
-    if (!(await directoryIdentityMatches(entryPath, identity, lstat))) {
+    // Open the child through the anchored path refusing a symlinked final
+    // component: the fd then pins the child inode for the whole descent, so
+    // later swaps of any path component cannot redirect the removal below.
+    let childFd: number;
+    try {
+      childFd = await ops.openDir(entryPath);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue; // vanished since the listing
+      // Refused (the name no longer is the listed directory) or anchoring
+      // unavailable: keep fail-closed.
       complete = false;
       unstable = true;
       continue;
     }
     try {
-      await fs.rmdir(entryPath);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") continue;
-      if (code === "ENOTEMPTY") {
-        complete = false;
-        continue;
-      }
-      if (code === "ENOTDIR") {
+      const identity = await ops.statDir(childFd);
+      if (identity.dev !== stats.dev || identity.ino !== stats.ino) {
+        // The opened directory is not the inode the anchored lstat saw.
         complete = false;
         unstable = true;
         continue;
       }
-      throw error;
+      if (identity.dev !== rootDevice) {
+        // A different device is a mount point: keep it and everything below.
+        complete = false;
+        continue;
+      }
+      const child = await removeEntriesWithinDevice(childFd, rootDevice, ops);
+      if (!child.complete) {
+        complete = false;
+        unstable = unstable || child.unstable;
+        continue;
+      }
+      try {
+        await ops.rmdir(entryPath);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") continue;
+        if (code === "ENOTEMPTY") {
+          // A concurrent writer refilled the emptied directory.
+          complete = false;
+          continue;
+        }
+        // ENOTDIR: the name stopped being the emptied directory.
+        complete = false;
+        unstable = true;
+        continue;
+      }
+    } finally {
+      await ops.closeDir(childFd).catch(() => undefined);
     }
   }
   return { complete, unstable };
 }
 
+interface VerifiedDir {
+  fd: number;
+  identity: TreeIdentity;
+}
+
+/**
+ * Open `dir` refusing a symlinked final component and prove the fd refers to
+ * the inode the pre-flight lstat saw. A missing path throws ENOENT (callers
+ * decide whether that means already removed); a swapped or unusable path
+ * yields null so the tree is kept.
+ */
+async function openVerifiedDirectory(
+  dir: string,
+  ops: RunScratchWalkerOps,
+): Promise<VerifiedDir | null> {
+  const pre = await ops.lstatPath(dir);
+  if (!pre.isDirectory() || pre.isSymbolicLink()) return null;
+  let fd: number;
+  try {
+    fd = await ops.openDir(dir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error;
+    return null;
+  }
+  const identity = await ops.statDir(fd);
+  if (identity.dev !== pre.dev || identity.ino !== pre.ino) {
+    await ops.closeDir(fd).catch(() => undefined);
+    return null;
+  }
+  return { fd, identity };
+}
+
+/**
+ * Remove the directory's name from its parent through a parent fd held open
+ * (openat semantics): an ancestor swapped for a symlink cannot redirect the
+ * rmdir, and the entry is proven to still be the verified directory before
+ * the removal.
+ */
+async function removeDirNameViaParent(
+  dir: string,
+  expected: TreeIdentity,
+  ops: RunScratchWalkerOps,
+): Promise<"removed" | "missing" | "kept" | "unstable"> {
+  const parent = path.dirname(dir);
+  const name = path.basename(dir);
+  // The parent itself is opened by path (the run temp root may legitimately
+  // live behind a symlinked home); the pre/post identity comparison refuses
+  // a parent whose path changed between the stat and the open.
+  let parentFd: number;
+  let parentPre: PathStatLike;
+  try {
+    parentPre = await ops.statPath(parent);
+    parentFd = await ops.openDir(parent, { follow: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    throw error;
+  }
+  try {
+    const parentIdentity = await ops.statDir(parentFd);
+    if (parentIdentity.dev !== parentPre.dev || parentIdentity.ino !== parentPre.ino) {
+      return "unstable";
+    }
+    const entryPath = anchoredEntryPath(parentFd, name);
+    const entry = await ops.lstatPath(entryPath).catch(() => null);
+    if (!entry) return "missing";
+    if (!entry.isDirectory() || entry.isSymbolicLink() || entry.dev !== expected.dev || entry.ino !== expected.ino) {
+      return "unstable";
+    }
+    try {
+      await ops.rmdir(entryPath);
+      return "removed";
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return "missing";
+      if (code === "ENOTEMPTY") return "kept";
+      if (code === "ENOTDIR") return "unstable";
+      throw error;
+    }
+  } finally {
+    await ops.closeDir(parentFd).catch(() => undefined);
+  }
+}
+
 /**
  * Recursively remove a directory tree without following symlinks and without
- * crossing mount points. Returns `complete: false` when something had to be
- * kept (mount point, concurrent writer); the directory itself then remains.
+ * crossing mount points. Every entry operation is anchored to a directory fd
+ * held open for the descent, so swapping any path component for a symlink
+ * cannot redirect a deletion outside the tree. Returns `complete: false`
+ * when something had to be kept (mount point, concurrent writer, unstable
+ * tree); the directory itself then remains.
  */
 export async function removeRunTempTree(
   dir: string,
-  opts?: { lstat?: LstatFn },
+  opts?: { walkerOps?: RunScratchWalkerOpsOverride },
 ): Promise<{ complete: boolean }> {
-  const lstat: LstatFn = opts?.lstat ?? ((p: string) => fs.lstat(p));
-  const rootStat = await lstat(dir);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return { complete: false };
-  const identity = identityOf(rootStat);
-  const walk = await removeEntriesWithinDevice(dir, identity, rootStat.dev, lstat);
-  if (!walk.complete) return { complete: false };
-  if (!(await directoryIdentityMatches(dir, identity, lstat))) return { complete: false };
+  const ops = resolveWalkerOps(opts?.walkerOps);
+  let verified: VerifiedDir | null = null;
   try {
-    await fs.rmdir(dir);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return { complete: true };
-    if (code === "ENOTEMPTY" || code === "ENOTDIR") return { complete: false };
-    throw error;
+    verified = await openVerifiedDirectory(dir, ops);
+    if (!verified) return { complete: false };
+    const walk = await removeEntriesWithinDevice(verified.fd, verified.identity.dev, ops);
+    if (!walk.complete) return { complete: false };
+    const removed = await removeDirNameViaParent(dir, verified.identity, ops);
+    return { complete: removed === "removed" || removed === "missing" };
+  } finally {
+    if (verified) await ops.closeDir(verified.fd).catch(() => undefined);
   }
-  return { complete: true };
 }
 
 /**
  * Remove a marked run scratch directory while keeping the ownership marker —
- * and its retry evidence — until every other entry is gone. An interrupted
- * removal (mount point, concurrent writer) leaves a still-marked directory a
- * later retry can act on, instead of an unrecoverable unmarked orphan.
+ * and its retry evidence — until every other entry is gone. The whole removal
+ * is anchored to directory fds: the marker is unlinked and restored through
+ * the verified directory itself, never through a path a swap could redirect,
+ * and the final rmdir targets the proven entry inside a parent fd held open.
+ * An interrupted removal (mount point, concurrent writer, unstable tree)
+ * leaves a still-marked directory a later retry can act on, instead of an
+ * unrecoverable unmarked orphan.
  */
 async function removeMarkedRunScratchDir(
   dir: string,
   marker: HeartbeatRunScratchMetadata,
-  lstat?: LstatFn,
+  walkerOps?: RunScratchWalkerOpsOverride,
 ): Promise<{ complete: boolean; cause?: "blocked" | "unstable" }> {
-  const statFn: LstatFn = lstat ?? ((p: string) => fs.lstat(p));
-  const rootStat = await statFn(dir);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return { complete: false, cause: "unstable" };
-  const identity = identityOf(rootStat);
-  const walk = await removeEntriesWithinDevice(dir, identity, rootStat.dev, statFn, new Set([HEARTBEAT_RUN_SCRATCH_MARKER]));
-  if (!walk.complete) return { complete: false, cause: walk.unstable ? "unstable" : "blocked" };
-  // Only unlink the marker once the path provably still is the verified
-  // directory: the marker — and its retry evidence — must never vanish into
-  // a swapped-in tree.
-  if (!(await directoryIdentityMatches(dir, identity, statFn))) return { complete: false, cause: "unstable" };
-  const markerPath = path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER);
-  await fs.unlink(markerPath).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  });
-  if (!(await directoryIdentityMatches(dir, identity, statFn))) {
-    // Swapped between the marker unlink and now: restoring the marker through
-    // the new path would write into a foreign tree. The emptied original
-    // directory left with the swap; nothing more can be done safely.
-    return { complete: false, cause: "unstable" };
-  }
+  const ops = resolveWalkerOps(walkerOps);
+  let verified: VerifiedDir | null = null;
   try {
-    await fs.rmdir(dir);
-    return { complete: true };
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOTDIR") return { complete: false, cause: "unstable" };
-    if (code === "ENOENT") return { complete: true };
-    // A concurrent writer can repopulate the emptied directory: restore the
-    // ownership evidence so a later retry can still prove ownership.
-    await fs.writeFile(markerPath, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
-    if (code === "ENOTEMPTY") return { complete: false, cause: "blocked" };
-    throw error;
+    verified = await openVerifiedDirectory(dir, ops);
+    if (!verified) return { complete: false, cause: "unstable" };
+    const walk = await removeEntriesWithinDevice(
+      verified.fd,
+      verified.identity.dev,
+      ops,
+      new Set([HEARTBEAT_RUN_SCRATCH_MARKER]),
+    );
+    if (!walk.complete) return { complete: false, cause: walk.unstable ? "unstable" : "blocked" };
+    // Unlink the marker through the anchored path only once every other
+    // entry is gone: it always targets the verified directory itself, never
+    // a swapped-in tree, so the retry evidence cannot vanish elsewhere.
+    const markerFailed = await ops.unlink(anchoredEntryPath(verified.fd, HEARTBEAT_RUN_SCRATCH_MARKER)).then(
+      () => false,
+      (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+    );
+    if (markerFailed) return { complete: false, cause: "blocked" };
+    let removed: "removed" | "missing" | "kept" | "unstable";
+    try {
+      removed = await removeDirNameViaParent(dir, verified.identity, ops);
+    } catch (error) {
+      await restoreMarkerThroughFd(ops, verified.fd, marker);
+      throw error;
+    }
+    if (removed === "removed" || removed === "missing") return { complete: true };
+    // The emptied directory could not be removed by name (a concurrent
+    // writer refilled it, or the name was swapped after the walk): restore
+    // the marker through the anchored fd — the original directory, wherever
+    // it now lives, keeps the ownership evidence a later retry needs.
+    await restoreMarkerThroughFd(ops, verified.fd, marker);
+    return { complete: false, cause: removed === "kept" ? "blocked" : "unstable" };
+  } finally {
+    if (verified) await ops.closeDir(verified.fd).catch(() => undefined);
   }
+}
+
+async function restoreMarkerThroughFd(
+  ops: RunScratchWalkerOps,
+  fd: number,
+  marker: HeartbeatRunScratchMetadata,
+): Promise<void> {
+  await ops
+    .writeFile(anchoredEntryPath(fd, HEARTBEAT_RUN_SCRATCH_MARKER), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 })
+    .catch(() => undefined);
 }
 
 export async function cleanupHeartbeatRunScratch(input: {
@@ -381,7 +578,7 @@ export async function cleanupHeartbeatRunScratch(input: {
   isProcessGroupAlive?: (processGroupId: number | null | undefined) => boolean;
   /** Persist recovery evidence after ownership/liveness checks, before removal. */
   beforeRemove?: () => Promise<void>;
-  lstat?: LstatFn;
+  walkerOps?: RunScratchWalkerOpsOverride;
   runTempRootOverride?: string;
 }): Promise<HeartbeatRunScratchCleanupResult> {
   const dir = path.resolve(input.scratch.dir);
@@ -415,7 +612,7 @@ export async function cleanupHeartbeatRunScratch(input: {
   }
 
   await input.beforeRemove?.();
-  const removal = await removeMarkedRunScratchDir(dir, input.scratch.metadata, input.lstat);
+  const removal = await removeMarkedRunScratchDir(dir, input.scratch.metadata, input.walkerOps);
   if (!removal.complete) {
     return { removed: false, dir, reason: removal.cause === "unstable" ? "unsafe_tree" : "mount_point_present" };
   }
@@ -491,8 +688,8 @@ export async function sweepOrphanedRunScratch(input: {
   tmpRoot?: string;
   /** Overrides the per-run temp root (tests). */
   runTempRootOverride?: string;
-  /** Overrides the lstat used by the removal walk (tests). */
-  lstat?: LstatFn;
+  /** Overrides the operations used by the removal walk (tests). */
+  walkerOps?: RunScratchWalkerOpsOverride;
   maxScan?: number;
   maxRemove?: number;
 }): Promise<SweepRunScratchResult> {
@@ -588,7 +785,7 @@ export async function sweepOrphanedRunScratch(input: {
         result.kept += 1;
         continue;
       }
-      const removal = await removeMarkedRunScratchDir(dir, marker, input.lstat);
+      const removal = await removeMarkedRunScratchDir(dir, marker, input.walkerOps);
       if (!removal.complete) {
         result.kept += 1;
         continue;
