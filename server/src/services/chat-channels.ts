@@ -157,7 +157,7 @@ import { canPublishIssueToChatAudience } from "./authorization.js";
 import { buildChatCommunicationGuidance } from "./chat-communication-guidance.js";
 import { assertChatTaskCreationAccess, resolveChatExecutionDefaults } from "./chat-execution-defaults.js";
 
-import { githubAutomaticAdmission } from "./chat-github-events.js";
+import { githubAutomaticAdmission, githubCommentMentionsOnlyInCode } from "./chat-github-events.js";
 import type { GitHubReviewEventContext, GitHubIssueEventContext, GitHubReviewPolicy } from "@paperclipai/shared";
 
 import { resumeExternalConversation } from "./slack-conversation-state.js";
@@ -3487,7 +3487,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     prepareProviderInventory, reconcileProviderResourceRows, listResources, replaceResources, update, configure, test, handleWebhook,
     get githubWizardOrigin() { return options.githubWizardOrigin; },
   });
-  const { prepareInboundEnvelope } = createInboundEnvelope(db, { runtimeFor, sanitizeFilename, githubManualMessages, githubAutomaticMessages, githubIssueMessages });
+  const { prepareInboundEnvelope } = createInboundEnvelope(db, { runtimeFor, sanitizeFilename, githubManualMessages, githubAutomaticMessages, githubIssueMessages, githubCommentMentionsOnlyInCode });
   const { admitInboundMessage } = createInboundAdmission(db, { runtimeGeneration, credentialFingerprint, leasedChatProvider, renewDiscordGatewayOwnershipForMessageAdmission, ensureResource, DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS });
   const { admitMessageResource } = createMessageResourceAdmission(db, { ensureResource });
   const messageLifecycle = createChatMessageLifecycle(db, {

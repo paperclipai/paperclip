@@ -52,11 +52,6 @@ import {
 import {
   githubAttachmentLimitOmissions,
 } from "../../chat-github-attachments.js";
-import {
-  githubBodyMentionsBot,
-  githubCommentMarkdownBody,
-} from "../../chat-github-events.js";
-
 import { chatProviderConversationUrl } from "../../chat-provider-links.js";
 
 import type {
@@ -84,16 +79,17 @@ type InboundEnvelopeOptions = {
   githubManualMessages: WeakMap<object, { policy: GitHubReviewPolicy; revision: number; event: "mention" | "comment" }>;
   githubAutomaticMessages: WeakMap<object, { context: GitHubReviewEventContext; revision: number; policy: GitHubReviewPolicy }>;
   githubIssueMessages: WeakMap<object, { context: GitHubIssueEventContext; revision: number; policy: GitHubReviewPolicy }>;
+  githubCommentMentionsOnlyInCode: (message: Message, botUsername: string | null) => boolean;
 };
 export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
-  const { runtimeFor, sanitizeFilename, githubManualMessages, githubAutomaticMessages, githubIssueMessages } = options;
+  const { runtimeFor, sanitizeFilename, githubManualMessages, githubAutomaticMessages, githubIssueMessages, githubCommentMentionsOnlyInCode } = options;
   async function prepareInboundEnvelope(input: InboundEnvelopeInput) {
     const { endpoint, thread, message, trigger, receiptReactionSupported, recoveredProviderUrl, runtimeContext, providerUpdateId, admittedDeliveryId, suppressSetupDestinationActivation, slackSlashControl } = input;
     const githubAutomatic = endpoint.provider === "github" ? githubAutomaticMessages.get(message) : undefined;
     const githubIssue = endpoint.provider === "github" ? githubIssueMessages.get(message) : undefined;
     let effectiveTrigger = trigger;
-    if (endpoint.provider === "github" && message.isMention === true
-        && !githubBodyMentionsBot(githubCommentMarkdownBody(message), endpoint.botUsername)) {
+    if (endpoint.provider === "github" && !githubAutomatic && !githubIssue && message.isMention === true
+        && githubCommentMentionsOnlyInCode(message, endpoint.botUsername)) {
       message.isMention = false;
       if (effectiveTrigger === "mention") effectiveTrigger = "unaddressed_message";
     }

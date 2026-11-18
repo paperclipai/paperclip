@@ -1,6 +1,6 @@
-import type { GitHubReviewPolicy } from "@paperclipai/shared";
+import type { GitHubReviewEventContext, GitHubReviewPolicy } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import { githubAutomaticIssueEvent, githubBodyMentionsBot, githubExplicitMentionEvent } from "./chat-github-events.js";
+import { githubAutomaticIssueEvent, githubBodyMentionsBot, githubCommentMentionsOnlyInCode, githubExplicitMentionEvent } from "./chat-github-events.js";
 import { createInboundEnvelope } from "./chat-channels/inbound/envelope.js";
 
 function payload() {
@@ -70,6 +70,12 @@ describe("explicit GitHub mentions", () => {
     expect(mention!.threadId).toBe(`github:Test/Repo:${event === "issues" || event === "issue_comment" ? "issue:" : ""}2${event === "pull_request_review_comment" ? ":rc:99" : ""}`);
   });
 
+  it("keeps a mention in a list continuation paragraph after a blank line", () => {
+    expect(githubBodyMentionsBot("- item\n\n    @maya help", "maya[bot]")).toBe(true);
+    expect(githubBodyMentionsBot("- item\n\n      @maya help", "maya[bot]")).toBe(false);
+    expect(githubBodyMentionsBot("- item\n\n    ```\n      @maya help\n    ```", "maya[bot]")).toBe(false);
+  });
+
   it("downgrades a code-only mention trigger before the envelope is addressed", async () => {
     const message = {
       id: "m1", text: "@maya", isMention: true,
@@ -87,6 +93,7 @@ describe("explicit GitHub mentions", () => {
       githubManualMessages,
       githubAutomaticMessages: new WeakMap(),
       githubIssueMessages: new WeakMap(),
+      githubCommentMentionsOnlyInCode,
     });
     const envelope = await prepareInboundEnvelope({
       endpoint, thread, message,
@@ -102,6 +109,39 @@ describe("explicit GitHub mentions", () => {
     expect(envelope.normalized.trigger).toBe("unaddressed_message");
     expect(envelope.normalized.message.mentionedBot).toBe(false);
     expect(envelope.redactedDestinationNormalized.trigger).toBe("unaddressed_message");
+  });
+
+  it("keeps the automatic mention trigger when generated text names no bot", async () => {
+    const message = {
+      id: "m2", text: "GitHub pull request opened for the assigned Paperclip agent.", isMention: true,
+      author: { userId: "u1", fullName: "A", userName: "a" },
+      attachments: [], metadata: {}, raw: {},
+    };
+    const thread = { id: "github:Acme/Repo:3", channelId: "github:acme/repo", channel: { name: "acme/repo" }, isDM: false };
+    const endpoint = { id: "e1", companyId: "c1", provider: "github", botUsername: "maya[bot]", providerAccountId: "1", botExternalId: "b1" };
+    const githubAutomaticMessages = new WeakMap<object, { context: GitHubReviewEventContext; revision: number; policy: GitHubReviewPolicy }>();
+    githubAutomaticMessages.set(message, { context: {} as GitHubReviewEventContext, revision: 1, policy: {} as GitHubReviewPolicy });
+    const { prepareInboundEnvelope } = createInboundEnvelope({} as never, {
+      runtimeFor: async () => ({}) as never,
+      sanitizeFilename: (v) => v ?? null,
+      githubManualMessages: new WeakMap(),
+      githubAutomaticMessages,
+      githubIssueMessages: new WeakMap(),
+      githubCommentMentionsOnlyInCode,
+    });
+    const envelope = await prepareInboundEnvelope({
+      endpoint, thread, message,
+      trigger: "mention",
+      receiptReactionSupported: false,
+      recoveredProviderUrl: null,
+      admittedDeliveryId: null,
+      suppressSetupDestinationActivation: false,
+      slackSlashControl: false,
+    } as never);
+    expect(envelope.addressed).toBe(true);
+    expect(envelope.eventKind).toBe("mention");
+    expect(envelope.normalized.trigger).toBe("mention");
+    expect(envelope.normalized.message.mentionedBot).toBe(true);
   });
   it("puts PR conversation comments in the PR thread, and preserves the SDK comment identity", () => {
     const input = { ...payload(), action: "created", issue: { ...payload().issue, pull_request: {} }, comment: { id: 123, body: "@maya help" } };

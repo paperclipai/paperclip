@@ -72,7 +72,7 @@ function stripGitHubCommentCodeSpans(body: string): string {
   let fenceLen = 0;
   let indentedCode = false;
   let blankContext = true;
-  let listContext = false;
+  let listIndent: number | null = null;
   for (const line of body.split(/\r\n|\r|\n/)) {
     if (fenceChar !== null) {
       const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
@@ -80,29 +80,33 @@ function stripGitHubCommentCodeSpans(body: string): string {
         fenceChar = null;
       continue;
     }
-    const indented = /^(?: {4}|\t)/.test(line);
+    const leading = (line.match(/^[ \t]*/) ?? [""])[0];
+    const indent = leading.includes("\t") ? 4 : leading.length;
+    const indented = indent >= 4;
     if (indentedCode) {
       if (line.trim() === "" || indented) continue;
       indentedCode = false;
     }
     if (line.trim() === "") {
       blankContext = true;
-      listContext = false;
       continue;
     }
     const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
-    if (indented && blankContext) {
+    if (indented && blankContext && indent >= (listIndent ?? 0) + 4) {
       indentedCode = true;
       continue;
     }
-    if (run && (!indented || listContext)) {
+    if (run && (!indented || (listIndent !== null && indent < listIndent + 4))) {
       fenceChar = run[1][0];
       fenceLen = run[1].length;
       continue;
     }
     kept.push(line);
     blankContext = false;
-    if (!indented) listContext = /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]/.test(line);
+    if (!indented) {
+      const marker = line.match(/^( {0,3})([-*+]|\d{1,9}[.)])[ \t]/);
+      listIndent = marker ? marker[1].length + marker[2].length + 1 : null;
+    }
   }
   return stripInlineCodeSpans(kept.join("\n"));
 }
@@ -117,13 +121,28 @@ export function githubCommentMarkdownBody(message: { raw?: unknown; text?: strin
   return message?.text ?? "";
 }
 
+function githubMentionPattern(username: string): RegExp | null {
+  const name = username.replace(/\[bot\]$/i, "");
+  if (!name) return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w-])@${escaped}(?:\\[bot\\])?(?![\\w-])`, "i");
+}
+
 export function githubBodyMentionsBot(body: string, username: string | null): boolean {
   if (!username) return false;
-  const name = username.replace(/\[bot\]$/i, "");
-  if (!name) return false;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const mention = new RegExp(`(?<![\\w-])@${escaped}(?:\\[bot\\])?(?![\\w-])`, "i");
-  return mention.test(stripGitHubCommentCodeSpans(body));
+  const mention = githubMentionPattern(username);
+  return mention !== null && mention.test(stripGitHubCommentCodeSpans(body));
+}
+
+export function githubCommentMentionsOnlyInCode(
+  message: { raw?: unknown; text?: string },
+  username: string | null,
+): boolean {
+  if (!username) return false;
+  const mention = githubMentionPattern(username);
+  if (!mention) return false;
+  const body = githubCommentMarkdownBody(message);
+  return mention.test(body) && !mention.test(stripGitHubCommentCodeSpans(body));
 }
 
 /**
