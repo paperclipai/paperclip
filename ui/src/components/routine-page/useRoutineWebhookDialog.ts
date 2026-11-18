@@ -31,6 +31,8 @@ export function useRoutineWebhookDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const queue = useRef<PendingWebhookKey[]>([]);
+  /** A change is being saved; closing waits for it so a half-started test is never left behind. */
+  const busyRef = useRef(false);
 
   const saved = triggerId ? triggers.find((trigger) => trigger.id === triggerId) ?? null : null;
   const trigger = saved ?? (created && created.id === triggerId ? created : null);
@@ -40,6 +42,7 @@ export function useRoutineWebhookDialog({
 
   const run = useCallback(
     async (action: () => Promise<void>, failure: string) => {
+      busyRef.current = true;
       setBusy(true);
       setError(null);
       try {
@@ -50,6 +53,7 @@ export function useRoutineWebhookDialog({
         setError(describeError(cause, { action: failure }).body);
         return false;
       } finally {
+        busyRef.current = false;
         setBusy(false);
       }
     },
@@ -84,8 +88,9 @@ export function useRoutineWebhookDialog({
     [showNextPendingKey],
   );
 
-  /** Closes the dialog, ending setup or test mode first. */
+  /** Closes the dialog, ending setup or test mode first. Ignored while a change is saving. */
   const close = useCallback(async () => {
+    if (busyRef.current) return;
     const current = trigger;
     if (current?.setupPending) {
       // Stay open if this fails, so the error is seen and the webhook is not left in test mode unnoticed.

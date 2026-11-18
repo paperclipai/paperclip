@@ -21,11 +21,11 @@ import {
   RoutineSubpage,
   type RoutinePageAgent,
   type RoutinePageProject,
-  type RoutineResponsibility,
 } from "@/components/routine-page/RoutinePage";
 import { RoutineWebhookDialog } from "@/components/routine-page/RoutineWebhookDialog";
 import {
   PartialRoutineSaveError,
+  buildRoutineResponsibilityChoices,
   routineFieldsChanged,
   routineFieldsPayload,
   routineToDraft,
@@ -89,7 +89,10 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   const [runOpen, setRunOpen] = useState(false);
   const [commentsOpen, setCommentsOpen] = useState(false);
   /** The revision the open form started from; refreshed after this person's own changes. */
-  const baseRevisionRef = useRef<string | null>(null);
+  const baseRevisionRef = useRef<{ id: string | null; number: number } | null>(null);
+  /** The direct responsibility when the form opened; Save only moves the link when the person changed it. */
+  const editResponsibilityRef = useRef("");
+  const [pageRemoved, setPageRemoved] = useState<RoutineTrigger[]>([]);
   const editOpenRef = useRef(false);
   editOpenRef.current = editOpen;
   const [webhookDialogOpen, setWebhookDialogOpen] = useState(false);
@@ -134,7 +137,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     enabled: options.responsibilitiesOn,
   });
   const linkEntries = linksQuery.data?.responsibilities;
-  const directResponsibilityId = linkEntries?.find((entry) => entry.via === "direct")?.id ?? "";
+  const linksView = useQueryView(linksQuery);
 
   const annotationTarget = { kind: "routine" as const, routineId, documentKey: "description" as const };
   const annotationsQuery = useQuery({
@@ -150,7 +153,12 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   /** Refetches the routine after a change; an open form adopts the new revision as its own. */
   const refreshRoutine = useCallback(async () => {
     const fresh = await queryClient.fetchQuery({ queryKey: detailKey, queryFn: () => routinesApi.get(routineId), staleTime: 0 });
-    if (editOpenRef.current) baseRevisionRef.current = fresh.latestRevisionId;
+    // Each change made from the open form adds one revision. Adopt it only when
+    // nothing else changed the routine, so a save still reports someone else's edit.
+    const base = baseRevisionRef.current;
+    if (editOpenRef.current && base && fresh.latestRevisionNumber - base.number <= 1) {
+      baseRevisionRef.current = { id: fresh.latestRevisionId, number: fresh.latestRevisionNumber };
+    }
     void queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(companyId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routineId) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(companyId, routineId) });
@@ -163,6 +171,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     onChanged: refreshRoutine,
     onRemoved: (trigger) => {
       if (editOpenRef.current) setRemovedWebhooks((current) => [...current, trigger]);
+      else setPageRemoved((current) => [...current, trigger]);
     },
   });
   useEffect(() => setWebhookDialogOpen(webhook.open), [webhook.open]);
@@ -206,20 +215,25 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     onError: (error) => toastError("Routine run failed", error, "start the routine run"),
   });
 
-  const changeSchedule = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: Record<string, unknown> }) => routinesApi.updateTrigger(id, patch),
-    onSuccess: async (_trigger, { patch }) => {
-      pushToast({ title: patch.archived ? "Schedule removed" : "Schedule saved", tone: "success" });
+  /** Saves, pauses, resumes, removes (with Undo on the page) or restores one trigger from the page. */
+  const changeTrigger = useMutation({
+    mutationFn: ({ trigger, patch }: { trigger: RoutineTrigger; patch: Record<string, unknown>; success: string }) =>
+      routinesApi.updateTrigger(trigger.id, patch),
+    onSuccess: async (_saved, { trigger, patch, success }) => {
+      if (patch.archived === true) setPageRemoved((current) => [...current, trigger]);
+      else if (patch.archived === false) setPageRemoved((current) => current.filter((item) => item.id !== trigger.id));
+      else pushToast({ title: success, tone: "success" });
       await refreshRoutine();
     },
-    onError: (error) => toastError("Couldn’t save the schedule", error, "save the schedule"),
+    onError: (error) => toastError("Couldn’t change this trigger", error, "change this trigger"),
   });
+  const triggerById = (id: string) => routineRef.current?.triggers.find((trigger) => trigger.id === id);
 
   const saveEdits = useMutation({
     mutationFn: async (draft: RoutineFormDraft) => {
       const latest = routineRef.current;
       if (!latest) throw new Error("This routine is still loading. Try again in a moment.");
-      const saved = routineToDraft(latest, directResponsibilityId);
+      const saved = routineToDraft(latest, editResponsibilityRef.current);
       const responsibleUserChanged = Boolean(draft.responsibleUserId)
         && draft.responsibleUserId !== saved.responsibleUserId
         && latest.canChangeResponsibleUser !== false;
@@ -229,9 +243,9 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
         const updated = await routinesApi.update(routineId, {
           ...routineFieldsPayload(draft),
           ...(responsibleUserChanged ? { responsibleUserId: draft.responsibleUserId } : {}),
-          ...(baseRevisionRef.current ? { baseRevisionId: baseRevisionRef.current } : {}),
+          ...(baseRevisionRef.current?.id ? { baseRevisionId: baseRevisionRef.current.id } : {}),
         });
-        baseRevisionRef.current = updated.latestRevisionId;
+        baseRevisionRef.current = { id: updated.latestRevisionId, number: updated.latestRevisionNumber };
         warnings = configurationWarningMessages(updated);
         savedSomething = true;
       }
@@ -246,7 +260,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
       }
       if (options.responsibilitiesOn) {
         try {
-          if (await syncRoutineResponsibility(routineId, saved.responsibilityId, draft.responsibilityId)) {
+          if (await syncRoutineResponsibility(routineId, editResponsibilityRef.current, draft.responsibilityId)) {
             await queryClient.invalidateQueries({ queryKey: queryKeys.responsibilities.all });
           }
         } catch (error) {
@@ -276,28 +290,48 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     },
   });
 
-  const openEdit = useCallback(() => {
+  /** The routine's direct responsibility, read before the form opens so Save never unlinks one it had not loaded. */
+  const loadDirectResponsibility = useCallback(async () => {
+    if (!options.responsibilitiesOn) return "";
+    const links = await queryClient.fetchQuery({
+      queryKey: queryKeys.responsibilities.routineLinks(companyId, routineId),
+      queryFn: () => responsibilitiesApi.lookupRoutineLinks(companyId, routineId),
+    });
+    return links.responsibilities.find((entry) => entry.via === "direct")?.id ?? "";
+  }, [companyId, options.responsibilitiesOn, queryClient, routineId]);
+
+  const openEdit = useCallback(async () => {
     const current = routineRef.current;
     if (!current) return;
-    setEditInitial(routineToDraft(current, directResponsibilityId));
-    baseRevisionRef.current = current.latestRevisionId;
+    let responsibilityId = "";
+    try {
+      responsibilityId = await loadDirectResponsibility();
+    } catch (error) {
+      toastError("Couldn’t open the editor", error, "load this routine’s responsibility");
+      return;
+    }
+    editResponsibilityRef.current = responsibilityId;
+    setEditInitial(routineToDraft(current, responsibilityId));
+    baseRevisionRef.current = { id: current.latestRevisionId, number: current.latestRevisionNumber };
     setSaveConflict(false);
     setSaveError(null);
     setRemovedWebhooks([]);
     setEditOpen(true);
-  }, [directResponsibilityId]);
+  }, [loadDirectResponsibility, toastError]);
 
   const reloadLatest = useCallback(async () => {
     try {
       const fresh = await refreshRoutine();
-      baseRevisionRef.current = fresh.latestRevisionId;
-      setEditInitial(routineToDraft(fresh, directResponsibilityId));
+      const responsibilityId = await loadDirectResponsibility();
+      editResponsibilityRef.current = responsibilityId;
+      baseRevisionRef.current = { id: fresh.latestRevisionId, number: fresh.latestRevisionNumber };
+      setEditInitial(routineToDraft(fresh, responsibilityId));
       setSaveConflict(false);
       setSaveError(null);
     } catch (error) {
       setSaveError(describeError(error, { action: "reload the routine" }).body);
     }
-  }, [directResponsibilityId, refreshRoutine]);
+  }, [loadDirectResponsibility, refreshRoutine]);
 
   const restoreWebhook = useMutation({
     mutationFn: (trigger: RoutineTrigger) => routinesApi.updateTrigger(trigger.id, { archived: false }),
@@ -397,6 +431,17 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     return () => setBreadcrumbToolbar(null);
   }, [actions, actionsInToolbar, setBreadcrumbToolbar]);
 
+  const routineProjectId = routine?.projectId ?? null;
+  const responsibilityChoices = useMemo(
+    () => buildRoutineResponsibilityChoices({
+      links: linkEntries ?? [],
+      options: options.responsibilities ?? [],
+      areaTitles: options.areaTitles,
+      projectId: routineProjectId,
+    }),
+    [linkEntries, options.areaTitles, options.responsibilities, routineProjectId],
+  );
+
   // Keep a loaded routine on screen through a failed refetch; only a real
   // failure, or an outage before the first load, replaces the page.
   if (routineView.kind === "loading" || routineView.kind === "reconnecting") {
@@ -422,34 +467,21 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   const project = options.allProjects.find((candidate) => candidate.id === routine.projectId)
     ?? (routine.project ? { id: routine.project.id, name: routine.project.name } : null);
   const responsibleUser = routine.responsibleUserId
-    ? options.people.find((person) => person.id === routine.responsibleUserId) ?? null
+    ? options.people.find((person) => person.id === routine.responsibleUserId)
+      ?? (options.peopleFailed || options.people.length === 0 ? { id: routine.responsibleUserId, name: options.peopleFailed ? "Couldn’t load this person" : "Loading…" } : { id: routine.responsibleUserId, name: "Former member" })
     : null;
-  const pageResponsibilities: RoutineResponsibility[] | undefined = options.responsibilitiesOn
-    ? (linkEntries ?? []).map((entry) => ({
-        id: entry.id,
-        title: entry.title,
-        areaTitle: entry.areaId ? options.areaTitles.get(entry.areaId) ?? null : null,
-        via: entry.via,
-      }))
-    : undefined;
-  const responsibilityOptions = options.responsibilities
-    ? [
-        ...options.responsibilities.map((option) => ({
-          ...option,
-          projectIds: (linkEntries ?? []).some((entry) => entry.id === option.id && entry.via === "project") && routine.projectId
-            ? [routine.projectId]
-            : [],
-        })),
-        ...(linkEntries ?? [])
-          .filter((entry) => !options.responsibilities?.some((option) => option.id === entry.id))
-          .map((entry) => ({
-            id: entry.id,
-            title: entry.title,
-            areaTitle: entry.areaId ? options.areaTitles.get(entry.areaId) ?? null : null,
-            projectIds: entry.via === "project" && routine.projectId ? [routine.projectId] : [],
-          })),
-      ]
-    : undefined;
+  const pageResponsibilities = options.responsibilitiesOn ? responsibilityChoices.onPage : undefined;
+  const responsibilityOptions = options.responsibilities ? responsibilityChoices.choices : undefined;
+  const loadErrors = [
+    // The routine stays on screen through a failed refresh; say so instead of showing stale data silently.
+    ...(routineView.kind === "error"
+      ? [{ action: "refresh this routine", error: routineView.error, retry: routineView.retry, retrying: routineView.isFetching }]
+      : []),
+    ...options.loadErrors,
+    ...(linksView.kind === "error"
+      ? [{ action: "load this routine’s responsibilities", error: linksView.error, retry: linksView.retry, retrying: linksView.isFetching }]
+      : []),
+  ];
   const webhooks = routine.triggers.filter((trigger) => trigger.kind === "webhook");
   const routineActive = routineAutomationState(routine) === "active";
   const webhookDialog = (
@@ -509,8 +541,21 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
         statusPending={setStatus.isPending}
         onToggleActive={(active) => setStatus.mutate(active ? "active" : "paused")}
         onEdit={openEdit}
-        onSaveSchedule={(id, change) => changeSchedule.mutate({ id, patch: change })}
-        onRemoveSchedule={(id) => changeSchedule.mutate({ id, patch: { archived: true } })}
+        onSaveSchedule={(id, change) => {
+          const trigger = triggerById(id);
+          if (trigger) changeTrigger.mutate({ trigger, patch: change, success: "Schedule saved" });
+        }}
+        onRemoveSchedule={(id) => {
+          const trigger = triggerById(id);
+          if (trigger) changeTrigger.mutate({ trigger, patch: { archived: true }, success: "Schedule removed" });
+        }}
+        onSetTriggerPaused={(id, paused) => {
+          const trigger = triggerById(id);
+          if (trigger) changeTrigger.mutate({ trigger, patch: { enabled: !paused }, success: paused ? "Paused" : "Resumed" });
+        }}
+        onRemoveTrigger={(trigger) => changeTrigger.mutate({ trigger, patch: { archived: true }, success: "Removed" })}
+        removedTriggers={pageRemoved}
+        onRestoreTrigger={(trigger) => changeTrigger.mutate({ trigger, patch: { archived: false }, success: "Restored" })}
         onOpenWebhook={(trigger) => webhook.show(trigger)}
       />
     ) : (
@@ -541,6 +586,20 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   return (
     <div className="-m-4 md:-m-6">
       {!actionsInToolbar && actions ? <div className="flex justify-end px-4 pt-3 md:px-8">{actions}</div> : null}
+      {loadErrors.length > 0 ? (
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 pt-4 md:px-8">
+          {loadErrors.map((failure) => (
+            <QueryErrorState
+              key={failure.action}
+              size="inline"
+              error={failure.error}
+              action={failure.action}
+              onRetry={failure.retry}
+              retrying={failure.retrying}
+            />
+          ))}
+        </div>
+      ) : null}
       {page}
 
       {editInitial ? (
@@ -562,7 +621,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
           canChangeResponsibleUser={routine.canChangeResponsibleUser !== false}
           saving={saveEdits.isPending}
           saveConflict={saveConflict}
-          error={saveError}
+          error={saveError ?? (loadErrors.length > 0 ? "Some choices couldn’t be loaded. Close this and use Retry on the page." : null)}
           onSave={(draft) => saveEdits.mutate(draft)}
           onReloadLatest={() => void reloadLatest()}
           onCreateSecret={options.createSecret}

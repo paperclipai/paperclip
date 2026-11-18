@@ -150,6 +150,12 @@ function RoutinePageContent({
     }));
   const removeTrigger = (id: string) =>
     setRoutine((current) => ({ ...current, triggers: current.triggers.filter((trigger) => trigger.id !== id) }));
+  /** Removed from the page itself: offered back with Undo under Repeats, as the routed page does. */
+  const [pageRemoved, setPageRemoved] = useState<RoutineTrigger[]>([]);
+  const removeFromPage = (trigger: RoutineTrigger) => {
+    removeTrigger(trigger.id);
+    setPageRemoved((current) => [...current, trigger]);
+  };
   const webhookTest = useWebhookTest(updateTrigger);
   const showWebhook = (trigger: RoutineTrigger | null) => {
     setWebhookId(trigger?.id ?? null);
@@ -193,7 +199,10 @@ function RoutinePageContent({
       onReplaceKey={() => setWebhookKey(DEMO_WEBHOOK_KEY)}
       onSetPaused={(paused) => openWebhook && updateTrigger(openWebhook.id, { enabled: !paused })}
       onRemove={() => {
-        if (openWebhook) removeTrigger(openWebhook.id);
+        if (openWebhook && editOpen) {
+          removeTrigger(openWebhook.id);
+          setRemovedWebhooks((current) => [...current, openWebhook]);
+        } else if (openWebhook) removeFromPage(openWebhook);
         setWebhookOpen(false);
       }}
     />
@@ -234,7 +243,17 @@ function RoutinePageContent({
       onToggleActive={(active) => setRoutine((current) => ({ ...current, status: active ? "active" : "paused" }))}
       onEdit={() => setEditOpen(true)}
       onSaveSchedule={(id, change) => updateTrigger(id, { ...change, nextRunAt: new Date(Date.now() + 3 * 3_600_000) })}
-      onRemoveSchedule={removeTrigger}
+      onRemoveSchedule={(id) => {
+        const trigger = routine.triggers.find((item) => item.id === id);
+        if (trigger) removeFromPage(trigger);
+      }}
+      onSetTriggerPaused={(id, paused) => updateTrigger(id, { enabled: !paused })}
+      onRemoveTrigger={removeFromPage}
+      removedTriggers={pageRemoved}
+      onRestoreTrigger={(trigger) => {
+        setPageRemoved((current) => current.filter((item) => item.id !== trigger.id));
+        setRoutine((current) => ({ ...current, triggers: [...current.triggers, trigger] }));
+      }}
       onOpenWebhook={showWebhook}
     />
   ) : (

@@ -6,7 +6,7 @@ import { InlineEntitySelector } from "@/components/InlineEntitySelector";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "@/components/MarkdownEditor";
 import { RoutineVariablesEditor } from "@/components/RoutineVariablesEditor";
 import { ScheduleEditor } from "@/components/ScheduleEditor";
-import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
+import { EnvironmentVariablesEditor, type EnvironmentVariablesEditorHandle } from "@/components/environment-variables-editor";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -124,6 +124,9 @@ export function RoutineEditDialog({
   const [scheduleValid, setScheduleValid] = useState(true);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const editorRef = useRef<MarkdownEditorRef>(null);
+  const secretsRef = useRef<EnvironmentVariablesEditorHandle>(null);
+  /** Secrets rows being typed that the secrets editor has not promoted into the draft yet. */
+  const [secretsDirty, setSecretsDirty] = useState(false);
   const titleId = useId();
 
   useEffect(() => {
@@ -131,9 +134,10 @@ export function RoutineEditDialog({
     setDraft(initial);
     setSecretsOpen(Object.keys(initial.env ?? {}).length > 0);
     setConfirmingDiscard(false);
+    setSecretsDirty(false);
   }, [initial, open]);
 
-  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(initial), [draft, initial]);
+  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(initial), [draft, initial]) || secretsDirty;
   const patch = (change: Partial<RoutineFormDraft>) => setDraft((current) => ({ ...current, ...change }));
   const agentById = useMemo(() => new Map(agents.map((agent) => [agent.id, agent])), [agents]);
   const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
@@ -148,6 +152,13 @@ export function RoutineEditDialog({
       ) ?? null
     : null;
   const canSave = draft.title.trim().length > 0 && scheduleValid && !saving && !saveConflict && (mode === "create" || dirty);
+
+  /** Saves the draft, including secrets rows still being typed. */
+  const submit = () => {
+    if (!canSave) return;
+    const flushed = secretsRef.current?.flushPendingDraft() ?? null;
+    onSave(flushed ? { ...draft, env: Object.keys(flushed).length > 0 ? flushed : null } : draft);
+  };
 
   const requestClose = () => {
     if (dirty && !saving) setConfirmingDiscard(true);
@@ -183,7 +194,7 @@ export function RoutineEditDialog({
           className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6 [&>*]:shrink-0"
           onSubmit={(event) => {
             event.preventDefault();
-            if (canSave) onSave(draft);
+            submit();
           }}
         >
           <div className="flex flex-col gap-2">
@@ -216,9 +227,7 @@ export function RoutineEditDialog({
               contentClassName="text-sm leading-6"
               mentions={mentions}
               submitKey="mod-enter"
-              onSubmit={() => {
-                if (canSave) onSave(draft);
-              }}
+              onSubmit={submit}
             />
             </div>
           </div>
@@ -457,6 +466,8 @@ export function RoutineEditDialog({
                 options={people.map((person) => ({ id: person.id, label: person.name }))}
                 placeholder="Choose a person"
                 noneLabel="No one"
+                // A responsible user can be changed but not cleared; "No one" only shows while there is none.
+                hideNone={Boolean(initial.responsibleUserId)}
                 searchPlaceholder="Find a person…"
                 emptyMessage="No people found."
                 disablePortal
@@ -475,6 +486,8 @@ export function RoutineEditDialog({
             <Label>Secrets</Label>
             {secretsOpen ? (
               <EnvironmentVariablesEditor
+                ref={secretsRef}
+                onDirtyChange={setSecretsDirty}
                 value={(draft.env ?? {}) as Record<string, EnvBinding>}
                 secrets={secrets}
                 onCreateSecret={onCreateSecret}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RoutineTrigger } from "@paperclipai/shared";
 import { AlertCircle, Check, CheckCircle2, GitBranch, Globe, PauseCircle, Radio } from "lucide-react";
-import { webhookAgentInstructions } from "@/components/routine-triggers/webhook-instructions";
+import { webhookAgentInstructions, webhookInstructionSigningMode } from "@/components/routine-triggers/webhook-instructions";
 import { AgentInstructions, CopyField } from "@/components/routine-triggers/WebhookFields";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
 import { Button } from "@/components/ui/button";
@@ -181,7 +181,15 @@ export function RoutineWebhookDialog({
               ) : null}
               <WebhookUrlWarning url={url} />
               <CopyField label={github ? "Payload URL" : "Webhook URL"} value={url} />
-              {trigger.signingMode === "none" ? null : secret ? (
+              {trigger.signingMode === "hmac_sha256" ? (
+                <p className="text-sm text-muted-foreground">
+                  Sign the timestamp, a period, and the exact JSON body with HMAC-SHA256. Send X-Paperclip-Timestamp and
+                  X-Paperclip-Signature: sha256=&lt;signature&gt;.
+                </p>
+              ) : null}
+              {trigger.signingMode === "none" ? (
+                <p className="text-sm text-muted-foreground">This webhook has no key. Its URL is the shared secret, so keep it private.</p>
+              ) : secret ? (
                 <CopyField
                   label={github ? "Secret" : bearer ? "Authorization header value" : "Secret key"}
                   value={!github && bearer ? `Bearer ${secret}` : secret}
@@ -201,7 +209,7 @@ export function RoutineWebhookDialog({
                     url,
                     secret,
                     Boolean(trigger.setupPending),
-                    bearer ? "bearer" : trigger.signingMode === "fireflies_hmac" ? "fireflies_hmac" : "app_webhook",
+                    webhookInstructionSigningMode(trigger.signingMode),
                   )}
                 />
               ) : null}

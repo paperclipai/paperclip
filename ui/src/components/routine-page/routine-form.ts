@@ -1,7 +1,8 @@
-import type { RoutineDetail, RoutineEnvConfig, RoutineTrigger } from "@paperclipai/shared";
+import type { ResponsibilityLinkLookupEntry, RoutineDetail, RoutineEnvConfig, RoutineTrigger } from "@paperclipai/shared";
 import { routinesApi } from "@/api/routines";
 import { responsibilitiesApi } from "@/api/responsibilities";
-import { EMPTY_ROUTINE_FORM_DRAFT, type RoutineFormDraft } from "./RoutineEditDialog";
+import { EMPTY_ROUTINE_FORM_DRAFT, type RoutineFormDraft, type RoutineResponsibilityOption } from "./RoutineEditDialog";
+import type { RoutineResponsibility } from "./RoutinePage";
 
 export function localTimezone(): string {
   try {
@@ -104,4 +105,36 @@ export class PartialRoutineSaveError extends Error {
     );
     this.name = "PartialRoutineSaveError";
   }
+}
+
+/**
+ * What the page shows under Responsibility and what the form offers, from the
+ * routine's link lookup and the person's responsibilities. Indexes each list
+ * once, so the work stays linear in the number of responsibilities.
+ */
+export function buildRoutineResponsibilityChoices({
+  links,
+  options,
+  areaTitles,
+  projectId,
+}: {
+  links: readonly ResponsibilityLinkLookupEntry[];
+  options: readonly RoutineResponsibilityOption[];
+  areaTitles: ReadonlyMap<string, string>;
+  projectId: string | null;
+}): { onPage: RoutineResponsibility[]; choices: RoutineResponsibilityOption[] } {
+  const areaTitle = (areaId: string | null) => (areaId ? areaTitles.get(areaId) ?? null : null);
+  const throughProject = new Set(links.filter((entry) => entry.via === "project").map((entry) => entry.id));
+  const offered = new Set(options.map((option) => option.id));
+  const projectIdsFor = (id: string) => (projectId && throughProject.has(id) ? [projectId] : []);
+  return {
+    onPage: links.map((entry) => ({ id: entry.id, title: entry.title, areaTitle: areaTitle(entry.areaId), via: entry.via })),
+    choices: [
+      ...options.map((option) => ({ ...option, projectIds: projectIdsFor(option.id) })),
+      // Responsibilities the routine is already under but that are not this person's still show by name.
+      ...links
+        .filter((entry) => !offered.has(entry.id))
+        .map((entry) => ({ id: entry.id, title: entry.title, areaTitle: areaTitle(entry.areaId), projectIds: projectIdsFor(entry.id) })),
+    ],
+  };
 }

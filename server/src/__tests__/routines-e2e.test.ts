@@ -648,6 +648,33 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect((await triggerRow()).lastWebhookDelivery?.previous).toBeUndefined();
   });
 
+  it("starts each test of a never-used webhook without the last test's result", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({ projectId, assigneeAgentId: agentId, title: "Quiet hook" });
+    const routineId = created.body.id;
+    const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer" });
+    const { trigger, secretMaterial } = configured.body;
+    const path = new URL(secretMaterial.webhookUrl).pathname;
+    const publicApp = await createApp({ type: "none" });
+    const triggerRow = async () => (await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)))[0]!;
+
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(200);
+    const tested = await request(publicApp).post(path).set("Authorization", `Bearer ${secretMaterial.webhookSecret}`)
+      .set("Idempotency-Key", "test-1").send({ event: "ping" });
+    expect(tested.body.status).toBe("test_received");
+    expect((await triggerRow()).lastWebhookDelivery).toMatchObject({ status: "received", test: true, previous: null });
+
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: false })).status).toBe(200);
+    expect((await triggerRow()).lastWebhookDelivery).toBeNull();
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(200);
+    // A new test starts clean: nothing reads as "Test event received" before an event arrives.
+    expect((await triggerRow()).lastWebhookDelivery).toBeNull();
+    expect(await db.select().from(issues)).toHaveLength(0);
+  });
+
   it("only starts testing on an active, enabled webhook", async () => {
     vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
     const { companyId, agentId, projectId, userId } = await seedFixture();

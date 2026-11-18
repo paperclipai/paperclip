@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { routinesApi } from "@/api/routines";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { EMPTY_ROUTINE_FORM_DRAFT } from "./RoutineEditDialog";
-import { routineFieldsChanged, routineFieldsPayload, syncRoutineResponsibility, syncRoutineSchedule } from "./routine-form";
+import { buildRoutineResponsibilityChoices, routineFieldsChanged, routineFieldsPayload, syncRoutineResponsibility, syncRoutineSchedule } from "./routine-form";
 import { resolveRoutineAddress, routinePath } from "./routine-routes";
 import { webhookHealth } from "./routine-summary";
 
@@ -65,5 +65,24 @@ describe("webhook health", () => {
       lastWebhookDelivery: { status: "received", receivedAt: "y", test: true, previous: { status: "received", receivedAt: "x", test: false } },
     })).toBe("testing");
     expect(webhookHealth({ ...base, lastWebhookDelivery: { status: "received", receivedAt: "x", test: false } })).toBe("receiving");
+  });
+});
+
+describe("responsibility choices", () => {
+  it("indexes links and options once, staying fast for large lists", () => {
+    const count = 5000;
+    const options = Array.from({ length: count }, (_, index) => ({ id: `resp-${index}`, title: `Responsibility ${index}` }));
+    const links = [
+      ...Array.from({ length: count }, (_, index) => ({ id: `resp-${index}`, title: `Responsibility ${index}`, areaId: "area-1", ownerUserId: "u", via: "project" as const })),
+      { id: "other-owner", title: "Someone else's", areaId: null, ownerUserId: "v", via: "direct" as const },
+    ];
+    const started = performance.now();
+    const result = buildRoutineResponsibilityChoices({ links, options, areaTitles: new Map([["area-1", "Customers"]]), projectId: "project-1" });
+    expect(performance.now() - started).toBeLessThan(200);
+    expect(result.onPage).toHaveLength(count + 1);
+    expect(result.onPage[0]).toMatchObject({ areaTitle: "Customers", via: "project" });
+    expect(result.choices).toHaveLength(count + 1);
+    expect(result.choices[0]!.projectIds).toEqual(["project-1"]);
+    expect(result.choices.at(-1)).toMatchObject({ id: "other-owner", projectIds: [] });
   });
 });

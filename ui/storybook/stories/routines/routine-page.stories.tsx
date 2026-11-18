@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, within } from "storybook/test";
 import { RoutinePagePreview } from "../../support/routines/RoutinePagePreview";
 
 const meta = {
@@ -35,6 +36,34 @@ export const ManualOnly: Story = { args: { scenario: "manualOnly" } };
 export const FirstRunPending: Story = { args: { scenario: "firstRunPending" } };
 export const NoInstructions: Story = { args: { scenario: "noInstructions" } };
 export const StandingCheckAndApi: Story = { args: { scenario: "standingCheck" } };
+/** A standing check or API trigger opens a small popover to pause, resume or remove it. */
+export const StandingCheckOpened: Story = {
+  args: { scenario: "standingCheck" },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("button", { name: "Change Standing check" }));
+    const body = within(canvasElement.ownerDocument.body);
+    await expect(await body.findByRole("button", { name: "Pause" })).toBeVisible();
+    await expect(body.getByRole("button", { name: "Remove" })).toBeVisible();
+  },
+};
+/** One paused schedule on an active routine: its popover offers Resume. */
+export const ScheduleTriggerPaused: Story = { args: { scenario: "scheduleTriggerPaused" } };
+export const ScheduleTriggerPausedOpened: Story = {
+  args: { scenario: "scheduleTriggerPaused" },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("button", { name: /Change schedule/ }));
+    await expect(await within(canvasElement.ownerDocument.body).findByRole("button", { name: "Resume" })).toBeVisible();
+  },
+};
+/** Removing a schedule (or a webhook, standing check or API trigger) from the page leaves a "removed. Undo" line under Repeats. */
+export const RemovedWithUndo: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /Change schedule/ }));
+    await userEvent.click(await within(canvasElement.ownerDocument.body).findByRole("button", { name: "Remove schedule" }));
+    await expect(await canvas.findByRole("button", { name: "Undo" })).toBeVisible();
+  },
+};
 export const CustomRunRules: Story = { args: { scenario: "customRunRules" } };
 export const ManagedByPlugin: Story = { args: { scenario: "pluginManaged" } };
 export const Archived: Story = { args: { scenario: "archived" } };

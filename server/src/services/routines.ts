@@ -2831,9 +2831,11 @@ export function routineService(
         }
         // Ending a test on a webhook that was already receiving real events puts
         // back its last real delivery, so it does not look brand new.
-        const restoredDelivery = finishesTesting && current.lastWebhookDelivery?.test
-          ? current.lastWebhookDelivery.previous ?? null
-          : null;
+        // A test delivery always records `previous` (null when there was no real
+        // delivery), so ending the test also drops a stale test result.
+        const lastDelivery = current.lastWebhookDelivery;
+        const restoresDelivery = finishesTesting && Boolean(lastDelivery?.test) && lastDelivery !== null && "previous" in lastDelivery;
+        const restoredDelivery = restoresDelivery ? lastDelivery?.previous ?? null : null;
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [updated] = await txDb
           .update(routineTriggers)
@@ -2841,7 +2843,7 @@ export function routineService(
             label: patch.label === undefined ? existing.label : patch.label,
             enabled: patch.enabled ?? existing.enabled,
             ...(patch.setupPending !== undefined ? { setupPending: patch.setupPending } : {}),
-            ...(restoredDelivery ? { lastWebhookDelivery: restoredDelivery } : {}),
+            ...(restoresDelivery ? { lastWebhookDelivery: restoredDelivery } : {}),
             ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
             cronExpression,
             timezone,

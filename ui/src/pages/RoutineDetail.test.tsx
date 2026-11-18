@@ -11,6 +11,7 @@ import { routinesApi } from "../api/routines";
 import { issuesApi } from "../api/issues";
 import { responsibilitiesApi } from "../api/responsibilities";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { accessApi } from "../api/access";
 import { RoutineDetail, ROUTINE_HISTORY_PAGE_SIZE } from "./RoutineDetail";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,6 +43,7 @@ vi.mock("../api/routines", () => ({
     run: vi.fn(),
     createTrigger: vi.fn(),
     updateTrigger: vi.fn(),
+    listRevisions: vi.fn(async () => []),
     rotateTriggerSecret: vi.fn(),
   },
 }));
@@ -195,7 +197,9 @@ describe("RoutineDetail (routed routine page)", () => {
     vi.mocked(routinesApi.update).mockReset();
     vi.mocked(routinesApi.updateTrigger).mockReset().mockResolvedValue(trigger({}));
     vi.mocked(issuesApi.list).mockReset().mockResolvedValue([task(1)]);
-    vi.mocked(responsibilitiesApi.lookupRoutineLinks).mockClear();
+    vi.mocked(responsibilitiesApi.lookupRoutineLinks).mockReset().mockResolvedValue({ responsibilities: [] });
+    vi.mocked(responsibilitiesApi.link).mockClear();
+    vi.mocked(responsibilitiesApi.unlink).mockClear();
     vi.mocked(responsibilitiesApi.overview).mockClear();
     vi.mocked(instanceSettingsApi.getExperimental).mockResolvedValue({ enableResponsibilities: false } as never);
     container = document.createElement("div");
@@ -335,6 +339,22 @@ describe("RoutineDetail (routed routine page)", () => {
     expect(routinesApi.updateTrigger).toHaveBeenLastCalledWith("webhook-1", { setupPending: false });
   });
 
+  it("does not close the webhook dialog while starting a test is still saving", async () => {
+    const live = trigger({ id: "webhook-1", kind: "webhook", cronExpression: null, nextRunAt: null, signingMode: "app_webhook" });
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [live] }));
+    let finishRequest: (value: unknown) => void = () => {};
+    vi.mocked(routinesApi.updateTrigger).mockImplementationOnce(() => new Promise((resolve) => { finishRequest = resolve as never; }) as never);
+    await render();
+    await act(async () => { button("Open Webhook")!.click(); await flush(); });
+    await act(async () => { button("Test webhook")!.click(); await flush(); });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await act(async () => { await flush(); });
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [{ ...live, setupPending: true }] }));
+    await act(async () => { finishRequest(live); await flush(); });
+    expect(document.body.textContent).toContain("Testing. No tasks are created.");
+  });
+
   it("shows a webhook left in test mode on the page", async () => {
     vi.mocked(routinesApi.get).mockResolvedValue(routine({
       triggers: [trigger({
@@ -355,6 +375,115 @@ describe("RoutineDetail (routed routine page)", () => {
     expect(container.textContent).toContain("Testing · events don’t run");
     await act(async () => { button("Open Webhook")!.click(); await flush(); });
     expect(button("Finish testing")).toBeDefined();
+  });
+
+  it("pauses and resumes one schedule from its popover", async () => {
+    await render();
+    await act(async () => { button("Change schedule: Weekdays at 9:00 AM")!.click(); await flush(); });
+    await act(async () => { button("Pause")!.click(); await flush(); });
+    expect(routinesApi.updateTrigger).toHaveBeenCalledWith("trigger-1", { enabled: false });
+  });
+
+  it("offers Undo on the page after removing a schedule", async () => {
+    await render();
+    await act(async () => { button("Change schedule: Weekdays at 9:00 AM")!.click(); await flush(); });
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [] }));
+    await act(async () => { button("Remove schedule")!.click(); await flush(); });
+    expect(routinesApi.updateTrigger).toHaveBeenCalledWith("trigger-1", { archived: true });
+    expect(container.textContent).toContain("Weekdays at 9:00 AM removed.");
+    await act(async () => { button("Undo")!.click(); await flush(); });
+    expect(routinesApi.updateTrigger).toHaveBeenLastCalledWith("trigger-1", { archived: false });
+  });
+
+  it("pauses and removes a standing check from its popover", async () => {
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({
+      triggers: [trigger({ id: "check-1", kind: "heartbeat", cronExpression: null, nextRunAt: null })],
+    }));
+    await render();
+    await act(async () => { button("Change Standing check")!.click(); await flush(); });
+    await act(async () => { button("Pause")!.click(); await flush(); });
+    expect(routinesApi.updateTrigger).toHaveBeenCalledWith("check-1", { enabled: false });
+    await act(async () => { button("Change Standing check")!.click(); await flush(); });
+    await act(async () => { button("Remove")!.click(); await flush(); });
+    expect(routinesApi.updateTrigger).toHaveBeenLastCalledWith("check-1", { archived: true });
+  });
+
+  it("does not adopt someone else's revision when the form's own webhook change refreshes the routine", async () => {
+    const live = trigger({ id: "webhook-1", kind: "webhook", cronExpression: null, nextRunAt: null, signingMode: "app_webhook" });
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [live] }));
+    vi.mocked(routinesApi.update).mockRejectedValue(new ApiError("conflict", 409, { error: "conflict" }));
+    await render();
+    await act(async () => { button("Edit routine")!.click(); await flush(); });
+    // Someone else saved (revision 2) and this form paused the webhook (revision 3).
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [{ ...live, enabled: false }], latestRevisionId: "revision-3", latestRevisionNumber: 3 }));
+    await act(async () => { button("Configure Webhook")!.click(); await flush(); });
+    await act(async () => { button("Pause")!.click(); await flush(); });
+    await act(async () => { button("Done")!.click(); await flush(); });
+    const dialog = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).find((element) => element.textContent?.includes("Edit routine"))!;
+    const title = dialog.querySelector<HTMLInputElement>("input[placeholder='Send the weekly digest']")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "Mine");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    await act(async () => { button("Save changes", dialog)!.click(); await flush(); });
+    expect(vi.mocked(routinesApi.update).mock.calls[0]![1]).toMatchObject({ baseRevisionId: "revision-1" });
+    expect(document.body.textContent).toContain("This routine changed while you were editing");
+  });
+
+  it("adopts the revision made by the form's own webhook change", async () => {
+    const live = trigger({ id: "webhook-1", kind: "webhook", cronExpression: null, nextRunAt: null, signingMode: "app_webhook" });
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [live] }));
+    vi.mocked(routinesApi.update).mockResolvedValue(routine({ latestRevisionId: "revision-3", latestRevisionNumber: 3 }));
+    await render();
+    await act(async () => { button("Edit routine")!.click(); await flush(); });
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ triggers: [{ ...live, enabled: false }], latestRevisionId: "revision-2", latestRevisionNumber: 2 }));
+    await act(async () => { button("Configure Webhook")!.click(); await flush(); });
+    await act(async () => { button("Pause")!.click(); await flush(); });
+    await act(async () => { button("Done")!.click(); await flush(); });
+    const dialog = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]')).find((element) => element.textContent?.includes("Edit routine"))!;
+    const title = dialog.querySelector<HTMLInputElement>("input[placeholder='Send the weekly digest']")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "Mine");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    await act(async () => { button("Save changes", dialog)!.click(); await flush(); });
+    expect(vi.mocked(routinesApi.update).mock.calls[0]![1]).toMatchObject({ baseRevisionId: "revision-2" });
+  });
+
+  it("keeps a responsibility that loads after the page when only the title changes", async () => {
+    vi.mocked(instanceSettingsApi.getExperimental).mockResolvedValue({ enableResponsibilities: true } as never);
+    let resolveLinks: (value: unknown) => void = () => {};
+    vi.mocked(responsibilitiesApi.lookupRoutineLinks).mockImplementation(() => new Promise((resolve) => { resolveLinks = resolve as never; }) as never);
+    vi.mocked(routinesApi.update).mockResolvedValue(routine({ title: "Mine", latestRevisionId: "revision-2", latestRevisionNumber: 2 }));
+    await render();
+    await act(async () => { button("Edit routine")!.click(); await flush(); });
+    // The form waits for the link before it opens.
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => {
+      resolveLinks({ responsibilities: [{ id: "resp-1", title: "Keep customers informed", areaId: null, ownerUserId: "user-1", via: "direct" }] });
+      await flush();
+    });
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const title = dialog.querySelector<HTMLInputElement>("input[placeholder='Send the weekly digest']")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "Mine");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    await act(async () => { button("Save changes", dialog)!.click(); await flush(); });
+    expect(routinesApi.update).toHaveBeenCalled();
+    expect(responsibilitiesApi.unlink).not.toHaveBeenCalled();
+    expect(responsibilitiesApi.link).not.toHaveBeenCalled();
+  });
+
+  it("says when people could not be loaded instead of showing no responsible user", async () => {
+    vi.mocked(accessApi.listUserDirectory).mockRejectedValueOnce(new ApiError("down", 500, { error: "down" }));
+    await render();
+    expect(container.textContent).not.toContain("No one yet");
+    expect(container.textContent).toContain("Couldn’t load this person");
+    expect(button("Retry")).toBeDefined();
   });
 
   it("neither fetches nor shows responsibilities while the experimental flag is off", async () => {

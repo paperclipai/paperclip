@@ -86,7 +86,7 @@ export function RoutineCreateDialog({
       responsibilities={options.responsibilities}
       mentions={options.mentions}
       saving={create.isPending}
-      error={error}
+      error={error ?? (options.loadErrors.length > 0 ? "Some choices couldn’t be loaded. Close this and try again." : null)}
       onSave={(draft) => create.mutate(draft)}
       onCreateSecret={options.createSecret}
     />

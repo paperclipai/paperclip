@@ -218,6 +218,10 @@ export const routineScenarios = {
     routine: makeRoutine({ status: "paused", triggers: [scheduleTrigger({ nextRunAt: null })] }),
     history: digestHistory.slice(1),
   },
+  scheduleTriggerPaused: {
+    routine: makeRoutine({ triggers: [scheduleTrigger({ enabled: false, nextRunAt: null })] }),
+    history: digestHistory.slice(1),
+  },
   draft: {
     routine: makeRoutine({ status: "paused", assigneeAgentId: null, triggers: [scheduleTrigger({ nextRunAt: null })] }),
     history: [],

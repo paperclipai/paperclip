@@ -92,6 +92,13 @@ export type RoutinePageProps = {
   onSaveSchedule: (triggerId: string, change: RoutineScheduleChange) => void;
   onRemoveSchedule: (triggerId: string) => void;
   onOpenWebhook: (trigger: RoutineTrigger) => void;
+  /** Pauses or resumes one schedule, standing check or API trigger. Omit to hide Pause/Resume. */
+  onSetTriggerPaused?: (triggerId: string, paused: boolean) => void;
+  /** Removes a standing check or API trigger. Omit to keep those rows read-only. */
+  onRemoveTrigger?: (trigger: RoutineTrigger) => void;
+  /** Triggers removed from this page, offered back with Undo under Repeats. */
+  removedTriggers?: readonly RoutineTrigger[];
+  onRestoreTrigger?: (trigger: RoutineTrigger) => void;
   onOpenInstructionComments?: () => void;
   /** Show the whole instructions, e.g. while their comments are open. */
   instructionsExpanded?: boolean;
@@ -139,11 +146,13 @@ function ScheduleRow({
   routineActive,
   onSave,
   onRemove,
+  onSetPaused,
 }: {
   trigger: RoutineTrigger;
   routineActive: boolean;
   onSave: (change: RoutineScheduleChange) => void;
   onRemove: () => void;
+  onSetPaused?: (paused: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [cron, setCron] = useState(trigger.cronExpression ?? "0 9 * * 1-5");
@@ -168,21 +177,37 @@ function ScheduleRow({
           <span className="shrink-0 text-xs text-muted-foreground">{trigger.enabled ? timezone : "Paused"}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="flex w-80 flex-col gap-4">
+      {/* Wider when Pause/Resume joins Remove and Save, so the footer stays on one row. */}
+      <PopoverContent align="start" className={cn("flex flex-col gap-4", onSetPaused ? "w-96" : "w-80")}>
         <ScheduleEditor value={cron} onChange={setCron} onValidityChange={setValid} />
         <p className="text-xs text-muted-foreground">Times are in {timezone}.</p>
         <div className="flex items-center justify-between gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground"
-            onClick={() => {
-              setOpen(false);
-              onRemove();
-            }}
-          >
-            Remove schedule
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => {
+                setOpen(false);
+                onRemove();
+              }}
+            >
+              Remove schedule
+            </Button>
+            {onSetPaused ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => {
+                  setOpen(false);
+                  onSetPaused(trigger.enabled);
+                }}
+              >
+                {trigger.enabled ? "Pause" : "Resume"}
+              </Button>
+            ) : null}
+          </div>
           <Button
             size="sm"
             disabled={!valid}
@@ -224,14 +249,85 @@ function WebhookRow({
   );
 }
 
-function StaticTriggerRow({ icon: Icon, title, detail }: { icon: typeof Radar; title: string; detail: string }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2 py-1.5 text-sm">
+/** A standing check or API trigger: nothing to configure, but it can be paused or removed. */
+function StaticTriggerRow({
+  icon: Icon,
+  title,
+  detail,
+  description,
+  trigger,
+  routineActive,
+  onSetPaused,
+  onRemove,
+}: {
+  icon: typeof Radar;
+  title: string;
+  detail: string;
+  description: string;
+  trigger: RoutineTrigger;
+  routineActive: boolean;
+  onSetPaused?: (paused: boolean) => void;
+  onRemove?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const dimmed = !trigger.enabled || !routineActive;
+  const content = (
+    <>
       <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
-      <span className="shrink-0 text-xs text-muted-foreground">{detail}</span>
-    </div>
+      <span className={cn("min-w-0 flex-1 truncate font-medium", dimmed && "text-muted-foreground")}>{title}</span>
+      <span className="shrink-0 text-xs text-muted-foreground">{trigger.enabled ? detail : "Paused"}</span>
+    </>
   );
+  if (!onSetPaused && !onRemove) {
+    return <div className="flex min-w-0 items-center gap-2 py-1.5 text-sm">{content}</div>;
+  }
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" className={rowButtonClass} aria-label={`Change ${title}`}>
+          {content}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="flex w-80 flex-col gap-4">
+        <p className="text-sm text-muted-foreground">{description}</p>
+        <div className="flex items-center justify-between gap-2">
+          {onRemove ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => {
+                setOpen(false);
+                onRemove();
+              }}
+            >
+              Remove
+            </Button>
+          ) : <span />}
+          {onSetPaused ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setOpen(false);
+                onSetPaused(trigger.enabled);
+              }}
+            >
+              {trigger.enabled ? "Pause" : "Resume"}
+            </Button>
+          ) : null}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** How a removed trigger is named in its "removed. Undo" line. */
+export function triggerTitle(trigger: RoutineTrigger): string {
+  if (trigger.kind === "schedule") return describeScheduleTrigger(trigger);
+  if (trigger.kind === "webhook") return webhookTitle(trigger);
+  if (trigger.kind === "heartbeat") return "Standing check";
+  return "API trigger";
 }
 
 function Instructions({
@@ -331,6 +427,10 @@ export function RoutinePage({
   onEdit,
   onSaveSchedule,
   onRemoveSchedule,
+  onSetTriggerPaused,
+  onRemoveTrigger,
+  removedTriggers = [],
+  onRestoreTrigger,
   onOpenWebhook,
   onOpenInstructionComments,
   instructionsExpanded = false,
@@ -421,16 +521,45 @@ export function RoutinePage({
                 routineActive={active}
                 onSave={(change) => onSaveSchedule(trigger.id, change)}
                 onRemove={() => onRemoveSchedule(trigger.id)}
+                onSetPaused={onSetTriggerPaused ? (paused) => onSetTriggerPaused(trigger.id, paused) : undefined}
               />
             ))}
             {webhooks.map((trigger) => (
               <WebhookRow key={trigger.id} trigger={trigger} routineActive={active} onOpen={() => onOpenWebhook(trigger)} />
             ))}
             {standingCheck ? (
-              <StaticTriggerRow icon={Radar} title="Standing check" detail="Each time the agent wakes up" />
+              <StaticTriggerRow
+                icon={Radar}
+                title="Standing check"
+                detail="Each time the agent wakes up"
+                description="The agent carries out these instructions each time it wakes up and reports what it found. It never creates a task by itself."
+                trigger={standingCheck}
+                routineActive={active}
+                onSetPaused={onSetTriggerPaused ? (paused) => onSetTriggerPaused(standingCheck.id, paused) : undefined}
+                onRemove={onRemoveTrigger ? () => onRemoveTrigger(standingCheck) : undefined}
+              />
             ) : null}
-            {apiTrigger ? <StaticTriggerRow icon={Terminal} title="API" detail="Started by an API call" /> : null}
-            {routine.triggers.length === 0 ? (
+            {apiTrigger ? (
+              <StaticTriggerRow
+                icon={Terminal}
+                title="API"
+                detail="Started by an API call"
+                description="Starts this routine when an app or agent calls the routine API."
+                trigger={apiTrigger}
+                routineActive={active}
+                onSetPaused={onSetTriggerPaused ? (paused) => onSetTriggerPaused(apiTrigger.id, paused) : undefined}
+                onRemove={onRemoveTrigger ? () => onRemoveTrigger(apiTrigger) : undefined}
+              />
+            ) : null}
+            {removedTriggers.map((trigger) => (
+              <p key={trigger.id} role="status" className="flex min-w-0 items-center gap-2 py-1.5 text-sm text-muted-foreground">
+                <span className="min-w-0 flex-1 truncate">{triggerTitle(trigger)} removed.</span>
+                {onRestoreTrigger ? (
+                  <Button type="button" variant="ghost" size="xs" onClick={() => onRestoreTrigger(trigger)}>Undo</Button>
+                ) : null}
+              </p>
+            ))}
+            {routine.triggers.length === 0 && removedTriggers.length === 0 ? (
               <p className="py-1.5 text-sm text-muted-foreground">Doesn’t repeat. Runs only when you start it.</p>
             ) : null}
           </div>

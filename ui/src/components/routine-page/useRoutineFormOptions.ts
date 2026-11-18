@@ -6,6 +6,7 @@ import { agentsApi } from "@/api/agents";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { secretsApi } from "@/api/secrets";
 import type { MentionOption } from "@/components/MarkdownEditor";
+import { useQueryView } from "@/components/QueryView";
 import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "@/lib/company-members";
@@ -50,6 +51,18 @@ export function useRoutineFormOptions(
     enabled: enabled && responsibilitiesOn,
   });
 
+  // Failed reads are reported, never shown as empty choices.
+  const views = [
+    { action: "load agents", view: useQueryView(agentsQuery) },
+    { action: "load projects", view: useQueryView(projectsQuery) },
+    { action: "load people", view: useQueryView(directoryQuery) },
+    { action: "load secrets", view: useQueryView(secretsQuery) },
+    { action: "load responsibilities", view: useQueryView(responsibilitiesQuery) },
+  ];
+  const loadErrors = views
+    .filter(({ view }) => view.kind === "error")
+    .map(({ action, view }) => ({ action, error: view.error, retry: view.retry, retrying: view.isFetching }));
+
   const allAgents = agentsQuery.data;
   const agents = useMemo(
     () => (allAgents ?? []).filter((agent) => agent.status !== "terminated"),
@@ -88,6 +101,8 @@ export function useRoutineFormOptions(
     }));
   }, [overview, responsibilitiesOn]);
 
+  const areaTitles = useMemo(() => new Map((overview?.areas ?? []).map((area) => [area.id, area.title])), [overview]);
+
   const createSecretMutation = useMutation({
     mutationFn: (input: { name: string; value: string }) => secretsApi.create(companyId!, input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId!) }),
@@ -110,7 +125,11 @@ export function useRoutineFormOptions(
     mentions,
     responsibilitiesOn,
     responsibilities,
-    areaTitles: new Map((overview?.areas ?? []).map((area) => [area.id, area.title])),
+    areaTitles,
     createSecret,
+    /** Reads that failed, each with a retry. */
+    loadErrors,
+    /** People could not be loaded, so a saved responsible user cannot be named. */
+    peopleFailed: views[2]!.view.kind === "error" && !members,
   };
 }

@@ -1,5 +1,12 @@
 export type WebhookInstructionSender = "custom" | "github";
-export type WebhookInstructionSigningMode = "app_webhook" | "bearer" | "fireflies_hmac";
+export type WebhookInstructionSigningMode = "app_webhook" | "bearer" | "fireflies_hmac" | "hmac_sha256" | "none";
+
+const SIGNING_MODES: readonly WebhookInstructionSigningMode[] = ["app_webhook", "bearer", "fireflies_hmac", "hmac_sha256", "none"];
+
+/** The instruction set for a saved webhook's signing mode; unknown modes read as the shared app flow. */
+export function webhookInstructionSigningMode(mode: string | null | undefined): WebhookInstructionSigningMode {
+  return SIGNING_MODES.includes(mode as WebhookInstructionSigningMode) ? mode as WebhookInstructionSigningMode : "app_webhook";
+}
 
 /** Copyable setup instructions for whoever (or whichever agent) connects the sending app. */
 export function webhookAgentInstructions(
@@ -26,6 +33,20 @@ export function webhookAgentInstructions(
           "Select the events that should start this routine, enable the webhook, and save.",
           "To check the connection, open Recent Deliveries and redeliver an event.",
         ]
+      : signingMode === "none"
+        ? [
+            "This webhook has no key. Its URL is the shared secret, so keep it private.",
+            "In the sending app, add a webhook using this URL, POST method and JSON body, then save it.",
+            "Send a unique Idempotency-Key header for each event and reuse it on retries.",
+          ]
+      : signingMode === "hmac_sha256"
+        ? [
+            `Secret key: ${webhookSecret}`,
+            "Sign each request with HMAC-SHA256 using the secret key. The signed message is the Unix timestamp in seconds, a period, and the exact JSON body.",
+            "Send the timestamp in X-Paperclip-Timestamp and the signature in X-Paperclip-Signature, formatted sha256=<hex digest>.",
+            "Requests with an old timestamp are rejected, so sign each request when you send it. Do not use Bearer authentication.",
+            "Send a unique Idempotency-Key header for each event and reuse it on retries.",
+          ]
       : [
           `Secret key: ${webhookSecret}`,
           ...(signingMode === "bearer" ? [] : [
