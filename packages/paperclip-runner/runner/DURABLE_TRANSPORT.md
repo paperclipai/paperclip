@@ -14,6 +14,12 @@ checks for an incoming connection every 10 ms (or sooner, when that delay is
 smaller). It never redials, so a connection does not wait out the reconnect
 delay after a disconnect or an authority rotation.
 
+A listening Runner accepts one controller at a time. Core pings the Runner
+every 20 seconds. When the current controller sends no frame, ping included,
+for 90 seconds, the Runner closes that connection and accepts the next one
+within its reconnect grace. A path that broke without a close therefore cannot
+block a replacement controller.
+
 In both modes, Runner enables `TCP_NODELAY` before the WebSocket handshake
 when the connected peer is on loopback.
 

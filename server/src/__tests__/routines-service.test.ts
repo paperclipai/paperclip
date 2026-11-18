@@ -1728,7 +1728,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           payload: { issueId: run.linkedIssueId, mutation: "create" },
           requestedByActorType: undefined,
           requestedByActorId: null,
-          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch" },
+          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch", responsibleUserId: routine.responsibleUserId },
         },
       },
     ]);
