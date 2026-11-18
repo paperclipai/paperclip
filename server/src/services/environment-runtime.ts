@@ -11,6 +11,7 @@ import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironment
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { leaseRuntimeConfigCacheFor } from "./lease-runtime-config-cache.js";
 import { hasNativeWorkspaceExportResume, releaseCompletedNativeWorkspaceExportRetention } from "./native-runtime/native-workspace-export-resume.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
@@ -1323,6 +1324,7 @@ function createSandboxEnvironmentDriver(
   } = {},
 ): EnvironmentRuntimeDriver {
   const pluginWorkerManager = options.pluginWorkerManager;
+  const leaseRuntimeConfigCache = leaseRuntimeConfigCacheFor(db);
   const pluginWorkerReadyTimeoutMs = options.pluginWorkerReadyTimeoutMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_TIMEOUT_MS;
   const pluginWorkerReadyPollMs = options.pluginWorkerReadyPollMs ?? DEFAULT_PLUGIN_SANDBOX_WORKER_READY_POLL_MS;
   // The retry count is at least one attempt, so a zero or negative override
@@ -1807,6 +1809,32 @@ function createSandboxEnvironmentDriver(
     };
   }
 
+  // The per-exec paths (execute, file sync, workspace realization) reuse one
+  // resolution per lease instead of resolving the provider config, and any
+  // secret-backed field in it, on every call. The fingerprint lists every
+  // input `resolvePluginSandboxRuntimeConfig` reads, so a changed environment
+  // or lease resolves again. See lease-runtime-config-cache.ts.
+  async function resolveCachedPluginSandboxRuntimeConfig(input: {
+    environment: Pick<Environment, "id" | "driver" | "config"> & Partial<Pick<Environment, "updatedAt">>;
+    lease: EnvironmentLease;
+    provider: string;
+  }): Promise<Record<string, unknown>> {
+    return await leaseRuntimeConfigCache.getOrResolve({
+      leaseId: input.lease.id,
+      companyId: input.lease.companyId,
+      fingerprintInput: {
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        environmentDriver: input.environment.driver,
+        environmentConfig: input.environment.config,
+        environmentUpdatedAt: input.environment.updatedAt ?? null,
+        provider: input.provider,
+        leaseMetadata: input.lease.metadata ?? null,
+      },
+      resolve: () => resolvePluginSandboxRuntimeConfig(input),
+    });
+  }
+
   async function cleanupObsoleteReusableSandboxLeases(input: {
     environment: Environment;
     leases: EnvironmentLease[];
@@ -1836,7 +1864,7 @@ function createSandboxEnvironmentDriver(
     if (!pluginId || !providerKey) {
       throw new Error("Sandbox lease is missing plugin/provider metadata for native file sync.");
     }
-    const config = await resolvePluginSandboxRuntimeConfig({
+    const config = await resolveCachedPluginSandboxRuntimeConfig({
       environment: input.environment,
       lease: input.lease,
       provider: providerKey,
@@ -2915,7 +2943,7 @@ function createSandboxEnvironmentDriver(
             ? (parseEnvironmentDriverConfig(input.environment).config as SandboxEnvironmentConfig).provider
             : null);
         if (pluginId && providerKey) {
-          const config = await resolvePluginSandboxRuntimeConfig({
+          const config = await resolveCachedPluginSandboxRuntimeConfig({
             environment: input.environment,
             lease: input.lease,
             provider: providerKey,
@@ -3029,7 +3057,7 @@ function createSandboxEnvironmentDriver(
         const pluginId = readString(input.lease.metadata?.pluginId);
         const providerKey = readString(input.lease.metadata?.provider);
         if (pluginId && providerKey) {
-          const config = await resolvePluginSandboxRuntimeConfig({
+          const config = await resolveCachedPluginSandboxRuntimeConfig({
             environment: input.environment,
             lease: input.lease,
             provider: providerKey,
@@ -3356,6 +3384,8 @@ function createSandboxEnvironmentDriver(
     if (input.resourceDisposition === "stop_and_retain") {
       throw new Error("Stop-only sandbox cleanup requires a durable stop intent.");
     }
+    // Release resolves the config fresh and ends the lease's cached entry.
+    leaseRuntimeConfigCache.invalidateLease(input.lease.id);
     const metadata = input.lease.metadata ?? {};
     const pluginId = readString(metadata.pluginId);
     const providerKey = readString(metadata.provider);
@@ -3426,6 +3456,8 @@ function createSandboxEnvironmentDriver(
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
     if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
+    // Destroy resolves the config fresh and ends the lease's cached entry.
+    leaseRuntimeConfigCache.invalidateLease(input.lease.id);
     let cleanupStatus: "success" | "failed" = "success";
     let termination: ReturnType<typeof remoteTerminationReceipt>;
     const metadata = input.lease.metadata ?? {};

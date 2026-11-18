@@ -66,6 +66,7 @@ import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { logActivity } from "./activity-log.js";
+import { noteCompanySecretChanged } from "./lease-runtime-config-cache.js";
 
 /**
  * Recognizes a 409 Conflict error specifically originating from duplicate
@@ -2667,7 +2668,7 @@ export function secretService(db: Db | DbTransaction) {
       // in opposite order and could deadlock. Matching the order here removes
       // that risk: every caller now locks the parent row before the version
       // rows, so a lock cycle between the two tables cannot form.
-      return await db.transaction(async (tx) => {
+      const rotated = await db.transaction(async (tx) => {
         const updated = await tx
           .update(companySecrets)
           .set({
@@ -2716,6 +2717,8 @@ export function secretService(db: Db | DbTransaction) {
 
         return updated;
       });
+      noteCompanySecretChanged(secret.companyId);
+      return rotated;
     } catch (error) {
       if (secret.managedMode !== "external_reference" || externalValueWrite) {
         const cleaned = await cleanupPreparedProviderWrite({
@@ -2844,7 +2847,10 @@ export function secretService(db: Db | DbTransaction) {
       })
       .where(eq(companySecrets.id, secret.id))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => {
+        noteCompanySecretChanged(secret.companyId);
+        return rows[0] ?? null;
+      });
   }
 
   function collectTargetIds(
@@ -3532,6 +3538,7 @@ export function secretService(db: Db | DbTransaction) {
           updatedAt: new Date(),
         })
         .where(eq(companySecrets.id, secretId));
+      noteCompanySecretChanged(secret.companyId);
     }
     const providerConfig = secret.providerConfigId
       ? await getProviderConfigById(secret.providerConfigId)
