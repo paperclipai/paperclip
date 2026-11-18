@@ -73,10 +73,11 @@ try {
         : section === 'storage' ? settings.storage && settings.storage.provider !== 's3'
         : settings.secrets && (!settings.secrets.provider || settings.secrets.provider === 'local_encrypted');
       if (required && !value) fail(section + ' requires an explicit data path; schema defaults can select another instance');
+      if (value && !value.startsWith('/') && !value.startsWith('~/')) fail(section + ' data path must be absolute or home-relative');
       if (value && !nativePath(resolveDataPath(value))) fail('instance still contains Windows data paths');
     }
     if (settings.database && settings.database.backup?.enabled !== false && !settings.database.backup?.dir) fail('database backup requires an explicit data path; schema defaults can select another instance');
-    if (settings.database?.backup?.dir && !nativePath(resolveDataPath(settings.database.backup.dir))) fail('instance still contains Windows data paths');
+    if (settings.database?.backup?.dir && (!nativePath(resolveDataPath(settings.database.backup.dir)) || (!settings.database.backup.dir.startsWith('/') && !settings.database.backup.dir.startsWith('~/') && !nativePath(path.resolve(repository,'server',settings.database.backup.dir))))) fail('instance still contains Windows data paths');
     const configuredBins = config.binPaths ?? ["/usr/local/bin", "/usr/bin", "/bin"];
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
@@ -215,7 +216,27 @@ try {
               try { return sockets.has(fs.readlinkSync("/proc/" + pid + "/fd/" + fd)); } catch { return false; }
             })) continue;
             const values = Object.fromEntries(fs.readFileSync("/proc/" + pid + "/environ","utf8").split("\0").filter(Boolean).map(value => { const index = value.indexOf("="); return [value.slice(0,index),value.slice(index+1)]; }));
-            ownsListener = values.PAPERCLIP_CONFIG === selectedConfig && values.PAPERCLIP_HOME === config.paperclipHome && values.PAPERCLIP_INSTANCE_ID === config.instanceId;
+            const cwd = fs.readlinkSync('/proc/' + pid + '/cwd');
+            const identify = env => {
+              const home = env.PAPERCLIP_HOME ? path.resolve(cwd,env.PAPERCLIP_HOME) : path.join(env.HOME || os.userInfo().homedir,'.paperclip');
+              const id = env.PAPERCLIP_INSTANCE_ID || 'default';
+              let file = env.PAPERCLIP_CONFIG ? path.resolve(cwd,env.PAPERCLIP_CONFIG) : undefined;
+              for (let directory=cwd; !file; directory=path.dirname(directory)) {
+                const candidate=path.join(directory,'.paperclip','config.json');
+                if (fs.existsSync(candidate)) file=candidate;
+                if (directory===path.dirname(directory)) break;
+              }
+              return {home,id,file:file || path.join(home,'instances',id,'config.json')};
+            };
+            const initial=identify(values);
+            const effective={...values};
+            for (const file of [path.join(path.dirname(initial.file),'.env'), ...(values.PAPERCLIP_DISABLE_CWD_ENV_FILE === 'true' ? [] : [path.join(cwd,'.env')])]) {
+              if (!fs.existsSync(file)) continue;
+              const saved=parseEnv(fs.readFileSync(file,'utf8'));
+              for (const [key,value] of Object.entries(saved)) if (effective[key]===undefined) effective[key]=value;
+            }
+            const selected=identify(effective);
+            ownsListener = selected.file === selectedConfig && selected.home === config.paperclipHome && selected.id === config.instanceId;
             if (ownsListener) break;
           } catch {}
         }

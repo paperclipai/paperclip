@@ -33,8 +33,8 @@ prove that its host volume can grow.
 
 Configured embedded database, local storage and encryption sections must set
 their data paths explicitly. Schema defaults contain the default instance path
-and can select a different home. Home-relative and relative paths are accepted
-when they resolve to native Linux storage.
+and can select a different home. Database, storage and key paths must be absolute or home-relative. Relative
+backup paths are checked from both the checkout and server working directories.
 
 Run the helper from the repository root:
 
@@ -57,10 +57,10 @@ Run `preflight --runner` before preparing an instance or starting native agent
 tests; Runner requires glibc 2.39 or newer. An operating system upgrade affects
 the entire distribution, so obtain approval before doing one.
 Run `preflight --health` to verify a running instance launched through this helper.
-The check requires the listener's initial home, config and instance environment;
-it refuses an older unlabelled process rather than inferring ownership from its
-port. Adopt an existing instance by restarting its selected service through the
-helper after checking ownership. Start with `exec pnpm dev`
+The check resolves the listener's explicit environment or normal home, instance,
+ancestor-config and dotenv defaults. If those do not establish the selected
+identity, adopt it by restarting the selected service through the helper after
+checking ownership. Start with `exec pnpm dev`
 only after checking the selected instance and existing service ownership.
 Stop that instance through `exec pnpm dev:stop`; preserve unrelated processes.
 Follow `doc/DOCKER.md` for an explicitly requested release-image qualification.
