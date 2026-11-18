@@ -457,12 +457,21 @@ async function syncInFileMappings(input: {
   mappings: PluginSyncFileMapping[];
   remoteDir: string;
   timeoutMs: number;
+  // TECH-8174: the operation's post-upload commands, run in the SAME exec after
+  // every file has landed (see `appendPostUploadSteps`). Empty keeps the plain
+  // transfer script.
+  postUploadCommands?: PluginPostUploadCommand[];
 }): Promise<{ filesTransferred: number; bytesTransferred: number }> {
   const { exec, mappings, remoteDir, timeoutMs } = input;
+  const postUploadCommands = input.postUploadCommands ?? [];
   if (mappings.length === 0) return { filesTransferred: 0, bytesTransferred: 0 };
 
   for (const mapping of mappings) {
     assertConfinedSandboxPath(remoteDir, mapping.targetPath, "target");
+  }
+  // C2 lexical guard for every command cwd, before any byte moves.
+  for (const command of postUploadCommands) {
+    assertConfinedSandboxPath(remoteDir, command.cwd ?? remoteDir, "post-upload command cwd");
   }
 
   return withHostTempDir(async (tmp) => {
@@ -542,15 +551,124 @@ async function syncInFileMappings(input: {
       );
     });
 
-    await streamFileToPodStdin({
-      exec,
-      script: script.join("\n"),
-      filePath: archivePath,
-      timeoutMs,
-      label: "syncIn file transfer",
-    });
+    if (postUploadCommands.length === 0) {
+      await streamFileToPodStdin({
+        exec,
+        script: script.join("\n"),
+        filePath: archivePath,
+        timeoutMs,
+        label: "syncIn file transfer",
+      });
+      return { filesTransferred: mappings.length, bytesTransferred };
+    }
+
+    const steps = appendPostUploadSteps({ script, remoteDir, remoteStage, commands: postUploadCommands });
+    const source = createReadStream(archivePath);
+    let result: { exitCode: number; stderr: string };
+    try {
+      result = await exec(["/bin/sh", "-c", script.join("\n"), "pc-sync-in", ...steps.args], {
+        stdin: source,
+        // The same total budget the separate execs had: the transfer plus each command.
+        timeoutMs: timeoutMs + postUploadCommands.reduce((sum, command) => sum + (command.timeoutMs ?? timeoutMs), 0),
+        maxStderrBytes: SYNC_STDERR_CAP_BYTES * (1 + postUploadCommands.length),
+      });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(`Kubernetes syncIn file transfer with ${postUploadCommands.length} post-upload command(s) failed: ${reason}`);
+    } finally {
+      source.destroy();
+    }
+    if (result.exitCode !== 0) throw steps.describeFailure(result);
     return { filesTransferred: mappings.length, bytesTransferred };
   });
+}
+
+/**
+ * TECH-8174: run an operation's post-upload commands at the end of the transfer
+ * exec instead of one exec each, with the same per-command semantics as
+ * `runPostUploadCommands`: array order, fail-fast, each command VERBATIM as a
+ * positional argument (never concatenated into the script), its `cwd` re-confined
+ * through realpath plus a `/proc/self/fd`-pinned open before it runs, run by
+ * `sh -c "$cmd"` in its own subshell with no stdin (the archive bytes are never
+ * visible to it).
+ *
+ * Each step writes a begin marker and, on failure, a failure marker with its exit
+ * code to stderr. Both carry a per-exec random nonce, so `describeFailure` can
+ * report exactly which step failed with that step's own stderr, in the same
+ * message shape as the separate execs: a transfer failure stays
+ * `syncIn file transfer failed (exit N)`, a command failure stays
+ * `post-upload command failed (exit N)`.
+ */
+function appendPostUploadSteps(input: {
+  script: string[];
+  remoteDir: string;
+  remoteStage: string;
+  commands: PluginPostUploadCommand[];
+}): { args: string[]; describeFailure: (result: { exitCode: number; stderr: string }) => Error } {
+  const { script, remoteStage, commands, remoteDir } = input;
+  const nonce = randomUUID().replace(/-/g, "");
+  const beginMarker = `__PC_SYNC_STEP_${nonce}`;
+  const failMarker = `__PC_SYNC_STEP_FAILED_${nonce}`;
+  const args: string[] = [];
+  // Every file is in place; drop the (now empty) staging dir before any command
+  // runs. The EXIT trap still sweeps it if anything above failed.
+  script.push(`rm -rf ${shQuote(remoteStage)};`);
+  commands.forEach((command, i) => {
+    const cwdArg = `\${${2 * i + 1}}`;
+    const commandArg = `\${${2 * i + 2}}`;
+    args.push(command.cwd ?? remoteDir, command.command);
+    script.push(
+      `printf '%s %s\\n' '${beginMarker}' ${i} >&2;`,
+      `( _pc_real=$(_pc_resolve "${cwdArg}") || { echo "ESCAPE" >&2; exit 42; };`,
+      `  case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
+      `  exec 9<"$_pc_real" || { echo "open failed" >&2; exit 46; };`,
+      `  _pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE" >&2; exit 42; };`,
+      `  case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
+      `  cd /proc/self/fd/9 || { echo "cd failed" >&2; exit 46; };`,
+      `  exec /bin/sh -c "${commandArg}" pc-post-upload`,
+      `) </dev/null;`,
+      `_pc_rc=$?;`,
+      `if [ "$_pc_rc" -ne 0 ]; then printf '\\n%s %s %s\\n' '${failMarker}' ${i} "$_pc_rc" >&2; exit "$_pc_rc"; fi;`,
+    );
+  });
+
+  const describeFailure = (result: { exitCode: number; stderr: string }): Error => {
+    const stderr = result.stderr || "";
+    const lines = stderr.split("\n");
+    const beginIndex = new Map<number, number>();
+    let resolved: { step: number; exitCode: number; line: number } | null = null;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (line.startsWith(`${beginMarker} `)) {
+        const step = Number(line.slice(beginMarker.length + 1));
+        if (Number.isInteger(step)) beginIndex.set(step, index);
+      } else if (line.startsWith(`${failMarker} `)) {
+        const [step, code] = line.slice(failMarker.length + 1).split(" ").map(Number);
+        if (Number.isInteger(step) && Number.isInteger(code)) resolved = { step, exitCode: code, line: index };
+      }
+    }
+    // A failure marker names the step. A step that began but wrote no failure
+    // marker (its shell died) is still that step's failure. Otherwise the
+    // transfer part failed before any command started.
+    if (resolved === null && beginIndex.size > 0) {
+      resolved = { step: Math.max(...beginIndex.keys()), exitCode: result.exitCode, line: lines.length };
+    }
+    const clean = (from: number, to: number) =>
+      lines
+        .slice(from, to)
+        .filter((line) => !line.startsWith(`${beginMarker} `) && !line.startsWith(`${failMarker} `))
+        .join("\n")
+        .trim();
+    if (resolved === null) {
+      const detail = clean(0, lines.length);
+      return new Error(`Kubernetes syncIn file transfer failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`);
+    }
+    const detail = clean((beginIndex.get(resolved.step) ?? 0) + 1, resolved.line);
+    return new Error(
+      `Kubernetes post-upload command failed (exit ${resolved.exitCode})${detail ? `: ${detail}` : ""}`,
+    );
+  };
+  return { args, describeFailure };
 }
 
 /**
@@ -690,11 +808,17 @@ export async function performSyncIn(input: {
     const fileMappings = operation.files.filter((mapping) => mapping.kind === "file");
     const directoryMappings = operation.files.filter((mapping) => mapping.kind === "directory");
 
+    // TECH-8174: an operation of file mappings only (every workspace and asset
+    // tarball) runs its post-upload commands (the extract) inside the transfer
+    // exec: one exec per operation instead of 1 + one per command.
+    const commands = operation.postUploadCommands ?? [];
+    const foldCommands = fileMappings.length > 0 && directoryMappings.length === 0 && commands.length > 0;
     const fileResult = await syncInFileMappings({
       exec: input.exec,
       mappings: fileMappings,
       remoteDir: input.remoteDir,
       timeoutMs: input.timeoutMs,
+      ...(foldCommands ? { postUploadCommands: commands } : {}),
     });
     filesTransferred += fileResult.filesTransferred;
     bytesTransferred += fileResult.bytesTransferred;
@@ -715,7 +839,7 @@ export async function performSyncIn(input: {
     // no extra exec, byte-identical to a pre-contract operation.
     await runPostUploadCommands({
       exec: input.exec,
-      commands: operation.postUploadCommands ?? [],
+      commands: foldCommands ? [] : commands,
       remoteDir: input.remoteDir,
       timeoutMs: input.timeoutMs,
     });

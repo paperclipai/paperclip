@@ -19,7 +19,7 @@
  * the pod holds no memory token and no route to the memory service.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -182,6 +182,46 @@ async function prepareInstructionsAsset(
   const name = path.basename(filePath) || "instructions.md";
   await fs.writeFile(path.join(dir, name), instructionsContent, { mode: 0o600, flag: "wx" });
   return { localDir: dir, relativeFile: name };
+}
+
+export const HERMES_SANDBOX_PROMPT_STAGING_FAILED_MESSAGE = "Could not stage the Hermes prompt in the sandbox.";
+/** Exit status of the launch exec when the staging step (not Hermes) failed; confirmed by the nonce line. */
+export const HERMES_SANDBOX_PROMPT_STAGING_EXIT_CODE = 121;
+
+/**
+ * TECH-8174: one exec that stages the prompt file and the run home, then execs the Hermes launch.
+ * Before, the staging was its own exec. The script and argv carry only fixed text and paths: the
+ * prompt arrives on stdin (after the provider's env line), the staging step reads it to EOF in a
+ * subshell (so its `umask 077` does not reach Hermes), and Hermes then starts with stdin at EOF,
+ * as before. A staging failure writes one line with a per-run nonce and exits with
+ * HERMES_SANDBOX_PROMPT_STAGING_EXIT_CODE without starting Hermes; `stagingFailed` needs both, so a
+ * Hermes exit with the same code is never mistaken for a staging failure.
+ */
+export function buildHermesSandboxPromptStagingLaunch(input: {
+  queryPath: string;
+  homeRoot: string;
+  command: string;
+  args: string[];
+}): {
+  command: string;
+  args: string[];
+  stagingFailed: (result: { exitCode: number | null; timedOut: boolean; stderr?: string | null }) => boolean;
+} {
+  const marker = `[hermes] ${HERMES_SANDBOX_PROMPT_STAGING_FAILED_MESSAGE} (stage ${randomBytes(8).toString("hex")})`;
+  const script = [
+    '( umask 077 && mkdir -p "$2"' + REMOTE_RUN_HOME_SUBDIRS.map((dir) => ` "$2/${dir}"`).join("") + ' && cat > "$1" ) ||',
+    `  { printf '%s\\n' ${shellQuote(marker)} >&2; exit ${HERMES_SANDBOX_PROMPT_STAGING_EXIT_CODE}; }`,
+    "shift 2",
+    'exec "$@"',
+  ].join("\n");
+  return {
+    command: "sh",
+    args: ["-c", script, "paperclip-hermes-launch", input.queryPath, input.homeRoot, input.command, ...input.args],
+    stagingFailed: (result) =>
+      !result.timedOut &&
+      result.exitCode === HERMES_SANDBOX_PROMPT_STAGING_EXIT_CODE &&
+      (result.stderr ?? "").includes(marker),
+  };
 }
 
 /** The sandbox-side env for a run home rooted at `homeRoot` (POSIX), like createRunHome's env. */
@@ -676,22 +716,6 @@ async function executeHermesInSandbox(
     args.push("--yolo");
     if (extraArgs?.length) args.push(...extraArgs);
 
-    // ── Stage the prompt file and run home inside the sandbox (prompt over stdin) ─
-    const stageScript =
-      'umask 077 && mkdir -p "$2"' +
-      REMOTE_RUN_HOME_SUBDIRS.map((dir) => ` "$2/${dir}"`).join("") +
-      ' && cat > "$1"';
-    const staged = await runAdapterExecutionTargetProcess(
-      ctx.runId,
-      runtimeTarget,
-      "sh",
-      ["-c", stageScript, "sh", remoteQueryPath, remoteHomeRoot],
-      { cwd: remoteCwd, env: {}, stdin: prompt, timeoutSec: 60, graceSec: 5, onLog: async () => {} },
-    );
-    if (staged.timedOut || staged.exitCode !== 0) {
-      throw new Error("Could not stage the Hermes prompt in the sandbox.");
-    }
-
     await ctx.onLog(
       "stdout",
       `[hermes] Starting Hermes Agent in ${describeAdapterExecutionTarget(target)} (model=${model ?? "hermes-default"}, provider=${resolvedProvider} [${effective.resolvedFrom}], timeout=${timeoutSec}s${maxTurns ? `, max_turns=${maxTurns}` : ""})\n`,
@@ -719,9 +743,18 @@ async function executeHermesInSandbox(
           ],
         }
       : { command, args };
-    const result = await runAdapterExecutionTargetProcess(ctx.runId, runtimeTarget, launch.command, launch.args, {
+    // TECH-8174: the launch exec stages the prompt file and run home first (one exec instead of
+    // two). The prompt still travels only on stdin, never in argv; argv carries the two paths.
+    const staging = buildHermesSandboxPromptStagingLaunch({
+      queryPath: remoteQueryPath,
+      homeRoot: remoteHomeRoot,
+      command: launch.command,
+      args: launch.args,
+    });
+    const result = await runAdapterExecutionTargetProcess(ctx.runId, runtimeTarget, staging.command, staging.args, {
       cwd: remoteCwd,
       env,
+      stdin: prompt,
       timeoutSec,
       graceSec,
       onLog: wrappedOnLog,
@@ -733,6 +766,9 @@ async function executeHermesInSandbox(
 
     for (const fl of activeRedactor.flushDetailed()) {
       await emitClassifiedChunk(fl.stream, fl.rawChunk, fl.chunk);
+    }
+    if (staging.stagingFailed(result)) {
+      throw new Error(HERMES_SANDBOX_PROMPT_STAGING_FAILED_MESSAGE);
     }
 
     const scrub = (text: string) => redactSensitiveString(text, sensitiveValues);

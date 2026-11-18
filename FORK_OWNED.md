@@ -84,6 +84,14 @@ any new fork patch; remove one when the patch is upstreamed.
 - `packages/adapter-utils/src/sandbox-callback-bridge-idle-wait.test.ts`
 - `doc/plans/2026-11-18-sandbox-bridge-idle-wait.md`
 
+## Fewer Kubernetes sandbox setup execs (TECH-8174)
+
+- `packages/plugins/sandbox-providers/kubernetes/src/file-sync.ts` post-upload extract runs in the upload exec
+- `packages/adapter-utils/src/sandbox-callback-bridge.ts` bridge start and readiness in one exec; worker mkdir skippable (TECH-8174 hunks)
+- `packages/adapter-utils/src/execution-target.ts` start fold and mkdir skip enabled for Kubernetes only (TECH-8174 hunk)
+- `packages/adapter-utils/src/sandbox-bridge-start-fold.test.ts`
+- `packages/adapters/hermes/src/server/execute-sandbox.prompt-staging.test.ts`
+
 ## Slack file text extraction (TECH-8958)
 
 - `server/src/services/connectors/slack-file-content.ts`

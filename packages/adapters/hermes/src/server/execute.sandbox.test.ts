@@ -98,7 +98,15 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importOriginal) =>
     }),
     runAdapterExecutionTargetProcess: vi.fn(async (_runId: string, _target: unknown, command: string, args: string[], options: ProcessCall["options"]) => {
       h.processCalls.push({ command, args, options });
-      const isHermes = command.endsWith("/hermes") || (command === "env" && args.some((a) => a.endsWith("/hermes")));
+      // TECH-8174: the launch exec stages the prompt first. A failed staging step exits with its own
+      // code and nonce line and never starts Hermes.
+      const staging = command === "sh" && args[2] === "paperclip-hermes-launch";
+      if (staging && h.stageExit !== 0) {
+        const marker = /'(\[hermes\] Could not stage[^']*)'/.exec(args[1] ?? "")?.[1] ?? "";
+        return { exitCode: 121, signal: null, timedOut: false, stdout: "", stderr: `${marker}\n`, pid: null, startedAt: new Date().toISOString() };
+      }
+      const launched = staging ? args.slice(5) : [command, ...args];
+      const isHermes = launched[0]!.endsWith("/hermes") || (launched[0] === "env" && launched.some((a) => a.endsWith("/hermes")));
       return {
         exitCode: isHermes ? h.hermesExit : h.stageExit,
         signal: null,
@@ -222,7 +230,11 @@ function ctx(overrides: { config?: Record<string, unknown>; target?: AdapterExec
 
 /** The Hermes launch, with a Router run's `env -u NAME ...` prefix peeled off. */
 function hermesCall(): ProcessCall & { unsetNames: string[] } {
-  for (const call of h.processCalls) {
+  for (const staged of h.processCalls) {
+    // TECH-8174: peel the prompt-staging wrapper (`sh -c <script> $0 <query> <home> <launch...>`).
+    const call = staged.command === "sh" && staged.args[2] === "paperclip-hermes-launch"
+      ? { command: staged.args[5]!, args: staged.args.slice(6), options: staged.options }
+      : staged;
     if (call.command.endsWith("/hermes")) return { ...call, unsetNames: [] };
     if (call.command === "env") {
       const unsetNames: string[] = [];
@@ -276,13 +288,14 @@ describe("Hermes execute on a sandbox target (TECH-8174)", () => {
     expect(Object.keys(h.shipped.instructions ?? {})).toEqual(["AGENTS.md"]);
     expect(prepare.assets?.[1]?.followSymlinks).toBe(false);
 
-    // The prompt is staged over stdin, never in argv.
+    // The prompt is staged over stdin, never in argv, by the launch exec itself (TECH-8174: one
+    // exec, not a separate staging exec).
+    expect(h.processCalls).toHaveLength(1);
     const stage = h.processCalls[0]!;
     expect(stage.command).toBe("sh");
     expect(stage.options.stdin).toContain("TASK-BODY-SENTINEL");
     expect(stage.args.join(" ")).not.toContain("TASK-BODY-SENTINEL");
-    expect(stage.args).toContain(`${REMOTE_RUNTIME}/query.txt`);
-    expect(stage.options.env).toEqual({});
+    expect(stage.args.slice(2, 5)).toEqual(["paperclip-hermes-launch", `${REMOTE_RUNTIME}/query.txt`, `${REMOTE_RUNTIME}/home`]);
 
     const call = hermesCall();
     expect(call.command).toBe("/opt/hermes/bin/hermes");
@@ -554,7 +567,6 @@ describe("Hermes execute on a sandbox target (TECH-8174)", () => {
     h.stageExit = 1;
     await expect(execute(ctx())).rejects.toThrow("Could not stage the Hermes prompt in the sandbox.");
     expect(logs.some(([, line]) => line.includes("Sandbox workspace restore failed after the run failed: copy-back failed"))).toBe(true);
-    expect(h.processCalls.some((c) => c.command.endsWith("/hermes"))).toBe(false);
     expect(h.shellCalls.some((c) => c.startsWith("rm -rf"))).toBe(true);
   });
 

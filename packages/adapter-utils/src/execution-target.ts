@@ -4974,6 +4974,9 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
+      // TECH-8174: on Kubernetes the server start below creates the queue
+      // directories in its own exec, so the worker skips its duplicate mkdir.
+      ...(waitInSandbox ? { skipQueueDirectorySetup: true } : {}),
       ...(relay
         ? { authorizeRequest: (request: { method: string; path: string }) => authorizeSandboxCallbackBridgeRequestWithRoutes(request, bridgeRouteAllowlist) }
         : {}),
@@ -4996,6 +4999,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       shellCommand,
       routePolicies: effectiveRoutePolicies,
       extraHeaders,
+      // TECH-8174: start and readiness wait in one exec on Kubernetes.
+      ...(waitInSandbox ? { foldReadinessIntoStart: true } : {}),
     });
   } catch (error) {
     await Promise.allSettled([

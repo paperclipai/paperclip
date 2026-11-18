@@ -600,17 +600,21 @@ describe("kubernetes onEnvironmentSyncIn (post-upload commands)", () => {
     // uploaded bytes, then the second command's append.
     expect(await fs.readFile(path.join(remoteDir, "out.txt"), "utf-8")).toBe("helloDONE");
 
-    // One exec for the transfer, then one exec per command (single-exec-per-command).
-    expect(calls).toHaveLength(3);
-    // C1/C3: each command rides as the FINAL positional argument, byte-for-byte
-    // unmutated — the provider concatenated no shell fragment onto it.
-    const cmdCalls = calls.filter((c) => c.command.includes("cat config.txt > out.txt") || c.command.includes("printf DONE >> out.txt"));
-    expect(cmdCalls).toHaveLength(2);
-    expect(cmdCalls[0].command[cmdCalls[0].command.length - 1]).toBe("cat config.txt > out.txt");
-    expect(cmdCalls[1].command[cmdCalls[1].command.length - 1]).toBe("printf DONE >> out.txt");
-    // Absent cwd defaults to the remote dir (the penultimate positional arg), never
-    // a process default cwd (C2).
-    expect(cmdCalls[0].command[cmdCalls[0].command.length - 2]).toBe(remoteDir);
+    // TECH-8174: the commands run inside the transfer exec (one exec in total).
+    expect(calls).toHaveLength(1);
+    // C1/C3: each command rides as its own positional argument, byte-for-byte
+    // unmutated, never in the script text: the provider concatenated no shell
+    // fragment onto it. Positional pairs are (cwd, command) after `$0`.
+    const [call] = calls;
+    expect(call.command.slice(3)).toEqual([
+      "pc-sync-in",
+      remoteDir,
+      "cat config.txt > out.txt",
+      remoteDir,
+      "printf DONE >> out.txt",
+    ]);
+    expect(call.script).not.toContain("cat config.txt");
+    expect(call.script).not.toContain("printf DONE");
   });
 
   it("runs a command in an explicit confined cwd", async () => {
@@ -756,6 +760,230 @@ describe("kubernetes onEnvironmentSyncIn (post-upload commands)", () => {
     // An absent/empty command list adds zero execs — byte-identical to today.
     expect(emptyCalls).toHaveLength(baseCalls.length);
     expect(emptyCalls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TECH-8174: upload and extract in ONE exec. A runtime asset or workspace
+// operation is a host tarball (one `file` mapping) plus its extract command. The
+// extract now runs at the end of the transfer exec. These run the real host
+// shell and real tar.
+// ---------------------------------------------------------------------------
+describe("kubernetes onEnvironmentSyncIn (upload and extract in one exec, TECH-8174)", () => {
+  const extractCommand = (tarPath: string, dir: string) =>
+    `rm -rf '${dir}' && mkdir -p '${dir}' && tar -xf '${tarPath}' -C '${dir}' && rm -f '${tarPath}'`;
+
+  async function hostTarball(host: string, files: Record<string, string>): Promise<string> {
+    const src = path.join(host, "asset-src");
+    for (const [name, body] of Object.entries(files)) {
+      await fs.mkdir(path.dirname(path.join(src, name)), { recursive: true });
+      await fs.writeFile(path.join(src, name), body);
+    }
+    const tarPath = path.join(host, "asset.tar");
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn("tar", ["-cf", tarPath, "-C", src, ...Object.keys(files)]);
+      child.on("error", reject);
+      child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))));
+    });
+    return tarPath;
+  }
+
+  it("uploads three asset tarballs and extracts each in ONE exec per operation (3 execs, not 6)", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const runtime = path.join(remoteDir, ".paperclip-runtime", "hermes");
+    const operations = [];
+    for (const key of ["workspace", "hermesHome", "instructions"]) {
+      const keyHost = path.join(host, key);
+      await fs.mkdir(keyHost);
+      const tarPath = await hostTarball(keyHost, { [`${key}.txt`]: `${key} body`, "nested/deep.txt": `${key} deep` });
+      const remoteTar = path.join(runtime, `${key}-upload.tar`);
+      operations.push({
+        operationId: `op-${key}`,
+        files: [{ sourcePath: tarPath, targetPath: remoteTar, kind: "file" as const }],
+        postUploadCommands: [{ command: extractCommand(remoteTar, path.join(runtime, key)) }],
+      });
+    }
+
+    const { exec, calls } = makeRealExec();
+    const result = await performSyncIn({ exec, remoteDir, timeoutMs: 30_000, operations });
+
+    expect(calls).toHaveLength(3);
+    for (const key of ["workspace", "hermesHome", "instructions"]) {
+      expect(await fs.readFile(path.join(runtime, key, `${key}.txt`), "utf-8")).toBe(`${key} body`);
+      expect(await fs.readFile(path.join(runtime, key, "nested/deep.txt"), "utf-8")).toBe(`${key} deep`);
+      // The extract removed its tarball.
+      await expect(fs.stat(path.join(runtime, `${key}-upload.tar`))).rejects.toThrow();
+    }
+    expect(result.operations.map((op) => op.filesTransferred)).toEqual([1, 1, 1]);
+    // No staging scratch is left at the workspace root.
+    expect((await fs.readdir(remoteDir)).filter((name) => name.startsWith(".paperclip-upload"))).toEqual([]);
+  });
+
+  it("reports a failed extract as a post-upload command failure with its own stderr, never as success", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const corrupt = path.join(host, "corrupt.tar");
+    await fs.writeFile(corrupt, "this is not a tar archive at all".repeat(64));
+    const remoteTar = path.join(remoteDir, "rt", "asset-upload.tar");
+    const assetDir = path.join(remoteDir, "rt", "asset");
+
+    const { exec, calls } = makeRealExec();
+    const failure = await performSyncIn({
+      exec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [{
+        operationId: "op-corrupt",
+        files: [{ sourcePath: corrupt, targetPath: remoteTar, kind: "file" }],
+        postUploadCommands: [
+          { command: "echo first-step-noise >&2" },
+          { command: extractCommand(remoteTar, assetDir) },
+          { command: "touch after-failure.txt" },
+        ],
+      }],
+    }).then(() => null, (error: Error) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure!.message).toMatch(/^Kubernetes post-upload command failed \(exit [1-9]\d*\)/);
+    expect(failure!.message).not.toMatch(/file transfer failed/);
+    // Only the failing step's stderr is attached: not an earlier step's, no markers.
+    expect(failure!.message).not.toContain("first-step-noise");
+    expect(failure!.message).not.toContain("__PC_SYNC_STEP");
+    expect(failure!.message.toLowerCase()).toContain("tar");
+    // Fail-fast inside the one exec: the command after the failure never ran.
+    await expect(fs.stat(path.join(remoteDir, "after-failure.txt"))).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reports a transfer-stage failure as a transfer failure even when commands follow, and runs none of them", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const outside = await makeTmp("k8s-outside-");
+    const src = path.join(host, "a.txt");
+    await fs.writeFile(src, "x");
+    // A planted symlink ancestor: the transfer stage refuses it (exit 42).
+    await fs.symlink(outside, path.join(remoteDir, "evil"));
+
+    const { exec, calls } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [{
+          operationId: "op-escape",
+          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "evil", "a.txt"), kind: "file" }],
+          postUploadCommands: [{ command: "touch ran.txt" }],
+        }],
+      }),
+    ).rejects.toThrow(/^Kubernetes syncIn file transfer failed \(exit 42\)/);
+    expect(calls).toHaveLength(1);
+    await expect(fs.stat(path.join(outside, "a.txt"))).rejects.toThrow();
+    await expect(fs.stat(path.join(remoteDir, "ran.txt"))).rejects.toThrow();
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it("keeps the symlink cwd guard inside the merged exec: the command never runs through the link", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const outside = await makeTmp("k8s-outside-");
+    const src = path.join(host, "a.txt");
+    await fs.writeFile(src, "x");
+    await fs.symlink(outside, path.join(remoteDir, "evil"));
+
+    const { exec, calls } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [{
+          operationId: "op-cwd-link",
+          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "a.txt"), kind: "file" }],
+          postUploadCommands: [
+            { command: "touch first.txt" },
+            { command: "touch pwned.txt", cwd: path.join(remoteDir, "evil") },
+          ],
+        }],
+      }),
+    ).rejects.toThrow(/^Kubernetes post-upload command failed \(exit 42\): ESCAPE/);
+    expect(calls).toHaveLength(1);
+    // The file landed and the first command ran; the escaping one did not.
+    expect(await fs.readFile(path.join(remoteDir, "a.txt"), "utf-8")).toBe("x");
+    await fs.stat(path.join(remoteDir, "first.txt"));
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it("rejects an escaping command cwd before ANY exec, so no file is uploaded either", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "a.txt");
+    await fs.writeFile(src, "x");
+
+    const { exec, calls } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [{
+          operationId: "op-cwd-escape",
+          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "a.txt"), kind: "file" }],
+          postUploadCommands: [{ command: "touch pwned.txt", cwd: "/etc" }],
+        }],
+      }),
+    ).rejects.toThrow(/escapes|not a confined/);
+    expect(calls).toHaveLength(0);
+    await expect(fs.stat(path.join(remoteDir, "a.txt"))).rejects.toThrow();
+  });
+
+  it("gives commands no stdin: the archive bytes are never readable by a command", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "a.txt");
+    await fs.writeFile(src, "payload");
+
+    const { exec } = makeRealExec();
+    await performSyncIn({
+      exec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [{
+        operationId: "op-stdin",
+        files: [{ sourcePath: src, targetPath: path.join(remoteDir, "a.txt"), kind: "file" }],
+        postUploadCommands: [{ command: "cat > stdin-seen.txt" }],
+      }],
+    });
+    expect(await fs.readFile(path.join(remoteDir, "stdin-seen.txt"), "utf-8")).toBe("");
+  });
+
+  it("keeps separate execs for an operation that also carries a directory mapping", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "a.txt");
+    await fs.writeFile(src, "x");
+    const dirSrc = path.join(host, "dir");
+    await fs.mkdir(dirSrc);
+    await fs.writeFile(path.join(dirSrc, "b.txt"), "y");
+
+    const { exec, calls } = makeRealExec();
+    await performSyncIn({
+      exec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [{
+        operationId: "op-mixed",
+        files: [
+          { sourcePath: src, targetPath: path.join(remoteDir, "a.txt"), kind: "file" },
+          { sourcePath: dirSrc, targetPath: path.join(remoteDir, "dir"), kind: "directory" },
+        ],
+        // Must run after the directory landed, so it stays its own exec.
+        postUploadCommands: [{ command: "cat dir/b.txt > seen.txt" }],
+      }],
+    });
+    expect(calls).toHaveLength(3);
+    expect(await fs.readFile(path.join(remoteDir, "seen.txt"), "utf-8")).toBe("y");
   });
 });
 

@@ -1119,6 +1119,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // runs under the run parent with no wrapper span, exactly like the earlier
   // behavior.
   runtimeSpan?: RuntimeSpanRunner;
+  // TECH-8174: skip the startup exec that creates the queue directories, for a
+  // caller whose bridge server start creates the same directories in its own
+  // exec. The poll loop already treats a missing requests directory as empty.
+  skipQueueDirectorySetup?: boolean;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const iterationTimeoutMs = normalizeTimeoutMs(input.iterationTimeoutMs, DEFAULT_BRIDGE_ITERATION_TIMEOUT_MS);
@@ -1152,7 +1156,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
     directories.responsesDir,
     directories.logsDir,
   ];
-  if (input.client.makeDirs) {
+  if (input.skipQueueDirectorySetup === true) {
+    // The bridge server start creates them (TECH-8174).
+  } else if (input.client.makeDirs) {
     await input.client.makeDirs(queueDirectories);
   } else {
     // Backward-compatible fallback for a queue client that omits the batched
@@ -2233,6 +2239,11 @@ export async function startSandboxCallbackBridgeServer(input: {
   // Per-route in-pod response deadlines. Empty by default.
   routePolicies?: readonly SandboxCallbackBridgeRoutePolicy[] | null;
   extraHeaders?: readonly string[];
+  // TECH-8174: run the readiness wait in the start exec (one exec instead of
+  // two). Set it only for a provider whose control commands run as independent
+  // execs (`sandboxProviderSupportsBlockingBridgeWait`); a session-based
+  // provider keeps the two commands. Failures keep their two messages.
+  foldReadinessIntoStart?: boolean;
 }): Promise<StartedSandboxCallbackBridgeServer> {
   const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
   const shellCommand = preferredShellForSandbox(input.shellCommand);
@@ -2262,52 +2273,77 @@ export async function startSandboxCallbackBridgeServer(input: {
     extraHeaders: input.extraHeaders,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
-  const startResult = await runSandboxBridgeControlCommand(input.runner, {
-    command: shellCommand,
-    args: shellCommandArgs(
-      [
-        `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
-        `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
-        `nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
-          `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
-        "pid=$!",
-        `printf '%s\\n' \"$pid\" > ${shellQuote(directories.pidFile)}`,
-        "printf '{\"pid\":%s}\\n' \"$pid\"",
-      ].join("\n"),
-    ),
-    cwd: input.remoteCwd,
-    env: {
-      [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
-      ...env,
-    },
-    timeoutMs,
-  });
-  requireSuccessfulResult("start sandbox callback bridge", startResult);
+  const startScript = [
+    `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
+    `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
+    `nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
+      `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
+    "pid=$!",
+    `printf '%s\\n' \"$pid\" > ${shellQuote(directories.pidFile)}`,
+    "printf '{\"pid\":%s}\\n' \"$pid\"",
+  ];
+  const readinessScript = [
+    "i=0",
+    `while [ \"$i\" -lt 200 ]; do`,
+    `  if [ -s ${shellQuote(directories.readyFile)} ]; then`,
+    `    cat ${shellQuote(directories.readyFile)}`,
+    "    exit 0",
+    "  fi",
+    `  if [ -s ${shellQuote(directories.logFile)} ] && ! kill -0 \"$(cat ${shellQuote(directories.pidFile)} 2>/dev/null)\" 2>/dev/null; then`,
+    `    cat ${shellQuote(directories.logFile)} >&2`,
+    "    exit 1",
+    "  fi",
+    "  i=$((i + 1))",
+    "  sleep 0.05",
+    "done",
+    `echo "Timed out waiting for bridge readiness." >&2`,
+    `if [ -s ${shellQuote(directories.logFile)} ]; then cat ${shellQuote(directories.logFile)} >&2; fi`,
+    "exit 1",
+  ];
+  const startEnv = {
+    [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
+    ...env,
+  };
 
-  const readyResult = await runShell(
-    input.runner,
-    input.remoteCwd,
-    [
-      "i=0",
-      `while [ \"$i\" -lt 200 ]; do`,
-      `  if [ -s ${shellQuote(directories.readyFile)} ]; then`,
-      `    cat ${shellQuote(directories.readyFile)}`,
-      "    exit 0",
-      "  fi",
-      `  if [ -s ${shellQuote(directories.logFile)} ] && ! kill -0 \"$(cat ${shellQuote(directories.pidFile)} 2>/dev/null)\" 2>/dev/null; then`,
-      `    cat ${shellQuote(directories.logFile)} >&2`,
-      "    exit 1",
-      "  fi",
-      "  i=$((i + 1))",
-      "  sleep 0.05",
-      "done",
-      `echo "Timed out waiting for bridge readiness." >&2`,
-      `if [ -s ${shellQuote(directories.logFile)} ]; then cat ${shellQuote(directories.logFile)} >&2; fi`,
-      "exit 1",
-    ].join("\n"),
-    timeoutMs,
-    shellCommand,
-  );
+  let readyResult: RunProcessResult;
+  if (input.foldReadinessIntoStart === true) {
+    // The start part always ends by printing this line on stdout, so a failed
+    // exec whose stdout holds it failed in the readiness wait, and one without
+    // it failed while starting: the same two error messages as two execs.
+    const startedMarker = `__PAPERCLIP_BRIDGE_STARTED_${randomBytes(8).toString("hex")}__`;
+    const result = await runSandboxBridgeControlCommand(input.runner, {
+      command: shellCommand,
+      args: shellCommandArgs([...startScript, `printf '%s\\n' '${startedMarker}'`, ...readinessScript].join("\n")),
+      cwd: input.remoteCwd,
+      env: startEnv,
+      // The budget of the two separate execs.
+      timeoutMs: timeoutMs * 2,
+    });
+    const markerAt = result.stdout.indexOf(`${startedMarker}\n`);
+    if (markerAt < 0) {
+      requireSuccessfulResult("start sandbox callback bridge", result.exitCode === 0 && !result.timedOut
+        ? { ...result, exitCode: 1, stderr: `${result.stderr}\nThe bridge start did not complete.`.trim() }
+        : result);
+    }
+    readyResult = { ...result, stdout: markerAt < 0 ? "" : result.stdout.slice(markerAt + startedMarker.length + 1) };
+  } else {
+    const startResult = await runSandboxBridgeControlCommand(input.runner, {
+      command: shellCommand,
+      args: shellCommandArgs(startScript.join("\n")),
+      cwd: input.remoteCwd,
+      env: startEnv,
+      timeoutMs,
+    });
+    requireSuccessfulResult("start sandbox callback bridge", startResult);
+
+    readyResult = await runShell(
+      input.runner,
+      input.remoteCwd,
+      readinessScript.join("\n"),
+      timeoutMs,
+      shellCommand,
+    );
+  }
   requireSuccessfulResult("wait for sandbox callback bridge readiness", readyResult);
 
   let readyData: { host?: string; port?: number; baseUrl?: string; pid?: number };
