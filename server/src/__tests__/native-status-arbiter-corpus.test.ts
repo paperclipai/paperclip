@@ -2920,6 +2920,51 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toHaveLength(2);
     });
 
+    it.each([
+      { trigger: "retired review", correctiveUsed: false },
+      { trigger: "new evidence", correctiveUsed: false },
+      { trigger: "retired review", correctiveUsed: true },
+      { trigger: "new evidence", correctiveUsed: true },
+    ])("settles unmerged delivery from $trigger without retry polling (corrective used=$correctiveUsed)", async ({ trigger, correctiveUsed }) => {
+      const seeded = await seedAutomaticReview();
+      const [originalAssessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, seeded.assessmentId));
+      await db.update(workAssessments).set({ createdAt: new Date(Date.now() - 2000),
+        assessmentJson: { ...originalAssessment.assessmentJson, allCriteriaSatisfied: false } }).where(eq(workAssessments.id, seeded.assessmentId));
+      await db.insert(issueWorkProducts).values({ companyId, issueId: seeded.issueId, type: "pull_request",
+        provider: "github", title: "Closed implementation PR", status: "closed", url: "https://github.com/example/project/pull/42",
+        createdAt: new Date(Date.now() - 1000), updatedAt: new Date(Date.now() - 1000) });
+      if (trigger === "retired review") await dismissAutomaticCompletionReviews(db, seeded.issueId);
+      else await db.update(issueThreadInteractions).set({ status: "cancelled", result: { version: 1, outcome: "withdrawn" } })
+        .where(eq(issueThreadInteractions.id, seeded.interaction.id));
+      if (correctiveUsed) {
+        const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+          triggerDetail: "system", reason: "issue_status_changed", status: "consumed",
+          requestedByActorType: "system", requestedByActorId: "native-status-committer",
+          payload: { continuationIdempotencyKey: "native-completion-incomplete" } }).returning();
+        await db.update(heartbeatRuns).set({ wakeupRequestId: wake.id }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      const lookup = vi.fn().mockResolvedValue("open");
+      const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+      try {
+        const work = nativeStatusReassessmentWork(db), scope = selectedScope(seeded);
+        const [pending] = await work.load(scope);
+        expect(pending).toBeDefined();
+        expect(await work.check(pending)).toBeNull();
+        const [latest] = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))
+          .orderBy(statusDecisions.createdAt, statusDecisions.id).then(rows => rows.filter(row => row.id !== seeded.decision.id));
+        const effects = latest.decisionJson.effects as Array<{ kind: string; summary?: string; nextAction?: string }>;
+        expect(latest.toStatus).not.toBe("done");
+        expect(effects.some(effect => effect.kind === "enqueue_continuation")).toBe(!correctiveUsed);
+        expect(effects.some(effect => effect.kind === "record_finalization_error")).toBe(correctiveUsed);
+        expect(effects.some(effect => (effect.summary ?? effect.nextAction ?? "").includes("not been verified as merged"))).toBe(true);
+        const assessments = await db.select().from(workAssessments).where(eq(workAssessments.runId, seeded.runId));
+        expect(await work.load(scope)).toEqual([]);
+        expect(await work.check(pending)).toBeNull();
+        expect(await db.select().from(workAssessments).where(eq(workAssessments.runId, seeded.runId))).toHaveLength(assessments.length);
+        expect(lookup).toHaveBeenCalledTimes(1);
+      } finally { resolve.mockRestore(); }
+    });
+
     it("respects a saved retry and live lease, then reloads the released owner", async () => {
       const seeded = await seedAutomaticReview();
       await dismissAutomaticCompletionReviews(db, seeded.issueId);

@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, approvals, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueApprovals, issueThreadInteractions, issueTreeHolds, issueDocuments, issueWorkProducts } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
@@ -8,7 +8,8 @@ import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index
 import { documentService } from "../documents.js";
 import * as pullRequestMerge from "../github-pull-request-merge.js";
 import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
-import { verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
+import { nativePullRequestCompletionReferences, verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
+import { workProductService } from "../work-products.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { executionStageApprovedByRun } from "./native-run-finalizer.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -149,6 +150,37 @@ describe("native final-response feedback", () => {
         .rejects.toThrow("deliverables changed before completion");
       expect(lookup).toHaveBeenCalledTimes(1);
     } finally { resolve.mockRestore(); }
+  });
+
+  it("serializes human restoration of an archived PR with the completion task lock", async () => {
+    const value = await fixture();
+    const [product] = await db.insert(issueWorkProducts).values({ companyId: value.companyId, issueId: value.issueId,
+      type: "pull_request", provider: "github", title: "Archived delivery", status: "archived",
+      url: "https://github.com/example/project/pull/42" }).returning();
+    let acquired!: (pid: number) => void;
+    const locked = new Promise<number>(resolve => { acquired = resolve; });
+    let release!: () => void;
+    const unlocked = new Promise<void>(resolve => { release = resolve; });
+    const completion = db.transaction(async tx => {
+      await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, value.issueId)).for("update");
+      expect(await nativePullRequestCompletionReferences(tx as unknown as typeof db, { ...value, lockSources: true }, done)).toEqual([]);
+      const [owner] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+      acquired(owner.pid);
+      await unlocked;
+    });
+    const ownerPid = await locked;
+    let restored = false;
+    const restoration = workProductService(db).update(product.id, { status: "active", url: "https://github.com/example/project/pull/43" }, null)
+      .then(row => { restored = true; return row; });
+    try {
+      await vi.waitFor(async () => {
+        const [wait] = await db.execute(sql`select exists(select 1 from pg_stat_activity activity
+          where ${ownerPid} = any(pg_blocking_pids(activity.pid))) as blocked`) as unknown as Array<{ blocked: boolean }>;
+        expect(restored).toBe(false);
+        expect(wait.blocked).toBe(true);
+      }, { timeout: 1500 });
+    } finally { release(); await completion; await restoration; }
+    expect(restored).toBe(true);
   });
 
   it("aborts a stalled provider body without holding the task lock or completing the task", async () => {

@@ -139,9 +139,13 @@ uses its existing bounded incomplete-work continuation. The agent can fix review
 or CI failures, use the existing monitor for an external wait, or report a
 concrete blocker. This creates no generic human completion approval.
 
+Reassessment uses the same bounded incomplete-delivery continuation as initial
+finalization. A stable unmerged PR does not create a status-race retry deadline.
 The transactional commit also checks these outputs, including reassessment
-paths. Provider reads occur before the transaction, with at most twenty PRs
-and a shared ten-second abort signal for GitHub requests. The locked transaction requires merge proof
+paths. Human and agent work-product updates lock their source and destination
+tasks in a stable order before changing status or identity. Provider reads occur
+before the transaction, with at most twenty PRs and a shared ten-second abort
+signal for GitHub requests. The locked transaction requires merge proof
 for every current deliverable, so a changed output requires a new assessment.
 There is no new polling worker or schema. Existing saved contracts remain valid;
 new contracts include the delivery guidance and existing unfinished results use
