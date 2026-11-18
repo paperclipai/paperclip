@@ -9,6 +9,7 @@ import type {
   ResponsibilityDelegationResult,
   ResponsibilityDetail,
   ResponsibilityLink,
+  ResponsibilityLinkLookupResult,
   ResponsibilityOverview,
   ResponsibilityStatusReportState,
   ResponsibilityStatusReportsOverview,
@@ -72,6 +73,11 @@ export const responsibilitiesApi = {
   unlink: (id: string, linkId: string) =>
     api.delete<ResponsibilityLink>(
       `/responsibilities/${encodeURIComponent(id)}/links/${encodeURIComponent(linkId)}`,
+    ),
+  /** The responsibilities a routine is under, directly or through its project. */
+  lookupRoutineLinks: (companyId: string, routineId: string) =>
+    api.get<ResponsibilityLinkLookupResult>(
+      `/companies/${encodeURIComponent(companyId)}/responsibility-links/lookup?${new URLSearchParams({ routineId })}`,
     ),
   delegate: (id: string, data: DelegateResponsibility) =>
     api.post<ResponsibilityDelegationResult>(`/responsibilities/${encodeURIComponent(id)}/delegate`, data),

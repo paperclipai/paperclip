@@ -49,6 +49,7 @@ import {
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import {
   effectiveGitHubReviewPolicy,
+  githubCompleteCoverageGap,
   githubReviewConclusion,
   githubReviewPathIsExcluded,
   githubReviewLineIsInPatch,
@@ -832,17 +833,13 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         throw conflict(
           "Assessment coverage and findings must refer to this PR's allowed changed files",
         );
-      if (
-        assessment.complete &&
-        (assessment.coverage.omittedPaths.some((path) => paths.has(path)) ||
-          permittedFiles.some(
-            (file) =>
-              !assessment.coverage.reviewedPaths.includes(file.filename),
-          ))
-      )
-        throw conflict(
-          "A complete assessment must cover every non-excluded changed file",
-        );
+      const coverageGap = assessment.complete
+        ? githubCompleteCoverageGap(
+            permittedFiles.map((file) => file.filename),
+            assessment.coverage,
+          )
+        : null;
+      if (coverageGap) throw conflict(coverageGap);
       // Commit the immutable assessment and its publication together. A restart
       // must never leave a stored result with no durable publication intent.
       const actionId = await db.transaction(async (tx) => {

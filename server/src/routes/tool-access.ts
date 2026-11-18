@@ -193,19 +193,48 @@ export function filterVisibleToolConnections<T extends {
     || Boolean(actor.userId && connection.createdByUserId === actor.userId));
 }
 
+const OAUTH_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+
+function githubRecoveryLink(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" && !url.username && !url.password
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export function githubInstallationRecovery(code: string | null | undefined, details: Record<string, unknown> | null) {
+  if (code !== "github_installation_required" || !details) return null;
+  const installationUrl = githubRecoveryLink(details.installationUrl);
+  const managementUrl = githubRecoveryLink(details.managementUrl);
+  return installationUrl || managementUrl ? { installationUrl, managementUrl } : null;
+}
+
 export function connectionIntentOAuthOutcomeHtml(input: {
-  interactionId: string;
+  interactionId: string | null;
   issueId: string | null;
   outcome: "connected" | "declined" | "failed";
   openerOrigin?: string | null;
+  code?: string | null;
+  recovery?: { installationUrl: string | null; managementUrl: string | null } | null;
 }) {
   // The callback window is only a signal. Connection identity and every
   // authorization URL stay server-side; the opener refreshes the task from the
   // interaction id instead of trusting provider-window data.
   const message = JSON.stringify({
     type: "paperclip.connection-intent.oauth",
-    interactionId: input.interactionId,
+    ...(input.interactionId ? { interactionId: input.interactionId } : {}),
     outcome: input.outcome,
+    ...(input.outcome === "failed" && input.code && OAUTH_FAILURE_CODE_PATTERN.test(input.code)
+      ? { code: input.code }
+      : {}),
+    ...(input.outcome === "failed" && input.code === "github_installation_required" && input.recovery
+      ? { recovery: input.recovery }
+      : {}),
   }).replace(/</g, "\\u003c");
   const issuePath = input.issueId
     ? `/issues/${encodeURIComponent(input.issueId)}`
@@ -336,6 +365,8 @@ export function toolAccessRoutes(
       issueId: string | null;
       outcome: "connected" | "declined" | "failed";
       openerOrigin?: string | null;
+      code?: string | null;
+      recovery?: { installationUrl: string | null; managementUrl: string | null } | null;
     },
   ) {
     res.type("html").send(connectionIntentOAuthOutcomeHtml(input));
@@ -1298,6 +1329,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const claimId = typeof req.query.claim_id === "string" ? req.query.claim_id : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState && req.get("accept")?.includes("text/html") === true) {
+      res.type("html").send(connectionIntentOAuthOutcomeHtml({
+        interactionId: null,
+        issueId: null,
+        outcome: "failed",
+        code: "oauth_state_missing",
+      }));
+      return;
+    }
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired OAuth state");
     }
@@ -1375,6 +1415,23 @@ function connectorEnrollmentPrincipal(req: Request): string {
       const details = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object"
         ? callbackError.details as Record<string, unknown>
         : null;
+      await logActivity(db, {
+        companyId: pendingState.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_failed",
+        entityType: "tool_connection",
+        entityId: pendingState.connectionId,
+        details: {
+          code: typeof details?.code === "string"
+            ? details.code
+            : callbackError instanceof HttpError ? `oauth_callback_http_${callbackError.status}` : "oauth_callback_failed",
+          status: callbackError instanceof HttpError ? callbackError.status : 500,
+          message: callbackError instanceof HttpError
+            ? callbackError.message
+            : "OAuth callback failed unexpectedly.",
+        },
+      });
       if (pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
         const outcome = details?.code === "oauth_authorization_denied" ? "declined" : "failed";
         await finishConnectionIntentOAuth({
@@ -1389,6 +1446,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
           issueId: pendingState.issueId,
           outcome,
           openerOrigin: pendingState.returnTo,
+          code: typeof details?.code === "string" ? details.code : null,
+          recovery: githubInstallationRecovery(typeof details?.code === "string" ? details.code : null, details),
         });
         return;
       }
@@ -1412,6 +1471,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const error = typeof req.query.error === "string" ? req.query.error : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState && req.get("accept")?.includes("text/html") === true) {
+      res.type("html").send(connectionIntentOAuthOutcomeHtml({
+        interactionId: null,
+        issueId: null,
+        outcome: "failed",
+        code: "oauth_state_missing",
+      }));
+      return;
+    }
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired Vercel Connect state");
     }
@@ -1511,6 +1579,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     // `error` code to its own copy instead of reflecting them (PAP-17108).
     const iss = typeof req.query.iss === "string" ? req.query.iss : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState && req.get("accept")?.includes("text/html") === true) {
+      res.type("html").send(connectionIntentOAuthOutcomeHtml({
+        interactionId: null,
+        issueId: null,
+        outcome: "failed",
+        code: "oauth_state_missing",
+      }));
+      return;
+    }
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired OAuth state");
     }
@@ -1589,6 +1666,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
           issueId: pendingState.issueId,
           outcome,
           openerOrigin: pendingState.returnTo,
+          code: callbackFailureCode,
+          recovery: githubInstallationRecovery(callbackErrorCode, details),
         });
         return;
       }

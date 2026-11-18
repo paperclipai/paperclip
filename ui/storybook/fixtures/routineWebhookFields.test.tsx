@@ -3,7 +3,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { AgentInstructions } from "./routineWebhookFields";
-import { webhookAgentInstructions, demoWebhookUrl } from "./routineTriggerWizard";
+import { webhookAgentInstructions as instructions } from "@/components/routine-triggers/webhook-instructions";
+
+const demoWebhookUrl = "https://acme.paperclip.example/api/routine-triggers/public/0123456789abcdef01234567/fire";
+const webhookAgentInstructions = (sender: "custom" | "github") =>
+  instructions(sender, "Verify a deployment", demoWebhookUrl, "demo_webhook_key_for_storybook_only");
 
 const container = document.createElement("div");
 document.body.append(container);
