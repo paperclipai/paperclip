@@ -9,6 +9,7 @@ import { ApiError } from "@/api/client";
 import { createConnectivityStore, ConnectivityProvider, type ConnectivityStore } from "@/lib/connectivity";
 import { createAppQueryClient } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
+import { TaskCancellationProvider } from "@/context/TaskCancellationContext";
 import {
   isReplayableIssueUpdate,
   mapIssuesInQueryData,
@@ -17,9 +18,11 @@ import {
 } from "./useUpdateIssueMutation";
 
 const mockUpdate = vi.hoisted(() => vi.fn());
+const mockGetCore = vi.hoisted(() => vi.fn());
+const mockListAll = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 
-vi.mock("@/api/issues", () => ({ issuesApi: { update: mockUpdate } }));
+vi.mock("@/api/issues", () => ({ issuesApi: { update: mockUpdate, getCore: mockGetCore, listAll: mockListAll } }));
 vi.mock("@/context/ToastContext", () => ({ useToastActions: () => ({ pushToast: mockPushToast }) }));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -64,6 +67,8 @@ describe("useUpdateIssueMutation", () => {
 
   beforeEach(() => {
     mockUpdate.mockReset();
+    mockGetCore.mockReset().mockImplementation(async (id: string) => issue({ id: id === "PAP-1" ? "issue-1" : id }));
+    mockListAll.mockReset().mockResolvedValue([]);
     mockPushToast.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -94,7 +99,7 @@ describe("useUpdateIssueMutation", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <ConnectivityProvider store={store}>
-            <Harness />
+            <TaskCancellationProvider><Harness /></TaskCancellationProvider>
           </ConnectivityProvider>
         </QueryClientProvider>,
       );
@@ -229,5 +234,134 @@ describe("useUpdateIssueMutation", () => {
     await act(async () => {});
     expect(mockUpdate.mock.calls.map((call) => call[0])).toEqual(["PAP-1", "PAP-2"]);
     await act(async () => finishFirst({ ...issue({ status: "in_progress" }), changes: {} }));
+  });
+
+  const child = (id: string, status: Issue["status"] = "todo") => issue({ id, identifier: `TEST-${id}`, title: `Subtask ${id}`, status, parentId: "issue-1" });
+  const choose = async (label: string) => {
+    const button = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
+      .find(button => button.textContent === label);
+    expect(button).toBeTruthy();
+    await act(async () => button!.click());
+    await act(async () => {});
+  };
+
+  it("lists every active subtask without links before canceling the task and subtasks", async () => {
+    const children = (["backlog", "todo", "in_progress", "in_review", "blocked"] as const)
+      .map((status, index) => child(String(index + 1), status));
+    // A nested task is included along with direct children.
+    children[4]!.parentId = children[0]!.id;
+    mockListAll.mockResolvedValue([...children, child("done", "done"), child("canceled", "cancelled")]);
+    mockUpdate.mockImplementation(async (id: string) => issue({ id, status: "cancelled" }));
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("This task has 5 active subtasks. Would you like to cancel those as well?");
+    expect(dialog.querySelectorAll("li")).toHaveLength(5);
+    expect(dialog.querySelectorAll("a")).toHaveLength(0);
+    for (const task of children) expect(dialog.textContent).toContain(task.title);
+    expect(dialog.textContent).not.toContain("Subtask done");
+    expect(dialog.textContent).not.toContain("Subtask canceled");
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(statusIn(queryKeys.issues.detail("PAP-1"))).toBe("todo");
+
+    await choose("Cancel task and subtasks");
+    expect(mockUpdate.mock.calls.map(call => call[0])).toEqual(["PAP-1", ...children.map(task => task.id)]);
+    expect(mockUpdate.mock.calls.every(call => call[1].status === "cancelled")).toBe(true);
+    expect(mockListAll).toHaveBeenCalledWith("company-1", expect.objectContaining({ descendantOf: "issue-1", includeAgentCreatedTasks: true }), { cache: "no-store" });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("can cancel only the parent and leave its active subtasks unchanged", async () => {
+    mockListAll.mockResolvedValue([child("1")]);
+    mockUpdate.mockResolvedValue(issue({ status: "cancelled" }));
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    expect(document.querySelector('[role="dialog"]')!.textContent).toContain("This task has 1 active subtask. Would you like to cancel it as well?");
+    await choose("Cancel task only");
+    expect(mockUpdate).toHaveBeenCalledExactlyOnceWith("PAP-1", { status: "cancelled" });
+  });
+
+  it("dismisses without changing tasks or reporting an error", async () => {
+    mockListAll.mockResolvedValue([child("1")]);
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    await choose("Close");
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockPushToast).not.toHaveBeenCalled();
+    expect(current.error).toBeNull();
+    expect(statusIn(queryKeys.issues.detail("PAP-1"))).toBe("todo");
+  });
+
+  it.each([{ children: [] }, { children: [child("done", "done"), child("canceled", "cancelled")] }])("cancels without a modal when no subtasks are active", async ({ children }) => {
+    mockListAll.mockResolvedValue(children);
+    mockUpdate.mockResolvedValue(issue({ status: "cancelled" }));
+    render();
+    await act(async () => { await current.mutateAsync({ id: "PAP-1", data: { status: "cancelled" } }); });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(mockUpdate).toHaveBeenCalledExactlyOnceWith("PAP-1", { status: "cancelled" });
+  });
+
+  it("leaves completed, moved, and newly created subtasks alone after confirmation", async () => {
+    mockListAll.mockResolvedValueOnce([child("1"), child("2"), child("3"), child("4")])
+      .mockResolvedValueOnce([child("1", "done"), child("2"), child("4"), child("new")]);
+    mockGetCore.mockImplementation(async (id: string) => id === "4" ? child("4", "done") : issue({ id }));
+    mockUpdate.mockResolvedValue(issue({ status: "cancelled" }));
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    await choose("Cancel task and subtasks");
+    expect(mockUpdate.mock.calls.map(call => call[0])).toEqual(["PAP-1", "2"]);
+  });
+
+  it("blocks cancellation when the subtask read fails", async () => {
+    mockListAll.mockRejectedValue(new ApiError("forbidden", 403, null));
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("reports partial failure and attempts the other confirmed subtasks", async () => {
+    mockListAll.mockResolvedValue([child("1"), child("2")]);
+    mockUpdate.mockImplementation(async (id: string) => {
+      if (id === "1") throw new ApiError("forbidden", 403, null);
+      return issue({ id, status: "cancelled" });
+    });
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    await choose("Cancel task and subtasks");
+    expect(mockUpdate.mock.calls.map(call => call[0])).toEqual(["PAP-1", "1", "2"]);
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining("TEST-1"), tone: "error" }));
+    expect(mockPushToast.mock.calls[0]![0].body).toContain("The task was canceled");
+  });
+
+  it("reports that the parent was canceled if refreshing the confirmed subtasks fails", async () => {
+    mockListAll.mockResolvedValueOnce([child("1")]).mockRejectedValueOnce(new ApiError("unavailable", 503, null));
+    mockUpdate.mockResolvedValue(issue({ status: "cancelled" }));
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    await choose("Cancel task and subtasks");
+    expect(mockUpdate).toHaveBeenCalledExactlyOnceWith("PAP-1", { status: "cancelled" });
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining("The task was canceled, but its subtasks could not be refreshed") }));
+  });
+
+  it("does not cancel subtasks when canceling the parent fails", async () => {
+    mockListAll.mockResolvedValue([child("1")]);
+    mockUpdate.mockRejectedValue(new ApiError("forbidden", 403, null));
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    await choose("Cancel task and subtasks");
+    expect(mockUpdate).toHaveBeenCalledExactlyOnceWith("PAP-1", { status: "cancelled" });
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("closes an account's pending confirmation when the account changes", async () => {
+    mockListAll.mockResolvedValue([child("1")]);
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => queryClient.setQueryData(queryKeys.auth.session, { user: { id: "account-b" } }));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(mockUpdate).not.toHaveBeenCalled();
+    expect(mockPushToast).not.toHaveBeenCalled();
   });
 });

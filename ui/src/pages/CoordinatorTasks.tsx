@@ -3,6 +3,7 @@ import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } f
 import { useDeferredValue, useEffect, useRef, useState, type ReactNode } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { TaskCancellationDismissedError, useTaskCancellation } from "@/hooks/useTaskCancellation";
 import { ListChecks, SearchX } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
@@ -245,12 +246,13 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     if (next.get("view") !== "needs_attention") next.set("view", "all");
     navigate({ search: next.toString(), hash: location.hash }, { replace: true });
   };
-  const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
+  const cancelTask = useTaskCancellation();
+  const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => data.status === "cancelled" ? cancelTask(id, data) : issuesApi.update(id, data),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },
   });
   const error = (needsAttention ? attention.error ?? attentionTasks.find(task => task.error)?.error : tasks.error)
     ?? (view === "unread" ? parentContext.error : null)
-    ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? update.error
+    ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? (update.error instanceof TaskCancellationDismissedError ? null : update.error)
     ?? (collection.filters.liveOnly ? liveRuns.error : null);
   const pending = (needsAttention ? attention.isPending || attentionTasks.some(task => task.isPending) : tasks.isPending)
     || (view === "unread" && parentIds.length > 0 && parentContext.isPending)

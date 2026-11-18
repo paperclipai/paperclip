@@ -1,4 +1,5 @@
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { useUpdateIssueMutation } from "@/hooks/useUpdateIssueMutation";
 import { startTransition, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "@/lib/router";
@@ -438,9 +439,8 @@ export function Routines() {
       });
     },
   });
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
+  const updateIssue = useUpdateIssueMutation({
+    companyId: selectedCompanyId,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] });
     },

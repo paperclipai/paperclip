@@ -343,6 +343,11 @@ Gaps: Private-task denial must be proved, not invented. Trace/report/export belo
 
 Capability ID: `tasks/completion`.
 
+The browser offers a subtask choice when a person cancels a parent task. It reads
+the accessible descendants and sends ordinary authorized PATCH requests for the
+chosen tasks. The modal adds no agent authority or implicit API cascade. See the
+[product cancellation recipe](../feature-map/tasks.md#task-detail).
+
 Task chat may group adjacent run and recovery errors for display. The API
 retains all run and comment records. This presentation does not change retry,
 approval, checkout or company access. See the
