@@ -47,7 +47,9 @@ import {
   resolveIssueFilterWorkspaceId,
   shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
+  issueUpdatedServerBefore,
   type IssueFilterState,
+  type IssueUpdatedFilter,
 } from "../lib/issue-filters";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -459,6 +461,11 @@ interface IssuesListProps {
   /** URL sorting overrides the saved collection preference when supplied. */
   sort?: IssueSort;
   onSortChange?: (sort: IssueSort) => void;
+  /** Reports the server `updatedBefore` bound for the Updated filter's custom range end. */
+  onUpdatedBeforeChange?: (updatedBefore: string | undefined) => void;
+  /** URL Updated filter; when supplied it overrides the saved collection preference. */
+  updatedFilter?: IssueUpdatedFilter;
+  onUpdatedFilterChange?: (filter: IssueUpdatedFilter) => void;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions" | "sortField" | "sortDir">;
   searchWithinLoadedIssues?: boolean;
@@ -683,6 +690,9 @@ export function IssuesList({
   onRoutineTasksOnlyChange,
   sort,
   onSortChange,
+  onUpdatedBeforeChange,
+  updatedFilter,
+  onUpdatedFilterChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -762,7 +772,12 @@ export function IssuesList({
     ...savedViewState,
     ...sort,
     ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
-  }), [savedViewState, sort, routineTasksOnly]);
+    ...updatedFilter,
+  }), [savedViewState, sort, routineTasksOnly, updatedFilter]);
+  const updatedBefore = issueUpdatedServerBefore(viewState);
+  useEffect(() => {
+    onUpdatedBeforeChange?.(updatedBefore);
+  }, [onUpdatedBeforeChange, updatedBefore]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
@@ -804,6 +819,13 @@ export function IssuesList({
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     if (patch.routineTasksOnly !== undefined) onRoutineTasksOnlyChange?.(patch.routineTasksOnly);
+    if (patch.updatedWithin !== undefined || patch.updatedFrom !== undefined || patch.updatedTo !== undefined) {
+      onUpdatedFilterChange?.({
+        updatedWithin: patch.updatedWithin !== undefined ? patch.updatedWithin : viewState.updatedWithin,
+        updatedFrom: patch.updatedFrom !== undefined ? patch.updatedFrom : viewState.updatedFrom,
+        updatedTo: patch.updatedTo !== undefined ? patch.updatedTo : viewState.updatedTo,
+      });
+    }
     if (patch.sortField !== undefined || patch.sortDir !== undefined) {
       onSortChange?.({
         sortField: patch.sortField ?? viewState.sortField,
@@ -818,7 +840,7 @@ export function IssuesList({
       }, { viewState: next, columns: visibleIssueColumns });
       return next;
     });
-  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange, onSortChange, sort, viewState.sortField, viewState.sortDir]);
+  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange, onSortChange, onUpdatedFilterChange, sort, viewState.sortField, viewState.sortDir, viewState.updatedWithin, viewState.updatedFrom, viewState.updatedTo]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;

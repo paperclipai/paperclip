@@ -9209,6 +9209,7 @@ export function issueRoutes(
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
+    const rawUpdatedBefore = req.query.updatedBefore as string | undefined;
 
     if (
       assigneeUserFilterRaw === "me" &&
@@ -9331,6 +9332,15 @@ export function issueRoutes(
       });
       return;
     }
+    if (
+      rawUpdatedBefore !== undefined &&
+      !Number.isFinite(new Date(rawUpdatedBefore).getTime())
+    ) {
+      res.status(400).json({
+        error: "updatedBefore must be a valid ISO 8601 timestamp when provided",
+      });
+      return;
+    }
     const uuidQuery = parseIssueListUuidQueryParams(req.query);
     if (!uuidQuery.ok) {
       res.status(422).json({ error: uuidQuery.error });
@@ -9391,6 +9401,7 @@ export function issueRoutes(
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      updatedBefore: rawUpdatedBefore,
     };
     // readCondition is a Drizzle SQL object with cyclic internal references;
     // actor identity already scopes the coordinator key, so only serializable

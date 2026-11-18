@@ -1945,6 +1945,8 @@ export interface IssueFilters {
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
+  /** ISO 8601 timestamp — only return issues with updatedAt strictly before this value. */
+  updatedBefore?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect & { displayStatus?: IssueDisplayStatus; externalConversationState?: "active" | "waiting" | null };
@@ -8746,6 +8748,12 @@ export function issueService(db: Db) {
         const since = new Date(filters.updatedSince);
         if (Number.isFinite(since.getTime())) {
           conditions.push(gt(issues.updatedAt, since));
+        }
+      }
+      if (filters?.updatedBefore) {
+        const before = new Date(filters.updatedBefore);
+        if (Number.isFinite(before.getTime())) {
+          conditions.push(lt(issues.updatedAt, before));
         }
       }
       if (

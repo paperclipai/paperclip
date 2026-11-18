@@ -8,6 +8,7 @@ import { MemoryRouter } from "@/lib/router";
 import { useLocation } from "react-router-dom";
 import { Issues } from "./Issues";
 import type { IssueSort } from "../lib/issue-sort";
+import type { IssueUpdatedFilter } from "../lib/issue-filters";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -23,12 +24,17 @@ vi.mock("../api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("../api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: async () => [] } }));
 vi.mock("../hooks/useUpdateIssueMutation", () => ({ useUpdateIssueMutation: () => ({ mutate: vi.fn() }) }));
-vi.mock("../components/IssuesList", () => ({ IssuesList: ({ issues, routineTasksOnly, onRoutineTasksOnlyChange, onLoadMoreIssues, sort, onSortChange, searchFilters }: {
+vi.mock("../components/IssuesList", () => ({ IssuesList: ({ issues, routineTasksOnly, onRoutineTasksOnlyChange, onLoadMoreIssues, sort, onSortChange, searchFilters, updatedFilter, onUpdatedFilterChange }: {
   searchFilters?: Record<string, unknown>;
+  updatedFilter?: IssueUpdatedFilter; onUpdatedFilterChange: (filter: IssueUpdatedFilter) => void;
   sort?: IssueSort; onSortChange: (sort: IssueSort) => void; issues: Issue[]; routineTasksOnly: boolean; onRoutineTasksOnlyChange: (checked: boolean) => void; onLoadMoreIssues: () => void;
 }) => <>
   <label><input type="checkbox" checked={routineTasksOnly} onChange={event => onRoutineTasksOnlyChange(event.target.checked)} />Routine tasks</label>
   <button onClick={onLoadMoreIssues}>Load more</button>
+  <button data-updated-custom onClick={() => onUpdatedFilterChange({ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-03" })}>Custom</button>
+  <button data-updated-any onClick={() => onUpdatedFilterChange({ updatedWithin: null, updatedFrom: null, updatedTo: null })}>Any time</button>
+  <button data-clear onClick={() => { onRoutineTasksOnlyChange(false); onUpdatedFilterChange({ updatedWithin: null, updatedFrom: null, updatedTo: null }); }}>Clear</button>
+  <data data-updated-filter={JSON.stringify(updatedFilter)} />
   <button data-sort onClick={() => onSortChange({ sortField: "created", sortDir: sort?.sortDir === "desc" ? "asc" : "desc" })}>Created</button>
   <output data-search-filters={JSON.stringify(searchFilters)}>{issues.map(issue => issue.id).join(",")}</output>
   <p>{useLocation().search}</p>
@@ -118,6 +124,43 @@ it("restores URL sorting, resets paging on a sort click, and preserves routine f
     expect(mocks.list.mock.lastCall?.[1]).toMatchObject({ sortField: "created", sortDir: "asc", originKind: "routine_execution", participantAgentId: "agent", offset: 0 });
     const params = new URLSearchParams(host.querySelector("p")!.textContent!);
     expect(Object.fromEntries(params)).toMatchObject({ view: "all", originKind: "routine_execution", sortField: "created", sortDir: "asc", participantAgentId: "agent" });
+  } finally {
+    flushSync(() => root.unmount()); client.clear(); host.remove();
+  }
+});
+
+it("reads and writes the Updated filter in the Tasks URL", async () => {
+  mocks.list.mockResolvedValue([{ id: "task" }]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  const updatedFilter = () => JSON.parse(host.querySelector("[data-updated-filter]")!.getAttribute("data-updated-filter")!);
+  const params = () => Object.fromEntries(new URLSearchParams(host.querySelector("p")!.textContent!));
+  try {
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/issues?view=all&updated=3d&updatedFrom=2026-11-01"]}><Issues /></MemoryRouter></QueryClientProvider>));
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("task"));
+    expect(updatedFilter()).toEqual({ updatedWithin: "3d", updatedFrom: null, updatedTo: null });
+    flushSync(() => host.querySelector<HTMLButtonElement>("[data-updated-custom]")!.click());
+    await vi.waitFor(() => expect(params()).toEqual({ view: "all", updated: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-03" }));
+    expect(updatedFilter()).toEqual({ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-03" });
+    flushSync(() => host.querySelector<HTMLButtonElement>("[data-updated-any]")!.click());
+    await vi.waitFor(() => expect(params()).toEqual({ view: "all" }));
+    expect(updatedFilter()).toEqual({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+  } finally {
+    flushSync(() => root.unmount()); client.clear(); host.remove();
+  }
+});
+
+it("clears the routine and Updated URL filters together in one event", async () => {
+  mocks.list.mockResolvedValue([{ id: "task" }]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={["/issues?view=all&originKind=routine_execution&updated=3d"]}><Issues /></MemoryRouter></QueryClientProvider>));
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toBe("task"));
+    flushSync(() => host.querySelector<HTMLButtonElement>("[data-clear]")!.click());
+    await vi.waitFor(() => expect(host.querySelector("p")?.textContent).toBe("?view=all"));
   } finally {
     flushSync(() => root.unmount()); client.clear(); host.remove();
   }
