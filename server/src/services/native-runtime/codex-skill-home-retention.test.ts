@@ -86,11 +86,13 @@ describe("Codex skill home retention", () => {
   it("removes an unreferenced, expired home and its last-used file", async () => {
     const { storeRoot, sessionsRoot } = await fixture();
     const path = await home(storeRoot, digest("a"), NOW - 25 * HOUR);
+    await writeFile(join(storeRoot, `${digest("a")}.stat.json`), "{}");
     const result = await sweepCodexSkillHomes({ storeRoot, sessionsRoot, now: NOW });
     expect(result.removed).toBe(1);
     expect(result.reclaimedBytes).toBeGreaterThanOrEqual(4096);
     expect(await exists(path)).toBe(false);
     expect(await exists(join(storeRoot, `${digest("a")}.last-used`))).toBe(false);
+    expect(await exists(join(storeRoot, `${digest("a")}.stat.json`))).toBe(false);
   });
 
   it("uses the home's own time when it has no last-used file", async () => {

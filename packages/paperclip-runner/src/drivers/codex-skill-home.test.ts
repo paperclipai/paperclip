@@ -179,6 +179,35 @@ describe("Codex skill home store", () => {
     expect(await readdir(join(storeRoot, "quarantine"))).toHaveLength(1);
   });
 
+  it("records file identities after sealing and reuses the home by them", async () => {
+    const { storeRoot, assigned } = await fixture();
+    const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    const record = JSON.parse(await readFile(join(storeRoot, `${first.digest}.stat.json`), "utf8"));
+    expect(record.files.map((entry: unknown[]) => entry[0])).toEqual([
+      ".agents/skills/alpha/SKILL.md", ".agents/skills/alpha/scripts/run.sh",
+      ".agents/skills/beta/SKILL.md", ".agents/skills/beta/scripts/run.sh", "manifest.json",
+    ]);
+    // A home whose stat record is lost is still verified by content and gets a new record.
+    await rm(join(storeRoot, `${first.digest}.stat.json`));
+    const second = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    expect(second.created).toBe(false);
+    await expect(readFile(join(storeRoot, `${first.digest}.stat.json`), "utf8")).resolves.toContain("manifest.json");
+  });
+
+  it("detects a tampered manifest that matches tampered content", async () => {
+    const { storeRoot, assigned } = await fixture();
+    const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    await makeWritable(first.home);
+    await writeFile(join(first.home, ".agents", "skills", "alpha", "SKILL.md"), "# ALPHA\n");
+    const manifestPath = join(first.home, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.files[0].sha256 = "f".repeat(64);
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const second = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    expect(second.created).toBe(true);
+    await expect(readFile(join(second.home, ".agents", "skills", "alpha", "SKILL.md"), "utf8")).resolves.toBe("# alpha\n");
+  });
+
   it("publishes one home when two launches race", async () => {
     const { storeRoot, assigned } = await fixture();
     const results = await Promise.all([

@@ -131,6 +131,7 @@ export async function sweepCodexSkillHomes(
     const bytes = await allocatedBytes(retiring);
     await removeCodexSkillHomeTree(retiring);
     await fs.rm(lastUsedFile, { force: true });
+    await fs.rm(path.join(input.storeRoot, `${digest}.stat.json`), { force: true });
     result.removed++;
     result.reclaimedBytes += bytes;
   }
