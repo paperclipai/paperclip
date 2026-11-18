@@ -38,10 +38,18 @@ export function registerRunScratchSweepWork(
   const continuationMs = Math.min(intervalMs, 30_000);
   let nextAt: number | null = Date.now();
   let pendingWork = true;
-  const settle = (truncated: boolean, pending: number) => {
+  // Bumped by every poke: a sweep that finishes after a poke arrived must
+  // not idle over state the in-flight scan never saw.
+  let pokeEpoch = 0;
+  const settle = (truncated: boolean, pending: number, observedEpoch: number) => {
     if (truncated || pending > 0) {
       pendingWork = true;
       nextAt = Date.now() + (truncated ? continuationMs : intervalMs);
+    } else if (pokeEpoch !== observedEpoch) {
+      // A lifecycle change arrived while the scan was running: rescan now
+      // rather than idling over the missed state.
+      pendingWork = true;
+      nextAt = Date.now();
     } else {
       pendingWork = false;
       nextAt = null;
@@ -63,9 +71,10 @@ export function registerRunScratchSweepWork(
         if (nextAt !== null) nextAt = Date.now() + intervalMs;
         return;
       }
+      const observedEpoch = pokeEpoch;
       try {
         const outcome = await input.sweep();
-        settle(outcome.truncated, outcome.pending);
+        settle(outcome.truncated, outcome.pending, observedEpoch);
       } catch (error) {
         // A failed sweep is an unresolved obligation: retry on the interval.
         pendingWork = true;
@@ -77,6 +86,8 @@ export function registerRunScratchSweepWork(
   const poke = () => {
     // A lifecycle change can create reclaimable state while the sweep idles:
     // pull the deadline to now (never postpone an earlier one) and wake.
+    // Pokes during a running scan are preserved through the epoch counter.
+    pokeEpoch += 1;
     nextAt = Math.min(nextAt ?? Number.POSITIVE_INFINITY, Date.now());
     pendingWork = true;
     registered.wake();

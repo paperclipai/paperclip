@@ -252,6 +252,13 @@ export interface RunScratchWalkerOps {
   listDir(fd: number): Promise<Dirent[]>;
   /** Path of `name` resolved inside the directory held by `fd`. */
   entryPath(fd: number, name: string): string;
+  /**
+   * Re-prove the recorded path still resolves to the directory the fd pins.
+   * A no-op under fd anchoring; in the portable fallback the walker calls it
+   * before every entry operation, so a parent swapped for a symlink after
+   * the listing cannot redirect that operation outside the tree.
+   */
+  verifyDir(fd: number): Promise<void>;
   unlink(p: string): Promise<void>;
   rmdir(p: string): Promise<void>;
   writeFile(p: string, data: string, options?: { mode?: number; flag?: string }): Promise<void>;
@@ -320,6 +327,22 @@ export function createDefaultRunScratchWalkerOps(
       const entry = handles.get(fd);
       return entry ? path.join(entry.dirPath, name) : anchoredEntryPath(fd, name);
     },
+    async verifyDir(fd) {
+      if ((anchorMode ?? "paths") === "procfd") return;
+      const entry = handles.get(fd);
+      if (!entry) throw new Error(`run scratch walker fd ${fd} is not open`);
+      // Portable fallback: every entry operation is preceded by proof that
+      // the recorded path still resolves to the directory the fd pins, so a
+      // parent renamed and replaced by a symlink after the listing cannot
+      // redirect a lookup, unlink or rmdir outside the tree.
+      const [listed, identity] = await Promise.all([
+        fs.lstat(entry.dirPath),
+        entry.handle.stat(),
+      ]);
+      if (listed.dev !== identity.dev || listed.ino !== identity.ino) {
+        throw new Error("run scratch walker directory identity mismatch");
+      }
+    },
     unlink: (p) => fs.unlink(p),
     rmdir: (p) => fs.rmdir(p),
     writeFile: (p, data, options) => fs.writeFile(p, data, { mode: options?.mode, flag: options?.flag }),
@@ -380,6 +403,14 @@ async function removeEntriesWithinDevice(
   let unstable = false;
   for (const entry of entries) {
     if (skipTopNames?.has(entry.name)) continue;
+    // Portable fallback: re-prove the directory identity before every entry
+    // operation. Under fd anchoring this is a no-op and the anchored paths
+    // below cannot leave the verified directory.
+    try {
+      await ops.verifyDir(dirFd);
+    } catch {
+      return { complete: false, unstable: true };
+    }
     const entryPath = ops.entryPath(dirFd, entry.name);
     // The anchored lstat resolves the name inside the directory the verified
     // fd holds open: a directory swapped for a symlink anywhere between the
@@ -400,6 +431,11 @@ async function removeEntriesWithinDevice(
       // unlink never follows a symlink and the anchored path cannot leave
       // the verified directory: the worst outcome is unlinking a
       // concurrently replaced name inside this same directory.
+      try {
+        await ops.verifyDir(dirFd);
+      } catch {
+        return { complete: false, unstable: true };
+      }
       await ops.unlink(entryPath).catch(() => {
         complete = false;
       });
@@ -438,6 +474,13 @@ async function removeEntriesWithinDevice(
         complete = false;
         unstable = unstable || child.unstable;
         continue;
+      }
+      try {
+        // Portable fallback: the emptied child is removed by name, so the
+        // directory identity must still hold right before the rmdir.
+        await ops.verifyDir(dirFd);
+      } catch {
+        return { complete: false, unstable: true };
       }
       try {
         await ops.rmdir(entryPath);
@@ -524,12 +567,16 @@ async function removeDirNameViaParent(
       return "unstable";
     }
     const entryPath = ops.entryPath(parentFd, name);
+    // Portable fallback: the entry operations below go through the parent's
+    // recorded path, so its identity must still hold right before each one.
+    if (!(await ops.verifyDir(parentFd).then(() => true, () => false))) return "unstable";
     const entry = await ops.lstatPath(entryPath).catch(() => null);
     if (!entry) return "missing";
     if (!entry.isDirectory() || entry.isSymbolicLink() || entry.dev !== expected.dev || entry.ino !== expected.ino) {
       return "unstable";
     }
     try {
+      if (!(await ops.verifyDir(parentFd).then(() => true, () => false))) return "unstable";
       await ops.rmdir(entryPath);
       return "removed";
     } catch (error) {
@@ -605,10 +652,12 @@ async function removeMarkedRunScratchDir(
       new Set([HEARTBEAT_RUN_SCRATCH_MARKER]),
     );
     if (!walk.complete) return { complete: false, cause: walk.unstable ? "unstable" : "blocked" };
-    // Unlink the marker through the anchored path only once every other
-    // entry is gone: it always targets the verified directory itself, never
-    // a swapped-in tree, so the retry evidence cannot vanish elsewhere.
-    const markerFailed = await ops.unlink(anchoredEntryPath(verified.fd, HEARTBEAT_RUN_SCRATCH_MARKER)).then(
+    // Unlink the marker through the entry path only once every other entry is
+    // gone: it always targets the verified directory itself, never a
+    // swapped-in tree, so the retry evidence cannot vanish elsewhere.
+    const markerStillOwned = await ops.verifyDir(verified.fd).then(() => true, () => false);
+    if (!markerStillOwned) return { complete: false, cause: "unstable" };
+    const markerFailed = await ops.unlink(ops.entryPath(verified.fd, HEARTBEAT_RUN_SCRATCH_MARKER)).then(
       () => false,
       (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
     );
@@ -654,7 +703,10 @@ async function restoreMarkerThroughFd(
   // — a regular file or a symlink — is neither followed nor truncated, so
   // the restore can never write outside the verified directory. A concurrent
   // writer that recreated the marker keeps its copy; when the name is not
-  // free the directory simply stays as it is.
+  // free the directory simply stays as it is. The portable fallback
+  // re-verifies the directory identity first: a swapped path never receives
+  // the marker.
+  if (!(await ops.verifyDir(fd).then(() => true, () => false))) return;
   await ops
     .writeFile(ops.entryPath(fd, HEARTBEAT_RUN_SCRATCH_MARKER), `${JSON.stringify(marker, null, 2)}\n`, {
       mode: 0o600,

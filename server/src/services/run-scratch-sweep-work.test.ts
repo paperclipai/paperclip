@@ -183,4 +183,47 @@ describe("run scratch sweep work", () => {
     expect(task.nextRunAt?.()).toBeNull();
     void worker;
   });
+
+  it("a lifecycle poke during an in-flight scan prevents the worker from idling over missed state", async () => {
+    const { coordinator, registered } = stubCoordinator();
+    vi.setSystemTime(30_000_000);
+    let inFlight: (() => void) | null = null;
+    const sweeps = vi.fn(async () => {
+      // The scan finishes only after the poke lands mid-flight.
+      await new Promise<void>((resolve) => { inFlight = resolve; });
+      return { truncated: false, pending: 0 };
+    });
+    const worker = registerRunScratchSweepWork(coordinator, {
+      intervalMs: 60_000,
+      canRun: () => true,
+      sweep: sweeps,
+    });
+    await worker.ready;
+    const task = registered[0]!.task;
+
+    const running = task.run(new AbortController().signal);
+    await vi.waitFor(() => expect(inFlight).not.toBeNull());
+    vi.setSystemTime(30_010_000);
+    pokeRunScratchSweep(); // a run prepared scratch while the scan was waiting
+    inFlight!();
+    await running;
+
+    // The settled-looking result must not idle: the missed poke forces an
+    // immediate rescan that observes the new state.
+    expect(task.nextRunAt?.()).toBeGreaterThanOrEqual(30_010_000);
+    expect(await task.hasPending(true)).toBe(true);
+    let secondInFlight: (() => void) | null = null;
+    sweeps.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => { secondInFlight = resolve; });
+      return { truncated: false, pending: 1 };
+    });
+    const rescan = task.run(new AbortController().signal);
+    await vi.waitFor(() => expect(secondInFlight).not.toBeNull());
+    secondInFlight!();
+    await rescan;
+    expect(sweeps).toHaveBeenCalledTimes(2);
+    // A real obligation keeps the full interval retry from the rescan time.
+    expect(task.nextRunAt?.()).toBeGreaterThanOrEqual(30_010_000 + 60_000);
+    await worker.stop();
+  });
 });

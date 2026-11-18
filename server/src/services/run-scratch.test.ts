@@ -635,9 +635,11 @@ describe("portable walker fallback (platforms without /proc/self/fd)", () => {
     const other = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-other-tree-"));
     cleanupDirs.add(other);
     await fs.writeFile(path.join(other, "foreign.txt"), "y");
-    const override: RunScratchWalkerOpsOverride = (base) => ({
+    const paths = createDefaultRunScratchWalkerOps("paths");
+    const override: RunScratchWalkerOpsOverride = () => ({
+      ...paths,
       openDir: async (p, opts) => {
-        const fd = await base.openDir(p, opts);
+        const fd = await paths.openDir(p, opts);
         if (p === dir) await fs.rename(dir, `${dir}-moved`).catch(() => undefined).then(async () => {
           await fs.symlink(other, dir).catch(() => undefined);
         });
@@ -649,6 +651,32 @@ describe("portable walker fallback (platforms without /proc/self/fd)", () => {
 
     expect(result).toEqual({ complete: false });
     await expect(fs.readFile(path.join(other, "foreign.txt"), "utf8")).resolves.toBe("y");
+  });
+
+  it("keeps the tree through path-based ops when the directory is swapped after its listing", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-devtree-"));
+    cleanupDirs.add(dir);
+    await fs.writeFile(path.join(dir, "file.txt"), "x");
+    const victim = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-victim-"));
+    cleanupDirs.add(victim);
+    await fs.writeFile(path.join(victim, "file.txt"), "precious");
+    // The swap happens after the (legitimate) listing: every following entry
+    // operation must re-verify the directory identity before touching paths.
+    const paths = createDefaultRunScratchWalkerOps("paths");
+    const override: RunScratchWalkerOpsOverride = () => ({
+      ...paths,
+      listDir: async (fd) => {
+        const entries = await paths.listDir(fd);
+        await fs.rename(dir, `${dir}-moved`).catch(() => undefined);
+        await fs.symlink(victim, dir).catch(() => undefined);
+        return entries;
+      },
+    });
+
+    const result = await removeRunTempTree(dir, { walkerOps: override });
+
+    expect(result).toEqual({ complete: false });
+    await expect(fs.readFile(path.join(victim, "file.txt"), "utf8")).resolves.toBe("precious");
   });
 
   it("reports the anchoring mode the default ops resolved to", async () => {

@@ -439,7 +439,10 @@ export async function sweepOrphanedRunScratchDirectories(db: Db): Promise<{ trun
     return { truncated: swept.truncated, pending: swept.pending };
   } catch (error) {
     logger.warn({ err: error }, "failed to sweep orphaned run scratch directories");
-    return { truncated: false, pending: 0 };
+    // A failed scan proves nothing about the roots it never read: report it
+    // as truncated so the sweep worker schedules a bounded follow-up instead
+    // of treating the unknown state as settled and idling.
+    return { truncated: true, pending: 0 };
   }
 }
 
