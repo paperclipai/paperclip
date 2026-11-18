@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRunTrace } from "./native-run-trace.js";
-import { invalidArchive, readProviderPackLayers, stageProviderPackLayers, verifyArchive, type ProviderPackTree } from "./provider-pack-layers.js";
+import { invalidArchive, readProviderPackLayers, stageProviderPackLayers, verifyArchive } from "./provider-pack-layers.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -38,8 +38,6 @@ export async function stageProviderPackArchive(input: {
   targetPath: string;
   trace?: NativeRunTrace;
   reuseRoots?: readonly string[];
-  trees?: readonly ProviderPackTree[];
-  runUid?: number;
 }): Promise<boolean> {
   if ("kind" in input.archive) return stageProviderPackLayers({ ...input, archive: input.archive, reuseRoots: input.reuseRoots ?? [] });
   const archive = input.archive;
