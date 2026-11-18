@@ -77,6 +77,11 @@ describe("kubernetesProviderConfigSchema", () => {
     ).toMatchObject({ runnerIdleTimeoutMs: 120_000 });
   });
 
+  it("leaves conversationPodReuse unset by default, so unset means ON (only false disables)", () => {
+    expect(parseKubernetesProviderConfig({ inCluster: true }).conversationPodReuse).toBeUndefined();
+    expect(parseKubernetesProviderConfig({ inCluster: true, conversationPodReuse: false }).conversationPodReuse).toBe(false);
+  });
+
   it("keeps the host-owned reuse flags through parsing (they would otherwise be stripped on save)", () => {
     expect(
       parseKubernetesProviderConfig({ inCluster: true, reuseLease: true, reuseLeaseScope: "conversations" }),

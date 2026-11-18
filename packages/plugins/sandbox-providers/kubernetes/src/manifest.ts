@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.kubernetes-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0-alpha.2";
+const PLUGIN_VERSION = "0.1.0-alpha.3";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -111,6 +111,11 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "boolean",
             description:
               "Keep a pod running between turns so later turns can reuse it (set by the host environment; default: false).",
+          },
+          conversationPodReuse: {
+            type: "boolean",
+            description:
+              "Escape hatch. Reuse of one pod per agent conversation (5 minute idle TTL, scrubbed between turns) is ON by default; set false to give conversation turns a fresh pod per run.",
           },
           reuseLeaseScope: {
             type: "string",

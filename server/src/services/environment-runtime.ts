@@ -1868,15 +1868,18 @@ function createSandboxEnvironmentDriver(
       // or account used for qualification and custom-template resolution.
       if (configuredEnvironment.id !== input.environment.id
         || configuredEnvironment.driver !== input.environment.driver
-        || stableStringify({ ...configuredEnvironment.config, reuseLease: undefined, runnerLifecycleMode: undefined })
-          !== stableStringify({ ...input.environment.config, reuseLease: undefined, runnerLifecycleMode: undefined })
-        // A run view may only narrow retention (turn reuse off, lifecycle per_turn),
-        // never widen it beyond the saved configuration.
-        || (input.environment.config.reuseLease === true && configuredEnvironment.config.reuseLease !== true
-          && input.adapterType !== "paperclip_runner")
-        || (input.environment.config.runnerLifecycleMode === "warm"
-          && configuredEnvironment.config.runnerLifecycleMode !== "warm"
-          && input.adapterType !== "paperclip_runner")) {
+        || stableStringify({ ...configuredEnvironment.config, reuseLease: undefined, runnerLifecycleMode: undefined, reuseLeaseScope: undefined })
+          !== stableStringify({ ...input.environment.config, reuseLease: undefined, runnerLifecycleMode: undefined, reuseLeaseScope: undefined })
+        // A run view may narrow retention freely. It may widen it only through the
+        // default-on Kubernetes conversation reuse (never past the kill switch),
+        // and paperclip_runner keeps its own retention rules.
+        || (input.adapterType !== "paperclip_runner"
+          && ((input.environment.config.reuseLease === true && configuredEnvironment.config.reuseLease !== true)
+            || (input.environment.config.runnerLifecycleMode === "warm"
+              && configuredEnvironment.config.runnerLifecycleMode !== "warm"))
+          && !(input.environment.config.reuseLeaseScope === "conversations"
+            && configuredEnvironment.config.provider === "kubernetes"
+            && configuredEnvironment.config.conversationPodReuse !== false))) {
         throw new Error("Run environment does not match its saved configuration.");
       }
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
@@ -1944,7 +1947,9 @@ function createSandboxEnvironmentDriver(
         // cannot serve, and it never strands a stale lease it cannot destroy.
         // One pod per conversation: scope reuse to the issue even when the run has an
         // execution workspace, so two conversations of one agent never share a pod.
-        const issueScoped = (parsed.config as { reuseLeaseScope?: string }).reuseLeaseScope === "conversations";
+        // Read the run-scoped view (storedParsed), not the saved config: default-on
+        // conversation reuse exists only in the run view.
+        const issueScoped = (storedParsed.config as { reuseLeaseScope?: string }).reuseLeaseScope === "conversations";
         const declaredReusableLeases =
           resolveDeclaredSandboxCapabilities(pluginProvider.resolved.driver).reusableLeases === true;
         const pluginVerifiedMethods = new Set(

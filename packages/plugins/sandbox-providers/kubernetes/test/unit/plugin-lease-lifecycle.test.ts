@@ -569,7 +569,7 @@ describe("reusable conversation pods", () => {
       leaseMetadata: leaseMetadata({ remoteCwd: "/workspace", reusableSandboxLease: { version: 1, adapterType: "hermes_local" } }),
     });
     expect(lease.providerLeaseId).toBe("pc-abc");
-    expect(h.scrub).toHaveBeenCalledWith(expect.anything(), "paperclip-acme", "pc-abc-pod", "/workspace", "hermes_local");
+    expect(h.scrub).toHaveBeenCalledWith(expect.anything(), "paperclip-acme", "pc-abc-pod", "/workspace");
     expect(isTracked("paperclip-acme", "pc-abc")).toBe(true);
   });
 
@@ -622,7 +622,7 @@ describe("reusable conversation pods", () => {
       driverKey: "kubernetes", companyId: "acme", environmentId: "env-1", config: CONFIG, providerLeaseId: "pc-abc",
       leaseMetadata: leaseMetadata({ reusableSandboxLease: { version: 1, adapterType: "claude_local" } }),
     });
-    expect(h.scrub).toHaveBeenCalledWith(expect.anything(), "paperclip-acme", "pc-abc-pod", "/workspace", "claude_local");
+    expect(h.scrub).toHaveBeenCalledWith(expect.anything(), "paperclip-acme", "pc-abc-pod", "/workspace");
     expect(isTracked("paperclip-acme", "pc-abc")).toBe(true);
   });
 
@@ -643,12 +643,13 @@ describe("reusable conversation pods", () => {
   it("keeps the host-owned reuse flags when a config is validated and normalized on save", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",
-      config: { inCluster: true, reuseLease: true, reuseLeaseScope: "conversations", runnerIdleTimeoutMs: 120_000 },
+      config: { inCluster: true, reuseLease: true, reuseLeaseScope: "conversations", conversationPodReuse: false, runnerIdleTimeoutMs: 120_000 },
     });
     expect(result.ok).toBe(true);
     expect(result.normalizedConfig).toMatchObject({
       reuseLease: true,
       reuseLeaseScope: "conversations",
+      conversationPodReuse: false,
       runnerIdleTimeoutMs: 120_000,
     });
   });

@@ -78,7 +78,7 @@ describe("applyReuseLeaseScope", () => {
 
   it("keeps reuse and warm retention for a conversation turn", () => {
     const env = sandbox({ provider: "kubernetes", reuseLease: true, runnerLifecycleMode: "warm", reuseLeaseScope: "conversations" });
-    expect(applyReuseLeaseScope(env, { conversationTurn: true })).toBe(env);
+    expect(applyReuseLeaseScope(env, { conversationTurn: true }).config).toEqual(env.config);
   });
 
   it("gives any other run a per-turn view with no reuse", () => {
@@ -88,6 +88,20 @@ describe("applyReuseLeaseScope", () => {
       runnerLifecycleMode: "per_turn",
       reuseLeaseScope: "conversations",
     });
+  });
+
+  it("turns conversation pod reuse on by default for Kubernetes, with an explicit kill switch", () => {
+    const saved = sandbox({ provider: "kubernetes", image: "x" });
+    const on = applyReuseLeaseScope(saved, { conversationTurn: true, adapterType: "claude_local" });
+    expect(on.config).toMatchObject({ reuseLease: true, runnerLifecycleMode: "warm", reuseLeaseScope: "conversations" });
+    const off = sandbox({ provider: "kubernetes", conversationPodReuse: false });
+    expect(applyReuseLeaseScope(off, { conversationTurn: true, adapterType: "claude_local" })).toBe(off);
+    // Plain tasks and other providers are untouched.
+    expect(applyReuseLeaseScope(saved, { conversationTurn: false, adapterType: "claude_local" })).toBe(saved);
+    const daytona = sandbox({ provider: "daytona" });
+    expect(applyReuseLeaseScope(daytona, { conversationTurn: true, adapterType: "claude_local" })).toBe(daytona);
+    // paperclip_runner never.
+    expect(applyReuseLeaseScope(saved, { conversationTurn: true, adapterType: "paperclip_runner" })).toBe(saved);
   });
 
   it("never narrows paperclip_runner, which owns its warm-session retention", () => {
@@ -643,12 +657,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
   async function seedReusablePluginSandboxLease(
     adapterType: string | null = null,
-    options: { timeoutMs?: number | null; defaultAcquireTimeoutMs?: number } = {},
+    options: { timeoutMs?: number | null; defaultAcquireTimeoutMs?: number; providerKey?: string } = {},
   ) {
     const pluginId = randomUUID();
+    const providerKey = options.providerKey ?? "fake-plugin";
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
-      provider: "fake-plugin",
+      provider: providerKey,
       image: "fake:test",
       ...(options.timeoutMs === null ? {} : { timeoutMs: options.timeoutMs ?? 1234 }),
       reuseLease: true,
@@ -671,7 +686,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       description: "Test provider with reusable lease support",
       environmentDrivers: [
         {
-          driverKey: "fake-plugin",
+          driverKey: providerKey,
           kind: "sandbox_provider",
           displayName: "Fake Plugin",
           supportsReusableLeases: true,
@@ -715,7 +730,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       executionWorkspaceId,
       heartbeatRunId: runId,
       leasePolicy: "reuse_by_environment",
-      provider: "fake-plugin",
+      provider: providerKey,
       providerLeaseId: "reusable-plugin-lease",
       metadata: {
         agentId,
@@ -731,9 +746,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           executionWorkspaceId,
           agentId,
           adapterType,
-          provider: "fake-plugin",
+          provider: providerKey,
           runtimeFingerprint: reusableRuntimeFingerprint({
-            provider: "fake-plugin",
+            provider: providerKey,
             adapterType,
             config: providerConfig,
           }),
@@ -1130,6 +1145,78 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const issueless = await runtimeWithPlugin.acquireRunLease({ companyId: seeded.companyId, environment, issueId: null, agentId: seeded.agentId, heartbeatRunId: nextRunId, persistedExecutionWorkspace: workspace });
     expect(issueless.lease.providerLeaseId).toBe("conv-2");
     expect(call.mock.calls.filter((entry) => entry[1] === "environmentResumeLease")).toHaveLength(0);
+  });
+
+  describe("Kubernetes conversation pod reuse is on by default", () => {
+    async function setup(savedExtra: Record<string, unknown> = {}) {
+      const seeded = await seedReusablePluginSandboxLease(null, { providerKey: "kubernetes" });
+      await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+      const issueIds = [randomUUID(), randomUUID()];
+      await db.insert(issues).values(issueIds.map((id) => ({
+        id, companyId: seeded.companyId, title: "Conversation", status: "in_progress", assigneeAgentId: seeded.agentId,
+      })));
+      // A saved config with NO reuse settings at all: the default must turn reuse on.
+      const saved = { ...seeded.environment, config: { provider: "kubernetes", image: "fake:test", timeoutMs: 1234, ...savedExtra } };
+      let acquisitions = 0;
+      const call = vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") return { providerLeaseId: `k8s-${++acquisitions}`, metadata: { remoteCwd: "/workspace" } };
+        if (method === "environmentResumeLease") return { providerLeaseId: "k8s-1", metadata: { remoteCwd: "/workspace" } };
+        if (method === "environmentDestroyLease") return { providerLeaseId: "k8s-1", state: "destroyed" };
+        throw new Error(`Unexpected method: ${method}`);
+      });
+      const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+        isRunning: () => true, call,
+        getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+      } as unknown as PluginWorkerManager });
+      const workspace = { id: seeded.executionWorkspaceId, mode: "shared_workspace" as const };
+      const turn = async (opts: { issueId: string | null; conversationTurn: boolean; runId?: string; adapterType?: string }) => {
+        let runId = opts.runId;
+        if (!runId) {
+          runId = randomUUID();
+          await db.insert(heartbeatRuns).values({ id: runId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+        }
+        const view = applyReuseLeaseScope(saved, { conversationTurn: opts.conversationTurn, adapterType: opts.adapterType ?? "pi_local" });
+        const lease = await runtime.acquireRunLease({
+          companyId: seeded.companyId, environment: view, configuredEnvironment: saved, issueId: opts.issueId,
+          agentId: seeded.agentId, heartbeatRunId: runId, persistedExecutionWorkspace: workspace, adapterType: opts.adapterType ?? "pi_local",
+        });
+        return { lease, runId };
+      };
+      return { seeded, issueIds, call, runtime, turn, acquisitionCount: () => acquisitions };
+    }
+
+    it("reuses one pod per conversation with no extra config, scoped to its own issue (Pi/Claude included)", async () => {
+      const t = await setup();
+      const first = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: true, runId: t.seeded.runId });
+      expect(first.lease.lease.leasePolicy).toBe("reuse_by_environment");
+      await t.runtime.releaseRunLeases(first.runId, "released", undefined, "keep_running");
+
+      const other = await t.turn({ issueId: t.issueIds[1]!, conversationTurn: true });
+      expect(other.lease.lease.providerLeaseId).toBe("k8s-2"); // never another conversation's pod
+      const again = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: true });
+      expect(again.lease.lease.providerLeaseId).toBe("k8s-1"); // same conversation resumes its pod
+      expect(t.call.mock.calls.filter((c) => c[1] === "environmentResumeLease")).toHaveLength(1);
+      expect(t.acquisitionCount()).toBe(2);
+    });
+
+    it("keeps a fresh pod per run for plain tasks", async () => {
+      const t = await setup();
+      const task = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: false, runId: t.seeded.runId });
+      expect(task.lease.lease.leasePolicy).toBe("ephemeral");
+      expect(task.lease.lease.metadata?.reusableSandboxLease).toBeUndefined();
+    });
+
+    it("does not reuse when the environment sets the conversationPodReuse kill switch", async () => {
+      const t = await setup({ conversationPodReuse: false });
+      const first = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: true, runId: t.seeded.runId });
+      expect(first.lease.lease.leasePolicy).toBe("ephemeral");
+    });
+
+    it("leaves paperclip_runner on its own retention rules", async () => {
+      const t = await setup();
+      const run = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: true, runId: t.seeded.runId, adapterType: "paperclip_runner" });
+      expect(run.lease.lease.leasePolicy).toBe("ephemeral");
+    });
   });
 
   it("gives a non-conversation run an ephemeral lease under reuseLeaseScope=conversations", async () => {

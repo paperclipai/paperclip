@@ -82,6 +82,14 @@ export const kubernetesProviderConfigSchema = z
     reuseLeaseScope: z.enum(["all", "conversations"]).optional(),
 
     /**
+     * Escape hatch. Conversation pod reuse (one pod per conversation, idle TTL,
+     * scrub between turns) is ON by default on every Kubernetes sandbox
+     * environment; `false` gives conversation turns a fresh pod per run.
+     * Deliberately unset by default (no zod default) so unset means ON.
+     */
+    conversationPodReuse: z.boolean().optional(),
+
+    /**
      * How long a reusable (kept-running) pod may sit idle before the plugin
      * destroys it. Matches the host's `runnerIdleTimeoutMs` (default 5 minutes).
      */

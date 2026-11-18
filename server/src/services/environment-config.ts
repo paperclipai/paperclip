@@ -106,6 +106,11 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
    * fresh sandbox. Absent or `all` keeps the existing behavior.
    */
   reuseLeaseScope: z.enum(["all", "conversations"]).optional(),
+  /**
+   * Kubernetes sandbox escape hatch. Conversation pod reuse is ON by default;
+   * set `false` to give conversation turns a fresh pod per run like any task.
+   */
+  conversationPodReuse: z.boolean().optional(),
   streamRunLogs: z.boolean().optional(),
   runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
   runnerIdleTimeoutMs: z.coerce

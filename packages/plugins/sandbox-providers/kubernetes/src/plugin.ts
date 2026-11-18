@@ -54,7 +54,7 @@ import {
   startIdleReaper,
   trackReusableLease,
 } from "./reuse-registry.js";
-import { runtimeKeyForAdapter, scrubPod } from "./pod-scrub.js";
+import { scrubPod } from "./pod-scrub.js";
 import {
   appendNetworkEgressDenyHint,
   createScopedNetworkEgressPolicyOrReleaseWorkload,
@@ -314,26 +314,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The adapter type of a lease the server kept running for reuse, or null when
- * the plugin must not manage it. Every adapter's kept-running pod gets the idle
- * TTL (so a pod the server retains can never leak), the between-turn scrub of
- * that adapter's own runtime directory, and quota eviction. One-shot leases and
- * paperclip_runner's warm sandboxes (which own their lifecycle) are left alone.
+ * True when the plugin manages this lease: the server kept it running for reuse
+ * (`metadata.reusableSandboxLease`) and it is not a paperclip_runner sandbox,
+ * which owns its own lifecycle. Every such pod gets the idle TTL (a retained pod
+ * can never leak), the between-turn scrub, and quota eviction. One-shot leases
+ * (plain task runs) are left alone.
  */
-function managedReusableAdapter(
-  metadata: Record<string, unknown> | null | undefined,
-  _config?: KubernetesProviderConfig,
-): string | null {
+function isManagedReusableLease(metadata: Record<string, unknown> | null | undefined): boolean {
   const scope = metadata?.reusableSandboxLease;
-  if (!isRecord(scope)) return null;
-  const adapterType = typeof scope.adapterType === "string" ? scope.adapterType : null;
-  if (!adapterType || adapterType === "paperclip_runner") return null;
-  try {
-    runtimeKeyForAdapter(adapterType); // rejects anything that is not a plain name
-  } catch {
-    return null;
-  }
-  return adapterType;
+  if (!isRecord(scope)) return false;
+  return typeof scope.adapterType !== "string" || scope.adapterType !== "paperclip_runner";
 }
 
 /** Wait briefly for evicted pods to leave the quota (terminating pods still count). */
@@ -363,7 +353,7 @@ function trackLeaseExecStart(params: PluginEnvironmentExecuteParams): () => void
   const { lease } = params;
   if (!lease.providerLeaseId) return () => {};
   const config = kubernetesProviderConfigSchema.safeParse(params.config);
-  if (!config.success || managedReusableAdapter(lease.metadata, config.data) === null) return () => {};
+  if (!config.success || !isManagedReusableLease(lease.metadata)) return () => {};
   const leaseBackend = typeof lease.metadata?.backend === "string" ? lease.metadata.backend : config.data.backend;
   if (leaseBackend !== "sandbox-cr") return () => {};
   const namespace =
@@ -1117,11 +1107,7 @@ const plugin = definePlugin({
     // Reused pod: scrub the previous turn's processes and runtime files before
     // handing it to the next turn. A pod that cannot be scrubbed is not reused:
     // destroy it and report the lease expired so the server acquires a fresh one.
-    const managedAdapter = managedReusableAdapter(
-      params.leaseMetadata,
-      kubernetesProviderConfigSchema.parse(params.config),
-    );
-    if (leaseBackend === "sandbox-cr" && check.podName && managedAdapter) {
+    if (leaseBackend === "sandbox-cr" && check.podName && isManagedReusableLease(params.leaseMetadata)) {
       const remoteCwd = leaseRemoteCwd(params.leaseMetadata?.remoteCwd);
       const idleTtlMs = kubernetesProviderConfigSchema.parse(params.config).runnerIdleTimeoutMs;
       // Track before scrubbing so a pod we then fail to delete stays visible to
@@ -1135,7 +1121,7 @@ const plugin = definePlugin({
         clients,
         idleTtlMs,
       });
-      const scrub = await scrubPod(kc, namespace, check.podName, remoteCwd, managedAdapter);
+      const scrub = await scrubPod(kc, namespace, check.podName, remoteCwd);
       if (!scrub.ok) {
         readySandboxesByLease.delete(params.providerLeaseId);
         try {
