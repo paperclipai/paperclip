@@ -28,6 +28,9 @@
  *     leader closes or crashes (its lease expires and a follower reclaims it).
  */
 
+import { createUuid } from "./uuid";
+
+
 // ---------------------------------------------------------------------------
 // Leader election (pure, injectable — the tested core)
 // ---------------------------------------------------------------------------
@@ -492,10 +495,7 @@ export function getSharedPollingTabId(): string {
 }
 
 function createRandomId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return createUuid();
 }
 
 function getBrowserVisible(): boolean {

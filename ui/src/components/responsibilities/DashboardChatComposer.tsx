@@ -11,6 +11,7 @@ import { agentIdFromChatValue, chatAgentOptions, defaultChatAgent } from "@/lib/
 import { queryKeys } from "@/lib/queryKeys";
 import { getRecentAssigneeIds, trackRecentAssignee } from "@/lib/recent-assignees";
 import { Link } from "@/lib/router";
+import { createUuid } from "../../lib/uuid";
 
 /** Below the app's mobile breakpoint the composer uses its mobile sizing (16px text, so iOS does not zoom). */
 const MOBILE_QUERY = "(max-width: 767px)";
@@ -75,7 +76,7 @@ export function DashboardChatComposer({
         return;
       }
       const key = `${agent.id}\n${text}\n${files.map((staged) => staged.id).join(",")}`;
-      if (request.current?.key !== key) request.current = { key, id: crypto.randomUUID() };
+      if (request.current?.key !== key) request.current = { key, id: createUuid() };
       setError(null);
       try {
         await startChat({ agent, body: text, files: files.map((staged) => staged.file), runSettings: settings, clientRequestId: request.current.id });
@@ -129,7 +130,7 @@ export function DashboardChatComposer({
           },
           onSubmit: submit,
           submitLabel: "Send",
-          onSelectFiles: (picked) => setFiles((current) => [...current, ...picked.map((file) => ({ id: crypto.randomUUID(), file }))]),
+          onSelectFiles: (picked) => setFiles((current) => [...current, ...picked.map((file) => ({ id: createUuid(), file }))]),
           images: images.map((staged) => ({ id: staged.id, name: staged.file.name, file: staged.file })),
           onRemoveImage: removeFile,
           runSettings,

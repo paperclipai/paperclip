@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { NativeVoiceConversation, type NativeVoiceConversationProps } from "./NativeVoiceConversation";
 import { voiceCallJournal } from "@/lib/voice-call-attempt";
 import { VoiceCallContext } from "./VoiceCallContext";
+import { createUuid } from "../../lib/uuid";
 
 /** Owns media above routes. Scope changes unmount the call and clean up media. */
 export function VoiceCallProvider({ children, companyId, userId }: {
@@ -16,7 +17,7 @@ export function VoiceCallProvider({ children, companyId, userId }: {
   const open = useCallback((props: NativeVoiceConversationProps) => {
     if (props.companyId !== companyId || current) return;
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setEnded(false); setCall({ props: { ...props, journal: props.journal ?? (props.client ? undefined : voiceCallJournal(sessionStorage, props.companyId, userId ?? "unresolved")) }, userId, id: crypto.randomUUID() });
+    setEnded(false); setCall({ props: { ...props, journal: props.journal ?? (props.client ? undefined : voiceCallJournal(sessionStorage, props.companyId, userId ?? "unresolved")) }, userId, id: createUuid() });
   }, [companyId, userId, current]);
   const value = useMemo(() => ({ active: Boolean(current), open }), [current, open]);
   return <VoiceCallContext.Provider value={value}>

@@ -28,6 +28,7 @@ import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
 import { AI_PROVIDERS, aiMethodLabel } from "./model";
 import { cn } from "@/lib/utils";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { createUuid } from "../../lib/uuid";
 
 const configOf = ({ name, enabled, members, mode, thresholdPercent }: AiConnectionPoolConfig): AiConnectionPoolConfig => ({ name, enabled, members, mode, thresholdPercent });
 const emptyConfig = (): AiConnectionPoolConfig => ({ name: "AI connection pool", enabled: false, members: [], mode: "round_robin", thresholdPercent: 90 });
@@ -36,7 +37,7 @@ function memberOf(account: AiManagedConnectionSummary): AiConnectionPoolMember {
     : account.provider === "anthropic" ? { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }
     : account.provider === "xai" ? { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }
     : { provider: "opencode", model: "openrouter/anthropic/claude-sonnet-4.6" };
-  return { id: crypto.randomUUID(), binding: { mode: account.ownership === "shared" ? "shared" : "delegated", provider: account.provider, method: account.method, connectionId: account.id, grantId: account.grantId }, profile };
+  return { id: createUuid(), binding: { mode: account.ownership === "shared" ? "shared" : "delegated", provider: account.provider, method: account.method, connectionId: account.id, grantId: account.grantId }, profile };
 }
 
 /** Native connector surface shared by all plugins implementing the pool contract. */

@@ -14,6 +14,7 @@ import { DecisionCardFooter } from "./DecisionCardFooter";
 import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "./coordinator/NeedsYouCardKit";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { createUuid } from "../lib/uuid";
 
 /**
  * Inline verbs for the cards whose server actions now work in place (PAP-749
@@ -77,7 +78,7 @@ export function FailedRunActions({
   const [retryNotice, setRetryNotice] = useState<string | null>(null);
   const retry = useMutation({
     mutationFn: () => {
-      idempotencyKey.current ??= crypto.randomUUID();
+      idempotencyKey.current ??= createUuid();
       return issuesApi.retryTask(issueId!, { idempotencyKey: idempotencyKey.current, observedRunId: item.subject.id });
     },
     onMutate: () => setRetryNotice(null),
