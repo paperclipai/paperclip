@@ -52,6 +52,12 @@ export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
+export { responsibilities, responsibilityAreas, responsibilityLinks } from "./responsibilities.js";
+export {
+  responsibilityStatusReports,
+  responsibilityMetrics,
+  responsibilityMetricReadings,
+} from "./responsibility_reporting.js";
 export { folders } from "./folders.js";
 export { issues } from "./issues.js";
 export { issueAccessGrants } from "./issue_access_grants.js";
@@ -281,6 +287,8 @@ export * from "./fast_responses.js";
 export { companyObservability } from "./company_observability.js";
 
 export * from "./prompt_injection_prevention.js";
+export * from "./responsibility_summary_invocations.js";
+export { responsibilityDashboardVersions } from "./responsibility_dashboard_versions.js";
 export { workflows } from "./workflows.js";
 
 export { userWorkspacePreferences } from "./user_workspace_preferences.js";

@@ -13,7 +13,7 @@ export function RoutineTriggerCard({
   editLabel,
   children,
 }: {
-  kind: "schedule" | "webhook" | "api";
+  kind: "schedule" | "webhook" | "api" | "heartbeat";
   icon: ReactNode;
   title: string;
   summary: string;
@@ -26,7 +26,7 @@ export function RoutineTriggerCard({
   const editorId = useId();
   return (
     <section
-      aria-label={`${kind === "schedule" ? "Schedule" : kind === "api" ? "API" : "Webhook"} trigger`}
+      aria-label={kind === "heartbeat" ? "Standing check" : `${kind === "schedule" ? "Schedule" : kind === "api" ? "API" : "Webhook"} trigger`}
       className="rounded-md border border-border"
     >
       <div className="flex flex-wrap items-center gap-3 p-4">
