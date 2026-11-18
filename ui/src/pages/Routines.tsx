@@ -254,11 +254,13 @@ export function Routines() {
     ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
-  const { data: companyMembers } = useQuery({
+  const companyMembersQuery = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: companyMembers } = companyMembersQuery;
+  const companyMembersView = useQueryView(companyMembersQuery);
   const recentRunsQuery = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
     queryFn: () => issuesApi.list(selectedCompanyId!, { originKind: "routine_execution" }),
@@ -639,6 +641,11 @@ export function Routines() {
           onRetry={routinesView.retry}
           retrying={routinesView.isFetching}
         />
+      ) : null}
+
+      {companyMembersView.kind === "error" ? (
+        <QueryErrorState error={companyMembersView.error} action="load responsible people" size="inline"
+          onRetry={companyMembersView.retry} retrying={companyMembersView.isFetching} />
       ) : null}
 
       {routineViewState.groupBy === "folder" && foldersView.kind === "error" ? (

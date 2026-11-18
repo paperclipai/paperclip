@@ -9,8 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import type { RequestOptions } from "../api/client";
 import { Routines, buildRoutineGroups, buildRoutineSections } from "./Routines";
+import { Routines as CurrentRoutines } from "./Routines.production";
 import { sortRoutines } from "../lib/routine-list-data";
 import { routinesApi } from "../api/routines";
+import { accessApi } from "../api/access";
 
 let currentSearch = "";
 
@@ -735,6 +737,35 @@ describe("Routines page", () => {
       } else {
         expect(container.textContent).toContain("Loose routine");
       }
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it.each([["classic", Routines], ["current", CurrentRoutines]] as const)("keeps %s routines readable when the people directory fails and restores names on retry", async (_variant, Page) => {
+    routinesListMock.mockResolvedValue([createRoutine({ title: "Owned routine", responsibleUserId: "user-1" })]);
+    vi.mocked(accessApi.listUserDirectory).mockRejectedValueOnce(new Error("Could not load responsible people"));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Page /></QueryClientProvider>);
+        await flush();
+      });
+      await act(async () => { await flush(); });
+      const routineLink = container.querySelector('a[href="/routines/routine-1"]');
+      expect(routineLink).not.toBeNull();
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain("Could not load responsible people");
+      const retry = alert?.querySelector("button");
+      expect(retry?.textContent).toBe("Retry");
+      await act(async () => { retry!.click(); await flush(); });
+      await act(async () => { await flush(); });
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector('a[href="/routines/routine-1"]')).toBe(routineLink);
+      expect(container.textContent).toContain("Taylor");
     } finally {
       await act(() => root.unmount());
       queryClient.clear();
