@@ -469,7 +469,6 @@ describe("PostHog proxy forwarding", () => {
         }).on("error", () => resolve("error"));
       });
       // The browser sees a cut-off response, not a complete one.
-      console.log("OUTCOME", outcome, Date.now() - startedAt);
       expect(outcome).not.toBe("end");
       await new Promise((resolve) => setTimeout(resolve, 50));
       // The proxy keeps serving after the broken response.
