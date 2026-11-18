@@ -10,6 +10,7 @@ import { ChevronDown, Loader2, MessageSquare, Pencil } from "lucide-react";
 import { activityApi } from "@/api/activity";
 import { authApi } from "@/api/auth";
 import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { responsibilityBarsApi } from "@/api/responsibility-bars";
 import { InlineEditor } from "@/components/InlineEditor";
@@ -231,11 +232,14 @@ export function useBarConversation(responsibility: ResponsibilityDetail, enabled
       if (state.conversation) navigate(`/issues/${state.conversation.identifier ?? state.conversation.issueId}`);
     },
   });
+  const view = useQueryView(query);
   const state = query.data ?? null;
   const open = state?.state === "discussing" || state?.state === "proposal_waiting";
   // Without the state (still loading, or it failed) the hand-edit path stays available.
   const canTalk = !!state && (open || state.defaultAgentId !== null);
-  return { state, open, canTalk, start };
+  /** A failed read of the conversation, shown with Retry instead of quietly hiding the agent option. */
+  const loadError = enabled && view.kind === "error" ? view.error : null;
+  return { state, open, canTalk, start, loadError, retry: view.retry, retrying: view.isFetching };
 }
 
 /**
@@ -403,6 +407,10 @@ export function ResponsibilityBarCard({
         <p role="alert" className="text-sm text-destructive">
           Couldn’t start the conversation. {describeError(conversation.start.error).body} You can still edit the bar by hand.
         </p>
+      ) : null}
+      {conversation.loadError ? (
+        <QueryErrorState error={conversation.loadError} size="inline" action="load the bar conversation"
+          onRetry={conversation.retry} retrying={conversation.retrying} />
       ) : null}
       {editable && conversation.state ? <BarConversationNotice state={conversation.state} agentsById={agentsById} /> : null}
 

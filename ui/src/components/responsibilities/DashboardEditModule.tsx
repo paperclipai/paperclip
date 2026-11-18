@@ -329,8 +329,17 @@ export function DashboardEditModuleView({
 }
 
 export function DashboardEditModule({ companyId, ownerUserId, empty, agentsById, onAddArea }: DashboardEditModuleProps) {
-  const { state, start, restore } = useDashboardConversation(companyId, ownerUserId);
+  const { query, state, start, restore } = useDashboardConversation(companyId, ownerUserId);
+  const stateView = useQueryView(query);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  if (stateView.kind === "error") {
+    return (
+      <div data-dashboard-edit-module="error">
+        <QueryErrorState error={stateView.error} size="inline" action="load your dashboard's changes"
+          onRetry={stateView.retry} retrying={stateView.isFetching} />
+      </div>
+    );
+  }
   return (
     <>
       <DashboardEditModuleView

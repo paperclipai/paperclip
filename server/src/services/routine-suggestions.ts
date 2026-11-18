@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issues } from "@paperclipai/db";
+import { issues, projects } from "@paperclipai/db";
 import {
   AUTOMATION_CONVERSATION_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
@@ -225,7 +225,28 @@ export function routineSuggestionService(
    * the onboarding task, a bar or automation conversation and a status update
    * request (or their subtasks).
    */
+  /**
+   * Routines are readable company-wide and copy the task's title and
+   * description, so a private task (or one in a private project) never
+   * becomes a routine.
+   */
+  async function assertNotPrivate(issue: { id: string; companyId: string }) {
+    const [row] = await db.select({
+      visibility: issues.visibility,
+      privacyRootIssueId: issues.privacyRootIssueId,
+      projectVisibility: projects.visibility,
+    }).from(issues)
+      .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)))
+      .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+    if (row && (row.visibility === "private" || row.privacyRootIssueId !== null || row.projectVisibility === "private")) {
+      throw unprocessable("A private task cannot become a routine, because routines are visible to the whole company", {
+        code: "routine_from_task_private",
+      });
+    }
+  }
+
   async function assertRepeatable(issue: { id: string; companyId: string }) {
+    await assertNotPrivate(issue);
     if (await lineageMatches(issue.companyId, issue.id, (row) => row.originKind === ROUTINE_EXECUTION_ORIGIN_KIND)) {
       throw unprocessable("This task already comes from a routine", { code: "routine_suggestion_routine_task" });
     }
@@ -437,6 +458,7 @@ export function routineSuggestionService(
       const data = createRoutineSuggestionSchema.parse(input);
       const issue = await loadIssue(issueRef.id, issueRef.companyId);
       await assertTaskEligible(issue);
+      await assertNotPrivate(issue);
       if (issue.assigneeAgentId !== actor.agentId) {
         throw forbidden("Only the agent assigned to the task can offer a routine for it");
       }
@@ -480,6 +502,7 @@ export function routineSuggestionService(
     ): Promise<AcceptedRoutineSuggestion> {
       await assertEnabled();
       const issue = await loadIssue(issueRef.id, issueRef.companyId);
+      await assertNotPrivate(issue);
       const timezone = await resolveTimeZone(input.timezone, actor.userId);
       const claimed = await interactions.claimRoutineSuggestion(issue, interactionId, "accepted", { userId: actor.userId });
       const claim = claimed.claim!;

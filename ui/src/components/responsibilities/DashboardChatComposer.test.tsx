@@ -167,6 +167,21 @@ describe("DashboardChatComposer", () => {
     expect(second![4]).toEqual(["attachment-1"]);
   });
 
+  it("does not pull the person back into the chat when they left before the send finished", async () => {
+    let finish: (value: unknown) => void = () => {};
+    mocks.issues.addComment.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    await render([chief]);
+    await type("Plan next week");
+    const { creation } = mocks.composer!;
+    let sending: Promise<unknown> = Promise.resolve();
+    await act(async () => { sending = Promise.resolve(creation.onSubmit("Plan next week", "standard", null)); });
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => { finish({ id: "comment-1" }); await sending; await flush(); });
+    expect(mocks.issues.addComment).toHaveBeenCalledTimes(1);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
   it("saves the chosen model on the chat before the message, as the chat composer does", async () => {
     mocks.issues.getCore.mockResolvedValue({ ...chat, assigneeAdapterOverrides: null });
     mocks.issues.update.mockResolvedValue(chat);

@@ -465,6 +465,23 @@ describeEmbeddedPostgres("routine suggestions", () => {
     expect(await db.select().from(routines).where(eq(routines.companyId, seeded.company.id))).toHaveLength(0);
   });
 
+  it("never turns a private task into a routine", async () => {
+    const seeded = await seed();
+    const offered = await offer(seeded);
+    await db.update(issues).set({ visibility: "private", privacyRootIssueId: seeded.issue.id, responsibleUserId: OWNER })
+      .where(eq(issues.id, seeded.issue.id));
+    const accepted = await request(createApp(boardActor()))
+      .post(`/api/issues/${seeded.issue.id}/routine-suggestions/${offered.body.id}/accept`).send({ timezone: "UTC" });
+    expect(accepted.status).toBe(422);
+    const repeated = await request(createApp(boardActor()))
+      .post(`/api/issues/${seeded.issue.id}/repeat-as-routine`)
+      .send({ title: "Weekly", cadence: { frequency: "weekly", dayOfWeek: "monday", time: "09:00" }, assigneeAgentId: seeded.agent.id, timezone: "UTC" });
+    expect(repeated.status).toBe(422);
+    expect(await db.select().from(routines).where(eq(routines.companyId, seeded.company.id))).toHaveLength(0);
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, offered.body.id)))[0])
+      .toMatchObject({ status: "pending" });
+  });
+
   it("declining is quiet and final", async () => {
     const seeded = await seed();
     const offered = await offer(seeded);

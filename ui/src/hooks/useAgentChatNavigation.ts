@@ -67,8 +67,15 @@ export function useStartAgentChat(companyId: string | null, userId: string | nul
   const client = useQueryClient();
   const navigate = useNavigate();
   const uploads = useRef(new Map<string, Awaited<ReturnType<typeof issuesApi.uploadAttachment>>[]>());
+  const scope = useRef({ companyId, userId, mounted: true });
+  useEffect(() => {
+    const current = { companyId, userId, mounted: true };
+    scope.current = current;
+    return () => { current.mounted = false; };
+  }, [companyId, userId]);
   return useCallback(async ({ agent, body, files = [], runSettings, clientRequestId }: StartAgentChatMessage) => {
     if (!companyId || agent.companyId !== companyId) throw new Error("Choose an agent from this company.");
+    const current = scope.current;
     const chat = await agentChatsApi.ensure(companyId, agent.id);
     rememberChat(client, companyId, userId, agent.id, chat);
     if (runSettings) {
@@ -99,6 +106,8 @@ export function useStartAgentChat(companyId: string | null, userId: string | nul
     uploads.current.delete(uploadKey);
     void client.invalidateQueries({ queryKey: queryKeys.issues.comments(chat.id) });
     void client.invalidateQueries({ queryKey: queryKeys.agentChats.list(companyId, userId) });
+    // The message is sent either way; only follow it when the person is still where they sent it from.
+    if (!current.mounted || scope.current !== current) return;
     navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}`);
   }, [client, companyId, userId, navigate]);
 }

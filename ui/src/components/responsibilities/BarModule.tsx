@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/shared";
 import { Loader2, MessageSquare, MoreHorizontal, X } from "lucide-react";
 import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { responsibilityMetricsApi } from "@/api/responsibility-metrics";
 import {
   AlertDialog,
@@ -263,11 +264,20 @@ function SetVisualizations({
   editable: boolean;
 }) {
   const query = useResponsibilityMetrics(responsibility.id);
+  const metricsView = useQueryView(query);
   const { showAs, remove } = useVisualizationWrites(responsibility.id);
   const [removing, setRemoving] = useState<ResponsibilityMetricView | null>(null);
   const primary = responsibility.rollup.metric;
-  if (!query.data) {
-    return <MetricGlance metric={primary} health={responsibility.rollup.health} now={now} size="hero" className="max-w-sm" />;
+  if (!query.data || metricsView.kind === "error") {
+    return (
+      <>
+        <MetricGlance metric={primary} health={responsibility.rollup.health} now={now} size="hero" className="max-w-sm" />
+        {metricsView.kind === "error" ? (
+          <QueryErrorState error={metricsView.error} size="inline" action="load the measures"
+            onRetry={metricsView.retry} retrying={metricsView.isFetching} />
+        ) : null}
+      </>
+    );
   }
   const set = query.data;
   // A set nobody chose is computed from the work: there is nothing to switch or remove.
@@ -419,6 +429,10 @@ export function BarModule({
       ) : null}
       {conversation.start.error ? (
         <p role="alert" className="text-sm text-destructive">Couldn’t start the conversation. {describeError(conversation.start.error).body}</p>
+      ) : null}
+      {conversation.loadError ? (
+        <QueryErrorState error={conversation.loadError} size="inline" action="load the bar conversation"
+          onRetry={conversation.retry} retrying={conversation.retrying} />
       ) : null}
       {body}
       {editable ? <EditBarDialog responsibility={responsibility} open={editing} onOpenChange={setEditing} /> : null}

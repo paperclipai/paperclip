@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import postgres from "postgres";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
@@ -10,6 +10,19 @@ const migrationHash = createHash("sha256").update(migration).digest("hex");
 // SQL published by this PR before its replay guards were added (14a1d73991).
 const originalMigrationHash = "bf087cbc9551b3c07aabffac45c87239ba53d1a095f03807d4ff98718028ea25";
 const statements = migration.split("--> statement-breakpoint").map(statement => statement.trim()).filter(Boolean);
+// Later migrations that redefine a CHECK constraint 0362 also defines. The
+// migrator always runs them after 0362, so wherever 0362 runs again here they
+// run again after it, as an in-order upgrade would.
+const SHARED_CONSTRAINTS = ["budget_reservations_source_check", "cost_events_usage_kind_check"];
+const laterRedefinitions = (await Promise.all((await readdir(new URL("./migrations/", import.meta.url)))
+  .filter(name => /^\d{4}_.*\.sql$/.test(name) && Number(name.slice(0, 4)) > 362)
+  .sort()
+  .map(name => readFile(new URL(`./migrations/${name}`, import.meta.url), "utf8"))))
+  .flatMap(text => text.split("--> statement-breakpoint").map(statement => statement.trim()))
+  .filter(statement => SHARED_CONSTRAINTS.some(name => statement.includes(`"${name}"`)) && /\b(ADD|DROP|VALIDATE) CONSTRAINT\b/.test(statement));
+async function replayLaterRedefinitions(sql: ReturnType<typeof postgres>) {
+  for (const statement of laterRedefinitions) await sql.unsafe(statement);
+}
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()?.(); });
 
@@ -76,6 +89,7 @@ describe("prompt injection migration replay", () => {
     const before = { shape: await shape(sql), rows: await rows(sql), history: await history(sql) };
     await replay(sql);
     await replay(sql);
+    await replayLaterRedefinitions(sql);
     expect(await shape(sql)).toEqual(before.shape);
     expect(await rows(sql)).toEqual(before.rows);
     expect(await history(sql)).toEqual(before.history);
@@ -110,6 +124,7 @@ describe("prompt injection migration replay", () => {
     const beforeRows = await rows(sql), beforeHistory = await history(sql);
     await applyPendingMigrations(url);
     expect((await inspectMigrations(url)).status).toBe("upToDate");
+    await replayLaterRedefinitions(sql);
     expect(await shape(sql)).toEqual(expectedShape);
     expect(await rows(sql)).toEqual(beforeRows);
     const afterHistory = await history(sql);
@@ -128,6 +143,7 @@ describe("prompt injection migration replay", () => {
     const before = { shape: await shape(sql), rows: await rows(sql), history: await history(sql) };
     await applyPendingMigrations(url);
     expect((await inspectMigrations(url)).status).toBe("upToDate");
+    await replayLaterRedefinitions(sql);
     expect(await shape(sql)).toEqual(before.shape);
     expect(await rows(sql)).toEqual(before.rows);
     const after = await history(sql);

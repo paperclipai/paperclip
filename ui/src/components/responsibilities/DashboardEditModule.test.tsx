@@ -157,6 +157,13 @@ describe("DashboardEditModule", () => {
     expect(api.restore).toHaveBeenCalledExactlyOnceWith("version-2");
   });
 
+  it("shows a failed read of the dashboard with Retry instead of a disabled button", async () => {
+    api.state.mockRejectedValueOnce(new ApiError("Not allowed", 403, { error: "forbidden" }));
+    await render(false);
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(buttons()).not.toContain("Edit your dashboard");
+  });
+
   it("shows a failed refresh of the versions instead of the old list", async () => {
     api.state.mockResolvedValue(dashboardStateFixture("populated"));
     api.versions.mockResolvedValueOnce(dashboardVersionsFixture);

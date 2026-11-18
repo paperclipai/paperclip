@@ -262,7 +262,7 @@ describeEmbeddedPostgres("automation conversations and standing checks", () => {
     expect(await db.select().from(issues).where(eq(issues.originId, privateId))).toHaveLength(0);
   });
 
-  it("keeps a private task's conversation private", async () => {
+  it("refuses to automate a private task, since routines are visible company-wide", async () => {
     const seeded = await seed();
     const privateId = randomUUID();
     await db.insert(issues).values({
@@ -270,9 +270,9 @@ describeEmbeddedPostgres("automation conversations and standing checks", () => {
       visibility: "private", privacyRootIssueId: privateId, responsibleUserId: OWNER, assigneeUserId: OWNER,
     });
     const started = await start(seeded, privateId, { agentId: seeded.agents.analyst.id });
-    expect(started.status).toBe(201);
-    const [conversation] = await db.select().from(issues).where(eq(issues.id, started.body.conversation.issueId));
-    expect(conversation).toMatchObject({ visibility: "private" });
+    expect(started.status).toBe(422);
+    expect(started.body.details?.code ?? started.body.code).toBe("routine_from_task_private");
+    expect(await db.select().from(issues).where(eq(issues.originId, privateId))).toHaveLength(0);
     const [open] = await db.select().from(issues).where(eq(issues.id, (await start(seeded, seeded.tasks.weekly.id, { agentId: seeded.agents.analyst.id })).body.conversation.issueId));
     expect(open).toMatchObject({ visibility: "open" });
   });
