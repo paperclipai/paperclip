@@ -116,7 +116,7 @@
     "packages/shared/src/app-definitions/gauge.json": "da9d1f2bd1592689f7363462c7c432d6f20a156f",
     "packages/shared/src/app-definitions/github-code-review-bot.json": "c5897ebcbbbf4f0c2d243574748d4e682f14e57e",
     "packages/shared/src/app-definitions/github-copilot.json": "c98ddd4f362dafe803b991c186f524a3c39e47d1",
-    "packages/shared/src/app-definitions/github.json": "9330e1f675d707fe8bd492bd2756492a55c7de2c",
+    "packages/shared/src/app-definitions/github.json": "18b30f1ba83712780889d9063608bee93848d98e",
     "packages/shared/src/app-definitions/gmail.json": "a0f2dcfaaeca5bf54318d8cad82a0cb188e72bea",
     "packages/shared/src/app-definitions/google-calendar.json": "ab9e93999dd69a5d432ae66195e517c66aad2b74",
     "packages/shared/src/app-definitions/google-chat.json": "f3cf1f37b4b9f0e937b2af2e8d86ebf5df83ac7c",

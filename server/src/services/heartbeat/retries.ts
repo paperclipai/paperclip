@@ -91,6 +91,7 @@ import {
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
+import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION } from "../native-runtime/native-sandbox-disk-full.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -536,6 +537,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
         || ["openai_dot", "muse"].includes(String(parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind))) {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (run.errorCode === NATIVE_SANDBOX_DISK_FULL) {
+      return { outcome: "not_scheduled" as const, reason: NATIVE_SANDBOX_DISK_FULL_ACTION,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "provider_tool_definition_invalid") {
       return { outcome: "not_scheduled" as const,
