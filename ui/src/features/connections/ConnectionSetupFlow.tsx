@@ -577,6 +577,8 @@ export interface ConnectionSetupFlowProps {
   forceNewConnection?: boolean;
   existingConnections?: ConnectionIntentSetupConnection[];
   configuredConnection?: ConnectionIntentSetupConnection;
+  /** Resume this saved draft instead of creating another connection. */
+  resumeConnectionId?: string;
   onUseExisting?: (connectionId: string) => Promise<void>;
   onComplete?: (result: ConnectionSetupCompletion) => void;
   onOAuthDeclined?: () => void;
@@ -604,7 +606,7 @@ export function ConnectionSetupFlow(props: ConnectionSetupFlowProps = {}) {
     }
     return null;
   }, [interactionId, selectedCompanyId, source]);
-  const existingId = props.configuredConnection?.id || searchParams.get("resume") || searchParams.get("reconnect") || draftId;
+  const existingId = props.resumeConnectionId || props.configuredConnection?.id || searchParams.get("resume") || searchParams.get("reconnect") || draftId;
   const requestedDefinition = getConnectableAppDefinition(source ?? "");
   const lookup = Boolean(existingId && (!source || isRemoteMcpConnectorId(source) || isMemoryConnectorId(source) || requestedDefinition?.experimentalFeatureKey));
   const existing = useQuery({ queryKey: ["tools", "connection", existingId], queryFn: () => toolsApi.getConnection(existingId!), enabled: lookup });
@@ -655,6 +657,7 @@ function StandardConnectionSetupFlow({
   forceNewConnection = false,
   existingConnections = [],
   configuredConnection,
+  resumeConnectionId: savedResumeConnectionId,
   onUseExisting,
   onComplete,
   onOAuthDeclined,
@@ -691,7 +694,7 @@ function StandardConnectionSetupFlow({
   const createNewConnection = forceNewConnection || searchParams.get("new") === "1";
   const routeStage = searchParams.get("stage")?.trim() || null;
   const requestedMethodKey = searchParams.get("method")?.trim() || null;
-  const resumeConnectionId = searchParams.get("resume")?.trim() || null;
+  const resumeConnectionId = savedResumeConnectionId || searchParams.get("resume")?.trim() || null;
   const oauthCallbackOutcome = searchParams.get("oauth");
   const oauthCallbackCode = searchParams.get("code");
   const githubInstallationUrl = githubRecoveryUrl(searchParams.get("installation_url"));
@@ -1306,6 +1309,17 @@ function StandardConnectionSetupFlow({
     && resumeConnection?.status === "active"
     ? resumeConnection.id
     : null;
+  const resumeEndpoint = resumeConnection?.config?.url ?? resumeConnection?.transportConfig?.url
+    ?? resumeConnection?.transportConfig?.serverUrl ?? resumeConnection?.config?.serverUrl;
+  const genericResumeMatches = Boolean(!requestedAppKey && resumeConnection && resumeApplication
+    && resumeConnection.applicationId === resumeApplication.id
+    && resumeConnection.companyId === selectedCompanyId && resumeApplication.companyId === selectedCompanyId
+    && resumeConnection.transport === "mcp_remote"
+    && typeof resumeEndpoint === "string" && /^https?:\/\//i.test(resumeEndpoint)
+    && !getConnectableAppDefinition(appConnectionSourceSlug(resumeConnection) ?? "")
+    && !getConnectableAppDefinition(appApplicationSourceSlug(resumeApplication) ?? "")
+    && (resumeConnection.status === "draft" || (resumeConnection.status === "active"
+      && resumeConnection.id === (completedResumeConnectionId ?? completedRouteResumeConnectionId))));
   const resumeSourceMatches = requestedAppKey
     ? retainedResumeMatches({
       requestedAppKey,
@@ -1313,7 +1327,7 @@ function StandardConnectionSetupFlow({
       resumeApplication,
       completedResumeConnectionId: completedResumeConnectionId ?? completedRouteResumeConnectionId,
     })
-    : false;
+    : genericResumeMatches;
   const identityConnection = resumeConnection ?? reconnectConnection;
   useEffect(() => {
     workspaceSelectionRef.current = null;
@@ -1552,7 +1566,7 @@ function StandardConnectionSetupFlow({
         );
         result = await toolsApi.connectApp(selectedCompanyId!, {
           ...genericPayload,
-          ...(reconnectConnectionId ? { reconnectConnectionId } : {}),
+          ...(resumeConnectionId ? { resumeConnectionId } : reconnectConnectionId ? { reconnectConnectionId } : {}),
           // Zapier issues a credential-bearing URL, so its branded setup keeps
           // the compact pasted-URL step. It is still a curated app, though: the
           // gallery identity must reach the server or Browse can only see a
@@ -1866,6 +1880,17 @@ function StandardConnectionSetupFlow({
   }, [resumeConnectionId]);
 
   useEffect(() => {
+    if (!genericResumeMatches || !resumeConnection || hydratedResumeConnectionIdRef.current === resumeConnection.id) return;
+    if (typeof resumeEndpoint !== "string") return;
+    setLinkUrl(resumeEndpoint);
+    setLinkName(resumeConnection.name);
+    setLinkAuthMode(resumeConnection.authKind === "oauth" ? "oauth" : "auto");
+    setStep("key");
+    hydratedResumeConnectionIdRef.current = resumeConnection.id;
+    setHydratedResumeConnectionId(resumeConnection.id);
+  }, [genericResumeMatches, resumeConnection, resumeEndpoint]);
+
+  useEffect(() => {
     const savedConnection = resumeConnection ?? reconnectConnection;
     if (
       !savedConnection
@@ -1953,23 +1978,29 @@ function StandardConnectionSetupFlow({
         connected,
         (catalogEntryId) => Boolean(enabledMap[catalogEntryId]),
       );
-      if (requiredAgentId && installChoice !== "all" && !installAgentIds.has(requiredAgentId)) {
+      const retainingDraft = resumeConnectionId === connected.connectionId;
+      if (requiredAgentId && !retainingDraft && installChoice !== "all" && !installAgentIds.has(requiredAgentId)) {
         throw new Error("Include the requesting agent or choose all agents to continue this task.");
       }
       // The Access step asks one question about agent reach, so profile access
       // and installs are committed to the same target set instead of drifting
       // apart behind two separate wizard screens.
-      const selection: AppAccessSelection = installChoice === "all"
+      let selection: AppAccessSelection = installChoice === "all"
         ? "all_agents"
         : { agentIds: Array.from(installAgentIds) };
+      if (retainingDraft) {
+        const { installs } = await toolsApi.getConnectionInstalls(connected.connectionId);
+        selection = installs.some(install => install.targetType === "company" && install.targetId === selectedCompanyId)
+          ? "all_agents" : { agentIds: installs.filter(install => install.targetType === "agent").map(install => install.targetId) };
+      }
       const finished = await toolsApi.finishApp(selectedCompanyId!, connected.connectionId, {
         enabledCatalogEntryIds: enabledIds,
         askFirstCatalogEntryIds: askFirstIds,
         ...(instructionValue ? { agentInstructions: instructionValue } : {}),
         access: selection,
-        ...(requestedAgentId ? { preserveExistingAccess: true } : {}),
+        ...(requestedAgentId || retainingDraft ? { preserveExistingAccess: true } : {}),
       });
-      await applyAccessInstalls(connected.connectionId);
+      if (!retainingDraft) await applyAccessInstalls(connected.connectionId);
       return finished;
     },
     onSuccess: async (_finished, input) => {
@@ -2137,7 +2168,7 @@ function StandardConnectionSetupFlow({
   if (resumeConnectionId && (
     !connectionsQuery.isFetchedAfterMount
     || galleryQuery.isLoading
-    || !entry
+    || (!entry && !genericResumeMatches)
     || hydratedResumeConnectionId !== resumeConnection?.id
   )) {
     return (
@@ -2479,7 +2510,7 @@ function StandardConnectionSetupFlow({
         onOpenAuthorization={openAuthorizationTab}
         onRetry={() => {
           setOAuthError(null);
-          const connection = connectResult?.connection;
+          const connection = connectResult?.connection ?? (genericResumeMatches ? resumeConnection : null);
           if (connection) {
             setOAuthPhase("starting");
             startOAuth(connection);
@@ -2836,14 +2867,20 @@ function StandardConnectionSetupFlow({
           guidance={linkGuidance}
           matchedEntry={linkMatchedEntry}
           onUseMatchedEntry={linkMatchedEntry ? () => useMatchedGalleryEntry(linkMatchedEntry) : undefined}
-          submitting={connectMutation.isPending || genericOAuthPending}
+          submitting={connectMutation.isPending || oauthStartMutation.isPending || genericOAuthPending}
           defaults={connectionDefaults}
           onBack={backToGallery}
           onConnect={() => {
             setLinkGuidance(null);
-            connectApp();
+            if (genericResumeMatches && resumeConnection?.authKind === "oauth" && linkAuthMode === "oauth"
+              && linkUrl.trim() === resumeEndpoint && !linkOAuthClientId.trim() && !linkOAuthClientSecret
+              && !linkHeaders.some(header => header.name.trim() || header.value.trim())) {
+              setGenericOAuthPending(true);
+              setOAuthPhase("starting");
+              startOAuth(resumeConnection);
+            } else connectApp();
           }}
-          machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId
+          machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId && !resumeConnectionId
             ? { companyId: selectedCompanyId, applicationId: prefill.applicationId, onConnected: acceptMachineSignInResult }
             : null}
         />

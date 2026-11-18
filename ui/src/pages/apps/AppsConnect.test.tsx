@@ -1018,6 +1018,57 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(document.activeElement).toBe(urlInput);
   });
 
+  it.each(["page", "card"])("resumes a custom MCP OAuth draft from %s without a provider slug", async host => {
+    const draft = { id: "custom-oauth-draft", applicationId: "custom-app", companyId: "company-1", name: "Archive",
+      status: "draft", enabled: false, transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user",
+      credentialSource: "paperclip_vault", config: { url: "https://archive.example.test/mcp", oauth: {
+        clientId: "saved-client", clientRegistrationSource: host === "page" ? "manual" : "dcr",
+      } }, transportConfig: {} };
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: draft.applicationId, companyId: "company-1", name: "Archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    getConnectionMock.mockResolvedValue(draft);
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
+    mockSearch.value = host === "page" ? `resume=${draft.id}&intent=custom-intent` : "";
+    await render(undefined, false, host === "card" ? <ConnectionSetupFlow host="dialog" resumeConnectionId={draft.id} interactionId="custom-intent" /> : undefined);
+    await vi.waitFor(() => expect(container.textContent).toContain(draft.config.url));
+    expect(container.textContent).not.toContain("This setup can’t be resumed");
+    await act(async () => { buttonByText("Check link")!.click(); });
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(draft.id, { asCurrentUser: true, interactionId: "custom-intent" }));
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves a custom draft's selected agent audience at completion", async () => {
+    const draft = { id: "custom-draft", applicationId: "custom-app", companyId: "company-1", name: "Archive",
+      status: "draft", enabled: false, transport: "mcp_remote", authKind: "none", credentialPolicy: "shared",
+      config: { url: "https://archive.example.test/mcp" }, transportConfig: {} };
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: draft.applicationId, companyId: "company-1", name: "Archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    getConnectionMock.mockResolvedValue(draft);
+    getConnectionInstallsMock.mockResolvedValue({ installs: [{ targetType: "agent", targetId: "saved-agent" }] });
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, application: { name: "Archive" }, catalog: [], actions: { readOnly: [], canMakeChanges: [] } });
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" resumeConnectionId={draft.id} interactionId="custom-intent" />);
+    await vi.waitFor(() => expect(buttonByText("Check link")).toBeTruthy());
+    await act(async () => { buttonByText("Check link")!.click(); });
+    await vi.waitFor(() => expect(finishAppMock).toHaveBeenCalledWith("company-1", draft.id,
+      expect.objectContaining({ access: { agentIds: ["saved-agent"] }, preserveExistingAccess: true })));
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: draft.id }));
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["foreign-company", "wrong-application", "active"])("refuses a custom draft resume with %s", async mismatch => {
+    const draft = { id: "custom-draft", applicationId: "custom-app", companyId: mismatch === "foreign-company" ? "other-company" : "company-1",
+      name: "Archive", status: mismatch === "active" ? "active" : "draft", transport: "mcp_remote", authKind: "oauth",
+      config: { url: "https://archive.example.test/mcp" }, transportConfig: {} };
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: mismatch === "wrong-application" ? "other-app" : draft.applicationId,
+      companyId: "company-1", name: "Archive", type: "mcp_http" }] });
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    getConnectionMock.mockResolvedValue(draft);
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" resumeConnectionId={draft.id} interactionId="custom-intent" />);
+    await vi.waitFor(() => expect(container.textContent).toContain("This setup can’t be resumed"));
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it.each(["config-url", "transport-url", "transport-serverUrl"] as const)("reloads a generic task reconnect endpoint from %s with selection-only card metadata", async (source) => {
     const endpoint = "https://archive.example.test/mcp";
     const choice = { id: "conn-archive", applicationId: "app-archive", name: "Archive", status: "active" as const, enabled: true };
@@ -3208,7 +3259,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true, workspaceServices: { gmail: "read" } });
   });
 
-  it("resumes a hidden provider draft only after matching its company-visible application", async () => {
+  it.each(["page", "card"])("resumes a hidden provider draft from %s only after matching its company-visible application", async host => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
     mockSearch.value = `source=clickup&resume=${connectionId}`;
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
@@ -3232,7 +3283,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     startOAuthMock.mockResolvedValueOnce(oauthStartResponse(connectionId, "clickup", "https://app.clickup.com/api?state=resumed"));
 
-    await render();
+    if (host === "card") mockSearch.value = "";
+    await render(undefined, false, host === "card"
+      ? <ConnectionSetupFlow host="dialog" serviceSlug="clickup" resumeConnectionId={connectionId} interactionId="saved-draft-intent" /> : undefined);
     await vi.waitFor(() => {
       expect(container.textContent).toContain("Finish connecting ClickUp");
     });
@@ -3243,10 +3296,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(connectAppMock).not.toHaveBeenCalled();
-    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true });
+    expect(startOAuthMock).toHaveBeenCalledWith(connectionId, { asCurrentUser: true, ...(host === "card" ? { interactionId: "saved-draft-intent" } : {}) });
   });
 
-  it("keeps a resumed unauthenticated draft through its finish-time active transition", async () => {
+  it.each([{ agentIds: [] }, { agentIds: ["saved-agent"] }])("keeps a resumed unauthenticated draft and its saved audience $agentIds through activation", async ({ agentIds }) => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
     const draft = {
       id: connectionId,
@@ -3260,6 +3313,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       transportConfig: { sourceTemplateKey: "context7" },
     };
     mockSearch.value = `source=context7&resume=${connectionId}`;
+    getConnectionInstallsMock.mockResolvedValue({ installs: agentIds.map(targetId => ({ targetType: "agent", targetId })) });
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValue({
       applications: [{
@@ -3293,6 +3347,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ resumeConnectionId: connectionId }));
     expect(finishAppMock).toHaveBeenCalledWith("company-1", connectionId, expect.any(Object));
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", connectionId, expect.objectContaining({ access: { agentIds }, preserveExistingAccess: true }));
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
     expect(startOAuthMock).not.toHaveBeenCalled();
     await act(async () => {
       buttonByText("View connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

@@ -935,6 +935,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "permissions-wrong-ack"
             | "resolutions"
             | "resolutions-error-redaction"
+            | "resolutions-readable-error"
             | "resolutions-projected-id"
             | "resolutions-wrong-ack"
             | "resolutions-snapshot-wrong-session"
@@ -1607,7 +1608,12 @@ fn bootstrap_success(
             })
         }
         "tool.resolve" => json!({
-            "resolved":if mode == "resolutions-error-redaction" {
+            "resolved":if mode == "resolutions-readable-error" {
+                params.get("result").is_none()
+                    && params.pointer("/error/message").and_then(Value::as_str)
+                        == Some("The saved connection is not eligible. Call connections_search and pass its connectionId.")
+                    && !params.to_string().contains("violet-internal-diagnostic-4821")
+            } else if mode == "resolutions-error-redaction" {
                 params.get("callId").and_then(Value::as_str) == Some("call-1")
                     && params.get("turnId").and_then(Value::as_str) == Some("turn-1")
                     && params.get("result").is_none()

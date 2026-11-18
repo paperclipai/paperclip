@@ -32,6 +32,15 @@ account must preserve its existing access.
 OAuth popups need a normal sign-in link fallback, and callback messages must be
 verified against durable server state before accepting the request.
 
+Agent-created tool drafts can be handed to the responsible user with
+`connection_request({ service, connectionId })`, without `toolNames`. The card
+resumes the saved draft through the same setup controller as Apps. Search returns
+the draft ID and setup path on its matching method. A request without an ID reuses
+a single draft saved by that responsible user; when several drafts match, the
+agent must choose an ID. The card and its completion retain that connection ID.
+Authenticated connections still use `connectionId` and exact `toolNames` for
+scoped access requests. Drafts require sign-in before they can grant tools.
+
 For chat and email setup, account linking, and ongoing configuration, also follow
 [Chat connector UX](./CHAT-CONNECTOR-UX.md). It covers step navigation, footer
 layout, credential instructions, provider handoffs, identity linking, optional

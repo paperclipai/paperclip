@@ -7797,28 +7797,29 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         return staleTerminalCallResult(call.operationId, settled.unseen, settled.pending);
       }
     }
+    const response = await this.#handler({
+      id: call.callId,
+      method: "item/tool/call",
+      params: {
+        threadId,
+        turnId: this.#turnId,
+        callId: call.callId,
+        tool: call.operationId,
+        arguments: call.input,
+      },
+      ...(call.sourceEventId && call.sourceEventType
+        ? {
+            paperclipTrace: {
+              sourceEventId: call.sourceEventId,
+              sourceEventType: call.sourceEventType,
+            },
+          }
+        : {}),
+    });
     const outcome = unwrapToolResponse(
-      await this.#handler({
-        id: call.callId,
-        method: "item/tool/call",
-        params: {
-          threadId,
-          turnId: this.#turnId,
-          callId: call.callId,
-          tool: call.operationId,
-          arguments: call.input,
-        },
-        ...(call.sourceEventId && call.sourceEventType
-          ? {
-              paperclipTrace: {
-                sourceEventId: call.sourceEventId,
-                sourceEventType: call.sourceEventType,
-              },
-            }
-          : {}),
-      }),
+      response,
       this.options.provider === "acpx" &&
-        (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block"),
+        (response.success === false || call.operationId === "paperclip_finish" || call.operationId === "paperclip_block"),
     );
     return this.#bindSemanticToolOutcome(call, outcome);
   }
