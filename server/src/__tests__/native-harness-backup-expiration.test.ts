@@ -97,6 +97,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     leaseStatus?: string;
     backupAgeDays?: number;
     cleanupActive?: boolean;
+    localHome?: boolean;
   } = {}) {
     if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
     const companyId = input.companyId ?? randomUUID();
@@ -143,15 +144,21 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     }
     const scope = createHash("sha256").update(randomUUID()).digest("hex");
     const root = path.join(stateBase, scope);
-    const current = path.join(root, "failover-backups", "current");
+    const current = input.localHome ? path.join(root, "codex-home") : path.join(root, "failover-backups", "current");
     await fs.mkdir(path.join(root, "control-plane"), { recursive: true });
     await fs.writeFile(
       path.join(root, "control-plane", "control-plane-state.json"),
       JSON.stringify({ identity: { runId: run!.id, normalizedSessionId: sessionId } }),
     );
-    await fs.mkdir(path.join(current, "codex-home"), { recursive: true });
-    await fs.writeFile(path.join(current, "codex-home", "history.jsonl"), "x".repeat(64 * 1024));
-    await fs.writeFile(path.join(current, "manifest.json"), "{}");
+    if (input.localHome) {
+      await fs.mkdir(path.join(current, "skills", "imported", ".paperclip-repository"), { recursive: true });
+      await fs.writeFile(path.join(current, "skills", "imported", ".paperclip-repository", "repo.bin"), "x".repeat(64 * 1024));
+      await fs.writeFile(path.join(current, "manifest.json"), "{}");
+    } else {
+      await fs.mkdir(path.join(current, "codex-home"), { recursive: true });
+      await fs.writeFile(path.join(current, "codex-home", "history.jsonl"), "x".repeat(64 * 1024));
+      await fs.writeFile(path.join(current, "manifest.json"), "{}");
+    }
     const backupAt = new Date(now.getTime() - (input.backupAgeDays ?? 9) * DAY_MS);
     await fs.utimes(current, backupAt, backupAt);
     if (input.cleanupActive) await fs.writeFile(path.join(root, "cleanup-activation.json"), "{}");
@@ -530,6 +537,77 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
 
     expect(await exists(retiring)).toBe(false);
     expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+  });
+
+  it("expires the local provider home of a closed session and clears its resume pointer", async () => {
+    const session = await seedSession({ localHome: true });
+    const result = await service().tick();
+
+    expect(result).toMatchObject({ checked: 1, candidates: 1, expired: 1, clearedTaskSessions: 1, failed: 0 });
+    expect(result.reclaimedBytes).toBeGreaterThan(0);
+    expect(await exists(session.current)).toBe(false);
+    expect(await exists(path.join(session.root, "control-plane", "control-plane-state.json"))).toBe(true);
+    expect((await fs.readdir(session.root)).sort()).toEqual(["control-plane"]);
+    expect(await taskSessionCount(session.agentId)).toBe(0);
+  });
+
+  it("expires a remote backup and the local provider home of one session together", async () => {
+    const session = await seedSession();
+    const home = path.join(session.root, "codex-home");
+    await fs.mkdir(home);
+    await fs.writeFile(path.join(home, "state.sqlite"), "x".repeat(4096));
+    const old = new Date(now.getTime() - 9 * DAY_MS);
+    await fs.utimes(home, old, old);
+
+    expect(await service().tick()).toMatchObject({ candidates: 1, expired: 1, clearedTaskSessions: 1 });
+    expect(await exists(session.current)).toBe(false);
+    expect(await exists(home)).toBe(false);
+  });
+
+  it.each([
+    ["issue_open", { issueStatus: "in_progress" }],
+    ["recently_closed", { closedDaysAgo: 2 }],
+    ["live_run", { runStatus: "running" }],
+    ["recent_backup", { backupAgeDays: 1 }],
+    ["cleanup_active", { cleanupActive: true }],
+  ] as const)("keeps the local provider home when %s", async (reason, input) => {
+    const session = await seedSession({ ...input, localHome: true });
+    const result = await service().tick();
+
+    expect(result).toMatchObject({ candidates: 0, expired: 0, failed: 0 });
+    expect(result.skipped[reason]).toBe(1);
+    expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+    expect(await taskSessionCount(session.agentId)).toBe(1);
+  });
+
+  it("restores a local provider home whose expiry stopped before its final check", async () => {
+    const session = await seedSession({ localHome: true, issueStatus: "in_progress" });
+    const retiring = path.join(session.root, `.retiring-${randomUUID()}`);
+    await fs.rename(session.current, retiring);
+
+    await service().tick();
+
+    expect(await exists(retiring)).toBe(false);
+    expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+  });
+
+  it("finishes removing a local provider home left over from an interrupted expiry", async () => {
+    const session = await seedSession({ localHome: true, issueStatus: "in_progress" });
+    const trash = path.join(session.root, `.expired-${randomUUID()}`);
+    await fs.mkdir(path.join(trash, "skills"), { recursive: true });
+
+    await service().tick();
+
+    expect(await exists(trash)).toBe(false);
+    expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+  });
+
+  it("schedules the retention deadline of a local provider home", async () => {
+    const session = await seedSession({ localHome: true });
+    const entry = await service().reconcileBackup(session.scope);
+
+    expect(entry).toMatchObject({ companyId: session.companyId, agentId: session.agentId });
+    expect(entry?.dueAt).toBeLessThanOrEqual(Date.now());
   });
 
   it("drops an unconfirmed retired backup once a newer backup exists", async () => {
