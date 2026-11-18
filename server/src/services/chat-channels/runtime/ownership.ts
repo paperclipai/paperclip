@@ -30,6 +30,7 @@ const DISCORD_GATEWAY_LEASE_WAIT_MS = 20_000;
 const DISCORD_GATEWAY_LEASE_POLL_MS = 100;
 export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
   const { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks } = options;
+  const finiteLeaseOwners = new Map<DiscordGatewayOwnership, Promise<void>>();
   function discordGatewayNotOwnedError() {
     return conflict(
       "Another Paperclip server owns this Discord Gateway connection; retry shortly",
@@ -83,7 +84,16 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
       clearInterval(ownership.renewTimer);
       ownership.renewTimer = null;
     }
+    const finiteBody = finiteLeaseOwners.get(ownership);
     ownership.stopPromise = (async () => {
+      if (finiteBody) {
+        // Renewal loss can enter stop while this finite operation is still
+        // retaining a real provider result. Fence now, release only after its
+        // body and the already-started renewal have both settled.
+        await finiteBody;
+        const renewal = ownership.renewal;
+        if (renewal) await renewal;
+      }
       if (
         stopOptions.removeRuntime !== false &&
         ownership.context.endpointRuntime &&
@@ -108,13 +118,15 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
       }
       if (!options.isShuttingDown() && stopOptions.notifyStopped !== false) options.onStopped?.(ownership.endpointId);
     })();
-    discordGatewayStopTasks.add(ownership.stopPromise);
-    void ownership.stopPromise.finally(() => {
-      if (ownership.stopPromise) {
-        discordGatewayStopTasks.delete(ownership.stopPromise);
-      }
+    const attempt = ownership.stopPromise;
+    discordGatewayStopTasks.add(attempt);
+    void attempt.then(() => { discordGatewayStopTasks.delete(attempt); }, () => {
+      discordGatewayStopTasks.delete(attempt);
+      // Preserve this finite owner for an ordinary same-owner cleanup retry;
+      // never retain a rejected promise as a fake completed stop receipt.
+      if (finiteBody && ownership.stopPromise === attempt) ownership.stopPromise = null;
     });
-    return ownership.stopPromise;
+    return attempt;
   }
 
   function canRenewLocalOwnership(ownership: DiscordGatewayOwnership): boolean {
@@ -126,6 +138,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
     ) {
       return false;
     }
+    if (finiteLeaseOwners.has(ownership)) return true;
     return ownership.context.endpointRuntime === undefined
       ? options.isRuntimeInitializing(ownership.endpointId, ownership.context)
       : runtime.get(ownership.endpointId) === ownership.context.endpointRuntime;
@@ -321,6 +334,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
   ): Promise<DiscordGatewayOwnership | null> {
     const receiverLeaseKey = leaseKeyForProvider(endpoint.provider)!;
     const local = discordGatewayOwnerships.get(endpoint.id);
+    if (local && finiteLeaseOwners.has(local)) return null;
     if (
       local &&
       !local.stopping &&
@@ -393,6 +407,38 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
     }
   }
 
+  /** Normal renewable receiver lease for a finite, allocation-free operation.
+   * Never stops/replaces an existing local runtime merely to acquire authority. */
+  async function withReceiverLease<T>(endpoint: EndpointRow, context: RuntimeContext,
+    work: (ownership: DiscordGatewayOwnership) => Promise<T>): Promise<T> {
+    const previous = discordGatewayOwnerships.get(endpoint.id);
+    if (previous?.stopping && finiteLeaseOwners.has(previous)) {
+      // A failed cleanup still owns this exact token; finish that same stop
+      // before another normal operation can acquire new business authority.
+      await stopDiscordGatewayOwnership(previous, { removeRuntime: false, notifyStopped: false });
+      finiteLeaseOwners.delete(previous); previous.context.discordGatewayOwned = false;
+    }
+    if (discordGatewayOwnerships.has(endpoint.id) || runtime.get(endpoint.id)) throw discordGatewayNotOwnedError();
+    const owned = await acquireDiscordGatewayOwnership(endpoint, context, false);
+    if (!owned) throw discordGatewayNotOwnedError();
+    let settled!: () => void;
+    finiteLeaseOwners.set(owned, new Promise<void>(resolve => { settled = resolve; }));
+    context.discordGatewayOwned = true;
+    let result!: T;
+    let primary: { error: unknown } | undefined;
+    try { result = await work(owned); }
+    catch (error) { primary = { error }; }
+    finally { settled(); }
+    try { await stopDiscordGatewayOwnership(owned, { removeRuntime: false, notifyStopped: false }); }
+    catch (cleanup) {
+      if (primary) throw new AggregateError([primary.error, cleanup], "Receiver operation and exact lease cleanup failed");
+      throw cleanup;
+    }
+    finiteLeaseOwners.delete(owned); context.discordGatewayOwned = false;
+    if (primary) throw primary.error;
+    return result;
+  }
+
   function discordGatewayRuntimeIsCurrent(
     endpointId: string,
     context: RuntimeContext,
@@ -408,5 +454,5 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
       runtime.get(endpointId) === context.endpointRuntime
     );
   }
-  return { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent };
+  return { withReceiverLease, discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent };
 }

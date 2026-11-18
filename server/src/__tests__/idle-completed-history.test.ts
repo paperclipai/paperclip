@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import net from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as tables from "@paperclipai/db";
 import { isRuntimeExposureAppPort } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -922,8 +922,12 @@ const DELETE_METHOD = "DELETE" as never;
       expect(receipts).toHaveLength(4);
       expect(await blockedActionKind("speko_tool_setup")).toBe(false);
       expect(await blockedActionKind("speko_lifecycle_setup")).toBe(false);
-      const [activity] = await db.select().from(tables.activityLog).where(eq(tables.activityLog.action,
-        defaultsFailure ? "chat_endpoint.reconnected" : "chat_endpoint.credentials_verified"));
+      const [activity] = await db.select().from(tables.activityLog).where(and(
+        eq(tables.activityLog.companyId, f.companyId),
+        eq(tables.activityLog.entityType, "tool_connection"),
+        eq(tables.activityLog.entityId, endpoint.connectionId),
+        eq(tables.activityLog.action, defaultsFailure ? "chat_endpoint.reconnected" : "chat_endpoint.credentials_verified"),
+      ));
       expect(activity.details).toMatchObject({ endpointId: endpoint.id, provider: "speko" });
     } finally {
       await chat.shutdown();

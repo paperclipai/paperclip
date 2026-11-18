@@ -7,6 +7,10 @@ import type {
 import { PhotonError } from "./cloud.js";
 import { PhotonState } from "./state.js";
 
+export type PhotonFailureResponsibility = { kind: "recorded" } | { kind: "obsolete" } | { kind: "retired-local" };
+/** Only the receiver close owner supplies this after all physical joins succeed. */
+export type PhotonFailureCleanup = { localClosed: true };
+
 interface Checkpoint {
   schema: 1;
   lineId: string;
@@ -22,7 +26,7 @@ export interface PhotonReceiverOptions {
   /** Renewal verifies both the selected identity and the current endpoint lease. */
   assertOwned(): Promise<void>;
   admit(event: LiveEvent): Promise<void>;
-  failure(error: unknown): Promise<void>;
+  failure(error: unknown, cleanup?: PhotonFailureCleanup): Promise<void | PhotonFailureResponsibility>;
   /** Production persists the cursor under the same transaction as its lease fence. */
   commitCheckpoint?(sequence: number): Promise<void>;
 }
@@ -33,6 +37,11 @@ export class PhotonReceiver {
   private stopped = false;
   private streams: Array<TypedEventStream<LiveEvent>> = [];
   private running?: Promise<void>;
+  private closing?: Promise<void>;
+  private readonly consumers: Promise<void>[] = [];
+  private readonly reads = new Set<Promise<void>>();
+  private readonly closeFailures = new Map<object, unknown>();
+  private readonly failureDebt = new Map<unknown, unknown>();
   private requested = false;
   private catchUpStream?: TypedEventStream<PhotonRecoveryEvent>;
   private timer?: ReturnType<typeof setInterval>;
@@ -47,44 +56,60 @@ export class PhotonReceiver {
       client.polls.subscribeEvents(),
     ];
     for (const stream of this.streams) {
-      void (async () => {
+      const consumer = (async () => {
         try {
           for await (const _event of stream) {
             if (this.stopped) break;
             this.request();
           }
           if (!this.stopped)
-            await this.options.failure(
+            await this.report(
               new PhotonError("network", "Photon event stream disconnected"),
             );
         } catch (error) {
-          if (!this.stopped) await this.options.failure(error);
+          if (!this.stopped) await this.report(error);
         }
-      })().catch(() => {});
+      })();
+      this.consumers.push(consumer);
+      void consumer.catch(() => {});
     }
     this.timer = setInterval(() => this.request(), 15_000);
     this.timer.unref();
     this.request();
   }
   private request(): void {
-    if (this.stopped) return;
+    if (this.closing || (this.stopped && this.failureDebt.size === 0)) return;
     this.requested = true;
     if (this.running) return;
     this.running = (async () => {
+      if (this.stopped) {
+        // The existing reader cadence owns reporting recovery, never new
+        // intake, until the current callback durably accepts responsibility.
+        this.requested = false;
+        await this.retryFailureDebt();
+        if (this.failureDebt.size === 0 && this.timer) clearInterval(this.timer);
+        return;
+      }
       while (this.requested && !this.stopped) {
         this.requested = false;
         await this.catchUp();
       }
     })()
       .catch(async (error) => {
-        if (!this.stopped) await this.options.failure(error);
+        if (!this.stopped) await this.report(error);
       })
       .finally(() => {
         this.running = undefined;
       });
   }
   /** Exposed for deterministic recovery tests, never an external route. */
-  async catchUp(): Promise<void> {
+  catchUp(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    const reading = this.catchUpOwned(); this.reads.add(reading);
+    void reading.finally(() => this.reads.delete(reading)).catch(() => {});
+    return reading;
+  }
+  private async catchUpOwned(): Promise<void> {
     const { state, lineId, client, assertOwned, admit, intakeAfter } =
       this.options;
     await assertOwned();
@@ -108,6 +133,7 @@ export class PhotonReceiver {
     const shared = this.options.allocation === "shared";
     let sequence = original?.sequence;
     let batchEvents = 0;
+    if (this.stopped) return;
     const stream =
       this.options.catchUp?.(sequence) ?? client.events.catchUp(sequence);
     this.catchUpStream = stream;
@@ -116,6 +142,7 @@ export class PhotonReceiver {
       for await (const event of stream) {
         if (this.stopped) return;
         await assertOwned();
+        if (this.stopped) return;
         if (event.type === "catchup.complete") {
           if (
             !Number.isSafeInteger(event.headSequence) ||
@@ -161,7 +188,10 @@ export class PhotonReceiver {
               "invalid_response",
               "Photon event timestamp is invalid",
             );
-          if (occurredAt >= intakeAfter) await admit(event);
+          // Membership must reach the normal fenced control-state owner even
+          // when message/poll history predates the useful-intake boundary.
+          if (event.type === "group.changed" || occurredAt >= intakeAfter)
+            await admit(event);
         }
         // admission must durably store or classify even irrelevant events.
         if (!shared) await this.checkpoint(event.sequence);
@@ -173,7 +203,7 @@ export class PhotonReceiver {
           "Photon catch-up ended before its checkpoint barrier",
         );
     } finally {
-      await stream.close();
+      await this.closeStream(stream);
       if (this.catchUpStream === stream) this.catchUpStream = undefined;
     }
   }
@@ -188,12 +218,60 @@ export class PhotonReceiver {
     );
   }
 
-  async close(): Promise<void> {
-    this.stopped = true;
+  private async report(error: unknown): Promise<void> {
+    try {
+      const receipt = await this.options.failure(error);
+      if (receipt?.kind !== "recorded") throw new Error("Photon failure responsibility was not recorded by the current owner");
+    }
+    catch (reportingError) {
+      // Preserve the original error and pause intake. Keep the existing
+      // reader interval solely for serialized reporting retry: persistence
+      // recovery must not depend on somebody else calling close().
+      this.failureDebt.set(error, reportingError);
+      this.stopped = true;
+      this.requested = false;
+    }
+  }
+  private async retryFailureDebt(localClosed = false): Promise<void> {
+    for (const [error] of this.failureDebt) {
+      try {
+        const receipt = await this.options.failure(error, localClosed ? { localClosed: true } : undefined);
+        if (receipt?.kind === "recorded" || localClosed && receipt?.kind === "retired-local") this.failureDebt.delete(error);
+        // A void/stale callback is not proof that current responsibility was
+        // durably accepted. Keep the original debt for explicit owner repair.
+      } catch (reportingError) { this.failureDebt.set(error, reportingError); }
+    }
+  }
+  private async closeStream(stream: { close(): Promise<void> }): Promise<void> {
+    try { await stream.close(); this.closeFailures.delete(stream); }
+    catch (error) { this.closeFailures.set(stream, error); throw error; }
+  }
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    const closing = this.closeOwned(); this.closing = closing;
+    void closing.catch(() => { if (this.closing === closing) this.closing = undefined; });
+    return closing;
+  }
+  private async closeOwned(): Promise<void> {
+    this.stopped = true; this.requested = false;
     if (this.timer) clearInterval(this.timer);
-    await this.catchUpStream?.close();
-    await Promise.allSettled(this.streams.map((stream) => stream.close()));
-    // client.close interrupts a blocked catch-up RPC during runtime shutdown.
+    const streams = [...this.streams, ...(this.catchUpStream ? [this.catchUpStream] : [])];
+    const closed = await Promise.allSettled([
+      ...streams.map(stream => this.closeStream(stream)),
+      Promise.resolve().then(() => this.options.client.close()),
+    ]);
+    const joined = await Promise.allSettled([...this.consumers, ...this.reads, ...(this.running ? [this.running] : [])]);
+    // Retirement responsibility is distinct from a current receive/reporting
+    // receipt, and can settle debt only after these actual owned joins.
+    await this.retryFailureDebt(closed.every(result => result.status === "fulfilled")
+      && joined.every(result => result.status === "fulfilled") && this.closeFailures.size === 0);
+    const errors = [...new Set([
+      ...this.closeFailures.values(),
+      ...[...this.failureDebt].map(([error, reportingError]) => new AggregateError([error, reportingError], "Photon failure responsibility remains unconfirmed")),
+      ...closed.flatMap(result => result.status === "rejected" ? [result.reason] : []),
+      ...joined.flatMap(result => result.status === "rejected" ? [result.reason] : []),
+    ])];
+    if (errors.length) throw new AggregateError(errors, "Photon receiver shutdown remains unconfirmed");
   }
 }
 

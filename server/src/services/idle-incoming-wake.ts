@@ -1,3 +1,4 @@
+import { readPhotonIdleIncomingProof } from "./chat-channels/imessage-photon/idle-incoming.js";
 import { idleChatHistoryChecksForOwner } from "./chat-channels/idle-history-proof.js";
 import { readSlackIdleIncomingProof, slackHasRegisteredOptionsAtCurrentBuild } from "./chat-channels/slack/idle-incoming.js";
 import { readIdleMcpSleepProof, type IdleMcpSleepProof } from "./public-mcp/idle-sleep-proof.js";
@@ -116,6 +117,14 @@ export async function readIdleIncomingWakeProof(
       proof.connectionIds.push(...slack.connectionIds);
       if (slack.completedActionIds.length) proof.completedActionIds = slack.completedActionIds;
     }
+  }
+  if (capability.routes.includes("photon-broker-events-v1")) {
+    const config = paperclipCloudConnectorConfigFromEnv();
+    const photon = await readPhotonIdleIncomingProof(tx, { capabilities: input.capabilities!,
+      identity: config ? { instanceId: config.instanceId, environment: config.environment } : undefined,
+      receiverOwner: input.receiverOwner as Db, receiverBound: hasConnectionEventWakeReceiver(input.receiverOwner), beforeRead, remaining, inspectionNow });
+    if (!photon) throw new Error("Photon incoming ownership is not settled");
+    proof.endpointIds.push(...photon.endpointIds); proof.connectionIds.push(...photon.connectionIds);
   }
   if (capability.routes.includes("mcp-oauth-http-v1")) {
     const stackId = process.env.PAPERCLIP_CLOUD_STACK_ID;

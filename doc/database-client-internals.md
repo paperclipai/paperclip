@@ -179,3 +179,20 @@ it stops with that message on an older runtime:
 cd packages/db
 TSX_DISABLE_CACHE=1 node --expose-gc --import tsx scripts/benchmark-transaction-allocation.ts
 ```
+
+### Published PostgreSQL driver
+
+`@paperclipai/db` bundles its exact reviewed `postgres` version. The normal
+`scripts/prepare-bundled-package.mjs` staging step applies the tracked driver
+patch before packing the package. This delivers the same connection lifecycle
+and queue fixes to npm consumers that the workspace receives through pnpm.
+When updating the driver, update its exact version and tracked patch together,
+then verify the staged and normally installed driver payloads.
+
+Both the DB package and the CLI bundle the matching exact Drizzle package
+beside this driver. The CLI needs this pair because its build includes DB
+source. Keep `postgres` and Drizzle external to the CLI JavaScript build.
+The installed Drizzle PostgreSQL adapter resolves its driver from its own
+package location. A hoisted ORM cannot use a driver nested in another package.
+The normal staging owner therefore keeps the pair together in each tarball.
+The publish-manifest generator retains the CLI bundle declaration.

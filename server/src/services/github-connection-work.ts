@@ -13,10 +13,15 @@ export function registerGitHubConnectionEventWork(db: Db, coordinator: Coordinat
   service: ReturnType<typeof githubConnectionEventService>, canRun: () => boolean) {
   const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.connectionEvents, {
     retryMs: 5_000, minimumSpacingMs: 5_000, notificationCoalesceMs: 1_000, canRun,
+    onBlocked: () => service.declineEventWakeEnrollment(),
     run: () => service.pollOnce({ forDelivery: true }),
     next: async () => service.nextPollAt(),
   });
-  const stops = [registerConnectionEventWake(db, worker.wake)];
+  const stops = [registerConnectionEventWake(db, worker.wake, { canRun, join: signal => {
+    const joined = service.joinEventWakeEnrollment(signal);
+    worker.wake();
+    return joined;
+  } })];
   return { ...worker, stop: async () => { for (const stop of stops) stop(); await worker.stop(); } };
 }
 export function registerGitHubConnectionContinuityWork(db: Db, coordinator: Coordinator,

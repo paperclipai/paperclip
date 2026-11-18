@@ -1,3 +1,5 @@
+import { PhotonTransportResources } from "./transport-resources.js";
+import { assertInstalledPhotonTransportJoin } from "./owned-client.js";
 import { Client, credentials, Metadata, status } from "@grpc/grpc-js";
 import {
   decodeCatchUpEvent,
@@ -111,13 +113,19 @@ export function decodePhotonRecoveryFrame(
 
 export class PhotonRecoveryTransport {
   private readonly client: Client;
+  private readonly resources = new PhotonTransportResources();
+  private closing?: Promise<void>;
+  private joined = false;
   constructor(
     private readonly authentication: PhotonLineAuthentication,
     client?: Client,
   ) {
+    if (!client) assertInstalledPhotonTransportJoin();
     this.client =
       client ??
       new Client(authentication.address, credentials.createSsl(), {
+        "grpc.use_local_subchannel_pool": 1,
+        "grpc-node.transport_owner": this.resources,
         "grpc.max_receive_message_length": MAX_ATTACHMENT_BYTES + 1024 * 1024,
       });
   }
@@ -172,7 +180,18 @@ export class PhotonRecoveryTransport {
     }
     return new TypedEventStream(receive(), async () => controller.abort());
   }
-  close(): void {
-    this.client.close();
+  close(): Promise<void> {
+    if (this.joined) return Promise.resolve();
+    if (this.closing) return this.closing;
+    this.resources.beginClose();
+    const attempt = (async () => {
+      const errors: unknown[] = [];
+      try { this.client.close(); } catch (error) { errors.push(error); }
+      try { await this.resources.close(); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, "Photon CatchUp client and physical transport close remain incomplete");
+    })();
+    this.closing = attempt;
+    void attempt.then(() => { this.joined = true; }, () => { if (this.closing === attempt) this.closing = undefined; });
+    return attempt;
   }
 }

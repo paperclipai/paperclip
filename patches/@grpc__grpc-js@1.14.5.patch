@@ -1,0 +1,3938 @@
+--- a/build/src/channel-credentials.js
++++ b/build/src/channel-credentials.js
+@@ -166,7 +166,8 @@
+     return connectionOptions;
+ }
+ class SecureConnectorImpl {
+-    constructor(connectionOptions, callCredentials) {
++    constructor(connectionOptions, callCredentials, transportOwner) {
++        this.transportOwner = transportOwner;
+         this.connectionOptions = connectionOptions;
+         this.callCredentials = callCredentials;
+     }
+@@ -187,6 +188,10 @@
+             tlsSocket.on('error', (error) => {
+                 reject(error);
+             });
++            if (this.transportOwner) {
++                tlsSocket.once('close', () => reject(new Error('Owned TLS socket closed before handshake completion')));
++                this.transportOwner.socket(tlsSocket);
++            }
+         });
+     }
+     waitForReady() {
+@@ -221,7 +226,7 @@
+     }
+     _createSecureConnector(channelTarget, options, callCredentials) {
+         const connectionOptions = getConnectionOptions(this.secureContext, this.verifyOptions, channelTarget, options);
+-        return new SecureConnectorImpl(connectionOptions, callCredentials !== null && callCredentials !== void 0 ? callCredentials : call_credentials_1.CallCredentials.createEmpty());
++        return new SecureConnectorImpl(connectionOptions, callCredentials !== null && callCredentials !== void 0 ? callCredentials : call_credentials_1.CallCredentials.createEmpty(), options['grpc-node.transport_owner']);
+     }
+ }
+ class CertificateProviderChannelCredentialsImpl extends ChannelCredentials {
+--- a/build/src/channel-options.d.ts
++++ b/build/src/channel-options.d.ts
+@@ -2,7 +2,16 @@
+ /**
+  * An interface that contains options used when initializing a Channel instance.
+  */
++/** Opt-in ownership for a private channel pool. Default channels are unchanged. */
++export interface TransportResourceOwner {
++  readonly signal: AbortSignal;
++  pending(operation: Promise<unknown>): void;
++  socket(socket: import('net').Socket): void;
++  session(session: import('http2').ClientHttp2Session): void;
++  request(request: import('http').ClientRequest): void;
++}
+ export interface ChannelOptions {
++    'grpc-node.transport_owner'?: TransportResourceOwner;
+     'grpc.ssl_target_name_override'?: string;
+     'grpc.primary_user_agent'?: string;
+     'grpc.secondary_user_agent'?: string;
+@@ -59,6 +68,7 @@
+     'grpc.initial_reconnect_backoff_ms': boolean;
+     'grpc.max_reconnect_backoff_ms': boolean;
+     'grpc.use_local_subchannel_pool': boolean;
++    'grpc-node.transport_owner': boolean;
+     'grpc.max_send_message_length': boolean;
+     'grpc.max_receive_message_length': boolean;
+     'grpc.enable_http_proxy': boolean;
+--- a/build/src/channel-options.js
++++ b/build/src/channel-options.js
+@@ -35,6 +35,7 @@
+     'grpc.initial_reconnect_backoff_ms': true,
+     'grpc.max_reconnect_backoff_ms': true,
+     'grpc.use_local_subchannel_pool': true,
++    'grpc-node.transport_owner': true,
+     'grpc.max_send_message_length': true,
+     'grpc.max_receive_message_length': true,
+     'grpc.enable_http_proxy': true,
+--- a/build/src/http_proxy.js
++++ b/build/src/http_proxy.js
+@@ -226,13 +226,26 @@
+                 Buffer.from(channelOptions['grpc.http_connect_creds']).toString('base64');
+     }
+     options.headers = headers;
++    if (channelOptions['grpc-node.transport_owner']) options.signal = channelOptions['grpc-node.transport_owner'].signal;
+     const proxyAddressString = (0, subchannel_address_1.subchannelAddressToString)(address);
+     trace('Using proxy ' + proxyAddressString + ' to connect to ' + options.path);
+     return new Promise((resolve, reject) => {
+         const request = http.request(options);
++        const owner = channelOptions['grpc-node.transport_owner'];
++        if (owner) {
++            request.once('socket', socket => owner.socket(socket));
++            request.once('close', () => reject(new Error('Owned proxy request closed')));
++            owner.request(request);
++        }
+         request.once('connect', (res, socket, head) => {
+             request.removeAllListeners();
+             socket.removeAllListeners();
++            if (owner) {
++                owner.request(request);
++                owner.socket(socket);
++                request.once('error', reject);
++                request.once('close', () => reject(new Error('Owned proxy request closed')));
++            }
+             if (res.statusCode === 200) {
+                 trace('Successfully connected to ' +
+                     options.path +
+@@ -262,6 +275,7 @@
+         });
+         request.once('error', err => {
+             request.removeAllListeners();
++            if (owner) owner.request(request);
+             (0, logging_1.log)(constants_1.LogVerbosity.ERROR, 'Failed to connect to proxy ' +
+                 proxyAddressString +
+                 ' with error ' +
+--- a/build/src/transport.js
++++ b/build/src/transport.js
+@@ -535,7 +535,8 @@
+         if (this.isShutdown) {
+             return Promise.reject();
+         }
+-        if (secureConnectResult.socket.closed) {
++        options['grpc-node.transport_owner']?.signal.throwIfAborted();
++            if (secureConnectResult.socket.closed) {
+             return Promise.reject('Connection closed before starting HTTP/2 handshake');
+         }
+         return new Promise((resolve, reject) => {
+@@ -613,6 +614,7 @@
+                     }
+                 }
+                 session.removeAllListeners();
++            options['grpc-node.transport_owner']?.session(session);
+                 secureConnectResult.socket.removeListener('close', closeHandler);
+                 secureConnectResult.socket.removeListener('error', errorHandler);
+                 resolve(new Http2Transport(session, address, options, remoteName));
+@@ -622,10 +624,13 @@
+             session.once('error', errorHandler);
+             secureConnectResult.socket.once('close', closeHandler);
+             secureConnectResult.socket.once('error', errorHandler);
++            options['grpc-node.transport_owner']?.session(session);
+         });
+     }
+     tcpConnect(address, options) {
+-        return (0, http_proxy_1.getProxiedConnection)(address, options).then(proxiedSocket => {
++        options['grpc-node.transport_owner']?.signal.throwIfAborted();
++            return (0, http_proxy_1.getProxiedConnection)(address, options).then(proxiedSocket => {
++            options['grpc-node.transport_owner']?.signal.throwIfAborted();
+             if (proxiedSocket) {
+                 return proxiedSocket;
+             }
+@@ -644,11 +649,19 @@
+                     });
+                     socket.once('close', closeCallback);
+                     socket.once('error', errorCallback);
++            options['grpc-node.transport_owner']?.socket(socket);
+                 });
+             }
+         });
+     }
+-    async connect(address, secureConnector, options) {
++    connect(address, secureConnector, options) {
++        const owner = options['grpc-node.transport_owner'];
++        if (owner && options['grpc.use_local_subchannel_pool'] !== 1) return Promise.reject(new Error('Owned transport requires a private subchannel pool'));
++        const operation = this.connectOwned(address, secureConnector, options);
++        owner?.pending(operation);
++        return operation;
++    }
++    async connectOwned(address, secureConnector, options) {
+         if (this.isShutdown) {
+             return Promise.reject();
+         }
+@@ -659,16 +672,20 @@
+             if (this.traceEnabled) {
+                 this.trace(addressString + ' Waiting for secureConnector to be ready');
+             }
++            options['grpc-node.transport_owner']?.signal.throwIfAborted();
+             await secureConnector.waitForReady();
++            options['grpc-node.transport_owner']?.signal.throwIfAborted();
+             if (this.traceEnabled) {
+                 this.trace(addressString + ' secureConnector is ready');
+             }
+             tcpConnection = await this.tcpConnect(address, options);
++            options['grpc-node.transport_owner']?.signal.throwIfAborted();
+             tcpConnection.setNoDelay();
+             if (this.traceEnabled) {
+                 this.trace(addressString + ' Established TCP connection');
+             }
+             secureConnectResult = await secureConnector.connect(tcpConnection);
++            options['grpc-node.transport_owner']?.signal.throwIfAborted();
+             if (this.traceEnabled) {
+                 this.trace(addressString + ' Established secure connection');
+             }
+--- a/src/channel-credentials.ts
++++ b/src/channel-credentials.ts
+@@ -1,523 +1,527 @@
+-/*
+- * Copyright 2019 gRPC authors.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- *
+- */
+-
+-import {
+-  ConnectionOptions,
+-  createSecureContext,
+-  PeerCertificate,
+-  SecureContext,
+-  checkServerIdentity,
+-  connect as tlsConnect
+-} from 'tls';
+-
+-import { CallCredentials } from './call-credentials';
+-import { CIPHER_SUITES, getDefaultRootsData } from './tls-helpers';
+-import { CaCertificateUpdate, CaCertificateUpdateListener, CertificateProvider, IdentityCertificateUpdate, IdentityCertificateUpdateListener } from './certificate-provider';
+-import { Socket } from 'net';
+-import { ChannelOptions } from './channel-options';
+-import { GrpcUri, parseUri, splitHostPort } from './uri-parser';
+-import { getDefaultAuthority } from './resolver';
+-import { log } from './logging';
+-import { LogVerbosity } from './constants';
+-
+-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+-function verifyIsBufferOrNull(obj: any, friendlyName: string): void {
+-  if (obj && !(obj instanceof Buffer)) {
+-    throw new TypeError(`${friendlyName}, if provided, must be a Buffer.`);
+-  }
+-}
+-
+-/**
+- * A callback that will receive the expected hostname and presented peer
+- * certificate as parameters. The callback should return an error to
+- * indicate that the presented certificate is considered invalid and
+- * otherwise returned undefined.
+- */
+-export type CheckServerIdentityCallback = (
+-  hostname: string,
+-  cert: PeerCertificate
+-) => Error | undefined;
+-
+-/**
+- * Additional peer verification options that can be set when creating
+- * SSL credentials.
+- */
+-export interface VerifyOptions {
+-  /**
+-   * If set, this callback will be invoked after the usual hostname verification
+-   * has been performed on the peer certificate.
+-   */
+-  checkServerIdentity?: CheckServerIdentityCallback;
+-  rejectUnauthorized?: boolean;
+-}
+-
+-export interface SecureConnectResult {
+-  socket: Socket;
+-  secure: boolean;
+-}
+-
+-export interface SecureConnector {
+-  connect(socket: Socket): Promise<SecureConnectResult>;
+-  waitForReady(): Promise<void>;
+-  getCallCredentials(): CallCredentials;
+-  destroy(): void;
+-}
+-
+-/**
+- * A class that contains credentials for communicating over a channel, as well
+- * as a set of per-call credentials, which are applied to every method call made
+- * over a channel initialized with an instance of this class.
+- */
+-export abstract class ChannelCredentials {
+-  /**
+-   * Returns a copy of this object with the included set of per-call credentials
+-   * expanded to include callCredentials.
+-   * @param callCredentials A CallCredentials object to associate with this
+-   * instance.
+-   */
+-  compose(callCredentials: CallCredentials): ChannelCredentials {
+-    return new ComposedChannelCredentialsImpl(this, callCredentials);
+-  }
+-
+-  /**
+-   * Indicates whether this credentials object creates a secure channel.
+-   */
+-  abstract _isSecure(): boolean;
+-
+-  /**
+-   * Check whether two channel credentials objects are equal. Two secure
+-   * credentials are equal if they were constructed with the same parameters.
+-   * @param other The other ChannelCredentials Object
+-   */
+-  abstract _equals(other: ChannelCredentials): boolean;
+-
+-  abstract _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector;
+-
+-  /**
+-   * Return a new ChannelCredentials instance with a given set of credentials.
+-   * The resulting instance can be used to construct a Channel that communicates
+-   * over TLS.
+-   * @param rootCerts The root certificate data.
+-   * @param privateKey The client certificate private key, if available.
+-   * @param certChain The client certificate key chain, if available.
+-   * @param verifyOptions Additional options to modify certificate verification
+-   */
+-  static createSsl(
+-    rootCerts?: Buffer | null,
+-    privateKey?: Buffer | null,
+-    certChain?: Buffer | null,
+-    verifyOptions?: VerifyOptions
+-  ): ChannelCredentials {
+-    verifyIsBufferOrNull(rootCerts, 'Root certificate');
+-    verifyIsBufferOrNull(privateKey, 'Private key');
+-    verifyIsBufferOrNull(certChain, 'Certificate chain');
+-    if (privateKey && !certChain) {
+-      throw new Error(
+-        'Private key must be given with accompanying certificate chain'
+-      );
+-    }
+-    if (!privateKey && certChain) {
+-      throw new Error(
+-        'Certificate chain must be given with accompanying private key'
+-      );
+-    }
+-    const secureContext = createSecureContext({
+-      ca: rootCerts ?? getDefaultRootsData() ?? undefined,
+-      key: privateKey ?? undefined,
+-      cert: certChain ?? undefined,
+-      ciphers: CIPHER_SUITES,
+-    });
+-    return new SecureChannelCredentialsImpl(secureContext, verifyOptions ?? {});
+-  }
+-
+-  /**
+-   * Return a new ChannelCredentials instance with credentials created using
+-   * the provided secureContext. The resulting instances can be used to
+-   * construct a Channel that communicates over TLS. gRPC will not override
+-   * anything in the provided secureContext, so the environment variables
+-   * GRPC_SSL_CIPHER_SUITES and GRPC_DEFAULT_SSL_ROOTS_FILE_PATH will
+-   * not be applied.
+-   * @param secureContext The return value of tls.createSecureContext()
+-   * @param verifyOptions Additional options to modify certificate verification
+-   */
+-  static createFromSecureContext(
+-    secureContext: SecureContext,
+-    verifyOptions?: VerifyOptions
+-  ): ChannelCredentials {
+-    return new SecureChannelCredentialsImpl(secureContext, verifyOptions ?? {});
+-  }
+-
+-  /**
+-   * Return a new ChannelCredentials instance with no credentials.
+-   */
+-  static createInsecure(): ChannelCredentials {
+-    return new InsecureChannelCredentialsImpl();
+-  }
+-}
+-
+-class InsecureChannelCredentialsImpl extends ChannelCredentials {
+-  constructor() {
+-    super();
+-  }
+-
+-  override compose(callCredentials: CallCredentials): never {
+-    throw new Error('Cannot compose insecure credentials');
+-  }
+-  _isSecure(): boolean {
+-    return false;
+-  }
+-  _equals(other: ChannelCredentials): boolean {
+-    return other instanceof InsecureChannelCredentialsImpl;
+-  }
+-  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
+-    return {
+-      connect(socket) {
+-        return Promise.resolve({
+-          socket,
+-          secure: false
+-        });
+-      },
+-      waitForReady: () => {
+-        return Promise.resolve();
+-      },
+-      getCallCredentials: () => {
+-        return callCredentials ?? CallCredentials.createEmpty();
+-      },
+-      destroy() {}
+-    }
+-  }
+-}
+-
+-function getConnectionOptions(secureContext: SecureContext, verifyOptions: VerifyOptions, channelTarget: GrpcUri, options: ChannelOptions): ConnectionOptions {
+-  const connectionOptions: ConnectionOptions = {
+-    secureContext: secureContext
+-  };
+-  let realTarget: GrpcUri = channelTarget;
+-  if ('grpc.http_connect_target' in options) {
+-    const parsedTarget = parseUri(options['grpc.http_connect_target']!);
+-    if (parsedTarget) {
+-      realTarget = parsedTarget;
+-    }
+-  }
+-  const targetPath = getDefaultAuthority(realTarget);
+-  const hostPort = splitHostPort(targetPath);
+-  const remoteHost = hostPort?.host ?? targetPath;
+-  connectionOptions.host = remoteHost;
+-
+-  if (verifyOptions.checkServerIdentity) {
+-    connectionOptions.checkServerIdentity = verifyOptions.checkServerIdentity;
+-  }
+-  if (verifyOptions.rejectUnauthorized !== undefined) {
+-    connectionOptions.rejectUnauthorized = verifyOptions.rejectUnauthorized;
+-  }
+-  connectionOptions.ALPNProtocols = ['h2'];
+-  if (options['grpc.ssl_target_name_override']) {
+-    const sslTargetNameOverride = options['grpc.ssl_target_name_override']!;
+-    const originalCheckServerIdentity =
+-      connectionOptions.checkServerIdentity ?? checkServerIdentity;
+-    connectionOptions.checkServerIdentity = (
+-      host: string,
+-      cert: PeerCertificate
+-    ): Error | undefined => {
+-      return originalCheckServerIdentity(sslTargetNameOverride, cert);
+-    };
+-    connectionOptions.servername = sslTargetNameOverride;
+-  } else {
+-    connectionOptions.servername = remoteHost;
+-  }
+-  if (options['grpc-node.tls_enable_trace']) {
+-    connectionOptions.enableTrace = true;
+-  }
+-  return connectionOptions;
+-}
+-
+-class SecureConnectorImpl implements SecureConnector {
+-  constructor(private connectionOptions: ConnectionOptions, private callCredentials: CallCredentials) {
+-  }
+-  connect(socket: Socket): Promise<SecureConnectResult> {
+-    const tlsConnectOptions: ConnectionOptions = {
+-      socket: socket,
+-      ...this.connectionOptions
+-    };
+-    return new Promise<SecureConnectResult>((resolve, reject) => {
+-      const tlsSocket = tlsConnect(tlsConnectOptions, () => {
+-        if ((this.connectionOptions.rejectUnauthorized ?? true) && !tlsSocket.authorized) {
+-          reject(tlsSocket.authorizationError);
+-          return;
+-        }
+-        resolve({
+-          socket: tlsSocket,
+-          secure: true
+-        })
+-      });
+-      tlsSocket.on('error', (error: Error) => {
+-        reject(error);
+-      });
+-    });
+-  }
+-  waitForReady(): Promise<void> {
+-    return Promise.resolve();
+-  }
+-  getCallCredentials(): CallCredentials {
+-    return this.callCredentials;
+-  }
+-  destroy() {}
+-}
+-
+-class SecureChannelCredentialsImpl extends ChannelCredentials {
+-  constructor(
+-    private secureContext: SecureContext,
+-    private verifyOptions: VerifyOptions
+-  ) {
+-    super();
+-  }
+-
+-  _isSecure(): boolean {
+-    return true;
+-  }
+-  _equals(other: ChannelCredentials): boolean {
+-    if (this === other) {
+-      return true;
+-    }
+-    if (other instanceof SecureChannelCredentialsImpl) {
+-      return (
+-        this.secureContext === other.secureContext &&
+-        this.verifyOptions.checkServerIdentity ===
+-          other.verifyOptions.checkServerIdentity
+-      );
+-    } else {
+-      return false;
+-    }
+-  }
+-  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
+-    const connectionOptions = getConnectionOptions(this.secureContext, this.verifyOptions, channelTarget, options);
+-    return new SecureConnectorImpl(connectionOptions, callCredentials ?? CallCredentials.createEmpty());
+-  }
+-}
+-
+-class CertificateProviderChannelCredentialsImpl extends ChannelCredentials {
+-  private refcount: number = 0;
+-  /**
+-   * `undefined` means that the certificates have not yet been loaded. `null`
+-   * means that an attempt to load them has completed, and has failed.
+-   */
+-  private latestCaUpdate: CaCertificateUpdate | null | undefined = undefined;
+-  /**
+-   * `undefined` means that the certificates have not yet been loaded. `null`
+-   * means that an attempt to load them has completed, and has failed.
+-   */
+-  private latestIdentityUpdate: IdentityCertificateUpdate | null | undefined = undefined;
+-  private caCertificateUpdateListener: CaCertificateUpdateListener = this.handleCaCertificateUpdate.bind(this);
+-  private identityCertificateUpdateListener: IdentityCertificateUpdateListener = this.handleIdentityCertitificateUpdate.bind(this);
+-  private secureContextWatchers: ((context: SecureContext | null) => void)[] = [];
+-  private static SecureConnectorImpl = class implements SecureConnector {
+-    constructor(private parent: CertificateProviderChannelCredentialsImpl, private channelTarget: GrpcUri, private options: ChannelOptions, private callCredentials: CallCredentials) {}
+-
+-    connect(socket: Socket): Promise<SecureConnectResult> {
+-      return new Promise((resolve, reject) => {
+-        const secureContext = this.parent.getLatestSecureContext();
+-        if (!secureContext) {
+-          reject(new Error('Failed to load credentials'));
+-          return;
+-        }
+-        if (socket.closed) {
+-          reject(new Error('Socket closed while loading credentials'));
+-        }
+-        const connnectionOptions = getConnectionOptions(secureContext, this.parent.verifyOptions, this.channelTarget, this.options);
+-        const tlsConnectOptions: ConnectionOptions = {
+-          socket: socket,
+-          ...connnectionOptions
+-        }
+-        const closeCallback = () => {
+-          reject(new Error('Socket closed'));
+-        };
+-        const errorCallback = (error: Error) => {
+-          reject(error);
+-        }
+-        const tlsSocket = tlsConnect(tlsConnectOptions, () => {
+-          tlsSocket.removeListener('close', closeCallback);
+-          tlsSocket.removeListener('error', errorCallback);
+-          if ((this.parent.verifyOptions.rejectUnauthorized ?? true) && !tlsSocket.authorized) {
+-            reject(tlsSocket.authorizationError);
+-            return;
+-          }
+-          resolve({
+-            socket: tlsSocket,
+-            secure: true
+-          });
+-        });
+-        tlsSocket.once('close', closeCallback);
+-        tlsSocket.once('error', errorCallback);
+-      });
+-    }
+-
+-    async waitForReady(): Promise<void> {
+-      await this.parent.getSecureContext();
+-    }
+-
+-    getCallCredentials(): CallCredentials {
+-      return this.callCredentials;
+-    }
+-
+-    destroy() {
+-      this.parent.unref();
+-    }
+-  }
+-  constructor(
+-    private caCertificateProvider: CertificateProvider,
+-    private identityCertificateProvider: CertificateProvider | null,
+-    private verifyOptions: VerifyOptions
+-  ) {
+-    super();
+-  }
+-  _isSecure(): boolean {
+-    return true;
+-  }
+-  _equals(other: ChannelCredentials): boolean {
+-    if (this === other) {
+-      return true;
+-    }
+-    if (other instanceof CertificateProviderChannelCredentialsImpl) {
+-      return this.caCertificateProvider === other.caCertificateProvider &&
+-        this.identityCertificateProvider === other.identityCertificateProvider &&
+-        this.verifyOptions?.checkServerIdentity === other.verifyOptions?.checkServerIdentity;
+-    } else {
+-      return false;
+-    }
+-  }
+-  private ref(): void {
+-    if (this.refcount === 0) {
+-      this.caCertificateProvider.addCaCertificateListener(this.caCertificateUpdateListener);
+-      this.identityCertificateProvider?.addIdentityCertificateListener(this.identityCertificateUpdateListener);
+-    }
+-    this.refcount += 1;
+-  }
+-  private unref(): void {
+-    this.refcount -= 1;
+-    if (this.refcount === 0) {
+-      this.caCertificateProvider.removeCaCertificateListener(this.caCertificateUpdateListener);
+-      this.identityCertificateProvider?.removeIdentityCertificateListener(this.identityCertificateUpdateListener);
+-    }
+-  }
+-  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
+-    this.ref();
+-    return new CertificateProviderChannelCredentialsImpl.SecureConnectorImpl(this, channelTarget, options, callCredentials ?? CallCredentials.createEmpty());
+-  }
+-
+-  private maybeUpdateWatchers() {
+-    if (this.hasReceivedUpdates()) {
+-      for (const watcher of this.secureContextWatchers) {
+-        watcher(this.getLatestSecureContext());
+-      }
+-      this.secureContextWatchers = [];
+-    }
+-  }
+-
+-  private handleCaCertificateUpdate(update: CaCertificateUpdate | null) {
+-    this.latestCaUpdate = update;
+-    this.maybeUpdateWatchers();
+-  }
+-
+-  private handleIdentityCertitificateUpdate(update: IdentityCertificateUpdate | null) {
+-    this.latestIdentityUpdate = update;
+-    this.maybeUpdateWatchers();
+-  }
+-
+-  private hasReceivedUpdates(): boolean {
+-    if (this.latestCaUpdate === undefined) {
+-      return false;
+-    }
+-    if (this.identityCertificateProvider && this.latestIdentityUpdate === undefined) {
+-      return false;
+-    }
+-    return true;
+-  }
+-
+-  private getSecureContext(): Promise<SecureContext | null> {
+-    if (this.hasReceivedUpdates()) {
+-      return Promise.resolve(this.getLatestSecureContext());
+-    } else {
+-      return new Promise(resolve => {
+-        this.secureContextWatchers.push(resolve);
+-      });
+-    }
+-  }
+-
+-  private getLatestSecureContext(): SecureContext | null {
+-    if (!this.latestCaUpdate) {
+-      return null;
+-    }
+-    if (this.identityCertificateProvider !== null && !this.latestIdentityUpdate) {
+-      return null;
+-    }
+-    try {
+-      return createSecureContext({
+-        ca: this.latestCaUpdate.caCertificate,
+-        key: this.latestIdentityUpdate?.privateKey,
+-        cert: this.latestIdentityUpdate?.certificate,
+-        ciphers: CIPHER_SUITES
+-      });
+-    } catch (e) {
+-      log(LogVerbosity.ERROR, 'Failed to createSecureContext with error ' + (e as Error).message);
+-      return null;
+-    }
+-  }
+-}
+-
+-export function createCertificateProviderChannelCredentials(caCertificateProvider: CertificateProvider, identityCertificateProvider: CertificateProvider | null, verifyOptions?: VerifyOptions) {
+-  return new CertificateProviderChannelCredentialsImpl(caCertificateProvider, identityCertificateProvider, verifyOptions ?? {});
+-}
+-
+-class ComposedChannelCredentialsImpl extends ChannelCredentials {
+-  constructor(
+-    private channelCredentials: ChannelCredentials,
+-    private callCredentials: CallCredentials
+-  ) {
+-    super();
+-    if (!channelCredentials._isSecure()) {
+-      throw new Error('Cannot compose insecure credentials');
+-    }
+-  }
+-  compose(callCredentials: CallCredentials) {
+-    const combinedCallCredentials =
+-      this.callCredentials.compose(callCredentials);
+-    return new ComposedChannelCredentialsImpl(
+-      this.channelCredentials,
+-      combinedCallCredentials
+-    );
+-  }
+-  _isSecure(): boolean {
+-    return true;
+-  }
+-  _equals(other: ChannelCredentials): boolean {
+-    if (this === other) {
+-      return true;
+-    }
+-    if (other instanceof ComposedChannelCredentialsImpl) {
+-      return (
+-        this.channelCredentials._equals(other.channelCredentials) &&
+-        this.callCredentials._equals(other.callCredentials)
+-      );
+-    } else {
+-      return false;
+-    }
+-  }
+-  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
+-    const combinedCallCredentials = this.callCredentials.compose(callCredentials ?? CallCredentials.createEmpty());
+-    return this.channelCredentials._createSecureConnector(channelTarget, options, combinedCallCredentials);
+-  }
+-}
++/*
++ * Copyright 2019 gRPC authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++
++import {
++  ConnectionOptions,
++  createSecureContext,
++  PeerCertificate,
++  SecureContext,
++  checkServerIdentity,
++  connect as tlsConnect
++} from 'tls';
++
++import { CallCredentials } from './call-credentials';
++import { CIPHER_SUITES, getDefaultRootsData } from './tls-helpers';
++import { CaCertificateUpdate, CaCertificateUpdateListener, CertificateProvider, IdentityCertificateUpdate, IdentityCertificateUpdateListener } from './certificate-provider';
++import { Socket } from 'net';
++import { ChannelOptions } from './channel-options';
++import { GrpcUri, parseUri, splitHostPort } from './uri-parser';
++import { getDefaultAuthority } from './resolver';
++import { log } from './logging';
++import { LogVerbosity } from './constants';
++
++// eslint-disable-next-line @typescript-eslint/no-explicit-any
++function verifyIsBufferOrNull(obj: any, friendlyName: string): void {
++  if (obj && !(obj instanceof Buffer)) {
++    throw new TypeError(`${friendlyName}, if provided, must be a Buffer.`);
++  }
++}
++
++/**
++ * A callback that will receive the expected hostname and presented peer
++ * certificate as parameters. The callback should return an error to
++ * indicate that the presented certificate is considered invalid and
++ * otherwise returned undefined.
++ */
++export type CheckServerIdentityCallback = (
++  hostname: string,
++  cert: PeerCertificate
++) => Error | undefined;
++
++/**
++ * Additional peer verification options that can be set when creating
++ * SSL credentials.
++ */
++export interface VerifyOptions {
++  /**
++   * If set, this callback will be invoked after the usual hostname verification
++   * has been performed on the peer certificate.
++   */
++  checkServerIdentity?: CheckServerIdentityCallback;
++  rejectUnauthorized?: boolean;
++}
++
++export interface SecureConnectResult {
++  socket: Socket;
++  secure: boolean;
++}
++
++export interface SecureConnector {
++  connect(socket: Socket): Promise<SecureConnectResult>;
++  waitForReady(): Promise<void>;
++  getCallCredentials(): CallCredentials;
++  destroy(): void;
++}
++
++/**
++ * A class that contains credentials for communicating over a channel, as well
++ * as a set of per-call credentials, which are applied to every method call made
++ * over a channel initialized with an instance of this class.
++ */
++export abstract class ChannelCredentials {
++  /**
++   * Returns a copy of this object with the included set of per-call credentials
++   * expanded to include callCredentials.
++   * @param callCredentials A CallCredentials object to associate with this
++   * instance.
++   */
++  compose(callCredentials: CallCredentials): ChannelCredentials {
++    return new ComposedChannelCredentialsImpl(this, callCredentials);
++  }
++
++  /**
++   * Indicates whether this credentials object creates a secure channel.
++   */
++  abstract _isSecure(): boolean;
++
++  /**
++   * Check whether two channel credentials objects are equal. Two secure
++   * credentials are equal if they were constructed with the same parameters.
++   * @param other The other ChannelCredentials Object
++   */
++  abstract _equals(other: ChannelCredentials): boolean;
++
++  abstract _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector;
++
++  /**
++   * Return a new ChannelCredentials instance with a given set of credentials.
++   * The resulting instance can be used to construct a Channel that communicates
++   * over TLS.
++   * @param rootCerts The root certificate data.
++   * @param privateKey The client certificate private key, if available.
++   * @param certChain The client certificate key chain, if available.
++   * @param verifyOptions Additional options to modify certificate verification
++   */
++  static createSsl(
++    rootCerts?: Buffer | null,
++    privateKey?: Buffer | null,
++    certChain?: Buffer | null,
++    verifyOptions?: VerifyOptions
++  ): ChannelCredentials {
++    verifyIsBufferOrNull(rootCerts, 'Root certificate');
++    verifyIsBufferOrNull(privateKey, 'Private key');
++    verifyIsBufferOrNull(certChain, 'Certificate chain');
++    if (privateKey && !certChain) {
++      throw new Error(
++        'Private key must be given with accompanying certificate chain'
++      );
++    }
++    if (!privateKey && certChain) {
++      throw new Error(
++        'Certificate chain must be given with accompanying private key'
++      );
++    }
++    const secureContext = createSecureContext({
++      ca: rootCerts ?? getDefaultRootsData() ?? undefined,
++      key: privateKey ?? undefined,
++      cert: certChain ?? undefined,
++      ciphers: CIPHER_SUITES,
++    });
++    return new SecureChannelCredentialsImpl(secureContext, verifyOptions ?? {});
++  }
++
++  /**
++   * Return a new ChannelCredentials instance with credentials created using
++   * the provided secureContext. The resulting instances can be used to
++   * construct a Channel that communicates over TLS. gRPC will not override
++   * anything in the provided secureContext, so the environment variables
++   * GRPC_SSL_CIPHER_SUITES and GRPC_DEFAULT_SSL_ROOTS_FILE_PATH will
++   * not be applied.
++   * @param secureContext The return value of tls.createSecureContext()
++   * @param verifyOptions Additional options to modify certificate verification
++   */
++  static createFromSecureContext(
++    secureContext: SecureContext,
++    verifyOptions?: VerifyOptions
++  ): ChannelCredentials {
++    return new SecureChannelCredentialsImpl(secureContext, verifyOptions ?? {});
++  }
++
++  /**
++   * Return a new ChannelCredentials instance with no credentials.
++   */
++  static createInsecure(): ChannelCredentials {
++    return new InsecureChannelCredentialsImpl();
++  }
++}
++
++class InsecureChannelCredentialsImpl extends ChannelCredentials {
++  constructor() {
++    super();
++  }
++
++  override compose(callCredentials: CallCredentials): never {
++    throw new Error('Cannot compose insecure credentials');
++  }
++  _isSecure(): boolean {
++    return false;
++  }
++  _equals(other: ChannelCredentials): boolean {
++    return other instanceof InsecureChannelCredentialsImpl;
++  }
++  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
++    return {
++      connect(socket) {
++        return Promise.resolve({
++          socket,
++          secure: false
++        });
++      },
++      waitForReady: () => {
++        return Promise.resolve();
++      },
++      getCallCredentials: () => {
++        return callCredentials ?? CallCredentials.createEmpty();
++      },
++      destroy() {}
++    }
++  }
++}
++
++function getConnectionOptions(secureContext: SecureContext, verifyOptions: VerifyOptions, channelTarget: GrpcUri, options: ChannelOptions): ConnectionOptions {
++  const connectionOptions: ConnectionOptions = {
++    secureContext: secureContext
++  };
++  let realTarget: GrpcUri = channelTarget;
++  if ('grpc.http_connect_target' in options) {
++    const parsedTarget = parseUri(options['grpc.http_connect_target']!);
++    if (parsedTarget) {
++      realTarget = parsedTarget;
++    }
++  }
++  const targetPath = getDefaultAuthority(realTarget);
++  const hostPort = splitHostPort(targetPath);
++  const remoteHost = hostPort?.host ?? targetPath;
++  connectionOptions.host = remoteHost;
++
++  if (verifyOptions.checkServerIdentity) {
++    connectionOptions.checkServerIdentity = verifyOptions.checkServerIdentity;
++  }
++  if (verifyOptions.rejectUnauthorized !== undefined) {
++    connectionOptions.rejectUnauthorized = verifyOptions.rejectUnauthorized;
++  }
++  connectionOptions.ALPNProtocols = ['h2'];
++  if (options['grpc.ssl_target_name_override']) {
++    const sslTargetNameOverride = options['grpc.ssl_target_name_override']!;
++    const originalCheckServerIdentity =
++      connectionOptions.checkServerIdentity ?? checkServerIdentity;
++    connectionOptions.checkServerIdentity = (
++      host: string,
++      cert: PeerCertificate
++    ): Error | undefined => {
++      return originalCheckServerIdentity(sslTargetNameOverride, cert);
++    };
++    connectionOptions.servername = sslTargetNameOverride;
++  } else {
++    connectionOptions.servername = remoteHost;
++  }
++  if (options['grpc-node.tls_enable_trace']) {
++    connectionOptions.enableTrace = true;
++  }
++  return connectionOptions;
++}
++
++class SecureConnectorImpl implements SecureConnector {
++  constructor(private connectionOptions: ConnectionOptions, private callCredentials: CallCredentials, private transportOwner?: ChannelOptions['grpc-node.transport_owner']) {
++  }
++  connect(socket: Socket): Promise<SecureConnectResult> {
++    const tlsConnectOptions: ConnectionOptions = {
++      socket: socket,
++      ...this.connectionOptions
++    };
++    return new Promise<SecureConnectResult>((resolve, reject) => {
++      const tlsSocket = tlsConnect(tlsConnectOptions, () => {
++        if ((this.connectionOptions.rejectUnauthorized ?? true) && !tlsSocket.authorized) {
++          reject(tlsSocket.authorizationError);
++          return;
++        }
++        resolve({
++          socket: tlsSocket,
++          secure: true
++        })
++      });
++      tlsSocket.on('error', (error: Error) => {
++        reject(error);
++      });
++            if (this.transportOwner) {
++                tlsSocket.once('close', () => reject(new Error('Owned TLS socket closed before handshake completion')));
++                this.transportOwner.socket(tlsSocket);
++            }
++    });
++  }
++  waitForReady(): Promise<void> {
++    return Promise.resolve();
++  }
++  getCallCredentials(): CallCredentials {
++    return this.callCredentials;
++  }
++  destroy() {}
++}
++
++class SecureChannelCredentialsImpl extends ChannelCredentials {
++  constructor(
++    private secureContext: SecureContext,
++    private verifyOptions: VerifyOptions
++  ) {
++    super();
++  }
++
++  _isSecure(): boolean {
++    return true;
++  }
++  _equals(other: ChannelCredentials): boolean {
++    if (this === other) {
++      return true;
++    }
++    if (other instanceof SecureChannelCredentialsImpl) {
++      return (
++        this.secureContext === other.secureContext &&
++        this.verifyOptions.checkServerIdentity ===
++          other.verifyOptions.checkServerIdentity
++      );
++    } else {
++      return false;
++    }
++  }
++  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
++    const connectionOptions = getConnectionOptions(this.secureContext, this.verifyOptions, channelTarget, options);
++    return new SecureConnectorImpl(connectionOptions, callCredentials ?? CallCredentials.createEmpty(), options['grpc-node.transport_owner']);
++  }
++}
++
++class CertificateProviderChannelCredentialsImpl extends ChannelCredentials {
++  private refcount: number = 0;
++  /**
++   * `undefined` means that the certificates have not yet been loaded. `null`
++   * means that an attempt to load them has completed, and has failed.
++   */
++  private latestCaUpdate: CaCertificateUpdate | null | undefined = undefined;
++  /**
++   * `undefined` means that the certificates have not yet been loaded. `null`
++   * means that an attempt to load them has completed, and has failed.
++   */
++  private latestIdentityUpdate: IdentityCertificateUpdate | null | undefined = undefined;
++  private caCertificateUpdateListener: CaCertificateUpdateListener = this.handleCaCertificateUpdate.bind(this);
++  private identityCertificateUpdateListener: IdentityCertificateUpdateListener = this.handleIdentityCertitificateUpdate.bind(this);
++  private secureContextWatchers: ((context: SecureContext | null) => void)[] = [];
++  private static SecureConnectorImpl = class implements SecureConnector {
++    constructor(private parent: CertificateProviderChannelCredentialsImpl, private channelTarget: GrpcUri, private options: ChannelOptions, private callCredentials: CallCredentials) {}
++
++    connect(socket: Socket): Promise<SecureConnectResult> {
++      return new Promise((resolve, reject) => {
++        const secureContext = this.parent.getLatestSecureContext();
++        if (!secureContext) {
++          reject(new Error('Failed to load credentials'));
++          return;
++        }
++        if (socket.closed) {
++          reject(new Error('Socket closed while loading credentials'));
++        }
++        const connnectionOptions = getConnectionOptions(secureContext, this.parent.verifyOptions, this.channelTarget, this.options);
++        const tlsConnectOptions: ConnectionOptions = {
++          socket: socket,
++          ...connnectionOptions
++        }
++        const closeCallback = () => {
++          reject(new Error('Socket closed'));
++        };
++        const errorCallback = (error: Error) => {
++          reject(error);
++        }
++        const tlsSocket = tlsConnect(tlsConnectOptions, () => {
++          tlsSocket.removeListener('close', closeCallback);
++          tlsSocket.removeListener('error', errorCallback);
++          if ((this.parent.verifyOptions.rejectUnauthorized ?? true) && !tlsSocket.authorized) {
++            reject(tlsSocket.authorizationError);
++            return;
++          }
++          resolve({
++            socket: tlsSocket,
++            secure: true
++          });
++        });
++        tlsSocket.once('close', closeCallback);
++        tlsSocket.once('error', errorCallback);
++      });
++    }
++
++    async waitForReady(): Promise<void> {
++      await this.parent.getSecureContext();
++    }
++
++    getCallCredentials(): CallCredentials {
++      return this.callCredentials;
++    }
++
++    destroy() {
++      this.parent.unref();
++    }
++  }
++  constructor(
++    private caCertificateProvider: CertificateProvider,
++    private identityCertificateProvider: CertificateProvider | null,
++    private verifyOptions: VerifyOptions
++  ) {
++    super();
++  }
++  _isSecure(): boolean {
++    return true;
++  }
++  _equals(other: ChannelCredentials): boolean {
++    if (this === other) {
++      return true;
++    }
++    if (other instanceof CertificateProviderChannelCredentialsImpl) {
++      return this.caCertificateProvider === other.caCertificateProvider &&
++        this.identityCertificateProvider === other.identityCertificateProvider &&
++        this.verifyOptions?.checkServerIdentity === other.verifyOptions?.checkServerIdentity;
++    } else {
++      return false;
++    }
++  }
++  private ref(): void {
++    if (this.refcount === 0) {
++      this.caCertificateProvider.addCaCertificateListener(this.caCertificateUpdateListener);
++      this.identityCertificateProvider?.addIdentityCertificateListener(this.identityCertificateUpdateListener);
++    }
++    this.refcount += 1;
++  }
++  private unref(): void {
++    this.refcount -= 1;
++    if (this.refcount === 0) {
++      this.caCertificateProvider.removeCaCertificateListener(this.caCertificateUpdateListener);
++      this.identityCertificateProvider?.removeIdentityCertificateListener(this.identityCertificateUpdateListener);
++    }
++  }
++  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
++    this.ref();
++    return new CertificateProviderChannelCredentialsImpl.SecureConnectorImpl(this, channelTarget, options, callCredentials ?? CallCredentials.createEmpty());
++  }
++
++  private maybeUpdateWatchers() {
++    if (this.hasReceivedUpdates()) {
++      for (const watcher of this.secureContextWatchers) {
++        watcher(this.getLatestSecureContext());
++      }
++      this.secureContextWatchers = [];
++    }
++  }
++
++  private handleCaCertificateUpdate(update: CaCertificateUpdate | null) {
++    this.latestCaUpdate = update;
++    this.maybeUpdateWatchers();
++  }
++
++  private handleIdentityCertitificateUpdate(update: IdentityCertificateUpdate | null) {
++    this.latestIdentityUpdate = update;
++    this.maybeUpdateWatchers();
++  }
++
++  private hasReceivedUpdates(): boolean {
++    if (this.latestCaUpdate === undefined) {
++      return false;
++    }
++    if (this.identityCertificateProvider && this.latestIdentityUpdate === undefined) {
++      return false;
++    }
++    return true;
++  }
++
++  private getSecureContext(): Promise<SecureContext | null> {
++    if (this.hasReceivedUpdates()) {
++      return Promise.resolve(this.getLatestSecureContext());
++    } else {
++      return new Promise(resolve => {
++        this.secureContextWatchers.push(resolve);
++      });
++    }
++  }
++
++  private getLatestSecureContext(): SecureContext | null {
++    if (!this.latestCaUpdate) {
++      return null;
++    }
++    if (this.identityCertificateProvider !== null && !this.latestIdentityUpdate) {
++      return null;
++    }
++    try {
++      return createSecureContext({
++        ca: this.latestCaUpdate.caCertificate,
++        key: this.latestIdentityUpdate?.privateKey,
++        cert: this.latestIdentityUpdate?.certificate,
++        ciphers: CIPHER_SUITES
++      });
++    } catch (e) {
++      log(LogVerbosity.ERROR, 'Failed to createSecureContext with error ' + (e as Error).message);
++      return null;
++    }
++  }
++}
++
++export function createCertificateProviderChannelCredentials(caCertificateProvider: CertificateProvider, identityCertificateProvider: CertificateProvider | null, verifyOptions?: VerifyOptions) {
++  return new CertificateProviderChannelCredentialsImpl(caCertificateProvider, identityCertificateProvider, verifyOptions ?? {});
++}
++
++class ComposedChannelCredentialsImpl extends ChannelCredentials {
++  constructor(
++    private channelCredentials: ChannelCredentials,
++    private callCredentials: CallCredentials
++  ) {
++    super();
++    if (!channelCredentials._isSecure()) {
++      throw new Error('Cannot compose insecure credentials');
++    }
++  }
++  compose(callCredentials: CallCredentials) {
++    const combinedCallCredentials =
++      this.callCredentials.compose(callCredentials);
++    return new ComposedChannelCredentialsImpl(
++      this.channelCredentials,
++      combinedCallCredentials
++    );
++  }
++  _isSecure(): boolean {
++    return true;
++  }
++  _equals(other: ChannelCredentials): boolean {
++    if (this === other) {
++      return true;
++    }
++    if (other instanceof ComposedChannelCredentialsImpl) {
++      return (
++        this.channelCredentials._equals(other.channelCredentials) &&
++        this.callCredentials._equals(other.callCredentials)
++      );
++    } else {
++      return false;
++    }
++  }
++  _createSecureConnector(channelTarget: GrpcUri, options: ChannelOptions, callCredentials?: CallCredentials): SecureConnector {
++    const combinedCallCredentials = this.callCredentials.compose(callCredentials ?? CallCredentials.createEmpty());
++    return this.channelCredentials._createSecureConnector(channelTarget, options, combinedCallCredentials);
++  }
++}
+--- a/src/channel-options.ts
++++ b/src/channel-options.ts
+@@ -1,128 +1,138 @@
+-/*
+- * Copyright 2019 gRPC authors.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- *
+- */
+-
+-import { CompressionAlgorithms } from './compression-algorithms';
+-
+-/**
+- * An interface that contains options used when initializing a Channel instance.
+- */
+-export interface ChannelOptions {
+-  'grpc.ssl_target_name_override'?: string;
+-  'grpc.primary_user_agent'?: string;
+-  'grpc.secondary_user_agent'?: string;
+-  'grpc.default_authority'?: string;
+-  'grpc.keepalive_time_ms'?: number;
+-  'grpc.keepalive_timeout_ms'?: number;
+-  'grpc.keepalive_permit_without_calls'?: number;
+-  'grpc.service_config'?: string;
+-  'grpc.max_concurrent_streams'?: number;
+-  'grpc.initial_reconnect_backoff_ms'?: number;
+-  'grpc.max_reconnect_backoff_ms'?: number;
+-  'grpc.use_local_subchannel_pool'?: number;
+-  'grpc.max_send_message_length'?: number;
+-  'grpc.max_receive_message_length'?: number;
+-  'grpc.enable_http_proxy'?: number;
+-  /* http_connect_target and http_connect_creds are used for passing data
+-   * around internally, and should not be documented as public-facing options
+-   */
+-  'grpc.http_connect_target'?: string;
+-  'grpc.http_connect_creds'?: string;
+-  'grpc.default_compression_algorithm'?: CompressionAlgorithms;
+-  'grpc.enable_channelz'?: number;
+-  'grpc.dns_min_time_between_resolutions_ms'?: number;
+-  'grpc.enable_retries'?: number;
+-  'grpc.per_rpc_retry_buffer_size'?: number;
+-  /* This option is pattered like a core option, but the core does not have
+-   * this option. It is closely related to the option
+-   * grpc.per_rpc_retry_buffer_size, which is in the core. The core will likely
+-   * implement this functionality using the ResourceQuota mechanism, so there
+-   * will probably not be any collision or other inconsistency. */
+-  'grpc.retry_buffer_size'?: number;
+-  'grpc.max_connection_age_ms'?: number;
+-  'grpc.max_connection_age_grace_ms'?: number;
+-  'grpc.max_connection_idle_ms'?: number;
+-  'grpc-node.max_session_memory'?: number;
+-  'grpc.service_config_disable_resolution'?: number;
+-  'grpc.client_idle_timeout_ms'?: number;
+-  /**
+-   * Set the enableTrace option in TLS clients and servers
+-   */
+-  'grpc-node.tls_enable_trace'?: number;
+-  'grpc.lb.ring_hash.ring_size_cap'?: number;
+-  'grpc-node.retry_max_attempts_limit'?: number;
+-  'grpc-node.flow_control_window'?: number;
+-  'grpc.server_call_metric_recording'?: number;
+-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+-  [key: string]: any;
+-}
+-
+-/**
+- * This is for checking provided options at runtime. This is an object for
+- * easier membership checking.
+- */
+-export const recognizedOptions = {
+-  'grpc.ssl_target_name_override': true,
+-  'grpc.primary_user_agent': true,
+-  'grpc.secondary_user_agent': true,
+-  'grpc.default_authority': true,
+-  'grpc.keepalive_time_ms': true,
+-  'grpc.keepalive_timeout_ms': true,
+-  'grpc.keepalive_permit_without_calls': true,
+-  'grpc.service_config': true,
+-  'grpc.max_concurrent_streams': true,
+-  'grpc.initial_reconnect_backoff_ms': true,
+-  'grpc.max_reconnect_backoff_ms': true,
+-  'grpc.use_local_subchannel_pool': true,
+-  'grpc.max_send_message_length': true,
+-  'grpc.max_receive_message_length': true,
+-  'grpc.enable_http_proxy': true,
+-  'grpc.enable_channelz': true,
+-  'grpc.dns_min_time_between_resolutions_ms': true,
+-  'grpc.enable_retries': true,
+-  'grpc.per_rpc_retry_buffer_size': true,
+-  'grpc.retry_buffer_size': true,
+-  'grpc.max_connection_age_ms': true,
+-  'grpc.max_connection_age_grace_ms': true,
+-  'grpc-node.max_session_memory': true,
+-  'grpc.service_config_disable_resolution': true,
+-  'grpc.client_idle_timeout_ms': true,
+-  'grpc-node.tls_enable_trace': true,
+-  'grpc.lb.ring_hash.ring_size_cap': true,
+-  'grpc-node.retry_max_attempts_limit': true,
+-  'grpc-node.flow_control_window': true,
+-  'grpc.server_call_metric_recording': true
+-};
+-
+-export function channelOptionsEqual(
+-  options1: ChannelOptions,
+-  options2: ChannelOptions
+-) {
+-  const keys1 = Object.keys(options1).sort();
+-  const keys2 = Object.keys(options2).sort();
+-  if (keys1.length !== keys2.length) {
+-    return false;
+-  }
+-  for (let i = 0; i < keys1.length; i += 1) {
+-    if (keys1[i] !== keys2[i]) {
+-      return false;
+-    }
+-    if (options1[keys1[i]] !== options2[keys2[i]]) {
+-      return false;
+-    }
+-  }
+-  return true;
+-}
++/*
++ * Copyright 2019 gRPC authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++
++import { CompressionAlgorithms } from './compression-algorithms';
++
++/**
++ * An interface that contains options used when initializing a Channel instance.
++ */
++/** Opt-in ownership for a private channel pool. Default channels are unchanged. */
++export interface TransportResourceOwner {
++  readonly signal: AbortSignal;
++  pending(operation: Promise<unknown>): void;
++  socket(socket: import('net').Socket): void;
++  session(session: import('http2').ClientHttp2Session): void;
++  request(request: import('http').ClientRequest): void;
++}
++export interface ChannelOptions {
++    'grpc-node.transport_owner'?: TransportResourceOwner;
++  'grpc.ssl_target_name_override'?: string;
++  'grpc.primary_user_agent'?: string;
++  'grpc.secondary_user_agent'?: string;
++  'grpc.default_authority'?: string;
++  'grpc.keepalive_time_ms'?: number;
++  'grpc.keepalive_timeout_ms'?: number;
++  'grpc.keepalive_permit_without_calls'?: number;
++  'grpc.service_config'?: string;
++  'grpc.max_concurrent_streams'?: number;
++  'grpc.initial_reconnect_backoff_ms'?: number;
++  'grpc.max_reconnect_backoff_ms'?: number;
++  'grpc.use_local_subchannel_pool'?: number;
++  'grpc.max_send_message_length'?: number;
++  'grpc.max_receive_message_length'?: number;
++  'grpc.enable_http_proxy'?: number;
++  /* http_connect_target and http_connect_creds are used for passing data
++   * around internally, and should not be documented as public-facing options
++   */
++  'grpc.http_connect_target'?: string;
++  'grpc.http_connect_creds'?: string;
++  'grpc.default_compression_algorithm'?: CompressionAlgorithms;
++  'grpc.enable_channelz'?: number;
++  'grpc.dns_min_time_between_resolutions_ms'?: number;
++  'grpc.enable_retries'?: number;
++  'grpc.per_rpc_retry_buffer_size'?: number;
++  /* This option is pattered like a core option, but the core does not have
++   * this option. It is closely related to the option
++   * grpc.per_rpc_retry_buffer_size, which is in the core. The core will likely
++   * implement this functionality using the ResourceQuota mechanism, so there
++   * will probably not be any collision or other inconsistency. */
++  'grpc.retry_buffer_size'?: number;
++  'grpc.max_connection_age_ms'?: number;
++  'grpc.max_connection_age_grace_ms'?: number;
++  'grpc.max_connection_idle_ms'?: number;
++  'grpc-node.max_session_memory'?: number;
++  'grpc.service_config_disable_resolution'?: number;
++  'grpc.client_idle_timeout_ms'?: number;
++  /**
++   * Set the enableTrace option in TLS clients and servers
++   */
++  'grpc-node.tls_enable_trace'?: number;
++  'grpc.lb.ring_hash.ring_size_cap'?: number;
++  'grpc-node.retry_max_attempts_limit'?: number;
++  'grpc-node.flow_control_window'?: number;
++  'grpc.server_call_metric_recording'?: number;
++  // eslint-disable-next-line @typescript-eslint/no-explicit-any
++  [key: string]: any;
++}
++
++/**
++ * This is for checking provided options at runtime. This is an object for
++ * easier membership checking.
++ */
++export const recognizedOptions = {
++  'grpc.ssl_target_name_override': true,
++  'grpc.primary_user_agent': true,
++  'grpc.secondary_user_agent': true,
++  'grpc.default_authority': true,
++  'grpc.keepalive_time_ms': true,
++  'grpc.keepalive_timeout_ms': true,
++  'grpc.keepalive_permit_without_calls': true,
++  'grpc.service_config': true,
++  'grpc.max_concurrent_streams': true,
++  'grpc.initial_reconnect_backoff_ms': true,
++  'grpc.max_reconnect_backoff_ms': true,
++  'grpc.use_local_subchannel_pool': true,
++    'grpc-node.transport_owner': true,
++  'grpc.max_send_message_length': true,
++  'grpc.max_receive_message_length': true,
++  'grpc.enable_http_proxy': true,
++  'grpc.enable_channelz': true,
++  'grpc.dns_min_time_between_resolutions_ms': true,
++  'grpc.enable_retries': true,
++  'grpc.per_rpc_retry_buffer_size': true,
++  'grpc.retry_buffer_size': true,
++  'grpc.max_connection_age_ms': true,
++  'grpc.max_connection_age_grace_ms': true,
++  'grpc-node.max_session_memory': true,
++  'grpc.service_config_disable_resolution': true,
++  'grpc.client_idle_timeout_ms': true,
++  'grpc-node.tls_enable_trace': true,
++  'grpc.lb.ring_hash.ring_size_cap': true,
++  'grpc-node.retry_max_attempts_limit': true,
++  'grpc-node.flow_control_window': true,
++  'grpc.server_call_metric_recording': true
++};
++
++export function channelOptionsEqual(
++  options1: ChannelOptions,
++  options2: ChannelOptions
++) {
++  const keys1 = Object.keys(options1).sort();
++  const keys2 = Object.keys(options2).sort();
++  if (keys1.length !== keys2.length) {
++    return false;
++  }
++  for (let i = 0; i < keys1.length; i += 1) {
++    if (keys1[i] !== keys2[i]) {
++      return false;
++    }
++    if (options1[keys1[i]] !== options2[keys2[i]]) {
++      return false;
++    }
++  }
++  return true;
++}
+--- a/src/http_proxy.ts
++++ b/src/http_proxy.ts
+@@ -1,315 +1,329 @@
+-/*
+- * Copyright 2019 gRPC authors.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- *
+- */
+-
+-import { log } from './logging';
+-import { LogVerbosity } from './constants';
+-import { isIPv4, Socket } from 'net';
+-import * as http from 'http';
+-import * as logging from './logging';
+-import {
+-  SubchannelAddress,
+-  isTcpSubchannelAddress,
+-  subchannelAddressToString,
+-} from './subchannel-address';
+-import { ChannelOptions } from './channel-options';
+-import { GrpcUri, parseUri, splitHostPort, uriToString } from './uri-parser';
+-import { URL } from 'url';
+-import { DEFAULT_PORT } from './resolver-dns';
+-
+-const TRACER_NAME = 'proxy';
+-
+-function trace(text: string): void {
+-  logging.trace(LogVerbosity.DEBUG, TRACER_NAME, text);
+-}
+-
+-interface ProxyInfo {
+-  address?: string;
+-  creds?: string;
+-}
+-
+-function getProxyInfo(): ProxyInfo {
+-  let proxyEnv = '';
+-  let envVar = '';
+-  /* Prefer using 'grpc_proxy'. Fallback on 'http_proxy' if it is not set.
+-   * Also prefer using 'https_proxy' with fallback on 'http_proxy'. The
+-   * fallback behavior can be removed if there's a demand for it.
+-   */
+-  if (process.env.grpc_proxy) {
+-    envVar = 'grpc_proxy';
+-    proxyEnv = process.env.grpc_proxy;
+-  } else if (process.env.https_proxy) {
+-    envVar = 'https_proxy';
+-    proxyEnv = process.env.https_proxy;
+-  } else if (process.env.http_proxy) {
+-    envVar = 'http_proxy';
+-    proxyEnv = process.env.http_proxy;
+-  } else {
+-    return {};
+-  }
+-  let proxyUrl: URL;
+-  try {
+-    proxyUrl = new URL(proxyEnv);
+-  } catch (e) {
+-    log(LogVerbosity.ERROR, `cannot parse value of "${envVar}" env var`);
+-    return {};
+-  }
+-  if (proxyUrl.protocol !== 'http:') {
+-    log(
+-      LogVerbosity.ERROR,
+-      `"${proxyUrl.protocol}" scheme not supported in proxy URI`
+-    );
+-    return {};
+-  }
+-  let userCred: string | null = null;
+-  if (proxyUrl.username) {
+-    if (proxyUrl.password) {
+-      log(LogVerbosity.INFO, 'userinfo found in proxy URI');
+-      userCred = decodeURIComponent(`${proxyUrl.username}:${proxyUrl.password}`);
+-    } else {
+-      userCred = proxyUrl.username;
+-    }
+-  }
+-  const hostname = proxyUrl.hostname;
+-  let port = proxyUrl.port;
+-  /* The proxy URL uses the scheme "http:", which has a default port number of
+-   * 80. We need to set that explicitly here if it is omitted because otherwise
+-   * it will use gRPC's default port 443. */
+-  if (port === '') {
+-    port = '80';
+-  }
+-  const result: ProxyInfo = {
+-    address: `${hostname}:${port}`,
+-  };
+-  if (userCred) {
+-    result.creds = userCred;
+-  }
+-  trace(
+-    'Proxy server ' + result.address + ' set by environment variable ' + envVar
+-  );
+-  return result;
+-}
+-
+-function getNoProxyHostList(): string[] {
+-  /* Prefer using 'no_grpc_proxy'. Fallback on 'no_proxy' if it is not set. */
+-  let noProxyStr: string | undefined = process.env.no_grpc_proxy;
+-  let envVar = 'no_grpc_proxy';
+-  if (!noProxyStr) {
+-    noProxyStr = process.env.no_proxy;
+-    envVar = 'no_proxy';
+-  }
+-  if (noProxyStr) {
+-    trace('No proxy server list set by environment variable ' + envVar);
+-    return noProxyStr.split(',');
+-  } else {
+-    return [];
+-  }
+-}
+-
+-interface CIDRNotation {
+-  ip: number;
+-  prefixLength: number;
+-}
+-
+-/*
+- * The groups correspond to CIDR parts as follows:
+- * 1. ip
+- * 2. prefixLength
+- */
+-
+-export function parseCIDR(cidrString: string): CIDRNotation | null {
+-  const splitRange = cidrString.split('/');  
+-  if (splitRange.length !== 2) {  
+-    return null;  
+-  }  
+-  const prefixLength = parseInt(splitRange[1], 10);  
+-  if (!isIPv4(splitRange[0]) || Number.isNaN(prefixLength) || prefixLength < 0 || prefixLength > 32) {  
+-    return null;  
+-  }  
+-  return {  
+-    ip: ipToInt(splitRange[0]),  
+-    prefixLength: prefixLength  
+-  };
+-}
+-
+-function ipToInt(ip: string) {
+-  return ip.split(".").reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0);
+-}
+-
+-function isIpInCIDR(cidr: CIDRNotation, serverHost: string) {
+-  const ip = cidr.ip;
+-  const mask = -1 << (32 - cidr.prefixLength);
+-  const hostIP = ipToInt(serverHost);
+-
+-  return (hostIP & mask) === (ip & mask);
+-}
+-
+-function hostMatchesNoProxyList(serverHost: string): boolean {
+-  for (const host of getNoProxyHostList()) {
+-    const parsedCIDR = parseCIDR(host);
+-    // host is a CIDR and serverHost is an IP address
+-    if (isIPv4(serverHost) && parsedCIDR && isIpInCIDR(parsedCIDR, serverHost)) {
+-      return true;
+-    } else if (serverHost.endsWith(host)) {
+-      // host is a single IP or a domain name suffix
+-      return true;
+-    }
+-  }
+-  return false;
+-}
+-
+-export interface ProxyMapResult {
+-  target: GrpcUri;
+-  extraOptions: ChannelOptions;
+-}
+-
+-export function mapProxyName(
+-  target: GrpcUri,
+-  options: ChannelOptions
+-): ProxyMapResult {
+-  const noProxyResult: ProxyMapResult = {
+-    target: target,
+-    extraOptions: {},
+-  };
+-  if ((options['grpc.enable_http_proxy'] ?? 1) === 0) {
+-    return noProxyResult;
+-  }
+-  if (target.scheme === 'unix') {
+-    return noProxyResult;
+-  }
+-  const proxyInfo = getProxyInfo();
+-  if (!proxyInfo.address) {
+-    return noProxyResult;
+-  }
+-  const hostPort = splitHostPort(target.path);
+-  if (!hostPort) {
+-    return noProxyResult;
+-  }
+-  const serverHost = hostPort.host;
+-  if (hostMatchesNoProxyList(serverHost)) {
+-    trace('Not using proxy for target in no_proxy list: ' + uriToString(target));
+-    return noProxyResult;
+-  }
+-  const extraOptions: ChannelOptions = {
+-    'grpc.http_connect_target': uriToString(target),
+-  };
+-  if (proxyInfo.creds) {
+-    extraOptions['grpc.http_connect_creds'] = proxyInfo.creds;
+-  }
+-  return {
+-    target: {
+-      scheme: 'dns',
+-      path: proxyInfo.address,
+-    },
+-    extraOptions: extraOptions,
+-  };
+-}
+-
+-export function getProxiedConnection(
+-  address: SubchannelAddress,
+-  channelOptions: ChannelOptions
+-): Promise<Socket | null> {
+-  if (!('grpc.http_connect_target' in channelOptions)) {
+-    return Promise.resolve(null);
+-  }
+-  const realTarget = channelOptions['grpc.http_connect_target'] as string;
+-  const parsedTarget = parseUri(realTarget);
+-  if (parsedTarget === null) {
+-    return Promise.resolve(null);
+-  }
+-  const splitHostPost = splitHostPort(parsedTarget.path);
+-  if (splitHostPost === null) {
+-    return Promise.resolve(null);
+-  }
+-  const hostPort = `${splitHostPost.host}:${
+-    splitHostPost.port ?? DEFAULT_PORT
+-  }`;
+-  const options: http.RequestOptions = {
+-    method: 'CONNECT',
+-    path: hostPort,
+-  };
+-  const headers: http.OutgoingHttpHeaders = {
+-    Host: hostPort,
+-  };
+-  // Connect to the subchannel address as a proxy
+-  if (isTcpSubchannelAddress(address)) {
+-    options.host = address.host;
+-    options.port = address.port;
+-  } else {
+-    options.socketPath = address.path;
+-  }
+-  if ('grpc.http_connect_creds' in channelOptions) {
+-    headers['Proxy-Authorization'] =
+-      'Basic ' +
+-      Buffer.from(channelOptions['grpc.http_connect_creds'] as string).toString(
+-        'base64'
+-      );
+-  }
+-  options.headers = headers;
+-  const proxyAddressString = subchannelAddressToString(address);
+-  trace('Using proxy ' + proxyAddressString + ' to connect to ' + options.path);
+-  return new Promise<Socket | null>((resolve, reject) => {
+-    const request = http.request(options);
+-    request.once('connect', (res, socket, head) => {
+-      request.removeAllListeners();
+-      socket.removeAllListeners();
+-      if (res.statusCode === 200) {
+-        trace(
+-          'Successfully connected to ' +
+-            options.path +
+-            ' through proxy ' +
+-            proxyAddressString
+-        );
+-        // The HTTP client may have already read a few bytes of the proxied
+-        // connection. If that's the case, put them back into the socket.
+-        // See https://github.com/grpc/grpc-node/issues/2744.
+-        if (head.length > 0) {
+-          socket.unshift(head);
+-        }
+-        trace(
+-          'Successfully established a plaintext connection to ' +
+-            options.path +
+-            ' through proxy ' +
+-            proxyAddressString
+-        );
+-        resolve(socket);
+-      } else {
+-        log(
+-          LogVerbosity.ERROR,
+-          'Failed to connect to ' +
+-            options.path +
+-            ' through proxy ' +
+-            proxyAddressString +
+-            ' with status ' +
+-            res.statusCode
+-        );
+-        reject();
+-      }
+-    });
+-    request.once('error', err => {
+-      request.removeAllListeners();
+-      log(
+-        LogVerbosity.ERROR,
+-        'Failed to connect to proxy ' +
+-          proxyAddressString +
+-          ' with error ' +
+-          err.message
+-      );
+-      reject();
+-    });
+-    request.end();
+-  });
+-}
++/*
++ * Copyright 2019 gRPC authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++
++import { log } from './logging';
++import { LogVerbosity } from './constants';
++import { isIPv4, Socket } from 'net';
++import * as http from 'http';
++import * as logging from './logging';
++import {
++  SubchannelAddress,
++  isTcpSubchannelAddress,
++  subchannelAddressToString,
++} from './subchannel-address';
++import { ChannelOptions } from './channel-options';
++import { GrpcUri, parseUri, splitHostPort, uriToString } from './uri-parser';
++import { URL } from 'url';
++import { DEFAULT_PORT } from './resolver-dns';
++
++const TRACER_NAME = 'proxy';
++
++function trace(text: string): void {
++  logging.trace(LogVerbosity.DEBUG, TRACER_NAME, text);
++}
++
++interface ProxyInfo {
++  address?: string;
++  creds?: string;
++}
++
++function getProxyInfo(): ProxyInfo {
++  let proxyEnv = '';
++  let envVar = '';
++  /* Prefer using 'grpc_proxy'. Fallback on 'http_proxy' if it is not set.
++   * Also prefer using 'https_proxy' with fallback on 'http_proxy'. The
++   * fallback behavior can be removed if there's a demand for it.
++   */
++  if (process.env.grpc_proxy) {
++    envVar = 'grpc_proxy';
++    proxyEnv = process.env.grpc_proxy;
++  } else if (process.env.https_proxy) {
++    envVar = 'https_proxy';
++    proxyEnv = process.env.https_proxy;
++  } else if (process.env.http_proxy) {
++    envVar = 'http_proxy';
++    proxyEnv = process.env.http_proxy;
++  } else {
++    return {};
++  }
++  let proxyUrl: URL;
++  try {
++    proxyUrl = new URL(proxyEnv);
++  } catch (e) {
++    log(LogVerbosity.ERROR, `cannot parse value of "${envVar}" env var`);
++    return {};
++  }
++  if (proxyUrl.protocol !== 'http:') {
++    log(
++      LogVerbosity.ERROR,
++      `"${proxyUrl.protocol}" scheme not supported in proxy URI`
++    );
++    return {};
++  }
++  let userCred: string | null = null;
++  if (proxyUrl.username) {
++    if (proxyUrl.password) {
++      log(LogVerbosity.INFO, 'userinfo found in proxy URI');
++      userCred = decodeURIComponent(`${proxyUrl.username}:${proxyUrl.password}`);
++    } else {
++      userCred = proxyUrl.username;
++    }
++  }
++  const hostname = proxyUrl.hostname;
++  let port = proxyUrl.port;
++  /* The proxy URL uses the scheme "http:", which has a default port number of
++   * 80. We need to set that explicitly here if it is omitted because otherwise
++   * it will use gRPC's default port 443. */
++  if (port === '') {
++    port = '80';
++  }
++  const result: ProxyInfo = {
++    address: `${hostname}:${port}`,
++  };
++  if (userCred) {
++    result.creds = userCred;
++  }
++  trace(
++    'Proxy server ' + result.address + ' set by environment variable ' + envVar
++  );
++  return result;
++}
++
++function getNoProxyHostList(): string[] {
++  /* Prefer using 'no_grpc_proxy'. Fallback on 'no_proxy' if it is not set. */
++  let noProxyStr: string | undefined = process.env.no_grpc_proxy;
++  let envVar = 'no_grpc_proxy';
++  if (!noProxyStr) {
++    noProxyStr = process.env.no_proxy;
++    envVar = 'no_proxy';
++  }
++  if (noProxyStr) {
++    trace('No proxy server list set by environment variable ' + envVar);
++    return noProxyStr.split(',');
++  } else {
++    return [];
++  }
++}
++
++interface CIDRNotation {
++  ip: number;
++  prefixLength: number;
++}
++
++/*
++ * The groups correspond to CIDR parts as follows:
++ * 1. ip
++ * 2. prefixLength
++ */
++
++export function parseCIDR(cidrString: string): CIDRNotation | null {
++  const splitRange = cidrString.split('/');  
++  if (splitRange.length !== 2) {  
++    return null;  
++  }  
++  const prefixLength = parseInt(splitRange[1], 10);  
++  if (!isIPv4(splitRange[0]) || Number.isNaN(prefixLength) || prefixLength < 0 || prefixLength > 32) {  
++    return null;  
++  }  
++  return {  
++    ip: ipToInt(splitRange[0]),  
++    prefixLength: prefixLength  
++  };
++}
++
++function ipToInt(ip: string) {
++  return ip.split(".").reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0);
++}
++
++function isIpInCIDR(cidr: CIDRNotation, serverHost: string) {
++  const ip = cidr.ip;
++  const mask = -1 << (32 - cidr.prefixLength);
++  const hostIP = ipToInt(serverHost);
++
++  return (hostIP & mask) === (ip & mask);
++}
++
++function hostMatchesNoProxyList(serverHost: string): boolean {
++  for (const host of getNoProxyHostList()) {
++    const parsedCIDR = parseCIDR(host);
++    // host is a CIDR and serverHost is an IP address
++    if (isIPv4(serverHost) && parsedCIDR && isIpInCIDR(parsedCIDR, serverHost)) {
++      return true;
++    } else if (serverHost.endsWith(host)) {
++      // host is a single IP or a domain name suffix
++      return true;
++    }
++  }
++  return false;
++}
++
++export interface ProxyMapResult {
++  target: GrpcUri;
++  extraOptions: ChannelOptions;
++}
++
++export function mapProxyName(
++  target: GrpcUri,
++  options: ChannelOptions
++): ProxyMapResult {
++  const noProxyResult: ProxyMapResult = {
++    target: target,
++    extraOptions: {},
++  };
++  if ((options['grpc.enable_http_proxy'] ?? 1) === 0) {
++    return noProxyResult;
++  }
++  if (target.scheme === 'unix') {
++    return noProxyResult;
++  }
++  const proxyInfo = getProxyInfo();
++  if (!proxyInfo.address) {
++    return noProxyResult;
++  }
++  const hostPort = splitHostPort(target.path);
++  if (!hostPort) {
++    return noProxyResult;
++  }
++  const serverHost = hostPort.host;
++  if (hostMatchesNoProxyList(serverHost)) {
++    trace('Not using proxy for target in no_proxy list: ' + uriToString(target));
++    return noProxyResult;
++  }
++  const extraOptions: ChannelOptions = {
++    'grpc.http_connect_target': uriToString(target),
++  };
++  if (proxyInfo.creds) {
++    extraOptions['grpc.http_connect_creds'] = proxyInfo.creds;
++  }
++  return {
++    target: {
++      scheme: 'dns',
++      path: proxyInfo.address,
++    },
++    extraOptions: extraOptions,
++  };
++}
++
++export function getProxiedConnection(
++  address: SubchannelAddress,
++  channelOptions: ChannelOptions
++): Promise<Socket | null> {
++  if (!('grpc.http_connect_target' in channelOptions)) {
++    return Promise.resolve(null);
++  }
++  const realTarget = channelOptions['grpc.http_connect_target'] as string;
++  const parsedTarget = parseUri(realTarget);
++  if (parsedTarget === null) {
++    return Promise.resolve(null);
++  }
++  const splitHostPost = splitHostPort(parsedTarget.path);
++  if (splitHostPost === null) {
++    return Promise.resolve(null);
++  }
++  const hostPort = `${splitHostPost.host}:${
++    splitHostPost.port ?? DEFAULT_PORT
++  }`;
++  const options: http.RequestOptions = {
++    method: 'CONNECT',
++    path: hostPort,
++  };
++  const headers: http.OutgoingHttpHeaders = {
++    Host: hostPort,
++  };
++  // Connect to the subchannel address as a proxy
++  if (isTcpSubchannelAddress(address)) {
++    options.host = address.host;
++    options.port = address.port;
++  } else {
++    options.socketPath = address.path;
++  }
++  if ('grpc.http_connect_creds' in channelOptions) {
++    headers['Proxy-Authorization'] =
++      'Basic ' +
++      Buffer.from(channelOptions['grpc.http_connect_creds'] as string).toString(
++        'base64'
++      );
++  }
++  options.headers = headers;
++    if (channelOptions['grpc-node.transport_owner']) options.signal = channelOptions['grpc-node.transport_owner'].signal;
++  const proxyAddressString = subchannelAddressToString(address);
++  trace('Using proxy ' + proxyAddressString + ' to connect to ' + options.path);
++  return new Promise<Socket | null>((resolve, reject) => {
++    const request = http.request(options);
++        const owner = channelOptions['grpc-node.transport_owner'];
++        if (owner) {
++            request.once('socket', socket => owner.socket(socket));
++            request.once('close', () => reject(new Error('Owned proxy request closed')));
++            owner.request(request);
++        }
++    request.once('connect', (res, socket, head) => {
++      request.removeAllListeners();
++      socket.removeAllListeners();
++            if (owner) {
++                owner.request(request);
++                owner.socket(socket);
++                request.once('error', reject);
++                request.once('close', () => reject(new Error('Owned proxy request closed')));
++            }
++      if (res.statusCode === 200) {
++        trace(
++          'Successfully connected to ' +
++            options.path +
++            ' through proxy ' +
++            proxyAddressString
++        );
++        // The HTTP client may have already read a few bytes of the proxied
++        // connection. If that's the case, put them back into the socket.
++        // See https://github.com/grpc/grpc-node/issues/2744.
++        if (head.length > 0) {
++          socket.unshift(head);
++        }
++        trace(
++          'Successfully established a plaintext connection to ' +
++            options.path +
++            ' through proxy ' +
++            proxyAddressString
++        );
++        resolve(socket);
++      } else {
++        log(
++          LogVerbosity.ERROR,
++          'Failed to connect to ' +
++            options.path +
++            ' through proxy ' +
++            proxyAddressString +
++            ' with status ' +
++            res.statusCode
++        );
++        reject();
++      }
++    });
++    request.once('error', err => {
++      request.removeAllListeners();
++            if (owner) owner.request(request);
++      log(
++        LogVerbosity.ERROR,
++        'Failed to connect to proxy ' +
++          proxyAddressString +
++          ' with error ' +
++          err.message
++      );
++      reject();
++    });
++    request.end();
++  });
++}
+--- a/src/transport.ts
++++ b/src/transport.ts
+@@ -1,883 +1,900 @@
+-/*
+- * Copyright 2023 gRPC authors.
+- *
+- * Licensed under the Apache License, Version 2.0 (the "License");
+- * you may not use this file except in compliance with the License.
+- * You may obtain a copy of the License at
+- *
+- *     http://www.apache.org/licenses/LICENSE-2.0
+- *
+- * Unless required by applicable law or agreed to in writing, software
+- * distributed under the License is distributed on an "AS IS" BASIS,
+- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+- * See the License for the specific language governing permissions and
+- * limitations under the License.
+- *
+- */
+-
+-import * as http2 from 'http2';
+-import {
+-  CipherNameAndProtocol,
+-  TLSSocket,
+-} from 'tls';
+-import { PartialStatusObject } from './call-interface';
+-import { SecureConnector, SecureConnectResult } from './channel-credentials';
+-import { ChannelOptions } from './channel-options';
+-import {
+-  ChannelzCallTracker,
+-  ChannelzCallTrackerStub,
+-  registerChannelzSocket,
+-  SocketInfo,
+-  SocketRef,
+-  TlsInfo,
+-  unregisterChannelzRef,
+-} from './channelz';
+-import { LogVerbosity } from './constants';
+-import { getProxiedConnection } from './http_proxy';
+-import * as logging from './logging';
+-import { getDefaultAuthority } from './resolver';
+-import {
+-  stringToSubchannelAddress,
+-  SubchannelAddress,
+-  subchannelAddressToString,
+-} from './subchannel-address';
+-import { GrpcUri, parseUri, uriToString } from './uri-parser';
+-import * as net from 'net';
+-import {
+-  Http2SubchannelCall,
+-  SubchannelCall,
+-  SubchannelCallInterceptingListener,
+-} from './subchannel-call';
+-import { Metadata } from './metadata';
+-import { getNextCallNumber } from './call-number';
+-import { Socket } from 'net';
+-import { AuthContext } from './auth-context';
+-
+-const TRACER_NAME = 'transport';
+-const FLOW_CONTROL_TRACER_NAME = 'transport_flowctrl';
+-
+-const clientVersion = require('../../package.json').version;
+-
+-const {
+-  HTTP2_HEADER_AUTHORITY,
+-  HTTP2_HEADER_CONTENT_TYPE,
+-  HTTP2_HEADER_METHOD,
+-  HTTP2_HEADER_PATH,
+-  HTTP2_HEADER_TE,
+-  HTTP2_HEADER_USER_AGENT,
+-} = http2.constants;
+-
+-const KEEPALIVE_TIMEOUT_MS = 20000;
+-
+-export interface CallEventTracker {
+-  addMessageSent(): void;
+-  addMessageReceived(): void;
+-  onCallEnd(status: PartialStatusObject): void;
+-  onStreamEnd(success: boolean): void;
+-}
+-
+-export interface TransportDisconnectListener {
+-  (tooManyPings: boolean): void;
+-}
+-
+-export interface Transport {
+-  getChannelzRef(): SocketRef;
+-  getPeerName(): string;
+-  getOptions(): ChannelOptions;
+-  getAuthContext(): AuthContext;
+-  createCall(
+-    metadata: Metadata,
+-    host: string,
+-    method: string,
+-    listener: SubchannelCallInterceptingListener,
+-    subchannelCallStatsTracker: Partial<CallEventTracker>,
+-    callId?: number
+-  ): SubchannelCall;
+-  addDisconnectListener(listener: TransportDisconnectListener): void;
+-  shutdown(): void;
+-}
+-
+-const tooManyPingsData: Buffer = Buffer.from('too_many_pings', 'ascii');
+-
+-class Http2Transport implements Transport {
+-  /**
+-   * The amount of time in between sending pings
+-   */
+-  private readonly keepaliveTimeMs: number;
+-  /**
+-   * The amount of time to wait for an acknowledgement after sending a ping
+-   */
+-  private readonly keepaliveTimeoutMs: number;
+-  /**
+-   * Indicates whether keepalive pings should be sent without any active calls
+-   */
+-  private readonly keepaliveWithoutCalls: boolean;
+-  /**
+-   * Timer reference indicating when to send the next ping or when the most recent ping will be considered lost.
+-   */
+-  private keepaliveTimer: NodeJS.Timeout | null = null;
+-  /**
+-   * Indicates that the keepalive timer ran out while there were no active
+-   * calls, and a ping should be sent the next time a call starts.
+-   */
+-  private pendingSendKeepalivePing = false;
+-
+-  private userAgent: string;
+-
+-  private activeCalls: Set<Http2SubchannelCall> = new Set();
+-
+-  private subchannelAddressString: string;
+-
+-  private disconnectListeners: TransportDisconnectListener[] = [];
+-
+-  private disconnectHandled = false;
+-
+-  private authContext: AuthContext;
+-
+-  // Channelz info
+-  private channelzRef: SocketRef;
+-  private readonly channelzEnabled: boolean = true;
+-  private streamTracker: ChannelzCallTracker | ChannelzCallTrackerStub;
+-  private keepalivesSent = 0;
+-  private messagesSent = 0;
+-  private messagesReceived = 0;
+-  private lastMessageSentTimestamp: Date | null = null;
+-  private lastMessageReceivedTimestamp: Date | null = null;
+-
+-  constructor(
+-    private session: http2.ClientHttp2Session,
+-    subchannelAddress: SubchannelAddress,
+-    private options: ChannelOptions,
+-    /**
+-     * Name of the remote server, if it is not the same as the subchannel
+-     * address, i.e. if connecting through an HTTP CONNECT proxy.
+-     */
+-    private remoteName: string | null
+-  ) {
+-    /* Populate subchannelAddressString and channelzRef before doing anything
+-     * else, because they are used in the trace methods. */
+-    this.subchannelAddressString = subchannelAddressToString(subchannelAddress);
+-
+-    if (options['grpc.enable_channelz'] === 0) {
+-      this.channelzEnabled = false;
+-      this.streamTracker = new ChannelzCallTrackerStub();
+-    } else {
+-      this.streamTracker = new ChannelzCallTracker();
+-    }
+-
+-    this.channelzRef = registerChannelzSocket(
+-      this.subchannelAddressString,
+-      () => this.getChannelzInfo(),
+-      this.channelzEnabled
+-    );
+-
+-    // Build user-agent string.
+-    this.userAgent = [
+-      options['grpc.primary_user_agent'],
+-      `grpc-node-js/${clientVersion}`,
+-      options['grpc.secondary_user_agent'],
+-    ]
+-      .filter(e => e)
+-      .join(' '); // remove falsey values first
+-
+-    if ('grpc.keepalive_time_ms' in options) {
+-      this.keepaliveTimeMs = options['grpc.keepalive_time_ms']!;
+-    } else {
+-      this.keepaliveTimeMs = -1;
+-    }
+-    if ('grpc.keepalive_timeout_ms' in options) {
+-      this.keepaliveTimeoutMs = options['grpc.keepalive_timeout_ms']!;
+-    } else {
+-      this.keepaliveTimeoutMs = KEEPALIVE_TIMEOUT_MS;
+-    }
+-    if ('grpc.keepalive_permit_without_calls' in options) {
+-      this.keepaliveWithoutCalls =
+-        options['grpc.keepalive_permit_without_calls'] === 1;
+-    } else {
+-      this.keepaliveWithoutCalls = false;
+-    }
+-
+-    session.once('close', () => {
+-      this.trace('session closed');
+-      this.handleDisconnect();
+-    });
+-
+-    session.once(
+-      'goaway',
+-      (errorCode: number, lastStreamID: number, opaqueData?: Buffer) => {
+-        let tooManyPings = false;
+-        /* See the last paragraph of
+-         * https://github.com/grpc/proposal/blob/master/A8-client-side-keepalive.md#basic-keepalive */
+-        if (
+-          errorCode === http2.constants.NGHTTP2_ENHANCE_YOUR_CALM &&
+-          opaqueData &&
+-          opaqueData.equals(tooManyPingsData)
+-        ) {
+-          tooManyPings = true;
+-        }
+-        if (this.traceEnabled) {
+-          this.trace(
+-            'connection closed by GOAWAY with code ' +
+-              errorCode +
+-              ' and data ' +
+-              opaqueData?.toString()
+-          );
+-        }
+-        this.reportDisconnectToOwner(tooManyPings);
+-      }
+-    );
+-
+-    session.once('error', error => {
+-      if (this.traceEnabled) {
+-        this.trace('connection closed with error ' + (error as Error).message);
+-      }
+-      this.handleDisconnect();
+-    });
+-
+-    session.socket.once('close', (hadError) => {
+-      if (this.traceEnabled) {
+-        this.trace('connection closed. hadError=' + hadError);
+-      }
+-      this.handleDisconnect();
+-    });
+-
+-    if (this.traceEnabled) {
+-      session.on('remoteSettings', (settings: http2.Settings) => {
+-        this.trace(
+-          'new settings received' +
+-            (this.session !== session ? ' on the old connection' : '') +
+-            ': ' +
+-            JSON.stringify(settings)
+-        );
+-      });
+-      session.on('localSettings', (settings: http2.Settings) => {
+-        this.trace(
+-          'local settings acknowledged by remote' +
+-            (this.session !== session ? ' on the old connection' : '') +
+-            ': ' +
+-            JSON.stringify(settings)
+-        );
+-      });
+-    }
+-
+-    /* Start the keepalive timer last, because this can trigger trace logs,
+-     * which should only happen after everything else is set up. */
+-    if (this.keepaliveWithoutCalls) {
+-      this.maybeStartKeepalivePingTimer();
+-    }
+-
+-    if (session.socket instanceof TLSSocket && session.socket.authorized) {
+-      this.authContext = {
+-        transportSecurityType: 'ssl',
+-        sslPeerCertificate: session.socket.getPeerCertificate()
+-      };
+-    } else {
+-      this.authContext = {};
+-    }
+-  }
+-
+-  private getChannelzInfo(): SocketInfo {
+-    const sessionSocket = this.session.socket;
+-    const remoteAddress = sessionSocket.remoteAddress
+-      ? stringToSubchannelAddress(
+-          sessionSocket.remoteAddress,
+-          sessionSocket.remotePort
+-        )
+-      : null;
+-    const localAddress = sessionSocket.localAddress
+-      ? stringToSubchannelAddress(
+-          sessionSocket.localAddress,
+-          sessionSocket.localPort
+-        )
+-      : null;
+-    let tlsInfo: TlsInfo | null;
+-    if (this.session.encrypted) {
+-      const tlsSocket: TLSSocket = sessionSocket as TLSSocket;
+-      const cipherInfo: CipherNameAndProtocol & { standardName?: string } =
+-        tlsSocket.getCipher();
+-      const certificate = tlsSocket.getCertificate();
+-      const peerCertificate = tlsSocket.getPeerCertificate();
+-      tlsInfo = {
+-        cipherSuiteStandardName: cipherInfo.standardName ?? null,
+-        cipherSuiteOtherName: cipherInfo.standardName ? null : cipherInfo.name,
+-        localCertificate:
+-          certificate && 'raw' in certificate ? certificate.raw : null,
+-        remoteCertificate:
+-          peerCertificate && 'raw' in peerCertificate
+-            ? peerCertificate.raw
+-            : null,
+-      };
+-    } else {
+-      tlsInfo = null;
+-    }
+-    const socketInfo: SocketInfo = {
+-      remoteAddress: remoteAddress,
+-      localAddress: localAddress,
+-      security: tlsInfo,
+-      remoteName: this.remoteName,
+-      streamsStarted: this.streamTracker.callsStarted,
+-      streamsSucceeded: this.streamTracker.callsSucceeded,
+-      streamsFailed: this.streamTracker.callsFailed,
+-      messagesSent: this.messagesSent,
+-      messagesReceived: this.messagesReceived,
+-      keepAlivesSent: this.keepalivesSent,
+-      lastLocalStreamCreatedTimestamp:
+-        this.streamTracker.lastCallStartedTimestamp,
+-      lastRemoteStreamCreatedTimestamp: null,
+-      lastMessageSentTimestamp: this.lastMessageSentTimestamp,
+-      lastMessageReceivedTimestamp: this.lastMessageReceivedTimestamp,
+-      localFlowControlWindow: this.session.state.localWindowSize ?? null,
+-      remoteFlowControlWindow: this.session.state.remoteWindowSize ?? null,
+-    };
+-    return socketInfo;
+-  }
+-
+-  private get traceEnabled(): boolean {
+-    return logging.isTracerEnabled(TRACER_NAME);
+-  }
+-
+-  private get keepaliveTraceEnabled(): boolean {
+-    return logging.isTracerEnabled('keepalive');
+-  }
+-
+-  private get flowControlTraceEnabled(): boolean {
+-    return logging.isTracerEnabled(FLOW_CONTROL_TRACER_NAME);
+-  }
+-
+-  private get internalsTraceEnabled(): boolean {
+-    return logging.isTracerEnabled('transport_internals');
+-  }
+-
+-  private trace(text: string): void {
+-    if (this.traceEnabled) {
+-      logging.trace(
+-        LogVerbosity.DEBUG,
+-        TRACER_NAME,
+-        '(' +
+-          this.channelzRef.id +
+-          ') ' +
+-          this.subchannelAddressString +
+-          ' ' +
+-          text
+-      );
+-    }
+-  }
+-
+-  private keepaliveTrace(text: string): void {
+-    if (this.keepaliveTraceEnabled) {
+-      logging.trace(
+-        LogVerbosity.DEBUG,
+-        'keepalive',
+-        '(' +
+-          this.channelzRef.id +
+-          ') ' +
+-          this.subchannelAddressString +
+-          ' ' +
+-          text
+-      );
+-    }
+-  }
+-
+-  private flowControlTrace(text: string): void {
+-    if (this.flowControlTraceEnabled) {
+-      logging.trace(
+-        LogVerbosity.DEBUG,
+-        FLOW_CONTROL_TRACER_NAME,
+-        '(' +
+-          this.channelzRef.id +
+-          ') ' +
+-          this.subchannelAddressString +
+-          ' ' +
+-          text
+-      );
+-    }
+-  }
+-
+-  private internalsTrace(text: string): void {
+-    if (this.internalsTraceEnabled) {
+-      logging.trace(
+-        LogVerbosity.DEBUG,
+-        'transport_internals',
+-        '(' +
+-          this.channelzRef.id +
+-          ') ' +
+-          this.subchannelAddressString +
+-          ' ' +
+-          text
+-      );
+-    }
+-  }
+-
+-  /**
+-   * Indicate to the owner of this object that this transport should no longer
+-   * be used. That happens if the connection drops, or if the server sends a
+-   * GOAWAY.
+-   * @param tooManyPings If true, this was triggered by a GOAWAY with data
+-   * indicating that the session was closed becaues the client sent too many
+-   * pings.
+-   * @returns
+-   */
+-  private reportDisconnectToOwner(tooManyPings: boolean) {
+-    if (this.disconnectHandled) {
+-      return;
+-    }
+-    this.disconnectHandled = true;
+-    this.disconnectListeners.forEach(listener => listener(tooManyPings));
+-  }
+-
+-  /**
+-   * Handle connection drops, but not GOAWAYs.
+-   */
+-  private handleDisconnect() {
+-    this.clearKeepaliveTimeout();
+-    this.reportDisconnectToOwner(false);
+-    for (const call of this.activeCalls) {
+-      call.onDisconnect();
+-    }
+-    // Wait an event loop cycle before destroying the connection
+-    setImmediate(() => {
+-      this.session.destroy();
+-    });
+-  }
+-
+-  addDisconnectListener(listener: TransportDisconnectListener): void {
+-    this.disconnectListeners.push(listener);
+-  }
+-
+-  private canSendPing() {
+-    return (
+-      !this.session.destroyed &&
+-      this.keepaliveTimeMs > 0 &&
+-      (this.keepaliveWithoutCalls || this.activeCalls.size > 0)
+-    );
+-  }
+-
+-  private maybeSendPing() {
+-    if (!this.canSendPing()) {
+-      this.pendingSendKeepalivePing = true;
+-      return;
+-    }
+-    if (this.keepaliveTimer) {
+-      console.error('keepaliveTimeout is not null');
+-      return;
+-    }
+-    if (this.channelzEnabled) {
+-      this.keepalivesSent += 1;
+-    }
+-    if (this.keepaliveTraceEnabled) {
+-      this.keepaliveTrace(
+-        'Sending ping with timeout ' + this.keepaliveTimeoutMs + 'ms'
+-      );
+-    }
+-    this.keepaliveTimer = setTimeout(() => {
+-      this.keepaliveTimer = null;
+-      this.keepaliveTrace('Ping timeout passed without response');
+-      this.handleDisconnect();
+-    }, this.keepaliveTimeoutMs);
+-    this.keepaliveTimer.unref?.();
+-    let pingSendError = '';
+-    try {
+-      const pingSentSuccessfully = this.session.ping(
+-        (err: Error | null, duration: number, payload: Buffer) => {
+-          this.clearKeepaliveTimeout();
+-          if (err) {
+-            if (this.keepaliveTraceEnabled) {
+-              this.keepaliveTrace('Ping failed with error ' + err.message);
+-            }
+-            this.handleDisconnect();
+-          } else {
+-            this.keepaliveTrace('Received ping response');
+-            this.maybeStartKeepalivePingTimer();
+-          }
+-        }
+-      );
+-      if (!pingSentSuccessfully) {
+-        pingSendError = 'Ping returned false';
+-      }
+-    } catch (e) {
+-      // grpc/grpc-node#2139
+-      pingSendError = (e instanceof Error ? e.message : '') || 'Unknown error';
+-    }
+-    if (pingSendError) {
+-      if (this.keepaliveTraceEnabled) {
+-        this.keepaliveTrace('Ping send failed: ' + pingSendError);
+-      }
+-      this.handleDisconnect();
+-    }
+-  }
+-
+-  /**
+-   * Starts the keepalive ping timer if appropriate. If the timer already ran
+-   * out while there were no active requests, instead send a ping immediately.
+-   * If the ping timer is already running or a ping is currently in flight,
+-   * instead do nothing and wait for them to resolve.
+-   */
+-  private maybeStartKeepalivePingTimer() {
+-    if (!this.canSendPing()) {
+-      return;
+-    }
+-    if (this.pendingSendKeepalivePing) {
+-      this.pendingSendKeepalivePing = false;
+-      this.maybeSendPing();
+-    } else if (!this.keepaliveTimer) {
+-      this.keepaliveTrace(
+-        'Starting keepalive timer for ' + this.keepaliveTimeMs + 'ms'
+-      );
+-      this.keepaliveTimer = setTimeout(() => {
+-        this.keepaliveTimer = null;
+-        this.maybeSendPing();
+-      }, this.keepaliveTimeMs);
+-      this.keepaliveTimer.unref?.();
+-    }
+-    /* Otherwise, there is already either a keepalive timer or a ping pending,
+-     * wait for those to resolve. */
+-  }
+-
+-  /**
+-   * Clears whichever keepalive timeout is currently active, if any.
+-   */
+-  private clearKeepaliveTimeout() {
+-    if (this.keepaliveTimer) {
+-      clearTimeout(this.keepaliveTimer);
+-      this.keepaliveTimer = null;
+-    }
+-  }
+-
+-  private removeActiveCall(call: Http2SubchannelCall) {
+-    this.activeCalls.delete(call);
+-    if (this.activeCalls.size === 0) {
+-      this.session.unref();
+-    }
+-  }
+-
+-  private addActiveCall(call: Http2SubchannelCall) {
+-    this.activeCalls.add(call);
+-    if (this.activeCalls.size === 1) {
+-      this.session.ref();
+-      if (!this.keepaliveWithoutCalls) {
+-        this.maybeStartKeepalivePingTimer();
+-      }
+-    }
+-  }
+-
+-  createCall(
+-    metadata: Metadata,
+-    host: string,
+-    method: string,
+-    listener: SubchannelCallInterceptingListener,
+-    subchannelCallStatsTracker: Partial<CallEventTracker>,
+-    callId?: number
+-  ): Http2SubchannelCall {
+-    const headers = metadata.toHttp2Headers();
+-    headers[HTTP2_HEADER_AUTHORITY] = host;
+-    headers[HTTP2_HEADER_USER_AGENT] = this.userAgent;
+-    headers[HTTP2_HEADER_CONTENT_TYPE] = 'application/grpc';
+-    headers[HTTP2_HEADER_METHOD] = 'POST';
+-    headers[HTTP2_HEADER_PATH] = method;
+-    headers[HTTP2_HEADER_TE] = 'trailers';
+-    let http2Stream: http2.ClientHttp2Stream;
+-    /* In theory, if an error is thrown by session.request because session has
+-     * become unusable (e.g. because it has received a goaway), this subchannel
+-     * should soon see the corresponding close or goaway event anyway and leave
+-     * READY. But we have seen reports that this does not happen
+-     * (https://github.com/googleapis/nodejs-firestore/issues/1023#issuecomment-653204096)
+-     * so for defense in depth, we just discard the session when we see an
+-     * error here.
+-     */
+-    try {
+-      http2Stream = this.session.request(headers);
+-    } catch (e) {
+-      this.handleDisconnect();
+-      throw e;
+-    }
+-    if (this.flowControlTraceEnabled) {
+-      this.flowControlTrace(
+-        'local window size: ' +
+-          this.session.state.localWindowSize +
+-          ' remote window size: ' +
+-          this.session.state.remoteWindowSize
+-      );
+-    }
+-    if (this.internalsTraceEnabled) {
+-      this.internalsTrace(
+-        'session.closed=' +
+-          this.session.closed +
+-          ' session.destroyed=' +
+-          this.session.destroyed +
+-          ' session.socket.destroyed=' +
+-          this.session.socket.destroyed
+-      );
+-    }
+-    let eventTracker: CallEventTracker;
+-    // eslint-disable-next-line prefer-const
+-    let call: Http2SubchannelCall;
+-    if (this.channelzEnabled) {
+-      this.streamTracker.addCallStarted();
+-      eventTracker = {
+-        addMessageSent: () => {
+-          this.messagesSent += 1;
+-          this.lastMessageSentTimestamp = new Date();
+-          subchannelCallStatsTracker.addMessageSent?.();
+-        },
+-        addMessageReceived: () => {
+-          this.messagesReceived += 1;
+-          this.lastMessageReceivedTimestamp = new Date();
+-          subchannelCallStatsTracker.addMessageReceived?.();
+-        },
+-        onCallEnd: status => {
+-          subchannelCallStatsTracker.onCallEnd?.(status);
+-          this.removeActiveCall(call);
+-        },
+-        onStreamEnd: success => {
+-          if (success) {
+-            this.streamTracker.addCallSucceeded();
+-          } else {
+-            this.streamTracker.addCallFailed();
+-          }
+-          subchannelCallStatsTracker.onStreamEnd?.(success);
+-        },
+-      };
+-    } else {
+-      eventTracker = {
+-        addMessageSent: () => {
+-          subchannelCallStatsTracker.addMessageSent?.();
+-        },
+-        addMessageReceived: () => {
+-          subchannelCallStatsTracker.addMessageReceived?.();
+-        },
+-        onCallEnd: status => {
+-          subchannelCallStatsTracker.onCallEnd?.(status);
+-          this.removeActiveCall(call);
+-        },
+-        onStreamEnd: success => {
+-          subchannelCallStatsTracker.onStreamEnd?.(success);
+-        },
+-      };
+-    }
+-    call = new Http2SubchannelCall(
+-      http2Stream,
+-      eventTracker,
+-      listener,
+-      this,
+-      callId ?? getNextCallNumber()
+-    );
+-    this.addActiveCall(call);
+-    return call;
+-  }
+-
+-  getChannelzRef(): SocketRef {
+-    return this.channelzRef;
+-  }
+-
+-  getPeerName() {
+-    return this.subchannelAddressString;
+-  }
+-
+-  getOptions() {
+-    return this.options;
+-  }
+-
+-  getAuthContext(): AuthContext {
+-    return this.authContext;
+-  }
+-
+-  shutdown() {
+-    this.session.close();
+-    unregisterChannelzRef(this.channelzRef);
+-  }
+-}
+-
+-export interface SubchannelConnector {
+-  connect(
+-    address: SubchannelAddress,
+-    secureConnector: SecureConnector,
+-    options: ChannelOptions
+-  ): Promise<Transport>;
+-  shutdown(): void;
+-}
+-
+-export class Http2SubchannelConnector implements SubchannelConnector {
+-  private session: http2.ClientHttp2Session | null = null;
+-  private isShutdown = false;
+-  constructor(private channelTarget: GrpcUri) {}
+-
+-  private get traceEnabled(): boolean {
+-    return logging.isTracerEnabled(TRACER_NAME);
+-  }
+-
+-  private trace(text: string) {
+-    if (this.traceEnabled) {
+-      logging.trace(
+-        LogVerbosity.DEBUG,
+-        TRACER_NAME,
+-        uriToString(this.channelTarget) + ' ' + text
+-      );
+-    }
+-  }
+-
+-  private createSession(
+-    secureConnectResult: SecureConnectResult,
+-    address: SubchannelAddress,
+-    options: ChannelOptions
+-  ): Promise<Http2Transport> {
+-    if (this.isShutdown) {
+-      return Promise.reject();
+-    }
+-
+-    if (secureConnectResult.socket.closed) {
+-      return Promise.reject('Connection closed before starting HTTP/2 handshake');
+-    }
+-
+-    return new Promise<Http2Transport>((resolve, reject) => {
+-      let remoteName: string | null = null;
+-      let realTarget: GrpcUri = this.channelTarget;
+-      if ('grpc.http_connect_target' in options) {
+-        const parsedTarget = parseUri(options['grpc.http_connect_target']!);
+-        if (parsedTarget) {
+-          realTarget = parsedTarget;
+-          remoteName = uriToString(parsedTarget);
+-        }
+-      }
+-      const scheme = secureConnectResult.secure ? 'https' : 'http';
+-      const targetPath = getDefaultAuthority(realTarget);
+-      const closeHandler = () => {
+-        this.session?.destroy();
+-        this.session = null;
+-        // Leave time for error event to happen before rejecting
+-        setImmediate(() => {
+-          if (!reportedError) {
+-            reportedError = true;
+-            reject(`${errorMessage.trim()} (${new Date().toISOString()})`);
+-          }
+-        });
+-      };
+-      const errorHandler = (error: Error) => {
+-        this.session?.destroy();
+-        errorMessage = (error as Error).message;
+-        if (this.traceEnabled) {
+-          this.trace('connection failed with error ' + errorMessage);
+-        }
+-        if (!reportedError) {
+-          reportedError = true;
+-          reject(`${errorMessage} (${new Date().toISOString()})`);
+-        }
+-      };
+-      const sessionOptions: http2.ClientSessionOptions = {
+-        createConnection: (authority, option) => {
+-          return secureConnectResult.socket;
+-        },
+-        settings: {
+-          initialWindowSize:
+-            options['grpc-node.flow_control_window'] ??
+-            http2.getDefaultSettings?.()?.initialWindowSize ?? 65535,
+-        },
+-        maxSendHeaderBlockLength: Number.MAX_SAFE_INTEGER,
+-        /* By default, set a very large max session memory limit, to effectively
+-         * disable enforcement of the limit. Some testing indicates that Node's
+-         * behavior degrades badly when this limit is reached, so we solve that
+-         * by disabling the check entirely. */
+-        maxSessionMemory: options['grpc-node.max_session_memory'] ?? Number.MAX_SAFE_INTEGER
+-      };
+-      const session = http2.connect(`${scheme}://${targetPath}`, sessionOptions);
+-      // Prepare window size configuration for remoteSettings handler
+-      const defaultWin = http2.getDefaultSettings?.()?.initialWindowSize ?? 65535; // 65 535 B
+-      const connWin = options[
+-        'grpc-node.flow_control_window'
+-      ] as number | undefined;
+-
+-      this.session = session;
+-      let errorMessage = 'Failed to connect';
+-      let reportedError = false;
+-      session.unref();
+-      session.once('remoteSettings', () => {
+-        // Send WINDOW_UPDATE now to avoid 65 KB start-window stall.
+-        if (connWin && connWin > defaultWin) {
+-          try {
+-            // Node ≥ 14.18
+-            (session as any).setLocalWindowSize(connWin);
+-          } catch {
+-            // Older Node: bump by the delta
+-            const delta = connWin - (session.state.localWindowSize ?? defaultWin);
+-            if (delta > 0) (session as any).incrementWindowSize(delta);
+-          }
+-        }
+-
+-        session.removeAllListeners();
+-        secureConnectResult.socket.removeListener('close', closeHandler);
+-        secureConnectResult.socket.removeListener('error', errorHandler);
+-        resolve(new Http2Transport(session, address, options, remoteName));
+-        this.session = null;
+-      });
+-      session.once('close', closeHandler);
+-      session.once('error', errorHandler);
+-      secureConnectResult.socket.once('close', closeHandler);
+-      secureConnectResult.socket.once('error', errorHandler);
+-    });
+-  }
+-
+-  private tcpConnect(address: SubchannelAddress, options: ChannelOptions): Promise<Socket> {
+-    return getProxiedConnection(address, options).then(proxiedSocket => {
+-      if (proxiedSocket) {
+-        return proxiedSocket;
+-      } else {
+-        return new Promise<Socket>((resolve, reject) => {
+-          const closeCallback = () => {
+-            reject(new Error('Socket closed'));
+-          };
+-          const errorCallback = (error: Error) => {
+-            reject(error);
+-          }
+-          const socket = net.connect(address, () => {
+-            socket.removeListener('close', closeCallback);
+-            socket.removeListener('error', errorCallback);
+-            resolve(socket);
+-          });
+-          socket.once('close', closeCallback);
+-          socket.once('error', errorCallback);
+-        });
+-      }
+-    });
+-  }
+-
+-  async connect(
+-    address: SubchannelAddress,
+-    secureConnector: SecureConnector,
+-    options: ChannelOptions
+-  ): Promise<Http2Transport> {
+-    if (this.isShutdown) {
+-      return Promise.reject();
+-    }
+-    let tcpConnection: net.Socket | null = null;
+-    let secureConnectResult: SecureConnectResult | null  = null;
+-    const addressString = subchannelAddressToString(address);
+-    try {
+-      if (this.traceEnabled) {
+-        this.trace(addressString + ' Waiting for secureConnector to be ready');
+-      }
+-      await secureConnector.waitForReady();
+-      if (this.traceEnabled) {
+-        this.trace(addressString + ' secureConnector is ready');
+-      }
+-      tcpConnection = await this.tcpConnect(address, options);
+-      tcpConnection.setNoDelay();
+-      if (this.traceEnabled) {
+-        this.trace(addressString + ' Established TCP connection');
+-      }
+-      secureConnectResult = await secureConnector.connect(tcpConnection);
+-      if (this.traceEnabled) {
+-        this.trace(addressString + ' Established secure connection');
+-      }
+-      return this.createSession(secureConnectResult, address, options);
+-    } catch (e) {
+-      tcpConnection?.destroy();
+-      secureConnectResult?.socket.destroy();
+-      throw e;
+-    }
+-  }
+-
+-  shutdown(): void {
+-    this.isShutdown = true;
+-    this.session?.close();
+-    this.session = null;
+-  }
+-}
++/*
++ * Copyright 2023 gRPC authors.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ */
++
++import * as http2 from 'http2';
++import {
++  CipherNameAndProtocol,
++  TLSSocket,
++} from 'tls';
++import { PartialStatusObject } from './call-interface';
++import { SecureConnector, SecureConnectResult } from './channel-credentials';
++import { ChannelOptions } from './channel-options';
++import {
++  ChannelzCallTracker,
++  ChannelzCallTrackerStub,
++  registerChannelzSocket,
++  SocketInfo,
++  SocketRef,
++  TlsInfo,
++  unregisterChannelzRef,
++} from './channelz';
++import { LogVerbosity } from './constants';
++import { getProxiedConnection } from './http_proxy';
++import * as logging from './logging';
++import { getDefaultAuthority } from './resolver';
++import {
++  stringToSubchannelAddress,
++  SubchannelAddress,
++  subchannelAddressToString,
++} from './subchannel-address';
++import { GrpcUri, parseUri, uriToString } from './uri-parser';
++import * as net from 'net';
++import {
++  Http2SubchannelCall,
++  SubchannelCall,
++  SubchannelCallInterceptingListener,
++} from './subchannel-call';
++import { Metadata } from './metadata';
++import { getNextCallNumber } from './call-number';
++import { Socket } from 'net';
++import { AuthContext } from './auth-context';
++
++const TRACER_NAME = 'transport';
++const FLOW_CONTROL_TRACER_NAME = 'transport_flowctrl';
++
++const clientVersion = require('../../package.json').version;
++
++const {
++  HTTP2_HEADER_AUTHORITY,
++  HTTP2_HEADER_CONTENT_TYPE,
++  HTTP2_HEADER_METHOD,
++  HTTP2_HEADER_PATH,
++  HTTP2_HEADER_TE,
++  HTTP2_HEADER_USER_AGENT,
++} = http2.constants;
++
++const KEEPALIVE_TIMEOUT_MS = 20000;
++
++export interface CallEventTracker {
++  addMessageSent(): void;
++  addMessageReceived(): void;
++  onCallEnd(status: PartialStatusObject): void;
++  onStreamEnd(success: boolean): void;
++}
++
++export interface TransportDisconnectListener {
++  (tooManyPings: boolean): void;
++}
++
++export interface Transport {
++  getChannelzRef(): SocketRef;
++  getPeerName(): string;
++  getOptions(): ChannelOptions;
++  getAuthContext(): AuthContext;
++  createCall(
++    metadata: Metadata,
++    host: string,
++    method: string,
++    listener: SubchannelCallInterceptingListener,
++    subchannelCallStatsTracker: Partial<CallEventTracker>,
++    callId?: number
++  ): SubchannelCall;
++  addDisconnectListener(listener: TransportDisconnectListener): void;
++  shutdown(): void;
++}
++
++const tooManyPingsData: Buffer = Buffer.from('too_many_pings', 'ascii');
++
++class Http2Transport implements Transport {
++  /**
++   * The amount of time in between sending pings
++   */
++  private readonly keepaliveTimeMs: number;
++  /**
++   * The amount of time to wait for an acknowledgement after sending a ping
++   */
++  private readonly keepaliveTimeoutMs: number;
++  /**
++   * Indicates whether keepalive pings should be sent without any active calls
++   */
++  private readonly keepaliveWithoutCalls: boolean;
++  /**
++   * Timer reference indicating when to send the next ping or when the most recent ping will be considered lost.
++   */
++  private keepaliveTimer: NodeJS.Timeout | null = null;
++  /**
++   * Indicates that the keepalive timer ran out while there were no active
++   * calls, and a ping should be sent the next time a call starts.
++   */
++  private pendingSendKeepalivePing = false;
++
++  private userAgent: string;
++
++  private activeCalls: Set<Http2SubchannelCall> = new Set();
++
++  private subchannelAddressString: string;
++
++  private disconnectListeners: TransportDisconnectListener[] = [];
++
++  private disconnectHandled = false;
++
++  private authContext: AuthContext;
++
++  // Channelz info
++  private channelzRef: SocketRef;
++  private readonly channelzEnabled: boolean = true;
++  private streamTracker: ChannelzCallTracker | ChannelzCallTrackerStub;
++  private keepalivesSent = 0;
++  private messagesSent = 0;
++  private messagesReceived = 0;
++  private lastMessageSentTimestamp: Date | null = null;
++  private lastMessageReceivedTimestamp: Date | null = null;
++
++  constructor(
++    private session: http2.ClientHttp2Session,
++    subchannelAddress: SubchannelAddress,
++    private options: ChannelOptions,
++    /**
++     * Name of the remote server, if it is not the same as the subchannel
++     * address, i.e. if connecting through an HTTP CONNECT proxy.
++     */
++    private remoteName: string | null
++  ) {
++    /* Populate subchannelAddressString and channelzRef before doing anything
++     * else, because they are used in the trace methods. */
++    this.subchannelAddressString = subchannelAddressToString(subchannelAddress);
++
++    if (options['grpc.enable_channelz'] === 0) {
++      this.channelzEnabled = false;
++      this.streamTracker = new ChannelzCallTrackerStub();
++    } else {
++      this.streamTracker = new ChannelzCallTracker();
++    }
++
++    this.channelzRef = registerChannelzSocket(
++      this.subchannelAddressString,
++      () => this.getChannelzInfo(),
++      this.channelzEnabled
++    );
++
++    // Build user-agent string.
++    this.userAgent = [
++      options['grpc.primary_user_agent'],
++      `grpc-node-js/${clientVersion}`,
++      options['grpc.secondary_user_agent'],
++    ]
++      .filter(e => e)
++      .join(' '); // remove falsey values first
++
++    if ('grpc.keepalive_time_ms' in options) {
++      this.keepaliveTimeMs = options['grpc.keepalive_time_ms']!;
++    } else {
++      this.keepaliveTimeMs = -1;
++    }
++    if ('grpc.keepalive_timeout_ms' in options) {
++      this.keepaliveTimeoutMs = options['grpc.keepalive_timeout_ms']!;
++    } else {
++      this.keepaliveTimeoutMs = KEEPALIVE_TIMEOUT_MS;
++    }
++    if ('grpc.keepalive_permit_without_calls' in options) {
++      this.keepaliveWithoutCalls =
++        options['grpc.keepalive_permit_without_calls'] === 1;
++    } else {
++      this.keepaliveWithoutCalls = false;
++    }
++
++    session.once('close', () => {
++      this.trace('session closed');
++      this.handleDisconnect();
++    });
++
++    session.once(
++      'goaway',
++      (errorCode: number, lastStreamID: number, opaqueData?: Buffer) => {
++        let tooManyPings = false;
++        /* See the last paragraph of
++         * https://github.com/grpc/proposal/blob/master/A8-client-side-keepalive.md#basic-keepalive */
++        if (
++          errorCode === http2.constants.NGHTTP2_ENHANCE_YOUR_CALM &&
++          opaqueData &&
++          opaqueData.equals(tooManyPingsData)
++        ) {
++          tooManyPings = true;
++        }
++        if (this.traceEnabled) {
++          this.trace(
++            'connection closed by GOAWAY with code ' +
++              errorCode +
++              ' and data ' +
++              opaqueData?.toString()
++          );
++        }
++        this.reportDisconnectToOwner(tooManyPings);
++      }
++    );
++
++    session.once('error', error => {
++      if (this.traceEnabled) {
++        this.trace('connection closed with error ' + (error as Error).message);
++      }
++      this.handleDisconnect();
++    });
++
++    session.socket.once('close', (hadError) => {
++      if (this.traceEnabled) {
++        this.trace('connection closed. hadError=' + hadError);
++      }
++      this.handleDisconnect();
++    });
++
++    if (this.traceEnabled) {
++      session.on('remoteSettings', (settings: http2.Settings) => {
++        this.trace(
++          'new settings received' +
++            (this.session !== session ? ' on the old connection' : '') +
++            ': ' +
++            JSON.stringify(settings)
++        );
++      });
++      session.on('localSettings', (settings: http2.Settings) => {
++        this.trace(
++          'local settings acknowledged by remote' +
++            (this.session !== session ? ' on the old connection' : '') +
++            ': ' +
++            JSON.stringify(settings)
++        );
++      });
++    }
++
++    /* Start the keepalive timer last, because this can trigger trace logs,
++     * which should only happen after everything else is set up. */
++    if (this.keepaliveWithoutCalls) {
++      this.maybeStartKeepalivePingTimer();
++    }
++
++    if (session.socket instanceof TLSSocket && session.socket.authorized) {
++      this.authContext = {
++        transportSecurityType: 'ssl',
++        sslPeerCertificate: session.socket.getPeerCertificate()
++      };
++    } else {
++      this.authContext = {};
++    }
++  }
++
++  private getChannelzInfo(): SocketInfo {
++    const sessionSocket = this.session.socket;
++    const remoteAddress = sessionSocket.remoteAddress
++      ? stringToSubchannelAddress(
++          sessionSocket.remoteAddress,
++          sessionSocket.remotePort
++        )
++      : null;
++    const localAddress = sessionSocket.localAddress
++      ? stringToSubchannelAddress(
++          sessionSocket.localAddress,
++          sessionSocket.localPort
++        )
++      : null;
++    let tlsInfo: TlsInfo | null;
++    if (this.session.encrypted) {
++      const tlsSocket: TLSSocket = sessionSocket as TLSSocket;
++      const cipherInfo: CipherNameAndProtocol & { standardName?: string } =
++        tlsSocket.getCipher();
++      const certificate = tlsSocket.getCertificate();
++      const peerCertificate = tlsSocket.getPeerCertificate();
++      tlsInfo = {
++        cipherSuiteStandardName: cipherInfo.standardName ?? null,
++        cipherSuiteOtherName: cipherInfo.standardName ? null : cipherInfo.name,
++        localCertificate:
++          certificate && 'raw' in certificate ? certificate.raw : null,
++        remoteCertificate:
++          peerCertificate && 'raw' in peerCertificate
++            ? peerCertificate.raw
++            : null,
++      };
++    } else {
++      tlsInfo = null;
++    }
++    const socketInfo: SocketInfo = {
++      remoteAddress: remoteAddress,
++      localAddress: localAddress,
++      security: tlsInfo,
++      remoteName: this.remoteName,
++      streamsStarted: this.streamTracker.callsStarted,
++      streamsSucceeded: this.streamTracker.callsSucceeded,
++      streamsFailed: this.streamTracker.callsFailed,
++      messagesSent: this.messagesSent,
++      messagesReceived: this.messagesReceived,
++      keepAlivesSent: this.keepalivesSent,
++      lastLocalStreamCreatedTimestamp:
++        this.streamTracker.lastCallStartedTimestamp,
++      lastRemoteStreamCreatedTimestamp: null,
++      lastMessageSentTimestamp: this.lastMessageSentTimestamp,
++      lastMessageReceivedTimestamp: this.lastMessageReceivedTimestamp,
++      localFlowControlWindow: this.session.state.localWindowSize ?? null,
++      remoteFlowControlWindow: this.session.state.remoteWindowSize ?? null,
++    };
++    return socketInfo;
++  }
++
++  private get traceEnabled(): boolean {
++    return logging.isTracerEnabled(TRACER_NAME);
++  }
++
++  private get keepaliveTraceEnabled(): boolean {
++    return logging.isTracerEnabled('keepalive');
++  }
++
++  private get flowControlTraceEnabled(): boolean {
++    return logging.isTracerEnabled(FLOW_CONTROL_TRACER_NAME);
++  }
++
++  private get internalsTraceEnabled(): boolean {
++    return logging.isTracerEnabled('transport_internals');
++  }
++
++  private trace(text: string): void {
++    if (this.traceEnabled) {
++      logging.trace(
++        LogVerbosity.DEBUG,
++        TRACER_NAME,
++        '(' +
++          this.channelzRef.id +
++          ') ' +
++          this.subchannelAddressString +
++          ' ' +
++          text
++      );
++    }
++  }
++
++  private keepaliveTrace(text: string): void {
++    if (this.keepaliveTraceEnabled) {
++      logging.trace(
++        LogVerbosity.DEBUG,
++        'keepalive',
++        '(' +
++          this.channelzRef.id +
++          ') ' +
++          this.subchannelAddressString +
++          ' ' +
++          text
++      );
++    }
++  }
++
++  private flowControlTrace(text: string): void {
++    if (this.flowControlTraceEnabled) {
++      logging.trace(
++        LogVerbosity.DEBUG,
++        FLOW_CONTROL_TRACER_NAME,
++        '(' +
++          this.channelzRef.id +
++          ') ' +
++          this.subchannelAddressString +
++          ' ' +
++          text
++      );
++    }
++  }
++
++  private internalsTrace(text: string): void {
++    if (this.internalsTraceEnabled) {
++      logging.trace(
++        LogVerbosity.DEBUG,
++        'transport_internals',
++        '(' +
++          this.channelzRef.id +
++          ') ' +
++          this.subchannelAddressString +
++          ' ' +
++          text
++      );
++    }
++  }
++
++  /**
++   * Indicate to the owner of this object that this transport should no longer
++   * be used. That happens if the connection drops, or if the server sends a
++   * GOAWAY.
++   * @param tooManyPings If true, this was triggered by a GOAWAY with data
++   * indicating that the session was closed becaues the client sent too many
++   * pings.
++   * @returns
++   */
++  private reportDisconnectToOwner(tooManyPings: boolean) {
++    if (this.disconnectHandled) {
++      return;
++    }
++    this.disconnectHandled = true;
++    this.disconnectListeners.forEach(listener => listener(tooManyPings));
++  }
++
++  /**
++   * Handle connection drops, but not GOAWAYs.
++   */
++  private handleDisconnect() {
++    this.clearKeepaliveTimeout();
++    this.reportDisconnectToOwner(false);
++    for (const call of this.activeCalls) {
++      call.onDisconnect();
++    }
++    // Wait an event loop cycle before destroying the connection
++    setImmediate(() => {
++      this.session.destroy();
++    });
++  }
++
++  addDisconnectListener(listener: TransportDisconnectListener): void {
++    this.disconnectListeners.push(listener);
++  }
++
++  private canSendPing() {
++    return (
++      !this.session.destroyed &&
++      this.keepaliveTimeMs > 0 &&
++      (this.keepaliveWithoutCalls || this.activeCalls.size > 0)
++    );
++  }
++
++  private maybeSendPing() {
++    if (!this.canSendPing()) {
++      this.pendingSendKeepalivePing = true;
++      return;
++    }
++    if (this.keepaliveTimer) {
++      console.error('keepaliveTimeout is not null');
++      return;
++    }
++    if (this.channelzEnabled) {
++      this.keepalivesSent += 1;
++    }
++    if (this.keepaliveTraceEnabled) {
++      this.keepaliveTrace(
++        'Sending ping with timeout ' + this.keepaliveTimeoutMs + 'ms'
++      );
++    }
++    this.keepaliveTimer = setTimeout(() => {
++      this.keepaliveTimer = null;
++      this.keepaliveTrace('Ping timeout passed without response');
++      this.handleDisconnect();
++    }, this.keepaliveTimeoutMs);
++    this.keepaliveTimer.unref?.();
++    let pingSendError = '';
++    try {
++      const pingSentSuccessfully = this.session.ping(
++        (err: Error | null, duration: number, payload: Buffer) => {
++          this.clearKeepaliveTimeout();
++          if (err) {
++            if (this.keepaliveTraceEnabled) {
++              this.keepaliveTrace('Ping failed with error ' + err.message);
++            }
++            this.handleDisconnect();
++          } else {
++            this.keepaliveTrace('Received ping response');
++            this.maybeStartKeepalivePingTimer();
++          }
++        }
++      );
++      if (!pingSentSuccessfully) {
++        pingSendError = 'Ping returned false';
++      }
++    } catch (e) {
++      // grpc/grpc-node#2139
++      pingSendError = (e instanceof Error ? e.message : '') || 'Unknown error';
++    }
++    if (pingSendError) {
++      if (this.keepaliveTraceEnabled) {
++        this.keepaliveTrace('Ping send failed: ' + pingSendError);
++      }
++      this.handleDisconnect();
++    }
++  }
++
++  /**
++   * Starts the keepalive ping timer if appropriate. If the timer already ran
++   * out while there were no active requests, instead send a ping immediately.
++   * If the ping timer is already running or a ping is currently in flight,
++   * instead do nothing and wait for them to resolve.
++   */
++  private maybeStartKeepalivePingTimer() {
++    if (!this.canSendPing()) {
++      return;
++    }
++    if (this.pendingSendKeepalivePing) {
++      this.pendingSendKeepalivePing = false;
++      this.maybeSendPing();
++    } else if (!this.keepaliveTimer) {
++      this.keepaliveTrace(
++        'Starting keepalive timer for ' + this.keepaliveTimeMs + 'ms'
++      );
++      this.keepaliveTimer = setTimeout(() => {
++        this.keepaliveTimer = null;
++        this.maybeSendPing();
++      }, this.keepaliveTimeMs);
++      this.keepaliveTimer.unref?.();
++    }
++    /* Otherwise, there is already either a keepalive timer or a ping pending,
++     * wait for those to resolve. */
++  }
++
++  /**
++   * Clears whichever keepalive timeout is currently active, if any.
++   */
++  private clearKeepaliveTimeout() {
++    if (this.keepaliveTimer) {
++      clearTimeout(this.keepaliveTimer);
++      this.keepaliveTimer = null;
++    }
++  }
++
++  private removeActiveCall(call: Http2SubchannelCall) {
++    this.activeCalls.delete(call);
++    if (this.activeCalls.size === 0) {
++      this.session.unref();
++    }
++  }
++
++  private addActiveCall(call: Http2SubchannelCall) {
++    this.activeCalls.add(call);
++    if (this.activeCalls.size === 1) {
++      this.session.ref();
++      if (!this.keepaliveWithoutCalls) {
++        this.maybeStartKeepalivePingTimer();
++      }
++    }
++  }
++
++  createCall(
++    metadata: Metadata,
++    host: string,
++    method: string,
++    listener: SubchannelCallInterceptingListener,
++    subchannelCallStatsTracker: Partial<CallEventTracker>,
++    callId?: number
++  ): Http2SubchannelCall {
++    const headers = metadata.toHttp2Headers();
++    headers[HTTP2_HEADER_AUTHORITY] = host;
++    headers[HTTP2_HEADER_USER_AGENT] = this.userAgent;
++    headers[HTTP2_HEADER_CONTENT_TYPE] = 'application/grpc';
++    headers[HTTP2_HEADER_METHOD] = 'POST';
++    headers[HTTP2_HEADER_PATH] = method;
++    headers[HTTP2_HEADER_TE] = 'trailers';
++    let http2Stream: http2.ClientHttp2Stream;
++    /* In theory, if an error is thrown by session.request because session has
++     * become unusable (e.g. because it has received a goaway), this subchannel
++     * should soon see the corresponding close or goaway event anyway and leave
++     * READY. But we have seen reports that this does not happen
++     * (https://github.com/googleapis/nodejs-firestore/issues/1023#issuecomment-653204096)
++     * so for defense in depth, we just discard the session when we see an
++     * error here.
++     */
++    try {
++      http2Stream = this.session.request(headers);
++    } catch (e) {
++      this.handleDisconnect();
++      throw e;
++    }
++    if (this.flowControlTraceEnabled) {
++      this.flowControlTrace(
++        'local window size: ' +
++          this.session.state.localWindowSize +
++          ' remote window size: ' +
++          this.session.state.remoteWindowSize
++      );
++    }
++    if (this.internalsTraceEnabled) {
++      this.internalsTrace(
++        'session.closed=' +
++          this.session.closed +
++          ' session.destroyed=' +
++          this.session.destroyed +
++          ' session.socket.destroyed=' +
++          this.session.socket.destroyed
++      );
++    }
++    let eventTracker: CallEventTracker;
++    // eslint-disable-next-line prefer-const
++    let call: Http2SubchannelCall;
++    if (this.channelzEnabled) {
++      this.streamTracker.addCallStarted();
++      eventTracker = {
++        addMessageSent: () => {
++          this.messagesSent += 1;
++          this.lastMessageSentTimestamp = new Date();
++          subchannelCallStatsTracker.addMessageSent?.();
++        },
++        addMessageReceived: () => {
++          this.messagesReceived += 1;
++          this.lastMessageReceivedTimestamp = new Date();
++          subchannelCallStatsTracker.addMessageReceived?.();
++        },
++        onCallEnd: status => {
++          subchannelCallStatsTracker.onCallEnd?.(status);
++          this.removeActiveCall(call);
++        },
++        onStreamEnd: success => {
++          if (success) {
++            this.streamTracker.addCallSucceeded();
++          } else {
++            this.streamTracker.addCallFailed();
++          }
++          subchannelCallStatsTracker.onStreamEnd?.(success);
++        },
++      };
++    } else {
++      eventTracker = {
++        addMessageSent: () => {
++          subchannelCallStatsTracker.addMessageSent?.();
++        },
++        addMessageReceived: () => {
++          subchannelCallStatsTracker.addMessageReceived?.();
++        },
++        onCallEnd: status => {
++          subchannelCallStatsTracker.onCallEnd?.(status);
++          this.removeActiveCall(call);
++        },
++        onStreamEnd: success => {
++          subchannelCallStatsTracker.onStreamEnd?.(success);
++        },
++      };
++    }
++    call = new Http2SubchannelCall(
++      http2Stream,
++      eventTracker,
++      listener,
++      this,
++      callId ?? getNextCallNumber()
++    );
++    this.addActiveCall(call);
++    return call;
++  }
++
++  getChannelzRef(): SocketRef {
++    return this.channelzRef;
++  }
++
++  getPeerName() {
++    return this.subchannelAddressString;
++  }
++
++  getOptions() {
++    return this.options;
++  }
++
++  getAuthContext(): AuthContext {
++    return this.authContext;
++  }
++
++  shutdown() {
++    this.session.close();
++    unregisterChannelzRef(this.channelzRef);
++  }
++}
++
++export interface SubchannelConnector {
++  connect(
++    address: SubchannelAddress,
++    secureConnector: SecureConnector,
++    options: ChannelOptions
++  ): Promise<Transport>;
++  shutdown(): void;
++}
++
++export class Http2SubchannelConnector implements SubchannelConnector {
++  private session: http2.ClientHttp2Session | null = null;
++  private isShutdown = false;
++  constructor(private channelTarget: GrpcUri) {}
++
++  private get traceEnabled(): boolean {
++    return logging.isTracerEnabled(TRACER_NAME);
++  }
++
++  private trace(text: string) {
++    if (this.traceEnabled) {
++      logging.trace(
++        LogVerbosity.DEBUG,
++        TRACER_NAME,
++        uriToString(this.channelTarget) + ' ' + text
++      );
++    }
++  }
++
++  private createSession(
++    secureConnectResult: SecureConnectResult,
++    address: SubchannelAddress,
++    options: ChannelOptions
++  ): Promise<Http2Transport> {
++    if (this.isShutdown) {
++      return Promise.reject();
++    }
++
++    options['grpc-node.transport_owner']?.signal.throwIfAborted();
++      if (secureConnectResult.socket.closed) {
++      return Promise.reject('Connection closed before starting HTTP/2 handshake');
++    }
++
++    return new Promise<Http2Transport>((resolve, reject) => {
++      let remoteName: string | null = null;
++      let realTarget: GrpcUri = this.channelTarget;
++      if ('grpc.http_connect_target' in options) {
++        const parsedTarget = parseUri(options['grpc.http_connect_target']!);
++        if (parsedTarget) {
++          realTarget = parsedTarget;
++          remoteName = uriToString(parsedTarget);
++        }
++      }
++      const scheme = secureConnectResult.secure ? 'https' : 'http';
++      const targetPath = getDefaultAuthority(realTarget);
++      const closeHandler = () => {
++        this.session?.destroy();
++        this.session = null;
++        // Leave time for error event to happen before rejecting
++        setImmediate(() => {
++          if (!reportedError) {
++            reportedError = true;
++            reject(`${errorMessage.trim()} (${new Date().toISOString()})`);
++          }
++        });
++      };
++      const errorHandler = (error: Error) => {
++        this.session?.destroy();
++        errorMessage = (error as Error).message;
++        if (this.traceEnabled) {
++          this.trace('connection failed with error ' + errorMessage);
++        }
++        if (!reportedError) {
++          reportedError = true;
++          reject(`${errorMessage} (${new Date().toISOString()})`);
++        }
++      };
++      const sessionOptions: http2.ClientSessionOptions = {
++        createConnection: (authority, option) => {
++          return secureConnectResult.socket;
++        },
++        settings: {
++          initialWindowSize:
++            options['grpc-node.flow_control_window'] ??
++            http2.getDefaultSettings?.()?.initialWindowSize ?? 65535,
++        },
++        maxSendHeaderBlockLength: Number.MAX_SAFE_INTEGER,
++        /* By default, set a very large max session memory limit, to effectively
++         * disable enforcement of the limit. Some testing indicates that Node's
++         * behavior degrades badly when this limit is reached, so we solve that
++         * by disabling the check entirely. */
++        maxSessionMemory: options['grpc-node.max_session_memory'] ?? Number.MAX_SAFE_INTEGER
++      };
++      const session = http2.connect(`${scheme}://${targetPath}`, sessionOptions);
++      // Prepare window size configuration for remoteSettings handler
++      const defaultWin = http2.getDefaultSettings?.()?.initialWindowSize ?? 65535; // 65 535 B
++      const connWin = options[
++        'grpc-node.flow_control_window'
++      ] as number | undefined;
++
++      this.session = session;
++      let errorMessage = 'Failed to connect';
++      let reportedError = false;
++      session.unref();
++      session.once('remoteSettings', () => {
++        // Send WINDOW_UPDATE now to avoid 65 KB start-window stall.
++        if (connWin && connWin > defaultWin) {
++          try {
++            // Node ≥ 14.18
++            (session as any).setLocalWindowSize(connWin);
++          } catch {
++            // Older Node: bump by the delta
++            const delta = connWin - (session.state.localWindowSize ?? defaultWin);
++            if (delta > 0) (session as any).incrementWindowSize(delta);
++          }
++        }
++
++        session.removeAllListeners();
++      options['grpc-node.transport_owner']?.session(session);
++        secureConnectResult.socket.removeListener('close', closeHandler);
++        secureConnectResult.socket.removeListener('error', errorHandler);
++        resolve(new Http2Transport(session, address, options, remoteName));
++        this.session = null;
++      });
++      session.once('close', closeHandler);
++      session.once('error', errorHandler);
++      secureConnectResult.socket.once('close', closeHandler);
++      secureConnectResult.socket.once('error', errorHandler);
++      options['grpc-node.transport_owner']?.session(session);
++    });
++  }
++
++  private tcpConnect(address: SubchannelAddress, options: ChannelOptions): Promise<Socket> {
++    options['grpc-node.transport_owner']?.signal.throwIfAborted();
++      return getProxiedConnection(address, options).then(proxiedSocket => {
++      options['grpc-node.transport_owner']?.signal.throwIfAborted();
++      if (proxiedSocket) {
++        return proxiedSocket;
++      } else {
++        return new Promise<Socket>((resolve, reject) => {
++          const closeCallback = () => {
++            reject(new Error('Socket closed'));
++          };
++          const errorCallback = (error: Error) => {
++            reject(error);
++          }
++          const socket = net.connect(address, () => {
++            socket.removeListener('close', closeCallback);
++            socket.removeListener('error', errorCallback);
++            resolve(socket);
++          });
++          socket.once('close', closeCallback);
++          socket.once('error', errorCallback);
++      options['grpc-node.transport_owner']?.socket(socket);
++        });
++      }
++    });
++  }
++
++  connect(address: SubchannelAddress, secureConnector: SecureConnector, options: ChannelOptions): Promise<Http2Transport> {
++    const owner = options['grpc-node.transport_owner'];
++    if (owner && options['grpc.use_local_subchannel_pool'] !== 1) return Promise.reject(new Error('Owned transport requires a private subchannel pool'));
++    const operation = this.connectOwned(address, secureConnector, options);
++    owner?.pending(operation);
++    return operation;
++  }
++  private async connectOwned(
++    address: SubchannelAddress,
++    secureConnector: SecureConnector,
++    options: ChannelOptions
++  ): Promise<Http2Transport> {
++    if (this.isShutdown) {
++      return Promise.reject();
++    }
++    let tcpConnection: net.Socket | null = null;
++    let secureConnectResult: SecureConnectResult | null  = null;
++    const addressString = subchannelAddressToString(address);
++    try {
++      if (this.traceEnabled) {
++        this.trace(addressString + ' Waiting for secureConnector to be ready');
++      }
++      options['grpc-node.transport_owner']?.signal.throwIfAborted();
++      await secureConnector.waitForReady();
++      options['grpc-node.transport_owner']?.signal.throwIfAborted();
++      if (this.traceEnabled) {
++        this.trace(addressString + ' secureConnector is ready');
++      }
++      tcpConnection = await this.tcpConnect(address, options);
++      options['grpc-node.transport_owner']?.signal.throwIfAborted();
++      tcpConnection.setNoDelay();
++      if (this.traceEnabled) {
++        this.trace(addressString + ' Established TCP connection');
++      }
++      secureConnectResult = await secureConnector.connect(tcpConnection);
++      options['grpc-node.transport_owner']?.signal.throwIfAborted();
++      if (this.traceEnabled) {
++        this.trace(addressString + ' Established secure connection');
++      }
++      return this.createSession(secureConnectResult, address, options);
++    } catch (e) {
++      tcpConnection?.destroy();
++      secureConnectResult?.socket.destroy();
++      throw e;
++    }
++  }
++
++  shutdown(): void {
++    this.isShutdown = true;
++    this.session?.close();
++    this.session = null;
++  }
++}

@@ -44,7 +44,7 @@ const runnerDist = resolve(runnerRoot, "dist");
 
 // The only entry points server/src actually imports from the vendored
 // runner, including the installed-runtime readiness probe surface.
-const ENTRY_POINT_NAMES = ["index.js", "testing.js", "live/index.js"];
+const ENTRY_POINT_NAMES = ["index.js", "testing.js", "live/index.js", "live/linux-process-start.js"];
 
 const NODE_BUILTINS = new Set([
   ...builtinModules,

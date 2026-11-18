@@ -265,7 +265,7 @@ jobs:
       - name: Install trusted reporting dependencies without lifecycle scripts
         run: |
           node tests/runner-e2e/prepare-report-lock.mjs
-          pnpm install --frozen-lockfile --ignore-scripts
+          node tests/runner-e2e/prepare-report-lock.mjs --reporting-install -- pnpm install --frozen-lockfile --ignore-scripts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}

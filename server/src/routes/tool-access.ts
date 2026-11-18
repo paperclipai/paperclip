@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../services/delivery-work-notifications.js";
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
 import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
@@ -1261,6 +1262,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
     } catch {
       throw badRequest("Invalid or expired Paperclip Cloud enrollment callback");
     }
+    // The enrollment file is already committed. Notify its existing owners
+    // independently of the activity write or the eventual HTTP response.
+    await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatReceivers);
+    });
     if (pending?.companyId) {
       await logActivity(db, {
         companyId: pending.companyId,

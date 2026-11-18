@@ -45,6 +45,7 @@ export type SlackCallbackObservation = { url: string; observedAt: string };
 
 export type InternalSetupState = ChatEndpointSetupState & {
   photonIntakeAfter?: string;
+  photonExternalSubject?: string;
   runtimeGeneration?: number;
   /** Binds pre-install URL verification to the signing secret later configured. */
   slackVerificationSigningFingerprint?: string;

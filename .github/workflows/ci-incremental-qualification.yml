@@ -51,7 +51,7 @@ jobs:
           import { readFileSync } from 'node:fs';
           import { execFileSync } from 'node:child_process';
           import { planTasks } from './.github/scripts/ci-plan.mjs';
-          import { createTestSelection } from './scripts/ci/select-tests.mjs';
+          import { createTestSelection, completeTestSelectionFallback } from './scripts/ci/select-tests.mjs';
           const config = JSON.parse(readFileSync('turbo.json', 'utf8'));
           const lanes = JSON.parse(readFileSync('.github/ci-task-matrix.json', 'utf8'));
           const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -60,7 +60,24 @@ jobs:
             ['server/src/middleware/auth.ts', '@paperclipai/server', 'server/src/__tests__/agent-auth-middleware.test.ts'],
             ['server/src/storage/config.test.ts', '@paperclipai/server', 'server/src/storage/config.test.ts'],
           ]) {
-            const selected = await createTestSelection(planTasks({ config, lanes, paths: [file, "doc/DEVELOPING.md", "doc/plans/2026-10-30-ci-proof.md"] }), head);
+            const plan = planTasks({ config, lanes, paths: [file, "doc/DEVELOPING.md", "doc/plans/2026-10-30-ci-proof.md"] });
+            let selected;
+            try {
+              selected = await createTestSelection(plan, head);
+            } catch (error) {
+              // Product setup may legitimately invalidate its reviewed, hash-pinned graph.
+              // Qualify the same complete-plan fallback that the production CLI publishes.
+              assert.equal(project, '@paperclipai/server', 'The UI case must still prove real narrowing');
+              assert.match(error.message, /^Opaque setup (?:dependency|builtin|package|module): /);
+              const fallback = completeTestSelectionFallback(plan, error);
+              assert.deepEqual(fallback.plan, { ...plan, testSelectionFallback: error.message });
+              assert.deepEqual(fallback.plan.jobs, plan.jobs, 'Every original lane, shard and budget must remain');
+              assert.equal(fallback.plan.testSelection, undefined);
+              assert.equal(fallback.manifest, undefined);
+              assert.equal(fallback.graphs, undefined);
+              console.log(file, 'COMPLETE_PLAN_FALLBACK', JSON.stringify(fallback.plan, null, 2));
+              continue;
+            }
             const graph = selected.graphs.find(graph => graph.project === project);
             assert.ok(graph.related.includes(related));
             assert.ok(graph.alwaysRun.length > 0, 'Filesystem contracts must remain covered');

@@ -59,8 +59,15 @@ export async function refreshReportLock(root = path.resolve(import.meta.dirname,
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const args = process.argv.slice(2);
-  const usage = 'Usage: prepare-report-lock.mjs [--refresh [--trusted-lock-sha256 <sha256>]]';
+  const usage = 'Usage: prepare-report-lock.mjs [--reporting-preflight | --reporting-install -- pnpm install --frozen-lockfile --ignore-scripts [--store-dir PATH] | --refresh [--trusted-lock-sha256 <sha256>]]';
   if (args.length === 0) console.log(await prepareReportLock());
+  else if (args[0] === '--reporting-preflight' || args[0] === '--reporting-install') {
+    const { withReportingDependencies, reportingPnpmArguments } = await import('./report-only-dependencies.mjs');
+    const options = reportingPnpmArguments(args[0], args.slice(1));
+    await prepareReportLock();
+    await withReportingDependencies(path.resolve(import.meta.dirname, '../..'),
+      () => execFileSync('pnpm', options, { cwd: path.resolve(import.meta.dirname, '../..'), stdio: 'inherit' }));
+  }
   else if (args.length === 1 && args[0] === '--refresh') console.log(await refreshReportLock());
   else if (args.length === 3 && args[0] === '--refresh' && args[1] === '--trusted-lock-sha256' && /^[0-9a-f]{64}$/.test(args[2])) {
     console.log(await refreshReportLock(undefined, { trustedLockSha256: args[2] }));

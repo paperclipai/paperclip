@@ -765,3 +765,46 @@ Use `--port 4320` for another port, `--refresh` to refresh the history snapshot,
 or `--offline` to require cached data. Offline mode supports reports and assets
 already visited; it reports uncached artifacts explicitly. The preview contains
 only published evidence, not private Playwright traces or videos.
+
+
+## Reporting-only dependency preparation
+
+Trusted report/publisher checkouts use `prepare-report-lock.mjs --reporting-install`
+around their existing frozen, scripts-disabled install and own store. After the
+reviewed lock and patch hashes are authenticated, only the two exact Photon/grpc
+patch declarations absent from that lock may be omitted temporarily. All package
+versions and canonical patches remain locked; normal frozen pnpm rejects any
+other manifest mismatch. This installs the canonical **unpatched reporting graph**,
+not the patched Photon product runtime. Never allocate a Photon client or produce
+a product installed-artifact proof from that reporting checkout.
+
+The exact DB pins `drizzle-orm: 0.45.2` and `postgres: 3.4.9` may also use
+the reviewed same-base ranges during reporting install, after authenticating
+the canonical exact resolutions including the PostgreSQL patch suffix. The
+unused product CLI direct `postgres: 3.4.9` declaration may be omitted only
+when absent from the reviewed CLI importer; reporting uses its `tsx` tool,
+not the product CLI. The same locked patched PostgreSQL remains owned by DB
+and Server. No other range, version, patch or dependency is projected; all
+unknown drift still fails closed.
+
+All four original manifest byte streams are restored before reporting or SDK evidence
+checks, including after an installer error. The default `prepareReportLock` API,
+product installs, reviewed SDK reference, registry and trusted managed lock are
+unchanged. The separate `--reporting-preflight` mode runs only the fixed offline,
+frozen, scripts-disabled, lockfile-only validation in a credential-free job. It
+refuses OIDC/AWS capabilities; protected install mode refuses preflight options.
+
+Ownership is exclusive per checkout. A restoration error retains the exact
+beforeimages in `.paperclip-reporting-dependencies/` and blocks another invocation.
+SIGTERM, SIGKILL or runner loss can bypass JavaScript cleanup: **automatic exact
+restoration is not promised on interruption**. Do not delete the ownership directory
+or retry in that checkout. Preserve the failed checkout/evidence and retry the
+normal job from a **fresh disposable checkout of the same trusted workflow SHA**,
+with a fresh job-local reporting store. The fresh checkout must contain the original
+committed manifests and no ownership directory; an accidentally reused checkout
+fails closed. Local retained-checkout restoration requires explicit owner review of
+both saved beforeimages and current files before either is replaced; the helper
+never takes over a stale owner. Do not reuse its installed modules as product inputs.
+
+`pnpm test:e2e:runner:unit` includes the Vitest reporting-owner controls through
+`tests/runner-e2e/vitest.config.ts`; no separate unowned Node test lane is needed.

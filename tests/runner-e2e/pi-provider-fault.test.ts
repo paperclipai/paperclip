@@ -19,7 +19,11 @@ it("calibrates the exact Pi fault helper with metadata negatives and native Linu
     cwd: dirname(fileURLToPath(import.meta.url)), timeout: PYTHON_SUITE_TIMEOUT_MS, killSignal: "SIGTERM", maxBuffer: 64 * 1024,
     encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
   });
-  expect(result.error).toBeUndefined();
+  const spawnFailure = result.error
+    ? JSON.stringify({ status: result.status, signal: result.signal,
+      stderrTail: Buffer.from(result.stderr ?? "", "utf8").subarray(-8 * 1024).toString("utf8") })
+    : undefined;
+  expect(result.error, spawnFailure).toBeUndefined();
   expect(result.signal).toBeNull();
   expect(result.status, result.stderr).toBe(0);
   expect(result.stderr).toContain("Ran 21 tests");

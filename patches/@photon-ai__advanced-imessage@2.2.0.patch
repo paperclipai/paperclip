@@ -1,0 +1,30 @@
+--- a/dist/chunk-5WYZRCOS.js
++++ b/dist/chunk-5WYZRCOS.js
+@@ -7246,15 +7246,20 @@
+   // Lifecycle
+   // -------------------------------------------------------------------------
+   /** Signal the stream is done. Interrupts any pending iteration. */
+-  async close() {
+-    if (this._closed) {
+-      return;
+-    }
++  close() {
++    if (this._cleanupComplete) return Promise.resolve();
++    if (this._closeAttempt) return this._closeAttempt;
+     this._closed = true;
+     this._cancelResolve?.();
+-    if (this._cleanup) {
+-      await this._cleanup();
+-    }
++    let resolveCleanup, rejectCleanup;
++    const attempt = new Promise((resolve, reject) => { resolveCleanup = resolve; rejectCleanup = reject; });
++    this._closeAttempt = attempt;
++    try { Promise.resolve(this._cleanup?.()).then(resolveCleanup, rejectCleanup); }
++    catch (error) { rejectCleanup(error); }
++    void attempt.then(() => { this._cleanupComplete = true; }, () => {
++      if (this._closeAttempt === attempt) this._closeAttempt = undefined;
++    });
++    return attempt;
+   }
+   /** `Symbol.asyncDispose` -- enables `await using`. */
+   async [Symbol.asyncDispose]() {

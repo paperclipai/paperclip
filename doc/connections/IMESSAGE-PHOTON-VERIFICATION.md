@@ -33,6 +33,23 @@ stopped or altered.
 
 ## Deterministic acceptance evidence
 
+The Cloud-handoff follow-up was locally qualified on 2026-11-10 with SDK 2.2.0
+and grpc-js 1.14.5 (App source `8633bd57`, Cloud source `696851d3`). Normal current
+App and Cloud TypeScript producers passed. Five whole Cloud owner/resource files
+passed 45 controls; a separate SDK loopback test proved cleartext HTTP/2 close and
+fresh reconnect. Three whole App files passed 41 cases, including the real
+Chat 4.39 shutdown path with controlled receiver/close failures and same-owner
+registry retry. The new shutdown case first failed because receiver rejection
+skipped adapter cleanup, then passed after independent teardown and exact close-
+attempt joining. These controlled lifecycle cases do not prove physical sockets.
+
+Those follow-up receipts do not repeat or extend the historical September live
+journeys below. The assembled real-SDK encrypted Cloud custody → authorized App
+useful response → exact ACK/replay journey, TLS/proxy resource branch, and enabled
+quiet/fresh-reactivation measurement remain pending. No deployed Cloud rollout
+or complete sleep acceptance is claimed from compilation, pure owner controls,
+or the cleartext HTTP/2 test.
+
 `server/src/__tests__/photon/photon.test.ts` exercises Basic Cloud authentication,
 token redaction, dedicated/shared/missing allocation, immutable line identity,
 Unicode multipart publication, receipt recovery, unknown sends and explicit retry,

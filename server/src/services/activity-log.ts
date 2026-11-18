@@ -6,6 +6,9 @@ export type { ActivityPublication } from "../types/activity-publication.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+
+/** Activity persistence needs query/transaction capability, not a pool client. */
+type ActivityDb = Pick<Db, "select" | "insert" | "update" | "transaction">;
 import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
@@ -73,7 +76,7 @@ export interface LogActivityInput {
 }
 
 
-export async function createActivityDetailsRedactor(db: Db) {
+export async function createActivityDetailsRedactor(db: ActivityDb) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };
@@ -82,7 +85,7 @@ export async function createActivityDetailsRedactor(db: Db) {
   );
 }
 
-export async function redactActivityDetails(db: Db, details: Record<string, unknown> | null) {
+export async function redactActivityDetails(db: ActivityDb, details: Record<string, unknown> | null) {
   if (!details) return null;
   return (await createActivityDetailsRedactor(db))(details);
 }
@@ -91,7 +94,7 @@ function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
+export async function resolveResponsibleUserIdForActivity(db: ActivityDb, input: LogActivityInput) {
   if (input.responsibleUserIdOverride !== undefined) {
     return readNonEmptyString(input.responsibleUserIdOverride);
   }
@@ -164,10 +167,10 @@ export function publishActivity(publication: ActivityPublication) {
   } finally { finish(); }
 }
 
-export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
+export async function persistActivity(db: ActivityDb, input: LogActivityInput, receipt?: { id: string }) {
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  const insert = (runner: Db) => runner.insert(activityLog).values({
+  const insert = (runner: Pick<Db, "insert">) => runner.insert(activityLog).values({
     ...(receipt ? { id: receipt.id } : {}),
     companyId: input.companyId,
     actorType: input.actorType,
@@ -185,7 +188,7 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${input.entityId}`);
       if (input.runId && input.action === "issue.updated" && ["done", "cancelled"].includes(String(input.details?.status)))
         await notifyActiveRunSilence(tx, { companyId: input.companyId, runId: input.runId });
-      return insert(tx as unknown as Db);
+      return insert(tx);
     })
     : await insert(db);
 
@@ -232,7 +235,7 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
 }
 
 export async function logActivity(
-  db: Db,
+  db: ActivityDb,
   input: LogActivityInput,
   postCommitPublications?: ActivityPublication[],
 ) {

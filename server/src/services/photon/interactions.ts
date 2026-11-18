@@ -291,7 +291,7 @@ export async function publishPhotonPrompt(input: {
           throw new PhotonAnswerValidationError("Photon poll already claimed");
         return { schema: 1, phase: "creating" };
       });
-      const poll = await adapter.client.polls
+      const poll = await adapter.withClient(client => client.polls
         .create(
           adapter.decodeThreadId(input.threadId).chatGuid,
           title,
@@ -310,7 +310,7 @@ export async function publishPhotonPrompt(input: {
               phase: "prepared",
             }));
           throw failure;
-        });
+        }));
       if (
         !poll.pollMessageGuid ||
         poll.options.length !== choices.length ||
