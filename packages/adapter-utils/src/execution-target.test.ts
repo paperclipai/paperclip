@@ -1,5 +1,7 @@
+import os from "node:os";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
@@ -11,6 +13,7 @@ import {
   normalizeAdapterExecutionTargetSessionIdentity,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   ensureAdapterExecutionTargetDirectory,
+  ensureAdapterExecutionTargetLocalWorkspace,
   ensureAdapterExecutionTargetCommandResolvable,
   isAdapterExecutionTargetUnavailableError,
   resolveAdapterExecutionTargetCwd,
@@ -483,5 +486,23 @@ describe("GitHub launcher lifecycle", () => {
       cwd: "/remote/workspace", timeoutMs: 5_000 });
     await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
     expect(runner.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("controller workspace preparation", () => {
+  it.each(["local", "copy", "in_place"] as const)("keeps %s workspace access on its owning filesystem", async mode => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-path-"));
+    try {
+      const mount = path.join(root, "remote-filesystem");
+      await writeFile(mount, "Not a controller directory");
+      const cwd = path.join(mount, "workspace");
+      const target = mode === "local" ? null : { ...sshExecutionTarget(), remoteCwd: cwd,
+        workspaceRealization: { mode, authoritativeRoot: cwd, pathAliases: [], outboundRestorePaths: [] } };
+      const prepare = ensureAdapterExecutionTargetLocalWorkspace(target, cwd);
+      if (mode === "in_place") await expect(prepare).resolves.toBeUndefined();
+      else await expect(prepare).rejects.toMatchObject({ code: "ENOTDIR" });
+      expect(await readFile(mount, "utf8")).toBe("Not a controller directory");
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
