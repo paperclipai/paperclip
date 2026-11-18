@@ -45,7 +45,11 @@ describe("ACPX runtime sandbox", () => {
     const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude" });
     const file = join(sandbox.agentHomeDirectory, "settings.json");
     if (recovery) await writeFile(file, JSON.stringify({ syncClaudeAiPlugins: true, syncClaudeAiSkills: true, disableClaudeAiConnectors: false }));
+    const plugins = join(sandbox.agentHomeDirectory, "plugins");
+    await mkdir(plugins, { recursive: true });
+    await writeFile(join(plugins, "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "old@cloud": [{ scope: "user", installPath: join(plugins, "cache", "old") }] } }));
     await sandbox.initializeOwnedConfiguration!();
+    expect(JSON.parse(await readFile(join(plugins, "installed_plugins.json"), "utf8"))).toEqual({ version: 2, plugins: {} });
     expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
       syncClaudeAiPlugins: false, syncClaudeAiSkills: false, disableClaudeAiConnectors: true,
     });
