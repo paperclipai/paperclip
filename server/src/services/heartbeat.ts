@@ -1742,6 +1742,36 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+/**
+ * Produce a diagnosable message for a thrown run failure.
+ *
+ * Drizzle wraps every failed query in a `DrizzleQueryError` whose `.message` is
+ * only `Failed query: <sql>\nparams: <params>` and whose underlying driver error
+ * (Postgres SQLSTATE code / detail, connection reset, admin shutdown, etc.) is
+ * carried on `.cause`. Recording just `.message` discards the real root cause,
+ * which is exactly why the AGE-810 run-event insert failure was undiagnosable.
+ * Append the cause chain (with the Postgres error code/detail when present) so
+ * intermittent DB failures can be attributed instead of guessed at.
+ */
+function describeRunFailureError(err: unknown, fallback: string): string {
+  const base = err instanceof Error ? err.message : readNonEmptyString(err);
+  const cause = (err as { cause?: unknown } | null | undefined)?.cause;
+  if (!base) return fallback;
+  if (!cause || cause === err) return base;
+
+  const causeMessage = cause instanceof Error ? cause.message : readNonEmptyString(cause);
+  const pgCode = (cause as { code?: unknown } | null | undefined)?.code;
+  const pgDetail = (cause as { detail?: unknown } | null | undefined)?.detail;
+  const parts = [
+    causeMessage ?? undefined,
+    typeof pgCode === "string" && pgCode ? `code=${pgCode}` : undefined,
+    typeof pgDetail === "string" && pgDetail ? `detail=${pgDetail}` : undefined,
+  ].filter((part): part is string => Boolean(part));
+  const causeText = parts.join(" ");
+  if (!causeText || base.includes(causeText)) return base;
+  return `${base} [cause: ${causeText}]`;
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -11090,7 +11120,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
     } catch (err) {
       const message = redactCurrentUserText(
-        err instanceof Error ? err.message : "Unknown adapter failure",
+        describeRunFailureError(err, "Unknown adapter failure"),
         await getCurrentUserRedactionOptions(),
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
@@ -11195,7 +11225,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = redactCurrentUserText(
-            outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
+            describeRunFailureError(outerErr, "Unknown setup failure"),
             await getCurrentUserRedactionOptions(),
           );
           // A missing secret/env binding is a known pre-dispatch configuration gap,
