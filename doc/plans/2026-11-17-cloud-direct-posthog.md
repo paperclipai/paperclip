@@ -320,6 +320,59 @@ each step is verified before the next one starts.
 - [ ] PostHog: set the project's internal/test account filter to exclude
       `environment = staging`.
 
+#### Revised plan: stage settings, let the team's deploy turn them on (Dotta, 2026-11-18)
+
+Production app deploys are coordinated by the whole team, and user stacks
+must not be restarted outside them. So the production switches are staged
+ahead of time and take effect with the team's next production app deploy:
+
+1. Wait for the team's next production harness deploy. The staging option
+   needs paperclip-cloud#1652 (`d1877e1`); production was on `d7b6764`
+   (2026-11-11) when checked. Check with
+   `curl -s https://admin.paperclip.app/healthz` and
+   `git merge-base --is-ancestor d1877e1 <commit>`.
+2. Stage with one fleet-scope `env_config` campaign using
+   `"applyOnNextDeploy": true` and these variables:
+   `PAPERCLIP_POSTHOG_PROJECT_TOKEN`, `PAPERCLIP_POSTHOG_ENVIRONMENT=production`,
+   `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`. No user stack restarts. Proven on
+   staging: 44 stacks staged in under 40 seconds, no restarts.
+   Never send this campaign to a harness that lacks #1652: an older harness
+   ignores the flag and restarts every stack.
+3. `TRUST_PROXY` is not staged this way: current production code already
+   reads it, so any early restart would apply it. Turn it on as a separate,
+   announced step.
+
+#### Note for the team's production deploy
+
+When a production app release that contains this work rolls out (it needs
+#22006, #22012, #22052, #22057, #22183 and #22186), stacks that have the staged
+settings start sending analytics on their new deployment:
+
+- Server events go straight to PostHog with real IDs (`environment=production`)
+  instead of through the collector. Self-hosted installs are unaffected.
+- Browser analytics and session replay load after the page settles. EU, EEA,
+  UK and Swiss visitors (by browser time zone) see a consent banner and nothing
+  loads until they accept. Replay shows interface text and masks customer
+  content and connected-account data.
+- Any stack that restarts before the deploy (wake, restore, another
+  restarting campaign) turns these on early; that is expected.
+
+Check on the deploy canary:
+- `cloud.workspace_started` and `server.started` arrive in PostHog 483530 with
+  `environment=production` and the canary's `stack_id`.
+- A sign-in on the canary produces `$pageview` with the user's
+  `paperclip-id:` distinct id (outside EU time zones), and a session replay
+  with content masked.
+- `count() = uniq(uuid)` for production server events (no duplicates).
+
+Rollback (each one is an `env_config` campaign; these restart the targets):
+- Server events back to the collector: `PAPERCLIP_POSTHOG_DIRECT=0`.
+- Browser analytics off: remove `PAPERCLIP_POSTHOG_BROWSER_ENABLED`.
+- Replay off but keep analytics: `PAPERCLIP_POSTHOG_REPLAY_ENABLED=0`.
+
+After the deploy: run the legacy link backfill (Step 3) and the one-week watch
+(Step 5).
+
 #### Step 1: server direct sending
 
 - Campaign: `PAPERCLIP_POSTHOG_PROJECT_TOKEN=<phc token>`,
