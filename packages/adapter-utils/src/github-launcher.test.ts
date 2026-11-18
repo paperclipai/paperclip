@@ -441,9 +441,6 @@ it("captures the current task broker file once per invocation and never falls ba
   expect(captured).toEqual(["Bearer first-run", "Bearer next-run"]);
 });
 
-// Windows resolves gh/git through PATHEXT, and Node cannot spawn .bat/.cmd
-// files directly (EINVAL since CVE-2024-27980), so the launcher runs them
-// through cmd.exe with every argument escaped.
 describe.runIf(process.platform === "win32")("managed GitHub launchers on Windows", () => {
   async function windowsFixture() {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-windows-"));
@@ -499,7 +496,6 @@ describe.runIf(process.platform === "win32")("managed GitHub launchers on Window
     await writeFile(path.join(second, "gh.bat"), "@echo off\r\necho second-bat\r\n");
     expect((await gh()).stdout.trim()).toBe("first-cmd");
     await writeFile(path.join(first, "gh.bat"), "@echo off\r\necho first-bat\r\n");
-    // PATHEXT lists .BAT before .CMD by default, so .bat wins within one directory.
     expect((await gh()).stdout.trim()).toBe("first-bat");
   });
 
@@ -528,16 +524,13 @@ describe.runIf(process.platform === "win32")("managed GitHub launchers on Window
       stderr: expect.stringContaining("batch_command_too_long") });
   });
 
-  // Node itself cannot start with an empty or bogus SystemRoot, so "." is the reachable relative case.
   it.each(["."])("never resolves cmd.exe from a %j SystemRoot", async systemRoot => {
     const { root, first, gh, forwarder, env } = await windowsFixture();
     await writeFile(path.join(first, "gh.cmd"), forwarder);
-    // A fake cmd.exe where a relative SystemRoot would point, relative to the working directory.
     await mkdir(path.join(root, systemRoot, "System32"), { recursive: true });
     await copyFile(process.execPath, path.join(root, systemRoot, "System32", "cmd.exe"));
     for (const key of Object.keys(env)) if (key.toLowerCase() === "systemroot") delete env[key];
     env.SystemRoot = systemRoot;
-    // Only the real cmd.exe runs the batch, which forwards the arguments.
     expect(JSON.parse((await gh("safe")).stdout).args).toEqual(["safe"]);
   });
 });

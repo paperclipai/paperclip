@@ -20,12 +20,9 @@ if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
-  // Empty, relative and "." entries would resolve the tool against the working
-  // directory, which lets a planted binary run with the managed environment.
   if (process.platform === 'win32' ? !path.win32.isAbsolute(p) : !path.isAbsolute(p)) return false;
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-// Search PATH directories first and PATHEXT entries second, as on Windows.
 const extensions = process.platform === 'win32'
   ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(ext => /^\.[a-z0-9]+$/i.test(ext))
   : [''];
@@ -57,13 +54,6 @@ function connectorRepositoryTool(args) {
   if (program !== 'gh' || args[0] !== 'repo' || args.includes('--help') || args.includes('-h')) return null;
   return connectorRepositoryTools.get(args[1]) || null;
 }
-// Node refuses to spawn .bat/.cmd files directly on Windows (EINVAL since the
-// CVE-2024-27980 fix), so batch tools run through cmd.exe with every argument
-// quoted and caret-escaped twice: once for cmd's /c parse, once for the batch
-// file's own %* re-parse. Line breaks and NUL cannot cross cmd.exe intact, so
-// such arguments are refused instead of being reinterpreted. Note that a batch
-// file which enables cmd's delayed expansion can still expand !VAR! itself; that
-// is inherent to batch and outside the launcher's control.
 const cmdMeta = /([()\][%!^"\x60<>&|;, *?])/g;
 function cmdQuote(arg) {
   let quoted = String(arg).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
@@ -79,11 +69,9 @@ function spawnResolved(file, args, env) {
     process.exitCode = 1;
     return null;
   }
-  // A relative or empty SystemRoot would resolve cmd.exe against the working directory.
   const root = [env.SystemRoot, env.SYSTEMROOT].find(value => value && path.win32.isAbsolute(value)) || 'C:\\Windows';
   const shell = path.win32.join(root, 'System32', 'cmd.exe');
   const line = [file.replace(cmdMeta, '^$1'), ...args.map(cmdQuote)].join(' ');
-  // cmd.exe truncates command lines past 8191 characters; fail explicitly instead.
   if (line.length + 2 > 8191) {
     process.stderr.write('Paperclip: GitHub batch_command_too_long; the arguments exceed the cmd.exe line limit.\n');
     process.exitCode = 1;
@@ -220,7 +208,6 @@ main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_fail
 /** Override inherited credentials even when adapters merge the host environment later. */
 export function githubBrokerEnvironment(input: Record<string, unknown>, broker: { url: string; token: string }): Record<string, string> {
   const env: Record<string, string> = {};
-  // Windows environment names are case-insensitive, so gh_token reaches a child as GH_TOKEN.
   const credential = /^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*|PAPERCLIP_GITHUB_OPERATION_ACTIVE)$/i;
   for (const [key, value] of Object.entries(input)) {
     if (typeof value === "string" && !(credential.test(key) && key !== key.toUpperCase())) env[key] = value;

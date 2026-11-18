@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { describe, it, onTestFinished } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, rmSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
@@ -6,10 +6,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { githubLauncherSource } from './github-launcher.ts';
 
-const win = { skip: process.platform !== 'win32' };
-function fixture(t, name = 'gh') {
+function fixture(name = 'gh') {
   const root = mkdtempSync(path.join(tmpdir(), 'pc-win-test-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
   const managed = path.join(root, 'managed'); mkdirSync(managed);
   const launcher = path.join(managed, name); writeFileSync(launcher, githubLauncherSource());
   return { root, managed, launcher };
@@ -17,14 +16,15 @@ function fixture(t, name = 'gh') {
 function run(launcher, args, env) {
   return spawnSync(process.execPath, [launcher, ...args], { encoding: 'utf8', timeout: 10000, env: { ...process.env, PAPERCLIP_GITHUB_OPERATION_ACTIVE: '', PAPERCLIP_GITHUB_BROKER_TOKEN: '', PAPERCLIP_GITHUB_BROKER_URL: '', ...env } });
 }
-for (const name of ['git', 'gh']) test(`executes real ${name}.exe`, win, t => {
-  const f = fixture(t, name);
+describe.skipIf(process.platform !== 'win32')('managed GitHub launcher on Windows (PATHEXT)', () => {
+for (const name of ['git', 'gh']) it(`executes real ${name}.exe`, () => {
+  const f = fixture(name);
   const binary = execFileSync('where.exe', [name + '.exe'], { encoding: 'utf8' }).split(/\r?\n/)[0];
   const result = run(f.launcher, ['--version'], { PATH: `${f.managed};${path.dirname(binary)}`, PATHEXT: '.EXE', GH_CONFIG_DIR: f.root });
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout.toLowerCase(), new RegExp(name));
 });
-test('PATH precedence, extension precedence, isolation and recursion guard', win, t => {
-  const f = fixture(t); const first = path.join(f.root, 'first'); const second = path.join(f.root, 'second'); mkdirSync(first); mkdirSync(second);
+it('PATH precedence, extension precedence, isolation and recursion guard', () => {
+  const f = fixture(); const first = path.join(f.root, 'first'); const second = path.join(f.root, 'second'); mkdirSync(first); mkdirSync(second);
   copyFileSync(process.execPath, path.join(first, 'gh.exe'));
   copyFileSync(process.execPath, path.join(second, 'gh.exe'));
   const probe = path.join(f.root, 'probe.js');
@@ -33,15 +33,16 @@ test('PATH precedence, extension precedence, isolation and recursion guard', win
   assert.equal(r.status, 0, r.stderr); const data = JSON.parse(r.stdout); assert.equal(data.exec.toLowerCase(), path.join(first, 'gh.exe').toLowerCase());
   assert.equal(data.token, ''); assert.equal(data.active, '1'); assert.equal(data.path, `${first};${second}`); assert.equal(data.recursion, 126); assert.match(data.stderr, /launcher_recursion_rejected/);
 });
-test('PATHEXT determines precedence within the same directory', win, t => {
-  const f = fixture(t); const dir = path.join(f.root, 'bin'); mkdirSync(dir);
+it('PATHEXT determines precedence within the same directory', () => {
+  const f = fixture(); const dir = path.join(f.root, 'bin'); mkdirSync(dir);
   copyFileSync(process.execPath, path.join(dir, 'gh.exe')); copyFileSync(process.execPath, path.join(dir, 'gh.com'));
   const probe = path.join(f.root, 'ext.js'); writeFileSync(probe, 'console.log(process.execPath)');
   const r = run(f.launcher, [probe], { PATH: `${f.managed};${dir}`, PATHEXT: '.COM;.EXE', GH_CONFIG_DIR: f.root });
   assert.equal(r.status, 0, r.stderr); assert.equal(r.stdout.trim().toLowerCase(), path.join(dir, 'gh.com').toLowerCase());
 });
-test('missing or disallowed executable returns 127', win, t => {
-  const f = fixture(t); const dir = path.join(f.root, 'bin'); mkdirSync(dir); copyFileSync(process.execPath, path.join(dir, 'gh.exe'));
+it('missing or disallowed executable returns 127', () => {
+  const f = fixture(); const dir = path.join(f.root, 'bin'); mkdirSync(dir); copyFileSync(process.execPath, path.join(dir, 'gh.exe'));
   const r = run(f.launcher, ['--version'], { PATH: `${f.managed};${dir}`, PATHEXT: '.COM', GH_CONFIG_DIR: f.root });
   assert.equal(r.status, 127); assert.match(r.stderr, /not installed/);
+});
 });
