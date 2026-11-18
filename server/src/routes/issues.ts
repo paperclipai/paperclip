@@ -14206,6 +14206,11 @@ export function issueRoutes(
       for (const child of req.body.children as Array<
         (typeof req.body.children)[number]
       >) {
+        assertNoAgentCompletionRequirementSupply(
+          req,
+          (child as { completionRequirement?: unknown }).completionRequirement,
+          "the completion requirement",
+        );
         const sanitizedChild = await sanitizeIssueCreateAttribution(
           db,
           req,
