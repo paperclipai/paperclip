@@ -166,7 +166,7 @@ describeEmbeddedPostgres("dashboard service", () => {
     });
 
     for (const [mode, explain] of Object.entries(plans)) {
-      const root = (explain as Array<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>)[0]!["QUERY PLAN"][0]!.Plan;
+      const root = (explain as unknown as Array<{ "QUERY PLAN": Array<{ Plan: Record<string, unknown> }> }>)[0]!["QUERY PLAN"][0]!.Plan;
       expect(inspected(root), mode).toBeLessThanOrEqual(activeStatuses.length);
     }
   });

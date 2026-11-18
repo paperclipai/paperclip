@@ -17,11 +17,6 @@ export async function selectDashboardRunIds(db: Db, companyId: string, limit: nu
     issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
   };
   const [activeRows, recentRuns] = await Promise.all([
-    // Materialize the active set with literal statuses: a generic plan cannot
-    // see that queued/running runs are rare, so a limited ordered scan could
-    // walk the company's whole run history. Literal statuses let the
-    // (company_id, status, ...) indexes serve the pool, and the outer query
-    // only orders those rows.
     db.execute(sql`with active_runs as materialized (
       select id, status, created_at, context_snapshot ->> 'issueId' as issue_id
       from heartbeat_runs
