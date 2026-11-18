@@ -1984,19 +1984,6 @@ function truncateBodyToByteCap(body: string, cap: number): string {
   return buffer.subarray(0, end).toString("utf8");
 }
 
-/**
- * Bound the serialized size of a wake payload so it fits in a spawned process's
- * environment. Comments are oldest-first, so we shed the oldest embedded
- * comments first (the newest are most relevant and the bounded
- * `continuationSummary` preserves earlier context), then truncate the remaining
- * comment bodies, then drop the heaviest optional context. The `commentIds`
- * list is append-only and otherwise unbounded on long-lived threads, so even a
- * payload with no embedded bodies can exceed the budget on the id list alone;
- * we trim that to a recent tail and, as a final guarantee, shed the remaining
- * optional context so the serialized payload is always within budget. Any
- * trimming sets `truncated` and `fallbackFetchNeeded` so the agent fetches the
- * full thread from the API instead of relying on the inlined history.
- */
 export function capPaperclipWakePayloadForEnv(
   payload: PaperclipWakePayload,
   budgetBytes: number = MAX_WAKE_PAYLOAD_ENV_BYTES,
@@ -2013,13 +2000,11 @@ export function capPaperclipWakePayloadForEnv(
   let droppedComments = 0;
   const overBudget = () => utf8ByteLength(JSON.stringify(working)) > budgetBytes;
 
-  // 1) Shed the oldest embedded comments first, keeping at least the newest few.
   while (overBudget() && working.comments.length > MIN_RETAINED_WAKE_COMMENTS) {
     working.comments.shift();
     droppedComments += 1;
   }
 
-  // 2) Still over budget: truncate the bodies of the retained comments.
   if (overBudget() && working.comments.length > 0) {
     working.comments = working.comments.map((comment) => {
       const body = truncateBodyToByteCap(comment.body, WAKE_COMMENT_BODY_BYTE_CAP);
@@ -2031,7 +2016,6 @@ export function capPaperclipWakePayloadForEnv(
     });
   }
 
-  // 3) Drop the remaining comments and the heaviest optional context.
   if (overBudget()) {
     droppedComments += working.comments.length;
     working.comments = [];
@@ -2039,10 +2023,6 @@ export function capPaperclipWakePayloadForEnv(
     working.planReviewContext = null;
   }
 
-  // 4) The comment-id list grows without bound on append-only threads (e.g. a
-  //    monitoring digest) and can exceed the budget on its own even with no
-  //    embedded bodies. Trim it to the most recent ids, shrinking the retained
-  //    tail until the payload fits.
   if (overBudget() && working.commentIds.length > 0) {
     for (const keep of [200, 50, 10, 0]) {
       if (keep >= working.commentIds.length) continue;
@@ -2052,16 +2032,32 @@ export function capPaperclipWakePayloadForEnv(
     }
   }
 
-  // 5) Final guarantee: if an id-free payload is still over budget, shed the
-  //    remaining optional context so the env var can never trigger spawn E2BIG.
   if (overBudget()) {
     working.commentIds = [];
     working.continuationSummary = null;
     working.livenessContinuation = null;
+    working.dispositionRepair = null;
     working.taskWatchdog = null;
     working.executionStage = null;
+    working.executionContinuation = null;
+    working.documentReviewContext = null;
+    working.planReviewContext = null;
+    working.recovery = null;
+    working.activeTreeHold = null;
+    working.githubReviewConfigurations = [];
     working.childIssueSummaries = [];
     working.unresolvedBlockerSummaries = [];
+  }
+
+  if (overBudget() && working.issue?.description) {
+    working.issue = {
+      ...working.issue,
+      description: truncateBodyToByteCap(working.issue.description, WAKE_COMMENT_BODY_BYTE_CAP),
+      descriptionTruncated: true,
+    };
+  }
+  if (overBudget() && working.issue?.description) {
+    working.issue = { ...working.issue, description: null, descriptionTruncated: true };
   }
 
   working.truncated = true;
@@ -2069,8 +2065,6 @@ export function capPaperclipWakePayloadForEnv(
   if (droppedComments > 0) {
     working.includedCount = Math.max(0, working.includedCount - droppedComments);
   }
-  // Reflect any comments that are no longer inlined (shed bodies or trimmed ids)
-  // as missing, so the agent knows the inline batch is incomplete.
   working.missingCount = Math.max(
     working.missingCount,
     Math.max(0, working.requestedCount - working.includedCount),

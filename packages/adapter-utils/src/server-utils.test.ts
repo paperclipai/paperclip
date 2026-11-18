@@ -4400,6 +4400,64 @@ describe("wake payload env-size cap (spawn E2BIG guard)", () => {
     expect(parsed.issue.description).toBeNull();
   });
 
+  it("bounds a payload whose executionContinuation envelope alone exceeds the budget", () => {
+    const continuationHeavy = {
+      ...buildLongThread(0, 0),
+      comments: [],
+      commentIds: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      executionContinuation: {
+        version: 1,
+        issueId: "issue-741",
+        objective: "x".repeat(200 * 1024),
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(continuationHeavy), "utf8")).toBeGreaterThan(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+    const serialized = stringifyPaperclipWakePayload(continuationHeavy);
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized!, "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+    const parsed = JSON.parse(serialized!);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.fallbackFetchNeeded).toBe(true);
+    expect(parsed.executionContinuation).toBeNull();
+  });
+
+  it("bounds a payload whose issue description alone exceeds the budget", () => {
+    const descriptionHeavy = {
+      reason: "issue_continuation_needed",
+      issue: {
+        id: "i1",
+        identifier: "AGE-741",
+        title: "monitor",
+        description: "d".repeat(200 * 1024),
+        descriptionTruncated: false,
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      commentIds: [],
+      fallbackFetchNeeded: false,
+    };
+    expect(Buffer.byteLength(JSON.stringify(descriptionHeavy), "utf8")).toBeGreaterThan(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+    const serialized = stringifyPaperclipWakePayload(descriptionHeavy);
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized!, "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+    const parsed = JSON.parse(serialized!);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.issue.descriptionTruncated).toBe(true);
+    expect(Buffer.byteLength(parsed.issue.description ?? "", "utf8")).toBeLessThanOrEqual(
+      4 * 1024,
+    );
+  });
+
   it("capPaperclipWakePayloadForEnv reports trimmed=false when within budget", () => {
     const normalized = JSON.parse(
       stringifyPaperclipWakePayload(buildLongThread(2, 32))!,
