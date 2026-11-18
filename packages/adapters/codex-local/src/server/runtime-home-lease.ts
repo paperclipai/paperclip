@@ -29,7 +29,9 @@ import path from "node:path";
  *   re-reads the lease and removes it, and only when it still holds that same
  *   stale content. A competing recoverer of the same generation loses the
  *   claim; a new lease has different content, so it can never match a stale
- *   generation. A marker left by a recoverer that died is recovered the same way.
+ *   generation. A marker left by a recoverer that died is recovered the same way,
+ *   one level deep. Deeper chains of dead recoverers are left untouched and that
+ *   slot is skipped, because deleting an unclaimed marker could break exclusion.
  *
  * A caller resuming a conversation can ask for the slot that holds it
  * (`preferredHome`); the first free slot is used when that one is taken.
@@ -37,7 +39,10 @@ import path from "node:path";
 
 const PROCESS_NONCE = randomUUID();
 const MAX_SLOTS = 64;
-const MAX_RECOVERY_DEPTH = 4;
+// A lease name, two recovery-marker suffixes and a temp suffix stay within
+// NAME_MAX (255); a third marker suffix would not. So recovery reclaims at most
+// one abandoned marker above a stale lease.
+const MAX_RECOVERY_DEPTH = 1;
 const heldLeases = new Set<string>();
 const acquireQueues = new Map<string, Promise<unknown>>();
 
@@ -132,7 +137,10 @@ async function createLease(leaseFile: string, contents: string): Promise<boolean
  * afterwards: a later recoverer of the same generation then re-reads a
  * different (or no) file and leaves it alone, because contents are never
  * reused. A marker whose recoverer died before removing it is itself stale and
- * recovered the same way, so a crash between the two writes strands nothing.
+ * recovered the same way, so one crash between the two writes is recovered.
+ * Recovery stops at `MAX_RECOVERY_DEPTH` marker levels to keep file names within
+ * NAME_MAX; a slot behind a deeper chain of dead recoverers stays occupied and
+ * acquisition moves on to the next slot.
  */
 async function removeStaleFile(file: string, staleRaw: string, claim: string, depth = 0): Promise<void> {
   const generation = createHash("sha256").update(staleRaw).digest("hex").slice(0, 32);

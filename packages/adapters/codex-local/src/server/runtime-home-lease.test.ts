@@ -143,6 +143,27 @@ describe("acquireRuntimeHomeLease", () => {
     expect((await fs.readdir(parent)).filter((name) => name.includes(".recover-"))).toEqual([]);
   });
 
+  it("skips a slot whose stale lease has a deeper chain of dead recoverers, without overlong names", async () => {
+    const generationOf = (raw: string) => createHash("sha256").update(raw).digest("hex").slice(0, 32);
+    const stale = JSON.stringify({ pid: 2 ** 22 + 12345, nonce: "dead-process", token: "stale" });
+    await fs.writeFile(leaseFile(0), stale);
+    const firstRecoverer = JSON.stringify({ pid: 2 ** 22 + 12346, nonce: "dead-recoverer-1", token: "r1" });
+    const firstMarker = `${leaseFile(0)}.recover-${generationOf(stale)}`;
+    await fs.writeFile(firstMarker, firstRecoverer);
+    const secondRecoverer = JSON.stringify({ pid: 2 ** 22 + 12347, nonce: "dead-recoverer-2", token: "r2" });
+    const secondMarker = `${firstMarker}.recover-${generationOf(firstRecoverer)}`;
+    await fs.writeFile(secondMarker, secondRecoverer);
+    for (let run = 0; run < 3; run += 1) {
+      const lease = await acquireRuntimeHomeLease(parent, DIGEST, `run-${run}`);
+      expect(lease.home).toBe(path.join(parent, `${DIGEST}-1`));
+      await lease.release();
+    }
+    // The occupied slot is left as found: dead markers are never deleted blindly.
+    expect(await fs.readFile(leaseFile(0), "utf8")).toBe(stale);
+    expect(await fs.readFile(firstMarker, "utf8")).toBe(firstRecoverer);
+    expect(await fs.readFile(secondMarker, "utf8")).toBe(secondRecoverer);
+  });
+
   it("leaves a stale lease alone while a live recoverer holds its marker", async () => {
     const stale = JSON.stringify({ pid: 2 ** 22 + 12345, nonce: "dead-process", token: "stale" });
     await fs.writeFile(leaseFile(0), stale);
