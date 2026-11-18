@@ -50,9 +50,17 @@ sys.exit(os.waitstatus_to_exitcode(status))
 export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
   if (provider === "google") return startAntigravityBrowserLogin(home);
   const controller = new AbortController();
-  const state: LocalBrowserLoginState = { abort: () => controller.abort() };
+  let runnerFinished: Promise<void> = Promise.resolve();
+  const state: LocalBrowserLoginState = { abort: async () => { controller.abort(); await runnerFinished; } };
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
   let child: ChildProcessWithoutNullStreams | null = null;
+  let activeProcessExit: Promise<void> = Promise.resolve();
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    const current = child; child = null;
+    try { current?.kill("SIGTERM"); } catch {}
+  };
   const driver = {
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
       let executable = "claude";
@@ -73,7 +81,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
           throw new Error("Browser login runtime unavailable");
         }
       }
-      if (controller.signal.aborted) throw new Error("Local sign-in cancelled before launch");
+      if (controller.signal.aborted || stopped) throw new Error("Local sign-in cancelled before launch");
       const env = { ...process.env,
         ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_OAUTH_TOKEN: "",
         OPENAI_API_KEY: "", CODEX_API_KEY: "",
@@ -81,7 +89,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
         CODEX_HOME: provider === "openai" ? home : process.env.CODEX_HOME,
         BROWSER: "true",
       };
-      return new Promise((resolve, reject) => {
+      const processExit = new Promise<{ exitCode: number | null }>((resolve, reject) => {
         child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
         child.stdout.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
         // Provider output may contain secrets. Never log or retain stderr.
@@ -92,17 +100,19 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
         });
         child.once("close", (exitCode) => resolve({ exitCode }));
       });
+      activeProcessExit = processExit.then(() => undefined, () => undefined);
+      return processExit;
     },
-    write(input: string) { child?.stdin.write(input); },
-    stop() { child?.kill("SIGTERM"); },
-    async dispose() { child?.kill("SIGTERM"); },
+    write(input: string) { try { child?.stdin.write(input); } catch {} },
+    stop,
+    async dispose() { stop(); await activeProcessExit; },
     async readFile(file: string) { const { readLocalAiCredentialFile } = await import("./local-ai-credential-file.js"); return Buffer.from(await readLocalAiCredentialFile(file)); },
   };
   if (provider === "anthropic") {
     let deliverCode: ((code: string) => void) | undefined;
     const codeReady = new Promise<string>((resolve) => { deliverCode = resolve; });
     state.submitCode = (code) => { deliverCode?.(code); deliverCode = undefined; };
-    void runSetupTokenLogin(driver, {
+    runnerFinished = runSetupTokenLogin(driver, {
       timeoutMs: 300_000, signal: controller.signal,
       onPrompt: (prompt) => { state.authorizationUrl = prompt.url; },
       provideCode: (signal) => new Promise<string>((resolve, reject) => {
@@ -126,7 +136,7 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
     })
       .catch(() => { state.outcome = "failure"; });
   } else {
-    void runDeviceLogin(driver, {
+    runnerFinished = runDeviceLogin(driver, {
       timeoutMs: 300_000, signal: controller.signal,
       onPrompt: (prompt) => { state.authorizationUrl = prompt.url; state.code = prompt.code; },
     }).then((result) => { state.outcome = result.outcome === "success" ? "success" : "failure"; })
