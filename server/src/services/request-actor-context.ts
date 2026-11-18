@@ -23,8 +23,10 @@ export function withRequestActor<T>(actor: AuthorizationActor, operation: () => 
 
 export const requestActorContext: RequestHandler = (req, res, next) => {
   const scope: RequestActorScope = { actor: req.actor, keyId: req.actor?.keyId ?? null };
-  const releaseKey = () => { scope.keyId = null; };
-  res.once("finish", releaseKey);
-  res.once("close", releaseKey);
+  const end = res.end;
+  res.end = function releaseKeyOnEnd(this: typeof res, ...args: Parameters<typeof res.end>) {
+    scope.keyId = null;
+    return end.apply(this, args);
+  } as typeof res.end;
   scopes.run(scope, next);
 };

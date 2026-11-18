@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { request as httpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -287,6 +289,63 @@ describeEmbeddedPostgres("logActivity attribution stamping", () => {
       { actorId: "during-request", apiKeyId: boardApiKeyId },
       { actorId: "after-response", apiKeyId: null },
     ]));
+  });
+
+  it("keeps the request key for handler work that finishes after the client disconnects", async () => {
+    const companyId = randomUUID();
+    const boardApiKeyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Disconnect",
+      issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    let releaseHandler!: () => void;
+    const handlerGate = new Promise<void>((resolve) => { releaseHandler = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let markClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { markClosed = resolve; });
+    let handlerDone!: Promise<void>;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = { type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" };
+      next();
+    });
+    app.use(requestActorContext);
+    app.put("/file", (_req, res) => {
+      res.once("close", () => markClosed());
+      handlerDone = (async () => {
+        markStarted();
+        await handlerGate;
+        await logActivity(db, activityInput({
+          companyId, actorType: "user", actorId: "after-disconnect", agentId: null, entityType: "company", entityId: companyId,
+        }), []);
+        res.json({ ok: true });
+      })();
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const client = httpRequest({ host: "127.0.0.1", port, method: "PUT", path: "/file" });
+      client.on("error", () => {});
+      client.end();
+      await started;
+      client.destroy();
+      await closed;
+      releaseHandler();
+      await handlerDone;
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    const rows = await db
+      .select({ actorId: activityLog.actorId, apiKeyId: activityLog.apiKeyId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(rows).toEqual([{ actorId: "after-disconnect", apiKeyId: boardApiKeyId }]);
   });
 
   it("stores a Board API key id and leaves session activity unkeyed", async () => {
