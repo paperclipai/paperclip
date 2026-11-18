@@ -40,6 +40,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { agentUrl } from "@/lib/utils";
 import { cn } from "@/lib/utils";
+import { formatProviderLimitMessage } from "@/lib/provider-limit-message";
 import { Badge } from "@/components/ui/badge";
 import {
   deriveRecoveryDisplayState,
@@ -1318,7 +1319,7 @@ export function IssueRecoveryActionCard({
           )}
         </MetadataRow>
         <MetadataRow label="Next action">
-          {action.nextAction ? <span>{action.nextAction}</span> : <MissingValue />}
+          {action.nextAction ? <span>{formatProviderLimitMessage(action.nextAction)}</span> : <MissingValue />}
         </MetadataRow>
         <MetadataRow label="Follow-up">
           <span className="inline-flex flex-wrap items-center gap-1.5">

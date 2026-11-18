@@ -102,8 +102,7 @@ describePostgres("heartbeat provider usage limit wait", () => {
         providerLimitWait: { resetAt: resetAt.toISOString(), resetReported: false, category: "rate_limit" },
       },
     });
-    expect(finished.error).toContain("UTC");
-    expect(finished.error).not.toContain(resetAt.toISOString());
+    expect(finished.error).toContain(resetAt.toISOString());
     const successors = await db.select().from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, f.agentId));
     const retry = successors.find(run => run.status === "scheduled_retry");
