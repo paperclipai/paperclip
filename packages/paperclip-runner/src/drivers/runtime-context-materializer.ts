@@ -15,7 +15,12 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
-import { ensureCodexSkillHome, touchCodexSkillHome, writeCodexSkillHomeMarker } from "./codex-skill-home.js";
+import {
+  codexSkillHomeDigest,
+  ensureCodexSkillHome,
+  touchCodexSkillHome,
+  writeCodexSkillHomeMarker,
+} from "./codex-skill-home.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 
@@ -345,8 +350,11 @@ export async function prepareIsolatedCodexHome(input: {
   if (input.skillHomeStoreRoot && input.context) {
     // Also migrates sessions that still carry a per-session skills copy.
     await releaseMaterializedNativeRuntimeSkills(join(input.codexHome, "skills"));
+    // Reference the home before checking it: a cleanup sweep that retires it
+    // afterwards sees this marker and restores it, and one that removed it
+    // before leaves it missing, so the check below publishes it again.
+    await writeCodexSkillHomeMarker(input.codexHome, codexSkillHomeDigest(input.context));
     const ensured = await ensureCodexSkillHome({ storeRoot: input.skillHomeStoreRoot, context: input.context });
-    await writeCodexSkillHomeMarker(input.codexHome, ensured.digest);
     await touchCodexSkillHome(input.skillHomeStoreRoot, ensured.digest);
     skillHome = ensured.home;
   } else {

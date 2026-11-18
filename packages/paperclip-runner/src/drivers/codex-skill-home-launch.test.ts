@@ -1,6 +1,6 @@
 import { chmod, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -11,7 +11,7 @@ import {
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
-import { createRunnerdCodexAppServerArgs } from "../live/runner-provider-launch.js";
+import { codexSkillReadRoots, createRunnerdCodexAppServerArgs } from "../live/runner-provider-launch.js";
 import { resolveRunnerdCodexSkillInputs } from "../live/runnerd-codex-transport.js";
 import {
   readCodexSkillHomeMarker,
@@ -108,6 +108,14 @@ describe("Codex launches with a shared skill home", () => {
     ]);
   });
 
+  it("records the session's skill home before publishing it, so cleanup sees the reference", async () => {
+    const { root, storeRoot, assigned } = await fixture();
+    await writeFile(storeRoot, "not a directory");
+    const codexHome = join(root, "a");
+    await expect(prepareIsolatedCodexHome({ context: assigned, codexHome, skillHomeStoreRoot: storeRoot })).rejects.toThrow();
+    await expect(readCodexSkillHomeMarker(codexHome)).resolves.toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it("reuses the recorded home during recovery", async () => {
     const { root, storeRoot, assigned } = await fixture();
     const codexHome = join(root, "a");
@@ -156,6 +164,13 @@ describe("Codex launches with a shared skill home", () => {
     expect(serialized).toContain('"/state/skill-homes/abc"="none"');
     expect(serialized).toContain('"/state/session/codex-home"="none"');
     expect(serialized).toContain('"/state/skill-homes/abc/.agents/skills"="read"');
-    expect(serialized).not.toContain('"/state/session/codex-home/skills"="read"');
+  });
+
+  it("keeps Codex's own system skills in the session home readable next to the skill home", () => {
+    expect(codexSkillReadRoots("/state/session/codex-home", "/state/skill-homes/abc")).toEqual([
+      resolve("/state/skill-homes/abc/.agents/skills"),
+      resolve("/state/session/codex-home/skills"),
+    ]);
+    expect(codexSkillReadRoots("/state/session/codex-home", null)).toEqual([resolve("/state/session/codex-home/skills")]);
   });
 });

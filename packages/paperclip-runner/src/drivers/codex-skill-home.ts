@@ -230,20 +230,36 @@ async function publishCodexSkillHome(
   }
 }
 
-export async function ensureCodexSkillHome(input: {
-  storeRoot: string;
-  context: NativeRuntimeContextSnapshot;
-}): Promise<{ home: string; digest: string; created: boolean }> {
+export async function ensureCodexSkillHome(
+  input: {
+    storeRoot: string;
+    context: NativeRuntimeContextSnapshot;
+  },
+  /** Test seam for launches and cleanup that interleave with this one. */
+  dependencies: { beforeQuarantine?: () => Promise<void> } = {},
+): Promise<{ home: string; digest: string; created: boolean }> {
   const digest = codexSkillHomeDigest(input.context);
   const home = join(input.storeRoot, digest);
   await mkdir(input.storeRoot, { recursive: true, mode: 0o700 });
-  const existing = await lstat(home).catch(() => null);
-  if (existing) {
+  let existing = await lstat(home).catch(() => null);
+  // Another launch may replace a damaged home, or cleanup may remove it, while
+  // this one checks it. Quarantine only the exact directory judged damaged.
+  for (let attempt = 0; existing && attempt < 2; attempt++) {
     if (existing.isDirectory() && await reusableCodexSkillHome(input.storeRoot, home, digest)) {
       return { home, digest, created: false };
     }
-    await quarantineCodexSkillHome(input.storeRoot, home);
+    await dependencies.beforeQuarantine?.();
+    const current = await lstat(home).catch(() => null);
+    if (current && current.ino === existing.ino && current.dev === existing.dev) {
+      await quarantineCodexSkillHome(input.storeRoot, home).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      existing = null;
+    } else {
+      existing = current;
+    }
   }
+  if (existing) throw integrityFailure();
   const created = await publishCodexSkillHome(input.storeRoot, home, digest, input.context);
   return { home, digest, created };
 }

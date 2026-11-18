@@ -208,6 +208,36 @@ describe("Codex skill home store", () => {
     await expect(readFile(join(second.home, ".agents", "skills", "alpha", "SKILL.md"), "utf8")).resolves.toBe("# alpha\n");
   });
 
+  it("does not quarantine a home another launch replaced after it was judged damaged", async () => {
+    const { storeRoot, assigned } = await fixture();
+    const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    await makeWritable(first.home);
+    await writeFile(join(first.home, ".agents", "skills", "alpha", "extra.md"), "x");
+    let replaced = false;
+    const result = await ensureCodexSkillHome({ storeRoot, context: assigned }, {
+      beforeQuarantine: async () => {
+        if (replaced) return;
+        replaced = true;
+        await ensureCodexSkillHome({ storeRoot, context: assigned });
+      },
+    });
+    expect(result.created).toBe(false);
+    await expect(verifyCodexSkillHome(result.home)).resolves.toBeUndefined();
+    expect(await readdir(join(storeRoot, "quarantine"))).toHaveLength(1);
+  });
+
+  it("republishes when a damaged home vanished before it could be quarantined", async () => {
+    const { storeRoot, assigned } = await fixture();
+    const first = await ensureCodexSkillHome({ storeRoot, context: assigned });
+    await makeWritable(first.home);
+    await writeFile(join(first.home, ".agents", "skills", "alpha", "extra.md"), "x");
+    const result = await ensureCodexSkillHome({ storeRoot, context: assigned }, {
+      beforeQuarantine: async () => { await rm(first.home, { recursive: true, force: true }); },
+    });
+    expect(result.created).toBe(true);
+    await expect(verifyCodexSkillHome(result.home)).resolves.toBeUndefined();
+  });
+
   it("publishes one home when two launches race", async () => {
     const { storeRoot, assigned } = await fixture();
     const results = await Promise.all([

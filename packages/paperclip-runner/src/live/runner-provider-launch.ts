@@ -403,7 +403,7 @@ export function createRunnerProviderLaunch(
                             ),
                             ...(runtimeContext
                               ? [
-                                  codexSkillReadRoot(codexHome, skillHome),
+                                  ...codexSkillReadRoots(codexHome, skillHome),
                                   runtimeContext.instructions.bundle.rootPath,
                                   ...runtimeContext.skills.map(
                                     (skill) => skill.bundle.rootPath,
@@ -484,9 +484,18 @@ export function trustedRuntimeReadOnlyRoots(
   return [...roots];
 }
 
-/** The directory Codex discovers assigned skills in, granted read-only to the sandbox. */
+/** The directory Codex discovers assigned skills in. */
 export function codexSkillReadRoot(codexHome: string, skillHome?: string | null): string {
   return skillHome ? resolve(skillHome, ".agents", "skills") : resolve(codexHome, "skills");
+}
+
+/**
+ * Skill directories granted read-only to the sandbox. Codex still writes its own
+ * bundled `.system` skills into CODEX_HOME/skills, so that stays readable next to
+ * a shared skill home.
+ */
+export function codexSkillReadRoots(codexHome: string, skillHome?: string | null): string[] {
+  return skillHome ? [codexSkillReadRoot(codexHome, skillHome), resolve(codexHome, "skills")] : [resolve(codexHome, "skills")];
 }
 
 export function createRunnerdCodexAppServerArgs(input: {
