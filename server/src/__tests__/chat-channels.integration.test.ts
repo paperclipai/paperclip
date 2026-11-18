@@ -7547,8 +7547,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } })
         : undefined);
       const staleSession = { companyId: f.companyId, agentId: f.assignedAgentId, issueId: task.id, runId: run.id };
-      // The run of the older head stops with a terminal outcome. It does not
-      // read the newer head, because its authority is bound to the older commit.
       const superseded = githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" });
       await expect(superseded).rejects.toMatchObject({
         status: 409,
@@ -7556,13 +7554,27 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           currentCommit: "c".repeat(40), newerReviewQueued: true },
       });
       await expect(superseded).rejects.toThrow(/older pull request head.*newer automatic review for that commit is already queued.*Stop this review/s);
+      await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "pull_request", delivery: randomUUID(), webhookSecret: f.webhookSecret,
+        payload: { ...payload, action: "synchronize", before: "c".repeat(40),
+          pull_request: { ...payload.pull_request, head: { sha: "d".repeat(40) } } },
+      }));
+      const waiting = (await readChatDeliveriesByEndpointId(f.endpoint.id)).filter((row) =>
+        (row.normalizedEvent.githubAutomatic as { context?: { headSha?: string } } | undefined)?.context?.headSha === "d".repeat(40));
+      expect(waiting).toHaveLength(1);
+      expect(waiting[0]).toMatchObject({ conversationId: null });
       f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
         ? Response.json({ ...payload.pull_request, head: { sha: "d".repeat(40) } })
+        : undefined);
+      await expect(githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" }))
+        .rejects.toMatchObject({ status: 409, details: { reasonCode: "github_review_superseded", currentCommit: "d".repeat(40), newerReviewQueued: true } });
+      f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
+        ? Response.json({ ...payload.pull_request, head: { sha: "e".repeat(40) } })
         : undefined);
       const unqueued = githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" });
       await expect(unqueued).rejects.toMatchObject({
         status: 409,
-        details: { reasonCode: "github_review_superseded", currentCommit: "d".repeat(40), newerReviewQueued: false },
+        details: { reasonCode: "github_review_superseded", currentCommit: "e".repeat(40), newerReviewQueued: false },
       });
       await expect(unqueued).rejects.toThrow(/no newer automatic review is queued.*Stop this review/s);
     });

@@ -333,10 +333,6 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         github<T>(`${prefix}${path}`, options),
     };
   }
-  // An automatic run is authorized only for the commit of its event. When the
-  // head moves, tell the agent to stop, and whether a newer automatic event for
-  // the current head already waits on this task, so it neither retries review
-  // tools nor posts its stale review as an ordinary comment.
   async function supersededAutomaticReview(
     source: Awaited<ReturnType<typeof scope>>,
     requestedCommit: string,
@@ -349,8 +345,14 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         and(
           eq(chatDeliveries.companyId, source.endpoint.companyId),
           eq(chatDeliveries.endpointId, source.endpoint.id),
-          eq(chatDeliveries.conversationId, source.conversation.id),
+          or(
+            eq(chatDeliveries.conversationId, source.conversation.id),
+            isNull(chatDeliveries.conversationId),
+          ),
+          gt(chatDeliveries.createdAt, source.delivery.createdAt),
           inArray(chatDeliveries.state, ["received", "processing", "processed", "retry"]),
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'repositoryId' = ${source.repositoryId}`,
+          sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'pullNumber' = ${String(source.number)}`,
           sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'headSha' = ${currentCommit}`,
         ),
       )
