@@ -17,12 +17,6 @@ export async function heldTaskRetryRefusals(db: Pick<Db, "selectDistinctOn">, co
   const issueId = sql<string>`${agentWakeupRequests.payload}->>'issueId'`;
   const rows = await db.selectDistinctOn([issueId], { issueId, sourceRunId: sql<string | null>`${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`,
     reason: sql<string | null>`${agentWakeupRequests.payload}#>>'{executionWait,reason}'`,
-    // Three indexed bindings, newest row wins: a uuid-column OR-chain forced a
-    // newest-first walk of the company's whole run history per held Retry. The
-    // native binding keeps all matches unordered: its index carries no
-    // created_at, so a per-branch limit would again walk company history; the
-    // outer ordering still picks the newest. The uuid casts are guarded so a
-    // malformed payload id degrades to no match instead of a query error.
     latestRunId: sql<string | null>`(select latest.id::text from (
       (select run.id, run.created_at from ${heartbeatRuns} run
         where run.company_id = ${companyId}

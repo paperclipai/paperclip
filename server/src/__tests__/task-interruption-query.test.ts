@@ -188,10 +188,6 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", intentId: message.id });
   });
 
-  // G1 wave s9802 t02: an accepted Retry held by the unpriced-usage refusal
-  // read as a budget wait. It is an accounting matter; name it so.
-  // G1 wave s9802 t02: an accepted Retry held by the unpriced-usage refusal
-  // read as a budget wait. It is an accounting matter; name it so.
   it("matches a held Retry's newest run across all issue-id bindings", async () => {
     const companyId = randomUUID(), agentId = randomUUID();
     const boundViaIssueId = randomUUID(), boundViaCtx = randomUUID(), boundViaNative = randomUUID();
@@ -212,21 +208,26 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(),
       payload: { issueId: task.id, taskRetry: { sourceRunId: boundViaCtx },
         executionWait: { reason: "budget.blocked", message: "held" } } };
-    // The source run is still the newest across every binding: the refusal applies.
-    await db.insert(agentWakeupRequests).values(wake);
+    const [savedWake] = await db.insert(agentWakeupRequests).values(wake).returning();
     expect((await heldTaskRetryRefusals(db, companyId, [task.id])).get(task.id)).toBe("budget.blocked");
-    // A newer run bound only through context_snapshot supersedes it.
     const newerCtx = randomUUID();
     await db.insert(heartbeatRuns).values({ id: newerCtx, companyId, agentId, scopeKind: "issue",
       status: "succeeded", contextSnapshot: { issueId: task.id },
       createdAt: new Date(), finishedAt: new Date() });
     expect((await heldTaskRetryRefusals(db, companyId, [task.id])).get(task.id)).toBeUndefined();
-    // The newest issue_id-bound run matching sourceRunId makes the refusal current again.
     await db.update(agentWakeupRequests).set({ payload: { ...wake.payload, taskRetry: { sourceRunId: boundViaIssueId } } })
-      .where(eq(agentWakeupRequests.reason, "task_retry"));
+      .where(eq(agentWakeupRequests.id, savedWake.id));
     await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, newerCtx)));
     await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, boundViaCtx)));
     await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, boundViaNative)));
+    expect((await heldTaskRetryRefusals(db, companyId, [task.id])).get(task.id)).toBe("budget.blocked");
+    const newerNative = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: newerNative, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue",
+      status: "failed", createdAt: new Date(), finishedAt: new Date() });
+    await db.update(heartbeatRuns).set({ issueId: null }).where(eq(heartbeatRuns.id, newerNative));
+    expect((await heldTaskRetryRefusals(db, companyId, [task.id])).get(task.id)).toBeUndefined();
+    await db.update(agentWakeupRequests).set({ payload: { ...wake.payload, taskRetry: { sourceRunId: newerNative } } })
+      .where(eq(agentWakeupRequests.id, savedWake.id));
     expect((await heldTaskRetryRefusals(db, companyId, [task.id])).get(task.id)).toBe("budget.blocked");
   });
 
@@ -250,8 +251,6 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     const f = await seedInterruptionFixture(db, { selected: 1, history: 2000, unrelated: 2000, payloadBytes: 512 });
     const [task] = await db.insert(issues).values({ companyId: f.companyId, title: "Old held task",
       status: "in_progress", assigneeAgentId: f.agentId }).returning();
-    // The newest bound run sits at the bottom of the company's history, so a
-    // newest-first company walk must inspect nearly every run before matching.
     await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId, agentId: f.agentId,
       issueId: task.id, scopeKind: "issue", status: "failed", createdAt: new Date("2020-01-01T00:00:00Z") });
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
@@ -301,11 +300,11 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue",
       status: "failed", runtimeMode: "native", errorCode: "native_session_cleanup_quarantined", finishedAt: new Date(Date.now() - 60_000) });
     const refusal = "Company cannot start work because recorded usage has no reliable price.";
-    await db.insert(agentWakeupRequests).values([{ companyId, agentId, source: "on_demand", reason: "task_retry",
+    const [heldWake] = await db.insert(agentWakeupRequests).values([{ companyId, agentId, source: "on_demand", reason: "task_retry",
       status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 30_000),
       payload: { issueId: task.id, taskRetry: { sourceRunId: runId }, executionWait: { reason: "budget.blocked", message: refusal } } },
     { companyId, agentId, source: "assignment", reason: "budget.blocked", status: "skipped", error: refusal,
-      requestedAt: new Date(), payload: { issueId: todo.id } }]);
+      requestedAt: new Date(), payload: { issueId: todo.id } }]).returning();
     const held = await taskInterruptionPresentation(db, task);
     expect(held?.retryWait).toMatchObject({ reason: "accounting.unpriced_usage", message: expect.stringContaining("has no price") });
     expect(held?.retryWait?.message).not.toContain("budget to allow");
@@ -314,7 +313,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     // A budget hard stop keeps its budget label.
     await db.update(agentWakeupRequests).set({ payload: { issueId: task.id, taskRetry: { sourceRunId: runId },
       executionWait: { reason: "budget.blocked", message: "Company is paused because its budget hard-stop was reached." } } })
-      .where(eq(agentWakeupRequests.reason, "task_retry"));
+      .where(eq(agentWakeupRequests.id, heldWake.id));
     expect((await taskInterruptionPresentation(db, task))?.retryWait?.reason).toBe("budget.blocked");
   });
 
