@@ -629,6 +629,7 @@ const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
   "provider_retry_requested",
   "oauth_insufficient_scope",
   "oauth_refreshed_retry_required",
+  "credentials_refreshed_retry_required",
   "provider_task_pending",
   "provider_task_cancelled",
   "provider_task_expired",
@@ -8172,10 +8173,14 @@ export function createToolGatewayService(
             refreshedResponse.headers.get("x-request-id") ??
             refreshedResponse.headers.get("traceparent"),
         };
+        // AWS credentials are minted, not OAuth tokens: say what actually happened.
+        const minted = isAwsMcpConnection(connection);
         throw new ToolGatewayHttpError(
           409,
-          "The provider rejected the saved OAuth token, which has now been refreshed. Retry the action explicitly; the original call was not replayed.",
-          "oauth_refreshed_retry_required",
+          minted
+            ? "AWS refused the saved credentials, and Paperclip has made new ones. Retry the action explicitly; the original call was not replayed."
+            : "The provider rejected the saved OAuth token, which has now been refreshed. Retry the action explicitly; the original call was not replayed.",
+          minted ? "credentials_refreshed_retry_required" : "oauth_refreshed_retry_required",
           { connectionId: connection.id, catalogEntryId: entry.id, execution },
         );
       };

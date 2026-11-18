@@ -125,7 +125,7 @@ describe("AWS connector with minted credentials", () => {
     rejected.add(lastAuthorization);
     const toolCalls = () => requests.filter((request) => request.method === "tools/call").length;
     const callsBefore = toolCalls();
-    expect(await call()).toMatchObject({ error: expect.anything() });
+    expect(await call()).toMatchObject({ error: { reasonCode: "credentials_refreshed_retry_required", message: expect.stringContaining("AWS refused the saved credentials") } });
     expect(toolCalls()).toBe(callsBefore + 1);
     expect(aws.createMcpToken.mock.calls.length).toBe(mintsBefore + 1);
     expect(await call()).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
