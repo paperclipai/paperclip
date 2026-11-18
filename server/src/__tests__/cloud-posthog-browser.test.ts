@@ -217,7 +217,7 @@ describe("PostHog proxy forwarding", () => {
 
   it("refuses a declared body over the limit without contacting PostHog", async () => {
     const app = express();
-    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256 }));
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256, requestDeadlineMs: 60_000 }));
     const res = await request(app).post("/_ph/e/").set("Content-Type", "text/plain").send("x".repeat(11));
     expect(res.status).toBe(413);
     expect(seen).toHaveLength(0);
@@ -225,7 +225,7 @@ describe("PostHog proxy forwarding", () => {
 
   it("cuts off a streamed body that grows past the limit", async () => {
     const app = express();
-    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256 }));
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256, requestDeadlineMs: 60_000 }));
     const server = app.listen(0, "127.0.0.1");
     await new Promise<void>((resolve) => server.once("listening", () => resolve()));
     const port = (server.address() as AddressInfo).port;
@@ -249,12 +249,24 @@ describe("PostHog proxy forwarding", () => {
 
   async function withHeldUpstream(
     limits: PostHogProxyLimits,
-    run: (send: (ip?: string) => Promise<number>, release: () => void) => Promise<void>,
+    run: (send: (ip?: string) => Promise<number>, release: () => void, arrived: (count: number) => Promise<void>) => Promise<void>,
     options: { trustProxy?: boolean; reportLimit?: Parameters<typeof posthogProxyRoutes>[2] } = {},
   ) {
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => { release = resolve; });
-    const slow = http.createServer(async (_req, res) => { await held; res.end("ok"); });
+    let arrivals = 0;
+    const waiters: Array<{ count: number; resolve: () => void }> = [];
+    const slow = http.createServer(async (_req, res) => {
+      arrivals += 1;
+      for (const waiter of waiters.filter((entry) => entry.count <= arrivals)) {
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve();
+      }
+      await held;
+      res.end("ok");
+    });
+    const arrived = (count: number) =>
+      count <= arrivals ? Promise.resolve() : new Promise<void>((resolve) => { waiters.push({ count, resolve }); });
     await new Promise<void>((resolve) => slow.listen(0, "127.0.0.1", resolve));
     const app = express();
     if (options.trustProxy) app.set("trust proxy", "loopback");
@@ -267,7 +279,7 @@ describe("PostHog proxy forwarding", () => {
       return req.then((res) => res.status);
     };
     try {
-      await run(send, release);
+      await run(send, release, arrived);
     } finally {
       release();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -275,16 +287,14 @@ describe("PostHog proxy forwarding", () => {
     }
   }
 
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
-
   it("limits requests in flight from one public client address", async () => {
-    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 256 };
-    await withHeldUpstream(limits, async (send, release) => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 256, requestDeadlineMs: 60_000 };
+    await withHeldUpstream(limits, async (send, release, arrived) => {
       const first = send("8.8.8.8");
-      await settle();
+      await arrived(1);
       expect(await send("8.8.8.8")).toBe(429);
       const other = send("9.9.9.9");
-      await settle();
+      await arrived(2);
       release();
       expect(await first).toBe(200);
       expect(await other).toBe(200);
@@ -293,10 +303,10 @@ describe("PostHog proxy forwarding", () => {
   });
 
   it("applies only the total limit when the client address is a shared private hop", async () => {
-    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 3 };
-    await withHeldUpstream(limits, async (send, release) => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 3, requestDeadlineMs: 60_000 };
+    await withHeldUpstream(limits, async (send, release, arrived) => {
       const held = [send(), send(), send()];
-      await settle();
+      await arrived(3);
       expect(await send()).toBe(429);
       release();
       expect(await Promise.all(held)).toEqual([200, 200, 200]);
@@ -304,23 +314,64 @@ describe("PostHog proxy forwarding", () => {
     });
   });
 
-  it("does not let a forged X-Forwarded-For pick the client bucket when no proxy is trusted", async () => {
-    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 2 };
-    await withHeldUpstream(limits, async (send, release) => {
-      const held = [send("8.8.8.8"), send("9.9.9.9")];
-      await settle();
-      expect(await send("1.1.1.1")).toBe(429);
+  it("does not key the per-client limit on a forged X-Forwarded-For when no proxy is trusted", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 8, requestDeadlineMs: 60_000 };
+    await withHeldUpstream(limits, async (send, release, arrived) => {
+      const held = [send("8.8.8.8"), send("8.8.8.8"), send("8.8.8.8")];
+      await arrived(3);
       release();
-      expect(await Promise.all(held)).toEqual([200, 200]);
+      expect(await Promise.all(held)).toEqual([200, 200, 200]);
     });
   });
 
+  it("frees a slot when PostHog holds a request past the request deadline", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 1, requestDeadlineMs: 200 };
+    await withHeldUpstream(limits, async (send, _release, arrived) => {
+      const startedAt = Date.now();
+      const first = send();
+      await arrived(1);
+      expect(await send()).toBe(429);
+      expect(await first).toBe(502);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      const second = send();
+      await arrived(2);
+      expect(await second).toBe(502);
+    });
+  });
+
+  it("cuts off a body that trickles in past the request deadline", async () => {
+    const app = express();
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 1, requestDeadlineMs: 200 }, () => {}));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+    let drip: ReturnType<typeof setInterval> | undefined;
+    try {
+      const startedAt = Date.now();
+      const outcome = await new Promise<number | string>((resolve) => {
+        const req = http.request({ host: "127.0.0.1", port, path: "/_ph/e/", method: "POST", headers: { "content-type": "text/plain", "transfer-encoding": "chunked" } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", () => resolve("error"));
+        req.on("close", () => resolve("closed"));
+        drip = setInterval(() => req.write("x"), 20);
+      });
+      expect([502, "error", "closed"]).toContain(outcome);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect((await request(server).get("/_ph/static/array.js")).status).not.toBe(429);
+    } finally {
+      clearInterval(drip);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("limits requests in flight in total across public clients and reports each refusal", async () => {
-    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 2 };
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 2, requestDeadlineMs: 60_000 };
     const reported: Array<[string, number]> = [];
-    await withHeldUpstream(limits, async (send, release) => {
+    await withHeldUpstream(limits, async (send, release, arrived) => {
       const held = [send("8.8.8.8"), send("9.9.9.9")];
-      await settle();
+      await arrived(2);
       expect(await send("1.1.1.1")).toBe(429);
       release();
       expect(await Promise.all(held)).toEqual([200, 200]);
@@ -329,11 +380,11 @@ describe("PostHog proxy forwarding", () => {
   });
 
   it("reports a per-client refusal with its reason", async () => {
-    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 8 };
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 8, requestDeadlineMs: 60_000 };
     const reported: Array<[string, number]> = [];
-    await withHeldUpstream(limits, async (send, release) => {
+    await withHeldUpstream(limits, async (send, release, arrived) => {
       const first = send("8.8.8.8");
-      await settle();
+      await arrived(1);
       expect(await send("8.8.8.8")).toBe(429);
       release();
       expect(await first).toBe(200);
@@ -427,6 +478,7 @@ describe("PostHog proxy limits", () => {
       maxBodyBytes: 64 * 1024 * 1024,
       maxInFlightPerClient: 128,
       maxInFlight: 1024,
+      requestDeadlineMs: 60_000,
     });
     const warn = vi.fn();
     expect(resolvePostHogProxyLimits({}, warn)).toEqual(DEFAULT_POSTHOG_PROXY_LIMITS);
@@ -437,16 +489,16 @@ describe("PostHog proxy limits", () => {
     const warn = vi.fn();
     const limits = resolvePostHogProxyLimits(
       {
-        PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: "4096",
+        PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: "65536",
         PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT: " 256 ",
       },
       warn,
     );
-    expect(limits).toEqual({ maxBodyBytes: 64 * 1024 * 1024, maxInFlight: 4096, maxInFlightPerClient: 256 });
+    expect(limits).toEqual({ ...DEFAULT_POSTHOG_PROXY_LIMITS, maxInFlight: 65536, maxInFlightPerClient: 256 });
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it.each(["0", "-5", "1.5", "1e3", "12abc", "abc", "0x10", "+8", "99999999999999999999"])(
+  it.each(["0", "-5", "1.5", "1e3", "12abc", "abc", "0x10", "+8", "65537", "1024000", "99999999999999999999"])(
     "keeps the default and warns for the invalid value %s",
     (value) => {
       const warn = vi.fn();
@@ -475,7 +527,7 @@ describe("PostHog proxy limits", () => {
       PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: "2048",
       PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT: "64",
     });
-    expect(mount?.limits).toEqual({ maxBodyBytes: 64 * 1024 * 1024, maxInFlight: 2048, maxInFlightPerClient: 64 });
+    expect(mount?.limits).toEqual({ ...DEFAULT_POSTHOG_PROXY_LIMITS, maxInFlight: 2048, maxInFlightPerClient: 64 });
     expect(resolvePostHogProxyMount({ ...ON, PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: "lots" })?.limits).toEqual(
       DEFAULT_POSTHOG_PROXY_LIMITS,
     );

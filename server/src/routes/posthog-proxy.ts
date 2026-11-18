@@ -37,18 +37,21 @@ export type PostHogProxyLimits = {
   maxInFlightPerClient: number;
   /** Requests in flight for the whole proxy. */
   maxInFlight: number;
+  requestDeadlineMs: number;
 };
 
 export const DEFAULT_POSTHOG_PROXY_LIMITS: PostHogProxyLimits = {
   maxBodyBytes: 64 * 1024 * 1024,
   maxInFlightPerClient: 128,
   maxInFlight: 1024,
+  requestDeadlineMs: 60_000,
 };
 
 export const POSTHOG_PROXY_MAX_IN_FLIGHT_ENV = "PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT";
 export const POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT_ENV = "PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT";
 
 const LIMIT_WARNING_INTERVAL_MS = 60_000;
+const MAX_CONFIGURED_IN_FLIGHT = 65_536;
 
 type LimitWarning = (fields: Record<string, unknown>, message: string) => void;
 
@@ -66,8 +69,11 @@ function parseInFlightLimit(
   if (raw === undefined || raw.trim() === "") return fallback;
   const value = raw.trim();
   const parsed = Number(value);
-  if (/^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(parsed)) return parsed;
-  warn({ variable: name, defaultValue: fallback }, `${name} is not a positive integer; the PostHog proxy uses the default`);
+  if (/^[1-9][0-9]*$/.test(value) && parsed <= MAX_CONFIGURED_IN_FLIGHT) return parsed;
+  warn(
+    { variable: name, defaultValue: fallback, maxValue: MAX_CONFIGURED_IN_FLIGHT },
+    `${name} is not an integer from 1 to ${MAX_CONFIGURED_IN_FLIGHT}; the PostHog proxy uses the default`,
+  );
   return fallback;
 }
 
@@ -77,6 +83,7 @@ export function resolvePostHogProxyLimits(
 ): PostHogProxyLimits {
   return {
     maxBodyBytes: DEFAULT_POSTHOG_PROXY_LIMITS.maxBodyBytes,
+    requestDeadlineMs: DEFAULT_POSTHOG_PROXY_LIMITS.requestDeadlineMs,
     maxInFlight: parseInFlightLimit(env, POSTHOG_PROXY_MAX_IN_FLIGHT_ENV, DEFAULT_POSTHOG_PROXY_LIMITS.maxInFlight, warn),
     maxInFlightPerClient: parseInFlightLimit(
       env,
@@ -288,6 +295,10 @@ export function posthogProxyRoutes(
     upstreamReq.on("timeout", () => {
       upstreamReq.destroy(new Error("posthog_proxy_timeout"));
     });
+    const deadline = setTimeout(() => {
+      upstreamReq.destroy(new Error("posthog_proxy_deadline"));
+    }, limits.requestDeadlineMs);
+    res.once("close", () => clearTimeout(deadline));
     upstreamReq.on("error", (err) => {
       logger.debug({ err, path: target.pathname }, "PostHog proxy request failed");
       if (!res.headersSent && bodyTooLarge) {

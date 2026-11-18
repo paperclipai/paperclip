@@ -158,9 +158,15 @@ Why these values:
   numbers include the test client and the test upstream, which ran in the same
   process. Most PostHog bodies are a few KiB.
 
-A value must be a positive whole number (for example `2048`). The server reads
-the values at start. If a value is not valid, the server logs a warning, uses
-the default, and starts as usual.
+A value must be a whole number from 1 to 65536 (for example `2048`). The
+server reads the values at start. If a value is not valid, the server logs a
+warning, uses the default, and starts as usual.
+
+Each request has a deadline of 60 seconds from the time the proxy accepts it,
+whether or not data still moves. At the deadline, the proxy stops the request
+to PostHog and closes the browser request, so a slow body or a slow answer
+cannot hold a slot for longer. This deadline is not configurable. The proxy
+also stops a request to PostHog that has no data for 30 seconds.
 
 #### Shared platform hop
 
@@ -172,7 +178,10 @@ address, so a per-client limit would hold back all of them together.
 
 When `req.ip` is not a public address (private, carrier-grade NAT, loopback,
 link-local or another reserved range, or no address), the proxy applies only
-the total limit. It does not read `X-Forwarded-For` to find the visitor for a
+the total limit. A separate limit for the shared hop would not protect the
+visitors behind it: one client that fills it blocks all of them, the same as
+with the total limit. The total limit and the request deadline bound the
+memory and sockets that clients can use. It does not read `X-Forwarded-For` to find the visitor for a
 limit, because a client can write that header. Set `TRUST_PROXY` to the
 platform's proxy range so that `req.ip` is the visitor, and the per-client
 limit applies again.
