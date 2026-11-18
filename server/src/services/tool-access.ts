@@ -2233,9 +2233,20 @@ export function toolAccessService(
               "",
           }
         : { templateId: method?.defaults?.templateKey };
+    // The issuer an AWS role is asked to trust, recorded so a later change of this instance's address
+    // gets a clear message instead of a role refusal. A draft being resumed keeps the issuer recorded at
+    // the draft step; any other setup or reconnect records the current address (the one now in AWS).
+    const recordedAwsIssuer = !input.reconnectConnectionId && retainedConnection?.status === "draft"
+      ? asRecord(retainedConnection.config)[AWS_MCP_ISSUER_CONFIG_KEY]
+      : undefined;
+    const awsIssuerOrigin = workloadIdentityIssuerOrigin();
+    const awsRoleIssuer = !awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key) ? null
+      : typeof recordedAwsIssuer === "string" ? recordedAwsIssuer
+        : awsIssuerOrigin.available ? workloadIdentityIssuer(awsIssuerOrigin.origin, companyId) : null;
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
@@ -2878,23 +2889,9 @@ export function toolAccessService(
 
       // Minted-credential methods (AWS role) need the connection to exist before the
       // provider can trust it, so they may also save a draft without contacting it.
-      if (awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key)) {
-        // Record the issuer AWS is asked to trust, so a later change of this instance's address gets a
-        // clear message instead of a role refusal. Resuming a draft keeps the issuer recorded at the draft
-        // step; an explicit reconnect records the current address, which the administrator updated in AWS.
-        const recorded = input.reconnectConnectionId ? undefined : asRecord(retainedConnection?.config)[AWS_MCP_ISSUER_CONFIG_KEY];
-        const origin = workloadIdentityIssuerOrigin();
-        const issuer = typeof recorded === "string" ? recorded
-          : origin.available ? workloadIdentityIssuer(origin.origin, companyId) : null;
-        if (issuer && connectionRow.config[AWS_MCP_ISSUER_CONFIG_KEY] !== issuer) {
-          const [recordedRow] = await db.update(toolConnections)
-            .set({ config: { ...connectionRow.config, [AWS_MCP_ISSUER_CONFIG_KEY]: issuer }, updatedAt: new Date() })
-            .where(and(eq(toolConnections.id, connectionRow.id), eq(toolConnections.companyId, companyId)))
-            .returning();
-          if (recordedRow) connectionRow = recordedRow;
-        }
-        // AWS validates the issuer's discovery document when the customer registers it, so publish the key now.
-        if (input.saveDraft) await workloadIdentityService(db).ensureActiveKey(companyId);
+      // AWS validates the issuer's discovery document when the customer registers it, so publish the key now.
+      if (input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key)) {
+        await workloadIdentityService(db).ensureActiveKey(companyId);
       }
       if (input.saveDraft && (remoteMcpConnector || method?.credentialMinter)) {
         return { connectionId: connectionRow.id, application: toApplication(applicationRow), connection: toConnection(connectionRow),
