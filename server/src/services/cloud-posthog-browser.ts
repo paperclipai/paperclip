@@ -9,7 +9,7 @@
 // The browser sends to `POSTHOG_PROXY_PATH` on its own origin, not to PostHog,
 // so ad blockers do not drop the events. See `routes/posthog-proxy.ts`.
 
-import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
+import { countryRequiresAnalyticsConsent, type BrowserAnalyticsConfig } from "@paperclipai/shared";
 import { isCloudStagingInstance, type CloudInstanceEnv } from "./cloud-instance.js";
 import { resolveCloudPostHogConfig, type CloudPostHogConfig } from "./cloud-posthog-config.js";
 
@@ -17,6 +17,15 @@ import { resolveCloudPostHogConfig, type CloudPostHogConfig } from "./cloud-post
 export const POSTHOG_PROXY_PATH = "/_ph";
 
 const POSTHOG_CLOUD_INGEST_HOST = /^(us|eu)\.i\.posthog\.com$/i;
+
+export type RequestHeaders = Record<string, string | string[] | undefined>;
+
+export function resolveAnalyticsConsentRequired(env: CloudInstanceEnv, headers: RequestHeaders): boolean | null {
+  const headerName = env.PAPERCLIP_POSTHOG_COUNTRY_HEADER?.trim().toLowerCase();
+  if (!headerName) return null;
+  const value = headers[headerName];
+  return countryRequiresAnalyticsConsent(Array.isArray(value) ? value[0] : value);
+}
 
 /** The browser analytics part of the Cloud PostHog config, or null when it is off. */
 export function resolveBrowserPostHogConfig(env: CloudInstanceEnv = process.env): CloudPostHogConfig | null {
@@ -42,7 +51,10 @@ export function posthogUiHost(ingestHost: string): string | null {
   return match ? `https://${match[1]!.toLowerCase()}.posthog.com` : null;
 }
 
-export function resolveBrowserAnalyticsConfig(env: CloudInstanceEnv = process.env): BrowserAnalyticsConfig | null {
+export function resolveBrowserAnalyticsConfig(
+  env: CloudInstanceEnv = process.env,
+  headers: RequestHeaders = {},
+): BrowserAnalyticsConfig | null {
   const config = resolveBrowserPostHogConfig(env);
   if (!config) return null;
   let uiHost: string | null;
@@ -61,5 +73,6 @@ export function resolveBrowserAnalyticsConfig(env: CloudInstanceEnv = process.en
     environment: config.environment ?? (isCloudStagingInstance(env) ? "staging" : "production"),
     stackId: config.stackId,
     replayEnabled: config.replayEnabled,
+    consentRequired: resolveAnalyticsConsentRequired(env, headers),
   };
 }

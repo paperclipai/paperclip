@@ -10,6 +10,29 @@ Human messages use their stored authenticated author. Queued messages retain the
 
 Delegated work and interactions persist their originating context. Retries retain the originating run's active context. Background continuations carry their source run; dependency wakes use the task's continuation context, independently of its owner. Scheduled and webhook routines use the routine's responsible person; manual invocations use the caller, and edits preserve the routine's responsible person.
 
+An accepted connection request continues for the addressed person who connected
+the account. If an authorized transfer changed that person, the new run records
+a connection handoff and keeps the original context as its audit parent.
+Declined or automatically closed requests and ordinary approvals retain their
+originating identity. Automatic retirement observes the addressee's existing
+access; its wake does not attribute work to that person or authorize use of that
+person's accounts. A request transfer alone cannot authorize that identity.
+Retries keep the previous run's latest accepted context,
+even when the retry still references the original request. If that context is
+unavailable, a retry that references a connection request stops instead of replaying
+the handoff or falling back to another person. An ordinary approval retry
+restores the approval's saved originating context when the prior run never
+initialized an identity, including an explicitly absent person. Otherwise,
+an ordinary retry after a
+preparation failure retains its existing responsible-user resolution when no
+identity context was initialized. It prefers the source run's stored person
+when available and can process newly authorized messages. It does not adopt
+the task's old continuation identity. A new explicit operator action retains
+precedence.
+A transfer grants no
+credential access; connection selection still checks the new person's grants and
+policies.
+
 ## Managed GitHub operations
 
 Executions with managed GitHub configured receive token-free `git` and `gh` launchers. Each launcher invocation resolves one eligible credential from the current run's accepted identity at operation start. A `gh` command's child Git processes inherit that command's captured identity; later steering does not change already-started operations.

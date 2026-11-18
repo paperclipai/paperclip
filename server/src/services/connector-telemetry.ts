@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/shared/telemetry";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 
 type ToolConnectionRow = typeof toolConnections.$inferSelect;
 type ToolInvocationRow = typeof toolInvocations.$inferSelect;
@@ -93,14 +94,14 @@ export function emitConnectionCreated(
     const client = getTelemetryClient();
     if (!client) return;
     if (!isToolPurpose(connection)) return;
-    trackConnectionCreated(client, {
+    withTelemetryCompany(connection.companyId, () => trackConnectionCreated(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       auth_kind: connection.authKind,
       setup_flow: setupFlow,
       status: connection.status,
       enabled: connection.enabled,
-    });
+    }));
   } catch (err) {
     logger.warn(
       { err, connectionId: connection.id },
@@ -131,7 +132,7 @@ export function emitConnectionUpdated(
     ) {
       return;
     }
-    trackConnectionUpdated(client, {
+    withTelemetryCompany(connection.companyId, () => trackConnectionUpdated(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       auth_kind: connection.authKind,
@@ -140,7 +141,7 @@ export function emitConnectionUpdated(
       status: connection.status,
       previous_enabled: previous.enabled,
       enabled: connection.enabled,
-    });
+    }));
   } catch (err) {
     logger.warn(
       { err, connectionId: connection.id },
@@ -212,13 +213,13 @@ export async function emitConnectionInvoked(
         ? Math.max(0, Math.round((completedAtMs - startedAtMs) / 1000))
         : undefined;
 
-    trackConnectionInvoked(client, {
+    withTelemetryCompany(connection.companyId, () => trackConnectionInvoked(client, {
       connector_key: connectorKeyForConnection(connection),
       transport: connection.transport,
       status: invocation.status,
       origin: invocationOrigin(invocation),
       ...(durationSeconds === undefined ? {} : { duration_seconds: durationSeconds }),
-    });
+    }));
   } catch (err) {
     logger.warn(
       { err, invocationId },

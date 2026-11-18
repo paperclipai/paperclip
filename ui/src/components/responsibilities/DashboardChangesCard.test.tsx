@@ -59,14 +59,27 @@ describe("DashboardChangesCard", () => {
     return match;
   };
   const group = (name: string) => container.querySelector<HTMLElement>(`section[aria-label="${name}"]`)!;
-  const rows = (name: string) => [...group(name).querySelectorAll<HTMLElement>("li")];
+  const rows = (name: string) => [...group(name).querySelectorAll<HTMLElement>("[data-dashboard-change]")];
+
+  it("identifies new areas in their headings and nests explicitly named new responsibilities", async () => {
+    await render(<DashboardChangesCard interaction={dashboardChangesFixture("create")} />);
+    const fundraising = group("Fundraising");
+    const area = fundraising.querySelector('[data-dashboard-change="add_area"]')!;
+    expect(area.querySelector("h3")?.textContent).toBe("Fundraising");
+    expect(area.textContent).toContain("New area");
+    const responsibilities = fundraising.querySelector('ul[aria-label="Responsibilities in Fundraising"]')!;
+    expect(responsibilities).not.toBeNull();
+    expect(responsibilities.contains(area)).toBe(false);
+    expect([...responsibilities.querySelectorAll("li")].map((row) => row.querySelector('[data-change-label]')?.textContent))
+      .toEqual(["New responsibility", "New responsibility"]);
+  });
 
   it("shows a first dashboard grouped by area, in plain words, with the agent's reasons", async () => {
     await render(<DashboardChangesCard interaction={dashboardChangesFixture("create")} />);
     const text = container.textContent ?? "";
     expect(text).toContain("Chief proposes");
     expect(text).toContain("A first dashboard from your answers and your calendar.");
-    expect([...container.querySelectorAll("h4")].map((heading) => heading.textContent)).toEqual(["Fundraising", "Portfolio", "Team", "Board"]);
+    expect([...container.querySelectorAll("h3")].map((heading) => heading.textContent)).toEqual(["Fundraising", "Portfolio", "Team", "Board"]);
     expect(rows("Fundraising").map((row) => row.getAttribute("data-dashboard-change"))).toEqual(["add_area", "add_responsibility", "add_responsibility"]);
     expect(rows("Fundraising")[1]!.textContent).toContain("You run the weekly fundraising sync");
     expect(text).not.toMatch(/\b(issue|interaction|op|areaRef)\b/i);
@@ -83,8 +96,21 @@ describe("DashboardChangesCard", () => {
     expect(rows("Portfolio")[0]!.textContent).toContain("Moved from Fundraising");
     const team = rows("Team");
     // Area changes first: the rename, seen by others too, then the responsibility let go with its reason.
-    expect(team[0]!.textContent).toContain("TeamPeopleAlso renamed for 2 other people");
-    expect(team[1]!.textContent).toContain("Hire a second designer.Let goThat is a task that finishes");
+    expect(team[0]!.querySelector("h3")?.textContent).toBe("Team People");
+    expect(team[0]!.textContent).toContain("Rename areaAlso renamed for 2 other people");
+    expect(team[1]!.textContent).toContain("Let go of responsibilityHire a second designer.Let goThat is a task that finishes");
+  });
+
+  it("names the existing parent area when only a responsibility is added, and identifies area removal", async () => {
+    const interaction = dashboardChangesFixture("create");
+    await render(<DashboardChangesCard interaction={{ ...interaction, payload: { ...interaction.payload, changes: [
+      { ...interaction.payload.changes[1]!, index: 0, groupRef: null, groupAreaId: "fundraising", dependsOn: [] },
+      { ...interaction.payload.changes[3]!, index: 1, op: "remove_area", groupRef: null, groupAreaId: "portfolio", reason: "Someone else owns it now." },
+    ] } }} />);
+    expect(group("Fundraising").textContent).toContain("FundraisingExisting areaNew responsibility");
+    expect(group("Portfolio").querySelector("h3")?.textContent?.trim()).toBe("Portfolio");
+    expect(group("Portfolio").textContent).toContain("Remove area");
+    expect(group("Portfolio").querySelector("ul")).toBeNull();
   });
 
   it("drops a new area together with what is filed under it, and keeps the area when one of them is kept", async () => {
@@ -99,6 +125,16 @@ describe("DashboardChangesCard", () => {
     await act(async () => button("Apply changes").click());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(acceptMock).toHaveBeenCalledExactlyOnceWith("issue-dashboard-conversation", "dashboard-changes-create", [0, 1, 2, 3, 5, 6, 7, 8, 9]);
+  });
+
+  it("does not label an unfiled responsibility as an existing area", async () => {
+    const interaction = dashboardChangesFixture("edit");
+    await render(<DashboardChangesCard interaction={{ ...interaction, payload: { ...interaction.payload, changes: [
+      { ...interaction.payload.changes[0]!, groupAreaId: null, groupName: "No area" },
+    ] } }} />);
+    expect(group("No area").textContent).not.toContain("Existing area");
+    expect(group("No area").querySelector("h3")?.textContent).toBe("No area");
+    expect(rows("No area")[0]!.textContent).toContain("Every prospective LP hears from us at least every two weeks.");
   });
 
   it("applies everything when nothing is dropped, and cannot apply nothing", async () => {

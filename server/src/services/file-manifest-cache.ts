@@ -28,6 +28,12 @@ export function relocateFileManifestVerification(from: string, to: string, files
   }
 }
 export async function verifyFileManifest(directory: string, files: readonly FileManifestEntry[]): Promise<boolean> {
+  return await inspectFileManifest(directory, files) === "verified";
+}
+
+/** Like verifyFileManifest, and says why it failed: "missing" when the
+ * directory or a listed file is gone, "changed" for any other difference. */
+export async function inspectFileManifest(directory: string, files: readonly FileManifestEntry[]): Promise<"verified" | "missing" | "changed"> {
   const expected = new Map(files.map(file => [file.path, file]));
   const seen = new Set<string>();
   async function walk(relative: string): Promise<boolean> {
@@ -69,6 +75,13 @@ export async function verifyFileManifest(directory: string, files: readonly File
     }
     return true;
   }
-  try { return await walk("") && seen.size === expected.size; }
-  catch (error) { if (["ENOENT", "ENOTDIR", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; }
+  try {
+    if (!await walk("")) return "changed";
+    return seen.size === expected.size ? "verified" : "missing";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "";
+    if (["ENOENT", "ENOTDIR"].includes(code)) return "missing";
+    if (code === "ELOOP") return "changed";
+    throw error;
+  }
 }
