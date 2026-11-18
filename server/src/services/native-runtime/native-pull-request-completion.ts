@@ -34,7 +34,11 @@ export async function nativePullRequestCompletionReferences(db: Db, binding: Bin
     ...(Array.isArray(artifacts) ? artifacts.flatMap(value => {
       const artifact = record(value);
       const ref = typeof value === "string" ? value : artifact.ref;
-      if (artifact.kind !== "pull_request" && typeof ref === "string" && /\/pull\/[1-9][0-9]*#[^\s]+/u.test(ref)) return [];
+      if (artifact.kind === "pull_request" && extractGitHubPullRequestReferences([ref]).length !== 1) {
+        throw new NativePullRequestCompletionError("A declared PR artifact has no verifiable GitHub identity. Register its canonical PR URL before completing the task.");
+      }
+      if (artifact.kind !== "pull_request" && (artifact.kind === "review_comment" ||
+          (typeof ref === "string" && /\/pull\/[1-9][0-9]*(?:[/?][^#\s]*)?#[^\s]+/u.test(ref)))) return [];
       return [ref];
     }) : []),
     ...products.flatMap(product => {

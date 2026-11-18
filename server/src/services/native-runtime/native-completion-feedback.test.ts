@@ -95,6 +95,44 @@ describe("native final-response feedback", () => {
     } finally { resolve.mockRestore(); }
   });
 
+  it.each([
+    "https://github.com/example/project/pull/not-a-number",
+    "https://github.com/example/project/pull/0",
+    "https://github.com/example/project/pull/9007199254740992",
+    "https://example.test/example/project/pull/42",
+  ])("rejects an explicitly declared PR artifact with an unreadable identity: %s", async ref => {
+    const value = await fixture();
+    const lookup = vi.fn();
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+    const report = { ...done, artifacts: [{ kind: "pull_request", ref }] };
+    try {
+      await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow("PR artifact has no verifiable GitHub identity");
+      await expect(db.transaction(tx => validateNativeDeliverableEvidence(tx as unknown as typeof db,
+        { ...value, objective: "Deliver the implementation.", semanticToolReceipts: {}, lockSources: true,
+          authoritativeDone: true, verifiedMergedPullRequests: new Set<string>() }, report)))
+        .rejects.toThrow("PR artifact has no verifiable GitHub identity");
+      expect(lookup).not.toHaveBeenCalled();
+    } finally { resolve.mockRestore(); }
+  });
+
+  it.each([
+    "https://github.com/example/project/pull/42/files#r123",
+    "https://github.com/example/project/pull/42/files?diff=split#r123",
+    "https://github.com/example/project/pull/42/changes#r123",
+    "https://github.com/example/project/pull/42#discussion_r123",
+  ])("does not treat a file-level review comment as delivery of the reviewed PR: %s", async ref => {
+    const value = await fixture();
+    const lookup = vi.fn().mockResolvedValue("open");
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+    try {
+      await expect(nativeCompletionFeedback(db, value.runId, { ...done,
+        artifacts: [{ kind: "review_comment", ref }] })).resolves.toContain("Completion report accepted");
+      expect(lookup).not.toHaveBeenCalled();
+      await expect(nativeCompletionFeedback(db, value.runId, { ...done,
+        artifacts: [{ kind: "pull_request", ref }] })).rejects.toThrow("not been verified as merged");
+    } finally { resolve.mockRestore(); }
+  });
+
   it("rechecks current deliverables under the commit lock without making network calls", async () => {
     const value = await fixture();
     const lookup = vi.fn().mockResolvedValue("merged");
