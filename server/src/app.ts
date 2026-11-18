@@ -140,6 +140,7 @@ import { routineSuggestionRoutes } from "./routes/routine-suggestions.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { tailscaleConnectionRoutes } from "./routes/tailscale-connections.js";
 import { workloadIdentityPublicRoutes, workloadIdentityRoutes } from "./routes/workload-identity.js";
+import { setWorkloadIdentityConfiguredPublicOrigin } from "./services/workload-identity.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { responsibilityRoutes } from "./routes/responsibilities.js";
@@ -620,6 +621,7 @@ export async function createApp(
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
   app.use(publicMcpIngress);
   // Outside clouds fetch these anonymously to verify connection identity tokens.
+  setWorkloadIdentityConfiguredPublicOrigin(opts.authPublicBaseUrl);
   app.use(workloadIdentityPublicRoutes(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an

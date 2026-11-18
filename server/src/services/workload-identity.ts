@@ -33,8 +33,23 @@ export type WorkloadIdentityIssuerOrigin =
   | { available: true; origin: string }
   | { available: false; reason: "no_public_url" | "not_https" | "has_port" | "loopback" };
 
+let configuredPublicOrigin: string | null = null;
+
+/**
+ * The instance's configured public address (auth.publicBaseUrl, BETTER_AUTH_URL,
+ * BETTER_AUTH_BASE_URL), set once by createApp. Used after the live Cloud
+ * address and the PAPERCLIP_PUBLIC_URL family, which `runtimePublicOrigin` reads.
+ */
+export function setWorkloadIdentityConfiguredPublicOrigin(origin: string | null | undefined) {
+  configuredPublicOrigin = origin?.trim() || null;
+}
+
+export function workloadIdentityPublicOrigin(): string | null {
+  return runtimePublicOrigin() ?? configuredPublicOrigin;
+}
+
 /** AWS requires an https issuer with no port that it can reach from the internet. */
-export function workloadIdentityIssuerOrigin(origin: string | null = runtimePublicOrigin()): WorkloadIdentityIssuerOrigin {
+export function workloadIdentityIssuerOrigin(origin: string | null = workloadIdentityPublicOrigin()): WorkloadIdentityIssuerOrigin {
   if (!origin) return { available: false, reason: "no_public_url" };
   let url: URL;
   try {

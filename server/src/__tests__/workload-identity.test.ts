@@ -28,6 +28,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { workloadIdentityPublicRoutes, workloadIdentityRoutes } from "../routes/workload-identity.js";
 import {
   resetWorkloadIdentityKeyCacheForTests,
+  setWorkloadIdentityConfiguredPublicOrigin,
   WORKLOAD_IDENTITY_PUBLISH_BEFORE_USE_MS,
   WORKLOAD_IDENTITY_RETIRING_GRACE_MS,
   workloadIdentityIssuerOrigin,
@@ -116,6 +117,23 @@ describe("company workload identity issuer", () => {
     expect(workloadIdentityIssuerOrigin("https://acme.example.com:8443")).toEqual({ available: false, reason: "has_port" });
     expect(workloadIdentityIssuerOrigin("https://localhost")).toEqual({ available: false, reason: "loopback" });
     expect(workloadIdentityIssuerOrigin("https://127.0.0.1")).toEqual({ available: false, reason: "loopback" });
+  });
+
+  it("falls back to the configured auth address when no public URL variable is set", () => {
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "");
+    vi.stubEnv("PAPERCLIP_API_URL", "");
+    try {
+      setWorkloadIdentityConfiguredPublicOrigin(null);
+      expect(workloadIdentityIssuerOrigin()).toEqual({ available: false, reason: "no_public_url" });
+      setWorkloadIdentityConfiguredPublicOrigin("https://paperclip.example.com/");
+      expect(workloadIdentityIssuerOrigin()).toEqual({ available: true, origin: "https://paperclip.example.com" });
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", ORIGIN);
+      expect(workloadIdentityIssuerOrigin()).toEqual({ available: true, origin: ORIGIN });
+    } finally {
+      setWorkloadIdentityConfiguredPublicOrigin(null);
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", ORIGIN);
+    }
   });
 
   it("publishes nothing until a company uses it, then converges on one key", async () => {
