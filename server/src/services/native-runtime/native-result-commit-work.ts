@@ -9,6 +9,9 @@ import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-wor
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 import { finalizeNativeRun, NativeFinalizationDeferredError, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { liveNativeFinalizationReserved } from "./live-native-finalization.js";
+
+const LIVE_HEARTBEAT_RECHECK_MS = 30_000;
 
 type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
 
@@ -80,6 +83,9 @@ export function nativeResultCommitWork(db: Db, finalize = finalizeNativeRun) {
     const [row] = await candidates(scope);
     if (!row) return null;
     const due = entry(row);
+    // The live heartbeat commits its own result. Its release wakes this queue;
+    // the recheck still finds the run if that notification is lost.
+    if (liveNativeFinalizationReserved(current.id)) return { ...due, dueAt: Math.max(due.dueAt, Date.now() + LIVE_HEARTBEAT_RECHECK_MS) };
     if (due.dueAt > Date.now()) return due;
     const [run] = await db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, current.companyId), eq(heartbeatRuns.id, current.id)));
