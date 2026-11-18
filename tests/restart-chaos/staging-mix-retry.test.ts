@@ -630,6 +630,8 @@ describe("a recovery continuation of a follow-up run that never committed (w-202
     { name: "only previousRunId", lineage: { context: { previousRunId: answering } } },
     { name: "only executionContinuation.interruptedRunId", lineage: { context: { executionContinuation: { interruptedRunId: answering } } } },
     { name: "only the retry_of_run_id column", lineage: { retryOfRunId: answering } },
+    { name: "a retry_of_run_id column that names a sibling and a previousRunId that names the answering run",
+      lineage: { retryOfRunId: leaseRetry, context: { previousRunId: answering } } },
   ])("passes when the continuation carries $name", ({ lineage }) => {
     const evidence = withLineage(lineage);
     for (const completion of both(evidence)) {

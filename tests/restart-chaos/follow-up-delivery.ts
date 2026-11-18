@@ -72,13 +72,12 @@ export function undeliveredFollowUpRuns(evidence: DeliveryEvidence): Set<string>
   return followUpDeliveries(evidence).undelivered;
 }
 
-export function continuedRunId(run: Pick<DeliveryRun, "contextSnapshot" | "retryOfRunId">, wake: DeliveryWake | undefined): string | null {
+export function continuedRunIds(run: Pick<DeliveryRun, "contextSnapshot" | "retryOfRunId">, wake: DeliveryWake | undefined): string[] {
   const context = object(run.contextSnapshot);
   const payload = object(wake?.payload);
-  const id = [run.retryOfRunId, context.retryOfRunId, context.previousRunId, object(context.executionContinuation).interruptedRunId,
+  return [...new Set([run.retryOfRunId, context.retryOfRunId, context.previousRunId, object(context.executionContinuation).interruptedRunId,
     object(payload._paperclipWakeContext).retryOfRunId, payload.retryOfRunId]
-    .find((value): value is string => typeof value === "string" && value.length > 0);
-  return id ?? null;
+    .filter((value): value is string => typeof value === "string" && value.length > 0))];
 }
 
 export function committedCompletion(run: { runId: string | null; acceptedDisposition?: string | null } | undefined, rejected: ReadonlySet<string>): boolean {
@@ -93,8 +92,8 @@ export function followUpAnsweringRuns(evidence: { runs?: ReadonlyArray<DeliveryR
   const runs = (evidence.runs ?? []).filter((run): run is typeof run & { runId: string } => Boolean(run.runId));
   const byId = new Map(runs.map(run => [run.runId, run]));
   for (const run of [...runs].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
-    const predecessor = continuedRunId(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined);
-    if (predecessor && answering.has(predecessor) && !committedCompletion(byId.get(predecessor), rejected)) answering.add(run.runId);
+    const predecessors = continuedRunIds(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined);
+    if (predecessors.some(id => answering.has(id) && !committedCompletion(byId.get(id), rejected))) answering.add(run.runId);
   }
   return answering;
 }
