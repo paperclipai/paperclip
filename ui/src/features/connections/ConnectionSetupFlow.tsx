@@ -466,7 +466,7 @@ function recommendedManagedConnectorMethod(
 // One-method sign-in skips the access step. These providers' warnings (Railway
 // project scope, Circleback sharing outside the workspace) must still be read
 // before authorizing, so the sign-in screen repeats them.
-const SIGN_IN_GUIDANCE_SLUGS = new Set(["railway", "circleback"]);
+const SIGN_IN_GUIDANCE_SLUGS = new Set(["railway", "circleback", "github"]);
 
 function canUseAutomaticOAuthFastPath(entry: AppDefinition | null | undefined): boolean {
   if (!entry) return false;
@@ -554,6 +554,16 @@ export function readConnectionIntentOAuthOutcome(
     : null;
 }
 
+export function readConnectionIntentGitHubRecovery(data: unknown): { installationUrl: string | null; managementUrl: string | null } | null {
+  if (!data || typeof data !== "object") return null;
+  const message = data as { code?: unknown; recovery?: unknown };
+  if (message.code !== "github_installation_required" || !message.recovery || typeof message.recovery !== "object") return null;
+  const recovery = message.recovery as { installationUrl?: unknown; managementUrl?: unknown };
+  const installationUrl = githubRecoveryUrl(typeof recovery.installationUrl === "string" ? recovery.installationUrl : null);
+  const managementUrl = githubRecoveryUrl(typeof recovery.managementUrl === "string" ? recovery.managementUrl : null);
+  return installationUrl || managementUrl ? { installationUrl, managementUrl } : null;
+}
+
 export function isMissingOAuthStateMessage(
   event: Pick<MessageEvent, "origin" | "data" | "source">,
   expectedOrigin: string,
@@ -591,7 +601,7 @@ export function oauthFailureMessage(code: string | null): string {
     case "oauth_scope_grant_invalid":
       return "The provider didn’t grant the access Paperclip asked for. Try again and approve every requested permission.";
     case "github_installation_required":
-      return "GitHub access is required. Install Paperclip and grant at least one repository, then try again.";
+      return "You signed in, but the Paperclip for GitHub app isn’t installed on any account you can use. Install it and choose at least one repository, then try again. An organization owner may need to approve the install.";
     default:
       return "Authorization did not complete. Try again when you’re ready.";
   }
@@ -839,6 +849,7 @@ function StandardConnectionSetupFlow({
     if (!resumingAfterOAuthFailure) return null;
     return oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode);
   });
+  const [intentGitHubRecovery, setIntentGitHubRecovery] = useState<{ installationUrl: string | null; managementUrl: string | null } | null>(null);
   /** Host of the page the operator is about to be sent to, shown while redirecting. */
   const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
   const directOAuthAccessConfirmedRef = useRef(false);
@@ -912,6 +923,7 @@ function StandardConnectionSetupFlow({
     // proxy from window.open without opening a usable authorization tab.
     oauthPopupRef.current = null;
     setOAuthError(null);
+    setIntentGitHubRecovery(null);
     setOAuthPhase("redirecting");
     onPhaseChange?.("authorizing");
   }, [onPhaseChange]);
@@ -931,6 +943,7 @@ function StandardConnectionSetupFlow({
   const prepareAndOpenOAuth = useCallback(async (
     start: Pick<ToolOAuthStartResult, "authorizationUrl" | "handoff">,
   ) => {
+    setIntentGitHubRecovery(null);
     oauthHandoffAbortRef.current?.abort();
     const controller = new AbortController();
     oauthHandoffAbortRef.current = controller;
@@ -1000,6 +1013,7 @@ function StandardConnectionSetupFlow({
       }
       if (outcome !== "failed") return;
       setOAuthPhase("error");
+      setIntentGitHubRecovery(readConnectionIntentGitHubRecovery(event.data));
       setOAuthError(oauthFailureMessage(readConnectionIntentOAuthFailureCode(event.data)));
     };
     window.addEventListener("message", receiveOAuthOutcome);
@@ -2407,7 +2421,7 @@ function StandardConnectionSetupFlow({
         recoveryActions={oauthCallbackCode === "github_installation_required" ? {
           installationUrl: githubInstallationUrl,
           managementUrl: githubManagementUrl,
-        } : undefined}
+        } : intentGitHubRecovery ?? undefined}
         authorizationHost={authorizationHost}
         authorizationUrl={authorizationFallbackUrl}
         guidance={entry && SIGN_IN_GUIDANCE_SLUGS.has(entry.slug) && accessStepMethod ? (

@@ -8,6 +8,7 @@ import {
   isVercelConnectUnavailable,
   isMissingOAuthStateMessage,
   oauthFailureMessage,
+  readConnectionIntentGitHubRecovery,
   readConnectionIntentOAuthFailureCode,
   readConnectionIntentOAuthOutcome,
   retainedResumeMatches,
@@ -312,5 +313,33 @@ describe("missing sign-in state messages", () => {
     expect(isMissingOAuthStateMessage(from(missing, activePopup, "https://evil.test"), origin, activePopup)).toBe(false);
     expect(isMissingOAuthStateMessage(from({ ...missing, code: "oauth_state_expired" }, activePopup), origin, activePopup)).toBe(false);
     expect(isMissingOAuthStateMessage(from({ ...missing, interactionId }, activePopup), origin, activePopup)).toBe(false);
+  });
+});
+
+describe("GitHub installation recovery from the sign-in window", () => {
+  it("offers the install and manage links GitHub returned", () => {
+    expect(readConnectionIntentGitHubRecovery({
+      outcome: "failed",
+      code: "github_installation_required",
+      recovery: {
+        installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+        managementUrl: "https://github.com/settings/installations",
+      },
+    })).toEqual({
+      installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+      managementUrl: "https://github.com/settings/installations",
+    });
+    expect(oauthFailureMessage("github_installation_required")).toMatch(/Paperclip for GitHub app isn’t installed/);
+  });
+
+  it("drops links that are not on github.com or belong to another failure", () => {
+    expect(readConnectionIntentGitHubRecovery({
+      code: "github_installation_required",
+      recovery: { installationUrl: "https://evil.test/install", managementUrl: "javascript:alert(1)" },
+    })).toBeNull();
+    expect(readConnectionIntentGitHubRecovery({
+      code: "oauth_state_expired",
+      recovery: { installationUrl: "https://github.com/apps/paperclip-for-github/installations/new" },
+    })).toBeNull();
   });
 });
