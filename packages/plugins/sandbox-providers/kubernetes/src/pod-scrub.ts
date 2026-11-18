@@ -59,8 +59,9 @@ export function buildScrubScript(remoteCwd: string): string {
     empty("/home/paperclip/.cache"),
     empty("/tmp"),
     empty("/dev/shm"),
-    // Verify: nothing may survive in any writable scratch area.
-    `[ ! -e ${shQuote(runtimeRoot)} ]`,
+    // Verify: nothing may survive in any writable scratch area. One chained
+    // command, so a surviving runtime root OR a surviving file fails the scrub.
+    `[ ! -e ${shQuote(runtimeRoot)} ] &&`,
     '[ -z "$(find /home/paperclip /home/paperclip/.cache /tmp /dev/shm -mindepth 1 -maxdepth 1 ! -path /home/paperclip/.cache 2>/dev/null | head -n 1)" ]',
   ].join('\n');
 }

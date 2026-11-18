@@ -26,7 +26,7 @@ describe("buildScrubScript", () => {
     expect(script).toContain("find /home/paperclip/.cache -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +");
     expect(script).toContain("find /tmp -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +");
     expect(script).toContain("find /dev/shm -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +");
-    expect(script).toContain("[ ! -e '/workspace/.paperclip-runtime' ]");
+    expect(script).toContain("[ ! -e '/workspace/.paperclip-runtime' ] &&");
     // The last command is the emptiness check, so a surviving file fails the scrub.
     expect(script.trim().split("\n").pop()).toContain("find /home/paperclip /home/paperclip/.cache /tmp /dev/shm");
   });
