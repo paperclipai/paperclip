@@ -21,6 +21,17 @@ describe("a native run that ends because its sandbox disk filled", () => {
     expect(nativeSessionFailureSourceCode(transport)).toBe("sandbox_disk_full");
   });
 
+  it("names the full disk when a failed relaunch reaches the run as a failed event", () => {
+    const failed = new NativeProviderTerminalFailure("notification_transport_failed", false,
+      "Notification transport failed closed: sandbox_disk_full: the sandbox disk is full, so the runner cannot be started");
+    expect(nativeSessionFailureSourceCode(failed)).toBe("sandbox_disk_full");
+    const owner = { companyId: "company", sessionScope: "session", runId: "run-a" };
+    const channel = new NativeSessionDiagnostics(owner, owner, () => undefined, () => undefined);
+    const lease = channel.activate(owner, async () => undefined);
+    channel.record("[paperclip-runner] runnerd diagnostic: sandbox_disk_full: the sandbox disk is full, so the runner cannot be started\n");
+    expect(lease.sandboxDiskFullObserved()).toBe(true);
+  });
+
   it("keeps other failures as they are", () => {
     expect(nativeSessionFailureSourceCode(turnLostOnRestore())).toBe("native_provider_terminal_failed");
     expect(nativeSessionFailureSourceCode(new NativeSessionProtocolIntegrityError("semantic_input_digest_mismatch"), true))

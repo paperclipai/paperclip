@@ -1,4 +1,5 @@
 import { isSandboxDiskFullFailure } from "../../vendor/paperclip-runner/index.js";
+import { isSandboxDiskFullText } from "./remote-runner-disk-reserve.js";
 
 export const NATIVE_SANDBOX_DISK_FULL = "sandbox_disk_full" as const;
 
@@ -30,10 +31,17 @@ const CODES_THAT_KEEP_THEIR_MEANING: ReadonlySet<string> = new Set([
   "planning_mode_unsupported",
 ]);
 
+const NAMED_DISK_FULL_FAILURE = /(?:^|: )sandbox_disk_full: /;
+
+export function isNativeSandboxDiskFullReport(text: string): boolean {
+  return isSandboxDiskFullText(text) || NAMED_DISK_FULL_FAILURE.test(text);
+}
+
 function diskFullCause(error: unknown, depth = 0): boolean {
   if (!error || typeof error !== "object" || depth > 5) return false;
   if (isSandboxDiskFullFailure(error)) return true;
-  const value = error as { cause?: unknown; errors?: unknown };
+  const value = error as { cause?: unknown; errors?: unknown; message?: unknown };
+  if (typeof value.message === "string" && NAMED_DISK_FULL_FAILURE.test(value.message)) return true;
   return diskFullCause(value.cause, depth + 1)
     || (Array.isArray(value.errors) && value.errors.slice(0, 3).some(item => diskFullCause(item, depth + 1)));
 }

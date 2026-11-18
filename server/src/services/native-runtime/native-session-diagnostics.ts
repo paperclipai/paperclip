@@ -1,4 +1,4 @@
-import { isSandboxDiskFullText } from "./remote-runner-disk-reserve.js";
+import { isNativeSandboxDiskFullReport } from "./native-sandbox-disk-full.js";
 
 export interface NativeDiagnosticOwner {
   companyId: string;
@@ -59,7 +59,7 @@ export class NativeSessionDiagnostics {
 
   record(chunk: string): void {
     const epoch = this.active;
-    if (epoch && isSandboxDiskFullText(chunk)) epoch.sandboxDiskFull = true;
+    if (epoch && isNativeSandboxDiskFullReport(chunk)) epoch.sandboxDiskFull = true;
     if (!epoch?.sink) {
       const kind = chunk.startsWith("[paperclip-runner] runnerd diagnostic: runner transport close requested:")
         ? "transport_close_requested" : "session_diagnostic";
