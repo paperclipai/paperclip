@@ -322,8 +322,12 @@ export async function initializeRunIdentity(
       ? parent?.responsibleUserId : null;
     if (!operatorIdentity && isRetry && !retryContextId && interaction?.kind === "connection_intent")
       throw forbidden("Originating execution identity is unavailable");
-    const parentId = operatorIdentity ? null : isRetry ? retryContextId : (
-      interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
+    // An ordinary approval keeps its saved origin when preparation failed
+    // before the previous run accepted an identity. A stored retry context
+    // still wins after initialization or later accepted steering.
+    const parentId = operatorIdentity ? null : (
+      retryContextId ?? interaction?.sourceIdentityContextId
+      ?? (isRetry ? null : input.parentContextId ?? parent?.activeIdentityContextId)
     );
     const [origin] = parentId
       ? await tx

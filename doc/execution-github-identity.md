@@ -20,7 +20,10 @@ person's accounts. A request transfer alone cannot authorize that identity.
 Retries keep the previous run's latest accepted context,
 even when the retry still references the original request. If that context is
 unavailable, a retry that references a connection request stops instead of replaying
-the handoff or falling back to another person. An ordinary retry after a
+the handoff or falling back to another person. An ordinary approval retry
+restores the approval's saved originating context when the prior run never
+initialized an identity, including an explicitly absent person. Otherwise,
+an ordinary retry after a
 preparation failure retains its existing responsible-user resolution when no
 identity context was initialized. It prefers the source run's stored person
 when available and can process newly authorized messages. It does not adopt

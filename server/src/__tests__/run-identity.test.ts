@@ -286,6 +286,28 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     })).toMatchObject({ responsibleUserId: "A", parentContextId: later!.id });
   });
 
+  it.each(["durable", "snapshot"].flatMap(retryKind => ["A", null].map(person => ({ retryKind, person }))))(
+    "preserves an approval's saved identity $person after pre-initialization failure ($retryKind)", async ({ retryKind, person }) => {
+      const input = await seed();
+      const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: person, cause: "instruction" });
+      const interactionId = randomUUID(), failedRunId = randomUUID(), runId = randomUUID();
+      await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: input.companyId, issueId: input.issueId,
+        kind: "request_confirmation", status: "accepted", sourceIdentityContextId: origin.id,
+        addresseeUserId: "B", resolvedByUserId: "B", payload: { prompt: "Continue?" } as never,
+      });
+      // Admission selected the task owner B, but preparation failed before the
+      // approval's originating identity could be restored on that run.
+      await db.insert(heartbeatRuns).values({ id: failedRunId, companyId: input.companyId, agentId: input.agentId,
+        status: "failed", responsibleUserId: "B", contextSnapshot: { issueId: input.issueId, interactionId } });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running",
+        ...(retryKind === "durable" ? { retryOfRunId: failedRunId } : {}),
+        contextSnapshot: { issueId: input.issueId, interactionId, retryOfRunId: failedRunId },
+      });
+      expect(await initializeRunIdentity(db, { ...input, runId, interactionId, messageIds: [],
+        responsibleUserId: "B", cause: "retry" })).toMatchObject({ responsibleUserId: person, parentContextId: origin.id });
+    },
+  );
+
   it.each(["durable", "snapshot"])("retries a pre-initialization failure as the stored source person (%s)", async (retryKind) => {
     const input = await seed();
     await db.update(heartbeatRuns).set({ status: "failed", responsibleUserId: "A" }).where(eq(heartbeatRuns.id, input.runId));
