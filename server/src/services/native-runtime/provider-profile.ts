@@ -11,8 +11,10 @@ import {
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 import {
+  codexCliVersionAtLeast,
   codexLocalReasoningEffortsForModel,
   isCodexLocalKnownModel,
+  minimumCodexCliVersionForModel,
 } from "@paperclipai/adapter-codex-local";
 import {
   AGENTCORE_QUALIFIED_MODEL,
@@ -665,6 +667,17 @@ export function resolvePaperclipRunnerProviderProfile(
       throw new PaperclipRunnerProviderProfileError(
         "paperclip_runner_claude_cli_version_incompatible",
         `${selectedModel} requires Claude Code ${minimum} or newer; this Paperclip Runner bundles Claude Code ${bundled}. Choose another model or use the legacy Claude runner until the Runner is updated.`,
+      );
+    }
+  }
+  if (acpxAgent === "codex") {
+    // ACPX Codex runs the qualified runtime pin, so the backend would reject a newer model.
+    const minimum = minimumCodexCliVersionForModel(selectedModel);
+    const bundled = qualifiedProfile.agentRuntimeVersion;
+    if (minimum && bundled && !codexCliVersionAtLeast(bundled, minimum)) {
+      throw new PaperclipRunnerProviderProfileError(
+        "paperclip_runner_codex_cli_version_incompatible",
+        `${selectedModel} requires Codex ${minimum} or newer; this Paperclip Runner bundles Codex ${bundled}. Choose another model or use the legacy Codex runner until the Runner is updated.`,
       );
     }
   }

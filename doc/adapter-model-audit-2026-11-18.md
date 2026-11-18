@@ -11,7 +11,7 @@ selections are migrated.
 | Adapter | Changes from the audit |
 | --- | --- |
 | Claude Code (direct and Bedrock) | Add Claude Fable 5.2 (`claude-fable-5-2`; Bedrock `global.anthropic.claude-fable-5-2`) at the top of the picker. Fable 5.1 stays selectable after the current-generation models. Fable 5.2 supports all five effort levels and needs Claude Code 2.1.321 or later. The CLI-lane Test and launch report that minimum. Paperclip Runner (ACPX Claude) now rejects a model whose minimum is above the Claude Code that its Agent SDK bundles, with a named version error. |
-| Codex | Add `gpt-6.2-sol` and `gpt-6.2-astra` with Fast mode and the `low` to `ultra` efforts. Both need Codex 0.169.1 or later. On an older CLI, remote runs fall back to `gpt-6.1-sol` or `gpt-6-astra` and show a message. The default stays `gpt-6.1-sol`. |
+| Codex | Add `gpt-6.2-sol` and `gpt-6.2-astra` with Fast mode and the `low` to `ultra` efforts. Both need Codex 0.169.1 or later. On an older CLI, native Codex runs fall back to `gpt-6.1-sol` or `gpt-6-astra` and show a message. ACPX Codex in Paperclip Runner rejects them before launch with a named version error. The default stays `gpt-6.1-sol`. |
 | OpenCode | Add `openai/gpt-6.2-sol`, `openai/gpt-6.2-astra`, `anthropic/claude-fable-5-2`, `google/gemini-4-carbon`, and `google/gemini-4-hydrogen` to the static fallback. All five IDs are in the OpenCode model registry (models.dev). |
 | Gemini CLI | No change. Gemini CLI 0.68.0 still registers no Gemini 4 model. Deferred. |
 | Grok Build, Kimi Code, Cursor, Pi, Hermes | No new verified model IDs. |
