@@ -1,5 +1,7 @@
+import { providerTurnStartBefore, providerTurnToolCallSourceSeq } from "./provider-turn-tool-order.js";
 import type { RunnerAttachmentDownloadGrant } from "../contracts/harness-driver.js";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
+import { isSandboxDiskFullFailure } from "../contracts/sandbox-disk-full.js";
 import { confirmAntigravityProbeNativeRetirement } from "../drivers/acpx/antigravity-probe-retirement.js";
 import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../drivers/acpx/grok-web-search.js";
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
@@ -75,6 +77,7 @@ import { NativeRunnerResumeStateUnavailableError, NativeRunnerSourceReconciliati
 import {
   DurablePrpControlPlane,
   inspectStagedRunAttachment,
+  SemanticToolHandedOffError,
   SemanticToolNotDispatchedError,
   durableRecoveryInternals,
   inspectWarmRunTransition,
@@ -104,7 +107,7 @@ import {
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
 import { resolvePackagedRunnerBinary, resolvePackagedRunnerBinaryAsync } from "./runner-binary.js";
-import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
+import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUN_TERMINAL, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
 import { isTerminalOperation, settleEarlierToolCalls, staleTerminalCallResult } from "./terminal-call-freshness.js";
 
@@ -1708,6 +1711,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   recoveryLaunch?: { requirements: RunnerProviderLaunchRequirements };
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
+  providerStartedTurns?: boolean;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
   acpxCandidateProfile?: "pi" | "cursor" | "copilot" | "kimi";
   /** Server/operator authority; never derived from persisted agent or provider input. */
@@ -4217,6 +4221,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   } | null = null;
   #checkpointProviderIdentityConfirmed = false;
   #turnId = "";
+  readonly #deliveredProviderTurnStarts = new Set<string>();
   #turnStartResponsePending = false;
   #turnStartResponseSettled: Promise<void> = Promise.resolve();
   #turnStartResponseEpoch = 0;
@@ -4249,7 +4254,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #releaseEpisode: {
     source: DurableRecoveryIdentity; confirmed: boolean; claimed?: boolean;
     claimantRunId?: string; ticket?: string; ticketFlushed?: boolean; deadline?: number;
+    parked?: { version: string; digest: string } | null;
   } | null = null;
+  #relaunchedRunnerArtifact: { version: string; digest: string } | null = null;
   #startupDrainTimedOut = false;
   #controllerDetachedForRestart = false;
   #failure: Error | null = null;
@@ -4386,6 +4393,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     void this.#failureSignal.catch(() => undefined);
     this.#ownsRoot = options.stateDirectory === undefined;
     this.#turnId = options.resumeActiveTurnId ?? "";
+    if (options.resumeActiveTurnId) this.#deliveredProviderTurnStarts.add(options.resumeActiveTurnId);
     this.#root =
       options.stateDirectory ??
       mkdtempSync(resolve(tmpdir(), "paperclip-runner-lab-prp-"));
@@ -4975,6 +4983,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       while (!episode.claimed) {
         assertPending();
         let outcome: "resumed" | "unavailable" | undefined;
+        let relaunched: { version: string; digest: string } | undefined;
+        let settled: (() => Promise<void>) | undefined;
         try {
           if (!episode.ticket) {
             episode.ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -4985,7 +4995,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             episode.ticketFlushed = true;
           }
           assertPending();
-          outcome = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          const result = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
+          outcome = typeof result === "string" ? result : result.outcome;
+          relaunched = typeof result === "string" ? undefined : result.runner;
+          settled = typeof result === "string" ? undefined : result.settled;
         } catch (error) {
           // A generic RPC error cannot prove refusal. Keep this exact pending claim quiet.
           assertPending();
@@ -4995,6 +5008,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         assertPending();
         if (outcome === "unavailable") throw new Error("native_runner_reuse_unavailable");
+        if (relaunched) {
+          try {
+            core.acceptRelaunchedRunner(episode.ticket!, relaunched, episode.parked);
+            this.#relaunchedRunnerArtifact = structuredClone(relaunched);
+            await Promise.race([core.flushCheckpoint(), deadline, closed]);
+            await Promise.race([settled?.(), deadline, closed]);
+          } catch (error) {
+            if (error instanceof Error && error.message === "native_runner_relaunched_build_unaccepted") {
+              throw new Error("native_runner_reuse_unavailable");
+            }
+            assertPending();
+            if (error === expired) throw error;
+            await Promise.race([new Promise(resolve => setTimeout(resolve, 250)), deadline, closed]);
+            continue;
+          }
+        }
         episode.claimed = true;
       }
     } finally {
@@ -5222,7 +5251,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (core.store.state.stagedRunAttachment && this.options.readRunnerState
         && (registration?.connection?.mode === "listen" || registration?.connection?.mode === "external")) {
         const deadline = Math.min(Date.now() + (this.options.runnerReconnectGraceMs ?? 5_000), this.#sourceAttachmentDeadline ?? Infinity);
-        const artifact = this.options.runnerArtifact ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
+        const artifact = this.#relaunchedRunnerArtifact ?? this.options.runnerArtifact
+          ?? approvedRunnerArtifact(this.options.runnerBinary ?? defaultCapabilityRunnerdBinary());
         for (;;) {
           this.#assertStartupOpen();
           const physical = await this.options.readRunnerState();
@@ -6514,7 +6544,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },
       semanticInputMode: this.#retainsSourceInputs() || this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
-      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#dispatchSemanticToolInput(call),
       recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         const source = this.#sourceAccountingIdentity();
@@ -6989,7 +7019,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
-    const runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
+    let runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
     this.#durableTurnId = identity.turnId;
     this.#eventIdentity = structuredClone(identity);
     const provider = this.options.provider ?? "codex";
@@ -7075,7 +7105,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       onAuthenticatedConnection: () => this.#startupSteps?.advance("runner.process.launch", "provider.session.load"),
       get authorityRunId() { return authorityRunId(); },
       semanticInputMode: this.#retainsSourceInputs() || this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
-      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#dispatchSemanticToolInput(call),
       recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         const source = this.#sourceAccountingIdentity();
@@ -7416,8 +7446,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const source = this.options.releaseResume.releasedSource;
       if (!recoveryIdentityMatches(source, core.store.state.identity)) throw new Error("native_runner_released_source_mismatch");
       if (!this.#controlPlaneCheckpoint) throw new Error("native_runner_released_cleanup_unavailable");
-      this.#releaseEpisode = { source: structuredClone(source), confirmed: true };
+      this.#releaseEpisode = { source: structuredClone(source), confirmed: true,
+        parked: this.options.releaseResume.releasedSourceRunner ? structuredClone(this.options.releaseResume.releasedSourceRunner) : null };
       await this.#claimReleasedRunner(this.#authorityRunId() ?? "");
+      runnerArtifact = this.#relaunchedRunnerArtifact ?? runnerArtifact;
     }
     const bootstrapTicket = adoptedRunner
       ? null
@@ -7676,6 +7708,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return outcome ? this.#bindSemanticToolOutcome(call, outcome) : null;
   }
 
+  async #dispatchSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]) {
+    try {
+      return await this.#handleSemanticToolInput(call);
+    } catch (error) {
+      if (error instanceof SemanticToolNotDispatchedError && this.#controllerDetachedForRestart) throw new SemanticToolHandedOffError();
+      throw error;
+    }
+  }
+
   async #handleSemanticToolInput(
     call: Parameters<
       NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>
@@ -7711,6 +7752,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#failureSignal,
         this.#closedSignal.then(() => { throw new SemanticToolNotDispatchedError(); }),
       ]).catch(() => { throw new SemanticToolNotDispatchedError(); });
+    }
+    if (this.#providerStartedTurns()) {
+      const providerTurnCallSeq = providerTurnToolCallSourceSeq(core?.store.state.committedEvents ?? [], call.sourceEventId);
+      if (providerTurnCallSeq !== null) await this.#deliverNotificationsBefore(providerTurnCallSeq);
     }
     try {
       this.#throwIfFailed();
@@ -7776,6 +7821,36 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block"),
     );
     return this.#bindSemanticToolOutcome(call, outcome);
+  }
+
+  #providerStartedTurns() {
+    return this.options.providerStartedTurns === true && this.options.provider === "acpx" && this.options.acpxAgent === "claude";
+  }
+
+  async #deliverNotificationsBefore(sourceSeq: number) {
+    while (this.#eventSourceSeq < sourceSeq - 1 || this.#deferredTurnStartEvents.some(event => event.sourceSeq < sourceSeq)) {
+      if (this.#closed || this.#failure) throw new SemanticToolNotDispatchedError();
+      this.#pumpEvents();
+      await new Promise<void>(resolveWait => setTimeout(resolveWait, 10));
+    }
+    this.#deliverProviderTurnStart(this.#core?.store.state.committedEvents ?? [], sourceSeq);
+    let delivered!: () => void;
+    const barrier = new Promise<void>(resolveBarrier => { delivered = resolveBarrier; });
+    this.#queue.pushControl({ id: `provider-turn-order:${sourceSeq}`, method: "paperclip/providerTurnOrder", params: {} }, () => delivered());
+    await Promise.race([
+      barrier,
+      this.#failureSignal,
+      this.#closedSignal.then(() => { throw new SemanticToolNotDispatchedError(); }),
+    ]).catch(() => { throw new SemanticToolNotDispatchedError(); });
+  }
+
+  #deliverProviderTurnStart(events: readonly DurableRecoveryCommittedEvent[], sourceSeq: number) {
+    const start = providerTurnStartBefore(events, sourceSeq);
+    if (start === null) return;
+    this.#turnId = start.turnId;
+    if (this.#deliveredProviderTurnStarts.has(start.turnId)) return;
+    this.#deliveredProviderTurnStarts.add(start.turnId);
+    this.#queue.push({ method: "turn/started", params: rehydrateRunnerdTurnNotification(start.payload, this.#threadId, start.turnId, "turn/started") });
   }
 
   #bindSemanticToolOutcome(call: { operationId: string; callId: string }, outcome: { result: unknown; isError?: boolean }) {
@@ -7945,6 +8020,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...((this.options.provider ?? "codex") === "codex" && params.effort !== undefined ? { effort: params.effort } : {}),
           ...(reasoningMode === undefined ? {} : { reasoningMode }),
           ...(skills.length ? { skills } : {}),
+          ...(!compactionTurn && this.#providerStartedTurns() ? { providerStartedTurns: true } : {}),
           turnId: pendingTurnId,
         },
         commandDeadline,
@@ -8441,6 +8517,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#applyProviderIdentityEvent(event);
         continue;
       }
+      if (this.#providerStartedTurns() && event.eventType !== "turn.started") this.#deliverProviderTurnStart(events, event.sourceSeq);
       if (event.eventType === "session.capabilities.updated" && this.options.provider === "acpx") {
         const capabilities = record(record(event.envelope.payload).payload);
         if (capabilities.turnControls !== undefined) {
@@ -8548,6 +8625,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           } } : {}),
         });
         continue;
+      }
+      if (event.eventType === "run.terminal" && this.#providerStartedTurns()) {
+        this.#queue.push({ method: "paperclip/runTerminal", params: { [RUNNERD_RUN_TERMINAL]: true, threadId: this.#threadId } });
       }
       const sessionUpdatePayload = record(eventPayload);
       const canonicalMethod = runnerdCanonicalNotificationMethod(
@@ -8672,6 +8752,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           }
           if (typeof providerTurnId === "string" && providerTurnId.length > 0) {
             this.#turnId = providerTurnId;
+            this.#deliveredProviderTurnStarts.add(providerTurnId);
             if (this.#turnStartResponsePending) {
               this.#observedTurnStartEpoch = this.#turnStartResponseEpoch;
             }
@@ -9317,6 +9398,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               { cause: observationError },
             ),
           );
+          return;
+        }
+        // The launcher already released everything Paperclip holds on that
+        // disk. The same launch fails the same way for the rest of the grace.
+        if (isSandboxDiskFullFailure(observationError)) {
+          this.#failTransport(new Error(observationDetail.slice(0, 1_000), { cause: observationError }));
           return;
         }
         attempt += 1;

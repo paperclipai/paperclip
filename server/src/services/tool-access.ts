@@ -84,10 +84,12 @@ import { stableHash } from "./tool-catalog-hash.js";
 
 import { NATIVE_PROVIDER_SLUGS, nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { connectorToolPolicy } from "./connectors/tool-policy.js";
+import { loadPluginAppCatalog, pluginAppCatalogFor } from "./plugin-app-catalog.js";
+import { validateInstanceConfig } from "./plugin-config-validator.js";
 
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 
-import { defaultConnectionAgentInstructions } from "@paperclipai/shared";
+import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
@@ -110,7 +112,7 @@ import { and, asc, desc, eq, inArray, max, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionGrantMembers, connectionGrants, companyMemberships, principalPermissionGrants, userSecretDefinitions, plugins, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolStdioCommandTemplates, toolCallEvents, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { AppDefinition, ConnectionGrantKind, CreateToolApplication, CreateToolConnection, ConnectToolApp, ConnectToolAppResult, CreateToolStdioCommandTemplate, FinishToolApp, FinishToolAppResult, CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, DeploymentExposure, DeploymentMode, ImportMcpJson, McpConnectionCredentialRef, McpJsonImportPreview, ToolApplication, ToolCatalogEntry, ToolCatalogRefreshResult, ToolConnection, ToolConnectionInstall, ToolConnectionHealthCheckResult, ToolConnectionAuthKind, ToolConnectionCredentialPolicy, ToolConnectionCredentialSource, ToolConnectionTransport, ToolAppMetadataPreflightResult, ToolExampleInstallResult, ToolExampleSmokeCheck, ToolExampleSmokeResult, ToolExampleSummary, ToolProfileBinding, ToolProfileEntry, ToolPolicyDecision, ToolStdioCommandTemplate, UpdateToolApplication, UpdateToolConnection, VercelConnectCredentialReference } from "@paperclipai/shared";
-import { getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { connectionSourceSlug, isPluginAppSlug, parsePluginAppSlug, getAppDefinitionForUrl, getAvailableConnectionMethods, getConnectableAppDefinition, recommendedDefaultsForApp, type ConnectionMethodDef } from "@paperclipai/shared";
 import {
   checkMcpRemoteHeaderName,
   checkMcpRemoteHeaderValue,
@@ -168,8 +170,6 @@ type ToolAccessServiceOptions = {
   composioAppToolkits?: readonly string[];
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipCloudConnector?: PaperclipCloudConnector | null;
-  /** @deprecated Use paperclipCloudConnector. */
-  paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
 };
@@ -754,12 +754,8 @@ export function toolAccessService(
   const profileService = createToolProfileService(db, now);
   const profileDetails = profileService.getProfile;
   const profileResolver = createToolProfileResolver(db, { assertOptionalAgent, resolveInstalledConnectionsForAgent, toCatalogEntry });
-  const configuredCloudConnector =
-    options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
-  const connectorWasProvided =
-    options.paperclipCloudConnector !== undefined ||
-    options.paperclipIdGmailConnector !== undefined;
-  let cachedCloudConnector = configuredCloudConnector ?? null;
+  const connectorWasProvided = options.paperclipCloudConnector !== undefined;
+  let cachedCloudConnector = options.paperclipCloudConnector ?? null;
   const currentCloudConnector = (): PaperclipCloudConnector | null => {
     if (cachedCloudConnector || connectorWasProvided)
       return cachedCloudConnector;
@@ -783,8 +779,42 @@ export function toolAccessService(
       ? createVercelConnectClient()
       : options.vercelConnectClient;
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
-  const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect });
-  const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow });
+  const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets });
+  const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow });
+  /**
+   * Connection setup resolves connector definitions synchronously. Refresh the
+   * plugin-provided part of the catalog from the plugins table first, so a
+   * plugin enabled or disabled through another process is seen here too.
+   */
+  /**
+   * A setup step that finishes after its plugin became unavailable reports the
+   * connector as gone. If the plugin was uninstalled, its cleanup may already
+   * have run, so this connection (and the credential just stored) is removed
+   * through the normal removal too.
+   */
+  async function retireIfPluginAppUnavailable<Result extends { connectionId: string; connection: { companyId: string; config?: Record<string, unknown> | null } }>(
+    result: Result,
+    actor?: ActorInfo,
+  ): Promise<Result> {
+    const source = result.connection.config?.sourceTemplateKey;
+    const pluginKey = parsePluginAppSlug(source)?.pluginKey;
+    if (!pluginKey || (await loadPluginAppCatalog(db)).isAvailable(source as string)) return result;
+    // Disabled: keep the saved setup (hidden) so re-enabling restores it.
+    // Uninstalled (or deleted): its cleanup may already have passed, so
+    // remove this connection the same way.
+    const [plugin] = await db.select({ status: plugins.status }).from(plugins).where(eq(plugins.pluginKey, pluginKey));
+    if (!plugin || plugin.status === "uninstalled") {
+      await removeConnection(result.connectionId, result.connection.companyId, actor);
+    }
+    throw notFound("Tool app gallery entry not found");
+  }
+
+  function withPluginApps<Args extends unknown[], Result>(fn: (...args: Args) => Promise<Result>) {
+    return async (...args: Args): Promise<Result> => {
+      await loadPluginAppCatalog(db);
+      return fn(...args);
+    };
+  }
   const credentialStore = createOAuthCredentialStore(db, secrets);
   const { syncCredentialBindings, annotateSavedOAuthClientSecret, oauthClientForConnection, createOrRotateOAuthSecret, getOAuthGrantRow, resolveOAuthGrantSecret } = credentialStore;
   const ensureOAuthClient = createOAuthClientRegistration(db, { now, options, store: credentialStore, getConnectionRow, requestOAuthClientRegistration });
@@ -817,7 +847,14 @@ export function toolAccessService(
   const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
   const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
-  const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  const publishCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
+  // Every catalog refresh (setup, scheduled discovery, or a read that
+  // refreshes) classifies tools from the connector definition, so make sure
+  // plugin-provided definitions are current first.
+  const refreshCatalog: typeof publishCatalog = async (...args) => {
+    await loadPluginAppCatalog(db);
+    return publishCatalog(...args);
+  };
   const catalogReader = createToolCatalogReader(db, options, now, getConnectionRow, refreshCatalog, toCatalogEntryForConnection);
   const listAppsNeedingAttention = createToolAppAttention(db, now);
   const aggregatorAccounts = createAggregatorAccounts(db, { options, secrets, audit, credentials: credentialAccess, getConnectionRow, requestRemoteHttpEndpoint, remoteTools: catalogDiscovery.remoteTools });
@@ -1529,7 +1566,20 @@ export function toolAccessService(
     };
   }
 
+  /** Origin and path of a pasted MCP address; query strings may carry credentials and are ignored. */
+  function linkEndpoint(value: unknown): string | null {
+    if (typeof value !== "string" || !value.trim()) return null;
+    try {
+      const url = new URL(value.trim());
+      return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+      return null;
+    }
+  }
+
   function defaultLinkName(link: string): string {
+    const peer = paperclipPeerFromMcpUrl(link);
+    if (peer) return peer.name;
     try {
       const url = new URL(link);
       const host = url.host.replace(/^www\./, "");
@@ -1620,6 +1670,19 @@ export function toolAccessService(
       if (!used.has(candidate.toLocaleLowerCase())) return candidate;
     }
     return `${base.slice(0, 151).trimEnd()} (${randomUUID().slice(0, 6)})`;
+  }
+
+  /** Per-connection settings of a plugin-served method, validated by its schema. */
+  function pluginConnectionSettings(method: ConnectionMethodDef, settings: Record<string, unknown>): Record<string, unknown> {
+    if (!method.settingsSchema) {
+      if (Object.keys(settings).length > 0) throw badRequest("This connector has no settings");
+      return {};
+    }
+    const result = validateInstanceConfig(settings, method.settingsSchema);
+    if (!result.valid) {
+      throw unprocessable("Check this connection's settings", { code: "plugin_connection_settings_invalid", errors: result.errors });
+    }
+    return settings;
   }
 
   async function connectGalleryApp(
@@ -1733,16 +1796,36 @@ export function toolAccessService(
         : null;
       const requestedSource =
         galleryEntry?.slug ?? (input.link ? "link" : null);
+      // A pasted address names its own server. Default names can repeat
+      // across hosts (two `acme Paperclip`s), so a removed link connection is
+      // revived only for the same endpoint; otherwise the new server would
+      // inherit another server's identity, instructions and tool prefix.
+      const sameLinkEndpoint = async (applicationId: string) => {
+        const requested = linkEndpoint(input.link);
+        if (!requested) return false;
+        const retained = await db
+          .select({ config: toolConnections.config })
+          .from(toolConnections)
+          .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.applicationId, applicationId)));
+        return retained.some((row) => linkEndpoint(asRecord(row.config).url) === requested);
+      };
       if (
         recoverableApplication &&
         requestedSource &&
-        recoverableSource === requestedSource
+        recoverableSource === requestedSource &&
+        (requestedSource !== "link" || await sameLinkEndpoint(recoverableApplication.id))
       ) {
         existingApplication = recoverableApplication;
       }
     }
 
     await assertConnectorConnectionSetupEnabled(requestedResumeConnection ?? {}, existingApplication?.applicationKey);
+    // Another Paperclip reached by address: tell agents those tools act on a
+    // different instance. Derived from the typed address, never from the server.
+    const paperclipPeer = galleryEntry ? null : paperclipPeerFromMcpUrl(input.link);
+    const newConnectionAgentInstructions = paperclipPeer
+      ? paperclipPeerAgentInstructions(paperclipPeer)
+      : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions);
     const requestedName =
       input.name ??
       existingApplication?.name ??
@@ -1777,6 +1860,14 @@ export function toolAccessService(
       input.reconnectConnectionId && requestedResumeConnection?.status !== "draft"
       && requestedResumeConnection?.config.sourceTemplateKey === galleryEntry?.slug,
     ));
+    if (galleryEntry && input.link && paperclipPeerFromMcpUrl(input.link)) {
+      // Another Paperclip needs its own name, instructions and tool prefix,
+      // which only the "Connect your own MCP server" path sets up.
+      throw badRequest(
+        `That is a Paperclip address. Connect it with "Connect your own MCP server" instead of ${galleryEntry.name}.`,
+        { code: "paperclip_peer_requires_generic_connection" },
+      );
+    }
     if (galleryEntry && input.link) {
       const acceptsProviderGeneratedUrl =
         method?.transport === "mcp_remote" &&
@@ -1842,7 +1933,8 @@ export function toolAccessService(
     const transport = method?.transport ?? "mcp_remote";
     const applicationType = transport === "rest_api" ? "rest_api"
       : transport === "mcp_remote" ? "mcp_http"
-        : transport === "local_stdio" ? "mcp_stdio" : null;
+        : transport === "local_stdio" ? "mcp_stdio"
+          : transport === "plugin" ? "paperclip_plugin" : null;
     if ((retainedConnection && retainedConnection.transport !== transport)
       || (existingApplication && applicationType && existingApplication.type !== applicationType)) {
       if (requestedResumeConnection || input.applicationId) {
@@ -2124,8 +2216,9 @@ export function toolAccessService(
       transport === "mcp_remote" && input.link
         ? splitRemoteUrlCredential(input.link)
         : null;
-    const baseConfig =
-      (transport === "mcp_remote" || transport === "rest_api")
+    const baseConfig = transport === "plugin" && method
+      ? { settings: pluginConnectionSettings(method, input.settings ?? asRecord(asRecord(retainedConnection?.config).settings)) }
+      : (transport === "mcp_remote" || transport === "rest_api")
         ? {
             url:
               (remoteMcpConnector ? remoteUrlCredential?.publicUrl : undefined) ??
@@ -2158,6 +2251,7 @@ export function toolAccessService(
             mcpPreserveAccess: Boolean(retainedConnection && (retainedConnection.status === "active" || asRecord(retainedConnection.config).mcpPreserveAccess === true)),
           } : {}),
           ...(galleryEntry.slug === "posthog" ? { safeDefault: true } : {}),
+          ...(galleryEntry.plugin?.legacyTools ? { legacyPluginTools: true } : {}),
           // Telem.AI attributes each search to the Paperclip company, agent,
           // run and issue, so its catalog connection forwards those context
           // headers by default (the gateway still drops empty values). A
@@ -2172,7 +2266,20 @@ export function toolAccessService(
               }
             : {}),
         }
-      : { ...baseConfig, quarantineNewEntries: false, unverifiedServer: true };
+      : {
+          ...baseConfig,
+          quarantineNewEntries: false,
+          unverifiedServer: true,
+          // Peer tool prefix, fixed when the identity is created. A retained
+          // identity keeps whatever it had, so tool names that saved rules and
+          // approvals refer to never change on reconnect or rename.
+          ...(() => {
+            const namespace = retainedConnection
+              ? asRecord(retainedConnection.config).paperclipPeerToolNamespace
+              : paperclipPeer?.toolNamespace;
+            return typeof namespace === "string" ? { paperclipPeerToolNamespace: namespace } : {};
+          })(),
+        };
     if (method && isPaperclipCloudConnectorStrategy(method.oauthStrategy)) {
       const connectorProfile = method.connectorProfile;
       const profile = managedConnectorProfile(connectorProfile);
@@ -2473,7 +2580,7 @@ export function toolAccessService(
                 applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
                 name: applicationName,
                 description: safeApplicationDescription,
-                type: transport === "rest_api" && (["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") || Boolean(restConnectorFor({ transport, config }))) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+                type: transport === "plugin" ? "paperclip_plugin" : transport === "rest_api" && (["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") || Boolean(restConnectorFor({ transport, config }))) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
                 status: "draft",
                 metadata: galleryEntry
                   ? {
@@ -2533,7 +2640,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
@@ -2570,7 +2677,7 @@ export function toolAccessService(
             agentInstructions: input.agentInstructions !== undefined
               ? input.agentInstructions
               : retainedConnection ? retainedConnection.agentInstructions
-              : defaultConnectionAgentInstructions(galleryEntry?.agentInstructions),
+              : newConnectionAgentInstructions,
             config,
             transportConfig: config,
             credentialRefs,
@@ -3823,7 +3930,7 @@ export function toolAccessService(
       if (!current) throw forbidden("Your GitHub connection was revoked. Connect it again.");
       return { githubUserId: String(identity.id), login: identity.login, avatarUrl: identity.avatar_url ?? null, connectionId, grantId: grant.id };
     },
-    preflightGalleryAppMetadata,
+    preflightGalleryAppMetadata: withPluginApps(preflightGalleryAppMetadata),
     approvedStdioTemplates: async (
       companyId: string,
     ): Promise<ToolStdioCommandTemplate[]> => {
@@ -3903,9 +4010,10 @@ export function toolAccessService(
     },
     ...aggregatorAccounts,
 
-    connectGalleryApp,
+    connectGalleryApp: withPluginApps(async (companyId: string, input: ConnectToolApp, actor?: ActorInfo) =>
+      retireIfPluginAppUnavailable(await connectGalleryApp(companyId, input, actor), actor)),
 
-    finishGalleryAppConnection,
+    finishGalleryAppConnection: withPluginApps(finishGalleryAppConnection),
 
     createMachineSignIn: clientCredentials.createMachineSignIn,
     testMachineSignIn: clientCredentials.testMachineSignIn,
@@ -3913,11 +4021,11 @@ export function toolAccessService(
     completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
     getMachineSignIn: clientCredentials.getMachineSignIn,
 
-    reconnectGalleryApp,
+    reconnectGalleryApp: withPluginApps(reconnectGalleryApp),
 
     storeConnectorOAuthSecret: createOrRotateOAuthSecret,
     resolveConnectorOAuthGrantSecret: resolveOAuthGrantSecret,
-    startOAuth,
+    startOAuth: withPluginApps(startOAuth),
 
     startAuthorizationForAgent: async (input: {
       companyId: string;
@@ -3962,11 +4070,12 @@ export function toolAccessService(
 
     peekOAuthState,
 
-    completePaperclipCloudConnectorCallback,
+    completePaperclipCloudConnectorCallback: withPluginApps(completePaperclipCloudConnectorCallback),
 
     completeVercelConnectCallback,
 
-    completeOAuthCallback,
+    completeOAuthCallback: withPluginApps(async (...args: Parameters<typeof completeOAuthCallback>) =>
+      retireIfPluginAppUnavailable(await completeOAuthCallback(...args), args[0].actor)),
     refreshOAuthGrantCredentials,
     finalizeOAuthAccess,
 
@@ -4150,7 +4259,10 @@ export function toolAccessService(
         .from(toolApplications)
         .where(eq(toolApplications.companyId, companyId))
         .orderBy(desc(toolApplications.updatedAt));
-      return rows.map(toApplication);
+      // A disabled plugin's connectors leave the Connectors page; their rows
+      // stay so re-enabling restores them unchanged.
+      const pluginApps = await pluginAppCatalogFor(db, rows);
+      return rows.filter((row) => pluginApps.isAvailable(connectionSourceSlug(row))).map(toApplication);
     },
 
     createApplication: async (
@@ -4496,11 +4608,13 @@ export function toolAccessService(
       companyId: string,
       viewerUserId?: string,
     ): Promise<ToolConnection[]> => {
-      const rows = await db
+      const allRows = await db
         .select()
         .from(toolConnections)
         .where(eq(toolConnections.companyId, companyId))
         .orderBy(desc(toolConnections.updatedAt));
+      const pluginApps = await pluginAppCatalogFor(db, allRows);
+      const rows = allRows.filter((row) => pluginApps.isAvailable(connectionSourceSlug(row)));
       const connections = rows.map(toConnection);
       if (connections.length === 0) return connections;
       const installRows = await db

@@ -1,3 +1,4 @@
+import { ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, environmentProviderWaitMessage } from "./environment-provider-wait.js";
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { AGENT_DIRECTORY_WAIT_RETRY_REASON, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
@@ -22,7 +23,7 @@ import { logger } from "../middleware/logger.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
-import { isQueuedDependencyWait } from "./run-cancellation.js";
+import { isAcknowledgedLegacyUserStop, isQueuedDependencyWait, runStopPresentationJson } from "./run-cancellation.js";
 import { heldRetryOffersRetry } from "./task-retry-eligibility.js";
 import { exhaustedNativeFinalizationCondition, savedResultRetryPendingCondition } from "./native-runtime/exhausted-finalization-retry.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
@@ -46,11 +47,20 @@ const WAITING_CONTINUATION_MOVE_FORWARD_MS = 15 * 60_000;
 const NO_WORK_CONTINUATION_HANDOFF_GRACE_MS = 30_000;
 const NO_WORK_CONTINUATION_CAUSES = new Set(["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]);
 
+function awaitsExactRemoteResume(issue: Pick<typeof issues.$inferSelect, "status" | "executionRunId">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "processPid" | "processGroupId">,
+  coordinator: Pick<typeof nativeRunFinalizations.$inferSelect, "failureDetail">): boolean {
+  const detail = coordinator.failureDetail as Record<string, unknown> | null;
+  return issue.status === "blocked" && issue.executionRunId === run.id
+    && (run.processPid !== null || run.processGroupId !== null) && detail?.recoveryMode === "exact_checkpoint_resume";
+}
+
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode" | "startedAt"
     | "scheduledRetryReason" | "createdAt" | "finishedAt" | "processPid" | "processGroupId">> & {
+  environmentProviderWaitName?: string | null;
   /** Due time of the native coordinator's own same-run resume, if one is pending. */
   nativeResumeAt?: Date | null;
   /** When the native coordinator saved this run's terminal failure, if it did. */
@@ -270,6 +280,7 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
   // The task's existing dependency UI owns this wait. Keep actual recovery and
   // Retry preparation failures authoritative; this does not change admission.
   if (!action && !retryWait?.preparationStatus && isQueuedDependencyWait(run)) return base;
+  if (!wait && !action && isAcknowledgedLegacyUserStop(run)) return base;
   // Intentional Stop is not an unsuccessful attempt. This is presentation only;
   // physical containment and pending cleanup keep their execution-side gates.
   if (!wait && run.runtimeMode === "native" && run.companyId === issue.companyId && run.nativeIssueId === issue.id
@@ -337,6 +348,9 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
       return { ...base, state: "retry_scheduled", nextRetryAt: new Date(deadline).toISOString() };
     if (!pending) return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
   }
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON && !system)
+    return { ...base, state: "working", canRetry: false, retryWait: { reason: ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON,
+      message: environmentProviderWaitMessage(run.environmentProviderWaitName ?? null) } };
   if (run.status === "scheduled_retry" && resourceWaitRetryReasons.has(run.scheduledRetryReason ?? "") && !system)
     return { ...base, state: "working" };
   if (run.status === "scheduled_retry" && run.scheduledRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON && !system
@@ -432,8 +446,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const requestedUuid = sql<string>`case when ${requestedIssueId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
     then ${requestedIssueId}::uuid else null end`;
   const legacyIssue = sql<string>`${heartbeatRuns.contextSnapshot}->>'issueId'`;
+  const attempt = sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
+    and coalesce(${heartbeatRuns.errorCode}, '') in ('recovery_no_longer_needed', 'issue_closed_before_start'))`;
   const candidate = (condition: ReturnType<typeof and>) => db.select({ id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition))
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), condition, attempt))
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
   const candidates = unionAll(
     candidate(eq(heartbeatRuns.nativeIssueId, requestedUuid)),
@@ -471,6 +487,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       rejectedModel: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
         then ${boundedJsonString(sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'provider'->'model'`, 200)} end`,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      environmentProviderWaitName: sql<string | null>`case when ${heartbeatRuns.scheduledRetryReason} = ${ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON}
+        then ${boundedJsonString(sql`${heartbeatRuns.contextSnapshot}->${ENVIRONMENT_PROVIDER_WAIT_KEY}->'environmentName'`, 200)} end`,
       // Candidate only: the coordinator also pushes nextAttemptAt forward while
       // it defers an ineligible run. The scheduler's own admission check below
       // decides whether this resume is real.
@@ -500,7 +518,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       setupFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'setupCommandFailure' is null
         and ${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.retryOfRunId} is not null
         then ${heartbeatRuns.retryOfRunId} else ${heartbeatRuns.id} end`,
-      resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
+      resultJson: sql<Record<string, unknown>>`${runStopPresentationJson(heartbeatRuns.resultJson)} || jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
         'stopReason', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'stopReason'`, 80)},
         'timeoutSource', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'timeoutSource'`, 80)},
         'timeoutFired', coalesce(${heartbeatRuns.resultJson}->'timeoutFired' = 'true'::jsonb, false),
@@ -525,7 +543,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         'setupCommandFailure', coalesce(${heartbeatRuns.resultJson}->'setupCommandFailure', case when ${heartbeatRuns.status} = 'scheduled_retry'
           then (select predecessor.result_json->'setupCommandFailure' from ${heartbeatRuns} predecessor
             where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
-              and predecessor.error_code = 'setup_failed') end))`,
+              and predecessor.error_code = 'setup_failed') end))`.as("result_json"),
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
       .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
@@ -598,13 +616,16 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         const issue = run?.nativeIssueId ? issueById.get(run.nativeIssueId) : undefined;
         const coordinator = coordinatorByRun.get(candidate.id);
         const admitted = run && issue && coordinator
-          && await readNativeSessionResumptionAgent(db, { issue, run, coordinator }).catch(() => null);
+          && (awaitsExactRemoteResume(issue, run, coordinator)
+            || await readNativeSessionResumptionAgent(db, { issue, run, coordinator }).catch(() => null));
         if (!admitted) candidate.nativeResumeAt = null;
       }));
     }
   }
   // A queued-message Interrupt records its queue on the stopped run. Newer
   // input can hide that wake from the latest-wait read, so load it by id.
+  // The click's recorded intent is the authority, not the wake's requester:
+  // a user's message can join an earlier automatic wake.
   const interruptQueueId = (run: typeof runs[number]) => {
     const id = run.status === "cancelled" ? run.resultJson?.queuedCommentInterruptQueueId : null;
     return typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) ? id : null;
@@ -614,7 +635,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     requestedAt: agentWakeupRequests.requestedAt,
     queuedInterruptRequestedAt: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{queuedCommentInterrupt,requestedAt}'`, 40) })
     .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.id, interruptQueueIds),
-      eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user"))) : [];
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      sql`${agentWakeupRequests.payload}#>>'{queuedCommentInterrupt,actorId}' is not null`)) : [];
   const interruptWaitById = new Map(interruptWaits.map(wait => [wait.id, wait]));
   const runIds = runs.map(run => run.id);
   const actions = runIds.length ? await db.selectDistinctOn([issueRecoveryActions.sourceIssueId]).from(issueRecoveryActions).where(and(
@@ -638,6 +660,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       sql`(${issueRecoveryActions.evidence} ? 'freshContinuationSettlement' or ${issueRecoveryActions.evidence} ? 'freshContinuationCheck')`)) : [];
   const pendingSchema = freshRows.some(row => row.delivery === "pending")
     ? (await import("./fresh-continuation-fallback.js")).FRESH_CONTINUATION_SCHEMA : null;
+  const unfinished = runs.filter(run => ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+    && selected.some(issue => issue.id === run.issueId && !["done", "cancelled"].includes(issue.status)));
+  const awaitingSystemContinuation = unfinished.length
+    ? await (await import("./fresh-continuation-fallback.js")).runsAwaitingSystemContinuation(db, companyId,
+      unfinished.map(run => run.issueId), unfinished.map(run => run.id))
+    : new Set<string>();
   const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
     // Only the primary record (it carries `freshContinuation`) says whether a
@@ -649,6 +677,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     }
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
       .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
+    if (awaitingSystemContinuation.has(`${issueId}:${runId}`) && retryWaitMap.get(issueId)?.sourceRunId !== runId)
+      return { state: "continuing" };
     return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
   };
   const dispositionRows = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,

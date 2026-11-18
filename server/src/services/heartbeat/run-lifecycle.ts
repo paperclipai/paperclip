@@ -1,3 +1,4 @@
+import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import { settleReattachRun } from "./run-admission.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { isContextCompactionRun } from "../context-compaction.js";
@@ -47,6 +48,7 @@ import { cancellationResultJson } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { isWaitingConversation } from "../agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED } from "../native-local-process-stop.js";
+import { trackRunIntake } from "../run-intake-stall-watch.js";
 import {
   hasAcknowledgedNativeReassignmentStopIntent,
   hasAcknowledgedNativeLifecycleStopIntent,
@@ -624,7 +626,7 @@ export async function persistHeartbeatRunProcessMetadata(
   );
   const startedAt = new Date(observedStartedAt ?? meta.startedAt);
   const processStartedAt = Number.isNaN(startedAt.getTime()) ? new Date() : startedAt;
-  return db.transaction(async tx => {
+  return trackRunIntake(runId, "process_identity", PROCESS_IDENTITY_RECORDED, () => db.transaction(async tx => {
     const [binding] = await tx
       .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -653,7 +655,7 @@ export async function persistHeartbeatRunProcessMetadata(
     });
     return tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
-  });
+  }));
 }
 
 type SkillTestHeartbeatCompletion = {
@@ -1122,6 +1124,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       if (previous && isHeartbeatRunTerminalStatus(status))
         await notifyRetainedNativeSessionCleanup(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+      const runIssueId = previous ? previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) : null;
+      if (previous && isHeartbeatRunTerminalStatus(status) && runIssueId) await notifyTerminalWorkspaceWork(tx, `issue:${runIssueId}`);
       await notifyExecutionRunWork(tx, previous ? { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,

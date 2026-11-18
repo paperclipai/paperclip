@@ -40,9 +40,9 @@ export function useRecentTasks({
     entries: storageKey && companyId ? readRecentTasks(storageKey, companyId) : [],
   }));
   // A scope change must not request the previous account's IDs for one render.
-  const entries = snapshot.storageKey === storageKey
+  const entries = useMemo(() => snapshot.storageKey === storageKey
     ? snapshot.entries
-    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [];
+    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [], [snapshot, storageKey, companyId]);
   const setEntries = (next: RecentTaskEntry[]) => setSnapshot({ storageKey, entries: next });
 
   useEffect(() => {
@@ -71,7 +71,6 @@ export function useRecentTasks({
   }, [companyId, storageKey]);
 
   const queryIds = useMemo(() => entries.map((entry) => entry.id).sort(), [entries]);
-  const membership = JSON.stringify(queryIds);
   const scope = JSON.stringify([storageKey, queryIds]);
   const summaryKey = queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, queryIds);
   // A cached omission predates IDs that the user has just added back. Only a
@@ -95,7 +94,7 @@ export function useRecentTasks({
       const worker = async () => {
         while (next < chunks.length) {
           const index = next++;
-          results[index] = await issuesApi.summaries(companyId!, chunks[index]!, { signal });
+          results[index] = await issuesApi.summaries(companyId!, chunks[index]!, { signal, navigation: true });
         }
       };
       await Promise.all(Array.from({ length: Math.min(RECENT_TASK_SUMMARY_CONCURRENCY, chunks.length) }, worker));
@@ -103,25 +102,45 @@ export function useRecentTasks({
     },
     enabled: Boolean(companyId && queryIds.length),
     staleTime: 30_000,
+    // Membership changes can keep already verified personal rows visible while
+    // the new candidates load. Never carry facts across account/company scopes.
+    placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === companyId
+      && previousQuery?.queryKey[3] === (userId ?? "__local_board__") ? previous : undefined,
   });
   // Observe completion even when structural sharing preserves the data object.
   // The successful-update counter itself is only available on the cache state.
   const fetchingSummaries = summaryQuery.isFetching;
   const updateCount = queryClient.getQueryState(summaryKey)?.dataUpdateCount ?? 0;
   const summaries = summaryQuery.isSuccess ? summaryQuery.data : undefined;
-  const confirmed = new Map((summaries ?? []).filter((issue) => issue.companyId === companyId)
-    .map((issue) => [issue.id, issue]));
-  const refreshedEntries = entries.map((entry) => {
+  const [lastConfirmed, setLastConfirmed] = useState<{
+    storageKey: string | null;
+    summaries: IssueSummary[];
+  } | null>(null);
+  useEffect(() => {
+    if (summaries && !summaryQuery.isPlaceholderData) setLastConfirmed({ storageKey, summaries });
+  }, [summaries, summaryQuery.isPlaceholderData, storageKey]);
+  // Placeholder data disappears when a new batch fails. Keep the last successful
+  // authenticated batch for this scope, without admitting any new candidates.
+  const confirmedRows = summaryQuery.data ?? (lastConfirmed?.storageKey === storageKey ? lastConfirmed.summaries : undefined);
+  const confirmed = useMemo(() => new Map((confirmedRows ?? []).filter((issue) => issue.companyId === companyId)
+    .map((issue) => [issue.id, issue])), [confirmedRows, companyId]);
+  // A visit is only a candidate. Neither imported provenance nor a persisted
+  // browser snapshot proves personal participation for the current account.
+  const refreshedEntries: RecentTaskEntry[] = useMemo(() => entries.filter(entry => confirmed.get(entry.id)?.isParticipantForMe === true).map((entry) => {
     const issue = confirmed.get(entry.id);
-    return issue ? mergeRecentTaskSnapshot(entry, issue) : entry;
-  });
-  const processed = useRef<{ scope: string; revision: number } | null>(null);
+    // Relationship/read state is session data, never a localStorage snapshot.
+    return issue ? { ...mergeRecentTaskSnapshot(entry, issue), parentId: issue.parentId,
+      isUnreadForMe: issue.isUnreadForMe, subtaskCount: issue.subtaskCount, unreadSubtaskCount: issue.unreadSubtaskCount } : entry;
+  }), [entries, confirmed]);
+  const processed = useRef<{ visit: typeof batchVisit; revision: number } | null>(null);
 
   useEffect(() => {
-    if (!storageKey || !companyId || !summaries) return;
-    if (processed.current?.scope === scope && processed.current.revision === updateCount) return;
-    processed.current = { scope, revision: updateCount };
-    const returnedIds = new Set(summaries.filter((issue) => issue.companyId === companyId).map((issue) => issue.id));
+    if (!storageKey || !companyId || !summaries || summaryQuery.isPlaceholderData) return;
+    if (processed.current?.visit === batchVisit && processed.current.revision === updateCount) return;
+    processed.current = { visit: batchVisit, revision: updateCount };
+    // Older cached summaries without the new projection cannot prove either
+    // eligibility or ineligibility. Keep those candidates until a current read.
+    const returnedIds = new Set(summaries.filter((issue) => issue.companyId === companyId && issue.isParticipantForMe !== false).map((issue) => issue.id));
     updateRecentTaskSnapshots(storageKey, companyId, summaries);
     const omittedIds = new Set(queryIds.filter((id) => !returnedIds.has(id)));
     if (omittedIds.size && updateCount <= batchVisit.initialUpdateCount) {
@@ -132,12 +151,12 @@ export function useRecentTasks({
     pruneRecentTasks(storageKey, companyId, omittedIds);
     // A storage notification must not republish the same successful revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [batchVisit, companyId, fetchingSummaries, scope, updateCount, summaries, storageKey]);
+  }, [batchVisit, companyId, fetchingSummaries, scope, updateCount, summaries, storageKey, summaryQuery.isPlaceholderData]);
 
   useEffect(() => {
     if (!storageKey || !companyId || !summaries) return;
     const summaryById = new Map(summaries.filter((issue) => issue.companyId === companyId).map((issue) => [issue.id, issue]));
-    const authorizedIds = new Set(summaryById.keys());
+    const authorizedIds = new Set([...summaryById.values()].filter(issue => issue.isParticipantForMe === true).map(issue => issue.id));
     const mergeCached = (value: unknown) => {
       if (!value || typeof value !== "object") return;
       const issue = value as Issue;
@@ -159,8 +178,9 @@ export function useRecentTasks({
     });
   }, [companyId, queryClient, summaries, storageKey]);
 
-  const [settledOrder, setSettledOrder] = useState(() => entries.map((entry) => entry.id));
-  const activityRevision = JSON.stringify(entries.map((entry) => [entry.id, entry.recordedAt]));
+  const [settledOrder, setSettledOrder] = useState(() => refreshedEntries.map((entry) => entry.id));
+  const membership = JSON.stringify(refreshedEntries.map((entry) => entry.id).sort());
+  const activityRevision = JSON.stringify(refreshedEntries.map((entry) => [entry.id, entry.recordedAt]));
   useEffect(() => {
     const latestOrder = (JSON.parse(activityRevision) as Array<[string, number]>).map(([id]) => id);
     // Additions and removals are immediate. Only activity-driven moves wait for quiet.
@@ -173,11 +193,14 @@ export function useRecentTasks({
     return () => window.clearTimeout(timeout);
   }, [activityRevision, membership, settledOrder, storageKey]);
 
-  const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
-  const hasSameMembership = settledOrder.length === entries.length && settledOrder.every((id) => entryById.has(id));
+  const orderedEntries = useMemo(() => {
+    const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
+    const hasSameMembership = settledOrder.length === refreshedEntries.length && settledOrder.every((id) => entryById.has(id));
+    return hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries;
+  }, [refreshedEntries, settledOrder]);
 
   return {
-    entries: hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries,
+    entries: orderedEntries,
     storageKey,
   };
 }

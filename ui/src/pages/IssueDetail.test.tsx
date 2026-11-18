@@ -51,7 +51,7 @@ import {
   readIssueDetailBreadcrumb,
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
-import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
+import { getRecentTasksStorageKey, readRecentTasks, recordRecentTask } from "../lib/recent-tasks";
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { ApiError } from "../api/client";
 import type { issuesApi } from "../api/issues";
@@ -3145,7 +3145,7 @@ describe("IssueDetail", () => {
     expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
   });
 
-  it("uses task activity for recency and ignores passive revisits", async () => {
+  it("refreshes task snapshots without promoting background activity or passive revisits", async () => {
     const authRequest = createDeferred<{
       session: { userId: string };
       user: { id: string };
@@ -3185,7 +3185,7 @@ describe("IssueDetail", () => {
           id: "issue-1",
           title: "Initial recent title",
           status: "todo",
-          recordedAt: 100,
+          recordedAt: 0,
         }),
       ]);
     });
@@ -3208,8 +3208,40 @@ describe("IssueDetail", () => {
     ).toMatchObject({
       title: "Snapshot refresh title",
       status: "in_progress",
-      recordedAt: 200,
+      recordedAt: 0,
     });
+  });
+
+  it.each(["reassignment", "run settings"])("advances recency only after a comment with %s saves", async (mode) => {
+    const issue = createIssue({ updatedAt: new Date(10) });
+    const comment = createIssueComment({ createdAt: new Date(30) });
+    const save = createDeferred<Issue & { comment: IssueComment }>();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.getCore.mockResolvedValue(issue);
+    mockIssuesApi.update.mockReturnValue(save.promise);
+    recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(createIssue({ id: "newer-work" }), "user-1", 20);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = props.onAdd(comment.body, false,
+        mode === "reassignment" ? { assigneeAgentId: "agent-1", assigneeUserId: null } : undefined,
+        undefined, "recency-comment",
+        mode === "run settings" ? { model: "gpt-6-astra", effort: "high", fast: false } : undefined);
+    });
+    await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalled());
+    const entries = () => readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
+    expect(entries().map(entry => entry.id)).toEqual(["newer-work", issue.id]);
+    await act(async () => {
+      save.resolve({ ...issue, updatedAt: new Date(15), comment });
+      await pending;
+    });
+    expect(entries().map(entry => entry.id)).toEqual([issue.id, "newer-work"]);
+    expect(entries()[0]?.recordedAt).toBe(30);
   });
 
   it.each([false, true])("renders a linked Decisions-v1 record in task context (Coordinator %s)", async (enabled) => {
@@ -5614,6 +5646,42 @@ describe("IssueDetail", () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.issues.queuedComments("issue-1") });
     });
     expect(props().queuedCommentQueue?.entries.map(entry => entry.comment.id)).toEqual([waiting.id]);
+  });
+
+  it("keeps a message the running turn already took out of the queue after the live queue closes", async () => {
+    // Posted while the run was still starting; its first turn took it.
+    const taken = createIssueComment({ id: "first-turn-message", body: "Include the word PINEAPPLE" });
+    const run = {
+      id: "run-native", runtimeMode: "native" as const, status: "running",
+      invocationSource: "issue", triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:01.000Z", finishedAt: null,
+      createdAt: "2026-04-21T00:00:01.000Z", agentId: "agent-1",
+      agentName: "Runner", adapterType: "paperclip_runner", issueId: "issue-1",
+    };
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: run.id }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(run);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([run]);
+    mockIssuesApi.listComments.mockResolvedValue([taken]);
+    // The deferred wake has retired, so the live queue no longer lists it.
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      queueId: null, state: null, targetRunId: null, entries: [],
+    }));
+    mockActivityApi.runsForIssue.mockResolvedValue([{
+      runId: run.id, agentId: "agent-1", adapterType: "paperclip_runner",
+      status: "running", startedAt: run.startedAt, finishedAt: null,
+      createdAt: run.createdAt, wakeCommentIds: null, firstTurnCommentIds: [taken.id],
+      wakeupRequestId: "wake-start", contextIssueId: "issue-1",
+    }]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+      expect(props.queuedCommentQueue?.entries ?? []).toEqual([]);
+      const comment = props.comments.find((comment: IssueComment) => comment.id === taken.id);
+      expect(comment).toMatchObject({ consumedByRunId: run.id });
+      expect(comment?.queueState).toBeUndefined();
+    });
   });
 
   it("keeps an admitted message pending until its queued run starts", async () => {

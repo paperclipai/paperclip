@@ -1,12 +1,13 @@
-import { useId, useMemo, useRef, useState, type ReactElement } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PreviewCard } from "@base-ui/react/preview-card";
 import { GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, TriangleAlert } from "lucide-react";
 import type { LinkPreview as Preview, LinkPreviewResult, LinkPreviewState, LinkPreviewTarget } from "@paperclipai/shared";
 import { useLinkPreviewContext, type LinkPreviewContextValue } from "@/context/LinkPreviewContext";
 import { timeAgo } from "@/lib/timeAgo";
-import { retryTransientOnly } from "@/lib/query-client";
-import { queryKeys } from "@/lib/queryKeys";
+import { linkPreviewQueryOptions } from "@/lib/link-preview-query";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export const linkPreviewStateLabel: Record<LinkPreviewState, string> = {
   unknown: "Status unknown", open: "Open", merged: "Merged", conflicts: "Merge conflicts", draft: "Draft", closed: "Closed",
@@ -18,13 +19,13 @@ export const linkPreviewStateIcon = {
 
 function PreviewCardContents({ target, preview, loading }: { target: LinkPreviewTarget; preview?: Preview | null; loading: boolean }) {
   const state = preview?.state ?? "unknown";
-  const Icon = linkPreviewStateIcon[state];
+  const Icon = linkPreviewStateIcon[state] ?? linkPreviewStateIcon.unknown;
   const updated = preview?.updatedAt && Number.isFinite(Date.parse(preview.updatedAt)) ? preview.updatedAt : null;
-  return <div className="flex min-w-0 flex-col gap-3" data-link-preview-state={state}>
+  return <div className={cn("flex min-w-0 flex-col gap-3", ANALYTICS_MASK_CLASS)} data-link-preview-state={state}>
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
       <Icon aria-hidden="true" className="link-preview-status size-4 shrink-0" data-state={state} />
       <span className="min-w-0 break-all font-mono">{target.label}</span>
-      {preview ? <span className="link-preview-status ml-auto shrink-0" data-state={state}>{linkPreviewStateLabel[state]}</span> : null}
+      {preview ? <span className="link-preview-status ml-auto shrink-0" data-state={state}>{linkPreviewStateLabel[state] ?? state}</span> : null}
     </div>
     {preview ? <>
       <p className="m-0 text-sm font-medium leading-snug">{preview.title}</p>
@@ -50,17 +51,8 @@ function ConnectedLinkPreview({ context, target, children }: {
     getBoundingClientRect: () => triggerRef.current?.getClientRects()[0] ?? new DOMRect(),
     get contextElement() { return triggerRef.current ?? undefined; },
   }), []);
-  const query = useQuery({
-    queryKey: queryKeys.linkPreview(context.companyId, context.userId, target.canonicalUrl),
-    // Optional enrichment: a failed read is a cached absence, not a global error.
-    queryFn: async (): Promise<LinkPreviewResult> => {
-      try { return await context.load(target); } catch { return { preview: null, maxAgeMs: 60_000 }; }
-    },
-    enabled: open,
-    staleTime: query => query.state.data?.maxAgeMs ?? 60_000,
-    gcTime: 5 * 60_000,
-    retry: retryTransientOnly(0), refetchOnMount: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
-  });
+  useEffect(() => context.register?.(target), [context, target.canonicalUrl]);
+  const query = useQuery({ ...linkPreviewQueryOptions(context, target), enabled: open });
   return <PreviewCard.Root open={open} onOpenChange={setOpen}>
     <PreviewCard.Trigger ref={triggerRef} delay={350} closeDelay={150}
       onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}

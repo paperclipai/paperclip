@@ -18,15 +18,17 @@ import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
+import { registerIssueDocumentBatchRoute } from "./issue-document-batch.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
-import { listIssueSummaries } from "../services/issue-summaries.js";
+import { listIssueNavigationState, listIssueSummaries } from "../services/issue-summaries.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
-import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
-import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
+import { recordChildTaskRead, recordChildTaskReads } from "../services/native-runtime/native-child-completion-delivery.js";
+import { recordCompletedHandoffRead, recordCompletedHandoffReads } from "../services/chat-completion-delivery.js";
+import { recordDeclinedInteractionRead } from "../services/chat-interaction-outcome-report.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -71,8 +73,6 @@ import {
   markExecutionReconciliation,
 } from "../services/execution-recovery-resolution.js";
 import {
-  storedSteeringAcknowledgement,
-  reconcileSteeredIdentity,
   reserveSteeredIdentity,
   acceptSteeredIdentity,
   rejectSteeredIdentity,
@@ -423,7 +423,6 @@ import {
 import {
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
-  steerNativeSession,
 } from "../services/native-runtime/native-session-executor.js";
 import {
   buildQueuedCommentQueueSnapshot,
@@ -431,6 +430,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { deliverSteeredMessage, steeringDeliveryIsUncertain } from "../services/queued-comment-steering.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -7713,6 +7713,8 @@ export function issueRoutes(
     response?: QueuedInteractionResponse | null;
   };
 
+  const QUEUED_INTERRUPT_HANDOFF_WAIT = { reason: "interrupt_handoff", message: "Sending your messages." } as const;
+
   async function findQueuedCommentWake(
     executor: IssueQueueDb,
     issue: { id: string; companyId: string; assigneeAgentId: string | null },
@@ -7895,10 +7897,15 @@ export function issueRoutes(
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
     const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
+    // The user's Interrupt click is delivering these messages. Its stopped run
+    // settling is not something to read about under the composer; the task
+    // notice owns any wait that needs the user.
+    const interruptHandoff = queueState?.state === "deferred" && readObject(wake?.payload).queuedCommentInterrupt != null;
     const queue = buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
-      executionWait: typeof wait.reason === "string" && typeof wait.message === "string"
-        ? { reason: wait.reason, message: wait.message } : null,
+      executionWait: interruptHandoff ? QUEUED_INTERRUPT_HANDOFF_WAIT
+        : typeof wait.reason === "string" && typeof wait.message === "string"
+          ? { reason: wait.reason, message: wait.message } : null,
       queueId: wake?.id ?? null,
       state: queueState?.state ?? null,
       activeRunId: input.activeRun?.id ?? null,
@@ -8470,9 +8477,9 @@ export function issueRoutes(
     companyId: string;
     projectId: string | null;
     goalId: string | null;
-  }) {
+  }, options: { workspaceProvider?: boolean } = {}) {
     const projectPromise = issue.projectId
-      ? projectsSvc.getById(issue.projectId)
+      ? projectsSvc.getById(issue.projectId, options)
       : Promise.resolve(null);
     const directGoalPromise = issue.goalId
       ? goalsSvc.getById(issue.goalId)
@@ -8778,11 +8785,20 @@ export function issueRoutes(
     }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ error: `ids must be the only query parameter and contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs` });
+      res.status(400).json({ error: `ids must contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs; navigation=true is the only optional parameter` });
       return;
     }
-    const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
+    if (parsed.data.navigation && req.actor.type !== "board") {
+      res.status(403).json({ error: "Navigation summaries require board authentication" });
+      return;
+    }
+    const readCondition = await issueReadSqlCondition(db, req.actor);
+    const rows = await listIssueSummaries(db, companyId, parsed.data.ids, readCondition);
     const visible = await filterIssuesForActor(req, rows);
+    const navigation = parsed.data.navigation ? await listIssueNavigationState(
+      db, companyId, visible.map(row => row.id), readCondition,
+      getActorInfo(req).actorId,
+    ) : null;
     // Blocked rows carry glyph-only blocker state so every task view resolves
     // the same glyph (covered → "in queue") as the task pane. At most ISSUE_SUMMARIES_MAX_IDS IDs.
     const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
@@ -8800,6 +8816,7 @@ export function issueRoutes(
         displayStatus: row.displayStatus,
         updatedAt: row.updatedAt,
         externalConversationState: row.externalConversationState,
+        ...(navigation ? { parentId: row.parentId, ...navigation.get(row.id) } : {}),
         ...(attention ? { blockerAttention: attention } : {}),
       };
     });
@@ -9107,6 +9124,15 @@ export function issueRoutes(
       string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as
       string | undefined;
+    if (req.query.includeReadState !== undefined && !["true", "false"].includes(req.query.includeReadState as string)) {
+      res.status(400).json({ error: "includeReadState must be true or false" });
+      return;
+    }
+    const includeReadState = req.query.includeReadState === "true";
+    if (includeReadState && req.actor.type !== "board") {
+      res.status(403).json({ error: "includeReadState requires board authentication" });
+      return;
+    }
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -9328,6 +9354,7 @@ export function issueRoutes(
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
+      readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
       workspaceId: uuidFilters.workspaceId,
       executionWorkspaceId: uuidFilters.executionWorkspaceId,
@@ -9731,7 +9758,6 @@ export function issueRoutes(
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     // An Agent Chat run starts only for the conversation's owner.
     if (issue.conversationAgentId) {
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       if (req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can compact a chat agent's context");
     }
@@ -10149,20 +10175,20 @@ export function issueRoutes(
       workProducts,
       createdFrom,
     ] = await Promise.all([
-      timing.time("project_goal", () => resolveIssueProjectAndGoal(issue)),
-      timing.time("ancestors", () => svc.getAncestors(issue.id)),
-      timing.time("mentions", () => svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false })),
+      timing.time("project_goal", () => resolveIssueProjectAndGoal(issue, { workspaceProvider: false })),
+      timing.time("ancestors", () => svc.getAncestors(issue.id, { parentId: issue.parentId })),
+      timing.time("mentions", () => svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false, issue })),
       timing.time("documents", () => documentsSvc.getIssueDocumentPayload(issue)),
-      timing.time("relations", () => svc.getRelationSummaries(issue.id)),
+      timing.time("relations", () => svc.getRelationSummaries(issue.id, { companyId: issue.companyId })),
       timing.time("blockers", () => svc
         .listBlockerAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null)),
       timing.time("review", () => svc
         .listReviewAttention(issue.companyId, [issue])
         .then((map) => map.get(issue.id) ?? null)),
-      timing.time("references", () => issueReferencesSvc.listIssueReferenceSummary(issue.id)),
+      timing.time("references", () => issueReferencesSvc.listIssueReferenceSummary(issue.id, undefined, { companyId: issue.companyId })),
       timing.time("handoff", () => listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])),
-      timing.time("retry", () => svc.getCurrentScheduledRetry(issue.id)),
+      timing.time("retry", () => svc.getCurrentScheduledRetry(issue.id, { companyId: issue.companyId })),
       timing.time("recovery", () => recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id)),
       inboxArchiveFieldsPromise,
       timing.time("channel", () => getExternalChannelBindingSummary(db, issue.companyId, issue.id)),
@@ -10417,7 +10443,6 @@ export function issueRoutes(
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     if (issue.conversationAgentId) {
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can retry a chat run");
     }
@@ -11421,6 +11446,18 @@ export function issueRoutes(
       res.json({ refreshed: results });
     },
   );
+
+  registerIssueDocumentBatchRoute(router, db, {
+    filterReadable: filterIssuesForActor,
+    recordReads: async (req, issues) => {
+      if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) return;
+      const input = { companyId: req.params.companyId as string, agentId: req.actor.agentId, runId: req.actor.runId };
+      await recordCompletedHandoffReads(db, { ...input, tasks: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the completed handoffs a run read"));
+      await recordChildTaskReads(db, { ...input, children: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the child tasks a run read"));
+    },
+  });
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
@@ -17429,6 +17466,22 @@ export function issueRoutes(
       action: "issue.deleted",
       entityType: "issue",
       entityId: issue.id,
+      details: { parentId: issue.parentId },
+    });
+
+    // The removed child can no longer pass live read authorization. Notify
+    // its parent separately; delivery authorizes that parent and exposes no
+    // deleted-child identity or content to people who can only read the parent.
+    if (issue.parentId) await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.child_deleted",
+      entityType: "issue",
+      entityId: issue.parentId,
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
@@ -17908,7 +17961,6 @@ export function issueRoutes(
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (req.actor.userId !== issue.conversationUserId) {
           throw forbidden("Only the conversation owner can interrupt a chat to send queued messages");
         }
@@ -18161,18 +18213,10 @@ export function issueRoutes(
             commentId, lock: true,
           });
           steeringDeliveryAttempted = true;
-          const acknowledgement =
-            (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
-              companyId: issue.companyId, runId: locked.activeRun.id, messageId: commentId,
-            })) ??
-            (await steerNativeSession({
-              runId: locked.activeRun.id,
-              message: entry.comment.body,
-              correlationId: commentId,
-              onAcknowledged: steeringIdentity
-                ? () => reconcileSteeredIdentity(db, steeringIdentity)
-                : undefined,
-            }));
+          const acknowledgement = await deliverSteeredMessage(db, {
+            executor: tx, companyId: issue.companyId, runId: locked.activeRun.id,
+            messageId: commentId, message: entry.comment.body, identity: steeringIdentity,
+          });
           // PRP ingestion allocates event sequences on this row. Locking it
           // while awaiting the provider prevents its durable ACK from arriving.
           // Re-read under lock after ACK so concurrent run receipts are retained.
@@ -18240,10 +18284,7 @@ export function issueRoutes(
           });
         });
       } catch (error) {
-        const uncertain =
-          steeringDeliveryAttempted &&
-          (!(error instanceof NativeSessionSteeringError) ||
-            error.code === "steering_timeout");
+        const uncertain = steeringDeliveryIsUncertain(error, steeringDeliveryAttempted);
         if (steeringIdentity && !uncertain)
           await rejectSteeredIdentity(db, steeringIdentity);
 
@@ -18394,7 +18435,12 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const interactions =
-      await issueThreadInteractionService(db).listForIssue(id);
+      await issueThreadInteractionService(db).listForIssue(issue.id, issue);
+    if (req.actor.type === "agent" && req.actor.agentId && req.actor.runId) {
+      await recordDeclinedInteractionRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
+        issue, interactions: interactions as Parameters<typeof recordDeclinedInteractionRead>[1]["interactions"] })
+        .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the declined actions a run read"));
+    }
     res.json(interactions);
   });
 
@@ -19850,7 +19896,6 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
-    if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const conversations = await svc.listConversations(companyId, req.actor.userId);
     res.json(await withConversationReadState(db, companyId, req.actor.userId, await filterIssuesForActor(req, conversations)));
   });
@@ -19861,7 +19906,6 @@ export function issueRoutes(
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       const resolved = await agentsSvc.resolveByReference(companyId, req.params.agentRef as string);
       if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
       if (!resolved.agent) throw notFound("Agent not found");
@@ -19873,7 +19917,7 @@ export function issueRoutes(
         return;
       }
       const issue = await svc.create(companyId, {
-        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        title: `Chat with ${agent.name}`, generateConversationTitle: true, assigneeAgentId: agent.id,
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
         conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
       });
@@ -19897,7 +19941,6 @@ export function issueRoutes(
       );
       if (!issue) return;
       if (issue.conversationAgentId && req.actor.type === "board") {
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
         if (!req.body.clientRequestId) throw unprocessable("Chat messages require a clientRequestId for safe retries");
@@ -21112,9 +21155,6 @@ export function issueRoutes(
       if (issue.companyId !== companyId) {
         res.status(422).json({ error: "Issue does not belong to company" });
         return;
-      }
-      if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
-        throw notFound("Agent Chat is disabled");
       }
       if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
         throw forbidden("Only the conversation owner can upload attachments");

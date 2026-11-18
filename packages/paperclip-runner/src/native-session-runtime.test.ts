@@ -312,7 +312,8 @@ describe("executeNativeSession recovery", () => {
   });
 
   /** A batching port whose queued deltas commit only when flushed: it has no timer. */
-  const batchingDeltaFixture = (events: () => AsyncGenerator<PrpEvent>, commitDelta: (sourceSeq: number) => Promise<void> = async () => {}) => {
+  const batchingDeltaFixture = (events: () => AsyncGenerator<PrpEvent>, commitDelta: (sourceSeq: number) => Promise<void> = async () => {},
+    pipelinedEventTypes?: ReadonlySet<PrpEvent["eventType"]>) => {
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
     const session: NativeSession = {
       identity: () => identity,
@@ -335,6 +336,7 @@ describe("executeNativeSession recovery", () => {
     let queued: Array<() => void> = [];
     const port: ControlPlanePort = {
       pipelinesStreamingEvents: true,
+      ...(pipelinedEventTypes ? { pipelinedEventTypes } : {}),
       flushStreamingEvents() {
         log.push("flush");
         const flushed = queued;
@@ -345,7 +347,7 @@ describe("executeNativeSession recovery", () => {
       async appendEvent(event: PrpEvent, options) {
         if (event.sourceKind !== "runner") return { cursor: 0, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" };
         log.push(`append:${event.sourceSeq}`);
-        if (event.eventType === "item.delta") {
+        if ((pipelinedEventTypes ?? new Set(["item.delta"])).has(event.eventType)) {
           expect(options?.streaming).toBe(true);
           await new Promise<void>(resolve => queued.push(resolve));
           await commitDelta(event.sourceSeq);
@@ -373,6 +375,26 @@ describe("executeNativeSession recovery", () => {
     expect(f.log.slice(0, 5)).toEqual(["append:1", "append:2", "append:3", "flush", "committed:1"]);
     expect(f.log.indexOf("append:4")).toBeGreaterThan(Math.max(...[1, 2, 3].map(seq => f.log.indexOf(`committed:${seq}`))));
     expect(execution).toMatchObject({ nativeEventCount: 7, highestContiguousSourceSeq: 5 });
+  });
+
+  it.each([true, false])("starts progress appends without waiting only when the port pipelines them (pipelined=%s)", async pipelined => {
+    const progress = (sourceSeq: number) => runnerEvent(sourceSeq, "tool.execution.progressed", { name: "build", status: "running" });
+    const f = batchingDeltaFixture(async function* () {
+      for (const sourceSeq of [1, 2]) yield progress(sourceSeq);
+      yield streamedDelta(3);
+      yield runnerEvent(4, "run.result.proposed", result);
+      yield runnerEvent(5, "turn.completed");
+    }, async () => {}, pipelined ? new Set(["item.delta", "tool.execution.progressed"]) : undefined);
+    const execution = await executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+    expect(f.log.slice(0, 4)).toEqual(["append:1", "append:2", "append:3", "flush"]);
+    if (pipelined) {
+      expect(f.log.indexOf("append:2")).toBeLessThan(f.log.indexOf("committed:1"));
+      expect(f.log.indexOf("append:4")).toBeGreaterThan(Math.max(...[1, 2, 3].map(seq => f.log.indexOf(`committed:${seq}`))));
+    } else {
+      expect(f.log).not.toContain("committed:1");
+    }
+    expect(execution).toMatchObject({ highestContiguousSourceSeq: 5 });
   });
 
   it("joins pending delta appends before a failed turn settles", async () => {

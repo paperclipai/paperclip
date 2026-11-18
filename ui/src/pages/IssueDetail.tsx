@@ -1,4 +1,5 @@
 import { createUuid } from "@/lib/uuid";
+import { invalidateInteractionRecordViews } from "@/lib/attention-record-views";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
@@ -90,6 +91,7 @@ import {
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
 import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
+import { isRestoredSavedRead } from "../lib/persisted-query-cache";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -134,6 +136,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
+  isQueuedInterruptHandoff,
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
   startingQueuedCommentIds,
@@ -1791,8 +1794,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               run.contextCommentId.length > 0
             ? run.contextCommentId
             : null;
-      const inputIds =
-        batchedIds.length > 0 ? batchedIds : fallbackId ? [fallbackId] : [];
+      // Messages posted while the run was starting, which its first turn took.
+      const firstTurnIds = Array.isArray(run.firstTurnCommentIds)
+        ? run.firstTurnCommentIds.filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          )
+        : [];
+      const inputIds = [...new Set([
+        ...(batchedIds.length > 0 ? batchedIds : fallbackId ? [fallbackId] : []),
+        ...firstTurnIds,
+      ])];
       const anchorAt = run.startedAt ?? run.createdAt;
       const anchorMs = new Date(anchorAt).getTime();
       inputIds.forEach((commentId, sequence) => {
@@ -2491,7 +2502,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       });
       try {
         const updatedQueue = await onInterruptQueued(runId);
-        if (updatedQueue?.state === "deferred") {
+        if (updatedQueue?.state === "deferred" && !isQueuedInterruptHandoff(updatedQueue)) {
           const remaining = new Set(updatedQueue.entries.map(entry => entry.comment.id));
           setConsumedQueuedCommentIds(current => new Set([...current].filter(id => !remaining.has(id))));
           setLocalInterruptPlacements(current => new Map([...current].filter(([id]) => !remaining.has(id))));
@@ -3246,6 +3257,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
 /** One controller and surface for both task URLs and agent conversations. */
 export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskSidePanelProps["tasksTab"]; conversation?: {
   agent: Agent; issue: Issue | null; ensureIssue: () => Promise<Issue>;
+  onReady?: () => void;
 } }) {
   const { issueId: routeIssueId, companyPrefix } = useParams<{ issueId: string; companyPrefix: string }>();
   const issueId = conversation ? conversation.issue?.id : routeIssueId;
@@ -3344,6 +3356,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const readReceiptRef = useRef<{
     issueId: string;
+    companyId: string;
     account: ReturnType<typeof bindAccount>;
     attemptedSessionAt?: number;
     confirmed: boolean;
@@ -3387,10 +3400,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   // A cold open sends one bootstrap request for everything the chat's first
   // frame needs; the reads below wait for its answer instead of fanning out.
-  // A task preloaded by the list is already cached, so this is a no-op.
+  // A task preloaded by the list is already cached, so this is a no-op. A task
+  // restored from the saved read cache shows its header at once but has no
+  // chat history saved, so it opens like a cold one.
   const bootstrapCompanyId = companies.find((company) => company.issuePrefix === companyPrefix?.toUpperCase())?.id ?? selectedCompanyId;
-  if (issueId && !conversation && queryClient.getQueryData([...queryKeys.issues.detail(issueId), "core"]) === undefined) {
-    startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId);
+  const coreIssueKey = issueId ? [...queryKeys.issues.detail(issueId), "core"] : null;
+  if (issueId && coreIssueKey && !conversation
+    && (queryClient.getQueryData(coreIssueKey) === undefined || isRestoredSavedRead(queryClient, coreIssueKey))) {
+    const restoredIssue = queryClient.getQueryData<Issue>(coreIssueKey);
+    startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId, [restoredIssue?.id, restoredIssue?.identifier]);
   }
   // The core issue keeps its own small, fast read so the header never waits
   // for the larger chat bootstrap; a preloaded task already has it cached.
@@ -3546,7 +3564,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [linkedComment.data, windowComments],
   );
 
+  const contentNavigationStartedAt = useRef(Infinity);
   useLayoutEffect(() => {
+    contentNavigationStartedAt.current = performance.now();
     beginIssueDetailNavigation();
   }, [issueId]);
   // The task page is loaded when its conversation content has painted: the
@@ -3554,6 +3574,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // chat with no saved task never records that mark, so it uses the generic rule.
   const contentPaintedAt = useIssueDetailContentPaintedAt();
   usePageContentReady(contentPaintedAt !== null, contentPaintedAt, { enabled: Boolean(issueId) });
+  useEffect(() => {
+    if (contentPaintedAt !== null && contentPaintedAt >= contentNavigationStartedAt.current) conversation?.onReady?.();
+  }, [contentPaintedAt, conversation?.onReady]);
 
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
@@ -3644,7 +3667,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const { data: liveRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<LiveRunForIssue[], Error, LiveRunSummary>(
     {
       queryKey: queryKeys.issues.liveRuns(issueId!),
-      queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
+      // Shares the chat's read: whichever observer mounts first must not send
+      // its own request while the page's bootstrap is loading.
+      queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId!), issueId!, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId!)),
       enabled: !!issueId,
       refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
       select: summarizeLiveRuns,
@@ -3818,6 +3843,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   useEffect(() => {
     if (!streamlinedUiEnabled || !issue || !sessionResolved) return;
+    // Passive reads refresh the snapshot without promoting it. The navigation
+    // summary still decides whether this candidate is personal work.
     recordRecentTask(issue, currentUserId);
   }, [issue, currentUserId, sessionResolved, streamlinedUiEnabled]);
   const { data: boardAccess } = useQuery({
@@ -4544,6 +4571,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const upsertInteractionInCache = useCallback(
     (interaction: IssueThreadInteraction) => {
+      invalidateInteractionRecordViews(queryClient, interaction.companyId, interaction);
       queryClient.setQueryData<IssueThreadInteraction[] | undefined>(
         queryKeys.issues.interactions(issueId!),
         (current) => {
@@ -4561,9 +4589,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           return next;
         },
       );
-      queryClient.invalidateQueries({ queryKey: ["issues", "pending-questions"] });
-      queryClient.invalidateQueries({ queryKey: ["issues", "decision-receipts"] });
-      queryClient.invalidateQueries({ queryKey: queryKeys.attention(interaction.companyId) });
     },
     [issueId, queryClient],
   );
@@ -4597,6 +4622,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     },
     onSuccess: (_data, receipt) => {
       receipt.confirmed = true;
+      // A late receipt belongs to its original company, even after navigation.
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(receipt.companyId) });
+      queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(receipt.companyId), "recent-subtasks"] });
       if (selectedCompanyId) {
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.listMineByMe(selectedCompanyId),
@@ -4634,7 +4662,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
       mergeIssueResponseIntoCaches(issueRefs, nextIssue);
       if (streamlinedUiEnabled && sessionResolved) {
-        recordRecentTask(nextIssue, currentUserId);
+        recordRecentTask(nextIssue, currentUserId, Date.now());
       }
       queryClient.invalidateQueries({
         queryKey: queryKeys.issues.activity(issueId!),
@@ -5670,6 +5698,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         if (!historyExpanded) {
           await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!), exact: true, refetchType: "none" });
         }
+        if (streamlinedUiEnabled && sessionResolved) {
+          recordRecentTask(nextIssue, currentUserId, new Date(comment.createdAt).getTime());
+        }
       }
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
@@ -6226,7 +6257,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     const receipt = readReceiptRef.current?.issueId === issue.id
       ? readReceiptRef.current
       : (readReceiptRef.current = pendingReadReceiptsRef.current.get(issue.id)
-        ?? { issueId: issue.id, account: bindAccount(queryClient), confirmed: false });
+        ?? { issueId: issue.id, companyId: issue.companyId, account: bindAccount(queryClient), confirmed: false });
     if (receipt.confirmed || pendingReadReceiptsRef.current.has(issue.id) || !receipt.account.isCurrentScope()) return;
     // Retry after a successful session read, without looping on a failed check.
     if (receipt.attemptedSessionAt === sessionUpdatedAt) return;

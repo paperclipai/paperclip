@@ -59,7 +59,7 @@ export function DotRunnerConnection({ companyId, agentId, bindingId, onBinding }
     : "";
   return <div className="space-y-3">
     <p className="text-sm text-muted-foreground">Dot manages its model and external tools. Paperclip supplies task coordination, people, assigned skills, and connected app tools. Dot can start a task directly from its conversation. Enable Read task attachments below to send assigned task file contents to OpenAI. Enable workspace files and commands for work in the assigned workspace. Provider usage and cost are unavailable; stopping a Paperclip run revokes access without confirming an external stop.</p>
-    {state.data && !state.data.enabled && <p className="text-sm text-muted-foreground">Enable OpenAI Dot and Assistant connections (MCP) in experimental settings.</p>}
+    {state.data && !state.data.enabled && <p className="text-sm text-muted-foreground">Enable OpenAI Dot in experimental settings.</p>}
     {state.data?.resourceUrl && <p className="text-sm break-all">Private plugin MCP URL: <code>{state.data.resourceUrl}</code></p>}
     {b && <p className="text-sm">Connection: {b.status}. Event subscription: {b.subscriptionVerified ? "verified" : "required"}.</p>}
     {b?.assignment && <p className="text-sm">Assignment: {b.assignment.status === "offered" ? "waiting for Dot to accept" : "accepted by Dot"}.</p>}

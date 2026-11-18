@@ -668,9 +668,7 @@ const recoveryFakeCodex = resolve(
       const address = server.address();
       if (!address || typeof address === "string")
         throw new Error("Missing test listener");
-      setupRunnerPrpWebSocketServer(server, {
-        apiUrl: `http://127.0.0.1:${address.port}`,
-      });
+      setupRunnerPrpWebSocketServer(server);
       const makeExecution = (runId: string): NativeExecutionInput => {
         const { runtimeContext: _runtimeContext, ...value } = execution(
           runId,

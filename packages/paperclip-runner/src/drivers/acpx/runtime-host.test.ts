@@ -20,7 +20,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
@@ -255,6 +255,31 @@ describe("ACPX runtime host", () => {
     expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_SKILLS");
     expect(openRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+  it("admits Claude instructions larger than the provider-delivered bound and passes them to the provider", async () => {
+    const fixture = await hostFixture();
+    const systemInstructions = "x".repeat(54_734);
+    const openRuntime = vi.fn(async (_options: { systemInstructions?: string }) => runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) }));
+    const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-all",
+      providerPolicy: { readOnly: false }, systemInstructions }, fixture.dependencies({ openRuntime }));
+    try {
+      expect(openRuntime).toHaveBeenCalledOnce();
+      expect(openRuntime.mock.calls[0]![0].systemInstructions).toBe(systemInstructions);
+    } finally { await host.close({ reason: "instructions admitted" }); }
+  });
+  it.each([
+    { agent: "pi" as const, model: "anthropic/claude-sonnet-5", bytes: 32 * 1024 + 1, extra: { piThinkingLevel: "low" as const } },
+    { agent: "copilot" as const, model: "gpt-5.6-sol", bytes: 32 * 1024 + 1, extra: { environment: { COPILOT_GITHUB_TOKEN: "synthetic-test-token" } } },
+    { agent: "claude" as const, model: "claude-sonnet-5", bytes: 256 * 1024 + 1, extra: {} },
+  ])("reports oversized $agent instructions as instructions admission before launch", async ({ agent, model, bytes, extra }) => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => runtimePort());
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent, model, permissionMode: "approve-all",
+      providerPolicy: { readOnly: false }, systemInstructions: "x".repeat(bytes), ...extra }, fixture.dependencies({ openRuntime })).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toMatch(/instructions exceed their bounded size/);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_INSTRUCTIONS");
+    expect(openRuntime).not.toHaveBeenCalled();
   });
   it.each(["installation", "sandbox", "credential", "runtime"] as const)("retains the failed %s admission stage through the sidecar boundary", async stage => {
     const fixture = await hostFixture();
@@ -924,7 +949,7 @@ describe("ACPX runtime host", () => {
       // staged credential to that pending admission. Abort before entering the
       // adapter so its pre-entry path must publish a completed cleanup proof.
       controller.abort(cancellation);
-      return openCodexAcpxRuntime(options, { createRuntime });
+      return openQualifiedAcpxRuntime(options, { createRuntime });
     });
 
     await expect(
