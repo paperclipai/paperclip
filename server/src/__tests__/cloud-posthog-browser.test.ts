@@ -339,6 +339,43 @@ describe("PostHog proxy forwarding", () => {
     });
   });
 
+  it("closes a response the browser does not read by the request deadline", async () => {
+    const big = Buffer.alloc(16 * 1024 * 1024, 120);
+    const finished: string[] = [];
+    const fast = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/javascript", "content-length": String(big.length) });
+      res.end(big, () => finished.push("upstream"));
+    });
+    await new Promise<void>((resolve) => fast.listen(0, "127.0.0.1", resolve));
+    const app = express();
+    app.use("/_ph", posthogProxyRoutes(`http://127.0.0.1:${(fast.address() as AddressInfo).port}`, { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 1, requestDeadlineMs: 300 }, () => {}));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      let browserRequest: http.ClientRequest | undefined;
+      const headers = await new Promise<number>((resolve) => {
+        browserRequest = http.get({ host: "127.0.0.1", port, path: "/_ph/static/recorder.js" }, (res) => {
+          res.pause();
+          resolve(res.statusCode ?? 0);
+        });
+        browserRequest.on("error", () => {});
+      });
+      expect(headers).toBe(200);
+      expect((await request(server).get("/_ph/static/array.js").buffer(false).parse((res, done) => { res.resume(); res.on("end", () => done(null, null)); })).status).toBe(429);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(finished).toEqual(["upstream"]);
+      const next = await request(server).get("/_ph/static/array.js").buffer(false).parse((res, done) => { res.resume(); res.on("end", () => done(null, null)); });
+      browserRequest?.destroy();
+      expect(next.status).toBe(200);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fast.closeAllConnections();
+      await new Promise<void>((resolve) => fast.close(() => resolve()));
+    }
+  });
+
   it("cuts off a body that trickles in past the request deadline", async () => {
     const app = express();
     app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 1, requestDeadlineMs: 200 }, () => {}));
@@ -432,6 +469,7 @@ describe("PostHog proxy forwarding", () => {
         }).on("error", () => resolve("error"));
       });
       // The browser sees a cut-off response, not a complete one.
+      console.log("OUTCOME", outcome, Date.now() - startedAt);
       expect(outcome).not.toBe("end");
       await new Promise((resolve) => setTimeout(resolve, 50));
       // The proxy keeps serving after the broken response.

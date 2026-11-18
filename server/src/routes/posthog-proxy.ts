@@ -296,6 +296,7 @@ export function posthogProxyRoutes(
       upstreamReq.destroy(new Error("posthog_proxy_timeout"));
     });
     const deadline = setTimeout(() => {
+      if (res.headersSent || upstreamReq.destroyed) res.destroy();
       upstreamReq.destroy(new Error("posthog_proxy_deadline"));
     }, limits.requestDeadlineMs);
     res.once("close", () => clearTimeout(deadline));
