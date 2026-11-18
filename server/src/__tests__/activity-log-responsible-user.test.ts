@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -21,7 +23,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { withRequestActor } from "../services/request-actor-context.js";
+import { requestActorContext, withRequestActor } from "../services/request-actor-context.js";
 
 type TableRows = Map<unknown, Array<Record<string, unknown>>>;
 
@@ -244,6 +246,47 @@ describeEmbeddedPostgres("logActivity attribution stamping", () => {
 
     expect(row?.responsibleUserId).toBe("key-user");
     expect(row?.apiKeyId).toBe(agentApiKeyId);
+  });
+
+  it("does not let a callback created during a keyed request reuse the key after the response", async () => {
+    const companyId = randomUUID();
+    const boardApiKeyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Worker",
+      issuePrefix: `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const record = (actorId: string) => logActivity(db, activityInput({
+      companyId, actorType: "user", actorId, agentId: null, entityType: "company", entityId: companyId,
+    }), []);
+    let releaseWorker!: () => void;
+    let workerActivity!: Promise<unknown>;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as unknown as { actor: unknown }).actor = { type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" };
+      next();
+    });
+    app.use(requestActorContext);
+    app.post("/configure", async (_req, res) => {
+      workerActivity = new Promise<void>((resolve) => { releaseWorker = resolve; }).then(() => record("after-response"));
+      await record("during-request");
+      res.json({ ok: true });
+    });
+
+    await request(app).post("/configure").expect(200);
+    releaseWorker();
+    await workerActivity;
+
+    const rows = await db
+      .select({ actorId: activityLog.actorId, apiKeyId: activityLog.apiKeyId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { actorId: "during-request", apiKeyId: boardApiKeyId },
+      { actorId: "after-response", apiKeyId: null },
+    ]));
   });
 
   it("stores a Board API key id and leaves session activity unkeyed", async () => {

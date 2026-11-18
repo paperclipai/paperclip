@@ -3,17 +3,28 @@ import type { RequestHandler } from "express";
 import { isUuidLike } from "@paperclipai/shared";
 import type { AuthorizationActor } from "./authorization.js";
 
-const actors = new AsyncLocalStorage<AuthorizationActor>();
+interface RequestActorScope {
+  actor: AuthorizationActor;
+  keyId: string | null;
+}
 
-export const currentRequestActor = () => actors.getStore();
+const scopes = new AsyncLocalStorage<RequestActorScope>();
+
+export const currentRequestActor = () => scopes.getStore()?.actor;
 
 export function currentRequestApiKeyId(): string | null {
-  const keyId = actors.getStore()?.keyId?.trim();
+  const keyId = scopes.getStore()?.keyId?.trim();
   return keyId && isUuidLike(keyId) ? keyId : null;
 }
 
 export function withRequestActor<T>(actor: AuthorizationActor, operation: () => T): T {
-  return actors.run(actor, operation);
+  return scopes.run({ actor, keyId: actor?.keyId ?? null }, operation);
 }
 
-export const requestActorContext: RequestHandler = (req, _res, next) => withRequestActor(req.actor, next);
+export const requestActorContext: RequestHandler = (req, res, next) => {
+  const scope: RequestActorScope = { actor: req.actor, keyId: req.actor?.keyId ?? null };
+  const releaseKey = () => { scope.keyId = null; };
+  res.once("finish", releaseKey);
+  res.once("close", releaseKey);
+  scopes.run(scope, next);
+};
