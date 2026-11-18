@@ -111,7 +111,10 @@ export function createArtifactInstaller(workspaceRoot: string, runner: Pick<Comm
       const result = await runner.execute({ command: "node", args: ["--input-type=commonjs", "-e", INSTALL, JSON.stringify({ root: workspaceRoot, destination: input.destination, byteSize: input.byteSize, sha256: input.sha256, scratch, phase })],
         cwd: workspaceRoot, env: { NODE_OPTIONS: "", NODE_PATH: "" }, stdin: phase === "prepare" ? input.bytes.toString("base64") : undefined, timeoutMs: 30_000, bypassSession: true }).catch(() => { throw new Error("artifact_install_failed"); });
       if (result.timedOut || result.exitCode !== 0 || result.stdout !== "ok") {
-        throw new Error(/^artifact_install_(missing|conflict|size_mismatch|hash_mismatch|unsupported_platform|path_changed)$/.test(result.stderr) ? result.stderr : "artifact_install_failed");
+        const failure = result.stderr || result.stdout;
+        const confirmed = !result.timedOut && result.exitCode === 1 && !(result.stderr && result.stdout)
+          && /^artifact_install_(missing|conflict|size_mismatch|hash_mismatch|unsupported_platform|path_changed)$/.test(failure);
+        throw new Error(confirmed ? failure : "artifact_install_failed");
       }
     };
     let committing = false;

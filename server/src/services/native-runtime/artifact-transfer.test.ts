@@ -104,6 +104,31 @@ describe.skipIf(process.platform !== "linux")("artifact filesystem installation"
     }
   });
 
+  it("settles a confirmed conflict from a combined-output command runner", async () => {
+    await writeFile(join(root, "result.bin"), "existing bytes");
+    const runner = { execute: vi.fn<Runner["execute"]>(async input => {
+      const result = await execute(input);
+      return { ...result, stdout: result.stdout + result.stderr, stderr: "" };
+    }) };
+    await expect(createArtifactInstaller(root, runner)(request())).rejects.toSatisfy(error =>
+      !(error instanceof SemanticToolOutcomeUnknownError) && error.message === "artifact_install_conflict");
+    expect(await readFile(join(root, "result.bin"), "utf8")).toBe("existing bytes");
+    expect(await readdir(root)).toEqual(["result.bin"]);
+  });
+
+  it.each(["timeout", "missing exit", "success exit", "noise", "both streams"])("keeps an unconfirmed commit unknown (%s)", async fault => {
+    const runner = { execute: vi.fn<Runner["execute"]>(async input => {
+      const result = await execute(input);
+      if (!input.args?.at(-1)?.includes('"phase":"commit"')) return result;
+      return { ...result, exitCode: fault === "missing exit" ? null : fault === "success exit" ? 0 : 1,
+        timedOut: fault === "timeout", stdout: (fault === "noise" ? "extra " : "") + "artifact_install_conflict",
+        stderr: fault === "both streams" ? "artifact_install_conflict" : "" };
+    }) };
+    await expect(createArtifactInstaller(root, runner)(request())).rejects.toBeInstanceOf(SemanticToolOutcomeUnknownError);
+    expect((await readFile(join(root, "result.bin"))).equals(bytes)).toBe(true);
+    expect(await readdir(root)).toEqual(["result.bin"]);
+  });
+
   it("recovery verifies only and never installs a missing destination", async () => {
     const runner = { execute: vi.fn(execute) };
     await expect(createArtifactInstaller(root, runner)({ ...request(), verifyOnly: true })).rejects.toThrow();

@@ -196,6 +196,11 @@ leave a reserved scratch file if cleanup cannot reach the provider, but never a
 completed destination. File synchronization after the turn remains owned by the
 normal workspace lifecycle.
 
+Confirmed installer failures are recognized with split output streams or with
+combined command output, as returned by Daytona one-shot execution. A destination
+conflict returns a tool error promptly. A timeout, missing exit status, or invalid
+receipt after promotion remains an unknown outcome and requires reconciliation.
+
 Current support is Linux local execution and remote native command-runner
 transports (including Daytona and SSH). Plugin-owned tasks without an installer,
 Dot, Muse, Grok and nonstandard work modes do not advertise this capability.
