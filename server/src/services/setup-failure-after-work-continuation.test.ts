@@ -22,20 +22,22 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
 describe("a native run that already did work and then failed setup", () => {
   useWorkspaceRecoveryFixture(targets);
 
-  async function failedAfterWork(errorCode = "setup_failed") {
+  async function failedAfterWork(errorCode = "setup_failed", providerWorkStarted = true) {
     const f = await seed("native");
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
     const finishedAt = new Date();
     const source = await run(f.runId);
     await db.update(heartbeatRuns).set({ errorCode, error: "Bad Gateway", nativePhase: "terminal_failure",
       startedAt: new Date(finishedAt.getTime() - 13 * 60_000), finishedAt,
-      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_assigned" } }).where(eq(heartbeatRuns.id, f.runId));
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_assigned" },
+      ...(providerWorkStarted ? {} : { resultJson: { ...source.resultJson,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }) }).where(eq(heartbeatRuns.id, f.runId));
     for (const eventType of ["turn.started", "tool.execution.started", "tool.execution.completed"])
       await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: source.agentId,
         eventType, stream: "system", level: "info", message: eventType, payload: {} });
     await db.update(issues).set({ status: "blocked", blockedTransitionAt: finishedAt, lastStatusDecisionId: null })
       .where(eq(issues.id, f.issueId));
-    await recordRequiredWorkspaceRestoreFailure(db, await run(f.runId), source.resultJson!);
+    await recordRequiredWorkspaceRestoreFailure(db, await run(f.runId), (await run(f.runId)).resultJson!);
     const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
     expect(hold).toMatchObject({ status: "resolved", outcome: "blocked",
       evidence: expect.objectContaining({ automaticRecovery: expect.objectContaining({ replay: "blocked" }) }) });
@@ -81,6 +83,13 @@ describe("a native run that already did work and then failed setup", () => {
     expect(next[0]!.contextSnapshot).toMatchObject({ previousRunId: f.runId, forceFreshSession: true,
       wakeReason: "issue_recovery_action_restored" });
     expect(await shown(f.issueId)).toMatchObject({ state: "working", canRetry: false });
+  }, 60_000);
+
+  it("leaves a setup failure before any provider work on its Retry path", async () => {
+    const f = await failedAfterWork("setup_failed", false);
+    await disposition();
+    expect(await successors(f.companyId, f.runId)).toEqual([]);
+    expect(await shown(f.issueId)).not.toMatchObject({ state: "working" });
   }, 60_000);
 
   it("leaves a person-owned setup failure for the person", async () => {

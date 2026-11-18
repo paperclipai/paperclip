@@ -99,7 +99,7 @@ export function recentInterruptionSourceSql(now: Date) {
 export async function runsAwaitingSystemContinuation(db: Db, companyId: string, issueIds: string[], runIds: string[],
   now = new Date()): Promise<Set<string>> {
   if (!issueIds.length || !runIds.length) return new Set();
-  const rows = await db.select({ issueId: issueRecoveryActions.sourceIssueId, runId: heldRunIdSql() })
+  const rows = await db.select({ issueId: issueRecoveryActions.sourceIssueId, runId: sql<string>`${heldRunIdSql()}` })
     .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
       eq(issues.companyId, issueRecoveryActions.companyId)))
     .where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, issueIds),
@@ -115,10 +115,12 @@ export async function runsAwaitingSystemContinuation(db: Db, companyId: string, 
   if (!rows.length) return new Set();
   const candidateIssueIds = [...new Set(rows.map(row => row.issueId))];
   const candidateRunIds = [...new Set(rows.map(row => row.runId))];
+  const runKeys = candidateRunIds.filter(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id));
+  if (!runKeys.length) return new Set();
   const [issueRows, runRows, holdRows] = await Promise.all([
     db.select().from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, candidateIssueIds))),
     db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(sql`${heartbeatRuns.id}::text`, candidateRunIds))),
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runKeys))),
     db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
       inArray(issueRecoveryActions.sourceIssueId, candidateIssueIds), inArray(heldRunIdSql(), candidateRunIds))),
   ]);

@@ -148,7 +148,7 @@ suite("fresh-continuation schedule queries", () => {
       const finishedMinutesAgo = pick([30, 120, 600, 1_200, 1_430, 1_450, 2_000, 4_000]);
       const sourceLink = pick(["native", "issue", "context"]);
       const errorCode = pick(["process_lost", "native_session_interrupted", "server_shutdown_interrupted", "controller_lease_lost",
-        "adapter_failed", "reusable_sandbox_resume_failed", "budget_exceeded", null]);
+        "adapter_failed", "reusable_sandbox_resume_failed", "setup_failed", "budget_exceeded", null]);
       const sourceCreated = chance(0.92);
       if (sourceCreated) {
         const finished = chance(0.92) ? at(finishedMinutesAgo) : null;
