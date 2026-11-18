@@ -2879,9 +2879,10 @@ export function toolAccessService(
       // Minted-credential methods (AWS role) need the connection to exist before the
       // provider can trust it, so they may also save a draft without contacting it.
       if (awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key)) {
-        // Record the issuer AWS is asked to trust, keeping one recorded earlier (the draft step), so a
-        // later change of this instance's address gets a clear message instead of a role refusal.
-        const recorded = asRecord(retainedConnection?.config)[AWS_MCP_ISSUER_CONFIG_KEY];
+        // Record the issuer AWS is asked to trust, so a later change of this instance's address gets a
+        // clear message instead of a role refusal. Resuming a draft keeps the issuer recorded at the draft
+        // step; an explicit reconnect records the current address, which the administrator updated in AWS.
+        const recorded = input.reconnectConnectionId ? undefined : asRecord(retainedConnection?.config)[AWS_MCP_ISSUER_CONFIG_KEY];
         const origin = workloadIdentityIssuerOrigin();
         const issuer = typeof recorded === "string" ? recorded
           : origin.available ? workloadIdentityIssuer(origin.origin, companyId) : null;

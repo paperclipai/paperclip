@@ -217,6 +217,11 @@ describe("AWS connector with minted credentials", () => {
       await service.checkHealth(connected.connectionId, actor).catch(() => undefined);
       const [moved] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
       expect(moved!.healthMessage).toContain("address changed");
+      // After the administrator registers the new address in AWS, reconnecting records it and works again.
+      const reconnected = await service.connectGalleryApp(org.id, { ...roleInput, reconnectConnectionId: connected.connectionId }, actor);
+      expect(reconnected.catalog).toHaveLength(2);
+      const [restored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      expect(restored!.config.workloadIdentityIssuer).toBe(`https://renamed.paperclip.app/oidc/companies/${org.id}`);
     } finally {
       vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://acme.paperclip.app");
     }
