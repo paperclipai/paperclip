@@ -961,30 +961,37 @@ describe("agent issue mutation checkout ownership", () => {
       );
     });
 
-    it("hides a scoped private project from a key whose agent is not a project member", async () => {
-      mockProjectService.getById.mockResolvedValue({ id: scopedProjectId, companyId, visibility: "private" } as never);
+    const privacyMatrix = (["off", "shadow", "enforce"] as const).flatMap((mode) =>
+      [false, true].flatMap((withAuthorizingUser) =>
+        [false, true].map((isMember) => ({
+          mode,
+          withAuthorizingUser,
+          isMember,
+          expectedStatus:
+            isMember || (!withAuthorizingUser && mode !== "enforce") ? 201 : 404,
+        }))));
 
-      const res = await createInProject(
-        await createApp(bridgeActor({ projectIds: [scopedProjectId] }), dbWithProjectPrivacy(false)),
-        scopedProjectId,
-      );
+    it.each(privacyMatrix)(
+      "mode $mode, authorizing user $withAuthorizingUser, project member $isMember on a scoped private project returns $expectedStatus",
+      async ({ mode, withAuthorizingUser, isMember, expectedStatus }) => {
+        vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", mode);
+        mockProjectService.getById.mockResolvedValue({ id: scopedProjectId, companyId, visibility: "private" } as never);
+        const actor = {
+          ...bridgeActor({ projectIds: [scopedProjectId] }),
+          ...(withAuthorizingUser ? { authorizingUserId: "authorizing-user" } : {}),
+        };
 
-      expect(res.status, JSON.stringify(res.body)).toBe(404);
-      expect(res.body.error).toBe("Project not found");
-      expect(mockIssueService.create).not.toHaveBeenCalled();
-    });
+        const res = await createInProject(
+          await createApp(actor, dbWithProjectPrivacy(isMember)),
+          scopedProjectId,
+        );
 
-    it("creates in a scoped private project when the key's agent is a project member", async () => {
-      mockProjectService.getById.mockResolvedValue({ id: scopedProjectId, companyId, visibility: "private" } as never);
-
-      const res = await createInProject(
-        await createApp(bridgeActor({ projectIds: [scopedProjectId] }), dbWithProjectPrivacy(true)),
-        scopedProjectId,
-      );
-
-      expect(res.status, JSON.stringify(res.body)).toBe(201);
-      expect(mockIssueService.create).toHaveBeenCalled();
-    });
+        expect(res.status, JSON.stringify(res.body)).toBe(expectedStatus);
+        expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "project:read" }));
+        if (expectedStatus === 404) expect(mockIssueService.create).not.toHaveBeenCalled();
+        else expect(mockIssueService.create).toHaveBeenCalled();
+      },
+    );
 
     it("still hides a project outside the key's project scope", async () => {
       const res = await createInProject(

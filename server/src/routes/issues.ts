@@ -5277,6 +5277,15 @@ export function issueRoutes(
     const authorizingUserId = req.actor.type === "agent" ? req.actor.authorizingUserId : undefined;
     if (!authorizingUserId && mode === "off") return true;
     if (await canActorReadProjectPrivacy(db, req.actor, project)) return true;
+    logger.warn({
+      authzMode: mode,
+      action: "project:read",
+      companyId: project.companyId,
+      projectId: project.id,
+      actorType: req.actor.type,
+      actorAgentId: req.actor.agentId ?? null,
+      reason: "deny_project_private",
+    }, "project privacy would deny read");
     return !authorizingUserId && mode === "shadow";
   }
 
