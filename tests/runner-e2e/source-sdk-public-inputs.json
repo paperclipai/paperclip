@@ -33,7 +33,7 @@
     "packages/plugins/sdk/src/workspace-operation-error.ts": "2cd247d002d83b163239229e631bca4e519e5075",
     "packages/plugins/sdk/src/workspace-provider.ts": "38e945b807f22150710c11b136af0a28aab2cb7c",
     "packages/plugins/sdk/tsconfig.json": "d62ebdff94bc4b75dabf1fcad187e1e7a90fc794",
-    "packages/shared/package.json": "6417ef8baef0cb9b836b14f453dc8bc5025709e0",
+    "packages/shared/package.json": "7ad3ff21dafa8b876818ee227280d5646b93dee3",
     "packages/shared/src/__snapshots__/slack-app-manifest.test.ts.snap": "79020ba3aa6662923f70aa44e2c483844e9901d9",
     "packages/shared/src/account-handle.test.ts": "fb77e08a68b8deb3ab5ebf271724a268ac6bae56",
     "packages/shared/src/account-handle.ts": "4bc5d6ec16b854497e83ce781bd900dfec599cbd",
