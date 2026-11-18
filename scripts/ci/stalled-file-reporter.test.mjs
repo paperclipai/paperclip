@@ -83,9 +83,9 @@ test("a file that never finishes loading is named from the moment it is queued",
 // The failure this guards: a test awaiting a promise that never settles, with
 // a test timeout longer than the CI job, holds Vitest until the job is
 // cancelled and never prints the file's name.
-for (const [label, body, step] of [
-  ["a test that never settles", 'import { test } from "vitest";\ntest("waits forever", () => new Promise(() => {}), 600_000);\n', 'test "waits forever"'],
-  ["a top-level await that never settles", 'import { test } from "vitest";\nawait new Promise(() => {});\ntest("never collected", () => {});\n', "loading the file"],
+for (const [label, body, steps] of [
+  ["a test that never settles", 'import { test } from "vitest";\ntest("waits forever", () => new Promise(() => {}), 600_000);\n', ['test "waits forever"', "starting the file's tests", "loading the file"]],
+  ["a top-level await that never settles", 'import { test } from "vitest";\nawait new Promise(() => {});\ntest("never collected", () => {});\n', ["loading the file"]],
 ]) test(`a real Vitest run with ${label} fails fast and names the file`, () => {
   const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "stalled-file-reporter-")));
   try {
@@ -107,7 +107,7 @@ test("passes", () => {});
     assert.notEqual(result.status, 0, output);
     assert.ok(Date.now() - started < 30_000, `took ${Date.now() - started} ms:\n${output}`);
     assert.match(output, /::error file=stuck\.test\.mjs,title=Test file stopped making progress::stuck\.test\.mjs made no progress/);
-    assert.ok(output.includes(`while in: ${step}.`), output);
+    assert.ok(steps.some(step => output.includes(`while in: ${step}.`)), output);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -535,11 +535,13 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
     const startedAt = new Date();
-    if (adapterType === "paperclip_runner" && binding.provider === "google" && context.config.provider === "acpx"
-      && context.config.acpxAgent === "antigravity" && managed.home) {
+    const managedCodexHome = binding.provider === "openai" && context.config.provider === "codex";
+    const managedGoogleHome = binding.provider === "google" && context.config.provider === "acpx"
+      && context.config.acpxAgent === "antigravity";
+    if (adapterType === "paperclip_runner" && (managedCodexHome || managedGoogleHome) && managed.home) {
       const selectedHome = join(managed.home, "provider");
       if (context.managedAiCredentialHome && context.managedAiCredentialHome !== selectedHome) {
-        throw unprocessable("The Google runtime credential home does not match the selected managed account.");
+        throw unprocessable(`The ${managedCodexHome ? "Codex" : "Google"} runtime credential home does not match the selected managed account.`);
       }
       context = { ...context, managedAiCredentialHome: selectedHome };
     }

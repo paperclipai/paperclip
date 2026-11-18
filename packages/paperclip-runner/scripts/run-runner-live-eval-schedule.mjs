@@ -8,11 +8,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { renderRunnerWorkflowWithCanonicalEvalbook } from "./render-runner-workflow-evalbook.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..");
-const evals = await import(resolve(packageRoot, "dist/eval/index.js"));
+const evals = await import(pathToFileURL(resolve(packageRoot, "dist/eval/index.js")).href);
 const packageManifest = JSON.parse(
   await readFile(resolve(packageRoot, "package.json"), "utf8"),
 );
