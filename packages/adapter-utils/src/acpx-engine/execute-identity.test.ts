@@ -268,7 +268,6 @@ describe("acpx session key length", () => {
   const COMPANY_ID = "11111111-2222-4333-8444-555555555555";
   const AGENT_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
   const FINGERPRINT = "0123456789abcdef";
-  // Longest file name ACPX derives from a session key.
   const longestFileName = (key: string) => `${encodeURIComponent(key)}.stream.1024.ndjson`;
 
   it("keeps a key that fits unchanged so its saved session still resumes", () => {
