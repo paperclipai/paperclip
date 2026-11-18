@@ -43,12 +43,12 @@ try {
 `;
 
 export async function prepareGrokRemoteProjectAssets(input: {
-  runId: string; target: AdapterExecutionTarget; cwd: string; assets: string;
+  runId: string; target: AdapterExecutionTarget; cwd: string; assets: string; env?: NodeJS.ProcessEnv;
 }): Promise<{ rulesFilePath: string | null; cleanup: () => Promise<void> }> {
   const execute = async (operation: string, entries: unknown[]) => {
     const result = await runAdapterExecutionTargetShellCommand(input.runId, input.target,
-      ["node", "-e", program, operation, input.assets, input.cwd, JSON.stringify(entries)].map(shellQuote).join(" "),
-      { cwd: input.cwd, env: {}, timeoutSec: 15 });
+      [...(input.env?.PATH ? ["env", `PATH=${input.env.PATH}`] : []), "node", "-e", program, operation, input.assets, input.cwd, JSON.stringify(entries)].map(shellQuote).join(" "),
+      { cwd: input.cwd, env: input.env?.PATH ? { PATH: input.env.PATH } : {}, timeoutSec: 15 });
     if (result.exitCode !== 0 || result.timedOut || result.signal) throw new Error("Could not prepare Grok SSH runtime assets");
     return result.stdout;
   };

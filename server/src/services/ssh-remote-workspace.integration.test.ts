@@ -217,7 +217,7 @@ describe.skipIf(!postgres.supported || !ssh.supported)("Cloud SSH durable worksp
     vi.spyOn(runLogModule, "getRunLogStore").mockReturnValue(objectLogFixture());
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), userId = `ssh-user-${randomUUID()}`;
     await db.insert(authUsers).values({ id: userId, name: "SSH test user", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
-    await db.insert(companies).values({ id: companyId, name: "Cloud SSH task", issuePrefix: `SSH${runs.findIndex(run => run.key === key)}`, defaultResponsibleUserId: userId });
+    await db.insert(companies).values({ id: companyId, name: "Cloud SSH task", issuePrefix: `SSH${randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase()}`, defaultResponsibleUserId: userId });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     const account = provider ? await aiConnectionService(db).save(companyId, userId, { provider: provider as AiProvider, method: "api_key",
       ownership: "personal", name: "Selected test account", apiKey: "synthetic-selected-ssh-key", agentIds: [], allAgents: true }, "synthetic-selected-ssh-key") : null;
@@ -300,7 +300,7 @@ if (process.argv.includes('--acp-fixture')) {
     await secretService(db).replaceSecretRefsForInstanceTarget({ targetType: "environment", targetId: environment.id },
       await collectEnvironmentSecretRefs({ db, environment: { id: environment.id, driver: "ssh", config: storedConfig } }));
     const adapterConfig = { command, ...(engine === "cli" ? { engine: "cli" } : { agentCommand: `${shellQuote(command)} --acp-fixture`, acpWarmHandleIdleMs: 60_000 }),
-      model, timeoutSec: 20, ...(!provider ? { env: { [authEnv]: "synthetic-selected-ssh-key" } } : {}) };
+      model, timeoutSec: 20, env: { PATH: process.env.PATH, ...(!provider ? { [authEnv]: "synthetic-selected-ssh-key" } : {}) } };
     await db.insert(agents).values({ id: agentId, companyId, name: `${adapterType} SSH task`, adapterType, status: "idle",
       defaultEnvironmentId: environment.id, adapterConfig,
       runtimeConfig: account ? { aiConnection: { provider, method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId } } : {} });
