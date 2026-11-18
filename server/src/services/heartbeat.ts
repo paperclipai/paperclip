@@ -504,6 +504,7 @@ import {
   sweepOrphanedRunScratch,
   type HeartbeatRunScratch,
 } from "./run-scratch.js";
+import { pokeRunScratchSweep } from "./run-scratch-sweep-work.js";
 import {
   applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
@@ -2936,6 +2937,9 @@ export function heartbeatService(
           issueId: issueRef?.id ?? null,
           issueIdentifier: issueRef?.identifier ?? null,
         });
+        // The sweep idles once cleanup settles: a fresh scratch directory is
+        // a new future obligation, so its lifecycle change must wake it.
+        pokeRunScratchSweep();
       } catch (scratchPrepareError) {
         runScratch = null;
         logger.warn(
@@ -4256,6 +4260,27 @@ export function heartbeatService(
           isHeartbeatRunTerminalStatus(latestRun.status)
         ) {
           const scratchForCleanup = runScratch;
+          // A run that never dispatched a process keeps an exactly-closed
+          // preparation settlement event set (readFailedPreparationSettlement
+          // rejects any extra event before a retry can reuse the outcome), so
+          // its scratch outcome is recorded logger-only.
+          const runDispatchedProcess = legacyAdapterEntered || nativeDispatchStarted ||
+            nativeOwnershipHeld || dispatchGateEntered;
+          const recordScratchOutcome = async (event: {
+            eventType: string;
+            stream: "system";
+            level: "info" | "warn";
+            message: string;
+            payload: unknown;
+          }) => {
+            if (!runDispatchedProcess) return;
+            await appendRunEvent(latestRun!, event as Parameters<typeof appendRunEvent>[1]).catch((error) => {
+              logger.warn(
+                { err: error, runId: run.id, scratchDir: scratchForCleanup.dir },
+                "failed to record heartbeat run scratch cleanup event",
+              );
+            });
+          };
           // A retained managed AI home still holds a credential this run could
           // not write back: the cleanup itself reports `ai_home_retained` and
           // keeps the directory until the retained cleanup retires the home.
@@ -4281,7 +4306,7 @@ export function heartbeatService(
               },
               "failed to clean heartbeat run scratch directory",
             );
-            await appendRunEvent(latestRun, {
+            await recordScratchOutcome({
               eventType: "error",
               stream: "system",
               level: "warn",
@@ -4293,13 +4318,13 @@ export function heartbeatService(
                     ? scratchCleanupError.message
                     : String(scratchCleanupError),
               },
-            }).catch(() => undefined);
+            });
           }
           if (scratchCleanup) {
             // Scratch cleanup verifies the owned process group, including
             // grandchildren. The main adapter's exit is not this proof.
             if (!scratchCleanup.removed) caseHandoffCleanupSettled = false;
-            await appendRunEvent(latestRun, {
+            await recordScratchOutcome({
               eventType: "lifecycle",
               stream: "system",
               level: scratchCleanup.removed ? "info" : "warn",
@@ -4307,15 +4332,6 @@ export function heartbeatService(
                 ? "run scratch cleaned"
                 : `run scratch cleanup skipped: ${scratchCleanup.reason}`,
               payload: scratchCleanup,
-            }).catch((scratchCleanupEventError) => {
-              logger.warn(
-                {
-                  err: scratchCleanupEventError,
-                  runId: run.id,
-                  scratchDir: scratchForCleanup.dir,
-                },
-                "failed to record heartbeat run scratch cleanup event",
-              );
             });
             // Earlier process attempts of this run (before a restart) left their
             // own scratch directories; the run is terminal, so remove them too.
@@ -4334,6 +4350,9 @@ export function heartbeatService(
               });
             }
           }
+          // The run settled: any kept directory is unfinished cleanup the
+          // sweep should retry, and a removed one may let it idle again.
+          pokeRunScratchSweep();
         }
         if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
             !latestRun.runtimeModeResolvedAt && latestRun.executionStage === "preparing") {

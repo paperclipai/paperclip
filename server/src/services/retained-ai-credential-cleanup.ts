@@ -19,6 +19,10 @@ type Cleanup = {
 };
 const retained = new Map<string, Set<Cleanup>>();
 const homes = new Map<string, RetainedAiCleanupScope>();
+// Managed homes a runtime is still tearing down (credential write-back in
+// flight, home removal pending). They protect exactly like retained entries,
+// but they are transient runtime state, not reconcilable cleanups.
+const teardownHolds = new Map<string, number>();
 const active = new AsyncLocalStorage<ReadonlySet<Cleanup>>();
 const key = (scope: RetainedAiCleanupScope) => JSON.stringify([scope.companyId, scope.accountKey]);
 registerIdleLocalWorkProbe(() => retained.size ? "present" : "none");
@@ -95,6 +99,29 @@ export function bindRetainedAiCredentialHome(home: string, scope: RetainedAiClea
 }
 
 /**
+ * Hold `home` protected for the whole runtime teardown: from home creation
+ * until the runtime's cleanup settles (write-back finished and home removed,
+ * or the failure converted into an ordinary retained cleanup). Without this
+ * hold, a sweep that observes the run already terminal and its process group
+ * exited could delete the directory — and the only copy of a refreshed
+ * credential in it — while the executor's finally block is still reading or
+ * writing `auth.json`.
+ */
+export function acquireAiCredentialTeardownHold(home: string): () => void {
+  const resolved = path.resolve(home);
+  teardownHolds.set(resolved, (teardownHolds.get(resolved) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = teardownHolds.get(resolved);
+    if (count === undefined) return;
+    if (count <= 1) teardownHolds.delete(resolved);
+    else teardownHolds.set(resolved, count - 1);
+  };
+}
+
+/**
  * Canonical filesystem identity of `p`: `undefined` means the path is verified
  * absent (ENOENT), `null` means the identity cannot be verified (permissions,
  * symlink loop, ...) and callers must not guess.
@@ -115,9 +142,10 @@ function isAtOrUnder(root: string, candidate: string): boolean {
 
 /**
  * True while a pending credential write-back still owns a home at or under
- * `dir`: every removal entrance (direct cleanup and the orphan sweep) must
- * keep the directory until the retained cleanup retires the home, or the only
- * copy of a rotated credential is lost.
+ * `dir` — a retained cleanup entry or an active runtime teardown hold:
+ * every removal entrance (direct cleanup and the orphan sweep) must keep the
+ * directory until the retained cleanup retires the home or the teardown
+ * settles, or the only copy of a rotated credential is lost.
  *
  * Provider homes are registered after `realpath` (Antigravity canonicalizes
  * its home) while the scratch directory may be reached through a symlinked
@@ -132,6 +160,7 @@ export async function retainedAiCredentialCleanupHomeInside(dir: string): Promis
       if (entry.home) retainedHomes.push(entry.home);
     }
   }
+  for (const held of teardownHolds.keys()) retainedHomes.push(held);
   if (retainedHomes.length === 0) return false;
   const root = path.resolve(dir);
   if (retainedHomes.some((home) => isAtOrUnder(root, path.resolve(home)))) return true;

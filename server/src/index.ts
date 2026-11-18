@@ -1509,11 +1509,12 @@ async function startServerWithDatabaseTeardown(
   ], () => !heartbeatSchedulerStopped);
 
   // Orphaned run scratch directories (crashed or restarted runs) are only
-  // reclaimed by a periodic instance-wide sweep: the per-run executor cleanup
-  // never runs for them. First pass at startup, then on the scheduler
-  // interval, with a bounded continuation while scans stay truncated. The
-  // sweep is never readiness- or drain-relevant, so it is not tracked as
-  // startup work.
+  // reclaimed by an instance-wide sweep: the per-run executor cleanup never
+  // runs for them. One pass at startup, bounded continuations while scans
+  // stay truncated, interval retries while a known cleanup stays unfinished,
+  // and no scheduled scan at all once the sweep settles (run lifecycle
+  // changes wake it again). The sweep is never readiness- or drain-relevant,
+  // so it is not tracked as startup work.
   registerRunScratchSweepWork(deliveryWork, {
     intervalMs: config.heartbeatSchedulerIntervalMs,
     canRun: () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,

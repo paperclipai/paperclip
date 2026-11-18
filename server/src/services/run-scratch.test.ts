@@ -8,6 +8,7 @@ import {
   buildHeartbeatRunScratchEnv,
   classifyRunScratchDir,
   cleanupHeartbeatRunScratch,
+  createDefaultRunScratchWalkerOps,
   prepareHeartbeatRunScratch,
   removeRunTempTree,
   runTempDirPath,
@@ -20,6 +21,7 @@ import {
   type RunScratchWalkerOpsOverride,
 } from "./run-scratch.js";
 import {
+  acquireAiCredentialTeardownHold,
   bindRetainedAiCredentialHome,
   reconcileRetainedAiCleanup,
   retainAiCredentialCleanup,
@@ -583,6 +585,128 @@ describe("run scratch tree removal safety", () => {
   });
 });
 
+describe("portable walker fallback (platforms without /proc/self/fd)", () => {
+  // macOS has no /proc/self/fd: the walker must still finish removals there.
+  const pathsOps = (): RunScratchWalkerOpsOverride => () => createDefaultRunScratchWalkerOps("paths");
+
+  it("completes the removal of an empty scratch directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("port2222"), root }));
+
+    const result = await cleanupHeartbeatRunScratch({
+      scratch,
+      walkerOps: pathsOps(),
+      runTempRootOverride: root,
+    });
+
+    expect(result).toEqual({ removed: true, dir: scratch.dir });
+    await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("completes the removal of a nested tree without following escaped symlinks", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const victimDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-victim-"));
+    cleanupDirs.add(victimDir);
+    await fs.writeFile(path.join(victimDir, "precious.txt"), "keep me");
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("port3333"), root }));
+    await fs.mkdir(path.join(scratch.dir, "nested", "deeper"), { recursive: true });
+    await fs.writeFile(path.join(scratch.dir, "nested", "deeper", "cache.bin"), "x");
+    await fs.symlink(victimDir, path.join(scratch.dir, "nested", "escape"));
+
+    const result = await cleanupHeartbeatRunScratch({
+      scratch,
+      walkerOps: pathsOps(),
+      runTempRootOverride: root,
+    });
+
+    expect(result).toEqual({ removed: true, dir: scratch.dir });
+    await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(victimDir, "precious.txt"), "utf8")).resolves.toBe("keep me");
+  });
+
+  it("keeps the tree through path-based ops when a listing no longer matches the held directory", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-devtree-"));
+    cleanupDirs.add(dir);
+    await fs.writeFile(path.join(dir, "file.txt"), "x");
+    // The recorded path is swapped for a symlink after the open: the listing
+    // identity check must refuse to feed foreign entries into the removal.
+    const other = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-other-tree-"));
+    cleanupDirs.add(other);
+    await fs.writeFile(path.join(other, "foreign.txt"), "y");
+    const override: RunScratchWalkerOpsOverride = (base) => ({
+      openDir: async (p, opts) => {
+        const fd = await base.openDir(p, opts);
+        if (p === dir) await fs.rename(dir, `${dir}-moved`).catch(() => undefined).then(async () => {
+          await fs.symlink(other, dir).catch(() => undefined);
+        });
+        return fd;
+      },
+    });
+
+    const result = await removeRunTempTree(dir, { walkerOps: override });
+
+    expect(result).toEqual({ complete: false });
+    await expect(fs.readFile(path.join(other, "foreign.txt"), "utf8")).resolves.toBe("y");
+  });
+
+  it("reports the anchoring mode the default ops resolved to", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-devtree-"));
+    cleanupDirs.add(dir);
+    try {
+      expect(createDefaultRunScratchWalkerOps("paths").anchoring).toBe("paths");
+      const auto = createDefaultRunScratchWalkerOps("auto");
+      expect(auto.anchoring).toBe("paths"); // unresolved until the first open
+      await removeRunTempTree(dir, { walkerOps: () => auto });
+      // This host supports /proc/self/fd: the probe upgrades to full anchoring.
+      expect(auto.anchoring).toBe(process.platform === "linux" ? "procfd" : "paths");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+});
+
+describe("managed ai home teardown hold", () => {
+  it("keeps the scratch directory while a runtime teardown hold is active, then removes it after release", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("hold4444"), root }));
+    const home = await fs.mkdtemp(path.join(scratch.dir, "paperclip-ai-hold-"));
+    const providerHome = path.join(home, "provider");
+    await fs.mkdir(providerHome, { mode: 0o700 });
+    await fs.writeFile(path.join(providerHome, "auth.json"), "fixture-credential");
+
+    const release = acquireAiCredentialTeardownHold(home);
+    try {
+      // Direct cleanup defers to the in-flight credential write-back.
+      const direct = await cleanupHeartbeatRunScratch({ scratch, runTempRootOverride: root });
+      expect(direct).toEqual({ removed: false, dir: scratch.dir, reason: "ai_home_retained" });
+
+      // The orphan sweep sees a terminal run with its process group exited,
+      // yet must not race the write-back: the hold keeps the directory.
+      const isolated = await makeIsolatedTempRoot();
+      const swept = await sweepOrphanedRunScratch({
+        tmpRoot: isolated,
+        runTempRootOverride: root,
+        resolveRunStates: async () => new Map([[scratch.metadata.runId, "terminal" as const]]),
+        isRunProcessGroupAlive: () => false,
+      });
+      expect(swept.removed).toEqual([]);
+      expect(swept.pending).toBeGreaterThanOrEqual(1);
+      await expect(fs.readFile(path.join(providerHome, "auth.json"), "utf8")).resolves.toBe("fixture-credential");
+
+      // The runtime teardown settled: nothing protects the home anymore.
+      release();
+      const done = await cleanupHeartbeatRunScratch({ scratch, runTempRootOverride: root });
+      expect(done).toEqual({ removed: true, dir: scratch.dir });
+      await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      release();
+    }
+  });
+});
+
 describe("orphaned run scratch sweep", () => {
   async function makeRoot() {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-sweep-test-"));
@@ -642,6 +766,42 @@ describe("orphaned run scratch sweep", () => {
     const foreignRun = await leave(root, "run-other-instance", new Date(Date.now() - 48 * 3600_000).toISOString());
     await sweepLegacy(root, { resolveRunStates: states({}) });
     expect(await exists(foreignRun)).toBe(true);
+  });
+
+  it("classifies kept directories as pending obligations only while this runner owns their cleanup", async () => {
+    const root = await makeRoot();
+    const active = await leave(root, "run-live");
+    const foreign = await leave(root, "run-other-instance");
+    const exiting = await leave(root, "run-exiting");
+
+    // Active runs own their directories until they settle: an obligation.
+    const withActive = await sweepLegacy(root, {
+      resolveRunStates: states({ "run-live": "active", "run-other-instance": "unknown", "run-exiting": "unknown" }),
+    });
+    expect(withActive.pending).toBe(1);
+
+    // A terminal run whose process group has not exited is unfinished cleanup.
+    const withExiting = await sweepLegacy(root, {
+      resolveRunStates: states({ "run-live": "active", "run-other-instance": "unknown", "run-exiting": "terminal" }),
+      isRunProcessGroupAlive: (id) => id === "run-exiting",
+    });
+    expect(withExiting.pending).toBe(2);
+
+    // Everything this runner owns settled: no obligation keeps the sweep awake.
+    const settled = await sweepLegacy(root, {
+      resolveRunStates: states({ "run-live": "active", "run-other-instance": "unknown", "run-exiting": "terminal" }),
+    });
+    expect(settled.removed).toEqual([exiting]);
+    expect(settled.pending).toBe(1); // the still-active run only
+    expect(await exists(active)).toBe(true);
+    expect(await exists(foreign)).toBe(true);
+  });
+
+  it("reports no pending obligation for roots that hold nothing to reclaim", async () => {
+    const root = await makeRoot();
+    const empty = await sweepLegacy(root, { resolveRunStates: states({}) });
+    expect(empty.pending).toBe(0);
+    expect(empty.kept).toBe(0);
   });
 
   it("reaches orphans past the scan limit on repeated sweeps", async () => {

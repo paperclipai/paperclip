@@ -216,15 +216,30 @@ function anchoredEntryPath(fd: number, name: string): string {
 }
 
 /**
+ * How entry operations reach the directory the walker holds open:
+ * - `procfd` resolves every entry through `/proc/self/fd/<fd>/<name>`
+ *   (openat-style semantics): the lookup happens inside the directory the fd
+ *   refers to, so no path component the walker does not hold open — including
+ *   the scratch root itself — can be swapped for a symlink to redirect a
+ *   deletion into a foreign tree.
+ * - `paths` is the portable fallback for platforms without a usable
+ *   `/proc/self/fd` (macOS): entries resolve through the path recorded at
+ *   open, every directory open still refuses a symlinked final component,
+ *   identities are verified around each operation, and each listing is proven
+ *   to belong to the directory the fd still pins before its entries are
+ *   removed.
+ */
+export type RunScratchAnchorMode = "procfd" | "paths";
+
+/**
  * Operations of the anchored removal walker. Directories are opened once and
- * every entry operation then goes through `/proc/self/fd/<fd>/<name>`
- * (openat-style semantics): the lookup resolves inside the directory the fd
- * refers to, so no path component the walker does not hold open — including
- * the scratch root itself — can be swapped for a symlink to redirect a
- * deletion into a foreign tree. Platforms without `/proc/self/fd` make every
- * walk fail closed (the directory is kept).
+ * every entry operation then resolves inside that directory (see
+ * {@link RunScratchAnchorMode}); platforms without `/proc/self/fd` use the
+ * verified path fallback instead of failing the walk.
  */
 export interface RunScratchWalkerOps {
+  /** Anchoring strategy this instance uses for entry operations. */
+  readonly anchoring: RunScratchAnchorMode;
   /** Open a directory; a symlinked final component is refused unless `follow`. */
   openDir(p: string, opts?: { follow?: boolean }): Promise<number>;
   /** Identity of the directory held by `fd`. */
@@ -235,38 +250,83 @@ export interface RunScratchWalkerOps {
   statPath(p: string): Promise<PathStatLike>;
   /** Entries of the directory held by `fd`. */
   listDir(fd: number): Promise<Dirent[]>;
+  /** Path of `name` resolved inside the directory held by `fd`. */
+  entryPath(fd: number, name: string): string;
   unlink(p: string): Promise<void>;
   rmdir(p: string): Promise<void>;
   writeFile(p: string, data: string, options?: { mode?: number; flag?: string }): Promise<void>;
   closeDir(fd: number): Promise<void>;
 }
 
-export function createDefaultRunScratchWalkerOps(): RunScratchWalkerOps {
-  const handles = new Map<number, FileHandle>();
+export function createDefaultRunScratchWalkerOps(
+  requested: "auto" | RunScratchAnchorMode = "auto",
+): RunScratchWalkerOps {
+  const handles = new Map<number, { handle: FileHandle; dirPath: string }>();
+  let anchorMode: RunScratchAnchorMode | undefined = requested === "auto" ? undefined : requested;
+  const resolveAnchorMode = async (fd: number): Promise<RunScratchAnchorMode> => {
+    if (anchorMode === undefined) {
+      // Probe once per walker: when fd-anchored listing does not work on
+      // this platform, every walk uses the portable path fallback.
+      try {
+        await fs.readdir(anchoredDirPath(fd));
+        anchorMode = "procfd";
+      } catch {
+        anchorMode = "paths";
+      }
+    }
+    return anchorMode;
+  };
   return {
+    get anchoring() {
+      return anchorMode ?? "paths";
+    },
     async openDir(p, opts) {
       const handle = await fs.open(
         p,
         fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | (opts?.follow ? 0 : fsConstants.O_NOFOLLOW),
       );
-      handles.set(handle.fd, handle);
+      handles.set(handle.fd, { handle, dirPath: p });
+      await resolveAnchorMode(handle.fd);
       return handle.fd;
     },
     async statDir(fd) {
-      const handle = handles.get(fd);
-      if (!handle) throw new Error(`run scratch walker fd ${fd} is not open`);
-      return identityOf(await handle.stat());
+      const entry = handles.get(fd);
+      if (!entry) throw new Error(`run scratch walker fd ${fd} is not open`);
+      return identityOf(await entry.handle.stat());
     },
     lstatPath: (p) => fs.lstat(p),
     statPath: (p) => fs.stat(p),
-    listDir: (fd) => fs.readdir(anchoredDirPath(fd), { withFileTypes: true }),
+    async listDir(fd) {
+      const entry = handles.get(fd);
+      if (!entry) throw new Error(`run scratch walker fd ${fd} is not open`);
+      const mode = await resolveAnchorMode(fd);
+      if (mode === "procfd") return fs.readdir(anchoredDirPath(fd), { withFileTypes: true });
+      // Portable fallback: the listing is read from the recorded path and
+      // then proven to belong to the directory the fd still pins, so a path
+      // swapped for a symlink between the open and this listing cannot feed
+      // foreign entries into the removal.
+      const [entries, listed, identity] = await Promise.all([
+        fs.readdir(entry.dirPath, { withFileTypes: true }),
+        fs.lstat(entry.dirPath),
+        entry.handle.stat(),
+      ]);
+      if (listed.dev !== identity.dev || listed.ino !== identity.ino) {
+        throw new Error("run scratch walker listing identity mismatch");
+      }
+      return entries;
+    },
+    entryPath(fd, name) {
+      if ((anchorMode ?? "paths") === "procfd") return anchoredEntryPath(fd, name);
+      const entry = handles.get(fd);
+      return entry ? path.join(entry.dirPath, name) : anchoredEntryPath(fd, name);
+    },
     unlink: (p) => fs.unlink(p),
     rmdir: (p) => fs.rmdir(p),
     writeFile: (p, data, options) => fs.writeFile(p, data, { mode: options?.mode, flag: options?.flag }),
     async closeDir(fd) {
-      const handle = handles.get(fd);
+      const entry = handles.get(fd);
       handles.delete(fd);
-      await handle?.close();
+      await entry?.handle.close();
     },
   };
 }
@@ -320,7 +380,7 @@ async function removeEntriesWithinDevice(
   let unstable = false;
   for (const entry of entries) {
     if (skipTopNames?.has(entry.name)) continue;
-    const entryPath = anchoredEntryPath(dirFd, entry.name);
+    const entryPath = ops.entryPath(dirFd, entry.name);
     // The anchored lstat resolves the name inside the directory the verified
     // fd holds open: a directory swapped for a symlink anywhere between the
     // root and here cannot redirect this lookup into a foreign tree.
@@ -463,7 +523,7 @@ async function removeDirNameViaParent(
     if (parentIdentity.dev !== parentPre.dev || parentIdentity.ino !== parentPre.ino) {
       return "unstable";
     }
-    const entryPath = anchoredEntryPath(parentFd, name);
+    const entryPath = ops.entryPath(parentFd, name);
     const entry = await ops.lstatPath(entryPath).catch(() => null);
     if (!entry) return "missing";
     if (!entry.isDirectory() || entry.isSymbolicLink() || entry.dev !== expected.dev || entry.ino !== expected.ino) {
@@ -596,7 +656,7 @@ async function restoreMarkerThroughFd(
   // writer that recreated the marker keeps its copy; when the name is not
   // free the directory simply stays as it is.
   await ops
-    .writeFile(anchoredEntryPath(fd, HEARTBEAT_RUN_SCRATCH_MARKER), `${JSON.stringify(marker, null, 2)}\n`, {
+    .writeFile(ops.entryPath(fd, HEARTBEAT_RUN_SCRATCH_MARKER), `${JSON.stringify(marker, null, 2)}\n`, {
       mode: 0o600,
       flag: "wx",
     })
@@ -658,6 +718,16 @@ export interface SweepRunScratchResult {
   removed: string[];
   kept: number;
   truncated: boolean;
+  /**
+   * Directories the sweep kept that still represent unfinished cleanup work
+   * for this runner: terminal-run directories it could not remove yet
+   * (process group still exiting, retained credential home, blocked or
+   * unstable tree, truncation) and active runs' directories, whose reclamation
+   * becomes due when the run settles. Directories of unknown (foreign)
+   * ownership are never removed and do not count: another instance owns
+   * their cleanup. Zero means the sweep has settled.
+   */
+  pending: number;
 }
 
 export const RUN_SCRATCH_SWEEP_MAX_SCAN = 500;
@@ -728,7 +798,7 @@ export async function sweepOrphanedRunScratch(input: {
   const tempRoot = path.resolve(input.runTempRootOverride ?? runTempRoot());
   const maxScan = input.maxScan ?? RUN_SCRATCH_SWEEP_MAX_SCAN;
   const maxRemove = input.maxRemove ?? RUN_SCRATCH_SWEEP_MAX_REMOVE;
-  const result: SweepRunScratchResult = { scanned: 0, removed: [], kept: 0, truncated: false };
+  const result: SweepRunScratchResult = { scanned: 0, removed: [], kept: 0, truncated: false, pending: 0 };
 
   const runNeedle = input.runId !== undefined ? `-${sanitizePathSegment(input.runId.slice(0, 12), "run")}-` : null;
   const tempSegment = input.runId !== undefined ? runTempSegment(input.runId) : null;
@@ -807,6 +877,10 @@ export async function sweepOrphanedRunScratch(input: {
     if (!removable || result.removed.length >= maxRemove) {
       if (removable) result.truncated = true;
       result.kept += 1;
+      // Terminal-run directories stay this sweep's unfinished cleanup;
+      // active-run directories are a future obligation that becomes
+      // removable once the run settles. Unknown ownership is not ours.
+      if (removable || state === "terminal" || state === "active") result.pending += 1;
       continue;
     }
     try {
@@ -819,11 +893,14 @@ export async function sweepOrphanedRunScratch(input: {
       const removal = await removeMarkedRunScratchDir(dir, marker, input.walkerOps);
       if (!removal.complete) {
         result.kept += 1;
+        // A terminal-run removal that could not finish retries on a later sweep.
+        result.pending += 1;
         continue;
       }
       result.removed.push(dir);
     } catch {
       result.kept += 1;
+      result.pending += 1;
     }
   }
   return result;

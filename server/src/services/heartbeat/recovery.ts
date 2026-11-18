@@ -405,7 +405,7 @@ function readNonEmptyString(value: unknown): string | null {
  * that reach their finally block, so crashed or restarted runs are reclaimed
  * here.
  */
-export async function sweepOrphanedRunScratchDirectories(db: Db): Promise<{ truncated: boolean }> {
+export async function sweepOrphanedRunScratchDirectories(db: Db): Promise<{ truncated: boolean; pending: number }> {
   const sweepProcessGroupIds = new Map<string, number | null>();
   try {
     const swept = await sweepOrphanedRunScratch({
@@ -436,10 +436,10 @@ export async function sweepOrphanedRunScratchDirectories(db: Db): Promise<{ trun
     if (swept.removed.length > 0) {
       logger.info({ removed: swept.removed.length, truncated: swept.truncated }, "swept orphaned run scratch directories");
     }
-    return { truncated: swept.truncated };
+    return { truncated: swept.truncated, pending: swept.pending };
   } catch (error) {
     logger.warn({ err: error }, "failed to sweep orphaned run scratch directories");
-    return { truncated: false };
+    return { truncated: false, pending: 0 };
   }
 }
 

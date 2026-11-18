@@ -29,7 +29,7 @@ import { NativeEnvironmentProbeCleanupError, sanitizeAntigravityCredential } fro
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
-import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { bindRetainedAiCredentialHome, acquireAiCredentialTeardownHold, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
 import { removeRunTempTree } from "./run-scratch.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
@@ -268,6 +268,7 @@ export async function prepareManagedAiRuntime(
     input.binding.provider !== "anthropic";
   let home: string | undefined;
   let releaseCredentialHome: (() => void) | undefined;
+  let releaseTeardownHold: (() => void) | undefined;
   try {
     const selectedGrantId = selection.grant.id;
     selection = await service.select({
@@ -322,6 +323,11 @@ export async function prepareManagedAiRuntime(
       ),
     );
     if (harness === "antigravity_runtime") home = await realpath(home);
+    // The home holds the only copy of the credential until write-back: from
+    // creation until cleanup settles, a teardown hold keeps sweeps from
+    // removing the run scratch directory out from under this runtime once
+    // the owning run turns terminal.
+    releaseTeardownHold = acquireAiCredentialTeardownHold(home);
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
     if (retainedCleanupScope) releaseCredentialHome = bindRetainedAiCredentialHome(providerHome, retainedCleanupScope);
@@ -439,6 +445,7 @@ export async function prepareManagedAiRuntime(
       }
       homeRemoved = true;
       releaseCredentialHome?.();
+      releaseTeardownHold?.();
     };
     let cleanupRunning: Promise<void> | undefined;
     const cleanupRuntime = (): Promise<void> => cleanupRunning ??= (async () => {
@@ -600,7 +607,14 @@ export async function prepareManagedAiRuntime(
         if (retainedCleanupScope && !homeRemoved) retainAiCredentialCleanup({ scope: retainedCleanupScope, home: providerHome, cleanup: cleanupRuntime });
         throw error;
       }
-    })().finally(() => { cleanupRunning = undefined; });
+    })().finally(() => {
+      // The first cleanup pass settles the teardown hold: write-back either
+      // completed (a deferred physical removal is then guarded by the run's
+      // process-group liveness) or failed and became an ordinary retained
+      // cleanup entry that protects the home on its own.
+      releaseTeardownHold?.();
+      cleanupRunning = undefined;
+    });
     return {
       sessionIdentity,
       ...(retainedCleanupScope ? { retainedCleanupScope } : {}),
@@ -627,6 +641,7 @@ export async function prepareManagedAiRuntime(
   } catch (error) {
     if (home) await removeRunTempTree(home).catch(() => undefined);
     releaseCredentialHome?.();
+    releaseTeardownHold?.();
     throw error;
   }
 }
