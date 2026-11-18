@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { ApiError } from "@/api/api-error";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -100,6 +101,14 @@ afterEach(async () => {
 });
 
 describe("Responsibilities home", () => {
+  it("shows a failed read of the agents with Retry where the chat would be", async () => {
+    agentsApi.list.mockRejectedValue(new ApiError("Not allowed", 403, { error: "forbidden" }));
+    await render();
+    const dock = host.querySelector('[data-dashboard-chat-dock=""]')!;
+    expect(dock.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(dock.querySelector('[data-dashboard-chat-stub=""]')).toBeNull();
+  });
+
   it("is titled Dashboard and offers onboarding to an agentless company", async () => {
     api.overview.mockResolvedValue(responsibilityOverviewFixture([portfolioOnTrack]));
     await render();

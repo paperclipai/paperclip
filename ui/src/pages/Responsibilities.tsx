@@ -5,7 +5,7 @@ import { Plus } from "lucide-react";
 import { describeError } from "@/api/errors";
 import { responsibilitiesApi } from "@/api/responsibilities";
 import { PageSkeleton } from "@/components/PageSkeleton";
-import { QueryView } from "@/components/QueryView";
+import { QueryErrorState, QueryView, useQueryView } from "@/components/QueryView";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
 import { AddResponsibilityDialog } from "@/components/responsibilities/AddResponsibilityDialog";
 import { DashboardAgentStatus } from "@/components/responsibilities/DashboardAgentStatus";
@@ -95,6 +95,7 @@ export function Responsibilities() {
   const { view, visiting, visit, leave } = usePageView(DASHBOARD_VIEW_OPTIONS, DASHBOARD_DEFAULT_VIEW);
   const [search, setSearch] = useState("");
   const { agents, byId: agentsById, query: agentsQuery } = useAgentDirectory(selectedCompanyId);
+  const agentsView = useQueryView(agentsQuery);
   // One clock per visit: day-level judgements, and a stable value keeps rows memoized.
   const now = useMemo(() => new Date(), []);
 
@@ -262,7 +263,14 @@ export function Responsibilities() {
         data-dashboard-chat-dock=""
       >
         <div className="pointer-events-auto">
-          <DashboardChatComposer companyId={selectedCompanyId} agents={agents} loaded={agentsQuery.isSuccess} />
+          {agentsView.kind === "error" ? (
+            <div className="rounded-lg border border-border bg-background px-4 py-3" data-dashboard-chat="error">
+              <QueryErrorState error={agentsView.error} size="inline" action="load your agents"
+                onRetry={agentsView.retry} retrying={agentsView.isFetching} />
+            </div>
+          ) : (
+            <DashboardChatComposer companyId={selectedCompanyId} agents={agents} loaded={agentsQuery.isSuccess} />
+          )}
         </div>
       </div>
 
