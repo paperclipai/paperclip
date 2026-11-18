@@ -1,4 +1,6 @@
 import {
+  ENVIRONMENT_ACQUIRE_ERROR_SCHEMA,
+  ENVIRONMENT_CREATION_CLEANUP_SCHEMA,
   PluginEnvironmentAcquisitionError,
   PluginEnvironmentCreationCleanupError,
   environmentCreationCleanupErrorData,
@@ -20,8 +22,8 @@ import {
  */
 export type PluginEnvironmentAcquireErrorDiagnostic = PluginEnvironmentResumeErrorDiagnostic;
 
-const SCHEMA = "paperclip/environment-acquire-error/v1";
-const CLEANUP_SCHEMA = "paperclip/environment-creation-cleanup/v1";
+const SCHEMA = ENVIRONMENT_ACQUIRE_ERROR_SCHEMA;
+const CLEANUP_SCHEMA = ENVIRONMENT_CREATION_CLEANUP_SCHEMA;
 
 function field(value: unknown, key: string): unknown {
   try { return value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined; }

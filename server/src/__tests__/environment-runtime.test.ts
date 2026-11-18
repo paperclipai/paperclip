@@ -1497,11 +1497,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .toEqual([expect.objectContaining({ state: "pending", originalEnvironmentId: seeded.environment.id, runId: seeded.runId })]);
   });
 
-  it.each(["worker", "forged error"])("records the step of a sandbox the provider could not start and removed: %s", async (mode) => {
+  it.each(["worker", "forged error", "invalid worker diagnostic"])("records the step of a sandbox the provider could not start and removed: %s", async (mode) => {
     const seeded = await seedReusablePluginSandboxLease();
     await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
     const data = { schema: "paperclip/environment-acquire-error/v1",
-      acquisitionDiagnostic: { phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } };
+      acquisitionDiagnostic: { phase: mode === "invalid worker diagnostic" ? "private-command" : "create",
+        elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } };
     const failure = mode === "forged error"
       ? Object.assign(new Error("Daytona could not start the sandbox; it was removed."), { data })
       : new JsonRpcCallError({ code: -32002, message: "Daytona could not start the sandbox; it was removed.", data });

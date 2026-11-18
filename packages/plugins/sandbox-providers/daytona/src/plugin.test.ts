@@ -1733,7 +1733,11 @@ describe("Daytona sandbox provider plugin", () => {
       const startError = new Error("Sandbox private-sandbox-id failed to start with status: error, error reason: null");
       mockCreate.mockRejectedValue(startError);
       let orphan: ReturnType<typeof ownedSandbox>;
-      mockGet.mockImplementation(async () => (orphan = { ...ownedSandbox(), state: "error" }));
+      mockGet.mockImplementation(async () => {
+        orphan = { ...ownedSandbox(), state: "error" };
+        orphan.delete.mockImplementation(async () => { orphan.state = "destroyed"; });
+        return orphan;
+      });
       const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
       expect(orphan!.delete).toHaveBeenCalledWith(10, true);
       expect(failure).toBeInstanceOf(PluginEnvironmentAcquisitionError);

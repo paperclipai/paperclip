@@ -168,6 +168,15 @@ describe("readTransientLeaseAcquisitionFailure", () => {
     expect(unavailable.message).toContain("the provider could not start the sandbox");
   });
 
+  it("names a later-step failure an unfinished acquisition, not a start failure", () => {
+    const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "x",
+      data: { schema: "paperclip/environment-acquire-error/v1",
+        acquisitionDiagnostic: { phase: "shell", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } } });
+    captureEnvironmentAcquisitionDiagnostic(error, { companyId: run.companyId, environmentId: "env-1", runId: run.id },
+      readEnvironmentAcquisitionDiagnostic(error));
+    expect(readTransientLeaseAcquisitionFailure(error, run)).toEqual({ reason: "acquisition_incomplete" });
+  });
+
   it("does not retry a removed sandbox whose step was never recorded for this run", () => {
     const error = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "x",
       data: { schema: "paperclip/environment-acquire-error/v1",

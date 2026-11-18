@@ -1301,7 +1301,7 @@ async function createSandbox(
     if (options.claimCleanup && !options.claimCleanup()) throw createError;
     // Observe the create failure before compensating deletion can stall or fail.
     const diagnostic = options.onCreateFailure?.();
-    let removedState: string | undefined;
+    let removedState: PluginEnvironmentAcquisitionProviderState | undefined;
     try {
       // A not-found lookup after an uncertain create is not a deletion receipt:
       // the provider may still materialize the request. Keep the name in the
@@ -1338,7 +1338,7 @@ async function destroyFailedCreation(
   config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
   driverKey: string,
   requireDurableObservation = false,
-): Promise<string | undefined> {
+): Promise<PluginEnvironmentAcquisitionProviderState | undefined> {
   if (cleanup.providerLeaseId !== `paperclip-create-${cleanup.attemptId}` ||
       cleanup.accountFingerprint !== sandboxAccountDiscriminator(config) ||
       cleanup.labels["paperclip-provider"] !== "daytona" ||
@@ -1382,9 +1382,11 @@ async function destroyFailedCreation(
   }
   idleActivity.observe(allocation, providerActivityKey(identity, config, orphan.id));
   const deletionProof = idleActivity.proof(providerActivityKey(identity, config, orphan.id));
+  const observedState = typeof orphan.state === "string" && REPORTED_CREATE_STATES.has(orphan.state)
+    ? orphan.state as PluginEnvironmentAcquisitionProviderState : undefined;
   await withLivenessTimeout("sandbox.failedCreateDelete", 15_000, () => orphan.delete(10, true));
   idleActivity.confirm(deletionProof);
-  return orphan.state;
+  return observedState;
 }
 
 // Daytona states reported as-is after a create deadline; any other is `other`.

@@ -105,7 +105,7 @@ export function readTransientLeaseAcquisitionFailure(
     const acquisition = getEnvironmentAcquisitionDiagnostic(cause, run);
     if (acquisition) {
       if (acquisition.elapsedMs >= acquisition.budgetMs) return { acquisitionTimedOut: true };
-      return { reason: acquisition.providerState === "error" ? "provider_start_failed" : "acquisition_incomplete" };
+      return { reason: acquisition.phase === "create" && acquisition.providerState === "error" ? "provider_start_failed" : "acquisition_incomplete" };
     }
     if (cause instanceof JsonRpcCallError && cause.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return { acquisitionTimedOut: true };
   }

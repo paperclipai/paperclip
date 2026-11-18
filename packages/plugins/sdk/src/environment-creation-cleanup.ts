@@ -11,7 +11,8 @@ export interface PluginEnvironmentCreationCleanup {
   labels: Record<string, string>;
 }
 
-const SCHEMA = "paperclip/environment-creation-cleanup/v1";
+export const ENVIRONMENT_CREATION_CLEANUP_SCHEMA = "paperclip/environment-creation-cleanup/v1";
+export const ENVIRONMENT_ACQUIRE_ERROR_SCHEMA = "paperclip/environment-acquire-error/v1";
 
 /** The step observed at the first acquisition failure, not its upstream cause. */
 export interface PluginEnvironmentAcquisitionDiagnostic {
@@ -32,15 +33,13 @@ export const ENVIRONMENT_ACQUISITION_PROVIDER_STATES = [
 ] as const;
 export type PluginEnvironmentAcquisitionProviderState = typeof ENVIRONMENT_ACQUISITION_PROVIDER_STATES[number];
 
-const ACQUIRE_ERROR_SCHEMA = "paperclip/environment-acquire-error/v1";
-
 function acquisitionDiagnosticContainer(error: unknown): object | null {
   if (error instanceof PluginEnvironmentAcquisitionError) return error;
   if (readEnvironmentCreationCleanupError(error)) {
     return error instanceof PluginEnvironmentCreationCleanupError ? error : (error as { data?: object }).data ?? null;
   }
   const data = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "data")?.value : undefined;
-  return data && typeof data === "object" && Object.getOwnPropertyDescriptor(data, "schema")?.value === ACQUIRE_ERROR_SCHEMA
+  return data && typeof data === "object" && Object.getOwnPropertyDescriptor(data, "schema")?.value === ENVIRONMENT_ACQUIRE_ERROR_SCHEMA
     ? data : null;
 }
 
@@ -95,14 +94,14 @@ export function environmentCreationCleanupErrorData(error: unknown, includeAcqui
   if (!(error instanceof PluginEnvironmentCreationCleanupError)) return undefined;
   const cleanup = readEnvironmentCreationCleanupError(error);
   const acquisitionDiagnostic = includeAcquisitionDiagnostic ? readEnvironmentAcquisitionDiagnostic(error) : null;
-  return cleanup ? { schema: SCHEMA, cleanup, ...(acquisitionDiagnostic ? { acquisitionDiagnostic } : {}) } : undefined;
+  return cleanup ? { schema: ENVIRONMENT_CREATION_CLEANUP_SCHEMA, cleanup, ...(acquisitionDiagnostic ? { acquisitionDiagnostic } : {}) } : undefined;
 }
 
 export function readEnvironmentCreationCleanupError(error: unknown): PluginEnvironmentCreationCleanup | null {
   const data = error instanceof PluginEnvironmentCreationCleanupError
-    ? { schema: SCHEMA, cleanup: error.cleanup }
+    ? { schema: ENVIRONMENT_CREATION_CLEANUP_SCHEMA, cleanup: error.cleanup }
     : error && typeof error === "object" && "data" in error ? error.data : null;
-  if (!data || typeof data !== "object" || !("schema" in data) || data.schema !== SCHEMA || !("cleanup" in data)) return null;
+  if (!data || typeof data !== "object" || !("schema" in data) || data.schema !== ENVIRONMENT_CREATION_CLEANUP_SCHEMA || !("cleanup" in data)) return null;
   const value = data.cleanup;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
