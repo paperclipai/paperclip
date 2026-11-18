@@ -22,7 +22,11 @@ const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+// Search PATH directories first and PATHEXT entries second, as on Windows.
+const extensions = process.platform === 'win32'
+  ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(ext => /^\.[a-z0-9]+$/i.test(ext))
+  : [''];
+const executable = originalPath.flatMap(p => extensions.map(ext => path.join(p, program + ext))).find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
 if (!['git', 'gh'].includes(program) || !executable) {
