@@ -100,7 +100,7 @@ test('puts the selected Node before a conflicting configured PATH', { skip: !ena
 test('rejects a Windows backup path in the selected instance config', { skip: !enabled }, async () => {
   const file = path.join(root, 'data', 'instances', 'default', 'config.json');
   const saved = await readFile(file, 'utf8');
-  await writeFile(file, JSON.stringify({server:{port:3100},database:{backup:{dir:'C:\\old-backups'}}}));
+  await writeFile(file, JSON.stringify({server:{port:3100},database:{embeddedPostgresDataDir:path.join(root,"data","instances","default","db"),backup:{dir:'C:\\old-backups'}}}));
   try {
     const result = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")']);
     assert.equal(result.status, 1);
@@ -124,7 +124,7 @@ for (const backup of ['~/backups', './backups']) {
   test('accepts supported native backup path ' + backup, { skip: !enabled }, async () => {
     const file = path.join(root, 'data', 'instances', 'default', 'config.json');
     const saved = await readFile(file, 'utf8');
-    await writeFile(file, JSON.stringify({server:{port:3100},database:{backup:{dir:backup}}}));
+    await writeFile(file, JSON.stringify({server:{port:3100},database:{embeddedPostgresDataDir:path.join(root,"data","instances","default","db"),backup:{dir:backup}}}));
     try {
       const result = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")']);
       assert.equal(result.status, 0, result.stderr);
@@ -232,3 +232,7 @@ for(const selected of [false,true]) test('verifies the actual health listener id
  try{const port=await new Promise((resolve,reject)=>{child.stdout.once('data',data=>resolve(Number(String(data).trim())));child.once('error',reject);child.once('exit',()=>reject(Error('listener exited before readiness')));});await writeFile(profileFile,JSON.stringify({...JSON.parse(savedProfile),port}));await writeFile(configFile,JSON.stringify({server:{port}}));const result=invoke(['preflight','--health']);assert.equal(result.status,selected?0:1,result.stderr);if(!selected)assert.match(result.stderr,/health listener does not belong/);
  }finally{child.kill();await writeFile(profileFile,savedProfile);await writeFile(configFile,savedConfig);}
 });
+
+for(const [key,value] of [['PAPERCLIP_SERVER_HOST','other.invalid'],['PAPERCLIP_SERVER_PORT','3101'],['RUN_LOG_BASE_PATH','/mnt/c/other'],['RUN_LOG_S3_BUCKET','other']]) test('rejects inherited destination '+key,{skip:!enabled},()=>{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")'],{[key]:value});assert.equal(result.status,1);assert.match(result.stderr,new RegExp(key));});
+for(const section of ['database','storage','secrets']) test('rejects ambiguous schema defaults for '+section,{skip:!enabled},async()=>{const file=path.join(root,'data','instances','default','config.json'),saved=await readFile(file,'utf8');await writeFile(file,JSON.stringify({server:{port:3100},[section]:{}}));try{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")']);assert.equal(result.status,1);assert.match(result.stderr,/explicit data path/);}finally{await writeFile(file,saved);}});
+test('accepts explicit home-relative data paths',{skip:!enabled},async()=>{const file=path.join(root,'data','instances','default','config.json'),saved=await readFile(file,'utf8');await writeFile(file,JSON.stringify({server:{port:3100},database:{embeddedPostgresDataDir:'~/.paperclip/instances/default/db',backup:{dir:'./backups'}}}));try{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")']);assert.equal(result.status,0,result.stderr);}finally{await writeFile(file,saved);}});

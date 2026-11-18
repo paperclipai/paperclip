@@ -60,12 +60,23 @@ try {
     const selectedConfig = path.join(instance, "config.json");
     const settings = JSON.parse(fs.readFileSync(selectedConfig, "utf8"));
     if ((settings.server?.port ?? 3100) !== config.port) fail("instance port differs from the local profile");
-    const dataPaths = [settings.database?.embeddedPostgresDataDir, settings.storage?.localDisk?.baseDir, settings.secrets?.localEncrypted?.keyFilePath].filter(Boolean);
-    if (dataPaths.some(value => !nativePath(value))) fail("instance still contains Windows data paths");
-    if (settings.database?.backup?.dir) {
-      const backup = settings.database.backup.dir;
-      if (/^[a-z]:/i.test(backup) || backup.includes("\\") || !nativePath(path.resolve(repository, backup === "~" ? os.homedir() : backup.startsWith("~/") ? path.join(os.homedir(), backup.slice(2)) : backup))) fail("instance still contains Windows data paths");
+    const resolveDataPath = value => {
+      if (typeof value !== 'string' || /^[a-z]:/i.test(value) || value.includes('\\')) fail('instance still contains Windows data paths');
+      return path.resolve(repository, value === '~' ? os.homedir() : value.startsWith('~/') ? path.join(os.homedir(),value.slice(2)) : value);
+    };
+    for (const [section,value] of [
+      ['database',settings.database?.embeddedPostgresDataDir],
+      ['storage',settings.storage?.localDisk?.baseDir],
+      ['secrets',settings.secrets?.localEncrypted?.keyFilePath],
+    ]) {
+      const required = section === 'database' ? settings.database && settings.database.mode !== 'postgres'
+        : section === 'storage' ? settings.storage && settings.storage.provider !== 's3'
+        : settings.secrets && (!settings.secrets.provider || settings.secrets.provider === 'local_encrypted');
+      if (required && !value) fail(section + ' requires an explicit data path; schema defaults can select another instance');
+      if (value && !nativePath(resolveDataPath(value))) fail('instance still contains Windows data paths');
     }
+    if (settings.database && settings.database.backup?.enabled !== false && !settings.database.backup?.dir) fail('database backup requires an explicit data path; schema defaults can select another instance');
+    if (settings.database?.backup?.dir && !nativePath(resolveDataPath(settings.database.backup.dir))) fail('instance still contains Windows data paths');
     const configuredBins = config.binPaths ?? ["/usr/local/bin", "/usr/bin", "/bin"];
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
@@ -114,6 +125,12 @@ try {
       for (const key of Object.keys(source)) if (["PAPERCLIP_AGENT_JWT_SECRET","BETTER_AUTH_SECRET","PAPERCLIP_TOOL_ACTION_SIGNING_SECRET","PAPERCLIP_SECRETS_MASTER_KEY"].includes(key) || key.startsWith("PAPERCLIP_SECRETS_AWS_")) {
         if (source[key] !== instanceEnvironment[key]) fail(key + " differs from the selected instance");
       }
+      for (const key of Object.keys(source).filter(key => key === 'RUN_LOG_BASE_PATH' || key.startsWith('RUN_LOG_S3_'))) {
+        if (source[key] !== instanceEnvironment[key]) fail(key + ' differs from the selected instance');
+        if (key === 'RUN_LOG_BASE_PATH' && !nativePath(resolveDataPath(source[key]))) fail(key + ' must be a native Linux path');
+      }
+      if (source.PAPERCLIP_SERVER_HOST !== undefined && !['localhost','127.0.0.1','::1'].includes(source.PAPERCLIP_SERVER_HOST)) fail('PAPERCLIP_SERVER_HOST selects another instance');
+      if (source.PAPERCLIP_SERVER_PORT !== undefined && Number(source.PAPERCLIP_SERVER_PORT) !== config.port) fail('PAPERCLIP_SERVER_PORT selects another instance');
       if (source.PAPERCLIP_RUNNER_BINARY !== undefined && !nativePath(source.PAPERCLIP_RUNNER_BINARY)) fail("PAPERCLIP_RUNNER_BINARY must be a native Linux path");
       for (const [key, expected] of [["PAPERCLIP_HOME", config.paperclipHome], ["PAPERCLIP_INSTANCE_ID", config.instanceId]]) {
         if (source[key] !== undefined && source[key] !== expected) fail(key + " selects another instance");

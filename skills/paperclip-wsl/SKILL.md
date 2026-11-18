@@ -31,6 +31,11 @@ Set `capacityPath` to the actual Windows volume containing this distribution's
 virtual disk. Free space reported inside the Linux virtual disk alone does not
 prove that its host volume can grow.
 
+Configured embedded database, local storage and encryption sections must set
+their data paths explicitly. Schema defaults contain the default instance path
+and can select a different home. Home-relative and relative paths are accepted
+when they resolve to native Linux storage.
+
 Run the helper from the repository root:
 
 ```sh
