@@ -1,10 +1,13 @@
-import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, desc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   chatConversations,
+  chatDeliveries,
   chatEndpointResources,
   chatExternalPrincipals,
   chatMessageLinks,
+  chatPublications,
   issueComments,
   issues,
 } from "@paperclipai/db";
@@ -17,6 +20,7 @@ import {
 import { externalThreadIdentityCondition } from "../../chat-control-chronology.js";
 import type { ChatSdkCallbackEvent } from "../../chat-sdk-runtime.js";
 import { normalizeMicrosoftTeamsExternalPrincipalId } from "../../chat-teams-credentials.js";
+import { notifyChatDeliveryWork } from "../../chat-work-notifications.js";
 import { feedbackService } from "../../feedback.js";
 import { nonDirectDestinationAllowed } from "../inbound/surfaces.js";
 import type { PublicationTransportInput } from "../publications/types.js";
@@ -29,6 +33,8 @@ import type {
   RuntimeContext,
 } from "../runtime-types.js";
 import type { TeamsFeedbackEvent } from "./feedback-loop.js";
+
+const TEAMS_FEEDBACK_SETTLEMENT_WINDOW_MS = 2 * 60_000;
 
 type TeamsFeedbackVoteOptions = {
   runtimeCallbackRecord: (
@@ -145,6 +151,83 @@ export function createTeamsFeedbackVotes(
       .then((rows) => rows[0] ?? null);
   }
 
+  async function settlementPending(
+    tx: DbTransaction,
+    endpoint: EndpointRow,
+    event: TeamsFeedbackEvent,
+  ): Promise<boolean> {
+    const rows = await tx
+      .select({ id: chatPublications.id })
+      .from(chatPublications)
+      .innerJoin(
+        chatConversations,
+        and(
+          eq(chatConversations.companyId, chatPublications.companyId),
+          eq(chatConversations.endpointId, chatPublications.endpointId),
+          eq(chatConversations.id, chatPublications.conversationId),
+        ),
+      )
+      .innerJoin(
+        issueComments,
+        and(
+          eq(issueComments.companyId, chatPublications.companyId),
+          eq(issueComments.id, chatPublications.commentId),
+        ),
+      )
+      .where(
+        and(
+          eq(chatPublications.companyId, endpoint.companyId),
+          eq(chatPublications.endpointId, endpoint.id),
+          eq(chatPublications.state, "streaming"),
+          gt(
+            chatPublications.updatedAt,
+            new Date(Date.now() - TEAMS_FEEDBACK_SETTLEMENT_WINDOW_MS),
+          ),
+          isNotNull(issueComments.authorAgentId),
+          isNull(issueComments.deletedAt),
+          externalThreadIdentityCondition(
+            sql<string>`${chatConversations.externalThreadId}`,
+            event.threadId,
+          ),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async function recordInvokeReceipt(
+    tx: DbTransaction,
+    endpoint: EndpointRow,
+    conversationId: string,
+    principalId: string,
+    event: TeamsFeedbackEvent,
+  ): Promise<boolean> {
+    const providerEventId = `teams-feedback:${event.activityId}`;
+    const processedAt = new Date();
+    await notifyChatDeliveryWork(tx);
+    const [receipt] = await tx
+      .insert(chatDeliveries)
+      .values({
+        companyId: endpoint.companyId,
+        endpointId: endpoint.id,
+        conversationId,
+        principalId,
+        providerEventId,
+        deduplicationKey: createHash("sha256")
+          .update(providerEventId)
+          .digest("hex"),
+        eventKind: "action",
+        normalizedEvent: { providerEventId, kind: "action" },
+        state: "processed",
+        attempts: 1,
+        processedAt,
+        updatedAt: processedAt,
+      })
+      .onConflictDoNothing()
+      .returning({ id: chatDeliveries.id });
+    return Boolean(receipt);
+  }
+
   async function feedbackPrincipal(
     endpoint: EndpointRow,
     event: TeamsFeedbackEvent,
@@ -212,7 +295,7 @@ export function createTeamsFeedbackVotes(
   async function recordTeamsFeedback(
     callback: ChatSdkCallbackEvent<TeamsFeedbackEvent>,
     context: RuntimeContext,
-  ): Promise<void> {
+  ): Promise<"retry" | void> {
     if (callback.provider !== "microsoft-teams") return;
     const record = await runtimeCallbackRecord(callback.endpointId, context, [
       "active",
@@ -221,7 +304,7 @@ export function createTeamsFeedbackVotes(
     const principal = await feedbackPrincipal(record.endpoint, callback.event);
     if (!principal) return;
     const publications: ActivityPublication[] = [];
-    await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       const endpoint = await runtimeCallbackEndpoint(
         tx,
         callback.endpointId,
@@ -230,7 +313,11 @@ export function createTeamsFeedbackVotes(
       );
       if (!endpoint || endpoint.provider !== "microsoft-teams") return;
       const target = await ratedAgentComment(tx, endpoint, callback.event);
-      if (!target) return;
+      if (!target) {
+        return (await settlementPending(tx, endpoint, callback.event))
+          ? ("retry" as const)
+          : undefined;
+      }
       const author = await voteAuthor(
         tx,
         endpoint,
@@ -238,6 +325,16 @@ export function createTeamsFeedbackVotes(
         principal.id,
       );
       if (!author) return;
+      if (
+        !(await recordInvokeReceipt(
+          tx,
+          endpoint,
+          target.conversation.id,
+          principal.id,
+          callback.event,
+        ))
+      )
+        return;
       const result = await feedback.saveIssueVoteInTransaction(tx, {
         issueId: target.issueId,
         targetType: "issue_comment",
@@ -272,14 +369,15 @@ export function createTeamsFeedbackVotes(
       );
     });
     for (const publication of publications) publishActivity(publication);
+    return outcome;
   }
 
   async function handleTeamsFeedback(
     callback: ChatSdkCallbackEvent<TeamsFeedbackEvent>,
     context: RuntimeContext,
-  ): Promise<void> {
+  ): Promise<"retry" | void> {
     try {
-      await recordTeamsFeedback(callback, context);
+      return await recordTeamsFeedback(callback, context);
     } catch (error) {
       logger.warn(
         { err: error, endpointId: callback.endpointId },

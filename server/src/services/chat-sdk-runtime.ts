@@ -501,7 +501,7 @@ export interface ChatSdkRuntimeCallbacks {
     | "denied";
   onTeamsFeedback?(
     event: ChatSdkCallbackEvent<TeamsFeedbackEvent>,
-  ): Promise<void> | void;
+  ): Promise<"retry" | void> | "retry" | void;
   onMessageDeleted?(
     event: ChatSdkCallbackEvent<MessageDeletedEvent>,
   ): Promise<void> | void;
@@ -2349,10 +2349,19 @@ export class ChatSdkEndpointRuntime {
               event,
             }),
           );
-          if (!attempt) return await promise;
+          if (!attempt) {
+            await promise;
+            return;
+          }
           attempt.callbackPromises.add(promise);
           try {
-            return await promise;
+            if (
+              (await promise) === "retry" &&
+              attempt.callbackError === undefined
+            )
+              attempt.callbackError = new Error(
+                "Teams feedback target is not settled yet",
+              );
           } finally {
             attempt.callbackPromises.delete(promise);
           }

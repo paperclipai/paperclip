@@ -5,10 +5,12 @@ import {
   activityLog,
   agents,
   chatConversations,
+  chatDeliveries,
   chatEndpoints,
   chatExternalPrincipals,
   chatIdentityLinks,
   chatMessageLinks,
+  chatPublications,
   companies,
   companyMemberships,
   createDb,
@@ -173,7 +175,15 @@ describeEmbeddedPostgres("Teams native feedback votes", () => {
       status: "active",
       membershipRole: "member",
     });
-    return { companyId, issueId, endpointId, agentCommentId, linkedUserId, guestPrincipalId: guestPrincipal!.id };
+    return {
+      companyId,
+      issueId,
+      endpointId,
+      conversationId: conversation!.id,
+      agentCommentId,
+      linkedUserId,
+      guestPrincipalId: guestPrincipal!.id,
+    };
   }
 
   type PrincipalAuthorization = (
@@ -216,7 +226,7 @@ describeEmbeddedPostgres("Teams native feedback votes", () => {
     event: Partial<TeamsFeedbackEvent>,
     wrapAuthorization?: (authorize: PrincipalAuthorization) => PrincipalAuthorization,
   ) {
-    await votes(wrapAuthorization).handleTeamsFeedback(
+    return votes(wrapAuthorization).handleTeamsFeedback(
       {
         endpointId: seed.endpointId,
         provider: "microsoft-teams",
@@ -339,8 +349,79 @@ describeEmbeddedPostgres("Teams native feedback votes", () => {
     ["an unknown message", { replyToId: "missing" }],
     ["another conversation", { threadId: `teams:${Buffer.from("a:other").toString("base64url")}` }],
   ] as const)("records nothing for %s", async (_name, event) => {
-    await submit(event);
+    expect(await submit(event)).toBeUndefined();
     expect(await savedVotes()).toHaveLength(0);
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, seed.companyId))).toHaveLength(0);
+  });
+
+  async function streamingReply(updatedAt = new Date()) {
+    const [publication] = await db
+      .insert(chatPublications)
+      .values({
+        companyId: seed.companyId,
+        endpointId: seed.endpointId,
+        conversationId: seed.conversationId,
+        issueId: seed.issueId,
+        commentId: seed.agentCommentId,
+        idempotencyKey: `comment:${randomUUID()}`,
+        payload: { text: "Agent reply" },
+        state: "streaming",
+        updatedAt,
+      })
+      .returning();
+    return publication!;
+  }
+
+  it("asks Teams to retry a vote on a reply whose message link is still settling", async () => {
+    const publication = await streamingReply();
+    const event = { activityId: "activity-fresh", replyToId: "fresh-reply", vote: "down" as const };
+
+    expect(await submit(event)).toBe("retry");
+    expect(await savedVotes()).toHaveLength(0);
+    expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, seed.endpointId))).toHaveLength(0);
+
+    await db.transaction(async (tx) => {
+      await tx.update(chatPublications).set({ state: "published", providerMessageId: "fresh-reply" }).where(eq(chatPublications.id, publication.id));
+      await tx.insert(chatMessageLinks).values({
+        companyId: seed.companyId,
+        endpointId: seed.endpointId,
+        conversationId: seed.conversationId,
+        publicationId: publication.id,
+        commentId: seed.agentCommentId,
+        providerMessageId: "fresh-reply",
+        direction: "outbound",
+      });
+    });
+    expect(await submit(event)).toBeUndefined();
+    const rows = await savedVotes();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ targetId: seed.agentCommentId, vote: "down" });
+  });
+
+  it("acknowledges an unlinked reply when no recent publication is settling", async () => {
+    await streamingReply(new Date(Date.now() - 10 * 60_000));
+    expect(await submit({ replyToId: "fresh-reply" })).toBeUndefined();
+    expect(await savedVotes()).toHaveLength(0);
+  });
+
+  it("ignores a replayed invoke so it cannot overwrite a newer vote", async () => {
+    await submit({ activityId: "activity-a", vote: "up", reason: "Clear answer." });
+    await submit({ activityId: "activity-b", vote: "down", reason: "Missed the deadline." });
+    await submit({ activityId: "activity-a", vote: "up", reason: "Clear answer." });
+
+    const rows = await savedVotes();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ vote: "down", reason: "Missed the deadline." });
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, seed.companyId), eq(activityLog.action, "issue.feedback_vote_saved")));
+    expect(activity).toHaveLength(2);
+    const receipts = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, seed.endpointId));
+    expect(receipts.map((row) => row.providerEventId).sort()).toEqual([
+      "teams-feedback:activity-a",
+      "teams-feedback:activity-b",
+    ]);
+    expect(receipts.every((row) => row.state === "processed" && row.eventKind === "action")).toBe(true);
   });
 });

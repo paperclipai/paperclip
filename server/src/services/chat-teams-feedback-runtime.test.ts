@@ -77,7 +77,7 @@ function persistence(): ChatSdkStatePersistence {
 
 type FeedbackCallback = (
   event: ChatSdkCallbackEvent<TeamsFeedbackEvent>,
-) => Promise<void>;
+) => Promise<"retry" | void>;
 interface AppSeam {
   server: {
     serviceTokenValidator: {
@@ -245,6 +245,15 @@ describe("Teams native feedback runtime", () => {
     const response = await h.dispatch(feedbackInvoke("like"));
     expect(response.status).toBe(200);
     expect(await response.text()).not.toContain("database unavailable");
+  });
+
+  it("asks Teams to retry when the rated reply is still settling", async () => {
+    const h = await harness();
+    h.callback.mockResolvedValueOnce("retry");
+    const response = await h.dispatch(feedbackInvoke("like"));
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(h.callback).toHaveBeenCalledTimes(1);
   });
 
   it("does not deliver feedback without the optional callback", async () => {
