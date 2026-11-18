@@ -1183,33 +1183,32 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       responsibleUserId: "grant-user", serviceSlug: "notion" })).resolves.toMatchObject({ id: f.connection.id });
   });
 
-  it("names an expired shared sign-in instead of a generic attention reason", async () => {
+  it("names a shared connection whose sign-in must be renewed instead of a generic attention reason", async () => {
     const f = await accessFixture("sentry");
     const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Sentry", defaultAction: "allow", status: "active" }).returning();
     await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });
     const sentry = async () => (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
     expect(await sentry()).toMatchObject({ state: "ready", connectionId: f.connection.id });
-    // The state OAuth refresh leaves after the provider rejects the refresh token.
-    await db.update(toolConnections).set({
-      authKind: "oauth", status: "draft", enabled: false, healthStatus: "error",
-      healthMessage: "OAuth authorization expired. Reconnect this app to continue.",
-      lastError: "oauth_reauthorization_required",
-    }).where(eq(toolConnections.id, f.connection.id));
+    // The rows a rejected refresh writes for an organization grant: the grant
+    // needs reauthorization and the connection is disabled. lastError is unchanged.
+    await db.update(connectionGrants).set({ status: "needs_reauthorization" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.update(toolConnections).set({ authKind: "oauth", status: "draft", enabled: false })
+      .where(eq(toolConnections.id, f.connection.id));
     const result = await sentry();
     expect(result).toMatchObject({ state: "needs_user_action", connectionId: null });
     expect(result?.reason).toContain("Saved sentry");
-    expect(result?.reason).toMatch(/sign-in .*expired/i);
+    expect(result?.reason).toMatch(/sign in again|signed in again/i);
     expect(result?.reason).toMatch(/reconnect/i);
   });
 
-  it("does not name another person's expired private connection", async () => {
+  it("does not name another person's private connection that must be renewed", async () => {
     const f = await accessFixture("sentry");
-    await db.update(connectionGrants).set({ kind: "user", subjectUserId: "other-user" })
+    await db.update(connectionGrants).set({ kind: "user", subjectUserId: "other-user", status: "needs_reauthorization" })
       .where(eq(connectionGrants.connectionId, f.connection.id));
     await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.id));
     await db.update(toolConnections).set({
-      name: "Private Sentry of another person", authKind: "oauth", credentialPolicy: "per_user",
-      status: "draft", enabled: false, healthStatus: "error", lastError: "oauth_reauthorization_required",
+      name: "Private Sentry of another person", authKind: "oauth", credentialPolicy: "per_user", status: "draft", enabled: false,
     }).where(eq(toolConnections.id, f.connection.id));
     const result = (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
     expect(result).toBeDefined();

@@ -540,14 +540,16 @@ export function connectionIntentService(db: Db) {
         && (aiOnly ? connection.connectionPurpose === "ai" : connection.connectionPurpose !== "ai"));
       // Indexed descriptions can contain private workspace metadata, including
       // for catalog providers. Check each configured connection's audience first.
-      const visibleConnectionIds = new Set<string>();
+      const reauthorizationRequired: ToolConnection[] = [];
       const catalogs = await Promise.all(matching.map(async (connection) => {
         const { grants } = await access.listConnectionGrants(connection.id, run.companyId);
-        const authorized = grants.some((grant) => grant.status === "active" && (
+        const audience = grants.filter((grant) =>
           grant.kind === "organization" || (grant.kind === "user" && grant.subjectUserId === run.responsibleUserId)
-          || (grant.kind === "agent" && grant.subjectAgentId === agent.id)
-        ));
-        if (authorized) visibleConnectionIds.add(connection.id);
+          || (grant.kind === "agent" && grant.subjectAgentId === agent.id));
+        const authorized = audience.some((grant) => grant.status === "active");
+        // A rejected refresh marks the grant. Name only connections in this
+        // caller's audience so the agent can report the exact human action.
+        if (!authorized && audience.some((grant) => grant.status === "needs_reauthorization")) reauthorizationRequired.push(connection);
         const entries = authorized ? await indexedCatalog(connection.id, run.companyId) : [];
         authorizedCatalogs.set(connection.id, entries);
         return entries;
@@ -577,18 +579,13 @@ export function connectionIntentService(db: Db) {
           nextApiOperation: purpose === "chat" ? "POST /api/companies/{companyId}/chat-endpoints"
             : purpose === "ai" ? "POST /api/companies/{companyId}/ai-connections" : "POST /api/companies/{companyId}/tools/apps/connect" } };
       }));
-      // A rejected refresh disables the connection; name it so the agent can
-      // report the exact human action instead of a generic attention state.
-      // Only a connection in this caller's audience may be named.
-      const expired = matching.find(connection => visibleConnectionIds.has(connection.id)
-        && (connection.lastError === "oauth_reauthorization_required" || connection.lastError === "oauth_refresh_missing"));
       candidates.push({ score, nameScore, item: {
         service, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
         methods, source: app.source,
         state: ready ? "ready" : (denied && !isRemoteMcpConnectorId(service)) || !app.available || !app.methods.length ? "unavailable"
           : matching.length ? "needs_user_action" : "available",
         reason: ready ? "Connection is installed and usable by this agent" : denied ? "Ask the responsible user to grant this agent access with connection_request" : !app.available ? "Connection is disabled or unavailable"
-          : expired ? `The sign-in for "${expired.name}" expired. A person who manages this connection must reconnect it on its app page`
+          : reauthorizationRequired.length ? `"${reauthorizationRequired[0]!.name}" must be signed in again. A person who manages this connection must reconnect it on its app page`
           : matching.some((connection) => isToolConnectionAttentionHealth(connection.healthStatus)) ? "Connection needs attention"
           : matching.length ? "Review identity and access for this agent" : "Connect this service to continue",
         connectionId: ready?.id ?? null,
