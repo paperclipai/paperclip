@@ -430,9 +430,13 @@ const HOST_OWNED_SANDBOX_FLAGS = [
   "streamRunLogs",
   "runnerLifecycleMode",
   "runnerIdleTimeoutMs",
+  // The conversation pod reuse kill switch and scope must survive a plugin that
+  // normalizes config and drops keys it does not know.
+  "conversationPodReuse",
+  "reuseLeaseScope",
 ] as const;
 
-function applyHostOwnedSandboxFlags(
+export function applyHostOwnedSandboxFlags(
   normalizedConfig: Record<string, unknown>,
   envelope: Record<string, unknown>,
 ): Record<string, unknown> {

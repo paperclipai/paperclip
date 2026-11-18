@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HttpError } from "../errors.js";
-import { normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.ts";
+import { applyHostOwnedSandboxFlags, normalizeEnvironmentConfig, parseEnvironmentDriverConfig } from "../services/environment-config.ts";
 
 describe("environment config helpers", () => {
   it("normalizes SSH config into its canonical stored shape", () => {
@@ -286,5 +286,24 @@ describe("environment config helpers", () => {
         template: "base",
       },
     });
+  });
+});
+
+describe("applyHostOwnedSandboxFlags", () => {
+  it("re-applies the conversation pod reuse kill switch and scope a plugin dropped while normalizing", () => {
+    // A plugin whose schema does not know these keys returns a config without them.
+    const pluginNormalized = { image: "x", timeoutMs: 1234 };
+    const envelope = { provider: "kubernetes", conversationPodReuse: false, reuseLeaseScope: "conversations", runnerLifecycleMode: "warm" };
+    expect(applyHostOwnedSandboxFlags(pluginNormalized, envelope)).toEqual({
+      image: "x",
+      timeoutMs: 1234,
+      conversationPodReuse: false,
+      reuseLeaseScope: "conversations",
+      runnerLifecycleMode: "warm",
+    });
+  });
+
+  it("does not invent the kill switch when the operator never set it", () => {
+    expect(applyHostOwnedSandboxFlags({ image: "x" }, { provider: "kubernetes" })).toEqual({ image: "x" });
   });
 });
