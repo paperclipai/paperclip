@@ -1955,6 +1955,130 @@ export function normalizePaperclipWakePayload(
   };
 }
 
+/**
+ * Byte budget for the serialized wake payload that adapters pass to the spawned
+ * agent process via the `PAPERCLIP_WAKE_PAYLOAD_JSON` environment variable.
+ *
+ * On Linux, `execve` caps every single argv/env string at `MAX_ARG_STRLEN`
+ * (32 pages = 128 KiB); exceeding it makes Node's `spawn`/`execFile` fail with
+ * `spawn E2BIG`. The wake payload embeds the issue's comment history, and that
+ * thread is append-only, so without a cap it grows until a wake crashes before
+ * the agent ever starts. We keep the serialized payload well under the hard
+ * limit, leaving headroom for the rest of the env block against `ARG_MAX`.
+ */
+export const MAX_WAKE_PAYLOAD_ENV_BYTES = 96 * 1024;
+const MIN_RETAINED_WAKE_COMMENTS = 2;
+const WAKE_COMMENT_BODY_BYTE_CAP = 4 * 1024;
+
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+/** Keep the head of a string within a UTF-8 byte budget without splitting a codepoint. */
+function truncateBodyToByteCap(body: string, cap: number): string {
+  if (cap <= 0) return "";
+  if (utf8ByteLength(body) <= cap) return body;
+  const buffer = Buffer.from(body, "utf8");
+  let end = Math.min(buffer.length, cap);
+  while (end > 0 && (buffer[end]! & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString("utf8");
+}
+
+/**
+ * Bound the serialized size of a wake payload so it fits in a spawned process's
+ * environment. Comments are oldest-first, so we shed the oldest embedded
+ * comments first (the newest are most relevant and the bounded
+ * `continuationSummary` preserves earlier context), then truncate the remaining
+ * comment bodies, then drop the heaviest optional context. The `commentIds`
+ * list is append-only and otherwise unbounded on long-lived threads, so even a
+ * payload with no embedded bodies can exceed the budget on the id list alone;
+ * we trim that to a recent tail and, as a final guarantee, shed the remaining
+ * optional context so the serialized payload is always within budget. Any
+ * trimming sets `truncated` and `fallbackFetchNeeded` so the agent fetches the
+ * full thread from the API instead of relying on the inlined history.
+ */
+export function capPaperclipWakePayloadForEnv(
+  payload: PaperclipWakePayload,
+  budgetBytes: number = MAX_WAKE_PAYLOAD_ENV_BYTES,
+): { payload: PaperclipWakePayload; trimmed: boolean } {
+  if (utf8ByteLength(JSON.stringify(payload)) <= budgetBytes) {
+    return { payload, trimmed: false };
+  }
+
+  const working: PaperclipWakePayload = {
+    ...payload,
+    comments: [...payload.comments],
+    annotationDeltas: [...payload.annotationDeltas],
+  };
+  let droppedComments = 0;
+  const overBudget = () => utf8ByteLength(JSON.stringify(working)) > budgetBytes;
+
+  // 1) Shed the oldest embedded comments first, keeping at least the newest few.
+  while (overBudget() && working.comments.length > MIN_RETAINED_WAKE_COMMENTS) {
+    working.comments.shift();
+    droppedComments += 1;
+  }
+
+  // 2) Still over budget: truncate the bodies of the retained comments.
+  if (overBudget() && working.comments.length > 0) {
+    working.comments = working.comments.map((comment) => {
+      const body = truncateBodyToByteCap(comment.body, WAKE_COMMENT_BODY_BYTE_CAP);
+      return {
+        ...comment,
+        body,
+        bodyTruncated: comment.bodyTruncated || body.length < comment.body.length,
+      };
+    });
+  }
+
+  // 3) Drop the remaining comments and the heaviest optional context.
+  if (overBudget()) {
+    droppedComments += working.comments.length;
+    working.comments = [];
+    working.annotationDeltas = [];
+    working.planReviewContext = null;
+  }
+
+  // 4) The comment-id list grows without bound on append-only threads (e.g. a
+  //    monitoring digest) and can exceed the budget on its own even with no
+  //    embedded bodies. Trim it to the most recent ids, shrinking the retained
+  //    tail until the payload fits.
+  if (overBudget() && working.commentIds.length > 0) {
+    for (const keep of [200, 50, 10, 0]) {
+      if (keep >= working.commentIds.length) continue;
+      working.commentIds =
+        keep === 0 ? [] : payload.commentIds.slice(payload.commentIds.length - keep);
+      if (!overBudget()) break;
+    }
+  }
+
+  // 5) Final guarantee: if an id-free payload is still over budget, shed the
+  //    remaining optional context so the env var can never trigger spawn E2BIG.
+  if (overBudget()) {
+    working.commentIds = [];
+    working.continuationSummary = null;
+    working.livenessContinuation = null;
+    working.taskWatchdog = null;
+    working.executionStage = null;
+    working.childIssueSummaries = [];
+    working.unresolvedBlockerSummaries = [];
+  }
+
+  working.truncated = true;
+  working.fallbackFetchNeeded = true;
+  if (droppedComments > 0) {
+    working.includedCount = Math.max(0, working.includedCount - droppedComments);
+  }
+  // Reflect any comments that are no longer inlined (shed bodies or trimmed ids)
+  // as missing, so the agent knows the inline batch is incomplete.
+  working.missingCount = Math.max(
+    working.missingCount,
+    Math.max(0, working.requestedCount - working.includedCount),
+  );
+
+  return { payload: working, trimmed: true };
+}
+
 export function stringifyPaperclipWakePayload(
   value: unknown,
   options: {
@@ -1962,21 +2086,29 @@ export function stringifyPaperclipWakePayload(
     // section already carries the issue description. Other serialized copies
     // stay complete.
     omitIssueDescription?: boolean;
+    // Override the env byte budget. Defaults to MAX_WAKE_PAYLOAD_ENV_BYTES; tests
+    // pass a tiny budget to exercise the trimming stages.
+    budgetBytes?: number;
   } = {},
 ): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
-  if (options.omitIssueDescription === true && normalized.issue) {
-    return JSON.stringify({
-      ...normalized,
-      issue: {
-        ...normalized.issue,
-        description: null,
-        descriptionTruncated: false,
-      },
-    });
-  }
-  return JSON.stringify(normalized);
+  const base: PaperclipWakePayload =
+    options.omitIssueDescription === true && normalized.issue
+      ? {
+          ...normalized,
+          issue: {
+            ...normalized.issue,
+            description: null,
+            descriptionTruncated: false,
+          },
+        }
+      : normalized;
+  const { payload } = capPaperclipWakePayloadForEnv(
+    base,
+    options.budgetBytes ?? MAX_WAKE_PAYLOAD_ENV_BYTES,
+  );
+  return JSON.stringify(payload);
 }
 
 /** Source ownership only. Canonical task, plan, response and event data stay in their existing fields. */
