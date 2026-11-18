@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { rm } from "node:fs/promises";
+import { rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { agents, agentWakeupRequests, authSessions, authUsers, caseEvents, caseHandoffs, cases, companies, companyMemberships,
@@ -290,6 +291,43 @@ describe("durable case handoff queue admission", () => {
       try { process.kill(-processId, "SIGTERM"); } catch { /* already stopped */ }
       if (scratch) await rm(scratch.dir, { recursive: true, force: true });
       await restartedDb?.$client.end();
+    }
+  });
+  // VPS-786 finding 2: an interrupted portable scratch cleanup leaves the
+  // tree quarantined under `<segment>-rm-<random>` while the run's receipt
+  // keeps the original path. The handoff recovery must not read the absent
+  // original name as proof of cleanup while the renamed tree still exists.
+  it("does not release a legacy handoff while a quarantined scratch remnant is still pending", async () => {
+    const f = await fixture(), sourceRunId = randomUUID(), controllerBootId = randomUUID(), startedAt = new Date();
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+    await once(child, "spawn");
+    const processId = child.pid!;
+    const scratch = await prepareHeartbeatRunScratch({ companyId: f.companyId, agentId: f.agentId,
+      runId: sourceRunId, issueId: f.issueId });
+    const quarantined = path.join(path.dirname(scratch.dir), `${path.basename(scratch.dir)}-rm-${"c3d4e5f6a7b8c9d0"}`);
+    try {
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+      await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId: f.companyId, agentId: f.agentId,
+        status: "running", runtimeMode: "legacy", startedAt, controllerBootId,
+        processPid: processId, processGroupId: processId, processStartedAt: startedAt,
+        contextSnapshot: { issueId: f.issueId }, responsibleUserId: f.userId });
+      await recordLegacyCaseHandoffCleanupIntent(db, { runId: sourceRunId, issueId: f.issueId, controllerBootId, scratch });
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, sourceRunId));
+      // Simulate the interrupted portable cleanup: the tree was already
+      // renamed to its quarantine name when the controller died.
+      await rename(scratch.dir, quarantined);
+
+      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(false);
+
+      // Once the remnant is gone the same absence becomes cleanup proof.
+      await rm(quarantined, { recursive: true, force: true });
+      expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
+    } finally {
+      try { process.kill(-processId, "SIGTERM"); } catch { /* already stopped */ }
+      await rm(scratch.dir, { recursive: true, force: true }).catch(() => undefined);
+      await rm(quarantined, { recursive: true, force: true }).catch(() => undefined);
     }
   });
   it("admits an authenticated new phase after two case-only runs without treating its agent comment as an idle re-wake", async () => {
