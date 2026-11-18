@@ -315,10 +315,15 @@ export async function initializeRunIdentity(
             )
         : [];
     const retryContextId = retryOrigin ?? (isRetry ? parent?.activeIdentityContextId : null);
-    if (!operatorIdentity && isRetry && !retryContextId)
+    // A preparation failure can precede identity initialization. An ordinary
+    // retry retains its stored person when available, or the caller's existing
+    // responsible-user resolution. It never replays a connection handoff.
+    const uninitializedRetryUserId = isRetry && !retryContextId
+      ? parent?.responsibleUserId : null;
+    if (!operatorIdentity && isRetry && !retryContextId && interaction?.kind === "connection_intent")
       throw forbidden("Originating execution identity is unavailable");
-    const parentId = operatorIdentity ? null : (
-      retryContextId ?? interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
+    const parentId = operatorIdentity ? null : isRetry ? retryContextId : (
+      interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
     );
     const [origin] = parentId
       ? await tx
@@ -340,7 +345,7 @@ export async function initializeRunIdentity(
       : !isRetry && connectionRecipient && origin?.responsibleUserId !== connectionRecipient
         ? { responsibleUserId: connectionRecipient, cause: "connection_handoff" }
         : {
-          responsibleUserId: origin ? origin.responsibleUserId : input.responsibleUserId,
+          responsibleUserId: origin ? origin.responsibleUserId : uninitializedRetryUserId ?? input.responsibleUserId,
           cause: origin?.cause === "company_default" ? "company_default" : input.cause,
         };
     let current = await append(tx, {

@@ -19,8 +19,13 @@ access; its wake does not attribute work to that person or authorize use of that
 person's accounts. A request transfer alone cannot authorize that identity.
 Retries keep the previous run's latest accepted context,
 even when the retry still references the original request. If that context is
-unavailable, the retry stops instead of replaying the handoff or falling back to
-another person. A new explicit operator action retains precedence.
+unavailable, a retry that references a connection request stops instead of replaying
+the handoff or falling back to another person. An ordinary retry after a
+preparation failure retains its existing responsible-user resolution when no
+identity context was initialized. It prefers the source run's stored person
+when available and can process newly authorized messages. It does not adopt
+the task's old continuation identity. A new explicit operator action retains
+precedence.
 A transfer grants no
 credential access; connection selection still checks the new person's grants and
 policies.

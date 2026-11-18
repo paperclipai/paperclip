@@ -286,6 +286,22 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     })).toMatchObject({ responsibleUserId: "A", parentContextId: later!.id });
   });
 
+  it.each(["durable", "snapshot"])("retries a pre-initialization failure as the stored source person (%s)", async (retryKind) => {
+    const input = await seed();
+    await db.update(heartbeatRuns).set({ status: "failed", responsibleUserId: "A" }).where(eq(heartbeatRuns.id, input.runId));
+    // The task's continuation and the caller's fallback can name another person.
+    // Neither replaces the persisted person on this uninitialized source run.
+    const [otherRun] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: input.agentId, status: "succeeded" }).returning();
+    const other = await initializeRunIdentity(db, { companyId: input.companyId, runId: otherRun.id, responsibleUserId: "B", cause: "instruction" });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running",
+      ...(retryKind === "durable" ? { retryOfRunId: input.runId } : {}),
+      contextSnapshot: { issueId: input.issueId, retryOfRunId: input.runId },
+    });
+    expect(await initializeRunIdentity(db, { ...input, runId, messageIds: [], parentContextId: other.id,
+      responsibleUserId: "B", cause: "retry" })).toMatchObject({ responsibleUserId: "A", parentContextId: null });
+  });
+
   it.each(["durable", "snapshot"].flatMap(retryKind =>
     ["missing-context", "pending-context", "missing-parent"].map(fault => ({ retryKind, fault })),
   ))("refuses a $retryKind retry with $fault instead of replaying a connection handoff", async ({ retryKind, fault }) => {
