@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RoutineTrigger } from "@paperclipai/shared";
 import { AlertCircle, Check, CheckCircle2, GitBranch, Globe, PauseCircle, Radio } from "lucide-react";
-import { webhookAgentInstructions } from "@/components/routine-triggers/TriggerWizard";
+import { webhookAgentInstructions } from "@/components/routine-triggers/webhook-instructions";
 import { AgentInstructions, CopyField } from "@/components/routine-triggers/WebhookFields";
 import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarning";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,12 @@ const STATUS: Record<WebhookHealth, { icon: typeof Radio; tone: string; title: s
     tone: "text-muted-foreground",
     title: "Waiting for a test event",
     detail: "Send one from your app. Test events never start the routine.",
+  },
+  testing: {
+    icon: Radio,
+    tone: "text-muted-foreground",
+    title: "Testing",
+    detail: "Send an event from your app. It won’t start the routine. Real events are ignored until you finish testing.",
   },
   waiting: {
     icon: Radio,
@@ -97,13 +103,15 @@ export function RoutineWebhookDialog({
   const github = trigger?.signingMode === "github_hmac";
   const bearer = trigger?.signingMode === "bearer";
   const health = trigger ? webhookHealth(trigger) : null;
-  const testReceived = trigger?.setupPending && trigger.lastWebhookDelivery?.status === "received";
+  // Only test deliveries count: a webhook put back into test mode still carries its last real delivery.
+  const testDelivery = trigger?.setupPending && trigger.lastWebhookDelivery?.test ? trigger.lastWebhookDelivery : null;
+  const testReceived = testDelivery?.status === "received";
   const status = health
     ? testReceived
       ? { icon: CheckCircle2, tone: "text-(--status-task-done)", title: "Test event received", detail: "The connection works. No task was created." }
-      : trigger?.setupPending && trigger.lastWebhookDelivery?.status === "rejected"
+      : testDelivery?.status === "rejected"
         ? STATUS.rejected
-        : !routineActive && health !== "setup"
+        : !routineActive && health !== "setup" && health !== "testing"
           ? {
               icon: PauseCircle,
               tone: "text-muted-foreground",

@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import type { Issue, RoutineDetail, RoutineTrigger } from "@paperclipai/shared";
 import {
+  ArrowLeft,
   CalendarClock,
   Check,
   ChevronDown,
@@ -75,6 +76,8 @@ export type RoutinePageProps = {
   /** Tasks this routine created, newest first. Pass the pages loaded so far. */
   history: readonly Issue[];
   historyLoading?: boolean;
+  /** Shown in place of the task list when History could not be loaded. */
+  historyError?: ReactNode;
   /** More tasks exist beyond the loaded pages. */
   hasMoreHistory?: boolean;
   loadingMoreHistory?: boolean;
@@ -90,13 +93,20 @@ export type RoutinePageProps = {
   onRemoveSchedule: (triggerId: string) => void;
   onOpenWebhook: (trigger: RoutineTrigger) => void;
   onOpenInstructionComments?: () => void;
+  /** Show the whole instructions, e.g. while their comments are open. */
+  instructionsExpanded?: boolean;
+  /** Wraps the rendered instructions, e.g. with the comment layer that anchors to them. */
+  renderInstructionsBody?: (body: ReactNode) => ReactNode;
+  /** Router state for task links in History, so a task can lead back here. */
+  historyLinkState?: unknown;
 };
 
 function Field({ label, children, action }: { label: string; children: ReactNode; action?: ReactNode }) {
+  const headingId = useId();
   return (
-    <section className="flex min-w-0 flex-col gap-2">
+    <section className="flex min-w-0 flex-col gap-2" aria-labelledby={headingId}>
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm text-muted-foreground">{label}</h2>
+        <h2 id={headingId} className="text-sm text-muted-foreground">{label}</h2>
         {action}
       </div>
       {children}
@@ -199,7 +209,7 @@ function WebhookRow({
   onOpen: () => void;
 }) {
   const health = webhookHealth(trigger);
-  const ignored = !routineActive && health !== "setup";
+  const ignored = !routineActive && health !== "setup" && health !== "testing";
   const Icon = trigger.signingMode === "github_hmac" ? GitBranch : Webhook;
   return (
     <button type="button" className={rowButtonClass} onClick={onOpen} aria-label={`Open ${webhookTitle(trigger)}`}>
@@ -229,13 +239,18 @@ function Instructions({
   commentCount = 0,
   onOpenComments,
   onEdit,
+  forceExpanded = false,
+  renderBody = (body) => body,
 }: {
   markdown: string;
   commentCount?: number;
   onOpenComments?: () => void;
   onEdit: () => void;
+  forceExpanded?: boolean;
+  renderBody?: (body: ReactNode) => ReactNode;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expandedState, setExpanded] = useState(false);
+  const expanded = expandedState || forceExpanded;
   const [copied, setCopied] = useState(false);
   const { preview, truncated } = instructionsPreview(markdown);
   const empty = markdown.trim().length === 0;
@@ -274,10 +289,12 @@ function Instructions({
         </div>
       ) : (
         <>
-          <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
-            {expanded ? markdown : preview}
-          </MarkdownBody>
-          {truncated ? (
+          {renderBody(
+            <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
+              {expanded ? markdown : preview}
+            </MarkdownBody>,
+          )}
+          {truncated && !forceExpanded ? (
             <Button
               variant="ghost"
               size="sm"
@@ -303,6 +320,7 @@ export function RoutinePage({
   responsibilities,
   history,
   historyLoading = false,
+  historyError,
   hasMoreHistory = false,
   loadingMoreHistory = false,
   onLoadMoreHistory,
@@ -315,6 +333,9 @@ export function RoutinePage({
   onRemoveSchedule,
   onOpenWebhook,
   onOpenInstructionComments,
+  instructionsExpanded = false,
+  renderInstructionsBody,
+  historyLinkState,
 }: RoutinePageProps) {
   const state = routineAutomationState(routine);
   const schedules = routine.triggers.filter((trigger) => trigger.kind === "schedule");
@@ -527,10 +548,14 @@ export function RoutinePage({
           commentCount={instructionCommentCount}
           onOpenComments={onOpenInstructionComments}
           onEdit={onEdit}
+          forceExpanded={instructionsExpanded}
+          renderBody={renderInstructionsBody}
         />
 
         <Field label="History">
-          {historyLoading ? (
+          {historyError && history.length === 0 ? (
+            historyError
+          ) : historyLoading ? (
             <p className="py-1.5 text-sm text-muted-foreground" role="status">Loading tasks…</p>
           ) : history.length === 0 ? (
             <p className="py-1.5 text-sm text-muted-foreground">
@@ -539,8 +564,9 @@ export function RoutinePage({
                 : "No tasks yet. Each run creates a task here."}
             </p>
           ) : (
-            <TaskSummaryList issues={history} label="Tasks created by this routine" />
+            <TaskSummaryList issues={history} label="Tasks created by this routine" issueLinkState={historyLinkState} />
           )}
+          {historyError && history.length > 0 ? historyError : null}
           {hasMoreHistory && history.length > 0 ? (
             <Button
               variant="ghost"
@@ -560,6 +586,32 @@ export function RoutinePage({
           ) : null}
         </Field>
       </div>
+    </div>
+  );
+}
+
+/** Version history and the audit log open as their own view, with a way back to the routine. */
+export function RoutineSubpage({
+  routineTitle,
+  title,
+  onBack,
+  children,
+}: {
+  routineTitle: string;
+  title: string;
+  onBack: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 md:px-8">
+      <div className="flex flex-col items-start gap-2">
+        <Button variant="ghost" size="sm" className="-mx-2 text-muted-foreground" onClick={onBack}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          {routineTitle}
+        </Button>
+        <h1 className="text-xl font-semibold">{title}</h1>
+      </div>
+      {children}
     </div>
   );
 }

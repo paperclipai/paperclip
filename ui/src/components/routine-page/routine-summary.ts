@@ -45,10 +45,17 @@ export function webhookTitle(trigger: Pick<RoutineTrigger, "signingMode" | "labe
   return trigger.label ? `${kind} · ${trigger.label}` : kind;
 }
 
-export type WebhookHealth = "setup" | "paused" | "rejected" | "receiving" | "waiting";
+export type WebhookHealth = "setup" | "testing" | "paused" | "rejected" | "receiving" | "waiting";
+
+/** A webhook that went live before and was put back into test mode (it has a real delivery on record). */
+export function webhookRetesting(trigger: Pick<RoutineTrigger, "setupPending" | "lastWebhookDelivery">): boolean {
+  const delivery = trigger.lastWebhookDelivery;
+  if (!trigger.setupPending || !delivery) return false;
+  return delivery.test ? delivery.previous != null : true;
+}
 
 export function webhookHealth(trigger: RoutineTrigger): WebhookHealth {
-  if (trigger.setupPending) return "setup";
+  if (trigger.setupPending) return webhookRetesting(trigger) ? "testing" : "setup";
   if (!trigger.enabled) return "paused";
   if (trigger.lastWebhookDelivery?.status === "rejected") return "rejected";
   if (trigger.lastWebhookDelivery?.status === "received" && !trigger.lastWebhookDelivery.test) return "receiving";
@@ -57,6 +64,7 @@ export function webhookHealth(trigger: RoutineTrigger): WebhookHealth {
 
 export const WEBHOOK_HEALTH_LABELS: Record<WebhookHealth, string> = {
   setup: "Setup unfinished",
+  testing: "Testing · events don’t run",
   paused: "Paused",
   rejected: "Key rejected",
   receiving: "Receiving events",
