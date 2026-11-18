@@ -1114,7 +1114,11 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
         clearedAt: new Date(),
       });
     } else {
-      const exhaustedReason = exhaustedMonitorClearReason({
+      // A held scheduled fire keeps its rescheduled check so the scheduler can
+      // clear an exhausted monitor through its recovery path; ordinary edits
+      // must not clear it first.
+      const heldFirePending = !input.monitorExplicitlyUpdated && Boolean(currentMonitorState?.deferredCount);
+      const exhaustedReason = heldFirePending ? null : exhaustedMonitorClearReason({
         monitor: input.policy.monitor,
         attemptCount: currentMonitorState?.attemptCount ?? 0,
         now: new Date(),
