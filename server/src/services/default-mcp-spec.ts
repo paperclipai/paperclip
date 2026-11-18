@@ -303,11 +303,16 @@ export function connectionHealthColumns<S extends string>(
 
 /**
  * Reviewed writes that start on at first consent: drafts (never sent), Gmail label tagging, Docs/Sheets/Slides/Forms
- * edits, Drive file writes, and comments. Reviewed 2026-11-06. The rule is "off only for real danger": sending,
- * deleting (including tools that delete through an `action` argument: `manage_gmail_label`, `manage_task`,
- * `manage_task_list`, `manage_contact*`), sharing and publishing, calendar invites and RSVPs, Gmail filters, and Apps
- * Script execution or deployment stay off. Activation is per tool name, so a tool that multiplexes a delete is never
- * listed. `manage_conditional_formatting` also accepts a delete action but only removes a formatting rule, never data.
+ * edits, Drive file writes, and comments. Reviewed 2026-11-06 and again 2026-11-18. The rule is "off only for real
+ * danger": sending, deleting that is not recoverable (including tools that delete through an `action` argument:
+ * `manage_gmail_label`, `manage_task`, `manage_task_list`, `manage_contact*`), sharing and publishing (including who a
+ * calendar is shared with: `manage_calendar`), calendar invites and RSVPs, Gmail filters, and Apps Script execution,
+ * deployment or code change (`run_script_function`, `manage_deployment`, `manage_script_content`,
+ * `manage_script_trigger`, `manage_script_project`) stay off. `send_approved_email` stays off: agents no longer send
+ * mail (TECH-8951). Activation is per tool name, so a tool that multiplexes an unrecoverable delete is never listed.
+ * The Docs/Sheets structure tools (`manage_doc_tab`, `manage_sheet_tab`, `resize_sheet_dimensions`,
+ * `manage_named_range`, `move_sheet_rows`) are on: their deletes are recoverable from version history.
+ * `manage_conditional_formatting` also accepts a delete action but only removes a formatting rule, never data.
  * `update_drive_file` is NOT listed: it can move a file to the trash (`trashed`) and change who can share it.
  * `modify_gmail_message_labels` and `batch_modify_gmail_message_labels` can add the `TRASH` or `SPAM` label (the batch
  * tool across many messages in one call); they are kept on so agents can tag mail.
@@ -350,6 +355,23 @@ export const RH_GOOGLE_MCP_SAFE_WRITE_TOOLS: readonly string[] = Object.freeze([
   "manage_presentation_comment",
   "manage_spreadsheet_comment",
   "modify_gmail_message_labels",
+  // Reviewed 2026-11-18: tools that arrived with the workspace-mcp 2.4.1 catalog (24 new tools, none reviewed before).
+  "draft_gmail_with_attachments",
+  "append_table_rows",
+  "import_to_google_sheets",
+  "import_to_google_slides",
+  "manage_script_version",
+  // Docs/Sheets structure edits. Their deletes (tabs, rows, columns, named ranges) are recoverable from Google version
+  // history, and `batch_update_doc`, `batch_update_presentation`, `batch_update_form` and `modify_sheet_values` above can
+  // already do the same or more, so keeping the narrow tools off protected nothing.
+  "manage_doc_tab",
+  "manage_sheet_tab",
+  "resize_sheet_dimensions",
+  "manage_named_range",
+  "move_sheet_rows",
+  // Own calendar status only. They auto-decline meeting invitations, which others can see, and are reversible.
+  "manage_focus_time",
+  "manage_out_of_office",
 ]);
 
 /**
@@ -375,6 +397,7 @@ export const RH_GOOGLE_MCP_INITIAL_ACTIVE_TOOLS: readonly string[] = Object.free
   "get_gmail_thread_content",
   "get_gmail_threads_content_batch",
   "get_gmail_attachment_content",
+  "get_gmail_attachment_text",
   "list_gmail_labels",
   "list_gmail_filters",
   // Drive
@@ -385,6 +408,7 @@ export const RH_GOOGLE_MCP_INITIAL_ACTIVE_TOOLS: readonly string[] = Object.free
   "get_drive_file_download_url",
   "get_drive_file_permissions",
   "check_drive_file_public_access",
+  "get_drive_file_text",
   // Docs
   "get_doc_content",
   "get_doc_as_markdown",
@@ -399,12 +423,14 @@ export const RH_GOOGLE_MCP_INITIAL_ACTIVE_TOOLS: readonly string[] = Object.free
   "get_spreadsheet_info",
   "list_spreadsheets",
   "list_spreadsheet_comments",
+  "list_sheet_tables",
   // Slides
   "get_presentation",
   "get_page",
   "get_page_thumbnail",
   "search_presentations",
   "list_presentation_comments",
+  "render_page_to_image",
   // Forms
   "get_form",
   "get_form_response",
@@ -438,6 +464,9 @@ export const RH_GOOGLE_MCP_INITIAL_ACTIVE_TOOLS: readonly string[] = Object.free
   "list_script_projects",
   "list_versions",
   "get_version",
+  "get_script_activity",
+  "get_script_version",
+  "list_script_deployments",
 ]);
 
 export const DEFAULT_MCP_SPEC_ENABLED_ENV = "PAPERCLIP_DEFAULT_MCP_SPEC_ENABLED";

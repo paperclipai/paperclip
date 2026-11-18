@@ -118,24 +118,33 @@ Use the Permissions UI (Layer 4). Do not edit code for a per-company choice.
 
 ## Risk grouping for RH Google MCP tools
 
-The rule (set 2026-11-06): off only for real danger, which means sending, deleting, sharing or publishing, reaching other
-people, and running code. Dangerous tools stay off by default and owners can enable them in the UI.
+The rule (set 2026-11-06, reviewed again 2026-11-18): off only for real danger, which means sending, deleting something
+that cannot be recovered, sharing or publishing, reaching other people, and running or changing code. Dangerous tools
+stay off by default and owners can enable them in the UI.
 
 - **Off by default, enable only with a reason:**
-  - Sending: `send_gmail_message`, `send_message` (Chat).
+  - Sending: `send_gmail_message`, `send_message` (Chat), `send_approved_email` (agents no longer send mail, TECH-8951).
   - Deleting, or deleting through an argument: `update_drive_file` (`trashed`, and it changes sharing),
     `delete_script_project`, `delete_doc_tab`, `manage_gmail_label`,
     `manage_task`, `manage_task_list`, `manage_contact`, `manage_contacts_batch`, `manage_contact_group`.
   - Sharing and publishing: `manage_drive_access`, `set_drive_file_permissions`, `set_publish_settings`,
-    `get_drive_shareable_link`.
+    `get_drive_shareable_link`, `manage_calendar` (who a calendar is shared with).
   - Reaching other people: `manage_event`, `respond_to_event`, `create_event_with_zoom`, `manage_gmail_filter`
     (auto-forward or auto-delete).
   - Apps Script execution or change: `run_script_function`, `create_script_project`, `update_script_content`,
-    `manage_deployment`, `create_version`.
+    `manage_deployment`, `create_version`, `manage_script_content` (rewrites code that later runs under the user's
+    authorization), `manage_script_trigger` (runs a helper through the Execution API), `manage_script_project`
+    (create or delete a project).
 - **On at first connect (`RH_GOOGLE_MCP_SAFE_WRITE_TOOLS`):** `draft_gmail_message`, Gmail label tagging
   (`modify_gmail_message_labels`, `batch_modify_gmail_message_labels`), Docs, Sheets, Slides and Forms edit and create
   tools, Drive file writes (`create_drive_file`, `copy_drive_file`, `export_doc_to_pdf`, ...), and
-  comment tools.
+  comment tools. Added 2026-11-18 (the 24 tools that arrived with workspace-mcp 2.4.1, none reviewed before):
+  `draft_gmail_with_attachments`, `append_table_rows`, `import_to_google_sheets`, `import_to_google_slides`,
+  `manage_script_version`, `manage_focus_time`, `manage_out_of_office`, and the Docs/Sheets structure tools
+  `manage_doc_tab`, `manage_sheet_tab`, `resize_sheet_dimensions`, `manage_named_range`, `move_sheet_rows`. Their
+  deletes are recoverable from Google version history, and the batch edit tools already on can do the same or more.
+  The matching read tools (`list_sheet_tables`, `get_drive_file_text`, `get_gmail_attachment_text`,
+  `render_page_to_image`, `get_script_activity`, `get_script_version`, `list_script_deployments`) are on too.
 - **Known trade-off:** the label tools need `gmail.modify`, which also lets a call add the `TRASH` or `SPAM` label, so
   they are not strictly "tags only". They are on so agents can tag mail.
 

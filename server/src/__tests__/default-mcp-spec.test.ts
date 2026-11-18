@@ -1219,7 +1219,7 @@ describe("RH Google MCP first-consent defaults", () => {
   // Outside the reviewed safe writes, only names that read. The server's readOnlyHint is wrong for many tools
   // (manage_drive_access, modify_sheet_values, run_script_function ...), so this is a name-shape guard on the curated
   // list, not a trust in that flag.
-  const READ_SHAPE = /^(get|list|search|read|query|check|inspect|svc_get|svc_list|svc_read)_/;
+  const READ_SHAPE = /^(get|list|search|read|query|check|inspect|render|svc_get|svc_list|svc_read)_/;
   // Dangerous tools must stay off by default; an owner enables them in Permissions.
   const DANGEROUS = [
     "send_gmail_message", "send_message", "manage_drive_access", "set_drive_file_permissions", "set_publish_settings",
@@ -1230,6 +1230,9 @@ describe("RH Google MCP first-consent defaults", () => {
     "manage_gmail_label", "manage_task", "manage_task_list",
     // Can move a file to the trash (`trashed`) and change who can share it.
     "update_drive_file",
+    // Reviewed 2026-11-18 and kept off: calendar sharing (access control), Apps Script code change or execution,
+    // and the approved-send tool (agents no longer send mail, TECH-8951).
+    "manage_calendar", "manage_script_content", "manage_script_trigger", "manage_script_project", "send_approved_email",
   ];
 
   it("lists read-shaped names plus the reviewed safe writes, none duplicated, and none of the dangerous tools", () => {
