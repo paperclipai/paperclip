@@ -1127,7 +1127,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand());
     options.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
     options.mcpServers = [
-      { name: "desktop", command: "/bin/desktop-mcp", args: ["mcp"], env: { HOME: "/runtime/home" } },
+      { name: "desktop", command: "/bin/desktop-mcp", args: ["mcp"], env: { HOME: "/runtime/home" }, runnerOwned: false },
       { name: "paperclip", url: "http://127.0.0.1:3210/mcp", bearerToken: "bridge-secret", runnerOwned: true },
       { name: "connector", url: "https://connector.invalid/mcp", bearerToken: "connector-secret", runnerOwned: false },
     ];
