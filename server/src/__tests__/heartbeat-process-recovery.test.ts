@@ -124,6 +124,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import type { NativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { runningProcesses, type AdapterExecutionContext, type AdapterExecutionResult } from "../adapters/index.ts";
@@ -10035,11 +10036,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("tracks the first heartbeat with the agent role instead of adapter type", async () => {
-    const { agentId, runId } = await seedRunFixture({
+    const { companyId, agentId, runId } = await seedRunFixture({
       agentStatus: "running",
       includeIssue: false,
     });
     const heartbeat = heartbeatService(db);
+    const scopedCompanies: Array<string | undefined> = [];
+    mockTrackAgentFirstHeartbeat.mockImplementationOnce(() => scopedCompanies.push(scopedTelemetryCompanyId()));
 
     await heartbeat.cancelRun(runId);
 
@@ -10050,6 +10053,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         agentId,
       }),
     );
+    expect(scopedCompanies).toEqual([companyId]);
   });
 
   it("preserves first-heartbeat telemetry after a timer interval claim", async () => {

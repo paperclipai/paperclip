@@ -208,6 +208,7 @@ import {
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
@@ -16704,13 +16705,13 @@ export function issueRoutes(
               typeof actorAgent.adapterConfig?.model === "string"
                 ? actorAgent.adapterConfig.model
                 : undefined;
-            trackAgentTaskCompleted(tc, {
+            withTelemetryCompany(issue.companyId, () => trackAgentTaskCompleted(tc, {
               agentRole: actorAgent.role,
               agentId: actorAgent.id,
               adapterType: actorAgent.adapterType,
               model,
               taskId: issue.id,
-            });
+            }));
           }
         }
       }

@@ -69,6 +69,7 @@ import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { HttpError, badRequest, conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
@@ -2083,10 +2084,10 @@ export function routineService(
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
-      trackRoutineRun(telemetryClient, {
+      withTelemetryCompany(input.routine.companyId, () => trackRoutineRun(telemetryClient, {
         source: run.source,
         status: run.status,
-      });
+      }));
     }
 
     return run;
