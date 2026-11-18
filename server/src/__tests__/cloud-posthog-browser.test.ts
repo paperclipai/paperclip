@@ -356,16 +356,17 @@ describe("PostHog proxy forwarding", () => {
       let browserRequest: http.ClientRequest | undefined;
       const headers = await new Promise<number>((resolve) => {
         browserRequest = http.get({ host: "127.0.0.1", port, path: "/_ph/static/recorder.js" }, (res) => {
+          res.on("error", () => {});
           res.pause();
           resolve(res.statusCode ?? 0);
         });
         browserRequest.on("error", () => {});
       });
       expect(headers).toBe(200);
-      expect((await request(server).get("/_ph/static/array.js").buffer(false).parse((res, done) => { res.resume(); res.on("end", () => done(null, null)); })).status).toBe(429);
+      expect((await request(server).get("/_ph/static/array.js")).status).toBe(429);
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       expect(finished).toEqual(["upstream"]);
-      const next = await request(server).get("/_ph/static/array.js").buffer(false).parse((res, done) => { res.resume(); res.on("end", () => done(null, null)); });
+      const next = await request(server).get("/_ph/static/array.js");
       browserRequest?.destroy();
       expect(next.status).toBe(200);
     } finally {
@@ -387,6 +388,7 @@ describe("PostHog proxy forwarding", () => {
       const startedAt = Date.now();
       const outcome = await new Promise<number | string>((resolve) => {
         const req = http.request({ host: "127.0.0.1", port, path: "/_ph/e/", method: "POST", headers: { "content-type": "text/plain", "transfer-encoding": "chunked" } }, (res) => {
+          res.on("error", () => {});
           res.resume();
           resolve(res.statusCode ?? 0);
         });
