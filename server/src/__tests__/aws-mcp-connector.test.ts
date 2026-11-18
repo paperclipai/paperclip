@@ -48,7 +48,7 @@ describe("AWS connector with minted credentials", () => {
     let tokens = 0;
     const session = (label: string) => ({ accessKeyId: `ASIA${label}`, secretAccessKey: "s", sessionToken: "t", expiration: new Date(Date.now() + 3_600_000) });
     const aws = {
-      assumeRoleWithWebIdentity: vi.fn(async () => session("WEB")),
+      assumeRoleWithWebIdentity: vi.fn(async (_input: Parameters<AwsMcpClients["assumeRoleWithWebIdentity"]>[0]) => session("WEB")),
       assumeRole: vi.fn(async () => session("ROLE")),
       getFederationToken: vi.fn(async () => session("FED")),
       createMcpToken: vi.fn(async () => ({ token: `mcp-${++tokens}`, expiresInSeconds: 3599 })),
