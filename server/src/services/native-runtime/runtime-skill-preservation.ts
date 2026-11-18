@@ -173,9 +173,21 @@ export async function preserveRuntimeSkillAssets(db: Db, input: { companyId: str
   return { preserved: assets.length };
 }
 
-export async function hasLocalRuntimeSkillObligations(db: Db): Promise<boolean> {
+/** Retained runs whose admitted local skill bundles have no durable receipt. */
+async function* localRuntimeSkillObligations(db: Db): AsyncGenerator<{ id: string; companyId: string }> {
   let after: string | undefined;
   const checkedPackages = new Map<string, { hash: string; storage: typeof snapshots.$inferSelect.storage }>();
+  const durable = async (companyId: string, asset: PreservedRuntimeSkill) => {
+    try { manifestFiles(asset.bundle, asset.manifestText); } catch { return false; }
+    const key = `${companyId}:${asset.packageSnapshotId}`;
+    let snapshot = checkedPackages.get(key);
+    if (!snapshot) {
+      [snapshot] = await db.select({ hash: snapshots.contentHash, storage: snapshots.storage }).from(snapshots)
+        .where(and(eq(snapshots.companyId, companyId), eq(snapshots.id, asset.packageSnapshotId)));
+      if (snapshot) checkedPackages.set(key, snapshot);
+    }
+    return snapshot?.storage?.provider === "s3" && snapshot.storage.durable === true && snapshot.hash === asset.packageContentHash;
+  };
   for (;;) {
     const rows = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       nativeIssueId: heartbeatRuns.nativeIssueId, runnerProfileJson: sql<Record<string, unknown>>`jsonb_build_object(
@@ -184,24 +196,49 @@ export async function hasLocalRuntimeSkillObligations(db: Db): Promise<boolean> 
       .from(heartbeatRuns).where(and(retainedRuntimeSkillsSql(), after ? gt(heartbeatRuns.id, after) : undefined))
       .orderBy(asc(heartbeatRuns.id)).limit(100);
     for (const row of rows) {
-      let receipt;
-      try { receipt = readRuntimeSkillPreservation(row); } catch { return true; }
-      if (!receipt) return true;
-      for (const asset of receipt.assets) {
-        try { manifestFiles(asset.bundle, asset.manifestText); } catch { return true; }
-        const key = `${row.companyId}:${asset.packageSnapshotId}`;
-        let snapshot = checkedPackages.get(key);
-        if (!snapshot) {
-          [snapshot] = await db.select({ hash: snapshots.contentHash, storage: snapshots.storage }).from(snapshots)
-            .where(and(eq(snapshots.companyId, row.companyId), eq(snapshots.id, asset.packageSnapshotId)));
-          if (snapshot) checkedPackages.set(key, snapshot);
-        }
-        if (snapshot?.storage?.provider !== "s3" || snapshot.storage.durable !== true || snapshot.hash !== asset.packageContentHash) return true;
-      }
+      let receipt: RuntimeSkillPreservation | null;
+      try { receipt = readRuntimeSkillPreservation(row); } catch { receipt = null; }
+      let settled = receipt !== null;
+      for (const asset of receipt?.assets ?? []) if (settled) settled = await durable(row.companyId, asset);
+      if (!settled) yield { id: row.id, companyId: row.companyId };
     }
-    if (rows.length < 100) return false;
+    if (rows.length < 100) return;
     after = rows.at(-1)!.id;
   }
+}
+
+export async function hasLocalRuntimeSkillObligations(db: Db): Promise<boolean> {
+  for await (const _ of localRuntimeSkillObligations(db)) return true;
+  return false;
+}
+
+/** The recorded bundle is not on this filesystem: its files are gone, or it
+ * was written under another instance root. Nothing this server reads saves it. */
+function runtimeSkillSourceAbsent(error: unknown) {
+  return ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException | undefined)?.code ?? "")
+    || (error instanceof Error && error.message === "runtime_skill_source_path_mismatch");
+}
+
+/** Copies every retained bundle this filesystem still holds into durable
+ * storage: the same copy the skill package maintenance command makes. A run
+ * whose bundle files are not here is reported, never guessed at. Any other
+ * failure (a changed source, storage) propagates to the caller. */
+export async function preserveLocalRuntimeSkillObligations(db: Db, options: { signal?: AbortSignal } = {}, storage?: StorageService) {
+  let preserved = 0;
+  const sourceAbsent: string[] = [];
+  await withSkillPackageReadScope(db, async () => {
+    for await (const run of localRuntimeSkillObligations(db)) {
+      options.signal?.throwIfAborted();
+      try {
+        await preserveRuntimeSkillAssets(db, { companyId: run.companyId, runId: run.id, signal: options.signal }, storage);
+        preserved++;
+      } catch (error) {
+        if (!runtimeSkillSourceAbsent(error)) throw error;
+        sourceAbsent.push(run.id);
+      }
+    }
+  });
+  return { preserved, sourceAbsent };
 }
 
 /** Existing bounded skill maintenance owns this optional online conversion;
