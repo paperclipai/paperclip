@@ -112,6 +112,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableBetaSkills: false,
     enableSummaries: false,
     enableStatusCards: false,
+    enableResponsibilities: false,
     enableDecisions: false,
     enableFastResponses: false,
     enableGoalsSidebarLink: false,
