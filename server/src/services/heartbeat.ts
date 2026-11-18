@@ -89,11 +89,6 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
-  describeRunFailureCause,
-  readTransientDbSqlstate,
-  writeWithTransientDbRetry,
-} from "./heartbeat-run-failure.js";
-import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
