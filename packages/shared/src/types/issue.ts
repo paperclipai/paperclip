@@ -202,6 +202,12 @@ export interface IssueDocument extends IssueDocumentSummary {
   body: string;
 }
 
+/** Unreadable or nonexistent tasks are omitted. A readable task without the key has document: null. */
+export interface IssueDocumentBatch {
+  key: string;
+  items: Array<{ issueId: string; document: IssueDocument | IssueDocumentSummary | null }>;
+}
+
 export interface DocumentRevision {
   id: string;
   companyId: string;

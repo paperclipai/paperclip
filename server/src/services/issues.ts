@@ -2067,6 +2067,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" |
   workspaceSelectionSource?: "explicit" | "channel";
   workspaceSelectionActor?: AuthorizationActor;
   title?: string;
+  generateConversationTitle?: boolean;
   initialPlan?: string | null;
   /** Internal, server-derived provenance for an accepted in-app chat suggestion. */
   conversationHandoff?: { conversationId: string; sessionGeneration: number };
@@ -10590,6 +10591,7 @@ export function issueService(db: Db) {
         workspaceSelection, workspaceSelectionSource = "explicit", workspaceSelectionActor,
         initialPlan,
         conversationHandoff,
+        generateConversationTitle,
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
@@ -10615,7 +10617,7 @@ export function issueService(db: Db) {
       const provisionalTitle = issueData.description
         ? provisionalTitleFromDescription(issueData.description)
         : undefined;
-      const resolvedTitle = explicitTitle || provisionalTitle;
+      let resolvedTitle = explicitTitle || provisionalTitle || "";
       if (!resolvedTitle) throw unprocessable("Provide a title or task description");
       const titleNeedsGeneration = !explicitTitle;
       // A prompt prefix is not a task identity: distinct requests can share it.
@@ -10649,6 +10651,15 @@ export function issueService(db: Db) {
       }
       const persist = async (tx: DbTransaction) => {
         await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("no key update");
+        if (generateConversationTitle) {
+          if (!issueData.conversationAgentId || !issueData.conversationUserId) throw unprocessable("Generated chat titles require a conversation");
+          const [conversationAgent] = await tx.select({ name: agents.name }).from(agents).where(and(
+            eq(agents.companyId, companyId), eq(agents.id, issueData.conversationAgentId),
+          ));
+          if (!conversationAgent) throw notFound("Conversation agent not found");
+          resolvedTitle = `Chat with ${conversationAgent.name}`;
+          issueData.title = resolvedTitle;
+        }
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0))`);
         await assertAgentInteraction(tx as unknown as Db, {
           companyId, actorAgentId: issueData.createdByAgentId,

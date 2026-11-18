@@ -878,6 +878,7 @@ export type {
   IssueThreadInteractionResult,
   IssueDocument,
   IssueDocumentSummary,
+  IssueDocumentBatch,
   DocumentRevision,
   ExactDocumentRevision,
   DocumentFormat,
