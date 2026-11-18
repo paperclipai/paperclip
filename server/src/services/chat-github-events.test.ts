@@ -1,3 +1,4 @@
+import type { GitHubReviewPolicy } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import { githubAutomaticIssueEvent, githubBodyMentionsBot, githubExplicitMentionEvent } from "./chat-github-events.js";
 import { createInboundEnvelope } from "./chat-channels/inbound/envelope.js";
@@ -78,8 +79,8 @@ describe("explicit GitHub mentions", () => {
     };
     const thread = { id: "github:Acme/Repo:issue:2", channelId: "github:acme/repo", channel: { name: "acme/repo" }, isDM: false };
     const endpoint = { id: "e1", companyId: "c1", provider: "github", botUsername: "maya[bot]", providerAccountId: "1", botExternalId: "b1" };
-    const githubManualMessages = new WeakMap<object, { policy: object; revision: number; event: "mention" | "comment" }>();
-    githubManualMessages.set(message, { policy: {}, revision: 1, event: "mention" });
+    const githubManualMessages = new WeakMap<object, { policy: GitHubReviewPolicy; revision: number; event: "mention" | "comment" }>();
+    githubManualMessages.set(message, { policy: {} as GitHubReviewPolicy, revision: 1, event: "mention" });
     const { prepareInboundEnvelope } = createInboundEnvelope({} as never, {
       runtimeFor: async () => ({}) as never,
       sanitizeFilename: (v) => v ?? null,
