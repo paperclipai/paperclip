@@ -584,6 +584,11 @@ describe("decideWakeAdmission", () => {
       expected: { kind: "coalesce" },
     },
     {
+      name: "defer: a wake that refuses run coalescing, such as a question reaction, waits for its own turn",
+      facts: { ...baseWakeAdmissionFacts, allowRunCoalescing: false },
+      expected: { kind: "defer" },
+    },
+    {
       name: "defer: same execution agent, but the running agent needs a fresh session",
       facts: { ...baseWakeAdmissionFacts, shouldDeferFollowupWake: true },
       expected: { kind: "defer" },

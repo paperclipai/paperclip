@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
   companies,
   createDb,
   documentAnnotationAnchorSnapshots,
+  documentAnnotationCommentReactions,
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
@@ -57,6 +59,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
 
   afterEach(async () => {
     await db.delete(documentAnnotationAnchorSnapshots);
+    await db.delete(documentAnnotationCommentReactions);
     await db.delete(documentAnnotationComments);
     await db.delete(documentAnnotationThreads);
     await db.delete(issueThreadInteractions);
@@ -65,6 +68,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await db.delete(documents);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -628,6 +632,123 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
         }),
       ],
     });
+  });
+
+  async function createAnnotatedIssue() {
+    const created = await createIssueWithDocument("standard");
+    const thread = await annotations.createThread(
+      created.issueId,
+      "plan",
+      {
+        baseRevisionId: created.document.latestRevisionId!,
+        baseRevisionNumber: created.document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Is this step ready?",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    return { ...created, thread, comment: thread.comments[0]! };
+  }
+
+  it("adds, repeats safely, and removes comment reactions with counts and reacted-by-me", async () => {
+    const { companyId, issueId, thread, comment } = await createAnnotatedIssue();
+    const user = { actorType: "user" as const, actorId: "board-user", userId: "board-user" };
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "worker", adapterType: "process", adapterConfig: {} });
+    const agent = { actorType: "agent" as const, actorId: agentId, agentId };
+    const target = { kind: "issue" as const, issueId, key: "plan" };
+    const react = (actor: typeof user | typeof agent, reaction: "done" | "question", present: boolean) =>
+      annotations.setCommentReaction({ target, threadId: thread.id, commentId: comment.id, reaction, present, actor });
+
+    const added = await react(user, "question", true);
+    expect(added.changed).toBe(true);
+    expect(added.firstAdd).toBe(true);
+    expect(added.comment.reactions).toEqual([
+      { reaction: "question", count: 1, reactedByMe: true, actors: [{ actorType: "user", agentId: null, userId: "board-user" }] },
+    ]);
+    expect((await react(user, "question", true)).changed).toBe(false);
+    await react(agent, "question", true);
+    await react(agent, "done", true);
+
+    const [listed] = await annotations.listThreadsForIssueDocument(issueId, "plan", {
+      includeComments: true,
+      viewer: { actorType: "user", actorId: "board-user" },
+    }) as unknown as Array<{ comments: Array<{ reactions?: unknown[] }> }>;
+    expect(listed!.comments[0]!.reactions).toEqual([
+      { reaction: "done", count: 1, reactedByMe: false, actors: [{ actorType: "agent", agentId, userId: null }] },
+      expect.objectContaining({ reaction: "question", count: 2, reactedByMe: true }),
+    ]);
+    const asAgent = await annotations.getThreadForIssueDocument(issueId, "plan", thread.id, { actorType: "agent", actorId: agentId });
+    expect(asAgent!.comments[0]!.reactions).toEqual([
+      expect.objectContaining({ reaction: "done", reactedByMe: true }),
+      expect.objectContaining({ reaction: "question", count: 2, reactedByMe: true }),
+    ]);
+
+    const removed = await react(user, "question", false);
+    expect(removed.changed).toBe(true);
+    expect(removed.comment.reactions).toEqual([
+      expect.objectContaining({ reaction: "done", count: 1, reactedByMe: false }),
+      expect.objectContaining({ reaction: "question", count: 1, reactedByMe: false }),
+    ]);
+    expect((await react(user, "question", false)).changed).toBe(false);
+
+    const readded = await react(user, "question", true);
+    expect(readded.changed).toBe(true);
+    expect(readded.firstAdd).toBe(false);
+    expect(readded.comment.reactions).toEqual([
+      expect.objectContaining({ reaction: "done", count: 1 }),
+      expect.objectContaining({ reaction: "question", count: 2, reactedByMe: true }),
+    ]);
+  });
+
+  it("rejects a reaction on a comment that belongs to another issue's thread", async () => {
+    const { issueId, thread } = await createAnnotatedIssue();
+    const other = await createAnnotatedIssue();
+
+    await expect(annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: other.comment.id,
+      reaction: "done",
+      present: true,
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    })).rejects.toMatchObject({ status: 404 });
+    await expect(annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: other.thread.id,
+      commentId: other.comment.id,
+      reaction: "done",
+      present: true,
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("marks a question reaction wake on the annotation delta", async () => {
+    const { companyId, issueId, thread, comment } = await createAnnotatedIssue();
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: "board-user",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(payload?.annotationDeltas).toMatchObject([
+      expect.objectContaining({
+        id: comment.id,
+        threadId: thread.id,
+        reaction: { name: "question", author: { type: "user", id: "board-user" } },
+      }),
+    ]);
   });
 
   it("fails closed when an annotation delta comment id points at a different issue", async () => {

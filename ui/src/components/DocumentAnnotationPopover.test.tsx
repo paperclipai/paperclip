@@ -13,6 +13,7 @@ const mutations = vi.hoisted(() => ({
   create: vi.fn(),
   reply: vi.fn(),
   status: vi.fn(),
+  reaction: vi.fn(),
 }));
 
 vi.mock("@/hooks/useDocumentAnnotationMutations", () => ({
@@ -20,6 +21,7 @@ vi.mock("@/hooks/useDocumentAnnotationMutations", () => ({
     createThread: { mutate: mutations.create, isPending: false },
     addReply: { mutate: mutations.reply, isPending: false },
     updateStatus: { mutate: mutations.status, isPending: false },
+    toggleReaction: { mutate: mutations.reaction, isPending: false },
     mutationError: null,
   }),
 }));
@@ -150,5 +152,38 @@ describe("DocumentAnnotationPopover", () => {
       expect(mutations.reply).toHaveBeenCalledWith({ threadId: "thread-1", body: "A reply" });
       expect(mutations.status).toHaveBeenCalledWith({ threadId: "thread-1", status: "resolved" });
     });
+  });
+
+  it("shows one-tap reactions with counts and toggles them", async () => {
+    const reacted = thread();
+    reacted.comments[0]!.reactions = [
+      { reaction: "done", count: 2, reactedByMe: true, actors: [
+        { actorType: "user", agentId: null, userId: "user-1" },
+        { actorType: "agent", agentId: "agent-1", userId: null },
+      ] },
+    ];
+    await render({
+      pendingAnchor: null,
+      thread: reacted,
+      agentMap: new Map([["agent-1", { id: "agent-1", name: "Engineering" }]]),
+    });
+    const group = container.querySelector('[data-testid="document-annotation-reactions-comment-1"]') as HTMLElement;
+    const buttons = Array.from(group.querySelectorAll("button"));
+    expect(buttons.map((button) => button.dataset.reaction)).toEqual(["done", "check", "thumbs_up", "question"]);
+
+    const done = buttons[0]!;
+    expect(done.getAttribute("aria-pressed")).toBe("true");
+    expect(done.textContent).toBe("✅2");
+    expect(done.title).toBe("Done: user-1, Engineering");
+    const question = buttons[3]!;
+    expect(question.getAttribute("aria-pressed")).toBe("false");
+    expect(question.textContent).toBe("❓");
+
+    await act(async () => {
+      question.click();
+      done.click();
+    });
+    expect(mutations.reaction).toHaveBeenCalledWith({ threadId: "thread-1", commentId: "comment-1", reaction: "question", present: true });
+    expect(mutations.reaction).toHaveBeenCalledWith({ threadId: "thread-1", commentId: "comment-1", reaction: "done", present: false });
   });
 });

@@ -2,11 +2,13 @@ import { z } from "zod";
 import {
   DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES,
   DOCUMENT_ANNOTATION_ANCHOR_STATES,
+  DOCUMENT_ANNOTATION_COMMENT_REACTIONS,
   DOCUMENT_ANNOTATION_THREAD_STATUSES,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 
 export const documentAnnotationThreadStatusSchema = z.enum(DOCUMENT_ANNOTATION_THREAD_STATUSES);
+export const documentAnnotationCommentReactionSchema = z.enum(DOCUMENT_ANNOTATION_COMMENT_REACTIONS);
 export const documentAnnotationAnchorStateSchema = z.enum(DOCUMENT_ANNOTATION_ANCHOR_STATES);
 export const documentAnnotationAnchorConfidenceSchema = z.enum(DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES);
 

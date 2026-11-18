@@ -2,6 +2,7 @@ import type {
   CreateDocumentAnnotationCommentRequest,
   CreateDocumentAnnotationThreadRequest,
   DocumentAnnotationComment,
+  DocumentAnnotationCommentReactionName,
   DocumentAnnotationThread,
   DocumentAnnotationThreadStatus,
   DocumentAnnotationThreadWithComments,
@@ -76,6 +77,18 @@ export const documentAnnotationsApi = {
       `${targetBasePath(target)}/${threadId}/comments`,
       data,
     ),
+  setReactionForTarget: (
+    target: DocumentAnnotationTarget,
+    threadId: string,
+    commentId: string,
+    reaction: DocumentAnnotationCommentReactionName,
+    present: boolean,
+  ) => {
+    const path = `${targetBasePath(target)}/${threadId}/comments/${commentId}/reactions/${reaction}`;
+    return present
+      ? api.put<DocumentAnnotationComment>(path, {})
+      : api.delete<DocumentAnnotationComment>(path);
+  },
   updateStatus: (
     issueId: string,
     key: string,
