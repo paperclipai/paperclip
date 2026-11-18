@@ -24,8 +24,16 @@ function owners(overrides: Record<string, unknown> = {}) {
       { skillId: "s1", companyId: "c", status: "converted" }, { skillId: "s2", companyId: "c", status: "unchanged" },
       { skillId: "s3", companyId: "c", status: "linked_local" }] }) }),
     runtimeSkillAssets: page("runtimeSkillAssets", { inspected: 1, after: null, results: [{ runId: "r1", status: "preserved" }] }),
-    nativeHarnessBackups: page("nativeHarnessBackups", { inspected: 1, published: 1, current: 0, deferred: { source_active: 2 } }),
-    nativeControllers: page("nativeControllers", { inspected: 1, imported: 1, unchanged: 0, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} }),
+    nativeHarnessBackups: async (_db: Db, input: { onOutcome?: (outcome: string) => void }) => {
+      calls.push("nativeHarnessBackups");
+      for (const outcome of ["published", "current", "source_active", "source_active"]) input.onOutcome?.(outcome);
+      return { inspected: 4, published: 1, current: 1, deferred: { source_active: 2 } };
+    },
+    nativeControllers: async (_db: Db, input: { onOutcome?: (outcome: string) => void }) => {
+      calls.push("nativeControllers");
+      for (const outcome of ["imported", "unchanged"]) input.onOutcome?.(outcome);
+      return { inspected: 2, imported: 1, unchanged: 1, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} };
+    },
     eligibility: vi.fn(async () => ({ eligible: false, blockers: ["skills_require_migration", "volume_free_storage_flags_required"] })),
     record: vi.fn(async () => undefined),
     ...overrides,
@@ -91,7 +99,7 @@ describe("online durable-data migration pass", () => {
     const slow = (name: string, value: unknown) => vi.fn(async () => { clock += 70_000; return value; });
     const fixture = owners({
       agentFiles: slow("agentFiles", { results: [], next: null }),
-      nativeHarnessBackups: slow("nativeHarnessBackups", { inspected: 0, published: 0, current: 0, deferred: {} }),
+      runtimeSkillAssets: slow("runtimeSkillAssets", { inspected: 0, after: null, results: [] }),
     });
     const run = () => runOnlineDurableDataMigration(db, { budgetMs: 60_000, now: () => clock }, fixture.owners);
     expect((await run()).state).toBe("budget_exhausted");
@@ -100,14 +108,38 @@ describe("online durable-data migration pass", () => {
     expect(fixture.calls).toContain("nativeControllers");
   });
 
-  it("stops an owner that overruns the budget and still returns the partial report", async () => {
-    const nativeHarnessBackups = vi.fn(async (_db: Db, input: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
-      input.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-    }));
+  it("stops an owner that overruns the budget and keeps the work it already finished", async () => {
+    const nativeHarnessBackups = vi.fn(async (_db: Db, input: { signal: AbortSignal; onOutcome?: (outcome: string) => void }) => {
+      input.onOutcome?.("published");
+      input.onOutcome?.("source_active");
+      return new Promise((_resolve, reject) => {
+        input.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    });
     const fixture = owners({ nativeHarnessBackups });
     const result = await runOnlineDurableDataMigration(db, { budgetMs: 20 }, fixture.owners);
-    expect(result).toMatchObject({ state: "budget_exhausted", resumePhase: "native_harness_backups", counts: { agentFiles: 1 } });
+    expect(result).toMatchObject({ state: "budget_exhausted", resumePhase: "native_harness_backups",
+      counts: { agentFiles: 1, nativeHarnessBackups: 1 }, deferred: { "native_harness:source_active": 1 } });
     expect(fixture.record).toHaveBeenCalledWith(db, result);
+  });
+
+  it("halves a page that overruns the budget, then skips an owner whose single item keeps overrunning", async () => {
+    const limits: number[] = [];
+    const runtimeSkillAssets = vi.fn(async (_db: Db, input: { limit: number; signal: AbortSignal }) => {
+      limits.push(input.limit);
+      return new Promise((_resolve, reject) => {
+        input.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    });
+    const fixture = owners({ runtimeSkillAssets });
+    let last;
+    for (let pass = 0; pass < 9 && !fixture.calls.includes("nativeControllers"); pass++) {
+      last = await runOnlineDurableDataMigration(db, { budgetMs: 10 }, fixture.owners);
+    }
+    expect(limits).toEqual([50, 25, 12, 6, 3, 1, 1]);
+    expect(fixture.calls).toContain("nativeControllers");
+    expect(last).toMatchObject({ state: "completed", deferred: expect.objectContaining({}) });
+    expect(fixture.record).toHaveBeenCalledWith(db, expect.objectContaining({ deferred: expect.objectContaining({ "runtime_skill_assets:stalled": 1 }) }));
   });
 
   it("records a failed pass with the work it finished before rethrowing", async () => {

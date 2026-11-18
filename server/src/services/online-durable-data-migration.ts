@@ -70,7 +70,10 @@ const PHASES = ["agent_files", "skill_objects", "skill_snapshots", "skill_versio
 type Phase = typeof PHASES[number];
 
 let running: Promise<OnlineDurableDataMigrationResult> | null = null;
-let progress: { phase: number; after?: string } = { phase: 0 };
+type Progress = { phase: number; after?: string; limit?: number; timeouts?: number };
+let progress: Progress = { phase: 0 };
+const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 25, skill_objects: 1, skill_snapshots: 50, skill_versions: 50,
+  skill_installations: 50, runtime_skill_assets: 50 };
 
 export function resetOnlineDurableDataMigrationProgressForTests() {
   progress = { phase: 0 };
@@ -109,10 +112,10 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
     const packages = owners.skillPackages(db, storage);
     const skills = owners.skillInstallations(db, storage);
 
-    const page = async (phase: Phase, after: string | undefined): Promise<string | null> => {
+    const page = async (phase: Phase, after: string | undefined, limit: number): Promise<string | null> => {
       switch (phase) {
         case "agent_files": {
-          const result = await owners.agentFiles(db, { apply: true, writersStopped: false, after, limit: 25 });
+          const result = await owners.agentFiles(db, { apply: true, writersStopped: false, after, limit });
           for (const row of result.results) {
             if (row.state === "durable") add(counts, "agentFiles");
             else add(deferred, `agent_files:${row.state}`);
@@ -123,38 +126,40 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           const result = await owners.skillObjects(db, { source: localSkills, destination: storage, writersStopped: false, online: true, signal, after });
           add(counts, "skillObjects", result.migrated);
           add(deferred, "skill_objects:owner_busy", result.busy);
-          return result.inspected < 50 ? null : result.after;
+          return result.inspected < 50 || !result.after ? null : result.after;
         }
         case "skill_snapshots":
         case "skill_versions": {
           const step = phase === "skill_snapshots" ? packages.migrateSnapshots : packages.migrateVersions;
-          const result: Awaited<ReturnType<typeof step>> = await step({ apply: true, after, limit: 50, signal });
+          const result: Awaited<ReturnType<typeof step>> = await step({ apply: true, after, limit, signal });
           add(counts, phase === "skill_snapshots" ? "skillSnapshots" : "skillVersions", result.migrated);
-          return result.inspected < 50 ? null : result.after;
+          return result.inspected < limit || !result.after ? null : result.after;
         }
         case "skill_installations": {
-          const result = await skills.installations({ apply: true, writersStopped: false, after, limit: 50, signal });
+          const result = await skills.installations({ apply: true, writersStopped: false, after, limit, signal });
           for (const row of result.results) {
             if (row.status === "converted") add(counts, "skillInstallations");
             else if (row.status !== "unchanged") add(deferred, `skills:${row.status}`);
           }
-          return result.inspected < 50 ? null : result.after;
+          return result.inspected < limit || !result.after ? null : result.after;
         }
         case "runtime_skill_assets": {
-          const result = await owners.runtimeSkillAssets(db, { apply: true, after, limit: 50, signal }, storage);
+          const result = await owners.runtimeSkillAssets(db, { apply: true, after, limit, signal }, storage);
           add(counts, "runtimeSkillRuns", result.results.filter(row => row.status === "preserved").length);
-          return result.inspected < 50 ? null : result.after;
+          return result.inspected < limit || !result.after ? null : result.after;
         }
         case "native_harness_backups": {
-          const result = await owners.nativeHarnessBackups(db, { storage, signal });
-          add(counts, "nativeHarnessBackups", result.published);
-          for (const [reason, count] of Object.entries(result.deferred)) add(deferred, `native_harness:${reason}`, count);
+          await owners.nativeHarnessBackups(db, { storage, signal, onOutcome: outcome => {
+            if (outcome === "published") add(counts, "nativeHarnessBackups");
+            else if (outcome !== "current") add(deferred, `native_harness:${outcome}`);
+          } });
           return null;
         }
         case "native_controllers": {
-          const result = await owners.nativeControllers(db, { storage, signal });
-          add(counts, "nativeControllers", result.imported);
-          for (const [reason, count] of Object.entries(result.deferred)) add(deferred, `native_controllers:${reason}`, count);
+          await owners.nativeControllers(db, { storage, signal, onOutcome: outcome => {
+            if (outcome === "imported") add(counts, "nativeControllers");
+            else if (!["unchanged", "archived_failed", "source_already_absent"].includes(outcome)) add(deferred, `native_controllers:${outcome}`);
+          } });
           return null;
         }
       }
@@ -162,13 +167,25 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
 
     while (progress.phase < PHASES.length) {
       if (spent()) return await finish("budget_exhausted");
-      const next = await page(PHASES[progress.phase]!, progress.after);
-      progress = next ? { phase: progress.phase, after: next } : { phase: progress.phase + 1 };
+      const phase = PHASES[progress.phase]!;
+      const next = await page(phase, progress.after, progress.limit ?? DEFAULT_LIMITS[phase] ?? 1);
+      progress = next ? { phase: progress.phase, after: next, limit: progress.limit } : { phase: progress.phase + 1 };
     }
     progress = { phase: 0 };
     return await finish("completed");
   } catch (error) {
-    if (signal.reason instanceof BudgetSpent) return await finish("budget_exhausted");
+    if (signal.reason instanceof BudgetSpent) {
+      const phase = PHASES[progress.phase];
+      if (phase) {
+        const limit = progress.limit ?? DEFAULT_LIMITS[phase] ?? 1;
+        if (limit > 1) progress = { ...progress, limit: Math.max(1, Math.floor(limit / 2)), timeouts: 0 };
+        else if ((progress.timeouts ?? 0) + 1 >= 2) {
+          add(deferred, `${phase}:stalled`);
+          progress = { phase: progress.phase + 1 };
+        } else progress = { ...progress, timeouts: (progress.timeouts ?? 0) + 1 };
+      }
+      return await finish("budget_exhausted");
+    }
     await owners.record(db, { state: "failed", counts }).catch(() => undefined);
     throw error;
   } finally {
