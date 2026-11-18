@@ -1,11 +1,3 @@
-/**
- * How long the tool gateway waits for a plugin connector tool.
- *
- * A plugin declares `timeoutMs` on a `transport: "plugin"` method or on one of
- * its static tools; without one the gateway waits 30 s. The tests run the real
- * gateway invocation paths against a fake worker whose calls resolve on fake
- * timers, so a 12 s backend costs no wall-clock time.
- */
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -107,11 +99,6 @@ const support = await getEmbeddedPostgresTestSupport();
     return { connectionId: connected.connectionId, buildReport: tool("build_report"), quickCheck: tool("quick_check") };
   }
 
-  /**
-   * Start a call, wait for the worker to receive it, then advance fake time
-   * by `advanceMs` and settle it. Only `setTimeout` is faked (and it still
-   * follows real time), so the database driver keeps working.
-   */
   async function settleAfter<T>(f: { workers: { calls: unknown[] } }, start: () => Promise<T>, advanceMs: number) {
     const before = f.workers.calls.length;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
@@ -131,7 +118,6 @@ const support = await getEmbeddedPostgresTestSupport();
 
     const call = await settleAfter(f, () => f.gateway.executeTool({ sessionToken: f.token, tool: buildReport.name, parameters: {}, idempotencyKey: randomUUID() }), BACKEND_DELAY_MS);
     expect(call).toMatchObject({ value: { status: "completed" } });
-    // The worker RPC outlasts the gateway timeout, so the gateway decides.
     expect(f.workers.calls.at(-1)).toMatchObject({ method: "executeTool", timeoutMs: 31_000 });
 
     const tested = await settleAfter(f, () => f.gateway.executeTestCall({ companyId: f.company.id, agentId: f.agent.id, userId: actor.actorId,
@@ -151,7 +137,6 @@ const support = await getEmbeddedPostgresTestSupport();
   it("waits 30 s for plugin tools that declare no timeout", async () => {
     const f = await setup(pluginManifestV1Schema.parse(slowManifest()) as PaperclipPluginManifestV1);
     const { buildReport } = await connectReports(f);
-    // A 12 s backend now succeeds; it failed at the old 10 s default.
     const call = await settleAfter(f, () => f.gateway.executeTool({ sessionToken: f.token, tool: buildReport.name, parameters: {}, idempotencyKey: randomUUID() }), BACKEND_DELAY_MS);
     expect(call).toMatchObject({ value: { status: "completed" } });
     expect(f.workers.calls.at(-1)).toMatchObject({ timeoutMs: 31_000 });
@@ -177,11 +162,6 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(call).toMatchObject(timedOut);
     expect(f.workers.calls.at(-1)).toMatchObject({ timeoutMs: 61_000 });
   });
-
-  // Legacy top-level plugin tools (provider `paperclip_plugin`) are not plugin
-  // connections: declared connector timeouts and the 30 s connector default do
-  // not reach them. Their own default is out of scope here (see #20746), so
-  // this pins only the behavior both agree on: a caller deadline applies.
   it("leaves legacy plugin tools on their own deadline path", async () => {
     const legacyManifest = pluginManifestV1Schema.parse({
       id: "example.legacy-slow", apiVersion: 1, version: "1.0.0", displayName: "Legacy slow", description: "Legacy tools", author: "Tests",
@@ -212,7 +192,6 @@ const support = await getEmbeddedPostgresTestSupport();
     const call = await settleAfter({ workers: { calls: dispatched } }, () => f.gateway.executeTool({ sessionToken: f.token, tool: tool.name, parameters: {},
       timeoutMs: 5_000, idempotencyKey: randomUUID() }), 5_000);
     expect(call).toMatchObject(timedOut);
-    // The connector runtime never saw the call, so no connector timeout applied.
     expect(f.workers.calls).toEqual([]);
   });
 });

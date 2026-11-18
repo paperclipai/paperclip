@@ -105,11 +105,6 @@ export function pluginCatalogEntryCurrent(
   return tools.list.some((tool) => tool.name === entry.toolName && tool.risk === entry.riskLevel);
 }
 
-/**
- * How long the gateway waits for one tool of a plugin connection: the tool's
- * declared `timeoutMs`, else its method's, else the plugin-transport default.
- * Callers still clamp the value to the gateway ceiling.
- */
 export function pluginConnectionToolTimeoutMs(
   connection: { config: Record<string, unknown> },
   toolName: string,
@@ -120,7 +115,6 @@ export function pluginConnectionToolTimeoutMs(
   return tool?.timeoutMs ?? method?.timeoutMs ?? PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS;
 }
 
-/** Extra time the worker RPC allows past the gateway timeout, so the gateway's own timeout is what callers see. */
 const PLUGIN_CONNECTOR_RPC_GRACE_MS = 1_000;
 
 /**
@@ -202,7 +196,6 @@ export async function executePluginConnectionTool(
     toolName: string;
     parameters: unknown;
     runContext: ToolRunContext & { connection: NonNullable<ToolRunContext["connection"]> };
-    /** The gateway's timeout for this call; the worker RPC outlasts it slightly. */
     timeoutMs: number;
   },
 ): Promise<ToolResult> {

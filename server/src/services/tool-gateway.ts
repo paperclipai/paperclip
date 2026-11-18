@@ -5073,10 +5073,6 @@ export function createToolGatewayService(
    * decided policy and recorded the invocation; here it resolves the grant
    * and credential for this one call. The run context comes only from the
    * session, never from tool arguments.
-   *
-   * The call times out after the caller's `requestedTimeoutMs` when one is
-   * given, else after the `timeoutMs` the plugin declares for the tool or its
-   * method (default 30 s), within the gateway ceiling.
    */
   async function executePluginConnectionTool(
     session: ToolGatewaySession,
