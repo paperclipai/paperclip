@@ -8,10 +8,17 @@ import {
   PRODUCT_ANALYTICS_LOAD_DEADLINE_MS,
   setProductAnalyticsUser,
   startProductAnalytics,
+  stopProductAnalytics,
 } from "@/lib/analytics/product-analytics";
+import {
+  analyticsChoiceMadeOnThisPage,
+  storeAnalyticsChoice,
+  useAnalyticsConsent,
+} from "@/lib/analytics/consent";
+import { AnalyticsConsentBanner } from "./AnalyticsConsentBanner";
 
 /**
- * Browser product analytics for hosted Paperclip Cloud. Renders nothing.
+ * Browser product analytics for hosted Paperclip Cloud.
  *
  * It reads the signed-in session, like `SentryGate` (same query, so no extra
  * request). The server sends `browserAnalytics` only for a cloud-managed
@@ -34,11 +41,18 @@ export function ProductAnalyticsGate() {
   const userId = session?.session.userId ?? null;
   const email = session?.user.email ?? null;
   const name = session?.user.name ?? null;
+  const consent = useAnalyticsConsent(config);
+  const granted = consent === "granted";
+  const denied = consent === "denied";
 
   useEffect(() => {
-    if (!config) return;
+    if (!config || !granted) return;
     startProductAnalytics(config, {
       schedule: (start) => {
+        if (analyticsChoiceMadeOnThisPage()) {
+          start();
+          return () => undefined;
+        }
         const cancelSettle = whenPageSettles(queryClient, start);
         const deadline = window.setTimeout(start, PRODUCT_ANALYTICS_LOAD_DEADLINE_MS);
         return () => {
@@ -49,11 +63,22 @@ export function ProductAnalyticsGate() {
     });
     return () => cancelPendingProductAnalytics();
     // Keyed by value: the config object identity changes on every session refetch.
-  }, [configKey, queryClient]);
+  }, [configKey, granted, queryClient]);
+
+  useEffect(() => {
+    if (denied) stopProductAnalytics();
+  }, [denied]);
 
   useEffect(() => {
     setProductAnalyticsUser(userId ? { id: userId, email, name } : null);
   }, [userId, email, name]);
 
-  return null;
+  if (!config || consent !== "ask") return null;
+  return (
+    <AnalyticsConsentBanner
+      recordings={config.replayEnabled}
+      onAccept={() => storeAnalyticsChoice("granted")}
+      onDecline={() => storeAnalyticsChoice("denied")}
+    />
+  );
 }

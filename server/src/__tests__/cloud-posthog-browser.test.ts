@@ -44,7 +44,22 @@ describe("browser analytics config exposure", () => {
       environment: "production",
       stackId: "stack-1",
       replayEnabled,
+      consentRequired: null,
     });
+  });
+
+  it("decides consent from the configured edge country header, and leaves it to the browser otherwise", () => {
+    const on = { ...CLOUD, ...TOKEN, ...BROWSER };
+    const withHeader = { ...on, PAPERCLIP_POSTHOG_COUNTRY_HEADER: "CF-IPCountry" };
+    expect(resolveBrowserAnalyticsConfig(on, { "cf-ipcountry": "DE" })?.consentRequired).toBeNull();
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "DE" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "gb" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "CH" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "NO" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "US" })?.consentRequired).toBe(false);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "XX" })?.consentRequired).toBeNull();
+    expect(resolveBrowserAnalyticsConfig(withHeader, {})?.consentRequired).toBeNull();
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": ["FR", "US"] })?.consentRequired).toBe(true);
   });
 
   it("always sends an environment: the explicit variable, else staging or production from the host", () => {

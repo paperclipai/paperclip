@@ -18,6 +18,30 @@ export const POSTHOG_PROXY_PATH = "/_ph";
 
 const POSTHOG_CLOUD_INGEST_HOST = /^(us|eu)\.i\.posthog\.com$/i;
 
+const CONSENT_REQUIRED_COUNTRIES = new Set([
+  "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
+  "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+  "AX", "GF", "GP", "MQ", "RE", "YT", "MF",
+  "IS", "LI", "NO",
+  "GB", "UK", "GG", "JE", "IM", "GI",
+  "CH",
+]);
+
+export type RequestHeaders = Record<string, string | string[] | undefined>;
+
+export function analyticsConsentRequiredForCountry(country: string | null | undefined): boolean | null {
+  const code = country?.trim().toUpperCase();
+  if (!code || !/^[A-Z]{2}$/.test(code) || code === "XX") return null;
+  return CONSENT_REQUIRED_COUNTRIES.has(code);
+}
+
+export function resolveAnalyticsConsentRequired(env: CloudInstanceEnv, headers: RequestHeaders): boolean | null {
+  const headerName = env.PAPERCLIP_POSTHOG_COUNTRY_HEADER?.trim().toLowerCase();
+  if (!headerName) return null;
+  const value = headers[headerName];
+  return analyticsConsentRequiredForCountry(Array.isArray(value) ? value[0] : value);
+}
+
 /** The browser analytics part of the Cloud PostHog config, or null when it is off. */
 export function resolveBrowserPostHogConfig(env: CloudInstanceEnv = process.env): CloudPostHogConfig | null {
   const config = resolveCloudPostHogConfig(env);
@@ -42,7 +66,10 @@ export function posthogUiHost(ingestHost: string): string | null {
   return match ? `https://${match[1]!.toLowerCase()}.posthog.com` : null;
 }
 
-export function resolveBrowserAnalyticsConfig(env: CloudInstanceEnv = process.env): BrowserAnalyticsConfig | null {
+export function resolveBrowserAnalyticsConfig(
+  env: CloudInstanceEnv = process.env,
+  headers: RequestHeaders = {},
+): BrowserAnalyticsConfig | null {
   const config = resolveBrowserPostHogConfig(env);
   if (!config) return null;
   let uiHost: string | null;
@@ -61,5 +88,6 @@ export function resolveBrowserAnalyticsConfig(env: CloudInstanceEnv = process.en
     environment: config.environment ?? (isCloudStagingInstance(env) ? "staging" : "production"),
     stackId: config.stackId,
     replayEnabled: config.replayEnabled,
+    consentRequired: resolveAnalyticsConsentRequired(env, headers),
   };
 }
