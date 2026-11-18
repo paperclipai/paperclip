@@ -320,60 +320,94 @@ each step is verified before the next one starts.
 - [ ] PostHog: set the project's internal/test account filter to exclude
       `environment = staging`.
 
-#### Revised plan: stage settings, let the team's deploy turn them on (Dotta, 2026-11-18)
+#### Revised plan: stage settings for the team's deploys (Dotta, 2026-11-18)
 
 Production app deploys are coordinated by the whole team, and user stacks
-must not be restarted outside them. So the production switches are staged
-ahead of time and take effect with the team's next production app deploy:
+must not be restarted outside them. So each switch is staged ahead of time
+with an `env_config` campaign that uses `"applyOnNextDeploy": true` (no drain,
+no restart) and takes effect with the team's next production app deploy. This
+section is the source of truth for production; it replaces the "campaign with
+a canary first" mechanics of Steps 1 and 4 below. Steps 2, 3 and 5 still apply.
 
-1. Wait for the team's next production harness deploy. The staging option
-   needs paperclip-cloud#1652 (`d1877e1`); production was on `d7b6764`
-   (2026-11-11) when checked. Check with
-   `curl -s https://admin.paperclip.app/healthz` and
-   `git merge-base --is-ancestor d1877e1 <commit>`.
-2. Stage with one fleet-scope `env_config` campaign using
-   `"applyOnNextDeploy": true` and these variables:
-   `PAPERCLIP_POSTHOG_PROJECT_TOKEN`, `PAPERCLIP_POSTHOG_ENVIRONMENT=production`,
-   `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`. No user stack restarts. Proven on
-   staging: 44 stacks staged in under 40 seconds, no restarts.
-   Never send this campaign to a harness that lacks #1652: an older harness
-   ignores the flag and restarts every stack.
-3. `TRUST_PROXY` is not staged this way: current production code already
-   reads it, so any early restart would apply it. Turn it on as a separate,
-   announced step.
+Release gate (each PR and what it enables on a stack):
+
+| PR | Enables |
+| --- | --- |
+| #22006 | Server events straight to PostHog (needs the token) |
+| #22183 | `company_id` on background server events |
+| #22012 | Browser analytics and replay (needs the browser flag) |
+| #22052 | Visitor location through the `/_ph` proxy |
+| #22057 | Replay shows interface text and masks marked content |
+| #22186 | EU/EEA/UK/Swiss consent banner before any browser analytics |
+
+Harness check (anyone can run it; `/healthz` is public, the 401 in the state
+table was the admin API):
+
+```sh
+commit=$(curl -s https://admin.paperclip.app/healthz | jq -r .commit)
+git -C ~/paperclipai/paperclip-cloud fetch -q origin
+git -C ~/paperclipai/paperclip-cloud merge-base --is-ancestor d1877e1 "$commit" && echo OK || echo "NOT READY: do not stage"
+```
+
+If the check prints anything but `OK`, or cannot run, do not create the
+campaign: a harness without paperclip-cloud#1652 ignores the flag and restarts
+every stack. The coordinator runs the campaigns; Dotta provides the production
+admin sign-in.
+
+Sequence:
+
+1. Stage A, server events (gate: harness check OK; policy and terms updated,
+   done 2026-11-17). Variables: `PAPERCLIP_POSTHOG_PROJECT_TOKEN`,
+   `PAPERCLIP_POSTHOG_ENVIRONMENT=production`. Server events carry real IDs for
+   every Cloud user, in every region; this is disclosed in Terms §8 and
+   Privacy §2. Turns on with the first production release that contains
+   #22006 (#22183 adds `company_id`). A wrong token or environment only loses
+   analytics data; it cannot break a stack.
+2. Verify Stage A on the team deploy's canary stack (it deploys first):
+   `cloud.workspace_started` and `server.started` with `environment=production`
+   and the canary's `stack_id`; `count() = uniq(uuid)` for production server
+   events. If it fails, stage `PAPERCLIP_POSTHOG_DIRECT=0` before the rest of
+   the fleet restarts.
+3. Stage B, browser analytics (gate: the production release that is live, or
+   about to deploy, contains #22186; check the canary's running app version).
+   Variable: `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`. Never stage it earlier: a
+   stack that restarts onto a build with #22012 but without #22186 would load
+   browser analytics and replay for EU/UK visitors with no banner.
+4. Verify Stage B on the next deploy's canary: a sign-in outside EU time zones
+   produces `$pageview` with the user's `paperclip-id:` distinct id and a masked
+   replay; an EU time zone shows the banner and makes no `/_ph` requests until
+   Accept.
+5. Then Step 2 (`TRUST_PROXY`, announced separately), Step 3 (legacy link
+   backfill) and Step 5 (one-week watch).
+
+Any stack that restarts before a deploy (wake, restore, another restarting
+campaign) applies staged values early. For Stage A that is harmless; Stage B
+waits for #22186 for exactly this reason.
 
 #### Note for the team's production deploy
 
-When a production app release that contains this work rolls out (it needs
-#22006, #22012, #22052, #22057, #22183 and #22186), stacks that have the staged
-settings start sending analytics on their new deployment:
+When the production app release that contains this work rolls out, stacks
+with staged settings start sending analytics on their new deployment:
 
-- Server events go straight to PostHog with real IDs (`environment=production`)
-  instead of through the collector. Self-hosted installs are unaffected.
-- Browser analytics and session replay load after the page settles. EU, EEA,
-  UK and Swiss visitors (by browser time zone) see a consent banner and nothing
-  loads until they accept. Replay shows interface text and masks customer
+- Stage A: server events go straight to PostHog with real IDs
+  (`environment=production`) instead of through the collector. Self-hosted
+  installs are unaffected.
+- Stage B (only once staged, after #22186 is in production): browser analytics
+  and session replay load after the page settles. Visitors in EU, EEA, UK and
+  Swiss time zones see a consent banner, and browser analytics and replay do
+  not load until they accept. Replay shows interface text and masks customer
   content and connected-account data.
-- Any stack that restarts before the deploy (wake, restore, another
-  restarting campaign) turns these on early; that is expected.
 
-Check on the deploy canary:
-- `cloud.workspace_started` and `server.started` arrive in PostHog 483530 with
-  `environment=production` and the canary's `stack_id`.
-- A sign-in on the canary produces `$pageview` with the user's
-  `paperclip-id:` distinct id (outside EU time zones), and a session replay
-  with content masked.
-- `count() = uniq(uuid)` for production server events (no duplicates).
+Canary checks are in steps 2 and 4 above.
 
-Rollback (each one is an `env_config` campaign; these restart the targets):
+Rollback (each one is an `env_config` campaign; without `applyOnNextDeploy`
+it restarts the targets, with it the change waits for the next deploy):
 - Server events back to the collector: `PAPERCLIP_POSTHOG_DIRECT=0`.
-- Browser analytics off: remove `PAPERCLIP_POSTHOG_BROWSER_ENABLED`.
+- Browser analytics off: remove `PAPERCLIP_POSTHOG_BROWSER_ENABLED` (removal
+  cannot use `applyOnNextDeploy`).
 - Replay off but keep analytics: `PAPERCLIP_POSTHOG_REPLAY_ENABLED=0`.
 
-After the deploy: run the legacy link backfill (Step 3) and the one-week watch
-(Step 5).
-
-#### Step 1: server direct sending
+#### Step 1: server direct sending (superseded by Stage A above)
 
 - Campaign: `PAPERCLIP_POSTHOG_PROJECT_TOKEN=<phc token>`,
   `PAPERCLIP_POSTHOG_ENVIRONMENT=production`. Canary: one internal stack.
@@ -399,7 +433,7 @@ After the deploy: run the legacy link backfill (Step 3) and the one-week watch
   then the verification join. Delete the local secret files and revoke the key.
 - Re-run after a week to link stacks that booted later.
 
-#### Step 4: browser analytics and replay
+#### Step 4: browser analytics and replay (superseded by Stage B above)
 
 Decided: option 1 (Dotta, 2026-11-18). The options considered:
 
