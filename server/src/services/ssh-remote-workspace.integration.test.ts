@@ -294,9 +294,9 @@ if (process.argv.includes('--acp-fixture')) {
  } else emit({type:'result',subtype:'success',is_error:false,result:'Created hello_world.txt',session_id:id,total_cost_usd:0,usage:{input_tokens:1,output_tokens:1}});
 }
 `, { mode: 0o700 });
-    const storedConfig = await normalizeEnvironmentConfigForPersistence({ db, companyId, environmentName: `Heartbeat SSH ${key}`,
+    const storedConfig = await normalizeEnvironmentConfigForPersistence({ db, companyId, environmentName: `Heartbeat SSH ${key} ${companyId}`,
       driver: "ssh", secretProvider: "local_encrypted", config: { ...config, useHostAuth: !provider } });
-    const [environment] = await db.insert(environments).values({ driver: "ssh", name: `Heartbeat SSH ${key}`, config: storedConfig }).returning();
+    const [environment] = await db.insert(environments).values({ driver: "ssh", name: `Heartbeat SSH ${key} ${companyId}`, config: storedConfig }).returning();
     await secretService(db).replaceSecretRefsForInstanceTarget({ targetType: "environment", targetId: environment.id },
       await collectEnvironmentSecretRefs({ db, environment: { id: environment.id, driver: "ssh", config: storedConfig } }));
     const adapterConfig = { command, ...(engine === "cli" ? { engine: "cli" } : { agentCommand: `${shellQuote(command)} --acp-fixture`, acpWarmHandleIdleMs: 60_000 }),
