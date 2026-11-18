@@ -43,6 +43,8 @@ import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { resolveManagedGitHubIdentitySelection } from "../services/git-credentials.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { attentionService } from "../services/attention.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -913,6 +915,49 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.search(claims, "notion"))
       .rejects.toThrow("no longer active");
   });
+  it("resumes transferred AI authentication with the recipient's account without sharing it with the original person", async () => {
+    const companyId = claims.company_id, agentId = randomUUID(), issueId = randomUUID(), sourceRunId = randomUUID();
+    const recipient = `recipient-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: recipient, name: "Recipient", email: `${recipient}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: recipient, status: "active", membershipRole: "member" });
+    const binding = { provider: "openai", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(agents).values({ id: agentId, companyId, name: "Transferred agent", adapterType: "codex_local", runtimeConfig: { aiConnection: binding } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Transferred authentication", status: "in_progress", assigneeAgentId: agentId, responsibleUserId: recipient });
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    const origin = await initializeRunIdentity(db, { companyId, runId: sourceRunId, issueId, responsibleUserId: claims.responsible_user_id!, cause: "company_default" });
+    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: `handoff-${agentId}`, name: "OpenAI", type: "mcp_http", metadata: { sourceTemplateKey: "openai" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, name: "Recipient account", uid: `handoff-${agentId}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "openai", ai: { provider: "openai", method: "api_key" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: recipient, createdByUserId: recipient }).returning();
+    await db.insert(aiProviderDefaults).values({ companyId, userId: recipient, provider: "openai", grantId: grant!.id });
+    const service = connectionIntentService(db);
+    const sourceClaims = { ...claims, sub: agentId, run_id: sourceRunId };
+    const pending = await service.request(sourceClaims, "openai", { purpose: "ai" });
+    expect(pending.state).toBe("needs_user_action");
+    await attentionService(db).transfer(companyId, {
+      sourceKind: "issue_thread_interaction", sourceId: pending.interactionId!, toUserId: recipient,
+      actor: { type: "board", source: "session", userId: claims.responsible_user_id! },
+    });
+    await expect(service.complete(pending.interactionId!, connection!.id, claims.responsible_user_id!)).rejects.toThrow("Only the addressed user");
+    await service.complete(pending.interactionId!, connection!.id, recipient);
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await connectionIntentDeliveryService(db, { wakeup } as never).deliver(pending.interactionId!);
+    expect(wakeup).toHaveBeenCalledTimes(1);
+    const contextSnapshot = wakeup.mock.calls[0][1].contextSnapshot;
+    expect(contextSnapshot).toMatchObject({ interactionId: pending.interactionId, forceFreshSession: true });
+    const continuedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: continuedRunId, companyId, agentId, status: "running", contextSnapshot });
+    const continued = await initializeRunIdentity(db, {
+      companyId, runId: continuedRunId, issueId, interactionId: contextSnapshot.interactionId,
+      responsibleUserId: claims.responsible_user_id!, cause: contextSnapshot.wakeReason,
+    });
+    expect(continued).toMatchObject({ responsibleUserId: recipient, parentContextId: origin.id, cause: "connection_handoff" });
+    expect(await service.request({ ...sourceClaims, run_id: continuedRunId, responsible_user_id: recipient }, "openai", { purpose: "ai" }))
+      .toMatchObject({ state: "ready", connectionId: connection!.id });
+    expect(await service.usableConnectionForAgent({ companyId, agentId, responsibleUserId: claims.responsible_user_id!, serviceSlug: "openai", purpose: "ai" })).toBeNull();
+    const [saved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!));
+    expect(saved).toMatchObject({ sourceIdentityContextId: origin.id, addresseeUserId: recipient, resolvedByUserId: recipient });
+  });
+
   it("keeps runtime authentication separate from obsolete Anthropic tool requests", async () => {
     const companyId = claims.company_id;
     const agentId = randomUUID();

@@ -31,6 +31,7 @@ extensions posthog-js loads at run time (recorder, web vitals).
 | `PAPERCLIP_POSTHOG_ENVIRONMENT` | — | `staging` or `production`. Added to every event as `environment`. |
 | `PAPERCLIP_POSTHOG_BROWSER_ENABLED` | off | `1` turns browser analytics on for this stack. Leave it unset to keep it off. |
 | `PAPERCLIP_POSTHOG_REPLAY_ENABLED` | on (when browser analytics is on) | `0` turns session replay off for this stack and keeps the other browser analytics. |
+| `PAPERCLIP_POSTHOG_COUNTRY_HEADER` | — | Name of a request header that the platform edge sets to the visitor's two-letter country code (for example `CF-IPCountry` behind a proxied Cloudflare zone). Leave it unset unless the edge sets the header and drops a value from the client. See [Consent](#consent). |
 
 ### Per-stack opt-out
 
@@ -38,6 +39,73 @@ For a customer whose contract forbids recording, set
 `PAPERCLIP_POSTHOG_REPLAY_ENABLED=0` on that stack. To turn off all browser
 analytics for a stack, unset `PAPERCLIP_POSTHOG_BROWSER_ENABLED`. Both take
 effect on the next server restart.
+
+## Consent
+
+Visitors in the EU, the EEA, the UK and Switzerland must agree before browser
+analytics and session replay start. Everyone else keeps analytics on by
+default. Both can change the choice later. Server events are not affected:
+they set no cookies.
+
+### Who must agree
+
+1. The server decides when it knows the visitor's country. If
+   `PAPERCLIP_POSTHOG_COUNTRY_HEADER` names a header and the request carries a
+   valid two-letter code in it, `browserAnalytics.consentRequired` is `true`
+   for the EU and EEA countries (and their outermost regions and Svalbard), the
+   UK (and the Crown Dependencies and Gibraltar) and Switzerland, and `false`
+   for every other ISO 3166-1 alpha-2 country. The aliases `UK` and `EL` count
+   as `GB` and `GR`, and `EU` and `EZ` count as consent required. Any other
+   value (for example `XX`, `UN`, `XK` or `T1`) gives `null`.
+2. Otherwise `consentRequired` is `null`, and the browser decides from its time
+   zone. It asks when the zone starts with
+   `Europe/`, is an EU, EEA or UK zone outside Europe (for example
+   `Atlantic/Canary`, `Atlantic/Reykjavik`, `Asia/Nicosia`, `Indian/Reunion`),
+   or is unknown (`UTC`, `Etc/*`, empty, or `Intl` fails). When unsure, it asks.
+
+Both lists live in one place, `packages/shared/src/analytics-consent.ts`
+(`countryRequiresAnalyticsConsent`, `timeZoneRequiresAnalyticsConsent`). The
+browser's choice logic is in `ui/src/lib/analytics/consent.ts`.
+
+Paperclip Cloud uses the time zone today. Requests reach Railway through
+DNS-only Cloudflare records, so no Cloudflare country header arrives, and the
+Railway edge adds no country header. Set `PAPERCLIP_POSTHOG_COUNTRY_HEADER`
+only when an edge that sets and overwrites a country header is in front of
+the stack. A visitor who forges the header can only change the default for
+their own browser.
+
+### What happens
+
+| Visitor | Before a choice | Accept / switch on | Decline / switch off |
+| --- | --- | --- | --- |
+| Must agree, no Do Not Track or Global Privacy Control | Banner. posthog-js does not load: no `/_ph` requests, no PostHog cookies or storage. | posthog-js loads at once, without a reload. | Nothing loads. |
+| Must agree, `navigator.doNotTrack === "1"` or `navigator.globalPrivacyControl === true` | No banner. Counts as Decline, also over a stored Accept. | Not possible: the settings switch is off and disabled, and says why. | Nothing loads. A running client opts out. |
+| Everyone else | Loads after the page settles, as before. | — | `opt_out_capturing()` and `stopSessionRecording()` run at once. After the next load, posthog-js does not load. |
+
+The gate calls one function, `syncProductAnalytics(config, consent)` in
+`ui/src/lib/analytics/product-analytics.ts`. It starts, opts in, opts out or
+cancels. Analytics stops whenever the choice is not `granted`, also when it goes back
+to "ask" (another tab removes the stored choice, or a session refresh changes
+`consentRequired` to `true`). If the choice changes while posthog-js is still
+downloading, `init()` does not run until the choice is `granted` again.
+
+The banner sits at the bottom of the page and does not block the board. It
+says that recordings hide what the visitor types and their messages,
+documents and connected accounts, but can show page names such as task
+titles. It links to the privacy policy (https://paperclip.ing/privacy/).
+
+### Where the choice is kept
+
+The choice is per browser, in `localStorage` under
+`paperclip.analyticsConsent` (`granted` or `denied`). The latest choice on
+the page wins, also when storage rejects the write; it then lasts for the open
+page only. Each user can change it in
+**Settings → Profile → Product analytics**. The switch shows only when browser
+analytics is on for the instance. Turning it on after an earlier opt-out also
+clears the PostHog opt-out (`opt_in_capturing()`).
+
+To reset the choice and see the banner again, remove the key in the browser
+console: `localStorage.removeItem("paperclip.analyticsConsent")`, then reload.
 
 ## Reverse proxy
 
