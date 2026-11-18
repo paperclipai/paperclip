@@ -1909,6 +1909,31 @@ describe("Connectors landing page", () => {
     expect(getAppStoreDefinition("clickup")).toBeNull();
   });
 
+  it("offers Connect your own MCP server next to search and opens the BYO setup", async () => {
+    await renderBrowse();
+    const topAction = Array.from(container.querySelectorAll<HTMLButtonElement>('header[aria-label="Connectors controls"] button'))
+      .find((button) => button.textContent?.trim() === "Connect your own MCP server");
+    expect(topAction).toBeTruthy();
+    await act(() => topAction!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/byo");
+
+    await clickButton("Composio", container);
+    expect(container.querySelector('header[aria-label="Connectors controls"]')?.textContent).not.toContain("Connect your own MCP server");
+  });
+
+  it("keeps the custom option when an app name search finds nothing", async () => {
+    await renderBrowse();
+    await search("mercury");
+    expect(container.querySelector('header[aria-label="Connectors controls"]')?.textContent).toContain("Connect your own MCP server");
+    expect(container.textContent).toContain("No connectors match");
+    const emptyStateAction = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .filter((button) => !button.closest("header"))
+      .find((button) => button.textContent?.trim() === "Connect your own MCP server");
+    expect(emptyStateAction).toBeTruthy();
+    await act(() => emptyStateAction!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/byo");
+  });
+
   it("filters the single list without restoring section chrome", async () => {
     await renderBrowse();
 
@@ -1930,7 +1955,7 @@ describe("Connectors landing page", () => {
         '[aria-label="Connector list"] > [data-app-slug]',
       ),
     );
-    expect(rows.map((row) => row.dataset.appSlug)).toEqual(["jira"]);
+    expect(rows.map((row) => row.dataset.appSlug)).toEqual(["jira", "custom-mcp"]);
     expect(container.textContent).not.toContain("Popular");
     expect(container.textContent).not.toContain("All apps");
   });

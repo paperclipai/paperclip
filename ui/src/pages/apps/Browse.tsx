@@ -995,8 +995,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const showAssistantConnection = (source === "paperclip" || source === "all" ||
     (source === "installed" && (!assistantConnections.loaded || assistantConnections.rows.some(row => !row.revokedAt)))) &&
     (!trimmed || "assistant connection (mcp) paperclip codex claude opencode".includes(trimmed));
-  const showCustomConnector =
-    (source === "paperclip" || source === "all") && (!trimmed || "connect your own tool custom mcp server".includes(trimmed));
+  // An app name search keeps the custom option: a missing app is when a user needs it most.
+  const showCustomConnector = source === "paperclip" || source === "all";
+  const customConnectorMatches = showCustomConnector && (!trimmed || "connect your own tool custom mcp server".includes(trimmed));
 
   if (!selectedCompanyId) {
     return (
@@ -1016,12 +1017,15 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   // Only a real failure shows the notice; loaded connectors stay through a transient refetch failure.
   const loadFailure = catalogViews.find((view) => view.kind === "error");
   const loadFailed = loadFailure !== undefined;
-  const nothingMatches = visibleRows.length === 0 && !showCustomConnector && !showAssistantConnection;
+  const nothingMatches = visibleRows.length === 0 && !customConnectorMatches && !showAssistantConnection;
 
   return (
     <div ref={catalogTop} className="max-w-5xl space-y-5 pb-12">
       <ConnectorsToolbar query={query} onQueryChange={changeQuery} source={source}
-        onSourceChange={value => { setSource(value); setExpandedSearch(false); setPage(1); }} />
+        onSourceChange={value => { setSource(value); setExpandedSearch(false); setPage(1); }}
+        action={showCustomConnector ? <Button type="button" size="sm" variant="outline" data-toolbar-primary className="shrink-0" onClick={() => navigate("/apps/byo")}>
+          <ServerCog className="h-4 w-4" />Connect your own MCP server
+        </Button> : null} />
 
       {loadFailure ? (
         <QueryErrorState
@@ -1053,7 +1057,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       ) : nothingMatches ? (
         <div className="flex flex-col items-start gap-3 rounded-xl border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
           <p className="flex items-center gap-2"><Link2 className="h-4 w-4" />No connectors match “{query.trim()}”.</p>
-          <Button variant="outline" size="sm" onClick={() => changeQuery("")}>Clear search</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => changeQuery("")}>Clear search</Button>
+            {showCustomConnector ? <Button variant="outline" size="sm" onClick={() => navigate("/apps/byo")}>Connect your own MCP server</Button> : null}
+          </div>
         </div>
       ) : (
         <div className={cn("space-y-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
