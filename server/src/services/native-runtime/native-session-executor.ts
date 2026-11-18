@@ -6,8 +6,7 @@ import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
-import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION, nativeSandboxDiskFullSourceCode, observeNativeRunnerDiagnostic,
-  takeNativeRunnerSandboxDiskFull } from "./native-sandbox-disk-full.js";
+import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION, nativeSandboxDiskFullSourceCode } from "./native-sandbox-disk-full.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
@@ -11004,6 +11003,9 @@ async function executePaperclipNativeSessionAttempt(
   cleanupOnly = false,
   ownDiagnosticLease?: (lease: NativeDiagnosticLease) => void,
 ): Promise<AdapterExecutionResult> {
+  const attemptDiagnosticLeases: NativeDiagnosticLease[] = [];
+  const ownRunDiagnosticLease = ownDiagnosticLease;
+  ownDiagnosticLease = lease => { attemptDiagnosticLeases.push(lease); ownRunDiagnosticLease?.(lease); };
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "antigravity") {
     const candidate = resolveAntigravityCandidateAdmission({
       companyId: input.execution.binding.companyId, model: input.execution.provider.model,
@@ -13285,7 +13287,7 @@ async function executePaperclipNativeSessionAttempt(
       }
       const now = new Date();
       const startupClassifiedFailureCode = nativeSessionFailureSourceCode(error,
-        takeNativeRunnerSandboxDiskFull(input.execution.binding.runId));
+        attemptDiagnosticLeases.some(lease => lease.sandboxDiskFullObserved()));
       // A timed-out session.open may still have opened a provider session
       // before its runner stopped. The same-run retry must not reuse it.
       const classifiedFailureCode = startupClassifiedFailureCode === "provider_session_open_timeout" &&
@@ -18867,10 +18869,9 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerProcessReconnectGraceMs: remoteTarget ? null : localRunnerProcessReconnectGraceMs(input.execution.session.lifecyclePolicy),
         environment: effectiveRunnerEnvironment,
         observability: input.observability,
-        onDiagnostic: message => {
-          observeNativeRunnerDiagnostic(diagnostics.ownerRunId(), message);
-          diagnostics.record(`[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`);
-        },
+        onDiagnostic: message => diagnostics.record(
+          `[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`,
+        ),
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
         runtimeContext:
           "runtimeContext" in input.execution

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { NativeProviderTerminalFailure, NativeSessionProtocolIntegrityError, SANDBOX_DISK_FULL_FAILURE_CODE } from "../../vendor/paperclip-runner/index.js";
 import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode } from "./native-session-executor.js";
-import { NATIVE_SANDBOX_DISK_FULL, observeNativeRunnerDiagnostic, takeNativeRunnerSandboxDiskFull } from "./native-sandbox-disk-full.js";
+import { NATIVE_SANDBOX_DISK_FULL } from "./native-sandbox-disk-full.js";
+import { NativeSessionDiagnostics } from "./native-session-diagnostics.js";
 
 const turnLostOnRestore = () => new NativeProviderTerminalFailure("provider_turn_lost_on_restore", true);
 
@@ -30,13 +31,27 @@ describe("a native run that ends because its sandbox disk filled", () => {
       .toMatchObject({ phase: "retryable_failure" });
   });
 
-  it("remembers a disk-full runner exit for its own run only, once", () => {
-    observeNativeRunnerDiagnostic("run-a", "runner process disconnected; recovery is allowed for 420000ms");
-    expect(takeNativeRunnerSandboxDiskFull("run-a")).toBe(false);
-    observeNativeRunnerDiagnostic("run-a", "Error: failed to write state: No space left on device (os error 28)");
-    expect(takeNativeRunnerSandboxDiskFull("run-b")).toBe(false);
-    expect(takeNativeRunnerSandboxDiskFull("run-a")).toBe(true);
-    expect(takeNativeRunnerSandboxDiskFull("run-a")).toBe(false);
+  it.each(["runner_ingress_unavailable: PRP command session.open timed out", "provider_initialize_timeout", "provider_request_protocol_error",
+    "provider_process_status_failed"])("names the full disk for a later %s on the same run", message => {
+    expect(nativeSessionFailureSourceCode(new Error(message), true)).toBe("sandbox_disk_full");
+    expect(nativeSessionFailureDisposition(1, new Date(), nativeSessionFailureSourceCode(new Error(message), true)))
+      .toMatchObject({ phase: "terminal_failure", failureCode: "sandbox_disk_full" });
+  });
+
+  it("keeps a full-disk report on the run that saw it", () => {
+    const owner = { companyId: "company", sessionScope: "session", runId: "run-a" };
+    const channel = new NativeSessionDiagnostics(owner, owner, () => undefined, () => undefined);
+    const sink = async () => undefined;
+    const first = channel.activate(owner, sink);
+    channel.record("[paperclip-runner] runnerd diagnostic: runner process disconnected; recovery is allowed for 420000ms\n");
+    expect(first.sandboxDiskFullObserved()).toBe(false);
+    channel.record("[paperclip-runner] runnerd diagnostic: failed to write state: No space left on device (os error 28)\n");
+    expect(first.sandboxDiskFullObserved()).toBe(true);
+    first.retire();
+    channel.record("[paperclip-runner] runnerd diagnostic: late exit: No space left on device (os error 28)\n");
+    const second = channel.activate({ ...owner, runId: "run-b" }, sink);
+    channel.record("[paperclip-runner] runnerd diagnostic: runner process restored its durable PRP session\n");
+    expect(second.sandboxDiskFullObserved()).toBe(false);
   });
 
   it("uses the runner's own code", () => {
