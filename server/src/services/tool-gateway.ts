@@ -1,10 +1,9 @@
 import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
 import {
   AwsMcpCredentialError,
-  awsMcpCredentialRevision,
-  awsMcpSettings,
   createAwsMcpCredentialMinter,
   isAwsMcpConnection,
+  resolveAwsMcpAuthorization,
   sharedAwsMcpCredentialMinter,
   type AwsMcpClients,
 } from "./connectors/aws/mcp-credentials.js";
@@ -4846,24 +4845,9 @@ export function createToolGatewayService(
     resolveOptions: { forceRefresh?: boolean },
   ): Promise<Record<string, string>> {
     try {
-      return await awsMcpMinter.authorizationHeader({
-        companyId: connection.companyId,
-        connectionId: connection.id,
-        connectionName: connection.name,
-        grantId: grant.id,
-        revision: awsMcpCredentialRevision(connection, grant),
-        settings: awsMcpSettings(connection),
-        forceRefresh: resolveOptions.forceRefresh,
-        readSecret: async (configPath) => {
-          const ref = grant.credentialSecretRefs.find((candidate) => candidate.configPath === configPath);
-          if (!ref) {
-            throw new AwsMcpCredentialError(
-              "aws_access_key_invalid", 422,
-              "This AWS connection has no saved access key. Reconnect AWS.", "error",
-            );
-          }
-          return resolveGrantSecretValue(session, connection, grant, ref);
-        },
+      return await resolveAwsMcpAuthorization({
+        minter: awsMcpMinter, connection, grant, forceRefresh: resolveOptions.forceRefresh,
+        readRef: (ref) => resolveGrantSecretValue(session, connection, grant, ref),
       });
     } catch (error) {
       if (error instanceof ToolGatewayHttpError) {
@@ -8159,6 +8143,15 @@ export function createToolGatewayService(
               responseTimeoutMs: ms,
             });
       };
+      // AWS refused the minted token: drop it everywhere and rebuild this call's headers with a fresh one.
+      const remintAwsCredentials = async () => {
+        awsMcpMinter.evict(connection.companyId, connection.id);
+        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
+        credentialHeaders = { ...projectedConnectionHeaders(connection), ...resolvedCredentials };
+        builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
+        headers = builtHeaders.headers;
+        headerSummary = builtHeaders.summary;
+      };
       const requireExplicitRetryAfterOAuthRefresh = async (refreshedResponse: Response): Promise<never> => {
         // The provider rejected this dispatch, but automatic replay is unsafe:
         // a server can apply a request before returning 401. A caller retry
@@ -8283,12 +8276,7 @@ export function createToolGatewayService(
           if (!(error instanceof McpHttpInitializationError && error.status === 401 && isAwsMcpConnection(connection))) throw error;
           // AWS refused the cached token while opening the session. No tool ran,
           // so mint a fresh token and open the session once more.
-          awsMcpMinter.evict(connection.companyId, connection.id);
-          resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
-          credentialHeaders = { ...projectedConnectionHeaders(connection), ...resolvedCredentials };
-          builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
-          headers = builtHeaders.headers;
-          headerSummary = builtHeaders.summary;
+          await remintAwsCredentials();
           requestHeaders = await openSession();
         }
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
@@ -8552,19 +8540,7 @@ export function createToolGatewayService(
       }
       if (response.status === 401 && isAwsMcpConnection(connection)) {
         // The cached AWS token was refused: mint a fresh one, never replay the call.
-        awsMcpMinter.evict(connection.companyId, connection.id);
-        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
-        credentialHeaders = {
-          ...projectedConnectionHeaders(connection), ...resolvedCredentials,
-        };
-        builtHeaders = buildRemoteHeaders({
-          session,
-          connection,
-          credentialHeaders,
-          callerHeaders,
-        });
-        headers = builtHeaders.headers;
-        headerSummary = builtHeaders.summary;
+        await remintAwsCredentials();
         await requireExplicitRetryAfterOAuthRefresh(response);
       }
       if (

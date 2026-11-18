@@ -6,6 +6,7 @@ import {
   STSClient,
 } from "@aws-sdk/client-sts";
 import { CreateOAuth2TokenWithIAMCommand, SigninClient } from "@aws-sdk/client-signin";
+import { getConnectableAppDefinition } from "@paperclipai/shared";
 
 /**
  * Credentials for AWS's hosted MCP server, minted on the control plane for each
@@ -15,6 +16,8 @@ import { CreateOAuth2TokenWithIAMCommand, SigninClient } from "@aws-sdk/client-s
  */
 
 export const AWS_MCP_SOURCE_TEMPLATE_KEY = "aws";
+/** The `credentialMinter` value AWS methods declare in their app definition. */
+export const AWS_MCP_CREDENTIAL_MINTER = "aws_mcp";
 export const AWS_MCP_METHOD_KEYS = ["aws-role", "aws-access-key"] as const;
 export type AwsMcpMethodKey = (typeof AWS_MCP_METHOD_KEYS)[number];
 export const AWS_MCP_ENDPOINT_REGIONS = [
@@ -56,6 +59,7 @@ export interface AwsSessionCredentials {
 export type AwsMcpCredentialErrorCode =
   | "aws_mcp_settings_invalid"
   | "aws_identity_unavailable"
+  | "aws_issuer_changed"
   | "aws_role_access_denied"
   | "aws_access_key_invalid"
   | "aws_mcp_signin_denied"
@@ -85,10 +89,19 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/** The credential minter the connection's method declares in its app definition, if any. */
+export function connectionCredentialMinter(connection: ConnectionLike): string | null {
+  if (connection.transport !== "mcp_remote") return null;
+  const slug = connection.config.sourceTemplateKey;
+  const methodKey = connection.config.connectionMethodKey;
+  if (typeof slug !== "string" || typeof methodKey !== "string") return null;
+  const method = getConnectableAppDefinition(slug)?.methods.find((candidate) => candidate.key === methodKey);
+  return method?.credentialMinter ?? null;
+}
+
+/** The method's declaration decides: a connection whose method mints AWS MCP credentials. */
 export function isAwsMcpConnection(connection: ConnectionLike): boolean {
-  return connection.transport === "mcp_remote"
-    && connection.config.sourceTemplateKey === AWS_MCP_SOURCE_TEMPLATE_KEY
-    && (AWS_MCP_METHOD_KEYS as readonly unknown[]).includes(connection.config.connectionMethodKey);
+  return connectionCredentialMinter(connection) === AWS_MCP_CREDENTIAL_MINTER;
 }
 
 /** Saved settings, rechecked at call time: the URL must be AWS's endpoint for the saved region. */
@@ -203,7 +216,14 @@ export function classifyAwsMcpError(step: Step, error: unknown): AwsMcpCredentia
   const status = awsHttpStatus(error);
   const details = asRecord(asRecord(error).details);
   if (step === "identity") {
-    if (details.code === "workload_identity_unavailable" || details.code === "workload_identity_issuer_changed") {
+    if (details.code === "workload_identity_issuer_changed") {
+      return new AwsMcpCredentialError(
+        "aws_issuer_changed", 409,
+        "This Paperclip instance's address changed since AWS was connected. Register the new identity provider address in AWS, then reconnect AWS.",
+        "error",
+      );
+    }
+    if (details.code === "workload_identity_unavailable") {
       return new AwsMcpCredentialError(
         "aws_identity_unavailable", 422,
         "The AWS role method needs this Paperclip instance to have a stable public HTTPS address. Use an access key instead.",
@@ -247,6 +267,8 @@ export interface AwsMcpMintInput {
   /** Changes whenever the connection or its grant is edited, so any edit makes a fresh token. */
   revision: string;
   grantId: string;
+  /** The issuer recorded at setup; signing stops with a clear message if the instance address changed. */
+  expectedIssuer?: string | null;
   settings: AwsMcpSettings;
   /** Reads a stored credential field by config path (access-key method only). */
   readSecret(configPath: string): Promise<string>;
@@ -256,7 +278,7 @@ export interface AwsMcpMintInput {
 export interface AwsMcpCredentialMinterOptions {
   clients?: AwsMcpClients;
   /** Signs a connection identity token (the workload identity issuer). */
-  signConnectionToken(input: { companyId: string; connectionId: string; audience: string }): Promise<{ token: string }>;
+  signConnectionToken(input: { companyId: string; connectionId: string; audience: string; expectedIssuer?: string | null }): Promise<{ token: string }>;
   now?: () => number;
   /** Deadline for each AWS request (default 10 s). */
   stepTimeoutMs?: number;
@@ -298,6 +320,7 @@ export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOpti
     if (settings.method === "aws-role") {
       const { token } = await step("identity", () => options.signConnectionToken({
         companyId: input.companyId, connectionId: input.connectionId, audience: AWS_MCP_STS_AUDIENCE,
+        expectedIssuer: input.expectedIssuer,
       }));
       return step("role", (signal) => clients.assumeRoleWithWebIdentity({
         region, roleArn: settings.roleArn!, sessionName, webIdentityToken: token, policyArns: readOnlyPolicies, signal,
@@ -408,4 +431,48 @@ export function awsMcpCredentialRevision(
 /** The role method proves itself with the company's issuer, which must be published before the customer registers it in AWS. */
 export function awsMcpMethodUsesIssuer(appSlug: string | null | undefined, methodKey: string | null | undefined): boolean {
   return appSlug === AWS_MCP_SOURCE_TEMPLATE_KEY && methodKey === "aws-role";
+}
+
+
+/** Where setup records the issuer a role connection's AWS trust was created for. */
+export const AWS_MCP_ISSUER_CONFIG_KEY = "workloadIdentityIssuer";
+
+type SecretRefLike = RevisionSource["credentialSecretRefs"][number];
+
+/**
+ * The shared minting pipeline for the gateway and connection health checks: builds
+ * the minter input from the connection and grant and reads stored keys through the
+ * caller's resolver. Failures are AwsMcpCredentialError; errors from `readRef`
+ * (the caller's own secret resolution) pass through unchanged.
+ */
+export async function resolveAwsMcpAuthorization<Ref extends SecretRefLike>(input: {
+  minter: AwsMcpCredentialMinter;
+  connection: ConnectionLike & { companyId: string; name: string; status: string; enabled: boolean; credentialSecretRefs: Ref[] };
+  grant: { id: string; status: string; credentialSecretRefs: Ref[] } | null;
+  forceRefresh?: boolean;
+  readRef(ref: Ref): Promise<string>;
+}): Promise<Record<string, string>> {
+  const { connection, grant } = input;
+  const refs = grant?.credentialSecretRefs ?? connection.credentialSecretRefs;
+  const recordedIssuer = connection.config[AWS_MCP_ISSUER_CONFIG_KEY];
+  return input.minter.authorizationHeader({
+    companyId: connection.companyId,
+    connectionId: connection.id,
+    connectionName: connection.name,
+    grantId: grant?.id ?? "shared",
+    revision: awsMcpCredentialRevision(connection, grant),
+    settings: awsMcpSettings(connection),
+    expectedIssuer: typeof recordedIssuer === "string" ? recordedIssuer : null,
+    forceRefresh: input.forceRefresh,
+    readSecret: async (configPath) => {
+      const ref = refs.find((candidate) => candidate.configPath === configPath);
+      if (!ref) {
+        throw new AwsMcpCredentialError(
+          "aws_access_key_invalid", 422,
+          "This AWS connection has no saved access key. Reconnect AWS.", "error",
+        );
+      }
+      return input.readRef(ref);
+    },
+  });
 }

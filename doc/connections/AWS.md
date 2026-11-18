@@ -138,6 +138,7 @@ error text is never shown, because it can contain account IDs and ARNs.
 |---|---|---|
 | `aws_mcp_settings_invalid` | error | Saved settings are incomplete, or the URL is not AWS's endpoint for the saved region. |
 | `aws_identity_unavailable` | error | The role method needs a stable public HTTPS address. |
+| `aws_issuer_changed` | error | The instance's address changed since setup. Register the new issuer in AWS and reconnect. |
 | `aws_role_access_denied` | error | AWS refused the role: it is missing, or its trust does not match this connection. |
 | `aws_access_key_invalid` | error | The access key is invalid or inactive, or the user cannot call `GetFederationToken`. |
 | `aws_mcp_signin_denied` | error | The token exchange was refused. Attach `AWSMCPSignInOAuthAccessPolicy`. |

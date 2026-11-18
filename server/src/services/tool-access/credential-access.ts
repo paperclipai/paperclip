@@ -1,5 +1,5 @@
 import { connectionActorUserId } from "./actor.js";
-import { AwsMcpCredentialError, awsMcpCredentialRevision, awsMcpSettings, createAwsMcpCredentialMinter, isAwsMcpConnection, sharedAwsMcpCredentialMinter, type AwsMcpClients } from "../connectors/aws/mcp-credentials.js";
+import { AwsMcpCredentialError, createAwsMcpCredentialMinter, isAwsMcpConnection, resolveAwsMcpAuthorization, sharedAwsMcpCredentialMinter, type AwsMcpClients } from "../connectors/aws/mcp-credentials.js";
 import { workloadIdentityService } from "../workload-identity.js";
 import type { ActorInfo } from "./types.js";
 import { oauthConfig } from "./oauth/metadata.js";
@@ -153,29 +153,13 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     options: { forceRefresh?: boolean },
   ): Promise<Record<string, string>> {
     const grant = connection.credentialPolicy === "shared" ? null : await vaultGrantForConnection(connection, actor);
-    const refs = grant?.credentialSecretRefs ?? connection.credentialSecretRefs;
-    const minter = awsMcpMinter;
     try {
-      return await minter.authorizationHeader({
-        companyId: connection.companyId,
-        connectionId: connection.id,
-        connectionName: connection.name,
-        grantId: grant?.id ?? "shared",
-        revision: awsMcpCredentialRevision(connection, grant),
-        settings: awsMcpSettings(connection),
-        forceRefresh: options.forceRefresh,
-        readSecret: async (configPath) => {
-          const ref = refs.find((candidate) => candidate.configPath === configPath);
-          if (!ref) {
-            throw new AwsMcpCredentialError(
-              "aws_access_key_invalid", 422,
-              "This AWS connection has no saved access key. Reconnect AWS.", "error",
-            );
-          }
-          // A grant's keys may be user-owned (personal connections); read them the way other grant credentials are read.
-          if (grant) return (await resolveOAuthGrantSecret(connection, grant, ref, actor, undefined)).value;
-          return secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.versionSelector ?? "latest");
-        },
+      return await resolveAwsMcpAuthorization({
+        minter: awsMcpMinter, connection, grant, forceRefresh: options.forceRefresh,
+        // A grant's keys may be user-owned (personal connections); read them the way other grant credentials are read.
+        readRef: async (ref) => grant
+          ? (await resolveOAuthGrantSecret(connection, grant, ref, actor, undefined)).value
+          : secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.versionSelector ?? "latest"),
       });
     } catch (error) {
       if (!(error instanceof AwsMcpCredentialError)) throw error;

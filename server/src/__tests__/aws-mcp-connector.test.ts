@@ -188,6 +188,8 @@ describe("AWS connector with minted credentials", () => {
     const connected = await service.connectGalleryApp(org.id, { ...roleInput, resumeConnectionId: draft.connectionId }, actor);
     expect(connected.connectionId).toBe(draft.connectionId);
     expect(connected.catalog).toHaveLength(2);
+    const [recorded] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    expect(recorded!.config.workloadIdentityIssuer).toBe(`https://acme.paperclip.app/oidc/companies/${org.id}`);
     const call = aws.assumeRoleWithWebIdentity.mock.calls[0]![0];
     expect(call).toMatchObject({ region: "us-east-1", roleArn: "arn:aws:iam::123456789012:role/paperclip-agents", policyArns: undefined });
     const claims = JSON.parse(Buffer.from(call.webIdentityToken.split(".")[1]!, "base64url").toString("utf8"));
@@ -204,5 +206,16 @@ describe("AWS connector with minted credentials", () => {
     const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
     expect(row!.healthMessage ?? JSON.stringify(health)).toContain("AWS refused this connection's role");
     expect(row!.healthMessage ?? "").not.toContain("123456789012");
+
+    // The instance's address changes: Paperclip stops with a clear message instead of a role refusal from AWS.
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://renamed.paperclip.app");
+    try {
+      for (const request of requests) rejected.add(request.headers.get("authorization") ?? "");
+      await service.checkHealth(connected.connectionId, actor).catch(() => undefined);
+      const [moved] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+      expect(moved!.healthMessage).toContain("address changed");
+    } finally {
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://acme.paperclip.app");
+    }
   });
 });

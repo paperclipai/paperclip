@@ -38,12 +38,19 @@ function input(settings: AwsMcpSettings, extra: Partial<AwsMcpMintInput> = {}): 
 }
 
 describe("AWS MCP credential minter", () => {
+  it("passes the issuer recorded at setup to the signer", async () => {
+    const sign = vi.fn(async () => ({ token: "jwt" }));
+    const minter = createAwsMcpCredentialMinter({ clients: fakeAws(), signConnectionToken: sign });
+    await minter.authorizationHeader(input(roleSettings, { expectedIssuer: "https://a.example/oidc/companies/c" }));
+    expect(sign).toHaveBeenCalledWith(expect.objectContaining({ expectedIssuer: "https://a.example/oidc/companies/c" }));
+  });
+
   it("role method: signs a connection token for STS and limits read-only sessions", async () => {
     const clients = fakeAws();
     const sign = vi.fn(async () => ({ token: "paperclip-jwt" }));
     const minter = createAwsMcpCredentialMinter({ clients, signConnectionToken: sign });
     expect(await minter.authorizationHeader(input(roleSettings))).toEqual({ Authorization: "Bearer mcp-token-1" });
-    expect(sign).toHaveBeenCalledWith({ companyId: "company-1", connectionId: "connection-1", audience: "sts.amazonaws.com" });
+    expect(sign).toHaveBeenCalledWith({ companyId: "company-1", connectionId: "connection-1", audience: "sts.amazonaws.com", expectedIssuer: undefined });
     expect(clients.assumeRoleWithWebIdentity).toHaveBeenCalledWith({
       region: "us-east-1", roleArn: roleSettings.roleArn, sessionName: "paperclip-aws-prod",
       webIdentityToken: "paperclip-jwt", policyArns: AWS_MCP_READ_ONLY_SESSION_POLICIES, signal: expect.any(AbortSignal),
@@ -141,6 +148,8 @@ describe("AWS MCP credential minter", () => {
     expect(classifyAwsMcpError("role", awsError("Throttling", 400))).toMatchObject({ code: "aws_unavailable" });
     expect(classifyAwsMcpError("identity", Object.assign(new Error("x"), { details: { code: "workload_identity_unavailable" } })))
       .toMatchObject({ code: "aws_identity_unavailable", status: 422 });
+    expect(classifyAwsMcpError("identity", Object.assign(new Error("x"), { details: { code: "workload_identity_issuer_changed" } })))
+      .toMatchObject({ code: "aws_issuer_changed", status: 409, message: expect.stringContaining("address changed") });
 
     const failing = createAwsMcpCredentialMinter({
       clients: fakeAws({ createMcpToken: vi.fn(async () => { throw awsError("UnauthorizedException", 401); }) }),
@@ -158,6 +167,9 @@ describe("AWS MCP credential minter", () => {
     } });
     expect(isAwsMcpConnection(connection({}))).toBe(true);
     expect(isAwsMcpConnection(connection({ connectionMethodKey: "other" }))).toBe(false);
+    // Detection follows the method's credentialMinter declaration, not a hard-coded list.
+    expect(isAwsMcpConnection(connection({ sourceTemplateKey: "pagerduty", connectionMethodKey: "mcp-api-key-us" }))).toBe(false);
+    expect(isAwsMcpConnection({ ...connection({}), transport: "local_stdio" })).toBe(false);
     expect(awsMcpSettings(connection({}))).toEqual({ method: "aws-role", roleArn: "arn:aws:iam::123456789012:role/agents", endpointRegion: "us-east-1", accessLevel: "full" });
     expect(() => awsMcpSettings(connection({ url: "https://evil.example.com/mcp" }))).toThrow(AwsMcpCredentialError);
     expect(() => awsMcpSettings(connection({ url: "https://aws-mcp.eu-west-1.api.aws/mcp" }))).toThrow(AwsMcpCredentialError);
