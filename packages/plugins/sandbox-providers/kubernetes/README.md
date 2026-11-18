@@ -91,6 +91,22 @@ When a company is at its pod quota there is **no queue**: a new run fails fast w
 
 **Changing the quota for existing companies.** Edit `resourceQuota` on the environment. The plugin reconciles `paperclip-quota` `spec.hard` to the configured values the next time it provisions a lease for that namespace (a changed `resourceQuota` is part of the cached setup fingerprint, so it is applied on the very next acquire; unchanged setup is re-verified at most every 5 minutes). This needs `update` on `resourcequotas` in the tenant namespaces for the server's Kubernetes credentials (`get`/`create` alone are not enough); if it is missing the plugin logs a warning naming the missing permission and the old quota stays in force. Other tenant objects (RBAC, NetworkPolicies, LimitRange) remain create-once: change those by deleting the object, or the namespace, and the next run recreates it. Sizing note: with 2 CPU limits per pod, `limitsCpu` of 20 admits about 10 concurrent pods regardless of `pods`.
 
+### Pod reuse per conversation (TECH-8900)
+
+By default every run gets a fresh pod. For chat agents the server can keep one pod alive per conversation between turns, so the second and later turns skip pod creation and image start (assets and the bridge are still set up fresh each turn). Enable it on the sandbox environment:
+
+```json
+{ "provider": "kubernetes", "reuseLease": true, "reuseLeaseScope": "conversations",
+  "runnerLifecycleMode": "warm", "runnerIdleTimeoutMs": 300000 }
+```
+
+- **Scope.** `reuseLeaseScope: "conversations"` limits reuse to turns of an ongoing agent conversation. New tasks, routines and timers keep getting a fresh pod released at the end of the run. The pod is bound to one conversation (issue) and one agent, even when several conversations share an execution workspace: a different conversation or agent never receives it. Omit the scope (or use `"all"`) for the older behavior, where any run of the same agent and workspace/issue may resume the pod.
+- **Idle TTL.** The server retains the lease and does not call the plugin's release between turns, so the plugin enforces the TTL: a reusable pod with no exec for `runnerIdleTimeoutMs` (default 5 minutes) and none in flight is deleted by a 30 s reaper. The next turn finds it gone and acquires a fresh pod.
+- **Which adapters.** Every kept-running pod the server marks reusable gets the idle TTL (so a retained pod can never leak), the scrub of that adapter's own runtime directory, and quota eviction. One-shot leases and `paperclip_runner`'s warm sandboxes, which own their lifecycle, are never touched by this logic.
+- **Scrub between turns.** When a turn resumes a pod, the plugin first kills every process except the pod's keeper (tini and its `sleep infinity`, which must stay up) and the scrub shell, deletes the previous turn's adapter runtime directory (`<cwd>/.paperclip-runtime/<adapter key>`, e.g. `hermes`: HERMES_HOME, the query file, the bridge and its queue; other adapters' state is untouched), and clears `/tmp` and `~/.cache`. The workspace is kept. A pod that fails the scrub is destroyed and the turn gets a fresh pod. The bridge and its token are new each turn, and secrets arrive over exec stdin per run, so nothing from the previous run's env survives.
+- **Quota.** Idle pods count against the company pod quota. Before refusing a run as over capacity, the plugin evicts the longest-idle reusable pod (idle at least 30 s, nothing in flight) in that company's namespace.
+- **Limits.** The idle registry lives in the worker process: after a plugin worker restart an idle pod is forgotten until its next turn (quota eviction and the orphan reaper cover it). Agent pause does not release the pod immediately; it expires at the idle TTL. A conversation that reaches a terminal state is released by the server.
+
 ### Task-scoped egress grants
 
 Keep provider-level egress defaults narrow, then grant only the destinations a task needs through its execution workspace settings:

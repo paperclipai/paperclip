@@ -986,6 +986,8 @@ async function buildReusableSandboxLeaseFingerprint(input: {
   adapterType: string | null;
   provider: string;
   providerConfig: Record<string, unknown>;
+  /** Scope the lease to the issue even when an execution workspace exists (one pod per conversation). */
+  issueScoped?: boolean;
   providerPlugin?: {
     id: string;
     pluginKey: string;
@@ -1006,7 +1008,7 @@ async function buildReusableSandboxLeaseFingerprint(input: {
         driver: input.environment.driver,
       },
       executionWorkspaceId: input.executionWorkspaceId,
-      ...(input.executionWorkspaceId ? {} : { projectlessIssueId: input.issueId }),
+      ...(input.executionWorkspaceId && !input.issueScoped ? {} : { projectlessIssueId: input.issueId }),
       agentId: input.agentId,
       adapterType: input.adapterType,
       provider: input.provider,
@@ -1029,6 +1031,7 @@ function buildReusableSandboxLeaseScope(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   providerMetadata?: Record<string, unknown> | null;
+  issueScoped?: boolean;
 }): Record<string, unknown> | null {
   // Chat tasks need not have a project workspace. Their task + agent identity
   // is a stable, narrower reuse boundary; unscoped/ad-hoc probes cannot match it.
@@ -1044,7 +1047,7 @@ function buildReusableSandboxLeaseScope(input: {
     companyId: input.companyId,
     environmentId: input.environmentId,
     executionWorkspaceId: input.executionWorkspaceId,
-    ...(input.executionWorkspaceId ? {} : { projectlessIssueId: input.issueId }),
+    ...(input.executionWorkspaceId && !input.issueScoped ? {} : { projectlessIssueId: input.issueId }),
     agentId: input.agentId,
     adapterType,
     provider: input.provider,
@@ -1073,8 +1076,12 @@ function reusableSandboxLeaseScopeMatches(input: {
   config: Record<string, unknown>;
   leaseFingerprint?: EffectiveRunConfigFingerprint | null;
   allowLegacyRuntimeFingerprint?: boolean;
+  issueScoped?: boolean;
 }): boolean {
   if ((!input.executionWorkspaceId && !input.issueId) || !input.agentId) return false;
+  // One pod per conversation: a run with no issue can never match an
+  // issue-scoped pod (null would otherwise equal a stored null issue).
+  if (input.issueScoped && !input.issueId) return false;
   const scope = input.lease.metadata?.reusableSandboxLease;
   if (!isRecord(scope)) return false;
   const adapterType = input.adapterType ?? null;
@@ -1082,7 +1089,7 @@ function reusableSandboxLeaseScopeMatches(input: {
     scope.companyId === input.companyId &&
     scope.environmentId === input.environmentId &&
     scope.executionWorkspaceId === input.executionWorkspaceId &&
-    (input.executionWorkspaceId !== null || scope.projectlessIssueId === input.issueId) &&
+    ((input.executionWorkspaceId !== null && !input.issueScoped) || scope.projectlessIssueId === input.issueId) &&
     scope.agentId === input.agentId &&
     scope.adapterType === adapterType &&
     scope.provider === input.provider;
@@ -1861,8 +1868,15 @@ function createSandboxEnvironmentDriver(
       // or account used for qualification and custom-template resolution.
       if (configuredEnvironment.id !== input.environment.id
         || configuredEnvironment.driver !== input.environment.driver
-        || stableStringify({ ...configuredEnvironment.config, reuseLease: undefined })
-          !== stableStringify({ ...input.environment.config, reuseLease: undefined })) {
+        || stableStringify({ ...configuredEnvironment.config, reuseLease: undefined, runnerLifecycleMode: undefined })
+          !== stableStringify({ ...input.environment.config, reuseLease: undefined, runnerLifecycleMode: undefined })
+        // A run view may only narrow retention (turn reuse off, lifecycle per_turn),
+        // never widen it beyond the saved configuration.
+        || (input.environment.config.reuseLease === true && configuredEnvironment.config.reuseLease !== true
+          && input.adapterType !== "paperclip_runner")
+        || (input.environment.config.runnerLifecycleMode === "warm"
+          && configuredEnvironment.config.runnerLifecycleMode !== "warm"
+          && input.adapterType !== "paperclip_runner")) {
         throw new Error("Run environment does not match its saved configuration.");
       }
       const storedParsed = parseEnvironmentDriverConfig(input.environment);
@@ -1928,6 +1942,9 @@ function createSandboxEnvironmentDriver(
         // all three methods fails closed and uses an ephemeral lease, so the
         // runtime never dispatches a resume, a release, or a destroy the worker
         // cannot serve, and it never strands a stale lease it cannot destroy.
+        // One pod per conversation: scope reuse to the issue even when the run has an
+        // execution workspace, so two conversations of one agent never share a pod.
+        const issueScoped = (parsed.config as { reuseLeaseScope?: string }).reuseLeaseScope === "conversations";
         const declaredReusableLeases =
           resolveDeclaredSandboxCapabilities(pluginProvider.resolved.driver).reusableLeases === true;
         const pluginVerifiedMethods = new Set(
@@ -1951,6 +1968,7 @@ function createSandboxEnvironmentDriver(
                 adapterType: input.adapterType,
                 provider: parsed.config.provider,
                 providerConfig: providerConfigForLease,
+                issueScoped,
                 providerPlugin: {
                   id: pluginProvider.resolved.plugin.id,
                   pluginKey: pluginProvider.resolved.plugin.pluginKey,
@@ -1976,7 +1994,7 @@ function createSandboxEnvironmentDriver(
                 lease.leasePolicy === "reuse_by_environment" &&
                 reusableLeaseCanBeResumed({ lease, heartbeatRunId: input.heartbeatRunId }) &&
                 lease.executionWorkspaceId === input.executionWorkspaceId &&
-                (input.executionWorkspaceId !== null || lease.issueId === input.issueId) &&
+                ((input.executionWorkspaceId !== null && !issueScoped) || lease.issueId === input.issueId) &&
                 lease.metadata?.agentId === input.agentId,
               )
           : [];
@@ -1995,6 +2013,7 @@ function createSandboxEnvironmentDriver(
             provider: parsed.config.provider,
             config: providerConfigForLease,
             leaseFingerprint,
+            issueScoped,
             allowLegacyRuntimeFingerprint:
               lease.status === "active" &&
               input.heartbeatRunId !== null &&
@@ -2243,6 +2262,7 @@ function createSandboxEnvironmentDriver(
               provider: parsed.config.provider,
               config: providerConfigForLease,
               leaseFingerprint,
+              issueScoped,
               providerMetadata: sanitizedProviderMetadata,
             })
           : null;

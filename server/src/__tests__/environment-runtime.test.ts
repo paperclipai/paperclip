@@ -28,7 +28,7 @@ import {
 import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import * as environmentsModule from "../services/environments.ts";
 import { logger } from "../middleware/logger.ts";
-import { resolveRunnerEnvironmentForRun } from "../services/runner-environment-lifecycle.js";
+import { applyReuseLeaseScope, resolveRunnerEnvironmentForRun } from "../services/runner-environment-lifecycle.js";
 import { environmentService } from "../services/environments.ts";
 import { remoteExecutionHasStopped } from "../services/remote-execution-termination.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -72,6 +72,37 @@ function reusableRuntimeFingerprint(input: {
 }) {
   return createHash("sha256").update(stableStringify(input)).digest("hex");
 }
+
+describe("applyReuseLeaseScope", () => {
+  const sandbox = (config: Record<string, unknown>) => ({ driver: "sandbox" as const, config });
+
+  it("keeps reuse and warm retention for a conversation turn", () => {
+    const env = sandbox({ provider: "kubernetes", reuseLease: true, runnerLifecycleMode: "warm", reuseLeaseScope: "conversations" });
+    expect(applyReuseLeaseScope(env, { conversationTurn: true })).toBe(env);
+  });
+
+  it("gives any other run a per-turn view with no reuse", () => {
+    const env = sandbox({ provider: "kubernetes", reuseLease: true, runnerLifecycleMode: "warm", reuseLeaseScope: "conversations" });
+    expect(applyReuseLeaseScope(env, { conversationTurn: false }).config).toMatchObject({
+      reuseLease: false,
+      runnerLifecycleMode: "per_turn",
+      reuseLeaseScope: "conversations",
+    });
+  });
+
+  it("never narrows paperclip_runner, which owns its warm-session retention", () => {
+    const env = sandbox({ provider: "kubernetes", reuseLease: true, runnerLifecycleMode: "warm", reuseLeaseScope: "conversations" });
+    expect(applyReuseLeaseScope(env, { conversationTurn: false, adapterType: "paperclip_runner" })).toBe(env);
+    expect(applyReuseLeaseScope(env, { conversationTurn: false, adapterType: "hermes_local" }).config).toMatchObject({ reuseLease: false });
+  });
+
+  it("changes nothing without the conversations scope, or for non-sandbox drivers", () => {
+    const all = sandbox({ provider: "kubernetes", reuseLease: true, runnerLifecycleMode: "warm" });
+    expect(applyReuseLeaseScope(all, { conversationTurn: false })).toBe(all);
+    const ssh = { driver: "ssh" as const, config: { reuseLeaseScope: "conversations" } };
+    expect(applyReuseLeaseScope(ssh, { conversationTurn: false })).toBe(ssh);
+  });
+});
 
 describe("findReusableSandboxLeaseId", () => {
   it("matches reusable plugin-backed sandbox leases by provider", () => {
@@ -1008,6 +1039,123 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(next.lease.providerLeaseId).toBe(shouldResume ? "projectless-1" : "projectless-2");
     expect(acquisitions).toBe(shouldResume ? 1 : 2);
     expect(call.mock.calls.filter((entry) => entry[1] === "environmentResumeLease")).toHaveLength(shouldResume ? 1 : 0);
+  });
+
+  it.each([
+    { scope: "conversations", otherIssueResumes: false },
+    { scope: "all", otherIssueResumes: true },
+  ])(
+    "one pod per conversation even in a shared execution workspace (reuseLeaseScope=$scope)",
+    async ({ scope, otherIssueResumes }) => {
+      const seeded = await seedReusablePluginSandboxLease();
+      await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+      const issueId = randomUUID();
+      const otherIssueId = randomUUID();
+      await db.insert(issues).values([issueId, otherIssueId].map((id) => ({
+        id, companyId: seeded.companyId, title: "Conversation", status: "in_progress",
+        assigneeAgentId: seeded.agentId,
+      })));
+      const environment = {
+        ...seeded.environment,
+        config: { ...seeded.environment.config, reuseLeaseScope: scope },
+      };
+      let acquisitions = 0;
+      const call = vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentAcquireLease") {
+          return { providerLeaseId: `conv-${++acquisitions}`, metadata: { remoteCwd: "/workspace" } };
+        }
+        if (method === "environmentResumeLease") {
+          return { providerLeaseId: "conv-1", metadata: { remoteCwd: "/workspace" } };
+        }
+        throw new Error(`Unexpected conversation lease method: ${method}`);
+      });
+      const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: {
+        isRunning: () => true, call,
+        getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+      } as unknown as PluginWorkerManager });
+      const workspace = { id: seeded.executionWorkspaceId, mode: "shared_workspace" as const };
+      const first = await runtimeWithPlugin.acquireRunLease({
+        companyId: seeded.companyId, environment, issueId, agentId: seeded.agentId,
+        heartbeatRunId: seeded.runId, persistedExecutionWorkspace: workspace,
+      });
+      expect(first.lease.providerLeaseId).toBe("conv-1");
+      // The server keeps the pod running between turns: lease is retained, plugin release not called.
+      await runtimeWithPlugin.releaseRunLeases(seeded.runId, "released", undefined, "keep_running");
+
+      // Another conversation (same agent, same shared workspace) must not get the pod.
+      const otherRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+      const other = await runtimeWithPlugin.acquireRunLease({
+        companyId: seeded.companyId, environment, issueId: otherIssueId, agentId: seeded.agentId,
+        heartbeatRunId: otherRunId, persistedExecutionWorkspace: workspace,
+      });
+      expect(other.lease.providerLeaseId).toBe(otherIssueResumes ? "conv-1" : "conv-2");
+
+      // The same conversation's next turn does reuse its own pod.
+      if (!otherIssueResumes) {
+        const nextRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+        const next = await runtimeWithPlugin.acquireRunLease({
+          companyId: seeded.companyId, environment, issueId, agentId: seeded.agentId,
+          heartbeatRunId: nextRunId, persistedExecutionWorkspace: workspace,
+        });
+        expect(next.lease.providerLeaseId).toBe("conv-1");
+        expect(call.mock.calls.filter((entry) => entry[1] === "environmentResumeLease")).toHaveLength(1);
+        expect(acquisitions).toBe(2);
+      }
+    },
+  );
+
+  it("never lets a run without an issue take an issue-scoped conversation pod", async () => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Conversation", status: "in_progress", assigneeAgentId: seeded.agentId });
+    const environment = { ...seeded.environment, config: { ...seeded.environment.config, reuseLeaseScope: "conversations" } };
+    let acquisitions = 0;
+    const call = vi.fn(async (_pluginId: string, method: string) => {
+      if (method === "environmentAcquireLease") return { providerLeaseId: `conv-${++acquisitions}`, metadata: { remoteCwd: "/workspace" } };
+      if (method === "environmentResumeLease") return { providerLeaseId: "conv-1", metadata: { remoteCwd: "/workspace" } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    const workspace = { id: seeded.executionWorkspaceId, mode: "shared_workspace" as const };
+    await runtimeWithPlugin.acquireRunLease({ companyId: seeded.companyId, environment, issueId, agentId: seeded.agentId, heartbeatRunId: seeded.runId, persistedExecutionWorkspace: workspace });
+    await runtimeWithPlugin.releaseRunLeases(seeded.runId, "released", undefined, "keep_running");
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
+    const issueless = await runtimeWithPlugin.acquireRunLease({ companyId: seeded.companyId, environment, issueId: null, agentId: seeded.agentId, heartbeatRunId: nextRunId, persistedExecutionWorkspace: workspace });
+    expect(issueless.lease.providerLeaseId).toBe("conv-2");
+    expect(call.mock.calls.filter((entry) => entry[1] === "environmentResumeLease")).toHaveLength(0);
+  });
+
+  it("gives a non-conversation run an ephemeral lease under reuseLeaseScope=conversations", async () => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const configured = {
+      ...seeded.environment,
+      config: { ...seeded.environment.config, runnerLifecycleMode: "warm", reuseLeaseScope: "conversations" },
+    };
+    const call = vi.fn(async (_pluginId: string, method: string) => {
+      if (method === "environmentAcquireLease") return { providerLeaseId: "task-1", metadata: { remoteCwd: "/workspace" } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager });
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId,
+      environment: applyReuseLeaseScope(configured, { conversationTurn: false }),
+      configuredEnvironment: configured,
+      issueId: null, agentId: seeded.agentId, heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" },
+    });
+    expect(acquired.lease.leasePolicy).toBe("ephemeral");
+    expect(acquired.lease.metadata?.reusableSandboxLease).toBeUndefined();
   });
 
   it.each(["pending", "inline", "foreign scope", "foreign environment", "foreign run", "malformed", "deleted environment", "forged error", "invalid diagnostic", "old worker"])("retains uncertain plugin creation for durable cleanup: %s", async (mode) => {

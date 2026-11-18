@@ -2,7 +2,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock the kube-client module so the plugin handlers run against injected
 // fake API clients instead of a real cluster. h.clients is swapped per test.
-const h = vi.hoisted(() => ({ clients: {} as Record<string, unknown> }));
+const h = vi.hoisted(() => ({
+  clients: {} as Record<string, unknown>,
+  scrub: vi.fn(),
+  execInPod: vi.fn(),
+}));
+
+// The between-turn scrub and the exec channel talk to a real pod; mock them.
+vi.mock("../../src/pod-scrub.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/pod-scrub.js")>()),
+  scrubPod: h.scrub,
+}));
+vi.mock("../../src/pod-exec.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/pod-exec.js")>()),
+  execInPod: h.execInPod,
+}));
 
 vi.mock("../../src/kube-client.js", () => ({
   createKubeConfig: vi.fn(() => ({})),
@@ -11,6 +25,7 @@ vi.mock("../../src/kube-client.js", () => ({
 
 import plugin, { DEFAULT_WORKSPACE_REMOTE_DIR, leaseRemoteCwd, resolveSyncRemoteDir } from "../../src/plugin.js";
 import { assertConfinedSandboxPath } from "../../src/file-sync.js";
+import { isTracked, reapIdleLeases, resetReuseRegistry } from "../../src/reuse-registry.js";
 
 const CONFIG = { inCluster: true, backend: "sandbox-cr" };
 
@@ -42,6 +57,10 @@ function readySandboxCr(podName: string): Record<string, unknown> {
 
 beforeEach(() => {
   h.clients = {};
+  h.scrub.mockReset();
+  h.scrub.mockResolvedValue({ ok: true, detail: "" });
+  h.execInPod.mockReset();
+  resetReuseRegistry();
 });
 
 describe("onEnvironmentResumeLease", () => {
@@ -525,3 +544,214 @@ describe("lease remote working dir (TECH-8174: runs that never realize a workspa
   });
 });
 
+
+describe("reusable conversation pods", () => {
+  const RESUME_CLIENTS = () => ({
+    custom: {
+      getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
+      deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+    },
+    core: {
+      readNamespacedPod: vi.fn().mockResolvedValue({ metadata: {}, status: { phase: "Running" } }),
+      deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+      deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+    },
+  });
+
+  it("scrubs the pod on resume, before handing it to the next turn, and tracks it for the idle TTL", async () => {
+    h.clients = RESUME_CLIENTS();
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ remoteCwd: "/workspace", reusableSandboxLease: { version: 1, adapterType: "hermes_local" } }),
+    });
+    expect(lease.providerLeaseId).toBe("pc-abc");
+    expect(h.scrub).toHaveBeenCalledWith(expect.anything(), "paperclip-acme", "pc-abc-pod", "/workspace", "hermes_local");
+    expect(isTracked("paperclip-acme", "pc-abc")).toBe(true);
+  });
+
+  it("does not reuse a pod that cannot be scrubbed: destroys it and reports the lease expired", async () => {
+    const clients = RESUME_CLIENTS();
+    h.clients = clients;
+    h.scrub.mockResolvedValue({ ok: false, detail: "exec failed" });
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ reusableSandboxLease: { version: 1, adapterType: "hermes_local" } }),
+    });
+    expect(lease.providerLeaseId).toBeNull();
+    expect(lease.metadata?.reason).toMatch(/scrub failed: exec failed/);
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalled();
+    expect(isTracked("paperclip-acme", "pc-abc")).toBe(false);
+  });
+
+  it("leaves paperclip_runner's warm sandboxes and one-shot leases alone: no scrub, no tracking", async () => {
+    h.clients = RESUME_CLIENTS();
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ reusableSandboxLease: { version: 1, adapterType: "paperclip_runner" } }),
+    });
+    expect(lease.providerLeaseId).toBe("pc-abc");
+    expect(h.scrub).not.toHaveBeenCalled();
+    expect(isTracked("paperclip-acme", "pc-abc")).toBe(false);
+
+    h.execInPod.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    await plugin.definition.onEnvironmentExecute!({
+      driverKey: "kubernetes", companyId: "acme", environmentId: "env-1", config: CONFIG, command: "true", args: [],
+      lease: {
+        providerLeaseId: "pc-runner",
+        metadata: leaseMetadata({ jobName: "pc-runner", reusableSandboxLease: { version: 1, adapterType: "paperclip_runner" } }),
+      },
+    } as never);
+    expect(isTracked("paperclip-acme", "pc-runner")).toBe(false);
+  });
+
+  it("also scrubs and tracks a kept-running pod of another legacy adapter, so a retained pod can never leak", async () => {
+    h.clients = RESUME_CLIENTS();
+    await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes", companyId: "acme", environmentId: "env-1", config: CONFIG, providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ reusableSandboxLease: { version: 1, adapterType: "claude_local" } }),
+    });
+    expect(h.scrub).toHaveBeenCalledWith(expect.anything(), "paperclip-acme", "pc-abc-pod", "/workspace", "claude_local");
+    expect(isTracked("paperclip-acme", "pc-abc")).toBe(true);
+  });
+
+  it("returns the lease as expired even when destroying an unscrubbable pod fails", async () => {
+    const clients = RESUME_CLIENTS();
+    clients.custom.deleteNamespacedCustomObject.mockRejectedValue(new Error("apiserver down"));
+    h.clients = clients;
+    h.scrub.mockResolvedValue({ ok: false, detail: "exec failed" });
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes", companyId: "acme", environmentId: "env-1", config: CONFIG, providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ reusableSandboxLease: { version: 1, adapterType: "hermes_local" } }),
+    });
+    expect(lease.providerLeaseId).toBeNull();
+    // The failed delete leaves the pod tracked so the reaper retries it.
+    expect(isTracked("paperclip-acme", "pc-abc")).toBe(true);
+  });
+
+  it("keeps the host-owned reuse flags when a config is validated and normalized on save", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: { inCluster: true, reuseLease: true, reuseLeaseScope: "conversations", runnerIdleTimeoutMs: 120_000 },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.normalizedConfig).toMatchObject({
+      reuseLease: true,
+      reuseLeaseScope: "conversations",
+      runnerIdleTimeoutMs: 120_000,
+    });
+  });
+
+  it("tracks idle time only for leases the server marked reusable, and the reaper deletes them after the TTL", async () => {
+    const clients = RESUME_CLIENTS();
+    h.clients = clients;
+    h.execInPod.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    const base = {
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: { ...CONFIG, runnerIdleTimeoutMs: 60_000 },
+      command: "true",
+      args: [],
+    };
+    await plugin.definition.onEnvironmentExecute!({
+      ...base,
+      lease: { providerLeaseId: "pc-oneshot", metadata: leaseMetadata({ jobName: "pc-oneshot" }) },
+    } as never);
+    expect(isTracked("paperclip-acme", "pc-oneshot")).toBe(false);
+
+    await plugin.definition.onEnvironmentExecute!({
+      ...base,
+      lease: {
+        providerLeaseId: "pc-chat",
+        metadata: leaseMetadata({ jobName: "pc-chat", reusableSandboxLease: { version: 1, adapterType: "hermes_local" } }),
+      },
+    } as never);
+    expect(isTracked("paperclip-acme", "pc-chat")).toBe(true);
+
+    expect(await reapIdleLeases(Date.now() + 30_000)).toEqual([]);
+    expect(await reapIdleLeases(Date.now() + 61_000)).toEqual(["pc-chat"]);
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "pc-chat" }),
+    );
+  });
+
+  it("evicts the longest-idle conversation pod instead of failing a new run when the company is at its pod quota", async () => {
+    const exists = vi.fn().mockResolvedValue({});
+    const create = vi.fn().mockResolvedValue({ metadata: { uid: "uid-new" } });
+    const clients = {
+      core: {
+        readNamespace: exists,
+        readNamespacedServiceAccount: exists,
+        readNamespacedLimitRange: exists,
+        // Full for the first checks (the existing pod), free once the evicted pod is gone.
+        readNamespacedResourceQuota: vi
+          .fn()
+          .mockResolvedValue({
+            spec: { hard: { pods: "1", "requests.cpu": "10", "requests.memory": "20Gi", "limits.cpu": "20", "limits.memory": "40Gi" } },
+            status: { hard: { pods: "1" }, used: { pods: "0" } },
+          })
+          .mockResolvedValueOnce({
+            spec: { hard: { pods: "1", "requests.cpu": "10", "requests.memory": "20Gi", "limits.cpu": "20", "limits.memory": "40Gi" } },
+            status: { hard: { pods: "1" }, used: { pods: "1" } },
+          })
+          .mockResolvedValueOnce({
+            spec: { hard: { pods: "1", "requests.cpu": "10", "requests.memory": "20Gi", "limits.cpu": "20", "limits.memory": "40Gi" } },
+            status: { hard: { pods: "1" }, used: { pods: "1" } },
+          }),
+        createNamespacedSecret: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        readNamespacedPod: vi.fn().mockRejectedValue(notFound()),
+        listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
+      },
+      rbac: { readNamespacedRole: exists, readNamespacedRoleBinding: exists },
+      networking: { readNamespacedNetworkPolicy: exists },
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockImplementation(async (a: { plural: string }) =>
+          a.plural === "sandboxes" ? { status: {} } : {},
+        ),
+        createNamespacedCustomObject: create,
+        deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+      },
+    };
+    h.clients = clients;
+    // An idle conversation pod holding the quota (idle well past the 30 s eviction floor).
+    const { trackReusableLease } = await import("../../src/reuse-registry.js");
+    trackReusableLease(
+      {
+        namespace: "paperclip-evict-co",
+        name: "pc-idle-chat",
+        secretName: "pc-idle-chat-env",
+        podName: null,
+        backend: "sandbox-cr",
+        clients: clients as never,
+        idleTtlMs: 300_000,
+      },
+      Date.now() - 120_000,
+    );
+    const lease = await plugin.definition.onEnvironmentAcquireLease!({
+      driverKey: "kubernetes",
+      companyId: "evict-co",
+      environmentId: "env-1",
+      config: { ...CONFIG, companySlug: "evict-co", resourceQuota: { pods: "1" } },
+      runId: "run-new",
+    } as never);
+    expect(lease.providerLeaseId).toMatch(/^pc-/);
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "pc-idle-chat" }),
+    );
+    expect(create).toHaveBeenCalled();
+  });
+});

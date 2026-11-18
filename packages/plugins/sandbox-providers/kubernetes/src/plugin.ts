@@ -48,6 +48,14 @@ import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
+  beginLeaseExec,
+  evictLongestIdleLease,
+  forgetLease,
+  startIdleReaper,
+  trackReusableLease,
+} from "./reuse-registry.js";
+import { runtimeKeyForAdapter, scrubPod } from "./pod-scrub.js";
+import {
   appendNetworkEgressDenyHint,
   createScopedNetworkEgressPolicyOrReleaseWorkload,
   NETWORK_EGRESS_GRANT_PATH,
@@ -156,6 +164,9 @@ const readySandboxesByLease = new Set<string>();
 // provision — if the pod isn't (almost) up, falling back to acquireLease is
 // faster and more reliable than waiting.
 const RESUME_READY_TIMEOUT_MS = 30_000;
+
+// How often the plugin looks for reusable pods idle past their TTL.
+const IDLE_REAP_INTERVAL_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
 
 // Every agent pod mounts an emptyDir at /workspace (sandbox-cr-builder /
@@ -298,8 +309,476 @@ async function resolveSyncPodExec(
   return { exec, timeoutMs };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The adapter type of a lease the server kept running for reuse, or null when
+ * the plugin must not manage it. Every adapter's kept-running pod gets the idle
+ * TTL (so a pod the server retains can never leak), the between-turn scrub of
+ * that adapter's own runtime directory, and quota eviction. One-shot leases and
+ * paperclip_runner's warm sandboxes (which own their lifecycle) are left alone.
+ */
+function managedReusableAdapter(
+  metadata: Record<string, unknown> | null | undefined,
+  _config?: KubernetesProviderConfig,
+): string | null {
+  const scope = metadata?.reusableSandboxLease;
+  if (!isRecord(scope)) return null;
+  const adapterType = typeof scope.adapterType === "string" ? scope.adapterType : null;
+  if (!adapterType || adapterType === "paperclip_runner") return null;
+  try {
+    runtimeKeyForAdapter(adapterType); // rejects anything that is not a plain name
+  } catch {
+    return null;
+  }
+  return adapterType;
+}
+
+/** Wait briefly for evicted pods to leave the quota (terminating pods still count). */
+async function waitForPodCapacity(
+  clients: ReturnType<typeof makeKubeClients>,
+  namespace: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await assertPodCapacity(clients, namespace);
+      return;
+    } catch (err) {
+      if (!(err instanceof OverCapacityError) || Date.now() >= deadline) throw err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+}
+
+/**
+ * Begin idle tracking for an exec on a lease the server marked reusable
+ * (`metadata.reusableSandboxLease`). Returns the function to call when the exec
+ * finishes. A no-op for ordinary one-shot leases, so Pi/Claude are untouched.
+ */
+function trackLeaseExecStart(params: PluginEnvironmentExecuteParams): () => void {
+  const { lease } = params;
+  if (!lease.providerLeaseId) return () => {};
+  const config = kubernetesProviderConfigSchema.safeParse(params.config);
+  if (!config.success || managedReusableAdapter(lease.metadata, config.data) === null) return () => {};
+  const leaseBackend = typeof lease.metadata?.backend === "string" ? lease.metadata.backend : config.data.backend;
+  if (leaseBackend !== "sandbox-cr") return () => {};
+  const namespace =
+    typeof lease.metadata?.namespace === "string"
+      ? lease.metadata.namespace
+      : deriveTenantNamespace(config.data, params.companyId);
+  trackReusableLease({
+    namespace,
+    name: lease.providerLeaseId,
+    secretName:
+      typeof lease.metadata?.secretName === "string"
+        ? lease.metadata.secretName
+        : `${lease.providerLeaseId}-env`,
+    podName: typeof lease.metadata?.podName === "string" ? lease.metadata.podName : null,
+    backend: "sandbox-cr",
+    clients: makeKubeClients(
+      createKubeConfig({ inCluster: config.data.inCluster, kubeconfig: config.data.kubeconfig }),
+    ),
+    idleTtlMs: config.data.runnerIdleTimeoutMs,
+  });
+  return beginLeaseExec(namespace, lease.providerLeaseId);
+}
+
+async function executeInLease(
+  params: PluginEnvironmentExecuteParams,
+): Promise<PluginEnvironmentExecuteResult> {
+  const { lease, timeoutMs } = params;
+
+  if (!lease.providerLeaseId) {
+    return {
+      exitCode: 1,
+      timedOut: false,
+      stdout: "",
+      stderr: "No provider lease ID available for execution.",
+    };
+  }
+
+  const config = kubernetesProviderConfigSchema.parse(params.config);
+  const scopedNetworkEgress = parseScopedNetworkEgressGrant({
+    networkEgress: lease.metadata?.scopedNetworkEgress,
+  });
+  const namespace =
+    typeof lease.metadata?.namespace === "string"
+      ? lease.metadata.namespace
+      : deriveTenantNamespace(config, params.companyId);
+
+  // Determine which backend this lease was created with.
+  const leaseBackend =
+    typeof lease.metadata?.backend === "string"
+      ? (lease.metadata.backend as "sandbox-cr" | "job")
+      : config.backend;
+
+  const kc = createKubeConfig({
+    inCluster: config.inCluster,
+    kubeconfig: config.kubeconfig,
+  });
+  const clients = makeKubeClients(kc);
+
+  const effectiveTimeoutMs =
+    typeof timeoutMs === "number" && timeoutMs > 0
+      ? timeoutMs
+      : config.podActivityDeadlineSec * 1000;
+
+  if (leaseBackend === "sandbox-cr") {
+    // ── Sandbox-CR backend ──────────────────────────────────────────────────
+    // 1. Ensure the Sandbox pod is Ready (wait only on first exec for this lease).
+    // 2. Exec the command into the running pod.
+    // 3. Return exec result directly (no log scraping needed).
+
+    let podName =
+      typeof lease.metadata?.podName === "string" && lease.metadata.podName
+        ? lease.metadata.podName
+        : null;
+
+    // Skip the readiness poll if we've already observed this Sandbox CR
+    // reaching Ready during this worker's lifetime. See readySandboxesByLease
+    // declaration for rationale.
+    const podAlreadyKnownReady = readySandboxesByLease.has(lease.providerLeaseId);
+
+    // The caller's timeout is a budget for the WHOLE execute call: readiness
+    // wait + exec must share it, or the first exec on a fresh lease could
+    // block for up to twice the requested timeout.
+    const executeStartedAt = Date.now();
+
+    if (!podAlreadyKnownReady) {
+      const readyBudgetMs = podReadyBudgetMs(config, effectiveTimeoutMs);
+      try {
+        await sandboxCrOrchestrator.waitForCompletion(
+          clients,
+          namespace,
+          lease.providerLeaseId,
+          { timeoutMs: readyBudgetMs, pollMs: DEFAULT_READY_POLL_MS },
+        );
+        readySandboxesByLease.add(lease.providerLeaseId);
+      } catch (err) {
+        if (err instanceof OverCapacityError) {
+          return {
+            exitCode: 1,
+            timedOut: false,
+            stdout: "",
+            stderr: err.message,
+            metadata: {
+              provider: "kubernetes",
+              backend: "sandbox-cr",
+              namespace,
+              sandboxName: lease.providerLeaseId,
+              overCapacity: true,
+            },
+          };
+        }
+        if (err instanceof SandboxCrTimeoutError) {
+          const message = await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs);
+          if (message.startsWith("Over capacity")) {
+            // The pod never started because the company quota is full: report
+            // it the same way as the fail-fast path, not as a run timeout.
+            return {
+              exitCode: 1,
+              timedOut: false,
+              stdout: "",
+              stderr: message,
+              metadata: {
+                provider: "kubernetes",
+                backend: "sandbox-cr",
+                namespace,
+                sandboxName: lease.providerLeaseId,
+                overCapacity: true,
+              },
+            };
+          }
+          return {
+            exitCode: null,
+            timedOut: true,
+            stdout: "",
+            stderr: message,
+            metadata: {
+              provider: "kubernetes",
+              backend: "sandbox-cr",
+              namespace,
+              sandboxName: lease.providerLeaseId,
+            },
+          };
+        }
+        throw err;
+      }
+    }
+
+    // Resolve pod name (may now be populated in Sandbox status).
+    if (!podName) {
+      podName = await sandboxCrOrchestrator.findPod(
+        clients,
+        namespace,
+        lease.providerLeaseId,
+      );
+    }
+
+    if (!podName) {
+      return {
+        exitCode: 1,
+        timedOut: false,
+        stdout: "",
+        stderr: "Sandbox pod is Ready but podName could not be resolved.",
+        metadata: {
+          provider: "kubernetes",
+          backend: "sandbox-cr",
+          namespace,
+          sandboxName: lease.providerLeaseId,
+        },
+      };
+    }
+
+    // Build the command to exec. The adapter passes shell invocations as
+    // `command: "sh", args: ["-c", "<script>"]` — must combine both, NOT
+    // drop args. If only command is present (no args), wrap in a login shell.
+    const command = typeof params.command === "string" ? params.command.trim() : "";
+    const args = Array.isArray(params.args) ? params.args : [];
+
+    // Fast-upload interceptor: short-circuit the chunked-shell file transfer
+    // protocol (adapter-utils writeFile) so an N-chunk upload becomes 1 exec
+    // instead of N+2. Falls back transparently when patterns don't match.
+    // See upload-interceptor.ts.
+    const shellScript =
+      command === "sh" && args[0] === "-c" && typeof args[1] === "string"
+        ? args[1]
+        : null;
+    if (shellScript) {
+      const decision = getOrCreateUploadInterceptor(lease.providerLeaseId).decide(shellScript);
+      if (decision.action === "ack") {
+        return {
+          exitCode: 0,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          metadata: {
+            provider: "kubernetes",
+            backend: "sandbox-cr",
+            namespace,
+            sandboxName: lease.providerLeaseId,
+            podName,
+            fastUpload: "ack",
+          },
+        };
+      }
+      if (decision.action === "flush") {
+        // Single exec: `head -c <N> | base64 -d > '<TARGET>'` with stdin =
+        // base64 ASCII. `head -c` reads EXACTLY N bytes and exits, so we
+        // don't depend on WebSocket-driven EOF detection on stdin (which is
+        // racy against the `base64 -d` exit timing in @kubernetes/client-node
+        // v0.21.0 — see pod-exec.ts). All bytes are sent through the
+        // WebSocket data channel; size is unbounded by ARG_MAX.
+        const base64Body = decision.flush.payload.toString("base64");
+        const dir = decision.flush.targetPath.substring(
+          0,
+          decision.flush.targetPath.lastIndexOf("/"),
+        );
+        const script =
+          `mkdir -p '${dir}' && ` +
+          `head -c ${base64Body.length} | base64 -d > '${decision.flush.targetPath}'`;
+        // The flush shares the caller's single execute budget (same contract
+        // as the normal exec path below) and surfaces watchdog/WebSocket
+        // failures as a timed-out result instead of an uncaught throw.
+        const flushTimeoutMs = Math.max(
+          5_000,
+          effectiveTimeoutMs - (Date.now() - executeStartedAt),
+        );
+        let flushResult: { exitCode: number; stdout: string; stderr: string };
+        try {
+          flushResult = await execInPod(
+            kc,
+            namespace,
+            podName,
+            "agent",
+            ["/bin/sh", "-c", script],
+            base64Body,
+            flushTimeoutMs,
+          );
+        } catch (err) {
+          return {
+            exitCode: null,
+            timedOut: true,
+            stdout: "",
+            stderr: `fast-upload flush failed: ${err instanceof Error ? err.message : String(err)}`,
+            metadata: {
+              provider: "kubernetes",
+              backend: "sandbox-cr",
+              namespace,
+              sandboxName: lease.providerLeaseId,
+              podName,
+              fastUpload: "flush",
+            },
+          };
+        }
+        return {
+          exitCode: flushResult.exitCode,
+          timedOut: false,
+          stdout: flushResult.stdout,
+          stderr: flushResult.stderr,
+          metadata: {
+            provider: "kubernetes",
+            backend: "sandbox-cr",
+            namespace,
+            sandboxName: lease.providerLeaseId,
+            podName,
+            fastUpload: "flush",
+            uploadedBytes: decision.flush.payload.length,
+          },
+        };
+      }
+      // decision.action === "passthrough" — fall through to normal exec
+    }
+
+    const baseExecCommand =
+      command.length > 0 && args.length > 0
+        ? [command, ...args]
+        : command.length > 0
+          ? ["/bin/sh", "-lc", command]
+          : ["/bin/sh", "-l"];
+
+    // Apply the caller-provided run env (params.env) to the in-pod process. Without
+    // this the adapter's runtime env (e.g. XDG_CONFIG_HOME pointing at the shipped
+    // OpenCode config, plus helper settings like small_model/provider routing) never
+    // reaches the harness, which falls back to its in-image HOME config -> wrong or
+    // partial behaviour. Env values travel on stdin, never in the exec request URI
+    // (see wrapCommandWithEnv).
+    const wrapped = wrapCommandWithEnv(
+      baseExecCommand,
+      params.env,
+      typeof params.stdin === "string" ? params.stdin : undefined,
+    );
+
+    // Remaining share of the caller's budget after the readiness wait (floor
+    // of 5s so an exec attempt is still made when readiness consumed most of
+    // it; the watchdog then bounds it tightly).
+    const remainingTimeoutMs = Math.max(
+      5_000,
+      effectiveTimeoutMs - (Date.now() - executeStartedAt),
+    );
+
+    let execResult: { exitCode: number; stdout: string; stderr: string };
+    try {
+      execResult = await execInPod(
+        kc,
+        namespace,
+        podName,
+        "agent",
+        wrapped.command,
+        wrapped.stdin,
+        remainingTimeoutMs,
+      );
+    } catch (err) {
+      // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
+      // the caller can retry instead of hanging forever.
+      return {
+        exitCode: null,
+        timedOut: true,
+        stdout: "",
+        stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
+        metadata: {
+          provider: "kubernetes",
+          backend: "sandbox-cr",
+          namespace,
+          sandboxName: lease.providerLeaseId,
+          podName,
+        },
+      };
+    }
+
+    return {
+      exitCode: execResult.exitCode,
+      timedOut: false,
+      stdout: execResult.stdout,
+      stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
+      metadata: {
+        provider: "kubernetes",
+        backend: "sandbox-cr",
+        namespace,
+        sandboxName: lease.providerLeaseId,
+        podName,
+      },
+    };
+  } else {
+    // ── Job backend (legacy / stable fallback) ──────────────────────────────
+    // The container entrypoint is baked into the Job spec (Tini + paperclip-agent-shim).
+    // We do NOT re-exec command/args — instead we wait for the Job to finish
+    // and collect its logs.
+    //
+    // params.command / params.args / params.stdin are intentionally ignored.
+
+    let status;
+    let timedOut = false;
+    try {
+      status = await jobOrchestrator.waitForCompletion(
+        clients,
+        namespace,
+        lease.providerLeaseId,
+        { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+      );
+    } catch (err) {
+      if (err instanceof JobTimeoutError) {
+        timedOut = true;
+        status = null;
+      } else {
+        throw err;
+      }
+    }
+
+    // Collect logs from the pod.
+    const podName =
+      typeof lease.metadata?.podName === "string"
+        ? lease.metadata.podName
+        : await jobOrchestrator.findPod(
+            clients,
+            namespace,
+            lease.providerLeaseId,
+          );
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+
+    if (podName) {
+      await jobOrchestrator.streamLogs(
+        clients,
+        namespace,
+        podName,
+        async (stream, text) => {
+          if (stream === "stdout") stdoutChunks.push(text);
+          else stderrChunks.push(text);
+        },
+      );
+    }
+
+    return {
+      exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
+      timedOut,
+      stdout: stdoutChunks.join(""),
+      stderr: appendNetworkEgressDenyHint(stderrChunks.join(""), scopedNetworkEgress),
+      metadata: {
+        provider: "kubernetes",
+        backend: "job",
+        namespace,
+        jobName: lease.providerLeaseId,
+        podName: podName ?? null,
+        phase: status?.phase ?? null,
+      },
+    };
+  }
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
+    // Idle-TTL reaper for reusable (kept-running) conversation pods.
+    startIdleReaper(IDLE_REAP_INTERVAL_MS, (err, entry) => {
+      ctx.logger.warn(
+        `[plugin-kubernetes] idle reap of ${entry.namespace}/${entry.name} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
   },
 
@@ -446,7 +925,16 @@ const plugin = definePlugin({
 
     // Fail fast (no queue) when the company's pod quota is already full, rather
     // than creating a Sandbox whose pod the quota will never admit.
-    await assertPodCapacity(clients, namespace);
+    try {
+      await assertPodCapacity(clients, namespace);
+    } catch (err) {
+      // Idle reusable conversation pods hold company quota. Before refusing a
+      // new run, evict the longest-idle one; its conversation just pays a cold
+      // start on its next turn. If there is nothing to evict, fail fast.
+      if (!(err instanceof OverCapacityError) || !(await evictLongestIdleLease(namespace))) throw err;
+      // The evicted pod still counts against the quota while it terminates.
+      await waitForPodCapacity(clients, namespace);
+    }
 
     const jobName = `pc-${newRunUlidDns()}`;
     const secretName = `${jobName}-env`;
@@ -625,6 +1113,50 @@ const plugin = definePlugin({
     // A resumed lease starts with clean per-lease state: drop any stale upload
     // interceptor buffers a previous run on this lease may have left behind.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
+
+    // Reused pod: scrub the previous turn's processes and runtime files before
+    // handing it to the next turn. A pod that cannot be scrubbed is not reused:
+    // destroy it and report the lease expired so the server acquires a fresh one.
+    const managedAdapter = managedReusableAdapter(
+      params.leaseMetadata,
+      kubernetesProviderConfigSchema.parse(params.config),
+    );
+    if (leaseBackend === "sandbox-cr" && check.podName && managedAdapter) {
+      const remoteCwd = leaseRemoteCwd(params.leaseMetadata?.remoteCwd);
+      const idleTtlMs = kubernetesProviderConfigSchema.parse(params.config).runnerIdleTimeoutMs;
+      // Track before scrubbing so a pod we then fail to delete stays visible to
+      // the idle reaper and quota eviction, which retry the destroy.
+      trackReusableLease({
+        namespace,
+        name: params.providerLeaseId,
+        secretName,
+        podName: check.podName,
+        backend: "sandbox-cr",
+        clients,
+        idleTtlMs,
+      });
+      const scrub = await scrubPod(kc, namespace, check.podName, remoteCwd, managedAdapter);
+      if (!scrub.ok) {
+        readySandboxesByLease.delete(params.providerLeaseId);
+        try {
+          await destroyLeaseResources(clients, {
+            namespace,
+            name: params.providerLeaseId,
+            backend: leaseBackend,
+            podName: check.podName,
+            secretName,
+          });
+          forgetLease(namespace, params.providerLeaseId);
+        } catch {
+          // Still report the lease expired so the server acquires a fresh one.
+          // The entry stays tracked, so the idle reaper retries the delete.
+        }
+        return {
+          providerLeaseId: null,
+          metadata: { expired: true, reason: `scrub failed: ${scrub.detail}` },
+        };
+      }
+    }
     if (leaseBackend === "sandbox-cr") {
       // We just observed the Sandbox pod Ready, so the first exec on the
       // resumed lease can skip its readiness poll.
@@ -710,6 +1242,7 @@ const plugin = definePlugin({
     // so unrelated concurrent leases keep their in-flight buffers intact.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
+    forgetLease(namespace, params.providerLeaseId);
 
     try {
       await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);
@@ -748,6 +1281,7 @@ const plugin = definePlugin({
     // cluster says — the lease is dead either way.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
+    forgetLease(namespace, params.providerLeaseId);
 
     const kc = createKubeConfig({
       inCluster: config.inCluster,
@@ -769,384 +1303,11 @@ const plugin = definePlugin({
   async onEnvironmentExecute(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult> {
-    const { lease, timeoutMs } = params;
-
-    if (!lease.providerLeaseId) {
-      return {
-        exitCode: 1,
-        timedOut: false,
-        stdout: "",
-        stderr: "No provider lease ID available for execution.",
-      };
-    }
-
-    const config = kubernetesProviderConfigSchema.parse(params.config);
-    const scopedNetworkEgress = parseScopedNetworkEgressGrant({
-      networkEgress: lease.metadata?.scopedNetworkEgress,
-    });
-    const namespace =
-      typeof lease.metadata?.namespace === "string"
-        ? lease.metadata.namespace
-        : deriveTenantNamespace(config, params.companyId);
-
-    // Determine which backend this lease was created with.
-    const leaseBackend =
-      typeof lease.metadata?.backend === "string"
-        ? (lease.metadata.backend as "sandbox-cr" | "job")
-        : config.backend;
-
-    const kc = createKubeConfig({
-      inCluster: config.inCluster,
-      kubeconfig: config.kubeconfig,
-    });
-    const clients = makeKubeClients(kc);
-
-    const effectiveTimeoutMs =
-      typeof timeoutMs === "number" && timeoutMs > 0
-        ? timeoutMs
-        : config.podActivityDeadlineSec * 1000;
-
-    if (leaseBackend === "sandbox-cr") {
-      // ── Sandbox-CR backend ──────────────────────────────────────────────────
-      // 1. Ensure the Sandbox pod is Ready (wait only on first exec for this lease).
-      // 2. Exec the command into the running pod.
-      // 3. Return exec result directly (no log scraping needed).
-
-      let podName =
-        typeof lease.metadata?.podName === "string" && lease.metadata.podName
-          ? lease.metadata.podName
-          : null;
-
-      // Skip the readiness poll if we've already observed this Sandbox CR
-      // reaching Ready during this worker's lifetime. See readySandboxesByLease
-      // declaration for rationale.
-      const podAlreadyKnownReady = readySandboxesByLease.has(lease.providerLeaseId);
-
-      // The caller's timeout is a budget for the WHOLE execute call: readiness
-      // wait + exec must share it, or the first exec on a fresh lease could
-      // block for up to twice the requested timeout.
-      const executeStartedAt = Date.now();
-
-      if (!podAlreadyKnownReady) {
-        const readyBudgetMs = podReadyBudgetMs(config, effectiveTimeoutMs);
-        try {
-          await sandboxCrOrchestrator.waitForCompletion(
-            clients,
-            namespace,
-            lease.providerLeaseId,
-            { timeoutMs: readyBudgetMs, pollMs: DEFAULT_READY_POLL_MS },
-          );
-          readySandboxesByLease.add(lease.providerLeaseId);
-        } catch (err) {
-          if (err instanceof OverCapacityError) {
-            return {
-              exitCode: 1,
-              timedOut: false,
-              stdout: "",
-              stderr: err.message,
-              metadata: {
-                provider: "kubernetes",
-                backend: "sandbox-cr",
-                namespace,
-                sandboxName: lease.providerLeaseId,
-                overCapacity: true,
-              },
-            };
-          }
-          if (err instanceof SandboxCrTimeoutError) {
-            const message = await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs);
-            if (message.startsWith("Over capacity")) {
-              // The pod never started because the company quota is full: report
-              // it the same way as the fail-fast path, not as a run timeout.
-              return {
-                exitCode: 1,
-                timedOut: false,
-                stdout: "",
-                stderr: message,
-                metadata: {
-                  provider: "kubernetes",
-                  backend: "sandbox-cr",
-                  namespace,
-                  sandboxName: lease.providerLeaseId,
-                  overCapacity: true,
-                },
-              };
-            }
-            return {
-              exitCode: null,
-              timedOut: true,
-              stdout: "",
-              stderr: message,
-              metadata: {
-                provider: "kubernetes",
-                backend: "sandbox-cr",
-                namespace,
-                sandboxName: lease.providerLeaseId,
-              },
-            };
-          }
-          throw err;
-        }
-      }
-
-      // Resolve pod name (may now be populated in Sandbox status).
-      if (!podName) {
-        podName = await sandboxCrOrchestrator.findPod(
-          clients,
-          namespace,
-          lease.providerLeaseId,
-        );
-      }
-
-      if (!podName) {
-        return {
-          exitCode: 1,
-          timedOut: false,
-          stdout: "",
-          stderr: "Sandbox pod is Ready but podName could not be resolved.",
-          metadata: {
-            provider: "kubernetes",
-            backend: "sandbox-cr",
-            namespace,
-            sandboxName: lease.providerLeaseId,
-          },
-        };
-      }
-
-      // Build the command to exec. The adapter passes shell invocations as
-      // `command: "sh", args: ["-c", "<script>"]` — must combine both, NOT
-      // drop args. If only command is present (no args), wrap in a login shell.
-      const command = typeof params.command === "string" ? params.command.trim() : "";
-      const args = Array.isArray(params.args) ? params.args : [];
-
-      // Fast-upload interceptor: short-circuit the chunked-shell file transfer
-      // protocol (adapter-utils writeFile) so an N-chunk upload becomes 1 exec
-      // instead of N+2. Falls back transparently when patterns don't match.
-      // See upload-interceptor.ts.
-      const shellScript =
-        command === "sh" && args[0] === "-c" && typeof args[1] === "string"
-          ? args[1]
-          : null;
-      if (shellScript) {
-        const decision = getOrCreateUploadInterceptor(lease.providerLeaseId).decide(shellScript);
-        if (decision.action === "ack") {
-          return {
-            exitCode: 0,
-            timedOut: false,
-            stdout: "",
-            stderr: "",
-            metadata: {
-              provider: "kubernetes",
-              backend: "sandbox-cr",
-              namespace,
-              sandboxName: lease.providerLeaseId,
-              podName,
-              fastUpload: "ack",
-            },
-          };
-        }
-        if (decision.action === "flush") {
-          // Single exec: `head -c <N> | base64 -d > '<TARGET>'` with stdin =
-          // base64 ASCII. `head -c` reads EXACTLY N bytes and exits, so we
-          // don't depend on WebSocket-driven EOF detection on stdin (which is
-          // racy against the `base64 -d` exit timing in @kubernetes/client-node
-          // v0.21.0 — see pod-exec.ts). All bytes are sent through the
-          // WebSocket data channel; size is unbounded by ARG_MAX.
-          const base64Body = decision.flush.payload.toString("base64");
-          const dir = decision.flush.targetPath.substring(
-            0,
-            decision.flush.targetPath.lastIndexOf("/"),
-          );
-          const script =
-            `mkdir -p '${dir}' && ` +
-            `head -c ${base64Body.length} | base64 -d > '${decision.flush.targetPath}'`;
-          // The flush shares the caller's single execute budget (same contract
-          // as the normal exec path below) and surfaces watchdog/WebSocket
-          // failures as a timed-out result instead of an uncaught throw.
-          const flushTimeoutMs = Math.max(
-            5_000,
-            effectiveTimeoutMs - (Date.now() - executeStartedAt),
-          );
-          let flushResult: { exitCode: number; stdout: string; stderr: string };
-          try {
-            flushResult = await execInPod(
-              kc,
-              namespace,
-              podName,
-              "agent",
-              ["/bin/sh", "-c", script],
-              base64Body,
-              flushTimeoutMs,
-            );
-          } catch (err) {
-            return {
-              exitCode: null,
-              timedOut: true,
-              stdout: "",
-              stderr: `fast-upload flush failed: ${err instanceof Error ? err.message : String(err)}`,
-              metadata: {
-                provider: "kubernetes",
-                backend: "sandbox-cr",
-                namespace,
-                sandboxName: lease.providerLeaseId,
-                podName,
-                fastUpload: "flush",
-              },
-            };
-          }
-          return {
-            exitCode: flushResult.exitCode,
-            timedOut: false,
-            stdout: flushResult.stdout,
-            stderr: flushResult.stderr,
-            metadata: {
-              provider: "kubernetes",
-              backend: "sandbox-cr",
-              namespace,
-              sandboxName: lease.providerLeaseId,
-              podName,
-              fastUpload: "flush",
-              uploadedBytes: decision.flush.payload.length,
-            },
-          };
-        }
-        // decision.action === "passthrough" — fall through to normal exec
-      }
-
-      const baseExecCommand =
-        command.length > 0 && args.length > 0
-          ? [command, ...args]
-          : command.length > 0
-            ? ["/bin/sh", "-lc", command]
-            : ["/bin/sh", "-l"];
-
-      // Apply the caller-provided run env (params.env) to the in-pod process. Without
-      // this the adapter's runtime env (e.g. XDG_CONFIG_HOME pointing at the shipped
-      // OpenCode config, plus helper settings like small_model/provider routing) never
-      // reaches the harness, which falls back to its in-image HOME config -> wrong or
-      // partial behaviour. Env values travel on stdin, never in the exec request URI
-      // (see wrapCommandWithEnv).
-      const wrapped = wrapCommandWithEnv(
-        baseExecCommand,
-        params.env,
-        typeof params.stdin === "string" ? params.stdin : undefined,
-      );
-
-      // Remaining share of the caller's budget after the readiness wait (floor
-      // of 5s so an exec attempt is still made when readiness consumed most of
-      // it; the watchdog then bounds it tightly).
-      const remainingTimeoutMs = Math.max(
-        5_000,
-        effectiveTimeoutMs - (Date.now() - executeStartedAt),
-      );
-
-      let execResult: { exitCode: number; stdout: string; stderr: string };
-      try {
-        execResult = await execInPod(
-          kc,
-          namespace,
-          podName,
-          "agent",
-          wrapped.command,
-          wrapped.stdin,
-          remainingTimeoutMs,
-        );
-      } catch (err) {
-        // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
-        // the caller can retry instead of hanging forever.
-        return {
-          exitCode: null,
-          timedOut: true,
-          stdout: "",
-          stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
-          metadata: {
-            provider: "kubernetes",
-            backend: "sandbox-cr",
-            namespace,
-            sandboxName: lease.providerLeaseId,
-            podName,
-          },
-        };
-      }
-
-      return {
-        exitCode: execResult.exitCode,
-        timedOut: false,
-        stdout: execResult.stdout,
-        stderr: appendNetworkEgressDenyHint(execResult.stderr, scopedNetworkEgress),
-        metadata: {
-          provider: "kubernetes",
-          backend: "sandbox-cr",
-          namespace,
-          sandboxName: lease.providerLeaseId,
-          podName,
-        },
-      };
-    } else {
-      // ── Job backend (legacy / stable fallback) ──────────────────────────────
-      // The container entrypoint is baked into the Job spec (Tini + paperclip-agent-shim).
-      // We do NOT re-exec command/args — instead we wait for the Job to finish
-      // and collect its logs.
-      //
-      // params.command / params.args / params.stdin are intentionally ignored.
-
-      let status;
-      let timedOut = false;
-      try {
-        status = await jobOrchestrator.waitForCompletion(
-          clients,
-          namespace,
-          lease.providerLeaseId,
-          { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
-        );
-      } catch (err) {
-        if (err instanceof JobTimeoutError) {
-          timedOut = true;
-          status = null;
-        } else {
-          throw err;
-        }
-      }
-
-      // Collect logs from the pod.
-      const podName =
-        typeof lease.metadata?.podName === "string"
-          ? lease.metadata.podName
-          : await jobOrchestrator.findPod(
-              clients,
-              namespace,
-              lease.providerLeaseId,
-            );
-
-      const stdoutChunks: string[] = [];
-      const stderrChunks: string[] = [];
-
-      if (podName) {
-        await jobOrchestrator.streamLogs(
-          clients,
-          namespace,
-          podName,
-          async (stream, text) => {
-            if (stream === "stdout") stdoutChunks.push(text);
-            else stderrChunks.push(text);
-          },
-        );
-      }
-
-      return {
-        exitCode: timedOut ? null : status?.phase === "Succeeded" ? 0 : 1,
-        timedOut,
-        stdout: stdoutChunks.join(""),
-        stderr: appendNetworkEgressDenyHint(stderrChunks.join(""), scopedNetworkEgress),
-        metadata: {
-          provider: "kubernetes",
-          backend: "job",
-          namespace,
-          jobName: lease.providerLeaseId,
-          podName: podName ?? null,
-          phase: status?.phase ?? null,
-        },
-      };
+    const endExec = trackLeaseExecStart(params);
+    try {
+      return await executeInLease(params);
+    } finally {
+      endExec();
     }
   },
 

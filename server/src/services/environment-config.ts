@@ -99,6 +99,13 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   provider: pluginSandboxProviderKeySchema,
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
+  /**
+   * Which runs may reuse a kept-running lease when `reuseLease` is on.
+   * `conversations` limits reuse to turns of an ongoing agent conversation
+   * (one pod per conversation); other runs (new tasks, routines) keep getting a
+   * fresh sandbox. Absent or `all` keeps the existing behavior.
+   */
+  reuseLeaseScope: z.enum(["all", "conversations"]).optional(),
   streamRunLogs: z.boolean().optional(),
   runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
   runnerIdleTimeoutMs: z.coerce

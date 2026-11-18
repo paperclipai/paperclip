@@ -27,7 +27,7 @@ import type {
   ExecutionWorkspaceConfig,
   IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
-import { resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
+import { applyReuseLeaseScope, resolveRunnerEnvironmentForRun } from "./runner-environment-lifecycle.js";
 import { environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
@@ -271,6 +271,8 @@ export function environmentRunOrchestrator(
     adapterType: string;
     adapterConfig?: Record<string, unknown>;
     admittedLifecycleMode?: "warm" | "per_turn";
+    /** True when this run is a turn of an ongoing agent conversation (see `reuseLeaseScope`). */
+    conversationTurn?: boolean;
     issueId: string | null;
     heartbeatRunId: string;
     agentId: string;
@@ -288,8 +290,11 @@ export function environmentRunOrchestrator(
       localEnvironmentId: input.localEnvironmentId,
     });
 
-    const environment = resolveRunnerEnvironmentForRun(
-      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+    const environment = applyReuseLeaseScope(
+      resolveRunnerEnvironmentForRun(
+        selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+      ),
+      { conversationTurn: input.conversationTurn === true, adapterType: input.adapterType },
     );
 
     if (input.recoverPluginTask && environment.driver === "plugin" && input.adapterType === "paperclip_runner") {

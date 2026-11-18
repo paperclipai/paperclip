@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.kubernetes-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0-alpha.1";
+const PLUGIN_VERSION = "0.1.0-alpha.2";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -21,6 +21,10 @@ const manifest: PaperclipPluginManifestV1 = {
       driverKey: "kubernetes",
       kind: "sandbox_provider",
       displayName: "Kubernetes",
+      // The host may keep one pod alive per conversation between turns (idle TTL,
+      // scrub on resume). Opt-in per environment through `reuseLease`; absent
+      // `reuseLease` keeps every run on a fresh pod.
+      sandboxCapabilities: { reusableLeases: true },
       description:
         "Dispatches agent runs in per-tenant Kubernetes namespaces. Default backend (sandbox-cr, alpha) uses kubernetes-sigs/agent-sandbox for multi-command exec; fallback backend (job) uses stable batch/v1 Job for clusters without agent-sandbox installed.",
       configSchema: {
@@ -102,6 +106,23 @@ const manifest: PaperclipPluginManifestV1 = {
             minimum: 1,
             description:
               "Longest a run waits for its sandbox pod to become Ready before failing with a clear error (default: 90). Separate from the run timeout.",
+          },
+          reuseLease: {
+            type: "boolean",
+            description:
+              "Keep a pod running between turns so later turns can reuse it (set by the host environment; default: false).",
+          },
+          reuseLeaseScope: {
+            type: "string",
+            enum: ["all", "conversations"],
+            description:
+              "With reuseLease, `conversations` limits pod reuse to turns of an ongoing agent conversation (one pod per conversation).",
+          },
+          runnerIdleTimeoutMs: {
+            type: "integer",
+            minimum: 1000,
+            description:
+              "How long a kept-running conversation pod may sit idle before the plugin deletes it (default: 300000, 5 minutes).",
           },
           resourceQuota: {
             type: "object",

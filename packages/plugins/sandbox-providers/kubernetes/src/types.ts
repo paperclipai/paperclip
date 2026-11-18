@@ -2,6 +2,9 @@ import { z } from "zod";
 import { adapterRegistrySchema } from "./adapter-registry.js";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
+/** Default idle TTL for a reusable (kept-running) pod: 5 minutes. */
+export const DEFAULT_REUSABLE_IDLE_TTL_MS = 300_000;
+
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
 // Kubernetes resource.Quantity subset: plain/decimal numbers with an optional
@@ -68,6 +71,21 @@ export const kubernetesProviderConfigSchema = z
      * instead of hanging for the whole adapter timeout.
      */
     podReadyTimeoutSec: z.number().int().positive().default(DEFAULT_POD_READY_TIMEOUT_SEC),
+
+    /**
+     * Host-owned retention flags. They must be part of this schema so they
+     * survive config normalization on save: `onEnvironmentValidateConfig`
+     * returns the parsed config, and a non-strict Zod object drops unknown keys.
+     * The plugin never decides reuse itself; the server does.
+     */
+    reuseLease: z.boolean().default(false),
+    reuseLeaseScope: z.enum(["all", "conversations"]).optional(),
+
+    /**
+     * How long a reusable (kept-running) pod may sit idle before the plugin
+     * destroys it. Matches the host's `runnerIdleTimeoutMs` (default 5 minutes).
+     */
+    runnerIdleTimeoutMs: z.number().int().min(1_000).max(86_400_000).default(DEFAULT_REUSABLE_IDLE_TTL_MS),
 
     /**
      * Per-company ResourceQuota applied to each tenant namespace. Changes are
