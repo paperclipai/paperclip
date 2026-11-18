@@ -39,7 +39,14 @@ export function TaskCancellationProvider({ children }: { children: ReactNode }) 
   }, [client, finish]);
   const subtaskList = useMemo(() => subtasks?.map(task => (
     <li key={task.id} className="flex min-w-0 items-center gap-2">
-      <StatusIcon {...taskStatusIconProps(task)} />
+      <StatusIcon
+        {...taskStatusIconProps(task)}
+        blockerAttention={task.blockerAttention ? {
+          ...task.blockerAttention,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        } : null}
+      />
       <span className="min-w-0 break-words">{task.title}</span>
     </li>
   )), [subtasks]);

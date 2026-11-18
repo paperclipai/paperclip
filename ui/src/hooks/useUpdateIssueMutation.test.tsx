@@ -307,6 +307,35 @@ describe("useUpdateIssueMutation", () => {
     expect(mockUpdate).toHaveBeenCalledExactlyOnceWith("PAP-1", { status: "cancelled" });
   });
 
+  it.each([
+    { name: "active child", reason: "active_child", state: "covered", stalledIdentifier: null,
+      label: "Blocked · waiting on 1 active sub-task", glyph: "in_queue" },
+    { name: "active dependency", reason: "active_dependency", state: "covered", stalledIdentifier: null,
+      label: "Blocked · covered by 1 active dependency", glyph: "in_queue" },
+    { name: "stalled review", reason: "stalled_review", state: "stalled", stalledIdentifier: "TEST-998",
+      label: "Blocked · review stalled with no clear next step", glyph: "blocked" },
+    { name: "stalled review with fallback", reason: "stalled_review", state: "stalled", stalledIdentifier: null,
+      label: "Blocked · review stalled with no clear next step", glyph: "blocked" },
+  ] as const)("omits blocker task IDs from $name icon labels and hover titles", async ({ reason, state, stalledIdentifier, label, glyph }) => {
+    const blockerAttention = Object.freeze({
+      reason, state, unresolvedBlockerCount: 1, coveredBlockerCount: state === "covered" ? 1 : 0,
+      stalledBlockerCount: state === "stalled" ? 1 : 0, attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "TEST-999", sampleStalledBlockerIdentifier: stalledIdentifier,
+    });
+    mockListAll.mockResolvedValue([{ ...child("blocked", "blocked"), blockerAttention }]);
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const icon = dialog.querySelector('li [role="img"]')!;
+    expect(icon.getAttribute("aria-label")).toBe(label);
+    expect(icon.querySelector("title")?.textContent).toBe(label);
+    expect(icon.getAttribute("style")).toContain(`--status-task-icon-${glyph}`);
+    expect(dialog.outerHTML).not.toContain("TEST-");
+    expect(blockerAttention.sampleBlockerIdentifier).toBe("TEST-999");
+    expect(blockerAttention.sampleStalledBlockerIdentifier).toBe(stalledIdentifier);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
   it.each(["slack", "speko"])("offers to cancel a waiting %s subtask", async (provider) => {
     const waiting = { ...child(provider, "in_review"), originKind: "chat_channel" as const, externalConversationState: "waiting" as const };
     mockListAll.mockResolvedValue([waiting]);
