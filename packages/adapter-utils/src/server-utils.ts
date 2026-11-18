@@ -1955,17 +1955,12 @@ export function normalizePaperclipWakePayload(
   };
 }
 
-/**
- * Byte budget for the serialized wake payload that adapters pass to the spawned
- * agent process via the `PAPERCLIP_WAKE_PAYLOAD_JSON` environment variable.
- *
- * On Linux, `execve` caps every single argv/env string at `MAX_ARG_STRLEN`
- * (32 pages = 128 KiB); exceeding it makes Node's `spawn`/`execFile` fail with
- * `spawn E2BIG`. The wake payload embeds the issue's comment history, and that
- * thread is append-only, so without a cap it grows until a wake crashes before
- * the agent ever starts. We keep the serialized payload well under the hard
- * limit, leaving headroom for the rest of the env block against `ARG_MAX`.
- */
+// Byte budget for the serialized wake payload. Adapters embed it in the run
+// prompt, and some (e.g. hermes `chat -q <prompt>`) pass that prompt as a single
+// argv string. Linux `execve` caps each argv/env string at `MAX_ARG_STRLEN`
+// (128 KiB), so an oversized payload makes spawn fail with `spawn E2BIG` before
+// the agent starts. Bounding the payload keeps the prompt within that limit; the
+// full thread stays available from the API via `fallbackFetchNeeded`.
 export const MAX_WAKE_PAYLOAD_ENV_BYTES = 96 * 1024;
 const MIN_RETAINED_WAKE_COMMENTS = 2;
 const WAKE_COMMENT_BODY_BYTE_CAP = 4 * 1024;
