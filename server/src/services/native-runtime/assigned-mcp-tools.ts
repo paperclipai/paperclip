@@ -306,6 +306,21 @@ export async function createAssignedMcpTools(input: {
   const searchPageBytes = input.delivery === "on_demand" ? 32 * 1024 : SEARCH_PAGE_BYTES;
   const schemaChunkCharacters = input.delivery === "on_demand" ? 16 * 1024 : SCHEMA_CHUNK_CHARACTERS;
 
+  // Agents often pass the gateway name or display name they read in a result
+  // description instead of the returned alias. Resolve only to this session's
+  // pinned catalog, and only when the reference names exactly one tool, so
+  // the lookup never grants a tool that the alias would not.
+  function resolveAssignedName(reference: string): string | undefined {
+    const trimmed = reference.trim();
+    if (tools.has(trimmed)) return trimmed;
+    for (const field of ["name", "displayName"] as const) {
+      const matches = [...tools].filter(([, { tool }]) => tool[field] === trimmed);
+      if (matches.length === 1) return matches[0]![0];
+      if (matches.length > 1) return undefined;
+    }
+    return undefined;
+  }
+
   async function search(argumentsValue: unknown, currentWorkMode?: WorkMode) {
     const args = object(argumentsValue);
     const offset = args.offset ?? 0;
@@ -334,7 +349,8 @@ export async function createAssignedMcpTools(input: {
         permits(fresh) && permits(fresh, currentWorkMode);
     });
     if (hasSchemaTool) {
-      const selected = authorized.find(([name]) => name === args.schemaTool);
+      const reference = resolveAssignedName(args.schemaTool as string);
+      const selected = authorized.find(([name]) => name === reference);
       if (!selected) throw new Error("assigned_mcp_tool_unknown: schemaTool must match an authorized inputSchemaRef. Omit schemaTool to search assigned tools, then use an exact inputSchemaRef from the results.");
       const schema = JSON.stringify(selected[1].schema);
       const end = schemaOffset + schemaChunkCharacters;
@@ -391,8 +407,12 @@ export async function createAssignedMcpTools(input: {
       if (name === CALL_TOOL) {
         const args = object(parameters);
         if (typeof args.name !== "string") throw new Error("assigned_mcp_tool_invalid_arguments");
-        name = args.name;
         parameters = object(args.arguments);
+        const resolved = resolveAssignedName(args.name);
+        if (!resolved) {
+          throw new Error("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools. Search assigned tools again and use the returned name.");
+        }
+        name = resolved;
       }
       const descriptor = tools.get(name)?.tool;
       if (!descriptor) throw new Error("assigned_mcp_tool_unknown");
