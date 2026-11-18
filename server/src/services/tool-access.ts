@@ -4002,7 +4002,9 @@ export function toolAccessService(
   }
 
   /** The values and template a customer needs to create an AWS role for this connection. */
-  async function getAwsSetup(companyId: string, connectionId: string): Promise<AwsConnectionSetup> {
+  async function getAwsSetup(
+    companyId: string, connectionId: string, options: { accessLevel?: "read_only" | "full" } = {},
+  ): Promise<AwsConnectionSetup> {
     const [row] = await db.select().from(toolConnections)
       .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
     if (!row) throw notFound("Tool connection not found");
@@ -4022,7 +4024,8 @@ export function toolAccessService(
     }
     const methodConfig = asRecord(row.config.methodConfig);
     const setup = awsRoleSetup({
-      issuer, connectionId: row.id, accessLevel: methodConfig.accessLevel === "full" ? "full" : "read_only",
+      issuer, connectionId: row.id,
+      accessLevel: options.accessLevel ?? (methodConfig.accessLevel === "full" ? "full" : "read_only"),
     });
     return {
       available: true,

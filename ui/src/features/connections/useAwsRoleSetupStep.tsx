@@ -81,11 +81,15 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnectConnectionId,
       setStage({ ...stage, error: awsSetupErrorMessage(error) });
       return true;
     },
-    renderStep({ testing, connect }: { testing: boolean; connect: () => void }): ReactNode | undefined {
+    /** `accessLevel` is the form's choice, which the test submits, so the guide matches it. */
+    renderStep({ testing, connect, accessLevel }: {
+      testing: boolean; connect: () => void; accessLevel?: "read_only" | "full";
+    }): ReactNode | undefined {
       if (appSlug !== "aws" || !stage) return undefined;
       return (
         <AwsRoleSetup
           connectionId={stage.connectionId}
+          accessLevel={accessLevel}
           error={stage.error}
           testing={testing}
           onBack={() => setStage(null)}

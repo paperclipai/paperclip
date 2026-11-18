@@ -14,11 +14,11 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 
 /** The call this step makes. Stories and tests pass in-memory fakes. */
 export interface AwsRoleSetupClient {
-  setup(connectionId: string): Promise<AwsConnectionSetup>;
+  setup(connectionId: string, accessLevel?: "read_only" | "full"): Promise<AwsConnectionSetup>;
 }
 
 export const awsRoleSetupApiClient: AwsRoleSetupClient = {
-  setup: (connectionId) => toolsApi.getAwsSetup(connectionId),
+  setup: (connectionId, accessLevel) => toolsApi.getAwsSetup(connectionId, accessLevel),
 };
 
 const UNAVAILABLE_REASON: Record<Extract<AwsConnectionSetup, { available: false }>["reason"], string> = {
@@ -45,6 +45,8 @@ export function awsSetupErrorMessage(error: unknown): string {
 
 export interface AwsRoleSetupProps {
   connectionId: string;
+  /** The access level the test will submit, when it may differ from the saved one (reconnect). */
+  accessLevel?: "read_only" | "full";
   client?: AwsRoleSetupClient;
   /** The last test's failure, shown in place. */
   error?: string | null;
@@ -70,6 +72,7 @@ const ROLE_ARN_PATTERN = new RegExp(
  */
 export function AwsRoleSetup({
   connectionId,
+  accessLevel,
   client = awsRoleSetupApiClient,
   error = null,
   testing = false,
@@ -85,7 +88,7 @@ export function AwsRoleSetup({
     let cancelled = false;
     setSetup(null);
     setLoadError(null);
-    client.setup(connectionId).then(
+    client.setup(connectionId, accessLevel).then(
       (value) => {
         if (cancelled) return;
         setSetup(value);
@@ -94,7 +97,7 @@ export function AwsRoleSetup({
       (caught) => { if (!cancelled) setLoadError(describeError(caught).body); },
     );
     return () => { cancelled = true; };
-  }, [client, connectionId]);
+  }, [client, connectionId, accessLevel]);
 
   const ready = setup?.available === true ? setup : null;
   const trimmedArn = roleArn.trim();

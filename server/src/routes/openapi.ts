@@ -12751,7 +12751,7 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/aws-setup",
   tags: ["tool-access"],
   summary: "Read what to configure in AWS for an AWS role connection",
-  description: "Returns the issuer, audience, connection subject, trust policy and a CloudFormation template for this connection. No secret values. 422 when the connection does not use an AWS role.",
+  description: "Returns the issuer, audience, connection subject, trust policy and a CloudFormation template for this connection. No secret values. Optional query `accessLevel` (`read_only` or `full`) sets up for an access level not saved yet. 422 when the connection does not use an AWS role.",
   responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
 });
 

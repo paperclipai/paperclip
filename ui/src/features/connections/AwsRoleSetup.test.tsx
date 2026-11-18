@@ -58,7 +58,7 @@ describe("AwsRoleSetup", () => {
 
   it("shows only the agent setup by default, then tests with the pasted role ARN", async () => {
     const { client, onTest } = await render(READY);
-    expect(client.setup).toHaveBeenCalledWith("conn-1");
+    expect(client.setup).toHaveBeenCalledWith("conn-1", undefined);
     expect(container.querySelector('button[aria-label="Set it up with your agent"]')).not.toBeNull();
     expect(container.textContent).toContain("Or do it by hand");
     expect(container.textContent).not.toContain("Download template");

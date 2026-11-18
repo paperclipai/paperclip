@@ -114,6 +114,10 @@ describe("AWS connector with minted credentials", () => {
     expect(template.Resources.PaperclipIdentityProvider.Properties.Url).toBe(issuer);
     expect(setup.body.trustPolicy.Statement[0].Principal.Federated).toBe(`arn:aws:iam::ACCOUNT_ID:oidc-provider/${host}`);
     expect(JSON.stringify(setup.body)).not.toMatch(/secret|private/i);
+    // A reconnect may change the access level before it is saved; the guide follows the level being set up.
+    const full = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup?accessLevel=full`).expect(200);
+    expect(full.body.accessLevel).toBe("full");
+    expect(JSON.parse(full.body.cloudFormationTemplate).Parameters.AccessPolicyArn.Default).toBeUndefined();
 
     // After the address changes, setup for the old address could never pass, so it asks for a new save,
     // and saving the draft again records the current address.

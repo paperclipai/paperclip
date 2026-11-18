@@ -95,7 +95,7 @@ vi.mock("@/api/tools", () => ({
     getConnection: (id: string) => getConnectionMock(id),
     getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
-    getAwsSetup: (connectionId: string) => getAwsSetupMock(connectionId),
+    getAwsSetup: (connectionId: string, accessLevel?: string) => getAwsSetupMock(connectionId, accessLevel),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
@@ -2568,7 +2568,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
     expect((connectAppMock.mock.calls.at(-1)![1] as { configValues?: { roleArn?: string } }).configValues?.roleArn ?? "").toBe("");
     expect(finishAppMock).not.toHaveBeenCalled();
-    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-draft");
+    expect(getAwsSetupMock.mock.calls.at(-1)?.[0]).toBe("aws-draft");
     expect(container.querySelector('button[aria-label="Set it up with your agent"]')).toBeTruthy();
     expect(container.textContent).toContain("Or do it by hand");
     expect(buttonByText("Test connection")?.disabled).toBe(true);
@@ -2613,7 +2613,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Or do it by hand"));
-    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-draft");
+    expect(getAwsSetupMock.mock.calls.at(-1)?.[0]).toBe("aws-draft");
     // Nothing was tested against AWS before the customer saw what to create.
     expect(connectAppMock).not.toHaveBeenCalled();
   });
@@ -2647,7 +2647,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     // Nothing is sent yet: reconnect opens the AWS step with the saved role ARN, which stays editable.
     expect(connectAppMock).not.toHaveBeenCalled();
-    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-conn");
+    // The guide is generated for the access level the test will submit.
+    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-conn", "read_only");
     const input = container.querySelector<HTMLInputElement>("#aws-role-arn")!;
     expect(input.value).toBe(oldArn);
     await act(async () => { setInputValue(input, newArn); });
