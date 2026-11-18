@@ -19,7 +19,7 @@ export const ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE = "environment_provider_unava
  * the provider reported a provisional creation that did not finish, or a
  * control-plane database query failed while the lease was taken.
  */
-type TransientLeaseFailureReason = "acquisition_incomplete" | "database_error";
+type TransientLeaseFailureReason = "acquisition_incomplete" | "provider_start_failed" | "database_error";
 type TransientProviderEvidence = { httpStatus?: number; errorCode?: string; acquisitionTimedOut?: true; reason?: TransientLeaseFailureReason };
 
 function own(value: unknown, key: string): unknown {
@@ -104,7 +104,8 @@ export function readTransientLeaseAcquisitionFailure(
   for (let cause = error, depth = 0; cause && depth < 5; cause = own(cause, "cause"), depth++) {
     const acquisition = getEnvironmentAcquisitionDiagnostic(cause, run);
     if (acquisition) {
-      return acquisition.elapsedMs >= acquisition.budgetMs ? { acquisitionTimedOut: true } : { reason: "acquisition_incomplete" };
+      if (acquisition.elapsedMs >= acquisition.budgetMs) return { acquisitionTimedOut: true };
+      return { reason: acquisition.phase === "create" && acquisition.providerState === "error" ? "provider_start_failed" : "acquisition_incomplete" };
     }
     if (cause instanceof JsonRpcCallError && cause.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return { acquisitionTimedOut: true };
   }
@@ -113,6 +114,7 @@ export function readTransientLeaseAcquisitionFailure(
 
 const REASON_LABELS: Record<TransientLeaseFailureReason, string> = {
   acquisition_incomplete: "sandbox creation did not finish",
+  provider_start_failed: "the provider could not start the sandbox",
   database_error: "a database query failed while recording the lease",
 };
 
@@ -128,10 +130,12 @@ export class EnvironmentProviderUnavailableError extends Error {
   readonly code = ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
   readonly httpStatus: number | null;
   readonly errorCode: string | null;
+  readonly environmentId: string | null;
+  readonly environmentName: string;
   /** Read by the setup-failure path and shown on the task as the reason. */
   readonly providerFailure: ProviderFailure;
 
-  constructor(input: { environmentName: string; driver: string; evidence: TransientProviderEvidence; cause: unknown }) {
+  constructor(input: { environmentId?: string; environmentName: string; driver: string; evidence: TransientProviderEvidence; cause: unknown }) {
     const status = input.evidence.httpStatus !== undefined ? `HTTP ${input.evidence.httpStatus}`
       : input.evidence.errorCode ?? (input.evidence.reason ? REASON_LABELS[input.evidence.reason] : undefined);
     super(status
@@ -140,6 +144,8 @@ export class EnvironmentProviderUnavailableError extends Error {
     this.name = "EnvironmentProviderUnavailableError";
     this.httpStatus = input.evidence.httpStatus ?? null;
     this.errorCode = input.evidence.errorCode ?? null;
+    this.environmentId = input.environmentId ?? null;
+    this.environmentName = input.environmentName;
     const providerCode = input.evidence.errorCode ?? (input.evidence.httpStatus === undefined ? input.evidence.reason : undefined);
     this.providerFailure = {
       schema: "paperclip.provider-failure.v1",
@@ -149,7 +155,7 @@ export class EnvironmentProviderUnavailableError extends Error {
       message: (status
         ? `The provider for "${input.environmentName}" was temporarily unavailable while Paperclip was starting it (${status}). `
         : `The sandbox for "${input.environmentName}" did not finish starting in time. `)
-        + "No agent work had started. Paperclip retries automatically; if those retries are used up, use Retry once the provider is available.",
+        + "No agent work had started. Paperclip keeps retrying automatically until the provider is back; if it stays unavailable for 30 minutes, use Retry once it is available.",
       ...(input.evidence.httpStatus !== undefined ? { httpStatus: input.evidence.httpStatus } : {}),
       ...(providerCode !== undefined ? { providerCode } : {}),
       retryability: "transient",

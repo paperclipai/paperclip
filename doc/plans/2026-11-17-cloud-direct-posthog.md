@@ -1,6 +1,6 @@
 # Paperclip Cloud sends analytics directly to PostHog
 
-Status: proposed, 2026-11-17 (revised: Cloud uses real IDs)
+Status: live on staging 2026-11-18; production rollout planned (see Phase 5)
 PostHog project: 483530 (US), kept as the only project so history is preserved.
 
 ## Delivery state (coordinator keeps this current)
@@ -15,11 +15,15 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 | Phase 0 A: install ID stability + Cloud ingest URL source | subagent | done. Stacks run on Railway with a `/paperclip` volume (state.json persists), except `single-ephemeral` stacks (new ID each boot). Legacy three-service stacks had ephemeral disks, and 126 of 166 live staging stacks are unclaimed warm-pool stacks: this explains the ID churn. No supported way to read state.json per stack. Env vars are set by fleet `env_config` campaigns (drain + restart; fleet keys override per-stack). `PAPERCLIP_TELEMETRY_ENDPOINT` lives in the fleet managed-env store. Staging vs production: separate fleets, and `isCloudStagingInstance()` by host. Production admin returned 401 | paperclip-cloud `src/providers/railway.ts:515-521`, `src/fleet/campaigns.ts:5545-5558`, `src/registry/model.ts:1300-1310` |
 | Phase 0 B: compliance checklist status | subagent | done. Blocker for ANY production token: Terms §8 says telemetry "does not identify individual users" and Privacy §2 says "anonymized". No subprocessor list, no consent banner (website already runs GA4 + X pixel without consent), no SOC 2 program, DPA status unknown. Workspace delete (`paperclip-cloud` `SleepController.deleteStackInner`) makes no PostHog call; no self-serve account deletion | paperclip-website `web/app/terms/page.tsx:146-165`, `web/app/privacy/page.tsx:59-61` |
 | Phase 0 C: PostHog entitlements | coordinator | done: session replay available pay-as-you-go ($0 now); Group analytics add-on NOT enabled (needs Dotta; not blocking: events carry `stack_id`, and the history join uses link events, not group properties); product analytics projected $1,186 this period from 40.1M events, almost all OSS | PostHog billing page, 2026-11-17 |
-| Phase 1: server direct sender | subagent | PR green (61 checks, Greptile 5/5); coordinator review asked for private repo `source_ref` to stay hashed on Cloud (customer content, not an ID); rebasing | https://github.com/paperclipai/paperclip/pull/22006 |
-| Phase 2: browser analytics | subagent | in progress | |
+| Phase 1: server direct sender | subagent | merged 55b692d; live on staging | https://github.com/paperclipai/paperclip/pull/22006 |
+| Phase 2: browser analytics | subagent | merged 8172d27; live on staging | https://github.com/paperclipai/paperclip/pull/22012 |
+| Phase 2b: visitor IP through the proxy | coordinator | merged fa8bc78 | https://github.com/paperclipai/paperclip/pull/22052 |
+| Phase 2c: replay shows text, masks marked content (Dotta's decision) | subagent | merged b56f240; live on staging | https://github.com/paperclipai/paperclip/pull/22057 |
+| Phase 2d: `company_id` on background events | subagent | in progress | |
 | Phase 3a: workspace-delete cleanup (paperclip-cloud) | coordinator | REVERTED by Dotta's decision (no automatic deletion): https://github.com/paperclipai/paperclip-cloud/pull/1604. It never ran. Original notes: merged b4ddeff; inert until `CLOUD_HARNESS_POSTHOG_PERSONAL_API_KEY_SECRET_REF` is set (scopes group:read, group:write, data_deletion:write; no person scopes). Limits: PostHog has no per-group delete (properties are cleared instead); event deletion uses the alpha Data Deletion API, which PostHog must enable for 483530, needs approval per request, max 5 active; no durable retry (2 in-process retries + audit record) | https://github.com/paperclipai/paperclip-cloud/pull/1603 |
-| Phase 3b: legacy link backfill script (telemetry-backend) | subagent | merged 9c9aaae (operator script, not deployed); run after Phase 1 is live on staging | https://github.com/paperclipai/telemetry-backend/pull/148 |
-| Phase 4: staging rollout + verification | coordinator | pending | |
+| Phase 3b: legacy link backfill script (telemetry-backend) | subagent | merged 9c9aaae, pagination fix a2c123d; staging run: 38 of 44 stacks linked | https://github.com/paperclipai/telemetry-backend/pull/148 |
+| Phase 4: staging rollout + verification | coordinator | done 2026-11-18. Staging fleet has the token, `environment=staging`, browser analytics and `TRUST_PROXY=100.64.0.0/10`. 24 h: 5,326 server events from 58 stacks, 0 duplicate uuids; 4,620 browser events, 91% with geo; browser and server events join on one person; replay shows chrome text and masks content | paperclip.staging.paperclip.app |
+| Phase 5: production rollout | coordinator | planned, waiting on Dotta's decisions | this doc, Phase 5 |
 
 ### Continuous deployment rule
 
@@ -294,6 +298,82 @@ the collector or directly to PostHog, never both.
 4. Optional cleanup, only after the `PAPERCLIP_POSTHOG_DIRECT=0` rollback is
    retired: remove the Cloud ingest URL setting and the backend's Cloud
    ingest path.
+
+### Phase 5: production rollout
+
+Production is a separate fleet (`admin.paperclip.app`). Every switch is an
+`env_config` campaign with a canary first. Each step has its own rollback, and
+each step is verified before the next one starts.
+
+#### Prerequisites
+
+- [ ] Production runs a release that contains #22006, #22012, #22052 and
+      #22057 (and the Phase 2d `company_id` PR if merged by then). Check the running app
+      version of the canary stack before each step.
+- [ ] Dotta signs in to `admin.paperclip.app` in the coordinator's browser
+      pane (the coordinator has no production admin access).
+- [x] Decision: consent approach for browser analytics (Step 4). Dotta chose
+      option 1, the EU/UK consent banner (2026-11-18). Its PR must be merged
+      and in the production release before Step 4.
+- [ ] PostHog: set a billing limit on Session replay before Step 4, so a spike
+      cannot run up the bill.
+- [ ] PostHog: set the project's internal/test account filter to exclude
+      `environment = staging`.
+
+#### Step 1: server direct sending
+
+- Campaign: `PAPERCLIP_POSTHOG_PROJECT_TOKEN=<phc token>`,
+  `PAPERCLIP_POSTHOG_ENVIRONMENT=production`. Canary: one internal stack.
+- Verify on the canary, then the fleet: `cloud.workspace_started` per stack,
+  `environment=production`, real IDs, `count() = uniq(uuid)`, no
+  `deployment_source=cloud` events from production through the collector
+  after the switch, self-hosted volume unchanged.
+- Rollback: campaign with `PAPERCLIP_POSTHOG_DIRECT=0` (back to the collector,
+  same IDs as before).
+
+#### Step 2: `TRUST_PROXY=100.64.0.0/10`
+
+- Validated on staging: sign-in, board mutations, reads, and visitor IP.
+- Production smoke on the canary: sign-in, create and delete a task, open one
+  connector OAuth flow (redirect URLs now resolve with `https`), invite link.
+- Rollback: campaign that removes `TRUST_PROXY`.
+
+#### Step 3: legacy link backfill
+
+- Operator run of `scripts/link-posthog-legacy-workspace-ids.mjs` in
+  telemetry-backend: a 1-day `query:read` PostHog key (Dotta re-authenticates
+  in PostHog) and the loader hash secret from AWS. Dry run, then `--write`,
+  then the verification join. Delete the local secret files and revoke the key.
+- Re-run after a week to link stacks that booted later.
+
+#### Step 4: browser analytics and replay
+
+Decided: option 1 (Dotta, 2026-11-18). The options considered:
+
+1. Consent banner for EU/UK visitors (recommended): analytics and replay start
+   only after the visitor accepts; other regions start as on staging. Needs a
+   small UI PR (posthog-js `opt_out_capturing_by_default` plus a banner) before
+   this step.
+2. Cookieless until consent for everyone: posthog-js cookieless mode for
+   anonymous counts, identified analytics and replay only after consent.
+   Fewer identified sessions.
+3. No consent step: turn it on as on staging. Relies on the policy text alone;
+   legal risk in the EU/UK.
+
+- Campaign: `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1` (replay on by default;
+  `PAPERCLIP_POSTHOG_REPLAY_ENABLED=0` per stack for customers whose contracts
+  forbid recording). Canary: one internal stack.
+- Verify: Web analytics and Product analytics pages show production visits,
+  replays mask content, browser and server events join on one person, cold
+  load time unchanged.
+- Rollback: campaign that removes `PAPERCLIP_POSTHOG_BROWSER_ENABLED`.
+
+#### Step 5: watch for one week
+
+- Daily: event volume per environment, duplicates, replay count and spend
+  against the billing limit, error rate of `/_ph` (429 and 5xx).
+- Then retire the `PAPERCLIP_POSTHOG_DIRECT=0` rollback and remove the Cloud
+  collector ingest path (Phase 4, item 4).
 
 ## Success criteria
 

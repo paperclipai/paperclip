@@ -10,6 +10,7 @@ import { activityLog, agentWakeupRequests, agents, approvals, authUsers, compani
 } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
@@ -424,14 +425,28 @@ describePostgres("already available connection requests", () => {
     } finally { await single.$client.end({ timeout: 1 }); }
   });
 
-  it("discovers pending cards through the existing delivery worker", async () => {
+  it("discovers pending cards without attributing system closure to the connection owner", async () => {
     const f = await seed(); const wakeup = vi.fn().mockResolvedValue(null);
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "succeeded", contextSnapshot: { issueId: f.issueId } }).returning();
+    const origin = await initializeRunIdentity(db, { companyId: f.companyId, runId: source.id,
+      issueId: f.issueId, responsibleUserId: "requester", cause: "instruction" });
+    await db.update(issueThreadInteractions).set({ sourceRunId: source.id, sourceIdentityContextId: origin.id })
+      .where(eq(issueThreadInteractions.id, f.intent.id));
     const worker = connectionIntentDeliveryService(db, { wakeup });
     expect(await worker.hasPending()).toBe(true);
     await worker.sweepPending();
     expect((await db.select().from(issueThreadInteractions))[0].status).toBe("expired");
     expect(wakeup).toHaveBeenCalledOnce();
-    expect(wakeup).toHaveBeenCalledWith(f.agentId, expect.objectContaining({ requestedByActorType: "system", idempotencyKey: `connection-intent:${f.intent.id}:expired`, contextSnapshot: expect.objectContaining({ refreshTools: true, responsibleUserId: "connection-owner" }) }));
+    expect(wakeup).toHaveBeenCalledWith(f.agentId, expect.objectContaining({ requestedByActorType: "system", idempotencyKey: `connection-intent:${f.intent.id}:expired`, contextSnapshot: expect.objectContaining({ refreshTools: true, connectionIntentResolution: "existing_connection" }) }));
+    const wake = wakeup.mock.calls[0][1];
+    expect(wake.contextSnapshot).not.toHaveProperty("responsibleUserId");
+    const [continued] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "running", contextSnapshot: wake.contextSnapshot }).returning();
+    expect(await initializeRunIdentity(db, { companyId: f.companyId, runId: continued.id, issueId: f.issueId,
+      interactionId: f.intent.id, responsibleUserId: "requester", cause: "continuation" })).toMatchObject({
+      responsibleUserId: "requester", parentContextId: origin.id,
+    });
   });
 
   it.each(["blocked", "todo", "backlog"] as const)("retires a satisfied card on a %s task without waking its agent", async (status) => {
