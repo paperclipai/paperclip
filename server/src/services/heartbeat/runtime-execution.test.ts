@@ -37,6 +37,7 @@ import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
 import { liveNativeFinalizationReserved } from "../native-runtime/live-native-finalization.js";
+import { onNativeWorkspaceFinalizationRelease } from "../native-workspace-finalization-notifications.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../native-runtime/native-workspace-finalization-ownership.js";
 
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
@@ -430,6 +431,16 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     if (outcome === "throws") await expect(execution).rejects.toThrow(); else await execution;
     expect(reservedDuringDispatch).toBe(true);
     expect(workerOwnership).toEqual({ acquired: false, reason: "owner_active" });
+    expect(liveNativeFinalizationReserved(input.run.id)).toBe(false);
+    expectCleanup(input);
+  });
+
+  it("still cleans up when waking the workers after the live heartbeat throws", async () => {
+    const { input } = await fixture(true);
+    const stop = onNativeWorkspaceFinalizationRelease(db, () => { throw new Error("release listener failed"); });
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).resolves.toMatchObject({ dispatched: true });
+    } finally { stop(); }
     expect(liveNativeFinalizationReserved(input.run.id)).toBe(false);
     expectCleanup(input);
   });
