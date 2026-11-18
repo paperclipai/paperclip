@@ -35,7 +35,8 @@ function previousRecentInterruptionSourceSql(now: Date) {
   const systemRetriedSource = sql`(${continuationCauseIsSystemOwnedSql("source")}
     and coalesce(source.context_snapshot->>'wakeReason', '') <> 'task_retry' and not coalesce(source.context_snapshot ? 'explicitUserContinuation', false)
     and exists (select 1 from ${heartbeatRuns} held where ${refusedLater} and ${recoveryRunSql("held")}))`;
-  const setupFailedAfterWork = sql`(source.error_code in (${sql.join(SETUP_FAILURE_CODES.map(code => sql`${code}`), sql`, `)})
+  const setupFailedAfterWork = sql`(coalesce(source.result_json#>>'{executionRecovery,providerWorkStarted}', '') <> 'false'
+    and source.error_code in (${sql.join(SETUP_FAILURE_CODES.map(code => sql`${code}`), sql`, `)})
     and exists (select 1 from ${issueRecoveryActions} saved where saved.company_id = source.company_id
       and saved.source_issue_id = ${input.issueId}
       and (saved.evidence->>'runId' = source.id::text or (saved.evidence->>'runId' is null and saved.evidence->>'sourceRunId' = source.id::text))

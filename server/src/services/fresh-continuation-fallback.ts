@@ -373,6 +373,20 @@ export async function freshContinuationIsolatesRun(db: Db, input: { companyId: s
   return { continuationPending: record.isolation === "fresh_isolated_workspace" && record.delivery === "pending" };
 }
 
+type BlockFacts = { holds: Array<typeof issueRecoveryActions.$inferSelect>;
+  issue: Pick<typeof issues.$inferSelect, "id" | "status" | "statusVersion" | "lastStatusDecisionId" | "blockedTransitionAt">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "finishedAt"> };
+
+function failureOwnsBlock(holds: BlockFacts["holds"], issue: BlockFacts["issue"], run: BlockFacts["run"]) {
+  const receipts = holds.filter(hold => hold.evidence.nativeFailureBlock !== undefined || hold.evidence.legacyCancellationBlock !== undefined
+    || hold.evidence.nativeBootstrapFailureBlock !== undefined);
+  return (receipts.length ? receipts : holds).some(hold => holdOwnsBlockedStatus(hold, issue, run))
+    || receipts.some(hold => [hold.evidence.legacyCancellationBlock, hold.evidence.nativeBootstrapFailureBlock]
+      .some(block => object(block).runId === run.id && object(block).statusVersion === Number(issue.statusVersion)))
+    || (!holds.length && issue.lastStatusDecisionId === null && issue.blockedTransitionAt !== null && run.finishedAt !== null
+      && issue.blockedTransitionAt.getTime() >= run.finishedAt.getTime() - 1_000);
+}
+
 export async function ensureFreshContinuation(db: Db, input: Input): Promise<FreshContinuationResult> {
   return db.transaction(tx => continueFreshInTransaction(tx as unknown as Db, input));
 }
@@ -540,14 +554,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   if (taskWait) return { kind: "person_owned", reason: taskWait };
   let ownsBlock = false;
   if (issue.status === "blocked") {
-    const receipts = holds.filter(hold => hold.evidence.nativeFailureBlock !== undefined || hold.evidence.legacyCancellationBlock !== undefined
-      || hold.evidence.nativeBootstrapFailureBlock !== undefined);
-    ownsBlock = (receipts.length ? receipts : holds).some(hold => holdOwnsBlockedStatus(hold, issue, run))
-      || receipts.some(hold => [hold.evidence.legacyCancellationBlock, hold.evidence.nativeBootstrapFailureBlock]
-        .some(block => object(block).runId === run.id && object(block).statusVersion === Number(issue.statusVersion)))
-      // A run that left no hold: its terminal failure set the block and nothing changed it since.
-      || (!holds.length && issue.lastStatusDecisionId === null && issue.blockedTransitionAt !== null
-        && issue.blockedTransitionAt.getTime() >= run.finishedAt.getTime() - 1_000);
+    ownsBlock = failureOwnsBlock(holds, issue, run);
     if (!ownsBlock) return { kind: "person_owned", reason: "blocked_by_another_decision" };
     const readiness = await issueService(tx).listDependencyReadiness(companyId, [issue.id], tx);
     if (readiness.get(issue.id)?.isDependencyReady === false) return { kind: "dependency_wait" };
@@ -847,7 +854,8 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
     and lost.evidence#>>'{systemRecovery,state}' = 'exhausted'
     and lost.evidence#>>'{systemRecovery,failure,code}' in (${sqlList(UNVERIFIABLE_SOURCE_CODES)})
     and lost.evidence#>>'{systemRecovery,failure,retryClass}' in (${sqlList(PERMANENT_SOURCE_RETRY_CLASSES)}))`;
-  const setupFailedAfterWork = sql`(source.error_code in (${sqlList(SETUP_FAILURE_CODES)})
+  const setupFailedAfterWork = sql`(coalesce(source.result_json#>>'{executionRecovery,providerWorkStarted}', '') <> 'false'
+    and source.error_code in (${sqlList(SETUP_FAILURE_CODES)})
     and exists (select 1 from ${issueRecoveryActions} saved where saved.company_id = source.company_id
       and saved.source_issue_id = ${input.issueId}
       and (saved.evidence->>'runId' = source.id::text or (saved.evidence->>'runId' is null and saved.evidence->>'sourceRunId' = source.id::text))
@@ -878,8 +886,31 @@ export async function runsAwaitingSystemContinuation(db: Db, companyId: string, 
         companyId: sql`${issueRecoveryActions.companyId}`, issueId: sql`${issueRecoveryActions.sourceIssueId}`,
         sourceRunId: heldRunIdSql() }).recent,
       sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}', 'exact_recovery_pending')
-        in ('exact_recovery_pending', 'backoff')`));
-  return new Set(rows.map(row => `${row.issueId}:${row.runId}`));
+        in ('exact_recovery_pending', 'backoff')`,
+      sql`not exists (select 1 from ${issueThreadInteractions} question where question.company_id = ${issueRecoveryActions.companyId}
+        and question.issue_id = ${issueRecoveryActions.sourceIssueId} and question.status = 'pending')`,
+      sql`not exists (select 1 from ${issueApprovals} link join ${approvals} approval on approval.id = link.approval_id
+        and approval.company_id = link.company_id where link.company_id = ${issueRecoveryActions.companyId}
+        and link.issue_id = ${issueRecoveryActions.sourceIssueId} and approval.status in ('pending', 'revision_requested'))`));
+  if (!rows.length) return new Set();
+  const candidateIssueIds = [...new Set(rows.map(row => row.issueId))];
+  const candidateRunIds = [...new Set(rows.map(row => row.runId))];
+  const [issueRows, runRows, holdRows] = await Promise.all([
+    db.select().from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, candidateIssueIds))),
+    db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), inArray(sql`${heartbeatRuns.id}::text`, candidateRunIds))),
+    db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
+      inArray(issueRecoveryActions.sourceIssueId, candidateIssueIds), inArray(heldRunIdSql(), candidateRunIds))),
+  ]);
+  return new Set(rows.filter(row => {
+    const issue = issueRows.find(candidate => candidate.id === row.issueId);
+    const run = runRows.find(candidate => candidate.id === row.runId);
+    if (!issue || !run) return false;
+    if (issue.status !== "blocked") return true;
+    const holds = holdRows.filter(hold => hold.sourceIssueId === row.issueId
+      && (hold.evidence.runId === row.runId || hold.evidence.sourceRunId === row.runId));
+    return failureOwnsBlock(holds, issue, run);
+  }).map(row => `${row.issueId}:${row.runId}`));
 }
 
 /** Held records the backlog pass leaves for a person (older, or not an interruption). */
