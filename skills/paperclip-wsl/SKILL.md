@@ -51,7 +51,11 @@ Use `doc/DEVELOPING.md` for the owning start/stop commands and focused checks.
 Run `preflight --runner` before preparing an instance or starting native agent
 tests; Runner requires glibc 2.39 or newer. An operating system upgrade affects
 the entire distribution, so obtain approval before doing one.
-Run `preflight --health` to verify a running instance. Start with `exec pnpm dev`
+Run `preflight --health` to verify a running instance launched through this helper.
+The check requires the listener's initial home, config and instance environment;
+it refuses an older unlabelled process rather than inferring ownership from its
+port. Adopt an existing instance by restarting its selected service through the
+helper after checking ownership. Start with `exec pnpm dev`
 only after checking the selected instance and existing service ownership.
 Stop that instance through `exec pnpm dev:stop`; preserve unrelated processes.
 Follow `doc/DOCKER.md` for an explicitly requested release-image qualification.

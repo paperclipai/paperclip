@@ -202,7 +202,7 @@ try {
             if (ownsListener) break;
           } catch {}
         }
-        if (!ownsListener) fail("health listener does not belong to the selected instance");
+        if (!ownsListener) fail("health listener does not belong to the selected instance: restart the selected service through this helper to record its identity");
         const response = await fetch(`http://127.0.0.1:${config.port}/api/health`, { signal: AbortSignal.timeout(5000) });
         if (!response.ok || (await response.json()).status !== "ok") fail("selected instance is not healthy");
       }
