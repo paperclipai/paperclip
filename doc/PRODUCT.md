@@ -94,7 +94,7 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
 Canceling a task with active subtasks asks whether to cancel those subtasks too.
-The modal lists the readable active descendants as plain text, without task links.
+The modal lists each readable active descendant's status icon and title, without task IDs or links.
 Done and canceled tasks are excluded. The person can cancel only the parent,
 cancel the parent and listed subtasks, or dismiss the modal to leave them unchanged.
 

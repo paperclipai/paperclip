@@ -245,7 +245,7 @@ describe("useUpdateIssueMutation", () => {
     await act(async () => {});
   };
 
-  it("lists every active subtask without links before canceling the task and subtasks", async () => {
+  it("lists active subtask titles and status icons without IDs or links before cancellation", async () => {
     const children = (["backlog", "todo", "in_progress", "in_review", "blocked"] as const)
       .map((status, index) => child(String(index + 1), status));
     children[4]!.parentId = children[0]!.id;
@@ -258,7 +258,12 @@ describe("useUpdateIssueMutation", () => {
     expect(dialog.textContent).toContain("This task has 5 active subtasks. Would you like to cancel those as well?");
     expect(dialog.querySelectorAll("li")).toHaveLength(5);
     expect(dialog.querySelectorAll("a")).toHaveLength(0);
-    for (const task of children) expect(dialog.textContent).toContain(task.title);
+    expect(Array.from(dialog.querySelectorAll('li [role="img"]'), icon => icon.getAttribute("aria-label")))
+      .toEqual(["Backlog", "Todo", "In Progress", "In Review", "Blocked"]);
+    for (const task of children) {
+      expect(dialog.textContent).toContain(task.title);
+      expect(dialog.textContent).not.toContain(task.identifier);
+    }
     expect(dialog.textContent).not.toContain("Subtask done");
     expect(dialog.textContent).not.toContain("Subtask canceled");
     expect(mockUpdate).not.toHaveBeenCalled();
@@ -269,6 +274,23 @@ describe("useUpdateIssueMutation", () => {
     expect(mockUpdate.mock.calls.every(call => call[1].status === "cancelled")).toBe(true);
     expect(mockListAll).toHaveBeenCalledWith("company-1", expect.objectContaining({ descendantOf: "issue-1", includeAgentCreatedTasks: true }), { cache: "no-store" });
     expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("shows the visible status of waiting, monitoring, and covered subtasks", async () => {
+    mockListAll.mockResolvedValue([
+      { ...child("waiting", "in_review"), externalConversationState: "waiting" },
+      { ...child("monitoring", "in_progress"), displayStatus: "monitoring" },
+      { ...child("covered", "blocked"), blockerAttention: { state: "covered", reason: "active_child", coveredBlockerCount: 1 } },
+    ]);
+    render();
+    await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(Array.from(dialog.querySelectorAll('li [role="img"]'), icon => icon.getAttribute("aria-label")))
+      .toEqual(["Idle", "Monitoring", "Blocked · waiting on 1 active sub-task"]);
+    expect(dialog.querySelector('li:last-child svg')?.getAttribute("style")).toContain("--status-task-icon-in_queue");
+    expect(dialog.querySelectorAll("li button, li a")).toHaveLength(0);
+    expect(dialog.textContent).not.toContain("TEST-");
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it("can cancel only the parent and leave its active subtasks unchanged", async () => {
@@ -356,7 +378,9 @@ describe("useUpdateIssueMutation", () => {
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("This task has 500 active subtasks.");
     expect(dialog.querySelectorAll("li")).toHaveLength(500);
+    expect(dialog.querySelectorAll('li [role="img"]')).toHaveLength(500);
     expect(dialog.querySelectorAll("a")).toHaveLength(0);
+    expect(dialog.textContent).not.toContain("TEST-");
     expect(dialog.textContent).toContain("Cancel task only");
     expect(dialog.textContent).toContain("Cancel task and subtasks");
     expect(titleReads).toBe(500);

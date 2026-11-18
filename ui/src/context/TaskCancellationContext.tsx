@@ -4,9 +4,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { bindAccount } from "@/lib/account-scope";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { StatusIcon } from "@/components/StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export type SubtaskCancellationChoice = "task_only" | "subtasks" | "dismiss";
-type Subtask = Pick<Issue, "id" | "identifier" | "title">;
+type Subtask = Pick<Issue, "id" | "title" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention">;
 type ConfirmCancellation = (subtasks: Subtask[]) => Promise<SubtaskCancellationChoice>;
 const TaskCancellationContext = createContext<ConfirmCancellation | null>(null);
 
@@ -36,8 +38,8 @@ export function TaskCancellationProvider({ children }: { children: ReactNode }) 
     return () => { unsubscribe(); resolveRef.current?.("dismiss"); };
   }, [client, finish]);
   const subtaskList = useMemo(() => subtasks?.map(task => (
-    <li key={task.id} className="flex min-w-0 items-start gap-2">
-      {task.identifier ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{task.identifier}</span> : null}
+    <li key={task.id} className="flex min-w-0 items-center gap-2">
+      <StatusIcon {...taskStatusIconProps(task)} />
       <span className="min-w-0 break-words">{task.title}</span>
     </li>
   )), [subtasks]);
