@@ -3,7 +3,7 @@ import { heartbeatRuns, issueThreadInteractions, issues, statusDecisions, type D
 import { queuedInteractionId } from "./queued-interaction-response.js";
 import { ordinaryQuestionCondition } from "./issue-question-context.js";
 
-const AGENT_REPORTED_BLOCKER_REASON_CODES = ["current_track_blocker_waiting", "task_wide_blocker_bound"];
+const AGENT_REPORTED_BLOCKER_REASON_CODES = ["current_track_blocker_waiting", "task_wide_blocker_bound", "native_agent_blocker_needs_person"];
 const PERSON_RESOLVED_BLOCKER_OWNER_KINDS = ["user", "board", "external", "unspecified"];
 
 export type AgentBlockingQuestionState = { lastStatusDecisionId: string; statusVersion: number };

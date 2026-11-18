@@ -17,6 +17,8 @@ export function isNativeEnvironmentBlocker(result: {
   reportedWorkDisposition?: unknown;
   blocker?: { owner?: { kind?: unknown } | null; reasonCode?: unknown } | null;
 }) {
-  return result.reportedWorkDisposition === "blocked" && result.blocker?.owner?.kind === "system"
-    && typeof result.blocker.reasonCode === "string" && ENVIRONMENT_BLOCKER_REASON_CODES.has(result.blocker.reasonCode);
+  if (result.reportedWorkDisposition !== "blocked") return false;
+  const ownerKind = result.blocker?.owner?.kind;
+  return ownerKind === "system" || (ownerKind === "agent" && typeof result.blocker?.reasonCode === "string"
+    && ENVIRONMENT_BLOCKER_REASON_CODES.has(result.blocker.reasonCode));
 }
