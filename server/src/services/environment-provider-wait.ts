@@ -5,6 +5,8 @@ export const ENVIRONMENT_PROVIDER_WAIT = {
   ceilingMs: 30 * 60_000,
   maxAttempts: 12,
   parkedRecheckMs: 30_000,
+  probeStartGraceMs: 60_000,
+  probeRunningBoundMs: 10 * 60_000,
   wakeReason: "transient_failure_retry",
 } as const;
 

@@ -6473,12 +6473,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }
     }, 90_000);
 
-    it("lets one waiter per environment probe the provider and releases the others once a lease is acquired", async () => {
+    async function seedProviderWaiters(leaderWaitedMs: number, followerWaitedMs: number) {
       const leader = await seedQueuedIssueRunFixture();
       const follower = await seedQueuedIssueRunFixture({ companyId: leader.companyId, issueNumber: 2 });
       const environment = await environmentService(db).ensureLocalEnvironment(leader.companyId);
       const now = new Date();
-      for (const [task, waitedMs] of [[leader, 120_000], [follower, 60_000]] as const) {
+      for (const [task, waitedMs] of [[leader, leaderWaitedMs], [follower, followerWaitedMs]] as const) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, task.runId));
         await db.update(heartbeatRuns).set({ status: "scheduled_retry", scheduledRetryReason: ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON,
           scheduledRetryAttempt: 1, scheduledRetryAt: new Date(now.getTime() - 1_000), createdAt: new Date(now.getTime() - 10_000),
@@ -6486,6 +6486,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             environmentName: environment.name, waitingSince: new Date(now.getTime() - waitedMs).toISOString() } } })
           .where(eq(heartbeatRuns.id, task.runId));
       }
+      return { leader, follower, environment, now };
+    }
+
+    it("lets the next waiter probe when the first waiter cannot start because its agent is busy", async () => {
+      const { leader, follower, now } = await seedProviderWaiters(120_000, 60_000);
+      await db.update(heartbeatRuns).set({ status: "queued", scheduledRetryAt: null,
+        updatedAt: new Date(now.getTime() - 2 * ENVIRONMENT_PROVIDER_WAIT.probeStartGraceMs) }).where(eq(heartbeatRuns.id, leader.runId));
+      await heartbeatService(db).promoteDueScheduledRetries(now);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]!.status).toBe("queued");
+    }, 60_000);
+
+    it("hands a parked task to a person with a working Retry once it reaches the 30-minute ceiling", async () => {
+      const { leader, follower, now } = await seedProviderWaiters(ENVIRONMENT_PROVIDER_WAIT.ceilingMs + 120_000,
+        ENVIRONMENT_PROVIDER_WAIT.ceilingMs + 60_000);
+      await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(now.getTime() + 5 * 60_000) }).where(eq(heartbeatRuns.id, leader.runId));
+      const lease = failLeaseAcquisition(1);
+      try {
+        const heartbeat = heartbeatService(db);
+        await heartbeat.promoteDueScheduledRetries(now);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]!.status).not.toBe("scheduled_retry");
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        expect(lease.acquisitions.refused).toBe(1);
+        expect((await runsFor(follower.agentId)).filter(run => run.status === "scheduled_retry")).toEqual([]);
+        const blocked = await waitForValue(async () => {
+          const [row] = await db.select().from(issues).where(eq(issues.id, follower.issueId));
+          return row?.status === "blocked" ? row : null;
+        });
+        expect(await taskInterruptionPresentation(db, blocked!)).toMatchObject({ state: "failed", canRetry: true });
+      } finally {
+        lease.restore();
+        mockAdapterExecute.mockClear();
+      }
+    }, 60_000);
+
+    it("lets one waiter per environment probe the provider and releases the others once a lease is acquired", async () => {
+      const { leader, follower, environment, now } = await seedProviderWaiters(120_000, 60_000);
       const heartbeat = heartbeatService(db);
 
       await heartbeat.promoteDueScheduledRetries(now);

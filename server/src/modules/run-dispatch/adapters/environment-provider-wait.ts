@@ -17,6 +17,7 @@ export async function parkEnvironmentProviderWaitInTx(tx: Db, run: HeartbeatRun,
   if (run.status !== "scheduled_retry" || run.scheduledRetryReason !== ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON) return false;
   const wait = readEnvironmentProviderWait(run.contextSnapshot);
   if (!wait) return false;
+  if (Date.parse(wait.waitingSince) + ENVIRONMENT_PROVIDER_WAIT.ceilingMs <= now.getTime()) return false;
   const [recovered] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId),
     eq(environmentLeases.environmentId, wait.environmentId),
@@ -32,8 +33,11 @@ export async function parkEnvironmentProviderWaitInTx(tx: Db, run: HeartbeatRun,
     sql`${heartbeatRuns.status} in ('scheduled_retry', 'queued', 'running')`,
     sql`${waitEnvironmentSql} = ${wait.environmentId}`,
     sql`((${waitingSinceSql})::timestamptz, ${heartbeatRuns.id}::text) < (${wait.waitingSince}::timestamptz, ${run.id}::text)`,
-    sql`(${heartbeatRuns.status} <> 'running' or not exists (select 1 from ${environmentLeases} l
-      where l.company_id = ${heartbeatRuns.companyId} and l.heartbeat_run_id = ${heartbeatRuns.id}))`,
+    sql`(${heartbeatRuns.status} = 'scheduled_retry'
+      or (${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.updatedAt} > ${new Date(now.getTime() - ENVIRONMENT_PROVIDER_WAIT.probeStartGraceMs).toISOString()}::timestamptz)
+      or (${heartbeatRuns.status} = 'running' and ${heartbeatRuns.startedAt} > ${new Date(now.getTime() - ENVIRONMENT_PROVIDER_WAIT.probeRunningBoundMs).toISOString()}::timestamptz
+        and not exists (select 1 from ${environmentLeases} l
+          where l.company_id = ${heartbeatRuns.companyId} and l.heartbeat_run_id = ${heartbeatRuns.id})))`,
   )).limit(1);
   if (!earlier) return false;
   const recheckAt = new Date(now.getTime() + ENVIRONMENT_PROVIDER_WAIT.parkedRecheckMs);
