@@ -49,6 +49,7 @@ import type {
   RoutineTrigger,
   RoutineTriggerSecretMaterial,
   RoutineVariable,
+  RoutineWebhookDelivery,
   RunRoutine,
   UpdateRoutine,
   UpdateRoutineTrigger,
@@ -2794,11 +2795,21 @@ export function routineService(
         }
       }
 
+      if (patch.setupPending === true && existing.kind !== "webhook") {
+        throw unprocessable("Only webhooks can be tested");
+      }
+
       const result = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${existing.routineId} for update`);
         const current = await txDb
-          .select({ signingMode: routineTriggers.signingMode })
+          .select({
+            signingMode: routineTriggers.signingMode,
+            enabled: routineTriggers.enabled,
+            archived: routineTriggers.archived,
+            setupPending: routineTriggers.setupPending,
+            lastWebhookDelivery: routineTriggers.lastWebhookDelivery,
+          })
           .from(routineTriggers)
           .where(eq(routineTriggers.id, id))
           .then((rows) => rows[0] ?? null);
@@ -2806,13 +2817,31 @@ export function routineService(
         if (existing.kind === "webhook" && current.signingMode !== "none") {
           assertAgentWebhookAuthenticated(actor, patch.signingMode);
         }
+        const startsTesting = patch.setupPending === true && !current.setupPending;
+        const finishesTesting = patch.setupPending === false && current.setupPending;
+        if (patch.setupPending === true) {
+          if (patch.archived ?? current.archived) throw conflict("This webhook was removed");
+          if (!(patch.enabled ?? current.enabled)) throw conflict("Turn the webhook on before testing it");
+          const [lockedRoutine] = await txDb
+            .select({ status: routines.status })
+            .from(routines)
+            .where(eq(routines.id, existing.routineId));
+          if (!lockedRoutine) throw notFound("Routine not found");
+          if (lockedRoutine.status === "archived") throw conflict("This routine is archived");
+        }
+        // Ending a test on a webhook that was already receiving real events puts
+        // back its last real delivery, so it does not look brand new.
+        const restoredDelivery = finishesTesting && current.lastWebhookDelivery?.test
+          ? current.lastWebhookDelivery.previous ?? null
+          : null;
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [updated] = await txDb
           .update(routineTriggers)
           .set({
             label: patch.label === undefined ? existing.label : patch.label,
             enabled: patch.enabled ?? existing.enabled,
-            ...(patch.setupPending === false ? { setupPending: false } : {}),
+            ...(patch.setupPending !== undefined ? { setupPending: patch.setupPending } : {}),
+            ...(restoredDelivery ? { lastWebhookDelivery: restoredDelivery } : {}),
             ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
             cronExpression,
             timezone,
@@ -2832,9 +2861,12 @@ export function routineService(
           .where(eq(routines.id, existing.routineId))
           .then((rows) => rows[0] ?? null);
         if (!routine) throw notFound("Routine not found");
-        const appended = await appendRoutineRevision(txDb, routine, actor, {
-          changeSummary: `Updated ${existing.kind} trigger`,
-        });
+        const changeSummary = startsTesting
+          ? "Started testing webhook"
+          : finishesTesting
+            ? restoredDelivery ? "Finished testing webhook" : "Finished webhook setup or test"
+            : `Updated ${existing.kind} trigger`;
+        const appended = await appendRoutineRevision(txDb, routine, actor, { changeSummary });
         return { trigger: updated as RoutineTrigger, revision: appended.revision };
       });
       return result;
@@ -3172,7 +3204,12 @@ export function routineService(
         if (!trigger.enabled || (!trigger.setupPending && routine.status !== "active")) throw conflict("Routine trigger is not active");
         const recordDelivery = async (status: "received" | "rejected") => {
           const receivedAt = new Date().toISOString();
-          await txDb.update(routineTriggers).set({ lastWebhookDelivery: { status, receivedAt, test: trigger.setupPending } }).where(eq(routineTriggers.id, trigger.id));
+          const last = trigger.lastWebhookDelivery;
+          // While testing, carry the last real delivery so finishing the test can restore it.
+          const delivery: RoutineWebhookDelivery = trigger.setupPending
+            ? { status, receivedAt, test: true, previous: last ? (last.test ? last.previous ?? null : last) : null }
+            : { status, receivedAt, test: false };
+          await txDb.update(routineTriggers).set({ lastWebhookDelivery: delivery }).where(eq(routineTriggers.id, trigger.id));
           await logActivity(txDb, {
             companyId: routine.companyId, actorType: "system", actorId: "routine-webhook",
             action: trigger.setupPending ? `routine.webhook_test_${status}` : `routine.webhook_${status}`,
