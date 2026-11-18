@@ -98,15 +98,13 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
   to REST.
 - **What we send to the reviewers.** Not decided: the new staging tester or
   something else. Whatever it is must use the separate Google app (below).
-- **Staging tester on the separate Google app.** The broker now has a
-  per-workspace client override; it is not switched on for the tester yet.
-  The remaining steps and their order are in "Environments".
 - **Reviewer login on staging.** The broker now allows the scoped reviewer
   password login on the staging tester host. Its secret is not set yet; no
   broker change is needed.
 - **AI-agent client and REST.** Whether an OAuth client marked for AI agents
-  may call the REST APIs rather than MCP. To check before the staging tester is
-  wired.
+  may call the REST APIs rather than MCP. The tester's client is marked for
+  AI agents and is wired, but it has only been used through MCP. Check on the
+  tester before any service is switched to REST.
 - **Three Gmail tools are inferred.** Google's MCP reference does not list
   `get_draft`, `list_threads` and `search_messages`; their schemas copy the
   sibling tools (#22014).
@@ -129,7 +127,8 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 1. Deploy the Cloud broker changes to production. They are merged and live
    on staging (see "Cloud broker"); the production deploy is manual and
    waits for Dotta.
-2. Point the staging tester at the separate Google app (see "Environments").
+2. Confirm the consent screen on the staging tester with a fresh Google
+   account, and set the reviewer login secret.
 3. Finish live acceptance on the staging tester.
 4. Switch services to REST one at a time, each after its live test.
 5. Revoke at Google when the last connection is removed.
@@ -159,13 +158,18 @@ Staging tester state (November 18):
   (list labels, search, read the synthetic email in full, create a draft),
   "Delete data", and a real agent task that found the synthetic email by its
   marker, returned the full body and left an unsent draft (about 2 minutes).
-- **Not yet on the separate Google app.** That app is External, In
-  Production, 0 of 100 users, with the six REST APIs enabled and the staging
-  broker callback registered on its one web client. The staging environment
-  has the alternate client ID. Still needed, in this order: Dotta adds a
-  client secret and stores it as the one-time bootstrap secret, then the
-  stack list variable is set, then a staging deploy, then reconnect. Setting
-  the stack list before the secret exists fails every staging deploy.
+- **On the separate Google app since November 18.** That app is External, In
+  Production, with the six REST APIs enabled and the staging broker callback
+  registered on its one web client. The staging environment lists the
+  tester's stack for the alternate client, for the Workspace group only, so
+  the per-service Gmail and Search profiles are unavailable on the tester.
+  After the switch the old grant asked for a reconnect, as designed; after
+  reconnecting, an agent task read the synthetic email again. Google did not
+  show a consent screen on reconnect (the account had approved this app
+  before), so the app name on the consent screen is still to be confirmed
+  with a fresh Google account.
+- Never set the alternate stack list before its client secret exists: the
+  Google bootstrap step then fails and blocks every staging deploy.
 - Reviewer password login for this host is supported by the broker but its
   secret is not set yet.
 
