@@ -236,7 +236,7 @@ try {
               for (const [key,value] of Object.entries(saved)) if (effective[key]===undefined) effective[key]=value;
             }
             const selected=identify(effective);
-            ownsListener = selected.file === selectedConfig && selected.home === config.paperclipHome && selected.id === config.instanceId;
+            ownsListener = selected.file === selectedConfig && selected.home === path.resolve(config.paperclipHome) && selected.id === config.instanceId;
             if (ownsListener) break;
           } catch {}
         }
