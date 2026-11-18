@@ -201,6 +201,9 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: hold!.id });
     expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
     expect(await issueService(ctx.db).count(f.companyId, { displayStatus: "blocked" })).toBe(1);
+    await ctx.db.update(issueRecoveryActions).set({ status: "cancelled" }).where(eq(issueRecoveryActions.id, hold!.id));
+    expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: hold!.id });
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
     await ctx.db.update(issueRecoveryActions).set({ evidence: { automaticRecovery: { replay: "allowed" } } }).where(eq(issueRecoveryActions.id, hold!.id));
     expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toBeNull();
     expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
