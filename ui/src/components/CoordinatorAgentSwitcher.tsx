@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { ChevronDown, PanelLeftOpen } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentChatPicker } from "./AgentChatPicker";
 import { AgentAvatar } from "./AgentAvatar";
@@ -10,7 +10,7 @@ import { agentRouteRef } from "@/lib/utils";
 
 /** Switching opens the existing conversation or its unsaved draft view.
  * The production chat controller persists it only when the user sends. */
-export function CoordinatorAgentSwitcher({ agent }: { agent?: Agent }) {
+export function CoordinatorAgentSwitcher({ agent }: { agent: Agent }) {
   const [open, setOpen] = useState(false);
   const { agents, chats } = useAgentChatNavigation();
   const navigate = useNavigate();
@@ -28,17 +28,13 @@ export function CoordinatorAgentSwitcher({ agent }: { agent?: Agent }) {
     <AgentChatPicker
       open={open}
       onOpenChange={setOpen}
-      trigger={agent ? (
+      trigger={
         <Button variant="ghost" size="sm" className="min-w-0 max-w-full gap-1.5 px-1.5 text-foreground" aria-label={`Switch agent. Currently ${agent.name}`} aria-current="page" title="Switch agent">
           <AgentAvatar agent={agent} size={24} />
           <span data-agent-name className="truncate">{agent.name}</span>
           <ChevronDown className="size-4" />
         </Button>
-      ) : (
-        <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Browse chats" title="Browse chats">
-          <PanelLeftOpen className="size-4" aria-hidden />
-        </Button>
-      )}
+      }
       agents={(agents.data ?? []).filter(item => item.status !== "terminated")}
       loading={agents.isPending}
       error={agents.error}

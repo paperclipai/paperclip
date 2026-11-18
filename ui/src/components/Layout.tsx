@@ -29,7 +29,6 @@ import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
-import { CoordinatorAgentSwitcher } from "./CoordinatorAgentSwitcher";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
@@ -585,7 +584,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             )}
           >
             <StandaloneBrowserControls mobile={isMobile} />
-            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} toolbarAction={chatListCollapsed ? <CoordinatorAgentSwitcher /> : undefined} />
+            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} toolbarAction={chatListCollapsed ? <AgentConversationsSidebar compact /> : undefined} />
             {isMobile && isCompanySettingsRoute ? (
               <div className="border-b border-border px-4 pb-3">
                 <CompanySettingsNav />

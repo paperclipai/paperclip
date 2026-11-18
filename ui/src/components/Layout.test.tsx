@@ -125,8 +125,9 @@ vi.mock("./AppConnectionSidebar", () => ({
 vi.mock("./BreadcrumbBar", () => ({
   BreadcrumbBar: ({ toolbarAction }: { toolbarAction?: ReactNode }) => <div>Breadcrumbs{toolbarAction}</div>,
 }));
-vi.mock("./AgentConversationsSidebar", () => ({ AgentConversationsSidebar: () => <aside aria-label="Chat contacts" /> }));
-vi.mock("./CoordinatorAgentSwitcher", () => ({ CoordinatorAgentSwitcher: () => <button>Browse chats</button> }));
+vi.mock("./AgentConversationsSidebar", () => ({
+  AgentConversationsSidebar: ({ compact }: { compact?: boolean }) => compact ? <button>Browse chats</button> : <aside aria-label="Chat contacts" />,
+}));
 
 vi.mock("./PropertiesPanel", () => ({
   PropertiesPanel: () => null,

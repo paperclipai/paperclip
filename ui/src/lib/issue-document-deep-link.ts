@@ -45,7 +45,6 @@ export function sameIssueDocumentHash(href: string, currentUrl: URL, issueRefere
   } catch { return null; }
 }
 
-/** Keep an explicitly sidebar-bound task document on the agent chat route. */
 export function chatSidebarDocumentHash(href: string, currentUrl: URL, issueReferences: string[]): string | null {
   let url: URL;
   try { url = new URL(href, currentUrl); } catch { return null; }
