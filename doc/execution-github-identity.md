@@ -10,6 +10,13 @@ Human messages use their stored authenticated author. Queued messages retain the
 
 Delegated work and interactions persist their originating context. Retries retain the originating run's active context. Background continuations carry their source run; dependency wakes use the task's continuation context, independently of its owner. Scheduled and webhook routines use the routine's responsible person; manual invocations use the caller, and edits preserve the routine's responsible person.
 
+A completed connection request continues for its current addressed person. If an
+authorized transfer changed that person, the new run records a connection handoff
+and keeps the original context as its audit parent. This also applies when the
+server finds that the recipient already has the required access. Ordinary
+approvals retain their originating identity. A transfer grants no credential
+access; connection selection still checks the new person's grants and policies.
+
 ## Managed GitHub operations
 
 Executions with managed GitHub configured receive token-free `git` and `gh` launchers. Each launcher invocation resolves one eligible credential from the current run's accepted identity at operation start. A `gh` command's child Git processes inherit that command's captured identity; later steering does not change already-started operations.

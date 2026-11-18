@@ -240,6 +240,64 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     }
   });
 
+  it.each(["accepted", "rejected", "expired"])("continues a transferred %s connection request as its recipient and retains the original audit identity", async (status) => {
+    const input = await seed();
+    const origin = await initializeRunIdentity(db, {
+      ...input, messageIds: [], responsibleUserId: "A", cause: "company_default",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: input.companyId, issueId: input.issueId,
+      kind: "connection_intent", status, sourceRunId: input.runId,
+      sourceIdentityContextId: origin.id, addresseeUserId: "B", resolvedByUserId: status === "expired" ? null : "B",
+      payload: { version: 1, serviceSlug: "openai", purpose: "ai", requestingAgentId: input.agentId } as never,
+      result: status === "rejected" ? { version: 1, outcome: "declined" }
+        : { version: 1, outcome: status === "expired" ? "expired" : "connected", connectionId: randomUUID() }, resolvedAt: new Date(),
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId: input.companyId, agentId: input.agentId,
+      status: "running", contextSnapshot: { issueId: input.issueId, interactionId },
+    });
+    const continued = await initializeRunIdentity(db, {
+      ...input, runId, interactionId, messageIds: [], responsibleUserId: "A", cause: "issue_commented",
+    });
+    expect(continued).toMatchObject({
+      responsibleUserId: "B", parentContextId: origin.id, cause: "connection_handoff",
+    });
+    expect((await captureRunIdentity(db, { ...input, runId })).run.responsibleUserId).toBe("B");
+    const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    expect(task).toMatchObject({ responsibleUserId: "owner", continuationIdentityContextId: continued.id });
+    const [request] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(request.sourceIdentityContextId).toBe(origin.id);
+    expect((await listRunIdentityContexts(db, input.companyId, input.runId))[0].responsibleUserId).toBe("A");
+    const retryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: retryRunId, companyId: input.companyId, agentId: input.agentId, status: "running" });
+    expect(await initializeRunIdentity(db, {
+      ...input, runId: retryRunId, messageIds: [], parentRunId: runId, responsibleUserId: "A", cause: "retry",
+    })).toMatchObject({ responsibleUserId: "B", parentContextId: continued.id });
+  });
+
+  it.each([
+    { kind: "request_confirmation", status: "accepted", addresseeUserId: "B", resolvedByUserId: "B" },
+    { kind: "connection_intent", status: "pending", addresseeUserId: "B", resolvedByUserId: null },
+    { kind: "connection_intent", status: "accepted", addresseeUserId: "B", resolvedByUserId: "C" },
+    { kind: "connection_intent", status: "accepted", addresseeUserId: null, resolvedByUserId: "B" },
+    { kind: "connection_intent", status: "expired", addresseeUserId: "B", resolvedByUserId: null },
+  ])("retains source identity without a completed connection handoff: %j", async (interaction) => {
+    const input = await seed();
+    const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
+    const interactionId = randomUUID(), runId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: input.companyId, issueId: input.issueId, ...interaction,
+      sourceIdentityContextId: origin.id, payload: {} as never,
+    });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
+    expect(await initializeRunIdentity(db, {
+      ...input, runId, interactionId, messageIds: [], responsibleUserId: "B", cause: "continuation",
+    })).toMatchObject({ responsibleUserId: "A", parentContextId: origin.id });
+  });
+
   it.each(["update", "no key update"] as const)("serializes identity initialization behind a task's %s lock", async (lockMode) => {
     const input = await seed();
     let initialization!: ReturnType<typeof initializeRunIdentity>;

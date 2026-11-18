@@ -311,13 +311,23 @@ export async function initializeRunIdentity(
       : [];
     if (parentId && !origin)
       throw forbidden("Originating execution identity is unavailable");
+    const connectionRecipient = interaction?.kind === "connection_intent"
+      && !interaction.resolvedByAgentId
+      && ((["accepted", "rejected"].includes(interaction.status)
+        && interaction.resolvedByUserId === interaction.addresseeUserId)
+        || (interaction.status === "expired" && !interaction.resolvedByUserId
+          && interaction.result?.outcome === "expired" && "connectionId" in interaction.result
+          && typeof interaction.result.connectionId === "string"))
+      ? interaction.addresseeUserId : null;
+    const connectionHandoff = !operatorIdentity && connectionRecipient
+      && origin?.responsibleUserId !== connectionRecipient;
     let current = await append(tx, {
       companyId: input.companyId,
       runId: input.runId,
-      responsibleUserId: operatorIdentity?.actorId ?? (origin ? origin.responsibleUserId : input.responsibleUserId),
+      responsibleUserId: operatorIdentity?.actorId ?? (connectionHandoff ? connectionRecipient : origin ? origin.responsibleUserId : input.responsibleUserId),
       parentContextId: origin?.id ?? null,
       cause:
-        operatorIdentity ? operatorIdentity.cause : origin?.cause === "company_default" ? "company_default" : input.cause,
+        operatorIdentity ? operatorIdentity.cause : connectionHandoff ? "connection_handoff" : origin?.cause === "company_default" ? "company_default" : input.cause,
       correlationId: "dispatch",
     });
     const ids = [...new Set(input.messageIds ?? [])];
