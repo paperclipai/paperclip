@@ -476,7 +476,7 @@ export {
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
 
-export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
+export { PluginEnvironmentAcquisitionError, PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
 export type { PluginEnvironmentCreationCleanup, PluginEnvironmentAcquisitionDiagnostic, PluginEnvironmentAcquisitionProviderState } from "./environment-creation-cleanup.js";
 export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
@@ -488,7 +488,8 @@ export { WORKSPACE_OPERATION_FAILURE_REASONS, PluginWorkspaceOperationError, wor
 export type { PluginWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
 export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
 export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
-export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export { environmentResumeErrorData, isRetryableEnvironmentErrorCode, isRetryableEnvironmentHttpStatus, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export type { EnvironmentRetryScope } from "./environment-resume-error.js";
 export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
 export { environmentAcquireErrorData, readEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
 export type { PluginEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";

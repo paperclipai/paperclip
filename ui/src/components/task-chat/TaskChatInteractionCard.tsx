@@ -2,6 +2,10 @@ import type { ComponentProps } from "react";
 import type { IssueDocument } from "@paperclipai/shared";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { RoutineSuggestionCard } from "@/components/RoutineSuggestionCard";
+import { BarProposalCard } from "@/components/responsibilities/BarProposalCard";
+import { AutomationProposalCard } from "@/components/responsibilities/AutomationProposalCard";
+import { DashboardChangesCard } from "@/components/responsibilities/DashboardChangesCard";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
@@ -54,6 +58,23 @@ export function TaskChatInteractionCard({
   // shows the same interaction at the same time, so it carries only the data
   // attribute: a DOM id must stay unique.
   const anchorId = presentation === "takeover" ? undefined : `interaction-${interaction.id}`;
+  // A routine offer follows the agent's completion message in the timeline;
+  // it never takes over the composer.
+  if (interaction.kind === "suggest_routine") {
+    return presentation === "timeline" ? <RoutineSuggestionCard interaction={interaction} /> : null;
+  }
+  // So does a proposed bar: it sits in the conversation where it was made.
+  if (interaction.kind === "propose_responsibility_bar") {
+    return presentation === "timeline" ? <BarProposalCard interaction={interaction} /> : null;
+  }
+  // And a proposed automation, in its automation conversation.
+  if (interaction.kind === "propose_automation") {
+    return presentation === "timeline" ? <AutomationProposalCard interaction={interaction} /> : null;
+  }
+  // And proposed dashboard changes, in a dashboard conversation.
+  if (interaction.kind === "propose_dashboard_changes") {
+    return presentation === "timeline" ? <DashboardChangesCard interaction={interaction} /> : null;
+  }
   if (coordinatorEnabled && interaction.kind === "suggest_tasks" && !shouldHideInteractionCard(interaction)) {
     return <div id={anchorId} data-interaction-id={interaction.id} data-testid="task-chat-interaction" className="w-full">
       <TaskChatCompactInteractionCard interaction={interaction} presentation={presentation} draftKey={draftKey} {...cardProps} />

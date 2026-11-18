@@ -185,6 +185,9 @@ describe("issue telemetry routes", () => {
   }, 60_000);
 
   it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {
+    const { scopedTelemetryCompanyId } = await import("../telemetry-company-scope.js");
+    const scopedCompanies: Array<string | undefined> = [];
+    mockTrackAgentTaskCompleted.mockImplementationOnce(() => scopedCompanies.push(scopedTelemetryCompanyId()));
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -213,6 +216,7 @@ describe("issue telemetry routes", () => {
         taskId: "11111111-1111-4111-8111-111111111111",
       });
     });
+    expect(scopedCompanies).toEqual(["company-1"]);
   }, 10_000);
 
   it("does not emit agent task-completed telemetry for board-driven completions", async () => {

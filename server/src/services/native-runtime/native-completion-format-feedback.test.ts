@@ -12,7 +12,7 @@ vi.mock("./automatic-completion-reviews.js", () => ({ findAutomaticCompletionRev
 vi.mock("../agent-invokability.js", () => ({ evaluateAgentInvokabilityFromDb: vi.fn() }));
 vi.mock("../issues.js", () => ({ issueService: () => ({ getDependencyReadiness: async () => ({ unresolvedBlockerCount: state.blockers }) }) }));
 vi.mock("./native-review-participant.js", () => ({ readNativeReviewAssignmentContext: () => null, getNativeReviewAssignment: vi.fn() }));
-vi.mock("../../vendor/paperclip-runner/index.js", () => ({ normalizePrpResultSignals: () => ({ verification: [], actionableAttentionRequests: [] }) }));
+vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({ ...(await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>()), normalizePrpResultSignals: () => ({ verification: [], actionableAttentionRequests: [] }) }));
 
 const result = { reportedWorkDisposition: "done", summary: "EXACT_PRIVATE_MARKER", completionClaim: { objectiveSatisfied: true, criteria: [], remainingWork: [] } } as unknown as PrpStructuredRunResult;
 function database(options: { interaction?: boolean; approval?: boolean; review?: boolean } = {}): Db {

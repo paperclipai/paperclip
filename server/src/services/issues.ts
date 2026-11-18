@@ -2067,6 +2067,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" |
   workspaceSelectionSource?: "explicit" | "channel";
   workspaceSelectionActor?: AuthorizationActor;
   title?: string;
+  generateConversationTitle?: boolean;
   initialPlan?: string | null;
   /** Internal, server-derived provenance for an accepted in-app chat suggestion. */
   conversationHandoff?: { conversationId: string; sessionGeneration: number };
@@ -10590,6 +10591,7 @@ export function issueService(db: Db) {
         workspaceSelection, workspaceSelectionSource = "explicit", workspaceSelectionActor,
         initialPlan,
         conversationHandoff,
+        generateConversationTitle,
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
@@ -10615,7 +10617,7 @@ export function issueService(db: Db) {
       const provisionalTitle = issueData.description
         ? provisionalTitleFromDescription(issueData.description)
         : undefined;
-      const resolvedTitle = explicitTitle || provisionalTitle;
+      let resolvedTitle = explicitTitle || provisionalTitle || "";
       if (!resolvedTitle) throw unprocessable("Provide a title or task description");
       const titleNeedsGeneration = !explicitTitle;
       // A prompt prefix is not a task identity: distinct requests can share it.
@@ -10649,6 +10651,15 @@ export function issueService(db: Db) {
       }
       const persist = async (tx: DbTransaction) => {
         await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("no key update");
+        if (generateConversationTitle) {
+          if (!issueData.conversationAgentId || !issueData.conversationUserId) throw unprocessable("Generated chat titles require a conversation");
+          const [conversationAgent] = await tx.select({ name: agents.name }).from(agents).where(and(
+            eq(agents.companyId, companyId), eq(agents.id, issueData.conversationAgentId),
+          ));
+          if (!conversationAgent) throw notFound("Conversation agent not found");
+          resolvedTitle = `Chat with ${conversationAgent.name}`;
+          issueData.title = resolvedTitle;
+        }
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0))`);
         await assertAgentInteraction(tx as unknown as Db, {
           companyId, actorAgentId: issueData.createdByAgentId,
@@ -11023,29 +11034,34 @@ export function issueService(db: Db) {
             executionWorkspaceSettings: issueData.executionWorkspaceSettings,
           });
         }
-        // Self-correcting counter: use MAX(issue_number) + 1 if the counter
-        // has drifted below the actual max, preventing identifier collisions.
-        const [maxRow] = await tx
-          .select({
-            maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)`,
-          })
-          .from(issues)
-          .where(eq(issues.companyId, companyId));
-        const currentMax = maxRow?.maxNum ?? 0;
+        // Standing chats use UUIDs and do not consume execution task numbers.
+        let issueNumber: number | null = null;
+        let identifier: string | null = null;
+        if (!issueData.conversationAgentId) {
+          // Self-correcting counter: use MAX(issue_number) + 1 if the counter
+          // has drifted below the actual max, preventing identifier collisions.
+          const [maxRow] = await tx
+            .select({
+              maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)`,
+            })
+            .from(issues)
+            .where(eq(issues.companyId, companyId));
+          const currentMax = maxRow?.maxNum ?? 0;
 
-        const [company] = await tx
-          .update(companies)
-          .set({
-            issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
-          })
-          .where(eq(companies.id, companyId))
-          .returning({
-            issueCounter: companies.issueCounter,
-            issuePrefix: companies.issuePrefix,
-          });
+          const [company] = await tx
+            .update(companies)
+            .set({
+              issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + 1`,
+            })
+            .where(eq(companies.id, companyId))
+            .returning({
+              issueCounter: companies.issueCounter,
+              issuePrefix: companies.issuePrefix,
+            });
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+          issueNumber = company.issueCounter;
+          identifier = `${company.issuePrefix}-${issueNumber}`;
+        }
         const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(
           tx,
           companyId,

@@ -136,11 +136,24 @@ import { createRemoteWorkspaceFiles } from "./services/remote-workspace-files.js
 import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
 import { createSavedWorkspaceArchiveOpener } from "./services/saved-workspace-archive.js";
 import { routineRoutes } from "./routes/routines.js";
+import { routineSuggestionRoutes } from "./routes/routine-suggestions.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { tailscaleConnectionRoutes } from "./routes/tailscale-connections.js";
+import { workloadIdentityPublicRoutes, workloadIdentityRoutes } from "./routes/workload-identity.js";
+import { setWorkloadIdentityConfiguredPublicOrigin } from "./services/workload-identity.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
+import { responsibilityRoutes } from "./routes/responsibilities.js";
+import { responsibilityAreaRoutes } from "./routes/responsibility-areas.js";
+import { responsibilityBarRoutes } from "./routes/responsibility-bars.js";
+import { responsibilityDashboardRoutes } from "./routes/responsibility-dashboard.js";
+import { responsibilitySummaryRoutes } from "./routes/responsibility-summaries.js";
+import { responsibilityAutomationRoutes } from "./routes/responsibility-automation.js";
+import { responsibilityStatusReportRoutes } from "./routes/responsibility-status-reports.js";
+import { responsibilityMetricRoutes } from "./routes/responsibility-metrics.js";
+import { responsibilityRunRoutes } from "./routes/responsibility-runs.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
+import { onboardingChatRoutes } from "./routes/onboarding-chat.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -607,6 +620,9 @@ export async function createApp(
   }));
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
   app.use(publicMcpIngress);
+  // Outside clouds fetch these anonymously to verify connection identity tokens.
+  setWorkloadIdentityConfiguredPublicOrigin(opts.authPublicBaseUrl);
+  app.use(workloadIdentityPublicRoutes(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
@@ -855,6 +871,8 @@ export async function createApp(
   }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(tailscaleConnectionRoutes(db));
+  api.use(workloadIdentityRoutes(db));
+  api.use(routineSuggestionRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     environmentRoutes(db, {
       pluginWorkerManager: workerManager,
@@ -870,7 +888,17 @@ export async function createApp(
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(emailRoutes(db, emailChannels));
   api.use(goalRoutes(db));
+  api.use(responsibilityRoutes(db));
+  api.use(responsibilityAreaRoutes(db));
+  api.use(responsibilityBarRoutes(db));
+  api.use(responsibilityDashboardRoutes(db));
+  api.use(responsibilitySummaryRoutes(db));
+  api.use(responsibilityAutomationRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(responsibilityStatusReportRoutes(db));
+  api.use(responsibilityMetricRoutes(db));
+  api.use(responsibilityRunRoutes(db));
   api.use(onboardingSeedRoutes(db));
+  api.use(onboardingChatRoutes(db, connectionIntentHeartbeat));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(voiceSessionRoutes(db, chatChannels.voice));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));

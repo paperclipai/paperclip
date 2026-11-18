@@ -180,7 +180,9 @@ async function appendRunEvent(
 }
 
 /**
- * Appends native source events of one run and one source atomically, in the
+ * Appends ordinary non-waking events of one run in one statement, preserving
+ * each event's existing payload and sequence. Special writers keep the single
+ * append path. Also appends native source events of one run and one source in the
  * given order, and returns one receipt per event. A stream that continues its
  * source's stored cursor with new events takes one statement for the whole
  * batch. Any other batch (a replay, a gap, an event that registers a wake, a
@@ -205,7 +207,38 @@ async function appendRunEventBatch(
 ): Promise<AppendHeartbeatRunEventResult[]> {
   const first = inputs[0]!;
   const source = first.nativeSource;
-  if (!source || inputs.some(input => !input.nativeSource || input.runUpdate || input.retryExhaustion
+  if (!source) {
+    if (inputs.some(input => input.nativeSource || input.runUpdate || input.retryExhaustion || input.assertWritable
+      || input.companyId !== first.companyId || input.runId !== first.runId || input.agentId !== first.agentId
+      || Object.values(runEventWakes(input)).some(Boolean))) throw new Error("heartbeat_run_event_batch_unsupported");
+    assertWritable?.();
+    const rows = JSON.stringify(inputs.map(input => ({
+      eventType: input.eventType, stream: input.stream ?? null, level: input.level ?? null, color: input.color ?? null,
+      message: input.message ?? null, payload: input.payload ? heartbeatRunEvents.payload.mapToDriverValue(input.payload) : null,
+    })));
+    const inserted = await db.execute<Record<string, unknown>>(sql`
+      with allocated_run_events as (
+        update heartbeat_runs
+        set next_event_seq = next_event_seq + ${inputs.length}::integer,
+            updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
+        where id = ${first.runId} and company_id = ${first.companyId} and agent_id = ${first.agentId}
+        returning company_id, id as run_id, agent_id, next_event_seq - ${inputs.length}::integer as first_seq
+      )
+      insert into heartbeat_run_events
+        (company_id, run_id, agent_id, seq, event_type, stream, level, color, message, payload)
+      select allocated.company_id, allocated.run_id, allocated.agent_id, allocated.first_seq + event.ordinal - 1,
+        event.value ->> 'eventType', event.value ->> 'stream', event.value ->> 'level', event.value ->> 'color',
+        event.value ->> 'message', (event.value ->> 'payload')::jsonb
+      from allocated_run_events allocated cross join jsonb_array_elements(${rows}::jsonb) with ordinality as event(value, ordinal)
+      order by event.ordinal
+      returning *
+    `);
+    if (inserted.length !== inputs.length) throw new Error("heartbeat_run_event_binding_mismatch");
+    assertWritable?.();
+    return inserted.map(decodeRunEventRow).sort((a, b) => a.seq - b.seq)
+      .map(row => ({ row, disposition: "committed" as const, highestContiguousSourceSeq: 0 }));
+  }
+  if (inputs.some(input => !input.nativeSource || input.runUpdate || input.retryExhaustion
     || input.companyId !== first.companyId || input.runId !== first.runId || input.agentId !== first.agentId
     || input.nativeSource.sourceInstanceId !== source.sourceInstanceId)) {
     throw new Error("heartbeat_run_event_batch_unsupported");

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import type { RequestOptions } from "../api/client";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
+import { routinesApi } from "../api/routines";
 
 let currentSearch = "";
 
@@ -228,6 +229,10 @@ vi.mock("../api/access", () => ({
       ],
     })),
   },
+}));
+
+vi.mock("../api/secrets", () => ({
+  secretsApi: { list: vi.fn(async () => []), create: vi.fn() },
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -1118,23 +1123,38 @@ describe("Routines page", () => {
     });
   });
 
-  it("opens the project picker after selecting the responsible agent", async () => {
-    pickerMode.real = true;
+  it("creates a routine from the shared routine form and opens its page", async () => {
     routinesListMock.mockResolvedValue([]);
     issuesListMock.mockResolvedValue([]);
+    vi.mocked(routinesApi.create).mockResolvedValue({ id: "routine-new", responsibleUserId: null } as Awaited<ReturnType<typeof routinesApi.create>>);
     const root = createRoot(container), queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const button = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
-      .find(element => element.textContent?.trim() === text)!;
+    const buttons = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+      .filter(element => element.textContent?.trim() === text);
     try {
       await act(async () => { root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>); await flush(); });
-      await vi.waitFor(() => expect(button("Create routine")).toBeTruthy());
-      await act(async () => { button("Create routine").click(); await flush(); });
-      await act(async () => { button("Responsible").click(); await flush(); });
-      await act(async () => { button("Agent One").click(); await new Promise(resolve => requestAnimationFrame(resolve)); await flush(); });
-      // Responsible selection already opens Project through its real focus path.
-      expect(document.querySelector('input[placeholder="Search projects..."]')).not.toBeNull();
-      await act(async () => { button("Project Alpha").click(); await flush(); });
-      expect(button("Project Alpha")).toBeTruthy();
+      await vi.waitFor(() => expect(buttons("Create routine").length).toBeGreaterThan(0));
+      await act(async () => { buttons("Create routine")[0]!.click(); await flush(); });
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+      expect(dialog?.textContent).toContain("New routine");
+      const title = dialog!.querySelector<HTMLInputElement>("input[placeholder='Send the weekly digest']")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "Weekly digest");
+        title.dispatchEvent(new Event("input", { bubbles: true }));
+        await flush();
+      });
+      const submit = Array.from(dialog!.querySelectorAll<HTMLButtonElement>("button")).find(element => element.textContent?.trim() === "Create routine")!;
+      await act(async () => { submit.click(); await flush(); });
+      await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith("/routines/routine-new"));
+      expect(routinesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        title: "Weekly digest",
+        description: null,
+        assigneeAgentId: null,
+        projectId: null,
+      }));
+      // Delivery settings and priority have no editor: new routines take the server defaults.
+      const payload = vi.mocked(routinesApi.create).mock.calls[0]![1];
+      expect(payload).not.toHaveProperty("concurrencyPolicy");
+      expect(payload).not.toHaveProperty("priority");
     } finally { await act(() => root.unmount()); queryClient.clear(); }
   });
 

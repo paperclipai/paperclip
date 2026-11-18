@@ -94,6 +94,8 @@ export function AttentionInteractionResolver({
   }, [interactions, interactionId]);
 
   const invalidate = (resolvedInteraction?: IssueThreadInteraction) => {
+    // Cancel old reads before publishing the write's canonical response.
+    invalidateInteractionRecordViews(queryClient, companyId, resolvedInteraction);
     // The accept route returns the fully stitched interaction (including
     // secretProposal.executed/failed). Put that receipt in the cache before
     // invalidating so the attention surface never flashes a generic Accepted
@@ -104,8 +106,6 @@ export function AttentionInteractionResolver({
         (current) => replaceResolvedInteraction(current, resolvedInteraction),
       );
     }
-    // Task detail keys the same list by identifier, so refresh every view (UX2).
-    invalidateInteractionRecordViews(queryClient, companyId);
     onResolved?.(resolvedInteraction);
   };
 

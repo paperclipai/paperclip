@@ -7,7 +7,7 @@ import { skillInstallationMaintenance } from "./skill-installation-maintenance.j
 import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
 import { findLocalNativeControllerObligation } from "./native-runtime/native-controller-migration.js";
 import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
-import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
+import { hasLocalRuntimeSkillObligations, preserveLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
 import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
 
 import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
@@ -45,20 +45,51 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
 /** Findings that describe work in progress when a server stopped, not data
  * waiting on a volume to be migrated. Every volume-free server that stops
  * during a run leaves some of them behind. Runtime skill assets are not in
- * this set: that finding also covers retained sessions whose skill bundles
- * were never preserved, which the owner marker does not prove durable. */
+ * this set: the server first copies the bundles still on this filesystem
+ * (settleRuntimeSkillObligations), and waives only the ones not here. */
 const interruptedRunBlockers: ReadonlySet<string> = new Set([
   "native_harness_backups_require_migration",
   "local_instruction_copies_require_settlement",
 ]);
 
-/** A readiness gate, not a periodic scan or an implicit migration. Existing
- * volume data is adopted by the owning maintenance commands before removal. */
+export const RUNTIME_SKILL_ASSETS_BLOCKER = "runtime_skill_assets_require_migration";
+
+/** Runtime skill bundles admitted before Core saved them at admission
+ * (Nov 2026) can still be retained by old runs. Copy the ones this filesystem
+ * holds into durable storage now. A bundle whose files are not here cannot be
+ * saved by refusing to start: on a filesystem with the volume-free owner
+ * marker there is no volume to read it from, and a volume-free stack never
+ * gets its volume back. Refusing would keep the stack down on every restart
+ * (staging, 2026-11-18: twelve days of failed deploys, then an outage). */
+async function settleRuntimeSkillObligations(db: Db, owned: () => Promise<boolean>) {
+  let outcome: Awaited<ReturnType<typeof preserveLocalRuntimeSkillObligations>>;
+  try { outcome = await preserveLocalRuntimeSkillObligations(db); }
+  catch (error) {
+    logger.warn({ err: error }, "Volume-free server could not save retained runtime skill bundles to durable storage");
+    return false;
+  }
+  if (outcome.bundles) logger.info({ bundles: outcome.bundles }, "Volume-free server saved retained runtime skill bundles to durable storage");
+  // The copy pass visited every obligation, so its result is the answer.
+  if (!outcome.unsaved.length) return true;
+  if (!await owned()) return false;
+  logger.warn({ blockers: [RUNTIME_SKILL_ASSETS_BLOCKER], runs: outcome.unsaved.length },
+    "Volume-free server is starting over runtime skill bundles that never reached durable storage; restart recovery owns those runs");
+  return true;
+}
+
+/** A readiness gate, not a periodic scan. Existing volume data is adopted by
+ * the owning maintenance commands before removal; the one copy it makes
+ * itself is of retained runtime skill bundles still on this filesystem. */
 export async function assertEphemeralServerData(db: Db) {
   if (!ephemeralServerEnabled()) return;
   const eligibility = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
   const { controller } = eligibility;
   let blockers = eligibility.blockers;
+  let ownedMarker: Promise<boolean> | undefined;
+  const owned = () => ownedMarker ??= volumeFreeControllerStateOwned();
+  if (blockers.includes(RUNTIME_SKILL_ASSETS_BLOCKER) && await settleRuntimeSkillObligations(db, owned)) {
+    blockers = blockers.filter(blocker => blocker !== RUNTIME_SKILL_ASSETS_BLOCKER);
+  }
   // Run state that never reached durable storage needs migration only while
   // it can still be on a volume. Once this filesystem carries the volume-free
   // owner marker there is no volume: the state was written by a volume-free
@@ -67,7 +98,7 @@ export async function assertEphemeralServerData(db: Db) {
   // starting again. Restart recovery owns those runs; start and say so.
   // Configuration that would write new data to the local disk stays refused.
   const interrupted = blockers.filter(blocker => interruptedRunBlockers.has(blocker));
-  if (interrupted.length && await volumeFreeControllerStateOwned()) {
+  if (interrupted.length && await owned()) {
     blockers = blockers.filter(blocker => !interruptedRunBlockers.has(blocker));
     logger.warn({ blockers: interrupted },
       "Volume-free server is starting over run state that never reached durable storage; restart recovery owns those runs");
@@ -104,7 +135,7 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
   if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
   const controller = await findLocalNativeControllerObligation(db);
   if (controller) blockers.push("native_controllers_require_migration");
-  if (await hasLocalRuntimeSkillObligations(db)) blockers.push("runtime_skill_assets_require_migration");
+  if (await hasLocalRuntimeSkillObligations(db)) blockers.push(RUNTIME_SKILL_ASSETS_BLOCKER);
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
   for (;;) {

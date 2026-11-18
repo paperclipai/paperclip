@@ -46,6 +46,7 @@ import { TruncatedText } from "./TruncatedText";
 import { FlyoutHeader, FlyoutOptions } from "./ui/flyout";
 
 import { PluginOrganizationSwitcher } from "./PluginOrganizationSwitcher";
+import { useCompanyHomePath } from "@/hooks/useCompanyHomePath";
 
 interface SidebarCompanyMenuProps {
   open?: boolean;
@@ -166,6 +167,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
   const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
+  const { path: homePath } = useCompanyHomePath();
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   const sensors = useSensors(
@@ -226,7 +228,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
     if (shouldLeaveCurrentRoute) {
-      navigate(`/${company.issuePrefix}/dashboard`);
+      navigate(`/${company.issuePrefix}${homePath}`);
     }
   }
 

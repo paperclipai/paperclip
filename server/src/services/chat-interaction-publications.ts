@@ -303,6 +303,14 @@ export async function enqueueIssueInteractionChatPublications(
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const { conversation, endpoint } of bindings) {
     if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
+    // Routine offers are accepted in Paperclip only; chat actions cannot create routines.
+    if (interaction.kind === "suggest_routine") continue;
+    // Bar proposals are accepted in Paperclip only, by someone who may edit the responsibility.
+    if (interaction.kind === "propose_responsibility_bar") continue;
+    // Automation proposals are accepted in Paperclip only, by someone who may set up routines.
+    if (interaction.kind === "propose_automation") continue;
+    // Dashboard changes are applied in Paperclip only, by someone who may edit that person's responsibilities.
+    if (interaction.kind === "propose_dashboard_changes") continue;
     if (endpoint.provider !== "slack" && interaction.kind !== "ask_user_questions" && interaction.kind !== "request_confirmation") continue;
     let connectionDecline = endpoint.provider === "slack" && endpoint.capabilities.actions && interaction.kind === "connection_intent" ? interaction : null;
     let suggestions = endpoint.provider === "slack" && endpoint.capabilities.actions ? nativeChatSuggestions(interaction) : null;

@@ -239,6 +239,7 @@ export function InstanceExperimentalSettings() {
   const statusCardsBlockedByManagedSummaries = summariesManaged && !enableSummaries;
   const summariesRequiredByManagedStatusCards = statusCardsManaged && enableStatusCards;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
+  const enableResponsibilities = experimentalQuery.data?.enableResponsibilities === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
@@ -306,6 +307,30 @@ export function InstanceExperimentalSettings() {
             Optional product features that are still being evaluated.
           </p>
         </div>
+
+        <ExperimentalToggleCard
+          title="Areas & Responsibilities dashboard"
+          description="Replace the classic dashboard with one built around the areas you care about and the responsibilities you own in each. An agent can interview you to create it, and you can undo any change."
+          footnote="Turning this off brings back the classic dashboard. Your areas and responsibilities are kept."
+          checked={enableResponsibilities}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableResponsibilities: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableResponsibilities"
+          managed={managedKeys.enableResponsibilities}
+          ariaLabel="Toggle Areas & Responsibilities dashboard experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="AWS connector"
+          description="Let agents work in AWS through AWS's hosted MCP server, with short-lived credentials made for each connection."
+          footnote="Off by default. While off, the AWS connector cannot be set up or run."
+          checked={experimentalQuery.data?.enableAwsConnector === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAwsConnector: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAwsConnector"
+          managed={managedKeys.enableAwsConnector}
+          ariaLabel="Toggle AWS connector experimental setting"
+        />
 
         <ExperimentalToggleCard
           title="Beta skills"
@@ -504,6 +529,7 @@ export function InstanceExperimentalSettings() {
           managed={managedKeys.enableGoogleWorkspaceConnector}
           ariaLabel="Toggle Paperclip Google Workspace connector experimental setting"
         />
+
 
         <ExperimentalToggleCard
           title="Grok Bot"

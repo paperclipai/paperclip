@@ -77,6 +77,7 @@ import {
 } from "./duplex-observability.js";
 import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
+  ensureAbsoluteDirectory,
   ensureCommandResolvable,
   resolveCommandForLogs,
   runChildProcess,
@@ -1035,10 +1036,12 @@ export async function runAdapterExecutionTargetShellCommand(
           stdout?: string;
           stderr?: string;
           signal?: string | null;
+          killed?: boolean;
         };
         const stdout = timedOutError.stdout ?? "";
         const stderr = timedOutError.stderr ?? "";
-        if (typeof timedOutError.code === "number") {
+        const timedOut = timedOutError.killed === true || timedOutError.code === "ETIMEDOUT";
+        if (!timedOut && typeof timedOutError.code === "number") {
           if (stdout) await onLog("stdout", stdout);
           if (stderr) await onLog("stderr", stderr);
           return {
@@ -1051,7 +1054,7 @@ export async function runAdapterExecutionTargetShellCommand(
             startedAt,
           };
         }
-        if (timedOutError.code !== "ETIMEDOUT") {
+        if (!timedOut) {
           throw error;
         }
         if (stdout) await onLog("stdout", stdout);
@@ -1313,6 +1316,11 @@ export async function ensureAdapterExecutionTargetFile(
   );
 }
 
+export async function ensureAdapterExecutionTargetLocalWorkspace(target: AdapterExecutionTarget | null | undefined, cwd: string): Promise<void> {
+  if (target?.kind === "remote" && target.workspaceRealization?.mode === "in_place") return;
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+}
+
 /**
  * Ensure a working directory exists (and is a directory) on the execution target.
  *
@@ -1566,6 +1574,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     };
   }
 
+  const syncWorkspace = input.syncWorkspace ?? target.workspaceRealization?.mode !== "in_place";
   if (target.transport === "ssh") {
     const prepared = await prepareRemoteManagedRuntime({
       spec: target.spec,
@@ -1573,7 +1582,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
-      syncWorkspace: input.syncWorkspace,
+      syncWorkspace,
       privateRuntime: input.privateRuntime,
       retainRuntime: input.retainRuntime,
       workspaceFileMode: input.workspaceFileMode,
@@ -1613,7 +1622,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
     runtimeRootDir: input.runtimeRootDir,
-    syncWorkspace: input.syncWorkspace,
+    syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
     workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,

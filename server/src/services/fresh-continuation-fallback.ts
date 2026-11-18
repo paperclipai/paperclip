@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRuns, issueApprovals,
   issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
@@ -25,11 +25,14 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
-import { PERMANENT_SOURCE_RETRY_CLASSES, UNVERIFIABLE_SOURCE_CODES, readSystemRecovery } from "./system-recovery-state.js";
-import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuationCauseIsSystemOwnedSql, continuesAutomaticallySql,
-  isPersonOwnedFailureCode, recoveryRunSql } from "./continuation-cause.js";
+import { readSystemRecovery } from "./system-recovery-state.js";
+import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isPersonOwnedFailureCode } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
-import { canonicalExecutionUuid } from "./execution-identity.js";
+import { BACKLOG_CONTINUATION_MAX_AGE_MS, failureOwnsBlock, heldExecutionWhere, heldRunIdSql, interruptionEligibility,
+  liveDispositionHoldSql, recentInterruptionSourceSql, sourceRunKey } from "./fresh-continuation-eligibility.js";
+
+export { BACKLOG_CONTINUATION_MAX_AGE_MS, BACKLOG_CONTINUATION_SOURCE_CODES, heldExecutionWhere, recentInterruptionSourceSql,
+  runsAwaitingSystemContinuation } from "./fresh-continuation-eligibility.js";
 
 export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPersonOwnedFailureCode, isRecoveryRun } from "./continuation-cause.js";
 
@@ -540,14 +543,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   if (taskWait) return { kind: "person_owned", reason: taskWait };
   let ownsBlock = false;
   if (issue.status === "blocked") {
-    const receipts = holds.filter(hold => hold.evidence.nativeFailureBlock !== undefined || hold.evidence.legacyCancellationBlock !== undefined
-      || hold.evidence.nativeBootstrapFailureBlock !== undefined);
-    ownsBlock = (receipts.length ? receipts : holds).some(hold => holdOwnsBlockedStatus(hold, issue, run))
-      || receipts.some(hold => [hold.evidence.legacyCancellationBlock, hold.evidence.nativeBootstrapFailureBlock]
-        .some(block => object(block).runId === run.id && object(block).statusVersion === Number(issue.statusVersion)))
-      // A run that left no hold: its terminal failure set the block and nothing changed it since.
-      || (!holds.length && issue.lastStatusDecisionId === null && issue.blockedTransitionAt !== null
-        && issue.blockedTransitionAt.getTime() >= run.finishedAt.getTime() - 1_000);
+    ownsBlock = failureOwnsBlock(holds, issue, run);
     if (!ownsBlock) return { kind: "person_owned", reason: "blocked_by_another_decision" };
     const readiness = await issueService(tx).listDependencyReadiness(companyId, [issue.id], tx);
     if (readiness.get(issue.id)?.isDependencyReady === false) return { kind: "dependency_wait" };
@@ -757,6 +753,17 @@ export async function recordFreshContinuationCheck(db: Db, input: { companyId: s
     eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));
 }
 
+export async function expediteFreshContinuationChecks(tx: Db, input: { companyId: string; issueId: string; runId: string },
+  now = new Date()) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+  await tx.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+    '{freshContinuationCheck,nextCheckAt}', to_jsonb(${now.getTime()}::bigint))` }).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    or(sql`${issueRecoveryActions.evidence}->>'runId' = ${input.runId}`, sql`${issueRecoveryActions.evidence}->>'sourceRunId' = ${input.runId}`),
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}' = 'exact_recovery_pending'`,
+    sql`(${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}')::bigint > ${now.getTime()}`));
+}
+
 /** Not yet checked, or due for another check. */
 export function freshContinuationCheckDue(now: Date) {
   return sql`(${issueRecoveryActions.evidence}->${FRESH_CONTINUATION_CHECK_KEY} is null
@@ -782,73 +789,9 @@ export function heldExecutionsAwaitingFreshContinuation(db: Db, now: Date, limit
     .limit(limit);
 }
 
-/**
- * The backlog pass continues a held record only when it is a recent
- * interruption: its source run ended within BACKLOG_CONTINUATION_MAX_AGE_MS
- * and ended with a restart, deploy, lease, process-loss or recovery-refusal
- * code. A configuration or provider failure, or anything older, stays exactly
- * as it is for a person's Retry: re-running last week's failures is not
- * "an interruption is invisible". Fresh interruptions reach the fallback
- * through restart recovery and the disposition pass, not through this list.
- */
-export const BACKLOG_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
-export const BACKLOG_CONTINUATION_SOURCE_CODES = RESTART_CLASS_FAILURE_CODES;
 /** At most this many backlog continuations per server per rolling minute, and per pass. */
 export const BACKLOG_CONTINUATIONS_PER_MINUTE = 10;
 const BACKLOG_CONTINUATIONS_PER_PASS = 5;
-
-/** Holds the disposition pass (unresolvedExecutionDispositions) handles itself, whatever their age. */
-function liveDispositionHoldSql() {
-  return and(inArray(issueRecoveryActions.status, ["active", "escalated"]), eq(issueRecoveryActions.kind, "active_run_watchdog"))!;
-}
-
-const cancelledAtDispatch = (alias: "newer" | "held") => sql.raw(`coalesce(${alias}.status = 'cancelled' and ${alias}.started_at is null
-  and ${alias}.error_code = 'execution_reconciliation_required', false)`);
-// The issue id is a uuid (a column or a task's id), so each link is compared on
-// its own indexed column; a cast of the column would scan every run's context.
-const runOfTask = (alias: "newer" | "held", issueId: SQL) => sql`(${sql.raw(alias)}.native_issue_id = ${issueId}::uuid
-  or ${sql.raw(alias)}.issue_id = ${issueId}::uuid or ${sql.raw(alias)}.context_snapshot->>'issueId' = ${issueId}::text)`;
-
-const sqlList = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
-
-function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQL; sourceRunId: SQL }) {
-  const since = sql`${new Date(input.now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz`;
-  const source = (condition: SQL) => sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${input.companyId}
-    and source.id = ${sourceRunKey(input.sourceRunId)} and ${condition})`;
-  const refusedLater = sql`held.company_id = source.company_id and held.id <> source.id and ${runOfTask("held", input.issueId)}
-    and (held.created_at, held.id) > (source.created_at, source.id) and ${cancelledAtDispatch("held")}`;
-  const personAsked = source(sql`(exists (select 1 from ${agentWakeupRequests} retry where retry.company_id = source.company_id
-      and retry.status = 'deferred_issue_execution' and retry.reason = 'task_retry' and retry.requested_by_actor_type = 'user'
-      and retry.run_id is null and retry.payload->>'issueId' = ${input.issueId}::text and retry.requested_at > source.finished_at)
-    or exists (select 1 from ${heartbeatRuns} held where ${refusedLater}
-      and held.context_snapshot->>'wakeReason' = 'task_retry' and held.finished_at > ${since}))`);
-  const systemRetriedSource = sql`(${continuationCauseIsSystemOwnedSql("source")}
-    and coalesce(source.context_snapshot->>'wakeReason', '') <> 'task_retry' and not coalesce(source.context_snapshot ? 'explicitUserContinuation', false)
-    and exists (select 1 from ${heartbeatRuns} held where ${refusedLater} and ${recoveryRunSql("held")}))`;
-  // Saved-work recovery proved the run's unsaved files are permanently gone
-  // (`source_unavailable`, use another strategy). The only way on is a fresh
-  // run in a new workspace, which is exactly what Retry would do: a person
-  // adds nothing, so the system takes that step itself (needed-retry is 0%).
-  // Uncast keys, so the (company, task, evidence runId) index serves the lookup.
-  const savedFilesLost = sql`exists (select 1 from ${issueRecoveryActions} lost where lost.company_id = source.company_id
-    and lost.source_issue_id = ${input.issueId}
-    and (lost.evidence->>'runId' = source.id::text or (lost.evidence->>'runId' is null and lost.evidence->>'sourceRunId' = source.id::text))
-    and lost.evidence#>>'{systemRecovery,state}' = 'exhausted'
-    and lost.evidence#>>'{systemRecovery,failure,code}' in (${sqlList(UNVERIFIABLE_SOURCE_CODES)})
-    and lost.evidence#>>'{systemRecovery,failure,retryClass}' in (${sqlList(PERMANENT_SOURCE_RETRY_CLASSES)}))`;
-  const recent = source(sql`(${continuesAutomaticallySql("source")} or ${systemRetriedSource}
-      or (${continuationCauseIsSystemOwnedSql("source")} and ${savedFilesLost}))
-    and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
-  return { recent, personAsked };
-}
-
-/** The backlog pass's eligibility: the one predicate its listing and its deadline query share. */
-export function recentInterruptionSourceSql(now: Date) {
-  const { recent, personAsked } = interruptionEligibility({ now, companyId: sql`${issueRecoveryActions.companyId}`,
-    issueId: sql`${issueRecoveryActions.sourceIssueId}`,
-    sourceRunId: heldRunIdSql() });
-  return sql`(${recent} or ${personAsked})`;
-}
 
 /** Held records the backlog pass leaves for a person (older, or not an interruption). */
 async function countHeldExecutionsLeftAlone(db: Db, now: Date): Promise<number> {
@@ -866,42 +809,6 @@ export function resetBacklogContinuationPacingForTests(db?: Db) {
 }
 let lastLeftAloneLogAt = 0;
 const LEFT_ALONE_LOG_INTERVAL_MS = 10 * 60_000;
-
-/** Held reconciliation records of a task's latest unfinished run (joined to its task). */
-export function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
-  return and(
-      inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
-      sql`${issueRecoveryActions.evidence}->'executionReconciliation' is null`,
-      sql`${issueRecoveryActions.evidence}->'freshContinuation' is null`,
-      sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId') is not null`,
-      or(
-        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
-        and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
-          sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('complete', 'exhausted')`),
-        options.includeActive ? and(inArray(issueRecoveryActions.status, ["active", "escalated"]),
-          eq(issueRecoveryActions.kind, "active_run_watchdog")) : undefined,
-        // Saved-work recovery still under way: checked so its bound is reached
-        // (exact recovery keeps its first chance inside the fallback).
-        sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')`,
-      ),
-      isNull(issueRecoveryActions.ownerUserId),
-      sql`${issues.status} not in ('done', 'cancelled')`,
-      sql`${issues.assigneeAgentId} is not null`,
-      // Only the task's latest run, unfinished and still its assignee's: other
-      sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
-        and source.id = ${sourceRunKey(heldRunIdSql())}
-        and source.status in ('failed', 'timed_out', 'interrupted', 'cancelled') and source.finished_at is not null
-        and source.agent_id = ${issues.assigneeAgentId}
-        and not exists (select 1 from ${heartbeatRuns} newer where newer.company_id = source.company_id and newer.id <> source.id
-          and (newer.native_issue_id = ${issues.id} or newer.issue_id = ${issues.id} or newer.context_snapshot->>'issueId' = ${issues.id}::text)
-          and not ${cancelledAtDispatch("newer")}
-          and (newer.status in ('queued', 'running', 'scheduled_retry') or (newer.created_at, newer.id) > (source.created_at, source.id))))`,
-  )!;
-}
-
-const heldRunIdSql = () => sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
-/** The recorded run id as the run's key: the same match as `id::text = text`, but an index lookup. */
-const sourceRunKey = (runId: SQL) => canonicalExecutionUuid(sql`(${runId})::text`);
 
 /** The earliest time a deferred check becomes due again, if any. */
 export async function nextFreshContinuationCheckAt(db: Db, now = new Date()): Promise<number | null> {
@@ -946,10 +853,13 @@ export async function continueHeldExecutions(db: Db, now = new Date(), limit = B
     seen.add(candidate.runId);
     times.push(now.getTime());
     try {
-      const result = await ensureFreshContinuation(db, { companyId: candidate.companyId, runId: candidate.runId,
-        trigger: "held_recovery", now });
+      const result = await db.transaction(async tx => {
+        const decided = await continueFreshInTransaction(tx as unknown as Db, { companyId: candidate.companyId, runId: candidate.runId,
+          trigger: "held_recovery", now });
+        await recordFreshContinuationCheck(tx as unknown as Db, { companyId: candidate.companyId, actionId: candidate.id }, decided, now);
+        return decided;
+      });
       if (result.kind === "continued") continued += 1;
-      else await recordFreshContinuationCheck(db, { companyId: candidate.companyId, actionId: candidate.id }, result, now);
     } catch (error) {
       logger.warn({ err: error, recoveryActionId: candidate.id }, "Fresh continuation of a held task deferred");
       await recordFreshContinuationCheck(db, { companyId: candidate.companyId, actionId: candidate.id },

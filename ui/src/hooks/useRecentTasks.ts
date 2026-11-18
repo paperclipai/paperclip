@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ISSUE_SUMMARIES_MAX_IDS, type Issue, type IssueSummary } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -20,15 +21,19 @@ type RecentTasksUpdatedDetail = {
 };
 
 const RECENT_TASK_ORDER_DEBOUNCE_MS = 1_000;
+const NO_PINNED_TASK_IDS: readonly string[] = [];
+const NO_PINNED_TASKS: readonly IssueSummary[] = [];
 /** Summary chunks in flight at once for a history longer than one request. */
 export const RECENT_TASK_SUMMARY_CONCURRENCY = 3;
 
 export function useRecentTasks({
   companyId,
   userId,
+  pinnedTaskIds = NO_PINNED_TASK_IDS,
 }: {
   companyId: string | null | undefined;
   userId: string | null | undefined;
+  pinnedTaskIds?: readonly string[];
 }) {
   const storageKey = useMemo(
     () => companyId ? getRecentTasksStorageKey(companyId, userId) : null,
@@ -70,8 +75,9 @@ export function useRecentTasks({
     };
   }, [companyId, storageKey]);
 
-  const queryIds = useMemo(() => entries.map((entry) => entry.id).sort(), [entries]);
-  const scope = JSON.stringify([storageKey, queryIds]);
+  const recentIds = useMemo(() => entries.map((entry) => entry.id).sort(), [entries]);
+  const queryIds = useMemo(() => pinnedTaskIds.length ? [...new Set([...recentIds, ...pinnedTaskIds])].sort() : recentIds, [recentIds, pinnedTaskIds]);
+  const scope = JSON.stringify([storageKey, recentIds, queryIds]);
   const summaryKey = queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, queryIds);
   // A cached omission predates IDs that the user has just added back. Only a
   // response completed during this visit to the batch may remove those IDs.
@@ -124,6 +130,12 @@ export function useRecentTasks({
   const confirmedRows = summaryQuery.data ?? (lastConfirmed?.storageKey === storageKey ? lastConfirmed.summaries : undefined);
   const confirmed = useMemo(() => new Map((confirmedRows ?? []).filter((issue) => issue.companyId === companyId)
     .map((issue) => [issue.id, issue])), [confirmedRows, companyId]);
+  const error = summaryQuery.error;
+  const denied = error instanceof ApiError && (error.status === 401 || error.status === 403);
+  const pinnedTasks = useMemo(() => denied || !pinnedTaskIds.length ? NO_PINNED_TASKS : pinnedTaskIds.flatMap((id) => {
+    const issue = confirmed.get(id);
+    return issue ? [issue] : [];
+  }), [confirmed, denied, pinnedTaskIds]);
   // A visit is only a candidate. Neither imported provenance nor a persisted
   // browser snapshot proves personal participation for the current account.
   const refreshedEntries: RecentTaskEntry[] = useMemo(() => entries.filter(entry => confirmed.get(entry.id)?.isParticipantForMe === true).map((entry) => {
@@ -142,7 +154,7 @@ export function useRecentTasks({
     // eligibility or ineligibility. Keep those candidates until a current read.
     const returnedIds = new Set(summaries.filter((issue) => issue.companyId === companyId && issue.isParticipantForMe !== false).map((issue) => issue.id));
     updateRecentTaskSnapshots(storageKey, companyId, summaries);
-    const omittedIds = new Set(queryIds.filter((id) => !returnedIds.has(id)));
+    const omittedIds = new Set(recentIds.filter((id) => !returnedIds.has(id)));
     if (omittedIds.size && updateCount <= batchVisit.initialUpdateCount) {
       void summaryQuery.refetch({ cancelRefetch: false });
       return;
@@ -201,6 +213,7 @@ export function useRecentTasks({
 
   return {
     entries: orderedEntries,
+    pinnedTasks,
     storageKey,
   };
 }

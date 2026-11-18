@@ -590,7 +590,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
   });
 
-  it.each(["claude_local", "codex_local"])("reserves remote storage for volume-free %s SSH tasks before acquiring the machine", async adapterType => {
+  it.each(["claude_local", "codex_local", "cursor", "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"])("reserves remote storage for volume-free %s SSH tasks before acquiring the machine", async adapterType => {
     const { input, issue, envOrchestrator } = await fixture();
     configureRemotePersistence();
     process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
