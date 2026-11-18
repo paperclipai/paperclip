@@ -637,19 +637,17 @@ export function arbitrateNativeStatus(input: {
   // A newer chat request waits behind this run. It starts the next turn with
   // its own source binding and the full task history. A fresh-session
   // continuation would inherit this run's older request instead, and would
-  // hold the task so the newer request never runs. Only the blockers that
-  // Paperclip continues automatically yield; a blocker for a person or an
-  // external owner is still bound now.
-  if (
-    input.assessment.reportedDisposition === "blocked" &&
-    input.assessment.blocker &&
-    input.hasQueuedChatRequest &&
-    !input.isConversation &&
-    !input.hasActivePauseHold &&
-    (input.environmentBlocker ||
-      (input.agentBlockerRecoverable && input.assessment.blocker.scope === "task_wide" &&
-        !input.assessment.blocker.boardOwned && input.assessment.blocker.ownerKind === "agent"))
-  ) {
+  // hold the task so the newer request never runs. Only a blocker that the
+  // lanes below would continue automatically yields. A blocker for a person or
+  // an external owner, or one whose automatic continuations are spent, is still
+  // bound now.
+  const blocker = input.assessment.blocker;
+  const retries = input.failureRetryCount ?? 0;
+  const continuesAutomatically = Boolean(blocker) && !input.isConversation && !input.hasActivePauseHold && (
+    (input.environmentBlocker === true && retries < NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES) ||
+    (input.agentBlockerRecoverable === true && blocker!.scope === "task_wide" && !blocker!.boardOwned &&
+      blocker!.ownerKind === "agent" && retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS));
+  if (input.assessment.reportedDisposition === "blocked" && input.hasQueuedChatRequest && continuesAutomatically) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "preserve", toStatus: input.priorIssueStatus,

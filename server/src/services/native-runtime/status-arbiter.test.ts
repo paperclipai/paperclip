@@ -778,8 +778,11 @@ describe("native status authority", () => {
       reasonCode: "native_blocker_superseded_by_queued_request", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
     expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true })).toMatchObject(superseded);
     expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasQueuedChatRequest: true })).toMatchObject(superseded);
+    // Spent automatic continuations bind the blocker to the board, as without a queued request.
     expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true, failureRetryCount: 2 }))
-      .toMatchObject(superseded);
+      .toMatchObject({ reasonCode: "native_environment_blocker_exhausted", toStatus: "blocked", unblockDescriptor: { owner: "board" } });
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasQueuedChatRequest: true, failureRetryCount: 1 }))
+      .toMatchObject({ reasonCode: "native_agent_blocker_needs_person", toStatus: "blocked" });
     expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true, hasActivePauseHold: true }))
       .toMatchObject({ reasonCode: "task_wide_blocker_bound" });
     // A blocker for a person or an external owner is bound now, as without a queued request.
