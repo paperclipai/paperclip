@@ -71,6 +71,27 @@ export function undeliveredFollowUpRuns(evidence: DeliveryEvidence): Set<string>
   return followUpDeliveries(evidence).undelivered;
 }
 
+export function continuedRunId(run: Pick<DeliveryRun, "contextSnapshot">, wake: DeliveryWake | undefined): string | null {
+  const payload = object(wake?.payload);
+  const id = [object(run.contextSnapshot).retryOfRunId, object(payload._paperclipWakeContext).retryOfRunId, payload.retryOfRunId]
+    .find((value): value is string => typeof value === "string" && value.length > 0);
+  return id ?? null;
+}
+
+export function followUpAnsweringRuns(evidence: { runs?: ReadonlyArray<DeliveryRun & { acceptedDisposition?: string | null }>;
+  wakes?: readonly DeliveryWake[] } | null): Set<string> {
+  const answering = new Set(laterAnswers(evidence).keys());
+  if (!evidence) return answering;
+  const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
+  const runs = (evidence.runs ?? []).filter((run): run is typeof run & { runId: string } => Boolean(run.runId));
+  const byId = new Map(runs.map(run => [run.runId, run]));
+  for (const run of [...runs].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
+    const predecessor = continuedRunId(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined);
+    if (predecessor && answering.has(predecessor) && byId.get(predecessor)?.acceptedDisposition !== "done") answering.add(run.runId);
+  }
+  return answering;
+}
+
 export const COMPLETION_INCOMPLETE_KEY = "native-completion-incomplete";
 
 export function rejectedDoneRuns(evidence: { runs?: ReadonlyArray<{ runId: string | null; acceptedDisposition?: string | null; acceptedAt?: number | null }>;
