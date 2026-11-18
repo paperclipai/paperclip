@@ -232,7 +232,8 @@ need the CLI is option D, which is a later opt-in.
      the permissions the customer picks (read-only to start, or their own
      policy).
    - The **Access key** choice's template creates a dedicated IAM user with
-     the same policies.
+     the same policies, plus an inline policy that allows
+     `sts:GetFederationToken`, so the user can mint read-scope tokens.
 2. The customer pastes the role ARN (or the key pair) and picks an endpoint
    region from the 8
    AWS publishes (us-east-1, us-west-2, eu-west-1, eu-west-2, eu-central-1,
@@ -245,7 +246,8 @@ need the CLI is option D, which is a later opt-in.
 
 An optional second method, "Sign in with AWS as yourself" (a personal grant),
 may need no code: the hosted server supports standard MCP OAuth with dynamic
-client registration. Verify it in the spike.
+client registration. Deferred: it is not part of v1, and the spike did not
+test it. Verify it when the personal-grant method is built.
 
 ## Phases (one PR each)
 
@@ -323,9 +325,11 @@ Implications for the build:
    **Decided: one issuer per company**
    (`https://<instance>/oidc/companies/<companyId>`), so a customer's identity
    provider trusts only their own company, even on a shared instance.
-2. **Read-only by AWS session policy** (recommended), rather than hiding the
-   write tools. It needs `PolicyArns` support carried into the token, which the
-   spike verifies.
+2. **Decided: read-only by AWS session policy**, rather than hiding the
+   write tools. The spike verified it through `AssumeRoleWithWebIdentity` and
+   `GetFederationToken`, with `ReadOnlyAccess` plus
+   `AWSMCPSignInOAuthAccessPolicy`. Not yet tested: `AssumeRole` from an
+   access key with a role ARN. Test it when that path is built.
 3. **Offer option D later** (credentials in the sandbox for infrastructure
    agents), or never.
 
