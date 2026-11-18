@@ -94,13 +94,6 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 
 ### `task-detail`
 
-Cancel a task with active direct and nested subtasks. The modal shows their count,
-identifiers, and titles without links. Verify **Cancel task only**, **Cancel task
-and subtasks**, and dismissal separately. Done and canceled subtasks are omitted;
-with no active subtasks, cancellation needs no modal. Repeat from task lists and
-**Stop and cancel**. Component coverage:
-[cancellation choices](../../ui/src/hooks/useUpdateIssueMutation.test.tsx).
-
 Manual: Open a long task with slow historical requests. Read the instruction and recent reply before those requests finish. Edit the title/status while enrichment is pending and verify saves and rollbacks. Expand **More messages**, verify scroll position and no duplicate replies, return to the task, and follow an older comment link. Leave a task open across new messages and runs and confirm none disappear. Reconnect after several turns and verify watched runs settle. Reopen after steering with more than 50 newer activity rows; the delivered message must not reappear in the queue.
 
 Automated: [cold-open reads](../../server/src/__tests__/task-cold-open.test.ts) cover bounded reads, event filtering and company denial. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.

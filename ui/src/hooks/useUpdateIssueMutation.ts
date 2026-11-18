@@ -206,7 +206,6 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
         ...[...refs].map((ref) => queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(ref) })),
         ...(companyId ? [queryClient.cancelQueries({ queryKey: queryKeys.issues.list(companyId) })] : []),
       ]);
-      // Cancellation must remain unchanged until the subtask choice is made.
       return { refs, rollback: data.status === "cancelled" ? [] : applyOptimisticIssueUpdate(queryClient, companyId, refs, data) };
     },
     onSuccess: (result: IssueUpdateResponse, variables: UpdateIssueVariables) => {
@@ -250,7 +249,6 @@ export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): 
     const queued = { ...variables };
     const cached = queryClient.getQueryData<Issue>(queryKeys.issues.detail(variables.id));
     issueWriteTurns.set(queued, takeIssueWriteTurn(`${companyIdRef.current ?? "none"}:${cached?.id ?? variables.id}`));
-    // A cancellation includes an interactive decision and multiple writes.
     const mutation = queued.data.status !== "cancelled" && isReplayableIssueUpdate(queued.data) ? replayableRef.current : directRef.current;
     return { mutation, queued };
   };

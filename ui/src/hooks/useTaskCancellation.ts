@@ -14,7 +14,6 @@ export class SubtaskCancellationError extends Error {}
 
 const active = (task: Issue) => task.status !== "done" && task.status !== "cancelled";
 
-/** The browser's cancellation choice; each write retains the ordinary API authorization. */
 export function useTaskCancellation() {
   const confirm = useConfirmTaskCancellation();
   const client = useQueryClient();
@@ -44,8 +43,6 @@ export function useTaskCancellation() {
     assertCurrentAccount();
     if (choice === "task_only") return result;
 
-    // Refresh membership and status after the decision. Exclude unlisted tasks
-    // and descendants observed as completed or moved away.
     const confirmedIds = new Set(subtasks.map(task => task.id));
     let remaining: Issue[];
     try {
@@ -62,7 +59,7 @@ export function useTaskCancellation() {
       try {
         const current = await issuesApi.getCore(task.id, { cache: "no-store" });
         assertCurrentAccount();
-        if (active(current)) await issuesApi.update(task.id, { status: "cancelled" });
+        if (current.parentId === task.parentId && active(current)) await issuesApi.update(task.id, { status: "cancelled" });
       } catch (error) {
         assertCurrentAccount();
         failed.push(task.identifier ?? task.title);

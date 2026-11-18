@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { bindAccount } from "@/lib/account-scope";
@@ -10,7 +10,6 @@ type Subtask = Pick<Issue, "id" | "identifier" | "title">;
 type ConfirmCancellation = (subtasks: Subtask[]) => Promise<SubtaskCancellationChoice>;
 const TaskCancellationContext = createContext<ConfirmCancellation | null>(null);
 
-/** Keep the confirmation mounted across task navigation and list refreshes. */
 export function TaskCancellationProvider({ children }: { children: ReactNode }) {
   const client = useQueryClient();
   const [subtasks, setSubtasks] = useState<Subtask[] | null>(null);
@@ -24,7 +23,6 @@ export function TaskCancellationProvider({ children }: { children: ReactNode }) 
     resolve?.(choice);
   }, []);
   const confirm = useCallback<ConfirmCancellation>((tasks) => {
-    // A second request replaces, rather than accepts, an unanswered prompt.
     resolveRef.current?.("dismiss");
     accountRef.current = bindAccount(client);
     setSubtasks(tasks);
@@ -37,6 +35,12 @@ export function TaskCancellationProvider({ children }: { children: ReactNode }) 
     });
     return () => { unsubscribe(); resolveRef.current?.("dismiss"); };
   }, [client, finish]);
+  const subtaskList = useMemo(() => subtasks?.map(task => (
+    <li key={task.id} className="flex min-w-0 items-start gap-2">
+      {task.identifier ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{task.identifier}</span> : null}
+      <span className="min-w-0 break-words">{task.title}</span>
+    </li>
+  )), [subtasks]);
 
   return (
     <TaskCancellationContext.Provider value={confirm}>
@@ -50,12 +54,7 @@ export function TaskCancellationProvider({ children }: { children: ReactNode }) 
             </DialogDescription>
           </DialogHeader>
           <ul aria-label="Active subtasks" className="flex flex-col gap-2 text-sm">
-            {subtasks?.map(task => (
-              <li key={task.id} className="flex min-w-0 items-start gap-2">
-                {task.identifier ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{task.identifier}</span> : null}
-                <span className="min-w-0 break-words">{task.title}</span>
-              </li>
-            ))}
+            {subtaskList}
           </ul>
           <DialogFooter>
             <Button variant="outline" onClick={() => finish("task_only")}>Cancel task only</Button>
