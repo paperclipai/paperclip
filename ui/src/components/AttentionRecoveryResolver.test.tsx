@@ -6,9 +6,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AttentionItem } from "@paperclipai/shared";
 import { AttentionRecoveryResolver } from "./AttentionRecoveryResolver";
 
-const api = vi.hoisted(() => ({ read: vi.fn(), resolve: vi.fn(), resolved: vi.fn() }));
+const api = vi.hoisted(() => ({ read: vi.fn(), resolve: vi.fn(), resolved: vi.fn(), variant: undefined as string | undefined }));
 vi.mock("@/api/issues", () => ({ issuesApi: { recoveryActions: api.read, resolveRecoveryAction: api.resolve } }));
-vi.mock("./IssueRecoveryActionCard", () => ({ IssueRecoveryActionCard: ({ onResolve }: { onResolve: (value: string) => void }) => <><button onClick={() => onResolve("todo")}>Try again</button><button onClick={() => onResolve("in_review")}>Send for review</button></> }));
+vi.mock("./IssueRecoveryActionCard", () => ({ IssueRecoveryActionCard: ({ onResolve, variant }: { onResolve: (value: string) => void; variant?: string }) => { api.variant = variant; return <><button onClick={() => onResolve("todo")}>Try again</button><button onClick={() => onResolve("in_review")}>Send for review</button></>; } }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -41,6 +41,10 @@ it("keeps a rejected recovery visible with the server's reason", async () => {
   expect(container.querySelector('[role="alert"]')?.textContent).toContain("Recovery ownership changed");
   expect(api.resolved).not.toHaveBeenCalled();
   expect(container.querySelector("button")?.disabled).toBe(false);
+});
+it("keeps the Inbox card compact, leaving recovery details to the task page", async () => {
+  await render();
+  expect(api.variant).toBe("compact");
 });
 it("does not offer actions on an already resolved recovery", async () => {
   api.read.mockResolvedValue({ actions: [{ id: "recovery", status: "resolved" }] });

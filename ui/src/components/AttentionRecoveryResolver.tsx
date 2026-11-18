@@ -40,7 +40,8 @@ export function AttentionRecoveryResolver({ item, companyId, agentMap, onResolve
   return <>
     {resolution.error ? <p role="alert" className="text-sm text-destructive">{describeError(resolution.error, { action: "resolve this recovery" }).body}</p> : null}
     <fieldset disabled={resolution.isPending} aria-busy={resolution.isPending}>
-      <IssueRecoveryActionCard action={action} agentMap={agentMap} onResolve={resolve} resolvePending={resolution.isPending} footerLeading={footerLeading} />
+      {/* The Inbox shows the decision; the task page keeps the full recovery details. */}
+      <IssueRecoveryActionCard variant="compact" action={action} agentMap={agentMap} onResolve={resolve} resolvePending={resolution.isPending} footerLeading={footerLeading} />
     </fieldset>
   </>;
 }
