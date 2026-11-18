@@ -16385,6 +16385,16 @@ describe("native session bounded recovery", () => {
     }
   });
 
+  it("retries exhausted verification of a fresh launch within the provider attempt budget", () => {
+    const now = new Date("2026-11-17T23:34:42.000Z");
+    for (const attempt of [1, 2]) {
+      expect(nativeSessionFailureDisposition(attempt, now, "runner_remote_provider_verification_unavailable", { freshBootstrap: true }))
+        .toEqual({ phase: "retryable_failure", failureCode: "native_session_interrupted", nextAttemptAt: new Date(now.getTime() + 30_000) });
+    }
+    expect(nativeSessionFailureDisposition(3, now, "runner_remote_provider_verification_unavailable", { freshBootstrap: true }))
+      .toEqual({ phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null });
+  });
+
   it("preserves stable provider and runner failure causes", () => {
     expect(
       nativeSessionFailureSourceCode(
