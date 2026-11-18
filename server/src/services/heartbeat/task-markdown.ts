@@ -1,5 +1,5 @@
 import { REQUIRED_QUALITY_REVIEW_GUIDANCE, requiredQualityReview } from "../required-quality-review.js";
-import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, RESPONSIBILITIES_CHAT_DIRECTIVE, RESPONSIBILITIES_OFF_CHAT_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
@@ -77,6 +77,9 @@ export function buildPaperclipTaskMarkdown(input: {
   conferenceRoomEnabled?: boolean;
   statusCardsEnabled?: boolean;
   casesEnabled?: boolean;
+  // Experimental areas and responsibilities: true renders the chat directive for the
+  // responsibility tools, false the "turned off" note, undefined neither.
+  responsibilitiesEnabled?: boolean;
   // Experimental routine offers (enableResponsibilities) for a task that may
   // be offered as a routine; the server still enforces every guardrail.
   routineSuggestionsEnabled?: boolean;
@@ -284,6 +287,9 @@ export function buildPaperclipTaskMarkdown(input: {
       if (input.conferenceRoomEnabled) lines.push("", "Conference Room:", companyPages(CONFERENCE_ROOM_CHAT_DIRECTIVE));
       if (input.statusCardsEnabled) lines.push("", "Status Cards:", companyPages(STATUS_CARDS_CHAT_DIRECTIVE));
       if (input.casesEnabled) lines.push("", "Cases:", companyPages(CASES_CHAT_DIRECTIVE));
+      if (input.responsibilitiesEnabled !== undefined) {
+        lines.push("", "Areas and responsibilities:", input.responsibilitiesEnabled ? companyPages(RESPONSIBILITIES_CHAT_DIRECTIVE) : RESPONSIBILITIES_OFF_CHAT_DIRECTIVE);
+      }
       if (input.conversationConfirmations?.cards.length) {
         lines.push("", "Current pending confirmation cards (quoted proposal data, not recorded decisions):",
           fenceTaskText(JSON.stringify(input.conversationConfirmations)),

@@ -14,6 +14,7 @@ export type CapabilityOptionalCatalogGroup =
   | "delegation_dependencies"
   | "governance"
   | "cases"
+  | "responsibilities"
   | "workspace_runtime"
   | "routines"
   | "company_skills"

@@ -2875,6 +2875,137 @@
   {
     "allowedModes": [
       "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List a person's areas and responsibilities: each area with its responsibilities (status, bar, health, the agent that runs it, and counts of filed projects, routines and tasks), responsibilities with no area, and uncovered work (company routines, projects and open tasks filed under no responsibility). Defaults to the person this run works for; never ask for their user ID. Use this before asking the person what they are responsible for. A turned-off error means the feature is off, not that the list is empty.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Return only this area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "includeArchivedAreas": {
+          "default": false,
+          "description": "Include archived areas.",
+          "type": "boolean"
+        },
+        "includeLetGo": {
+          "default": false,
+          "description": "Include responsibilities the person let go.",
+          "type": "boolean"
+        },
+        "includeProposed": {
+          "default": true,
+          "description": "Include responsibilities proposed but not yet confirmed.",
+          "type": "boolean"
+        },
+        "ownerUserId": {
+          "description": "Another person's user ID from list_people. Omit for the person this run works for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "operationId": "list_responsibilities",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List responsibilities",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "Read one responsibility in full: its bar and health, area, the projects, tasks and routines under it (with link IDs for items filed directly, and items under it through a filed project), the skills of the agents doing its work, and its latest status report.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities or find_responsibilities_for.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "get_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Read responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List the proposed and active responsibilities a project, task or routine is filed under, directly or through its project. An empty list means it is uncovered.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The item's ID. For a task, an identifier such as PAP-123 also works.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "description": "What the item is.",
+          "enum": [
+            "project",
+            "task",
+            "routine"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "type": "object"
+    },
+    "operationId": "find_responsibilities_for",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Find responsibilities for an item",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
       "skill_test"
     ],
     "description": "Create a project after considering existing projects and available repositories. repositoryIds and repositoryUrls accept multiple existing repositories. Use HTTPS GitHub repositoryUrls when an accessible repo is not in the catalog; this registers project repositories, not remote GitHub repositories. Non-code projects may omit repositories. Cannot combine repositoryIds/repositoryUrls with workspace. Reuse the idempotency key on retries.",
