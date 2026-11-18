@@ -18,6 +18,7 @@ const READY: AwsConnectionSetup = {
   accountId: "123456789012",
   roleName: "paperclip-agents",
   rolePath: "/",
+  accessLevel: "read_only",
   trustPolicy: { Version: "2012-10-17", Statement: [{ Effect: "Allow" }] },
   cloudFormationTemplate: "{\"Resources\":{}}\n",
   cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
@@ -62,6 +63,24 @@ describe("AwsRoleSetup", () => {
     expect(onTest).toHaveBeenCalledOnce();
   });
 
+  it("keeps a role path in the by-hand steps and the CLI commands", async () => {
+    const pathed = { ...READY, roleArn: "arn:aws:iam::123456789012:role/agents/paperclip-ops", roleName: "paperclip-ops", rolePath: "/agents/" } as AwsConnectionSetup;
+    await render(pathed);
+    await act(async () => { button("Set it up by hand instead")?.click(); });
+    expect(container.textContent).toContain("arn:aws:iam::123456789012:role/agents/paperclip-ops");
+    expect(container.textContent).toContain("which the IAM console cannot set");
+    const cli = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="AWS CLI commands"]')!.value;
+    expect(cli).toContain("--path /agents/ --role-name paperclip-ops");
+    expect(cli).toContain("AWSMCPSignInOAuthAccessPolicy");
+    expect(cli).toContain("arn:aws:iam::aws:policy/ReadOnlyAccess");
+  });
+
+  it("asks for the access policy when the connection has full access", async () => {
+    await render({ ...READY, accessLevel: "full" } as AwsConnectionSetup);
+    expect(container.textContent).toContain("Set AccessPolicyArn to the managed policy agents should have");
+    expect(container.textContent).not.toContain("so it needs no edits");
+  });
+
   it("downloads the template generated for this connection", async () => {
     await render(READY);
     const createObjectURL = vi.fn(() => "blob:template");
@@ -91,7 +110,7 @@ describe("AwsRoleSetup", () => {
   });
 
   it("explains a failed test in place and flags a changed address", async () => {
-    await render({ ...READY, addressChanged: true }, { error: "AWS refused this connection's role. Check that the role exists and trusts this connection." });
+    await render({ ...READY, addressChanged: true } as AwsConnectionSetup, { error: "AWS refused this connection's role. Check that the role exists and trusts this connection." });
     expect(container.textContent).toContain("AWS didn’t accept the connection yet");
     expect(container.textContent).toContain("AWS refused this connection's role");
     expect(container.textContent).toContain("This instance’s address changed");

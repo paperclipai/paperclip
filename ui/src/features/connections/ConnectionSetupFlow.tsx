@@ -1302,6 +1302,16 @@ function StandardConnectionSetupFlow({
       : null,
     [connectionsQuery.data, resumeConnectionId],
   );
+  // Coming back to an unfinished AWS role draft reopens the AWS step (once), so the
+  // template and values are there before anything is tested against AWS.
+  const resumingAwsRoleDraft = resumeConnection?.status === "draft"
+    && resumeConnection.config?.sourceTemplateKey === "aws"
+    && resumeConnection.config?.connectionMethodKey === "aws-role";
+  useEffect(() => {
+    if (!resumingAwsRoleDraft || !resumeConnection || awsRoleDraftRef.current === resumeConnection.id) return;
+    awsRoleDraftRef.current = resumeConnection.id;
+    setAwsRoleDraftId(resumeConnection.id);
+  }, [resumingAwsRoleDraft, resumeConnection]);
   const resumeApplication = useMemo(
     () => resumeConnection
       ? (applicationsQuery.data?.applications ?? []).find(
@@ -1517,7 +1527,7 @@ function StandardConnectionSetupFlow({
         );
         // AWS role: the first connect saves a draft (reusing an earlier one); "Test connection" resumes it.
         const awsRoleDraftFirst = connectEntry.slug === "aws" && connectionMethodKey === "aws-role"
-          && !resumeConnectionId && !reconnectConnectionId && !awsRoleTestingRef.current;
+          && (!resumeConnectionId || resumingAwsRoleDraft) && !reconnectConnectionId && !awsRoleTestingRef.current;
         if (awsRoleDraftFirst && awsRoleDraftRef.current && !customerClientResumeRef.current) {
           customerClientResumeRef.current = awsRoleDraftRef.current;
         }

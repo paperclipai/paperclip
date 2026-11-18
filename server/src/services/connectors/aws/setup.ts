@@ -1,4 +1,4 @@
-import { AWS_MCP_STS_AUDIENCE } from "./mcp-credentials.js";
+import { AWS_MCP_STS_AUDIENCE, AWS_ROLE_ARN_PATTERN } from "./mcp-credentials.js";
 
 /**
  * What a customer configures in AWS for an AWS role connection: an IAM OIDC
@@ -7,13 +7,22 @@ import { AWS_MCP_STS_AUDIENCE } from "./mcp-credentials.js";
  * needs no hand-entered values.
  */
 
-const ROLE_ARN_PARTS = /^arn:(aws[a-z-]*):iam::([0-9]{12}):role\/(?:(.*)\/)?([A-Za-z0-9+=,.@_-]{1,64})$/;
 const SIGN_IN_POLICY = "AWSMCPSignInOAuthAccessPolicy";
+
+/** The saved role ARN is not one IAM accepts (for example a trailing slash or a name over 64 characters). */
+export class AwsRoleArnError extends Error {
+  constructor() {
+    super("This role ARN is not valid. Use arn:aws:iam::<account>:role/<name>, optionally with a path like role/team/<name>; role names have at most 64 characters.");
+    this.name = "AwsRoleArnError";
+  }
+}
 
 export interface AwsRoleSetupInput {
   issuer: string;
   connectionId: string;
   roleArn: string;
+  /** Read-only connections default the template to ReadOnlyAccess; full access asks for the policy. */
+  accessLevel: "read_only" | "full";
 }
 
 export interface AwsRoleSetup {
@@ -26,6 +35,7 @@ export interface AwsRoleSetup {
   accountId: string;
   roleName: string;
   rolePath: string;
+  accessLevel: "read_only" | "full";
   trustPolicy: Record<string, unknown>;
   /** A CloudFormation template (JSON) that creates the identity provider (optional) and the role. */
   cloudFormationTemplate: string;
@@ -33,9 +43,9 @@ export interface AwsRoleSetup {
 }
 
 export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
-  const parts = ROLE_ARN_PARTS.exec(input.roleArn);
-  if (!parts) throw new Error("Invalid AWS role ARN");
-  const [, partition, accountId, path, roleName] = parts as unknown as [string, string, string, string | undefined, string];
+  const parts = AWS_ROLE_ARN_PATTERN.exec(input.roleArn);
+  if (!parts) throw new AwsRoleArnError();
+  const [, partition, accountId, pathPrefix, roleName] = parts as unknown as [string, string, string, string, string];
   const providerHost = input.issuer.replace(/^https:\/\//, "");
   const subject = `connection:${input.connectionId}`;
   const condition = {
@@ -54,7 +64,7 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
       Condition: condition,
     }],
   };
-  const rolePath = path ? `/${path}/` : "/";
+  const rolePath = `/${pathPrefix}`;
   const template = {
     AWSTemplateFormatVersion: "2010-09-09",
     Description: `Paperclip AWS connection: an IAM role that trusts only ${subject} from ${input.issuer}.`,
@@ -65,11 +75,18 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
         Default: "true",
         Description: "Choose false if this account already has an IAM identity provider for this Paperclip issuer.",
       },
-      AccessPolicyArn: {
-        Type: "String",
-        Default: `arn:${partition}:iam::aws:policy/ReadOnlyAccess`,
-        Description: "The managed policy that decides what agents can do in this account.",
-      },
+      AccessPolicyArn: input.accessLevel === "read_only"
+        ? {
+            Type: "String",
+            Default: `arn:${partition}:iam::aws:policy/ReadOnlyAccess`,
+            Description: "The managed policy that decides what agents can do. This connection is read only, so ReadOnlyAccess fits.",
+          }
+        : {
+            Type: "String",
+            AllowedPattern: "^arn:aws[a-z-]*:iam::(aws|[0-9]{12}):policy/.+$",
+            ConstraintDescription: "Enter the ARN of a managed policy.",
+            Description: "Required. The managed policy that decides what agents can change in this account.",
+          },
     },
     Conditions: {
       CreateProvider: { "Fn::Equals": [{ Ref: "CreateIdentityProvider" }, "true"] },
@@ -126,6 +143,7 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
     accountId,
     roleName,
     rolePath,
+    accessLevel: input.accessLevel,
     trustPolicy,
     cloudFormationTemplate: `${JSON.stringify(template, null, 2)}\n`,
     cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",

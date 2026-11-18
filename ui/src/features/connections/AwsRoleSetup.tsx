@@ -114,7 +114,10 @@ export function AwsRoleSetup({
             <h3 id="aws-role-cloudformation" className="text-sm font-medium text-foreground">Create it with CloudFormation</h3>
             <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
               <li>
-                <span className="text-foreground">Download the template.</span> It is made for this connection, so it needs no edits.
+                <span className="text-foreground">Download the template.</span>{" "}
+                {ready.accessLevel === "read_only"
+                  ? "It is made for this connection, so it needs no edits."
+                  : "It is made for this connection; it only needs the access policy you choose in step 3."}
                 <div className="mt-2">
                   <Button type="button" variant="outline" size="sm" onClick={() => downloadTemplate(ready)}>
                     <Download className="mr-2 h-4 w-4" /> Download template
@@ -135,9 +138,12 @@ export function AwsRoleSetup({
                 , choose Upload a template file, and select the downloaded file.
               </li>
               <li>
-                Keep the defaults. If this AWS account already has an identity provider for this Paperclip address, set
-                CreateIdentityProvider to false. To let agents make changes, replace AccessPolicyArn with the policy they
-                should have. On the last page, tick the box that acknowledges the stack creates IAM resources.
+                {ready.accessLevel === "read_only"
+                  ? "Keep the defaults: AccessPolicyArn is ReadOnlyAccess, matching this read-only connection."
+                  : "Set AccessPolicyArn to the managed policy agents should have. This connection has full access, so there is no default."}{" "}
+                If this AWS account already has an identity provider for this Paperclip address, set
+                CreateIdentityProvider to false. On the last page, tick the box that acknowledges the stack creates IAM
+                resources.
               </li>
               <li>When the stack finishes, come back and test the connection.</li>
             </ol>
@@ -151,13 +157,22 @@ export function AwsRoleSetup({
             <CollapsibleContent className="mt-3 space-y-4">
               <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
                 <li>In IAM, add an OpenID Connect identity provider with the provider URL and audience below.</li>
-                <li>Create the role <span className="font-mono text-foreground">{ready.roleName}</span> with the trust policy below.</li>
+                <li>
+                  Create the role <span className="font-mono text-foreground">{ready.roleArn}</span> with the trust policy below.
+                  {ready.rolePath !== "/"
+                    ? " Its path is " : null}
+                  {ready.rolePath !== "/" ? <span className="font-mono text-foreground">{ready.rolePath}</span> : null}
+                  {ready.rolePath !== "/"
+                    ? ", which the IAM console cannot set, so use the AWS CLI commands below." : null}
+                </li>
                 <li>Attach AWSMCPSignInOAuthAccessPolicy and the permissions agents should have.</li>
               </ol>
               <CopyRow label="Provider URL" value={ready.issuer} />
               <CopyRow label="Audience" value={ready.audience} />
+              <CopyRow label="Role ARN" value={ready.roleArn} />
               <CopyRow label="Connection subject" value={ready.subject} />
               <CopyBlock label="Trust policy" value={JSON.stringify(ready.trustPolicy, null, 2)} />
+              <CopyBlock label="AWS CLI commands" value={awsCliCommands(ready)} />
             </CollapsibleContent>
           </Collapsible>
         </>
@@ -174,6 +189,17 @@ export function AwsRoleSetup({
       </div>
     </div>
   );
+}
+
+/** The same setup as the trust policy above, for people who prefer the AWS CLI (it also sets role paths). */
+export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: true }>): string {
+  const policy = JSON.stringify(setup.trustPolicy);
+  return [
+    `aws iam create-open-id-connect-provider --url ${setup.issuer} --client-id-list ${setup.audience}`,
+    `aws iam create-role --path ${setup.rolePath} --role-name ${setup.roleName} --assume-role-policy-document '${policy}'`,
+    `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn arn:aws:iam::aws:policy/AWSMCPSignInOAuthAccessPolicy`,
+    `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn ${setup.accessLevel === "read_only" ? "arn:aws:iam::aws:policy/ReadOnlyAccess" : "<the managed policy agents should have>"}`,
+  ].join("\n");
 }
 
 function downloadTemplate(setup: Extract<AwsConnectionSetup, { available: true }>) {

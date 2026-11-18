@@ -38,7 +38,11 @@ const SESSION_SECONDS = 3600;
 const DEFAULT_STEP_TIMEOUT_MS = 10_000;
 /** Mint again this long before the token expires, so an in-flight call never carries an expiring token. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
-const ROLE_ARN_PATTERN = /^arn:aws[a-z-]*:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
+/**
+ * An IAM role ARN: partition, account, optional path segments, and a role name of
+ * at most 64 characters. The app definition's field pattern mirrors this rule.
+ */
+export const AWS_ROLE_ARN_PATTERN = /^arn:(aws[a-z-]*):iam::([0-9]{12}):role\/((?:[A-Za-z0-9+=,.@_-]+\/)*)([A-Za-z0-9+=,.@_-]{1,64})$/;
 
 export type AwsMcpAccessLevel = "read_only" | "full";
 
@@ -117,7 +121,7 @@ export function awsMcpSettings(connection: ConnectionLike & { config: Record<str
   if (!(AWS_MCP_ENDPOINT_REGIONS as readonly unknown[]).includes(endpointRegion)) throw invalid();
   if (connection.config.url !== `https://aws-mcp.${endpointRegion}.api.aws/mcp`) throw invalid();
   const roleArn = typeof values.roleArn === "string" && values.roleArn.trim() ? values.roleArn.trim() : null;
-  if (roleArn !== null && !ROLE_ARN_PATTERN.test(roleArn)) throw invalid();
+  if (roleArn !== null && !AWS_ROLE_ARN_PATTERN.test(roleArn)) throw invalid();
   if (method === "aws-role" && !roleArn) throw invalid();
   const accessLevel = values.accessLevel === "full" ? "full" : "read_only";
   return {

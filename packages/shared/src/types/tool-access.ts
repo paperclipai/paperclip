@@ -1305,6 +1305,8 @@ export type AwsConnectionSetup =
       accountId: string;
       roleName: string;
       rolePath: string;
+      /** The connection's access level; the template defaults to ReadOnlyAccess only when it is read_only. */
+      accessLevel: "read_only" | "full";
       trustPolicy: Record<string, unknown>;
       cloudFormationTemplate: string;
       cloudFormationConsoleUrl: string;

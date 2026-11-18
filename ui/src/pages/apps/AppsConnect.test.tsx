@@ -2553,7 +2553,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     getAwsSetupMock.mockResolvedValue({
       available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
       subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1", roleArn,
-      accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
       cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
       issuerPublished: true, addressChanged: false,
     });
@@ -2585,6 +2585,33 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(testCall).toMatchObject({ galleryKey: "aws", connectionMethodKey: "aws-role", resumeConnectionId: "aws-draft" });
     expect(testCall.saveDraft).toBeUndefined();
     expect(finishAppMock).toHaveBeenCalledWith("company-1", "aws-draft", expect.anything());
+  });
+
+  it("reopens the AWS step when someone returns to an unfinished AWS role draft", async () => {
+    experimentalMock.mockResolvedValue({ enableAwsConnector: true });
+    listGalleryMock.mockResolvedValue({ apps: [AWS] });
+    const draft = {
+      id: "aws-draft", companyId: "company-1", name: "AWS", status: "draft", authKind: "api_key", credentialPolicy: "shared",
+      transport: "mcp_remote", applicationId: "app-aws",
+      config: { sourceTemplateKey: "aws", connectionMethodKey: "aws-role", url: "https://aws-mcp.us-east-1.api.aws/mcp",
+        methodConfig: { roleArn: "arn:aws:iam::123456789012:role/paperclip-agents", endpointRegion: "us-east-1", accessLevel: "read_only" } },
+    };
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-aws", companyId: "company-1", name: "AWS", applicationKey: "app-gallery:aws:x", metadata: { sourceTemplateKey: "aws" } }] });
+    getConnectionMock.mockResolvedValue(draft);
+    mockSearch.value = "source=aws&resume=aws-draft";
+    getAwsSetupMock.mockResolvedValue({
+      available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
+      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1", roleArn: draft.config.methodConfig.roleArn,
+      accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
+      issuerPublished: true, addressChanged: false,
+    });
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain("Create it with CloudFormation"));
+    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-draft");
+    // Nothing was tested against AWS before the customer saw what to create.
+    expect(connectAppMock).not.toHaveBeenCalled();
   });
 
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
