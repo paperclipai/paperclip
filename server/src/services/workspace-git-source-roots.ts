@@ -57,6 +57,22 @@ async function onlyEntry(directory: string, name: string): Promise<boolean> {
   return found;
 }
 
+async function emptyDirectory(directory: string): Promise<boolean> {
+  const handle = await fs.opendir(directory);
+  try { return await handle.read() === null; }
+  finally { await handle.close(); }
+}
+
+async function isGitMetadataFragment(marker: string): Promise<boolean> {
+  // Provider sandboxes can leave an empty protected .git mountpoint in plain workspaces.
+  if (await emptyDirectory(marker)) return true;
+  if (await entry(path.join(marker, "objects")) || !await onlyEntry(marker, "info")) return false;
+  const info = path.join(marker, "info"), infoEntry = await entry(info);
+  if (!infoEntry?.isDirectory() || infoEntry.isSymbolicLink() || !await onlyEntry(info, "exclude")) return false;
+  const exclude = await entry(path.join(info, "exclude"));
+  return Boolean(exclude?.isFile() && !exclude.isSymbolicLink() && exclude.nlink === 1n);
+}
+
 export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancestors?: boolean } = {}): Promise<WorkspaceGitSourceRoots | null> {
   let root = path.resolve(cwd), marker = "", markerEntry: Awaited<ReturnType<typeof entry>>;
   for (let depth = 0; ; depth++) {
@@ -66,7 +82,8 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
     if (!source.isDirectory() || source.isSymbolicLink()) throw invalid();
     root = await fs.realpath(root);
     marker = path.join(root, ".git"); markerEntry = await entry(marker);
-    if (markerEntry) break;
+    if (markerEntry && !(markerEntry.isDirectory() && !markerEntry.isSymbolicLink()
+      && await isGitMetadataFragment(marker))) break;
     if (await entry(path.join(root, "objects")) && await entry(path.join(root, "HEAD"))) throw invalid();
     if (!options.ancestors || path.dirname(root) === root) return null;
     root = path.dirname(root);
@@ -74,13 +91,6 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
   const metadata: Metadata[] = [];
   let gitDirectory: Identity;
   if (markerEntry.isDirectory() && !markerEntry.isSymbolicLink()) {
-    if (!await entry(path.join(marker, "objects")) && await onlyEntry(marker, "info")) {
-      const info = path.join(marker, "info"), infoEntry = await entry(info);
-      if (infoEntry?.isDirectory() && !infoEntry.isSymbolicLink() && await onlyEntry(info, "exclude")) {
-        const exclude = await entry(path.join(info, "exclude"));
-        if (exclude?.isFile() && !exclude.isSymbolicLink() && exclude.nlink === 1n) return null;
-      }
-    }
     gitDirectory = await directoryIdentity(marker);
   }
   else {
@@ -125,8 +135,10 @@ export async function readNestedWorkspaceGitSourceRoots(cwd: string): Promise<Wo
     if (entries > 100_000) throw invalid();
     if (children.some(child => child.name === ".git")) {
       const source = await readWorkspaceGitSourceRoots(directory);
-      if (!source || roots.length >= 64) throw invalid();
-      roots.push(source); inRepository = true;
+      if (source) {
+        if (roots.length >= 64) throw invalid();
+        roots.push(source); inRepository = true;
+      }
     } else if (children.some(child => child.name === "objects") && children.some(child => child.name === "HEAD")) throw invalid();
     for (const child of children) {
       if (!child.isDirectory() || child.name === ".git" || depth === 0 && child.name === ".paperclip-runtime") continue;
