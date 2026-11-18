@@ -6883,6 +6883,17 @@ export function recoveryService(
         .some(runId => runId !== null && pendingResumeRunIds.has(runId))) {
         continue;
       }
+      if (!taskClosed) {
+        let settlingUntil: Date | null = null;
+        for (const runId of new Set([issue.checkoutRunId, issue.executionRunId])) {
+          const lockRun = runId ? runById.get(runId) : undefined;
+          if (lockRun && !settlingUntil) settlingUntil = await terminalRunSettlingUntil(issue.companyId, lockRun.id, lockRun);
+        }
+        if (settlingUntil) {
+          opts?.onDeferredDeadline?.(settlingUntil.getTime());
+          continue;
+        }
+      }
 
       await deps.beforeStaleLockClear?.(issue.id);
       const updated = await db.transaction(async tx => {
