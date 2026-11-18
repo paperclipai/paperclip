@@ -47,6 +47,7 @@ import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
 import { UnverifiedServerBadge } from "./UnverifiedServerBadge";
 import {
+  aiConnectionSourceSlug,
   appApplicationSourceSlug,
   appConnectionSourceSlug,
   appDefinitionDarkLogoUrl,
@@ -241,7 +242,8 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     const peer = paperclipPeerFromMcpUrl(typeof connection?.config?.url === "string" ? connection.config.url : null);
     return peer ? { provider: peer.host, template: paperclipPeerInstructionTemplate(peer) } : null;
   }, [logoEntry, connection]);
-  const brandKey = appApplicationSourceSlug(application)
+  const brandKey = aiConnectionSourceSlug(connection)
+    ?? appApplicationSourceSlug(application)
     ?? appConnectionSourceSlug(connection)
     ?? (logoEntry ? appDefinitionSlug(logoEntry) : null);
   const userProfileById = useMemo(
@@ -628,7 +630,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
           galleryEntry={logoEntry}
           canReconnect={canReconnect}
           reconnectUnavailableMessage={reconnectUnavailableMessage}
-          onReconnect={onReconnect ? () => onReconnect(connection) : (connection.connectionPurpose === "ai" || isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey)) ? () => navigate(`/apps/connect?source=${connection.config?.sourceTemplateKey}&reconnect=${connection.id}`) : undefined}
+          onReconnect={onReconnect ? () => onReconnect(connection) : (connection.connectionPurpose === "ai" || isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey)) ? () => navigate(`/apps/connect?source=${aiConnectionSourceSlug(connection) ?? connection.config?.sourceTemplateKey}&reconnect=${connection.id}`) : undefined}
           onReconnected={() => {
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId) });

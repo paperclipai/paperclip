@@ -1,3 +1,4 @@
+import { aiConnectionCatalogSlug } from "@paperclipai/shared";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionChoiceList } from "@/features/connections/ConnectionChoiceList";
 import { Button } from "@/components/ui/button";
@@ -76,7 +77,7 @@ export function AiConnectionPicker({
       <div className="flex items-center gap-3">
         <AppLogo
           name={AI_PROVIDERS[requirement.provider].name}
-          brandKey={requirement.provider}
+          brandKey={aiConnectionCatalogSlug(requirement.provider)}
           logoUrl={AI_PROVIDERS[requirement.provider].logo}
           darkLogoUrl={requirement.provider === "xai" ? "/brands/adapters/grok-dark.svg" : undefined}
           size={32}

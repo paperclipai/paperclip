@@ -1314,10 +1314,38 @@ describe("Connectors landing page", () => {
     expect(container.textContent).not.toContain("Chat with agents");
     await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
-    const copilot = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Connect Copilot")!;
-    expect(copilot).toBeTruthy();
-    await act(() => void copilot.click());
-    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github&method=copilot-token");
+  });
+
+  it("lists GitHub Copilot as its own connector and keeps saved Copilot accounts off the GitHub card", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["github", "github-copilot"].map(getAppStoreDefinition) });
+    listApplicationsMock.mockResolvedValue({ applications: [application({
+      id: "github-app", name: "GitHub", applicationKey: "app-gallery:github", metadata: { sourceTemplateKey: "github" },
+    })] });
+    listConnectionsMock.mockResolvedValue({ connections: [
+      connection({ id: "github-tools", applicationId: "github-app", name: "octocat", config: { sourceTemplateKey: "github" } }),
+      connection({
+        id: "copilot-account", applicationId: "github-app", name: "My Copilot", connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key",
+        config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+      }),
+    ] });
+    await renderBrowse();
+    const github = container.querySelector('[data-app-slug="github"]')!;
+    const copilot = container.querySelector('[data-app-slug="github-copilot"]')!;
+    expect(github.querySelector("h2")?.textContent).toBe("GitHub");
+    expect(copilot.querySelector("h2")?.textContent).toBe("GitHub Copilot");
+    expect(github.textContent).toContain("octocat");
+    expect(github.textContent).not.toContain("My Copilot");
+    expect(github.textContent).not.toContain("Copilot");
+    expect(copilot.textContent).toContain("My Copilot");
+    expect(copilot.textContent).not.toContain("octocat");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Connect Copilot")).toBe(false);
+  });
+
+  it("opens Copilot setup from the GitHub Copilot card", async () => {
+    listGalleryMock.mockResolvedValue({ apps: ["github", "github-copilot"].map(getAppStoreDefinition) });
+    await renderBrowse();
+    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub Copilot"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github-copilot");
   });
 
   it("names what the card will actually ask for", async () => {

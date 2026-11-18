@@ -141,6 +141,7 @@ export function aiConnectionCatalogSlug(provider: string, routing?: Pick<AiProvi
     return routing.protocol === "messages" ? "messages-api"
       : routing.protocol === "chat" ? "chat-completions-api" : "responses-api";
   }
+  if (!routing && provider === "github") return "github-copilot";
   return routing?.kind ?? provider;
 }
 

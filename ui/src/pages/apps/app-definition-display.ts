@@ -48,12 +48,16 @@ export function appApplicationSourceSlug(application: ToolApplication | null | u
   return key;
 }
 
+export function aiConnectionSourceSlug(connection: ToolConnection | null | undefined): string | null {
+  if (connection?.connectionPurpose !== "ai") return null;
+  const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
+  return metadata.success ? aiConnectionCatalogSlug(metadata.data.provider, metadata.data.routing) : null;
+}
+
 export function appConnectionSourceSlug(connection: ToolConnection | null | undefined): string | null {
   if (!connection) return null;
-  if (connection.connectionPurpose === "ai") {
-    const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
-    if (metadata.success) return aiConnectionCatalogSlug(metadata.data.provider, metadata.data.routing);
-  }
+  const aiSource = aiConnectionSourceSlug(connection);
+  if (aiSource) return aiSource;
   const router = aiConnectionRouterPluginKey(connection);
   if (router) return aiConnectionRouterSlug(router);
   const source = connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey;
@@ -66,7 +70,7 @@ export function galleryEntryFor(
   application: ToolApplication | undefined,
 ): AppGalleryDisplayEntry | null {
   if (!connection) return null;
-  const sourceSlug = appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
+  const sourceSlug = aiConnectionSourceSlug(connection) ?? appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
   if (sourceSlug) {
     const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
     if (keyed) return keyed;

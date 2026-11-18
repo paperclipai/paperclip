@@ -18,6 +18,10 @@ const githubBranding = {
   logoUrl: "./brands/apps/github.svg",
   darkLogoUrl: "./brands/apps/github-dark.svg",
 };
+const copilotBranding = {
+  logoUrl: "./brands/apps/github-copilot.svg",
+  darkLogoUrl: "./brands/apps/github-copilot-dark.svg",
+};
 
 function GitHubConnections({ saved = false, chatEnabled = true }) {
   const location = useLocation();
@@ -30,6 +34,7 @@ function GitHubConnections({ saved = false, chatEnabled = true }) {
       apps: [
         { ...github, branding: githubBranding, ownershipAvailability: { platform_shared: true, customer: true } },
         { ...getAppStoreDefinition("github-code-review-bot"), branding: githubBranding },
+        { ...getAppStoreDefinition("github-copilot"), branding: copilotBranding },
       ],
       capabilities: { canSetCompanyInstall: true, canCreatePersonalConnection: true, canCreateOrganizationConnection: true },
     });
@@ -43,6 +48,10 @@ function GitHubConnections({ saved = false, chatEnabled = true }) {
       id: "github-account", applicationId: "github-tools", companyId, name: "octocat",
       status: "active", enabled: true, healthStatus: "healthy", transport: "mcp_remote",
       authKind: "oauth", config: { sourceTemplateKey: "github" }, transportConfig: {},
+    }, {
+      id: "copilot-account", applicationId: "github-tools", companyId, name: "My Copilot",
+      status: "active", enabled: true, healthStatus: "ok", transport: "runtime_auth", connectionPurpose: "ai",
+      authKind: "api_key", config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } }, transportConfig: {},
     }] : [] });
     result.setQueryData(queryKeys.chatEndpoints.list(companyId), saved ? [
       { id: "github-review", companyId, provider: "github", status: "active", assignedAgentId: "reviewer", assignedAgentName: "Reviewer", botLabel: "Paperclip Review", allowUnlinkedPeople: false },
@@ -86,7 +95,7 @@ const meta = {
   },
   parameters: {
     layout: "fullscreen",
-    docs: { description: { component: "Production catalog cards and setup pages with local API query fixtures. GitHub opens account/tool access; GitHub Code Review Bot opens Choose agent. These stories cover discovery and entry into setup, without live GitHub consent or app installation." } },
+    docs: { description: { component: "Production catalog cards and setup pages with local API query fixtures. GitHub opens account/tool access; GitHub Copilot opens Copilot runtime authentication; GitHub Code Review Bot opens Choose agent. These stories cover discovery and entry into setup, without live GitHub consent or app installation." } },
     paperclip: {
       "capabilities": [
         "chat-channels/providers",
@@ -114,6 +123,15 @@ export const ToolSetup: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: /^Connect GitHub$/ }));
+    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
+    await expect(canvas.queryByRole("heading", { name: "Choose how to connect" })).not.toBeInTheDocument();
+  },
+};
+export const CopilotSetup: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("button", { name: "Connect Copilot" })).not.toBeInTheDocument();
+    await userEvent.click(await canvas.findByRole("button", { name: /^Connect GitHub Copilot$/ }));
     await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
     await expect(canvas.queryByRole("heading", { name: "Choose how to connect" })).not.toBeInTheDocument();
   },

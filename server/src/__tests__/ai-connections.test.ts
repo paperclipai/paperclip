@@ -1676,6 +1676,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     }
   });
 
+  it("files Copilot accounts under the GitHub Copilot connector, not GitHub", async () => {
+    const saved = await service.save(companyId, "alice", { provider: "github", method: "api_key", ownership: "personal", name: "Copilot catalog", apiKey: "github_pat_fixture_catalog", agentIds: [], allAgents: false }, "github_pat_fixture_catalog");
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, saved.connectionId));
+    expect(stored!.config.sourceTemplateKey).toBe("github-copilot");
+    const [application] = await db.select().from(toolApplications).where(eq(toolApplications.id, stored!.applicationId));
+    expect(application).toMatchObject({ applicationKey: "app-gallery:github-copilot", name: "GitHub Copilot", metadata: { sourceTemplateKey: "github-copilot" } });
+  });
+
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;

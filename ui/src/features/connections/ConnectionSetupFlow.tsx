@@ -2271,7 +2271,7 @@ function StandardConnectionSetupFlow({
       setInstallAgentIds={setInstallAgentIds}
       lockedAgentId={requestedAgentId}
       capabilities={galleryQuery.data?.capabilities}
-      githubIdentity={entry?.slug === "github"}
+      githubIdentity={entry?.slug === "github" || entry?.slug === "github-copilot"}
       identityLoading={Boolean(automaticOAuthEntry) && directOAuthLookupPending}
       preserveAgentAccess={preservesAgentAccess}
       disabled={connectMutation.isPending || oauthStartMutation.isPending}

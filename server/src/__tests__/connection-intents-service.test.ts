@@ -458,6 +458,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toThrow("was not found");
     expect((await service.search(claims, "github")).results).toEqual([
       expect.objectContaining({ service: "github", state: "available" }),
+      expect.objectContaining({ service: "github-copilot", state: "available" }),
     ]);
     await expect(service.request(claims, "github")).resolves.toMatchObject({
       state: "needs_user_action",
@@ -478,10 +479,17 @@ describeEmbeddedPostgres("connectionIntentService", () => {
             auth: "api_key",
             purpose: "tool",
           }),
+        ],
+      }),
+    );
+    const copilot = search.results.find((result) => result.service === "github-copilot");
+    expect(copilot).toEqual(
+      expect.objectContaining({
+        methods: [
           expect.objectContaining({
             key: "copilot-token",
             purpose: "ai",
-            setupPath: expect.stringContaining("/apps/connect?source=github"),
+            setupPath: expect.stringMatching(/\/apps\/connect\?source=github-copilot$/),
           }),
         ],
       }),
@@ -1021,6 +1029,25 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     });
   });
 
+
+  it("requests Copilot authentication through the GitHub Copilot connector", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const aiRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Copilot Agent", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Copilot authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
+    const service = connectionIntentService(db);
+    const aiRequest = await service.request({ ...claims, sub: agentId, run_id: aiRunId }, "github", { purpose: "ai" });
+    expect(aiRequest).toMatchObject({ service: "github-copilot", state: "needs_user_action" });
+    const setup = await service.setupOptions(aiRequest.interactionId!);
+    expect(setup.service).toMatchObject({ service: "github-copilot", name: "GitHub Copilot" });
+    expect(setup.service.methods.map((method) => method.key)).toEqual(["copilot-token"]);
+    expect(setup.aiConnection).toMatchObject({ provider: "github", method: "api_key" });
+  });
 
   async function accessFixture(source = "composio") {
     const [company] = await db.insert(companies).values({ name: "Grant fixture", issuePrefix: `G${randomUUID().slice(0, 7)}` }).returning();
