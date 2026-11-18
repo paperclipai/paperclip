@@ -120,6 +120,7 @@ import {
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
 import { codexShellEnvironmentKeys } from "@paperclipai/adapter-utils/codex-shell-environment";
+import { acquireRuntimeHomeLease, type RuntimeHomeLease } from "./runtime-home-lease.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
@@ -581,6 +582,22 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  // A leased generated home is released on every exit path: success, provider
+  // failure, timeout/cancellation, and errors thrown during setup.
+  const runtimeHomeLeases: RuntimeHomeLease[] = [];
+  try {
+    return await executeWithRuntimeHomeLeases(ctx, runtimeHomeLeases);
+  } finally {
+    for (const lease of runtimeHomeLeases) {
+      await lease.release().catch(() => {});
+    }
+  }
+}
+
+async function executeWithRuntimeHomeLeases(
+  ctx: AdapterExecutionContext,
+  runtimeHomeLeases: RuntimeHomeLease[],
+): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -687,13 +704,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // the same subscription identity preserve its cache and session state.
     const credentialIdentity = credentialBytes
       ? readSubscriptionAccountId(credentialBytes) ?? createHash("sha256").update(credentialBytes).digest("hex") : null;
+    // A managed AI connection materializes its credential into a new temporary
+    // directory for every run, so its path must not select the home (it would
+    // leak one full home per run). Key on the connection's stable session
+    // identity instead: it changes with the grant, user, secret or reconnect
+    // epoch, but not with a token refresh. Other credential homes are stable
+    // paths and keep their previous digest input.
+    const managedAiConnection = parseObject(config.managedAiConnection);
+    const credentialHomeKey = config.managedAiConnection
+      ? `managed-ai-connection:${asString(managedAiConnection.sessionIdentity, "")}`
+      : credentialHome;
     runtimeSkillDigest = createHash("sha256").update(JSON.stringify({
-      runtimeSkillDigest, credentialHome, credentialIdentity, selectedConfigDigest, apiKey: envConfig.OPENAI_API_KEY ?? null,
+      runtimeSkillDigest, credentialHome: credentialHomeKey, credentialIdentity, selectedConfigDigest,
+      apiKey: envConfig.OPENAI_API_KEY ?? null,
     })).digest("hex");
     // Different authorized versions/assignments get separate homes, including
     // session state. Previously permitted private links cannot survive revocation.
-    configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
-      connectorSkillDigest ? "connector-runtimes" : "skill-runtimes", agent.id, runtimeSkillDigest);
+    // Unchanged runs reuse the home; an overlapping run of the same agent leases
+    // the next reusable slot so it never relinks another run's credential.
+    const runtimeHomeLease = await acquireRuntimeHomeLease(
+      path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
+        connectorSkillDigest ? "connector-runtimes" : "skill-runtimes", agent.id),
+      runtimeSkillDigest,
+      runId,
+    );
+    runtimeHomeLeases.push(runtimeHomeLease);
+    configuredCodexHome = runtimeHomeLease.home;
+    if (config.managedAiConnection) {
+      // The connection's credential for THIS run is authoritative. Drop any
+      // link to an earlier run's (now removed) credential directory, or a
+      // regular file left by a copy-back, so seeding links the current one.
+      await fs.rm(path.join(configuredCodexHome, "auth.json"), { force: true });
+    }
   }
   if (!executionTargetIsRemote) {
     await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
