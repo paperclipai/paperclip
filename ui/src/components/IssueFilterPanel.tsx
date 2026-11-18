@@ -1,32 +1,13 @@
-import { useId, useState, type ComponentProps, type CSSProperties, type ReactNode } from "react";
-import { Bot, Search, User } from "lucide-react";
+import { useState, type ComponentProps, type CSSProperties } from "react";
+import { Bot, User } from "lucide-react";
 import type { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { Button } from "./ui/button";
-import { Checkbox } from "./ui/checkbox";
-import { Input } from "./ui/input";
 import { FlyoutHeader } from "./ui/flyout";
 import { StatusIcon } from "./StatusIcon";
-import { TruncatedText } from "./TruncatedText";
+import { FilterGroup, FilterRow } from "./CollectionFilterOptions";
 import { issueFilterLabel, issueStatusOrder, searchIssueFilterOptions, toggleIssueFilterValue } from "@/lib/issue-filters";
 
 type PanelProps = Pick<ComponentProps<typeof IssueFiltersPopover>, "state" | "onChange" | "activeFilterCount" | "agents" | "projects" | "labels" | "creators" | "currentUserId" | "enableRoutineTasksFilter" | "enableAgentCreatedVisibilityFilter" | "enableLiveRunsFilter"> & { onClear: () => void };
-
-function FilterGroup({ title, searchLabel, query, onQueryChange, children, optionsKey }: { title: string; searchLabel?: string; query?: string; onQueryChange?: (value: string) => void; children: ReactNode; optionsKey: string }) {
-  const headingId = useId();
-  return (
-    <section className="task-filter-group" aria-labelledby={headingId}>
-      <h3 id={headingId}>{title}</h3>
-      <div className="task-filter-group-body">
-        {searchLabel ? <div className="task-filter-search"><Search aria-hidden /><Input aria-label={`Search ${searchLabel}`} placeholder={`Search ${searchLabel}...`} value={query} onChange={event => onQueryChange?.(event.target.value)} /></div> : null}
-        <div className="task-filter-options" data-filter-options={optionsKey}>{children}</div>
-      </div>
-    </section>
-  );
-}
-
-function FilterRow({ label, checked, onToggle, icon }: { label: string; checked: boolean; onToggle: () => void; icon?: ReactNode }) {
-  return <label className="task-filter-option" data-marquee-surface><Checkbox aria-label={label} checked={checked} onCheckedChange={onToggle} />{icon ? <span className="task-filter-icon" aria-hidden>{icon}</span> : null}<TruncatedText className="task-filter-option-label">{label}</TruncatedText></label>;
-}
 
 /** The collection retains ownership of filter state. */
 export function IssueFilterPanel({ state, onChange, activeFilterCount, agents = [], projects = [], labels = [], creators = [], currentUserId, onClear, enableRoutineTasksFilter, enableAgentCreatedVisibilityFilter, enableLiveRunsFilter = true }: PanelProps) {
