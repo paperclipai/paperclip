@@ -17,6 +17,7 @@ import {
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { assessSessionRetention } from "./native-session-retention-blockers.js";
+import { sweepCodexSkillHomes } from "./codex-skill-home-retention.js";
 import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
 import { nativeSessionScopeDigestIsBusy } from "./native-session-executor.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -66,6 +67,8 @@ export type NativeHarnessBackupExpirationOptions = {
   maxRemovals?: number;
   now?: Date;
   stateBase?: string;
+  /** Shared Codex skill homes; defaults to the sibling of the default state base. */
+  skillHomeStoreRoot?: string;
   shouldContinue?: () => boolean;
   isSessionBusy?: (scopeDigest: string) => boolean;
   storage?: StorageService;
@@ -87,6 +90,8 @@ export type NativeHarnessBackupExpirationResult = {
   failed: number;
   truncated: boolean;
   skipped: Record<string, number>;
+  skillHomesRemoved: number;
+  skillHomeReclaimedBytes: number;
 };
 
 type EvidenceContext = {
@@ -123,6 +128,8 @@ function emptyResult(): NativeHarnessBackupExpirationResult {
     failed: 0,
     truncated: false,
     skipped: {},
+    skillHomesRemoved: 0,
+    skillHomeReclaimedBytes: 0,
   };
 }
 
@@ -845,6 +852,22 @@ export function nativeHarnessBackupExpirationService(
       }
       if (result.truncated) return result;
       cursor = null;
+      // A test or caller that moves the state base names its store explicitly,
+      // so a sweep never reaches a store outside the state it was given.
+      const skillHomeStoreRoot = options.skillHomeStoreRoot ?? defaults.skillHomeStoreRoot
+        ?? (options.stateBase ?? defaults.stateBase ? null : path.resolve(base, "..", "skill-homes"));
+      if (includeBackups && skillHomeStoreRoot) {
+        try {
+          const swept = await sweepCodexSkillHomes({
+            storeRoot: skillHomeStoreRoot, sessionsRoot: base, now, dryRun, maxRemovals,
+          });
+          result.skillHomesRemoved = swept.removed;
+          result.skillHomeReclaimedBytes = swept.reclaimedBytes;
+        } catch (err) {
+          result.failed++;
+          logger.warn({ err }, "native harness expiration skipped Codex skill homes");
+        }
+      }
       if (!evidencePass) {
         passActive = false;
         return result;
