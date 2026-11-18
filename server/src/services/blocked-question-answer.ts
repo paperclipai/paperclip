@@ -12,7 +12,7 @@ export async function questionsAwaitedByAgentBlock(db: Pick<Db, "select">, input
   companyId: string; issueId: string; agentId: string | null | undefined; reasonCode: string | null;
   toStatus: string; unblockOwner: unknown; blockerOwnerKind?: string;
 }): Promise<string[]> {
-  const personResolves = input.blockerOwnerKind === undefined
+  const personResolves = input.reasonCode === "native_agent_blocker_needs_person" || input.blockerOwnerKind === undefined
     ? input.unblockOwner === "board"
     : PERSON_RESOLVED_BLOCKER_OWNER_KINDS.includes(input.blockerOwnerKind);
   if (!input.agentId || input.toStatus !== "blocked" || !personResolves

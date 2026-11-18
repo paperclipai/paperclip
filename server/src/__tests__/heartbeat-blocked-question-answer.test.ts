@@ -83,7 +83,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
   }
 
   async function agentReportsBlocker(input: { companyId: string; agentId: string; issueId: string;
-    blocker?: Record<string, unknown> }): Promise<void> {
+    blocker?: Record<string, unknown>; handedToPerson?: boolean }): Promise<void> {
     const runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID();
     await db.insert(completionContracts).values({ id: contractId, companyId: input.companyId, issueId: input.issueId,
       revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
@@ -113,6 +113,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
           evidence: [], verification: [], attentionRequests: [], artifacts: [] } }),
       terminalState: "succeeded", workspaceFinalizeStatus: "succeeded", agentId: input.agentId,
       priorIssueStatus: snapshot!.status as "in_review",
+      ...(input.handedToPerson ? { agentBlockerRecoverable: true, failureRetryCount: 1 } : {}),
     }) : { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "blocked" as const, toStatus: "blocked" as const,
       reasonCode: "current_track_blocker_waiting",
       unblockDescriptor: { owner: "board" as const, action: "Answer the pending codename question." },
@@ -121,6 +122,7 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
       db, companyId: input.companyId, issueId: input.issueId, runId, assessmentId,
       priorStatus: snapshot!.status, priorStatusVersion: Number(snapshot!.statusVersion),
       priorDecisionId: snapshot!.lastStatusDecisionId, decision,
+      ...(input.handedToPerson ? { requireProviderFailureOwner: { agentId: input.agentId, reviewContext: null } } : {}),
     });
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
   }
@@ -176,6 +178,21 @@ describeEmbeddedPostgres("an answer to the agent's own question continues the ta
     const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
     expect({ status: run?.status, errorCode: run?.errorCode ?? null }).toEqual({ status: "succeeded", errorCode: null });
   }, 60_000);
+
+  it.each([["agent", { kind: "agent", name: "Writer" }], ["system", { kind: "system", name: "Paperclip" }]])(
+    "delivers the answer once Paperclip hands the agent's or the system's blocker to a person (%s)", async (_label, owner) => {
+      mockAdapterExecute.mockClear();
+      const { agentId, issueId, question, companyId } = await seed();
+      await agentReportsBlocker({ companyId, agentId, issueId, handedToPerson: true, blocker: { owner, scope: "task_wide",
+        reasonCode: "credential_missing", unblockAction: "Resolve the blocker." } });
+      const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(blocked).toMatchObject({ status: "blocked", unblockDescriptor: { owner: "board" } });
+      const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.id, blocked!.lastStatusDecisionId!));
+      expect(decision).toMatchObject({ reasonCode: "native_agent_blocker_needs_person", decisionJson: { awaitingInteractionIds: [question.id] } });
+      await answer(question);
+      const run = await deliverAnswer({ agentId, issueId, questionId: question.id });
+      expect({ status: run?.status, errorCode: run?.errorCode ?? null }).toEqual({ status: "succeeded", errorCode: null });
+    }, 60_000);
 
   it.each([["agent", { kind: "agent", name: "Writer" }], ["system", { kind: "system", name: "Paperclip" }]])(
     "keeps cancelling the answer for a blocker the agent or the system owns (%s)", async (_label, owner) => {
