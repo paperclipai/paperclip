@@ -1,3 +1,4 @@
+import * as pullRequestMerge from "../services/github-pull-request-merge.js";
 import { retainedNativeSessionCleanupWork } from "../services/native-runtime/retained-native-session-cleanup-work.js";
 import { pendingNativeGovernance } from "../services/native-runtime/native-governance.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
@@ -3143,6 +3144,41 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("succeeded");
       expect(errors).toEqual([]);
     } finally { boundary.mockRestore(); worker.stop(); await coordinator.stop(); }
+  }, 30_000);
+
+  it.each(["open", "unknown", "merged"] as const)("gates native finalization on a %s PR deliverable", async state => {
+    const seeded = await seedFixture({ ...corpus.fixtures[0]!, id: `pr-completion-${randomUUID()}` });
+    await db.update(completionContracts).set({ risk: "low", completionAuthority: "agent_claim_policy" })
+      .where(eq(completionContracts.id, seeded.contractId!));
+    await db.insert(issueWorkProducts).values({ companyId, issueId: seeded.issueId, createdByRunId: seeded.runId,
+      type: "pull_request", provider: "github", title: "Implementation PR", status: "active",
+      url: "https://github.com/example/project/pull/42", metadata: { state: "merged" } });
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver")
+      .mockReturnValue(vi.fn().mockResolvedValue(state));
+    try {
+      await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded" });
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe(state === "merged" ? "done" : "in_progress");
+      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId));
+      expect(decisions.some(decision => decision.toStatus === "done")).toBe(state === "merged");
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, seeded.issueId))).toHaveLength(0);
+    } finally { resolve.mockRestore(); }
+  }, 30_000);
+
+  it("refuses a direct Done commit for an unmerged PR during reassessment", async () => {
+    const seeded = await seedFixture({ ...corpus.fixtures[0]!, id: `pr-direct-commit-${randomUUID()}` });
+    await db.insert(issueWorkProducts).values({ companyId, issueId: seeded.issueId, createdByRunId: seeded.runId,
+      type: "pull_request", provider: "github", title: "Implementation PR", status: "merged",
+      url: "https://github.com/example/project/pull/42" });
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver")
+      .mockReturnValue(vi.fn().mockResolvedValue("open"));
+    try {
+      await expect(commitNativeStatusDecision({ db, companyId, issueId: seeded.issueId, runId: seeded.runId,
+        assessmentId: seeded.assessmentId, priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
+        decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "done", toStatus: "done",
+          reasonCode: "decision_superseded_by_new_evidence", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] },
+      })).rejects.toThrow("native_status_race");
+      expect((await issueService(db).getById(seeded.issueId))!.status).toBe("in_progress");
+    } finally { resolve.mockRestore(); }
   }, 30_000);
 
   it("completes a new merge run after an old CI review and bounds repeated incomplete results", async () => {
