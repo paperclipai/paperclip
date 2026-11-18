@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   describeRunFailureError,
-  FIRST_LIFECYCLE_WRITE_RETRY_DELAYS_MS,
+  isTransientDbErrorCode,
   isTransientDbFailure,
   isTransientDbSqlState,
   readDbFailureErrorCode,
-  runWithTransientDbRetry,
   unwrapDbErrorCause,
+} from "../services/db-error-codes.js";
+import {
+  FIRST_LIFECYCLE_WRITE_RETRY_DELAYS_MS,
+  runWithTransientDbRetry,
 } from "../services/heartbeat.js";
 
 /**
@@ -86,8 +89,10 @@ describe("unwrapDbErrorCause", () => {
 });
 
 describe("isTransientDbSqlState / isTransientDbFailure", () => {
-  it("treats the connection (08) class and serialization/deadlock/lock/cancel codes as transient", () => {
-    for (const code of ["08000", "08003", "08006", "40001", "40P01", "55P03", "57014"]) {
+  it("treats the connection (08) class, serialization/deadlock/lock/cancel and admin-shutdown codes as transient", () => {
+    // 57P01 / 08006 are the exact codes AGE-810/AGE-815 call out for a Neon
+    // connection drop / cold-start failover.
+    for (const code of ["08000", "08003", "08006", "40001", "40P01", "55P03", "57014", "57P01", "57P02", "57P03"]) {
       expect(isTransientDbSqlState(code)).toBe(true);
       expect(isTransientDbFailure(makeDrizzleQueryError({ code }))).toBe(true);
     }
@@ -100,6 +105,20 @@ describe("isTransientDbSqlState / isTransientDbFailure", () => {
     }
     expect(isTransientDbSqlState(null)).toBe(false);
     expect(isTransientDbFailure(new Error("boom"))).toBe(false);
+  });
+});
+
+describe("isTransientDbErrorCode", () => {
+  it("classifies persisted transient DB errorCodes (pg_<transient-sqlstate> + db_query_failed) as transient", () => {
+    for (const errorCode of ["pg_57P01", "pg_08006", "pg_40001", "pg_57P03", "db_query_failed"]) {
+      expect(isTransientDbErrorCode(errorCode)).toBe(true);
+    }
+  });
+
+  it("does not treat deterministic DB errorCodes or unrelated codes as transient", () => {
+    for (const errorCode of ["pg_23505", "pg_42P01", "adapter_failed", "setup_failed", "timeout", null, undefined]) {
+      expect(isTransientDbErrorCode(errorCode)).toBe(false);
+    }
   });
 });
 

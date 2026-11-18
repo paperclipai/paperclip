@@ -35,4 +35,23 @@ describe("pause durability: continuation retry classification", () => {
     expect(classifyContinuationFailure(run(null)).kind).toBe("default");
     expect(classifyContinuationFailure(run("some_adapter_error")).kind).toBe("default");
   });
+
+  it("transient DB-driver failures (AGE-815) retry as transient infra", () => {
+    // Before AGE-815 these were recorded as adapter_failed and caught by the
+    // transient-infra set; now they carry dedicated pg_<sqlstate> / db_query_failed
+    // codes and must still be classified transient so continuation recovery reschedules.
+    for (const code of ["pg_57P01", "pg_08006", "db_query_failed"]) {
+      const c = classifyContinuationFailure(run(code));
+      expect(c.kind).toBe("transient_infra");
+      expect(c.maxAttempts).toBeGreaterThan(0);
+    }
+  });
+
+  it("deterministic DB failures (AGE-815) fail fast via the default branch", () => {
+    // Constraint / missing-object errors are deterministic bugs, not infra blips,
+    // so they must NOT be retried as transient infra.
+    for (const code of ["pg_23505", "pg_42P01"]) {
+      expect(classifyContinuationFailure(run(code)).kind).toBe("default");
+    }
+  });
 });

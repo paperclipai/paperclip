@@ -39,6 +39,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
+import { isTransientDbErrorCode } from "../db-error-codes.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -215,7 +216,18 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
   }
-  if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
+  // A transient DB-driver failure (e.g. a Neon connection drop / cold-start
+  // restart surfaced as `pg_57P01` / `pg_08006`, or a code-less `db_query_failed`
+  // drizzle wrapper) is infra, not a deterministic bug. Before AGE-815 these were
+  // all recorded as `adapter_failed` and caught by the set below; now that they
+  // carry dedicated `pg_<sqlstate>` / `db_query_failed` codes, classify the
+  // transient family here so continuation recovery still reschedules them.
+  // Deterministic DB codes (`pg_23505`, `pg_42P01`, ...) fall through to the
+  // `default` branch so they fail fast instead of being retried.
+  if (
+    errorCode &&
+    (TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode) || isTransientDbErrorCode(errorCode))
+  ) {
     return {
       kind: "transient_infra",
       maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,

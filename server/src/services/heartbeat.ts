@@ -89,11 +89,6 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
-  describeRunFailureCause,
-  readTransientDbSqlstate,
-  writeWithTransientDbRetry,
-} from "./heartbeat-run-failure.js";
-import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -166,6 +161,11 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import {
+  describeRunFailureError,
+  isTransientDbFailure,
+  readDbFailureErrorCode,
+} from "./db-error-codes.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -1745,101 +1745,6 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-/**
- * Postgres SQLSTATEs that denote a transient / retryable failure rather than a
- * deterministic programming or data error. Class `08` (connection exception)
- * covers every connection-level drop (`08000`, `08001`, `08003`, `08004`,
- * `08006`, `08007`, ...), so match the whole class by prefix; the remaining
- * codes are the serialization / deadlock / lock / cancellation family.
- */
-const TRANSIENT_DB_SQLSTATES = new Set<string>([
-  "40001", // serialization_failure
-  "40P01", // deadlock_detected
-  "55P03", // lock_not_available
-  "57014", // query_canceled
-]);
-
-export function isTransientDbSqlState(code: string | null | undefined): boolean {
-  if (!code) return false;
-  if (code.startsWith("08")) return true; // connection_exception class
-  return TRANSIENT_DB_SQLSTATES.has(code);
-}
-
-/**
- * Detect drizzle's `DrizzleQueryError` without importing drizzle internals:
- * it carries `name === "DrizzleQueryError"` and a `Failed query:` message prefix.
- */
-function isDrizzleQueryError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  if ((err as { name?: unknown }).name === "DrizzleQueryError") return true;
-  const message = (err as { message?: unknown }).message;
-  return typeof message === "string" && message.startsWith("Failed query:");
-}
-
-/**
- * Unwrap drizzle's `DrizzleQueryError` to the underlying driver error.
- *
- * Drizzle wraps every failed query in a `DrizzleQueryError` whose `.message` is
- * only `Failed query: <sql>\nparams: <params>` and whose underlying driver error
- * (Postgres SQLSTATE `code` / `detail`, connection reset, admin shutdown, etc.)
- * is carried on `.cause`. Return the cause's message + SQLSTATE code + detail so
- * callers can both compose a diagnosable message and derive a dedicated error
- * code instead of discarding the real root cause.
- */
-export function unwrapDbErrorCause(
-  err: unknown,
-): { message: string | null; code: string | null; detail: string | null } | null {
-  const cause = (err as { cause?: unknown } | null | undefined)?.cause;
-  if (!cause || cause === err) return null;
-  const message = cause instanceof Error ? cause.message : readNonEmptyString(cause);
-  const rawCode = (cause as { code?: unknown } | null | undefined)?.code;
-  const rawDetail = (cause as { detail?: unknown } | null | undefined)?.detail;
-  const code = typeof rawCode === "string" && rawCode ? rawCode : null;
-  const detail = typeof rawDetail === "string" && rawDetail ? rawDetail : null;
-  if (!message && !code && !detail) return null;
-  return { message, code, detail };
-}
-
-/**
- * Dedicated `errorCode` for a DB-driver failure so it is not swallowed by the
- * generic `adapter_failed` / `setup_failed` bucket. `pg_<sqlstate>` when the
- * Postgres error code is known, else `db_query_failed` for a drizzle query
- * wrapper with no surfaced code. Returns `null` for non-DB errors so callers
- * fall back to their existing default.
- */
-export function readDbFailureErrorCode(err: unknown): string | null {
-  const cause = unwrapDbErrorCause(err);
-  if (cause?.code) return `pg_${cause.code}`;
-  if (isDrizzleQueryError(err)) return "db_query_failed";
-  return null;
-}
-
-/** True when a thrown error is a DB failure with a transient SQLSTATE. */
-export function isTransientDbFailure(err: unknown): boolean {
-  return isTransientDbSqlState(unwrapDbErrorCause(err)?.code);
-}
-
-/**
- * Produce a diagnosable message for a thrown run failure, appending the drizzle
- * cause chain (Postgres error code/detail when present) so intermittent DB
- * failures can be attributed instead of guessed at. See {@link unwrapDbErrorCause}.
- */
-export function describeRunFailureError(err: unknown, fallback: string): string {
-  const base = err instanceof Error ? err.message : readNonEmptyString(err);
-  if (!base) return fallback;
-  const cause = unwrapDbErrorCause(err);
-  if (!cause) return base;
-
-  const parts = [
-    cause.message ?? undefined,
-    cause.code ? `code=${cause.code}` : undefined,
-    cause.detail ? `detail=${cause.detail}` : undefined,
-  ].filter((part): part is string => Boolean(part));
-  const causeText = parts.join(" ");
-  if (!causeText || base.includes(causeText)) return base;
-  return `${base} [cause: ${causeText}]`;
 }
 
 /** Backoff schedule for retrying a transient failure on the first lifecycle write. */
@@ -10514,7 +10419,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     };
 
-    let seq = 1;
+    // Allocate the first lifecycle seq from the current max rather than
+    // hardcoding 1. A run promoted from a scheduled retry already has a
+    // promotion event at seq 1 (written via nextRunEventSeq by
+    // promoteDueScheduledRetries), so starting at 1 here collides on
+    // heartbeat_run_events_run_seq_uq (run_id, seq) and hard-fails the run on
+    // its first "run started" write before the adapter dispatches (AGE-810 RCA).
+    let seq = await nextRunEventSeq(run.id);
     let handle: RunLogHandle | null = null;
     let stdoutExcerpt = "";
     let stderrExcerpt = "";
