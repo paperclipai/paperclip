@@ -20,6 +20,9 @@ if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
+  // Empty, relative and "." entries would resolve the tool against the working
+  // directory, which lets a planted binary run with the managed environment.
+  if (process.platform === 'win32' ? !path.win32.isAbsolute(p) : !path.isAbsolute(p)) return false;
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
 // Search PATH directories first and PATHEXT entries second, as on Windows.
@@ -123,7 +126,7 @@ ${options.brokerFile ? String.raw`
   } catch { diagnostic('configuration_directory_unavailable'); }
   {
     for (const key of Object.keys(env)) {
-      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
+      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/i.test(key)) delete env[key];
     }
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
@@ -217,7 +220,11 @@ main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_fail
 /** Override inherited credentials even when adapters merge the host environment later. */
 export function githubBrokerEnvironment(input: Record<string, unknown>, broker: { url: string; token: string }): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(input)) if (typeof value === "string") env[key] = value;
+  // Windows environment names are case-insensitive, so gh_token reaches a child as GH_TOKEN.
+  const credential = /^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*|PAPERCLIP_GITHUB_OPERATION_ACTIVE)$/i;
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "string" && !(credential.test(key) && key !== key.toUpperCase())) env[key] = value;
+  }
   for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_COUNT", "PAPERCLIP_GITHUB_OPERATION_ACTIVE"]) env[key] = "";
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) env[key] = "";

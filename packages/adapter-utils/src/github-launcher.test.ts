@@ -470,6 +470,29 @@ describe.runIf(process.platform === "win32")("managed GitHub launchers on Window
     expect(result.stderr).not.toContain("launcher_setup_failed");
   });
 
+  it("discards relative PATH entries instead of executing a tool planted in the working directory", async () => {
+    const { root, first, gh, env } = await windowsFixture();
+    await writeFile(path.join(root, "gh.cmd"), "@echo off\r\necho planted\r\n");
+    await writeFile(path.join(first, "gh.cmd"), "@echo off\r\necho trusted\r\n");
+    for (const entry of ["", ".", "relative"]) {
+      env.PATH = [entry, first].join(path.delimiter);
+      expect((await gh()).stdout.trim()).toBe("trusted");
+    }
+  });
+
+  it("removes mixed-case inherited credentials before running a batch tool", async () => {
+    const { first, gh, env } = await windowsFixture();
+    env.Gh_Token = "fake-host-token";
+    env.git_askpass = "fake-host-askpass";
+    await writeFile(path.join(first, "gh.cmd"), "@echo off\r\nset GH_TOKEN\r\nset GIT_ASKPASS\r\nexit /b 0\r\n");
+    const output = (await gh()).stdout;
+    expect(output).not.toContain("fake-host-token");
+    expect(output).not.toContain("fake-host-askpass");
+    const filtered = githubBrokerEnvironment({ Gh_Token: "fake", git_askpass: "fake" }, { url: "", token: "" });
+    expect(filtered).not.toHaveProperty("Gh_Token");
+    expect(filtered).not.toHaveProperty("git_askpass");
+  });
+
   it("follows PATH order before PATHEXT order", async () => {
     const { first, second, gh } = await windowsFixture();
     await writeFile(path.join(first, "gh.cmd"), "@echo off\r\necho first-cmd\r\n");
