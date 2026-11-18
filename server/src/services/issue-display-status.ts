@@ -4,15 +4,6 @@ import { EXECUTION_RECONCILIATION_CAUSES, PROVIDER_QUOTA_MONITOR_SERVICE_NAME, t
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 
-/**
- * A resolved recovery action that keeps `automaticRecovery.replay = blocked`
- * still holds execution: wake admission (`executionBlockerPredicate`) refuses
- * every wake, including a due monitor. Without this, the task shows as a
- * scheduled wait whose check never starts. This is the cheap subset of that
- * predicate whose holds are always effective. Its exceptions apply only to
- * legacy reconciliation holds, legacy workspace-restore holds and conversation
- * boundaries, so those keep their current display.
- */
 const DISPLAYED_NO_REPLAY_HOLD_CAUSES = EXECUTION_RECONCILIATION_CAUSES
   .filter(cause => cause !== "legacy_execution_requires_reconciliation");
 

@@ -192,7 +192,6 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
 
   it("shows an overdue monitor behind a resolved no-replay execution hold as Blocked, not Monitoring", async () => {
     const f = await fixture();
-    // The monitor is due, but wake admission refuses it while this hold exists.
     await ctx.db.update(issues).set({ monitorNextCheckAt: new Date(Date.now() - 60 * 60_000) }).where(eq(issues.id, f.issueId));
     const [hold] = await ctx.db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
       kind: "active_run_watchdog", status: "resolved", ownerType: "board", returnOwnerAgentId: f.agentId,
@@ -202,7 +201,6 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: hold!.id });
     expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
     expect(await issueService(ctx.db).count(f.companyId, { displayStatus: "blocked" })).toBe(1);
-    // Once the hold allows replay again, the scheduled wait is visible as Monitoring.
     await ctx.db.update(issueRecoveryActions).set({ evidence: { automaticRecovery: { replay: "allowed" } } }).where(eq(issueRecoveryActions.id, hold!.id));
     expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toBeNull();
     expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
