@@ -130,3 +130,22 @@ for (const backup of ['~/backups', './backups']) {
     } finally { await writeFile(file, saved); }
   });
 }
+
+for (const [key, value] of [['PAPERCLIP_CONTEXT','/tmp/other/context.json'], ['PAPERCLIP_AUTH_STORE','/tmp/other/auth.json'], ['PAPERCLIP_STORAGE_PROVIDER','s3'], ['PAPERCLIP_STORAGE_S3_BUCKET','other'], ['PAPERCLIP_STORAGE_S3_ENDPOINT','https://other.invalid'], ['PAPERCLIP_STORAGE_S3_PREFIX','other/'], ['PAPERCLIP_IN_WORKTREE','true']]) {
+  test('rejects inherited instance selector ' + key, { skip: !enabled }, () => {
+    const result = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")'], { [key]: value });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(key));
+    assert.doesNotMatch(result.stdout, /STARTED/);
+  });
+}
+test('rejects a normalized data path into a Windows mount', { skip: !enabled }, async () => {
+  const file = path.join(root, 'data', 'instances', 'default', 'config.json');
+  const saved = await readFile(file, 'utf8');
+  await writeFile(file, JSON.stringify({server:{port:3100},storage:{localDisk:{baseDir:'/home/../mnt/c/other'}}}));
+  try {
+    const result = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Windows data paths/);
+  } finally { await writeFile(file, saved); }
+});

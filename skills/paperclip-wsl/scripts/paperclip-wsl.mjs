@@ -9,7 +9,21 @@ const relativeScript = "skills/paperclip-wsl/scripts/paperclip-wsl.mjs";
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const args = process.argv.slice(2);
 const fail = (message) => { throw new Error(`Paperclip WSL preflight: ${message}`); };
-const nativePath = (value) => typeof value === "string" && value.startsWith("/") && !value.startsWith("/mnt/") && !value.endsWith(".exe");
+const nativePath = value => {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.endsWith(".exe")) return false;
+  let resolved = path.posix.normalize(value);
+  if (process.platform === "linux") {
+    let parent = resolved;
+    const missing = [];
+    while (!fs.existsSync(parent)) {
+      if (fs.lstatSync(parent, { throwIfNoEntry: false })?.isSymbolicLink()) return false;
+      missing.unshift(path.basename(parent));
+      parent = path.dirname(parent);
+    }
+    resolved = path.join(fs.realpathSync(parent), ...missing);
+  }
+  return resolved !== "/mnt" && !resolved.startsWith("/mnt/");
+};
 
 try {
   const filename = path.join(repository, ".paperclip/wsl.local.json");
@@ -59,6 +73,18 @@ try {
         if (source[key] !== undefined && source[key] !== expected) fail(key + " selects another instance");
       }
       if (source.PAPERCLIP_CONFIG !== undefined && path.resolve(repository, source.PAPERCLIP_CONFIG) !== selectedConfig) fail("PAPERCLIP_CONFIG selects another instance");
+      for (const [key, expected] of [["PAPERCLIP_CONTEXT", path.join(config.paperclipHome, "context.json")], ["PAPERCLIP_AUTH_STORE", path.join(config.paperclipHome, "auth.json")]]) {
+        if (source[key] !== undefined && path.resolve(repository, source[key]) !== expected) fail(key + " selects another CLI state root");
+      }
+      if (source.PAPERCLIP_IN_WORKTREE === "true") fail("PAPERCLIP_IN_WORKTREE selects another scheduling context");
+      for (const [key, expected] of [
+        ["PAPERCLIP_STORAGE_PROVIDER", settings.storage?.provider ?? "local_disk"],
+        ["PAPERCLIP_STORAGE_S3_BUCKET", settings.storage?.s3?.bucket ?? "paperclip"],
+        ["PAPERCLIP_STORAGE_S3_REGION", settings.storage?.s3?.region ?? "us-east-1"],
+        ["PAPERCLIP_STORAGE_S3_ENDPOINT", settings.storage?.s3?.endpoint],
+        ["PAPERCLIP_STORAGE_S3_PREFIX", settings.storage?.s3?.prefix ?? ""],
+        ["PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE", String(settings.storage?.s3?.forcePathStyle ?? false)],
+      ]) if (source[key] !== undefined && source[key] !== expected) fail(key + " selects another storage backend");
       for (const key of ["DATABASE_URL", "DATABASE_MIGRATION_URL"]) {
         if (source[key] !== undefined) fail(key + " overrides the selected instance; configure its config file instead");
       }
@@ -75,7 +101,7 @@ try {
     }
     if (process.env.WSL_DISTRO_NAME && !config.capacityPath) fail("capacityPath must select the Windows volume that contains the WSL virtual disk");
     if (config.capacityPath !== undefined && (!config.capacityPath.startsWith("/mnt/") || !/^[a-z]$/.test(config.capacityPath.split("/")[2]))) fail("capacityPath must select a Windows host volume");
-    const environment = { ...process.env, PATH: bins.join(":"), PAPERCLIP_HOME: config.paperclipHome, PAPERCLIP_INSTANCE_ID: config.instanceId, PAPERCLIP_CONFIG: selectedConfig, PAPERCLIP_DISABLE_CWD_ENV_FILE: "true" };
+    const environment = { ...process.env, PATH: bins.join(":"), PAPERCLIP_HOME: config.paperclipHome, PAPERCLIP_INSTANCE_ID: config.instanceId, PAPERCLIP_CONFIG: selectedConfig, PAPERCLIP_DISABLE_CWD_ENV_FILE: "true", PAPERCLIP_CONTEXT: path.join(config.paperclipHome, "context.json"), PAPERCLIP_AUTH_STORE: path.join(config.paperclipHome, "auth.json") };
     for (const key of ["CARGO_HOME", "RUSTUP_HOME"]) if (config[key]) { if (!nativePath(config[key])) fail("invalid " + key); environment[key] = config[key]; }
     const capacity = fs.statfsSync(config.capacityPath ?? config.paperclipHome);
     const availableBytes = capacity.bavail * capacity.bsize;
