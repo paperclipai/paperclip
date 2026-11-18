@@ -174,8 +174,10 @@ issue carries that requirement in two fields:
 
 `"workspace_delivery"` means the task cannot reach `done` without a delivery
 attestation for the completing run. The attestation only satisfies the
-declaration it was recorded against, so changing the requirement invalidates an
-older attestation even when the value stays the same.
+declaration it was recorded against, so a changed requirement invalidates an
+older attestation. Only a value that differs from the stored one counts as a
+change: resending the same value neither advances the revision nor invalidates
+an existing attestation.
 
 **Create.** Omit the field, or send `null`, to inherit the target project
 workspace's `defaultCompletionRequirement`. A concrete value overrides the
@@ -194,11 +196,14 @@ satisfying attestation returns `422`:
 ```
 
 **Agent keys.** The requirement is the board's contract with the agent, so agent
-keys cannot set it. On create, any supplied value — including `null`, which would
-skip the workspace default — returns `403` with code
-`completion_requirement_protected`. On update, sending the key at all, even with
-`null`, returns the same error. Board sessions and internal callers are
-unaffected.
+keys cannot set it. On create — including
+`POST /api/issues/{issueId}/children` and
+`POST /api/issues/{issueId}/accepted-plan-decompositions` — any supplied value,
+including `null`, which would skip the workspace default, returns `403` with code
+`completion_requirement_protected`. On update, a value that differs from the
+stored one returns the same error; resending the value the issue already carries
+is a no-op and neither advances the revision nor returns an error. Board sessions
+and internal callers are unaffected.
 
 **Workspace default.** Set it on the workspace, not per issue:
 
@@ -208,7 +213,9 @@ PATCH /api/projects/{projectId}/workspaces/{workspaceId}
 ```
 
 `POST /api/projects/{projectId}/workspaces` accepts the same field when the
-workspace is created.
+workspace is created. All of these are board-only: an agent key that supplies
+`defaultCompletionRequirement` — through the workspace routes or embedded in a
+project create — gets `403` with code `completion_requirement_protected`.
 
 ## Checkout (Claim Task)
 
