@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { responsibilities, responsibilityAreas, responsibilityDashboardVersions } from "@paperclipai/db";
+import { agents, issues, projects, responsibilities, responsibilityAreas, responsibilityDashboardVersions, responsibilityLinks, routines } from "@paperclipai/db";
 import {
   RESPONSIBILITY_DASHBOARD_UNDO_HOURS,
   RESPONSIBILITY_DASHBOARD_VERSION_LIMIT,
@@ -9,6 +9,7 @@ import {
   responsibilityDashboardSnapshotSchema,
   type ResponsibilityDashboardSnapshot,
   type ResponsibilityDashboardSnapshotArea,
+  type ResponsibilityDashboardSnapshotLinks,
   type ResponsibilityDashboardVersionCause,
   type ResponsibilityDashboardVersionList,
   type ResponsibilityDashboardVersionSummary,
@@ -59,13 +60,27 @@ export function parseDashboardSnapshot(value: unknown): ResponsibilityDashboardS
   return responsibilityDashboardSnapshotSchema.parse(value) as ResponsibilityDashboardSnapshot;
 }
 
-/** Identity of a snapshot's contents: the areas and responsibilities, never which areas a change created. */
-export function dashboardSnapshotHash(snapshot: ResponsibilityDashboardSnapshot): string {
+/**
+ * Identity of a snapshot's contents: the areas and responsibilities, never
+ * which areas a change created. A snapshot whose responsibilities hold what is
+ * filed under them hashes those too; `legacy` leaves them out, to compare with
+ * a version saved before snapshots held them.
+ */
+export function dashboardSnapshotHash(snapshot: ResponsibilityDashboardSnapshot, opts: { legacy?: boolean } = {}): string {
   const areas = [...snapshot.areas].sort((a, b) => a.id.localeCompare(b.id))
     .map((area) => [area.id, area.title, area.status, area.sortOrder]);
   const items = [...snapshot.responsibilities].sort((a, b) => a.id.localeCompare(b.id))
-    .map((item) => [item.id, item.title, item.standard, item.areaId, item.status, item.sortOrder]);
+    .map((item) => {
+      const base: unknown[] = [item.id, item.title, item.standard, item.areaId, item.status, item.sortOrder];
+      if (opts.legacy || !item.links) return base;
+      return [...base, item.links, item.description ?? null, item.runByAgentId ?? null];
+    });
   return createHash("sha256").update(JSON.stringify({ areas, items })).digest("hex");
+}
+
+/** True for a version saved before snapshots held filed items. */
+function isLegacySnapshot(snapshot: ResponsibilityDashboardSnapshot) {
+  return snapshot.responsibilities.some((item) => item.links === undefined);
 }
 
 /** Serialize all dashboard writes for one person inside `tx`. */
@@ -94,7 +109,7 @@ export function responsibilityDashboardVersionService(db: Db) {
     createdNow: readonly string[] = [],
     touched: readonly string[] = [],
   ): Promise<ResponsibilityDashboardSnapshot> {
-    const [items, created] = await Promise.all([
+    const [rows, linkRows, created] = await Promise.all([
       database.select({
         id: responsibilities.id,
         title: responsibilities.title,
@@ -102,11 +117,25 @@ export function responsibilityDashboardVersionService(db: Db) {
         areaId: responsibilities.areaId,
         status: responsibilities.status,
         sortOrder: responsibilities.sortOrder,
+        description: responsibilities.description,
+        runByAgentId: responsibilities.runByAgentId,
       }).from(responsibilities).where(and(
         eq(responsibilities.companyId, companyId),
         eq(responsibilities.ownerUserId, ownerUserId),
         eq(responsibilities.status, "active"),
       )),
+      database.select({
+        responsibilityId: responsibilityLinks.responsibilityId,
+        projectId: responsibilityLinks.projectId,
+        issueId: responsibilityLinks.issueId,
+        routineId: responsibilityLinks.routineId,
+      }).from(responsibilityLinks)
+        .innerJoin(responsibilities, eq(responsibilities.id, responsibilityLinks.responsibilityId))
+        .where(and(
+          eq(responsibilities.companyId, companyId),
+          eq(responsibilities.ownerUserId, ownerUserId),
+          eq(responsibilities.status, "active"),
+        )),
       database.selectDistinct({ id: sql<string>`jsonb_array_elements_text(${responsibilityDashboardVersions.snapshot} -> 'createdAreaIds')` })
         .from(responsibilityDashboardVersions)
         .where(and(
@@ -114,6 +143,19 @@ export function responsibilityDashboardVersionService(db: Db) {
           eq(responsibilityDashboardVersions.ownerUserId, ownerUserId),
         )),
     ]);
+    const linksBy = new Map<string, ResponsibilityDashboardSnapshotLinks>();
+    for (const link of linkRows) {
+      const entry = linksBy.get(link.responsibilityId) ?? { projectIds: [], issueIds: [], routineIds: [] };
+      if (link.projectId) entry.projectIds.push(link.projectId);
+      if (link.issueId) entry.issueIds.push(link.issueId);
+      if (link.routineId) entry.routineIds.push(link.routineId);
+      linksBy.set(link.responsibilityId, entry);
+    }
+    const sortedLinks = (id: string): ResponsibilityDashboardSnapshotLinks => {
+      const entry = linksBy.get(id) ?? { projectIds: [], issueIds: [], routineIds: [] };
+      return { projectIds: [...entry.projectIds].sort(), issueIds: [...entry.issueIds].sort(), routineIds: [...entry.routineIds].sort() };
+    };
+    const items = rows.map(({ description, runByAgentId, ...item }) => ({ ...item, links: sortedLinks(item.id), description, runByAgentId }));
     const referenced = [...new Set(items.map((item) => item.areaId).filter((value): value is string => value !== null))];
     const createdIds = [...new Set([...created.map((row) => row.id), ...createdNow, ...touched])].filter((value) => !referenced.includes(value));
     const areas = referenced.length + createdIds.length === 0 ? [] : await database.select({
@@ -175,7 +217,10 @@ export function responsibilityDashboardVersionService(db: Db) {
   }): Promise<{ row: VersionRow; created: boolean }> {
     const previous = await latestRow(tx, input.companyId, input.ownerUserId);
     const hash = dashboardSnapshotHash(input.snapshot);
-    if (previous && previous.snapshotHash === hash) return { row: previous, created: false };
+    // A version saved before snapshots held filed items is compared on what it holds.
+    const comparable = previous && isLegacySnapshot(parseDashboardSnapshot(previous.snapshot))
+      ? dashboardSnapshotHash(input.snapshot, { legacy: true }) : hash;
+    if (previous && previous.snapshotHash === comparable) return { row: previous, created: false };
     const summary = responsibilityDashboardChangeSummary(previous ? parseDashboardSnapshot(previous.snapshot) : null, input.snapshot);
     // Strictly after the previous version, so "newest" never ties within one transaction.
     const createdAt = new Date(Math.max(Date.now(), (previous?.createdAt.getTime() ?? 0) + 1));
@@ -220,8 +265,10 @@ export function responsibilityDashboardVersionService(db: Db) {
    * and responsibility in it, its name or sentence, area, order and status
    * are put back; whatever the person owns now that is not in it is let go,
    * and an area it leaves holding nothing of anyone's is archived. Nothing is
-   * deleted, and bars, metrics, readings and what is filed under a
-   * responsibility are never touched.
+   * deleted, and bars, metrics and readings are never touched. A version that
+   * holds what is filed under each responsibility, its description and the
+   * agent that runs it puts those back too (see restoreDetailsInTx); an older
+   * version leaves them as they are.
    *
    * Areas other people have responsibilities in keep their name and order
    * (they see them too); a responsibility deleted since is created again with
@@ -364,6 +411,7 @@ export function responsibilityDashboardVersionService(db: Db) {
           confirmedAt: now,
         }).returning();
         events.push({ action: "responsibility.created", entityType: "responsibility", entityId: created!.id, details: { title: created!.title, ownerUserId, status: "active", source: "manual", areaId, ...source } });
+        events.push(...await restoreDetailsInTx(tx, companyId, created!, want, source));
         continue;
       }
       // A bar keeps its sentence: an empty one would leave its metric without the words it measures.
@@ -377,6 +425,7 @@ export function responsibilityDashboardVersionService(db: Db) {
         set.status = "active";
         if (!row.confirmedAt) set.confirmedAt = now;
       }
+      events.push(...await restoreDetailsInTx(tx, companyId, row, want, source));
       if (Object.keys(set).length === 0) continue;
       await tx.update(responsibilities).set({ ...set, updatedAt: now })
         .where(and(eq(responsibilities.id, row.id), eq(responsibilities.companyId, companyId)));
@@ -415,6 +464,87 @@ export function responsibilityDashboardVersionService(db: Db) {
     const candidates = [...new Set([...current.areas.map((area) => area.id), ...touchedAreas])].filter((areaId) => !kept.has(areaId));
     events.push(...await archiveIfEmpty(tx, companyId, candidates, source));
     return { events, createdAreaIds };
+  }
+
+  /**
+   * Inside `tx`: put back what a version holds beyond the sentence fields,
+   * when it holds them: the description, the agent that runs it (while that
+   * agent still exists) and exactly the projects, tasks and routines filed
+   * directly under it (those deleted since stay gone).
+   */
+  async function restoreDetailsInTx(
+    tx: DashboardTransaction,
+    companyId: string,
+    row: Pick<ResponsibilityRow, "id" | "description" | "runByAgentId">,
+    want: ResponsibilityDashboardSnapshot["responsibilities"][number],
+    source: Record<string, unknown>,
+  ): Promise<DashboardActivityEvent[]> {
+    const events: DashboardActivityEvent[] = [];
+    const set: Partial<typeof responsibilities.$inferInsert> = {};
+    if (want.description !== undefined && (row.description ?? null) !== want.description) set.description = want.description;
+    if (want.runByAgentId !== undefined && row.runByAgentId !== want.runByAgentId) {
+      const agentExists = want.runByAgentId === null || (await tx.select({ id: agents.id }).from(agents)
+        .where(and(eq(agents.id, want.runByAgentId), eq(agents.companyId, companyId)))).length > 0;
+      if (agentExists) set.runByAgentId = want.runByAgentId;
+    }
+    if (Object.keys(set).length > 0) {
+      await tx.update(responsibilities).set({ ...set, updatedAt: new Date() })
+        .where(and(eq(responsibilities.id, row.id), eq(responsibilities.companyId, companyId)));
+      events.push({
+        action: "responsibility.updated",
+        entityType: "responsibility",
+        entityId: row.id,
+        details: {
+          fields: Object.keys(set),
+          ...(set.runByAgentId !== undefined ? { fromRunByAgentId: row.runByAgentId, toRunByAgentId: set.runByAgentId } : {}),
+          ...source,
+        },
+      });
+    }
+    if (!want.links) return events;
+    const current = await tx.select().from(responsibilityLinks).where(eq(responsibilityLinks.responsibilityId, row.id));
+    const wanted = new Set([
+      ...want.links.projectIds.map((id) => `project:${id}`),
+      ...want.links.issueIds.map((id) => `issue:${id}`),
+      ...want.links.routineIds.map((id) => `routine:${id}`),
+    ]);
+    const keyOf = (link: typeof responsibilityLinks.$inferSelect) =>
+      link.projectId ? `project:${link.projectId}` : link.issueId ? `issue:${link.issueId}` : `routine:${link.routineId}`;
+    const have = new Set(current.map(keyOf));
+    for (const link of current) {
+      if (wanted.has(keyOf(link))) continue;
+      await tx.delete(responsibilityLinks).where(eq(responsibilityLinks.id, link.id));
+      const [targetType, targetId] = keyOf(link).split(":");
+      events.push({ action: "responsibility.unlinked", entityType: "responsibility", entityId: row.id, details: { linkId: link.id, targetType, targetId, ...source } });
+    }
+    const missing = [...wanted].filter((key) => !have.has(key)).map((key) => key.split(":") as [string, string]);
+    const idsOf = (kind: string) => missing.filter(([type]) => type === kind).map(([, id]) => id);
+    // Only items that still exist in the company can be filed again.
+    const [liveProjects, liveIssues, liveRoutines] = await Promise.all([
+      idsOf("project").length === 0 ? [] : tx.select({ id: projects.id }).from(projects)
+        .where(and(eq(projects.companyId, companyId), inArray(projects.id, idsOf("project")))),
+      idsOf("issue").length === 0 ? [] : tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, idsOf("issue")))),
+      idsOf("routine").length === 0 ? [] : tx.select({ id: routines.id }).from(routines)
+        .where(and(eq(routines.companyId, companyId), inArray(routines.id, idsOf("routine")))),
+    ]);
+    const live = new Set([
+      ...liveProjects.map((item) => `project:${item.id}`),
+      ...liveIssues.map((item) => `issue:${item.id}`),
+      ...liveRoutines.map((item) => `routine:${item.id}`),
+    ]);
+    for (const [kind, id] of missing) {
+      if (!live.has(`${kind}:${id}`)) continue;
+      const [inserted] = await tx.insert(responsibilityLinks).values({
+        companyId,
+        responsibilityId: row.id,
+        projectId: kind === "project" ? id : null,
+        issueId: kind === "issue" ? id : null,
+        routineId: kind === "routine" ? id : null,
+      }).onConflictDoNothing().returning();
+      if (inserted) events.push({ action: "responsibility.linked", entityType: "responsibility", entityId: row.id, details: { linkId: inserted.id, targetType: kind, targetId: id, ...source } });
+    }
+    return events;
   }
 
   /** Inside `tx`: archive each listed area that is not archived and holds no proposed or active responsibility of anyone. */

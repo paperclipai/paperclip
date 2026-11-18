@@ -158,7 +158,7 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(53);
+    expect(operationIds).toHaveLength(61);
     expect(operationIds).toContain("set_task_monitor");
     expect(operationIds).toContain("send_chat_message");
     expect(new Set(operationIds).size).toBe(operationIds.length);

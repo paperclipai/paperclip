@@ -42,7 +42,8 @@ function fakeApi(routes: Record<string, { status?: number; body: unknown }>) {
   return { calls, fetcher };
 }
 
-const base = { apiUrl: "http://paperclip.test/api", token: "agent-token", companyId: COMPANY, companyPrefix: "PAP" };
+const ISSUE = "77777777-7777-4777-8777-777777777777";
+const base = { apiUrl: "http://paperclip.test/api", token: "agent-token", companyId: COMPANY, issueId: ISSUE, companyPrefix: "PAP" };
 
 describe("responsibility tools", () => {
   it("groups a person's responsibilities by area and reports uncovered work", async () => {

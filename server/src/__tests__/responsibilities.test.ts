@@ -18,9 +18,11 @@ import {
   issueDocuments,
   issueReferenceMentions,
   issues,
+  issueThreadInteractions,
   projects,
   responsibilities,
   responsibilityAreas,
+  responsibilityDashboardVersions,
   responsibilityLinks,
   routineRuns,
   routines,
@@ -31,6 +33,7 @@ import { errorHandler } from "../middleware/index.js";
 import { responsibilityRoutes } from "../routes/responsibilities.js";
 import { responsibilityAreaRoutes } from "../routes/responsibility-areas.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { responsibilityDashboardVersionService } from "../services/responsibility-dashboard-versions.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -95,6 +98,8 @@ describeEmbeddedPostgres("responsibility routes", () => {
   }, 30_000);
 
   afterEach(async () => {
+    await db.delete(responsibilityDashboardVersions);
+    await db.delete(issueThreadInteractions);
     await db.delete(responsibilityLinks);
     await db.delete(responsibilities);
     await db.delete(responsibilityAreas);
@@ -182,7 +187,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
     }
   });
 
-  it("reads and proposes for the person an agent's run works for when no owner is named", async () => {
+  it("reads and creates for the person an agent's run works for when no owner is named", async () => {
     await enable();
     const company = await seedCompany();
     const agent = await seedAgent(company.id);
@@ -199,9 +204,10 @@ describeEmbeddedPostgres("responsibility routes", () => {
     expect(listed.body.ownerUserId).toBe(OWNER);
     expect(listed.body.responsibilities.map((row: { id: string }) => row.id)).toEqual([mine.id]);
 
-    const proposed = await request(forOwner).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Hiring", ...METRIC });
-    expect(proposed.status).toBe(201);
-    expect(proposed.body).toMatchObject({ ownerUserId: OWNER, status: "proposed" });
+    // Acting for the owner, it creates what the owner could: an active responsibility.
+    const created = await request(forOwner).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Hiring", ...METRIC });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ ownerUserId: OWNER, status: "active" });
 
     // A named owner still wins, and a run that works for no person must name one.
     const other = await request(forOwner).get(`/api/companies/${company.id}/responsibilities?ownerUserId=other-user`);
@@ -910,5 +916,150 @@ describeEmbeddedPostgres("responsibility routes", () => {
     const [deleted] = await db.select().from(activityLog)
       .where(and(eq(activityLog.companyId, company.id), eq(activityLog.action, "responsibility.deleted")));
     expect(deleted?.entityId).toBe(area.id);
+  });
+
+  describe("an agent acting for the person its run works for", () => {
+    function actingAgent(companyId: string, agentId: string, personUserId = OWNER, role = "owner") {
+      return createApp(db, {
+        ...agentActor(companyId, agentId),
+        onBehalfOfUserId: personUserId,
+        onBehalfOfMemberships: [{ companyId, membershipRole: role, status: "active" }],
+      });
+    }
+
+    async function latestVersion(companyId: string, ownerUserId = OWNER) {
+      const rows = await db.select().from(responsibilityDashboardVersions)
+        .where(and(eq(responsibilityDashboardVersions.companyId, companyId), eq(responsibilityDashboardVersions.ownerUserId, ownerUserId)));
+      return rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+    }
+
+    it("creates and changes what the person could, each change an undoable Dashboard version", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const app = actingAgent(company.id, agent.id);
+
+      // A title is enough, as for the person; it is active and records which agent made it.
+      const created = await request(app).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Hiring" });
+      expect(created.status).toBe(201);
+      expect(created.body).toMatchObject({ ownerUserId: OWNER, status: "active", proposedByAgentId: agent.id });
+      const afterCreate = await latestVersion(company.id);
+      expect(afterCreate).toMatchObject({ cause: "change_set", actorAgentId: agent.id, interactionId: null });
+
+      const area = await request(app).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "People" });
+      expect(area.body.status).toBe("active");
+      const renamed = await request(app).patch(`/api/responsibilities/${created.body.id}`).send({ title: "Hire well", areaId: area.body.id });
+      expect(renamed.status).toBe(200);
+      expect(renamed.body).toMatchObject({ title: "Hire well", areaId: area.body.id });
+      const afterRename = await latestVersion(company.id);
+      expect(afterRename?.summary).toContain("moved 1 responsibility");
+
+      // Undo from the Dashboard history puts it back.
+      const versions = responsibilityDashboardVersionService(db);
+      await versions.restore((await versions.getById(afterRename!.previousVersionId!))!, { userId: OWNER });
+      const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, created.body.id));
+      expect(row).toMatchObject({ title: "Hiring", areaId: null });
+
+      const updated = (await actions(company.id)).find((entry) => entry.action === "responsibility.updated" && entry.entityId === created.body.id);
+      expect(updated?.details).toMatchObject({ onBehalfOfUserId: OWNER });
+    });
+
+    it("files and moves work in one step, and Undo unfiles it", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const app = actingAgent(company.id, agent.id);
+      const board = createApp(db, localBoardActor());
+      const hiring = await createResponsibility(board, company.id, { title: "Hiring" });
+      const sales = await createResponsibility(board, company.id, { title: "Sales" });
+      const routine = await db.insert(routines).values({ companyId: company.id, title: "Weekly pipeline" }).returning().then((r) => r[0]!);
+      await request(board).post(`/api/responsibilities/${hiring.id}/links`).send({ routineId: routine.id });
+
+      const moved = await request(app).post(`/api/responsibilities/${sales.id}/file`).send({ items: [{ kind: "routine", id: routine.id }], moveFrom: "all" });
+      expect(moved.status).toBe(200);
+      expect(moved.body.filed).toHaveLength(1);
+      expect(moved.body.unfiled.map((link: { responsibilityId: string }) => link.responsibilityId)).toEqual([hiring.id]);
+      const links = await db.select().from(responsibilityLinks).where(eq(responsibilityLinks.routineId, routine.id));
+      expect(links.map((link) => link.responsibilityId)).toEqual([sales.id]);
+
+      const version = await latestVersion(company.id);
+      expect(version?.summary).toMatch(/filed 1 item and unfiled 1 item/i);
+      const versions = responsibilityDashboardVersionService(db);
+      await versions.restore((await versions.getById(version!.previousVersionId!))!, { userId: OWNER });
+      const restored = await db.select().from(responsibilityLinks).where(eq(responsibilityLinks.routineId, routine.id));
+      expect(restored.map((link) => link.responsibilityId)).toEqual([hiring.id]);
+
+      const unfiled = await request(app).post(`/api/responsibilities/${hiring.id}/unfile`).send({ items: [{ kind: "routine", id: routine.id }] });
+      expect(unfiled.body.unfiled).toHaveLength(1);
+    });
+
+    it("may not change what the person could not, and stays propose-only without a person", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const board = createApp(db, localBoardActor());
+      const mine = await createResponsibility(board, company.id, { title: "Hiring" });
+
+      // An operator may not manage the owner's responsibilities, so neither may an agent acting for one.
+      const forOperator = actingAgent(company.id, agent.id, "other-user", "operator");
+      expect((await request(forOperator).patch(`/api/responsibilities/${mine.id}`).send({ title: "x" })).status).toBe(403);
+      expect((await request(forOperator).post(`/api/responsibilities/${mine.id}/file`).send({ items: [{ kind: "routine", id: randomUUID() }] })).status).toBe(403);
+
+      const alone = createApp(db, agentActor(company.id, agent.id));
+      expect((await request(alone).patch(`/api/responsibility-areas/${randomUUID()}`).send({ title: "x" })).status).toBe(404);
+      const area = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "People" });
+      expect((await request(alone).patch(`/api/responsibility-areas/${area.body.id}`).send({ title: "x" })).status).toBe(403);
+      const proposal = await request(alone).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Ops", ownerUserId: OWNER, ...METRIC });
+      expect(proposal.body.status).toBe("proposed");
+    });
+
+    it("deletes only after the person accepts the agent's confirmation card", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const app = actingAgent(company.id, agent.id);
+      const board = createApp(db, localBoardActor());
+      const doomed = await createResponsibility(board, company.id, { title: "Old work" });
+      const area = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Old area" });
+
+      const refused = await request(app).delete(`/api/responsibilities/${doomed.id}`);
+      expect(refused.status).toBe(403);
+      expect(refused.body.code).toBe("responsibility_delete_confirmation_required");
+
+      const chat = await db.insert(issues).values({ companyId: company.id, title: "Chat", status: "in_progress", priority: "medium" }).returning().then((r) => r[0]!);
+      const card = async (key: string, status: string, resolvedByUserId: string | null = OWNER) => db.insert(issueThreadInteractions).values({
+        companyId: company.id, issueId: chat.id, kind: "request_confirmation", status, createdByAgentId: agent.id,
+        payload: { version: 1, prompt: "Delete it?", target: { type: "custom", key } },
+        ...(resolvedByUserId ? { resolvedByUserId, resolvedAt: new Date() } : {}),
+      }).returning().then((r) => r[0]!);
+      const pending = await card(`responsibility-delete:${doomed.id}`, "pending", null);
+      expect((await request(app).delete(`/api/responsibilities/${doomed.id}?confirmationId=${pending.id}`)).status).toBe(403);
+      const wrongTarget = await card(`responsibility-delete:${randomUUID()}`, "accepted");
+      expect((await request(app).delete(`/api/responsibilities/${doomed.id}?confirmationId=${wrongTarget.id}`)).status).toBe(403);
+
+      const accepted = await card(`responsibility-delete:${doomed.id}`, "accepted");
+      const deleted = await request(app).delete(`/api/responsibilities/${doomed.id}?confirmationId=${accepted.id}`);
+      expect(deleted.status).toBe(200);
+      const [logged] = (await actions(company.id)).filter((entry) => entry.action === "responsibility.deleted");
+      expect(logged?.details).toMatchObject({ confirmationInteractionId: accepted.id, onBehalfOfUserId: OWNER });
+
+      const areaCard = await card(`responsibility-area-delete:${area.body.id}`, "accepted");
+      const removedArea = await request(app).delete(`/api/responsibility-areas/${area.body.id}?confirmationId=${areaCard.id}`);
+      expect(removedArea.status).toBe(200);
+    });
+
+    it("moves an area's responsibilities when the area is deleted", async () => {
+      await enable();
+      const company = await seedCompany();
+      const board = createApp(db, localBoardActor());
+      const from = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Money" });
+      const to = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Finance" });
+      const item = await createResponsibility(board, company.id, { title: "Runway", areaId: from.body.id });
+      const removed = await request(board).delete(`/api/responsibility-areas/${from.body.id}?moveResponsibilitiesTo=${to.body.id}`);
+      expect(removed.status).toBe(200);
+      expect(removed.body.movedResponsibilities).toBe(1);
+      const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, item.id));
+      expect(row?.areaId).toBe(to.body.id);
+    });
   });
 });

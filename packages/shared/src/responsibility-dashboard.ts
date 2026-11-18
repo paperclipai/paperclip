@@ -24,10 +24,12 @@ export const RESPONSIBILITY_DASHBOARD_SENTENCE_MAX = 200;
 export const RESPONSIBILITY_DASHBOARD_UNDO_HOURS = 24;
 
 /**
- * Who caused a version. `change_set`: an agent's proposal a person applied.
- * `person`: changes made by hand since the last version (picked up before the
- * next agent change and whenever the version list is opened). `restore`: a
- * person went back to an earlier version.
+ * Who caused a version. `change_set`: an agent's change, either a proposal a
+ * person applied (`interactionId` set) or a change an agent made for the
+ * person with its responsibility tools (no `interactionId`). `person`: changes
+ * made by hand since the last version (picked up before the next agent change
+ * and whenever the version list is opened). `restore`: a person went back to
+ * an earlier version.
  */
 export const RESPONSIBILITY_DASHBOARD_VERSION_CAUSES = ["change_set", "person", "restore"] as const;
 export type ResponsibilityDashboardVersionCause = (typeof RESPONSIBILITY_DASHBOARD_VERSION_CAUSES)[number];
@@ -401,7 +403,19 @@ export interface ResponsibilityDashboardSnapshotArea {
   sortOrder: number;
 }
 
-/** One responsibility as a version holds it: its sentence fields, area, status and order. */
+/** The projects, tasks and routines filed directly under a responsibility, each sorted. */
+export interface ResponsibilityDashboardSnapshotLinks {
+  projectIds: string[];
+  issueIds: string[];
+  routineIds: string[];
+}
+
+/**
+ * One responsibility as a version holds it: its sentence fields, area, status
+ * and order. Versions saved since agents could change responsibilities for a
+ * person also hold what is filed under it, its description and the agent that
+ * runs it; restoring an older version leaves those as they are.
+ */
 export interface ResponsibilityDashboardSnapshotResponsibility {
   id: string;
   title: string;
@@ -409,6 +423,9 @@ export interface ResponsibilityDashboardSnapshotResponsibility {
   areaId: string | null;
   status: string;
   sortOrder: number;
+  links?: ResponsibilityDashboardSnapshotLinks;
+  description?: string | null;
+  runByAgentId?: string | null;
 }
 
 /**
@@ -435,6 +452,13 @@ export const responsibilityDashboardSnapshotSchema = z.object({
     areaId: z.string().nullable(),
     status: z.string(),
     sortOrder: z.number(),
+    links: z.object({
+      projectIds: z.array(z.string()),
+      issueIds: z.array(z.string()),
+      routineIds: z.array(z.string()),
+    }).optional(),
+    description: z.string().nullable().optional(),
+    runByAgentId: z.string().nullable().optional(),
   })),
   createdAreaIds: z.array(z.string()).default([]),
 });
@@ -519,6 +543,15 @@ export function responsibilityDashboardSentence(row: { standard: string | null; 
   return row.standard?.trim() || row.title;
 }
 
+/** One key per filed item, such as `routine:<id>`, for comparing two versions. */
+export function snapshotLinkKeys(links: ResponsibilityDashboardSnapshotLinks): string[] {
+  return [
+    ...links.projectIds.map((id) => `project:${id}`),
+    ...links.issueIds.map((id) => `issue:${id}`),
+    ...links.routineIds.map((id) => `routine:${id}`),
+  ];
+}
+
 function count(n: number, one: string, many: string) {
   return `${n} ${n === 1 ? one : many}`;
 }
@@ -560,6 +593,9 @@ export function responsibilityDashboardChangeSummary(
   let reworded = 0;
   let moved = 0;
   let letGo = 0;
+  let filed = 0;
+  let unfiled = 0;
+  let detailed = 0;
   for (const [itemId, item] of afterItems) {
     const was = beforeItems.get(itemId);
     if (!was) {
@@ -568,6 +604,15 @@ export function responsibilityDashboardChangeSummary(
     }
     if (responsibilityDashboardSentence(was) !== responsibilityDashboardSentence(item)) reworded += 1;
     if (was.areaId !== item.areaId) moved += 1;
+    // Only versions that both hold these can be compared; an older version holds none.
+    if (was.links && item.links) {
+      const before = new Set(snapshotLinkKeys(was.links));
+      const after = new Set(snapshotLinkKeys(item.links));
+      for (const key of after) if (!before.has(key)) filed += 1;
+      for (const key of before) if (!after.has(key)) unfiled += 1;
+    }
+    if ((was.description !== undefined && item.description !== undefined && was.description !== item.description)
+      || (was.runByAgentId !== undefined && item.runByAgentId !== undefined && was.runByAgentId !== item.runByAgentId)) detailed += 1;
   }
   for (const itemId of beforeItems.keys()) if (!afterItems.has(itemId)) letGo += 1;
   const verbs: string[] = [];
@@ -581,6 +626,9 @@ export function responsibilityDashboardChangeSummary(
   if (moved > 0) verbs.push(`moved ${count(moved, "responsibility", "responsibilities")}`);
   if (removedAreas > 0) verbs.push(`removed ${count(removedAreas, "area", "areas")}`);
   if (letGo > 0) verbs.push(`let go of ${count(letGo, "responsibility", "responsibilities")}`);
+  if (filed > 0) verbs.push(`filed ${count(filed, "item", "items")}`);
+  if (unfiled > 0) verbs.push(`unfiled ${count(unfiled, "item", "items")}`);
+  if (detailed > 0) verbs.push(`changed the details of ${count(detailed, "responsibility", "responsibilities")}`);
   if (verbs.length === 0) return "No changes";
   const line = joinWords(verbs);
   return line.charAt(0).toUpperCase() + line.slice(1);

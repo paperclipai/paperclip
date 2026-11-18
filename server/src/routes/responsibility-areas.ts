@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createResponsibilityAreaSchema,
+  deleteResponsibilityAreaQuerySchema,
   listResponsibilityAreasQuerySchema,
   updateResponsibilityAreaSchema,
 } from "@paperclipai/shared";
@@ -10,21 +11,26 @@ import { responsibilitiesDisabledError } from "../services/responsibilities-disa
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
+import { responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
 import { responsibilityAreaService } from "../services/responsibility-areas.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { agentPersonInCompany } from "./responsibilities.js";
 
 const NOT_FOUND = "Area not found";
 
 /**
  * Responsibility areas (experimental, `enableResponsibilities`). Areas have no
- * owner: any board user with write access to the company manages them, and
- * agents can only propose one.
+ * owner: any board user with write access to the company manages them. An
+ * agent acting for a member of the company may do the same, each change saved
+ * as a version of that person's Dashboard they can undo (a delete only after
+ * the person accepts a confirmation card); other agents can only propose one.
  */
 export function responsibilityAreaRoutes(db: Db) {
   const router = Router();
   const access = accessService(db);
   const settings = instanceSettingsService(db);
   const svc = responsibilityAreaService(db);
+  const agentChanges = responsibilityAgentChangeService(db);
 
   async function assertResponsibilitiesEnabled() {
     const experimental = await settings.getExperimental();
@@ -52,6 +58,15 @@ export function responsibilityAreaRoutes(db: Db) {
     return row;
   }
 
+  /** A board user, or an agent acting for a member of the company: who the agent acts for, or null for a board user. */
+  async function assertAreaWriter(req: Request, companyId: string) {
+    if (req.actor.type === "board") return null;
+    await assertCompanyRead(req, companyId);
+    const person = agentPersonInCompany(req, companyId);
+    if (!person) throw forbidden("Only a member of the company can change an area; this agent's run does not work for one");
+    return { personUserId: person.userId, agentId: getActorInfo(req).actorId };
+  }
+
   async function logAreaMutation(req: Request, companyId: string, action: string, entityId: string, details?: Record<string, unknown>) {
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -64,7 +79,9 @@ export function responsibilityAreaRoutes(db: Db) {
       action,
       entityType: "responsibility_area",
       entityId,
-      details,
+      details: req.actor.type === "agent" && req.actor.onBehalfOfUserId
+        ? { ...details, onBehalfOfUserId: req.actor.onBehalfOfUserId }
+        : details,
     });
   }
 
@@ -81,11 +98,20 @@ export function responsibilityAreaRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const actor = getActorInfo(req);
-    const { area, created } = await svc.create(
+    const person = agentPersonInCompany(req, companyId);
+    const create = () => svc.create(
       companyId,
       req.body,
-      req.actor.type === "agent" ? { type: "agent", agentId: actor.actorId } : { type: "board" },
+      req.actor.type !== "agent" ? { type: "board" }
+        : person ? { type: "board", viaAgentId: actor.actorId }
+          : { type: "agent", agentId: actor.actorId },
     );
+    const { area, created } = person
+      ? await agentChanges.record({
+        companyId, ownerUserIds: [person.userId], agentId: actor.actorId,
+        createdAreaIds: (result) => (result.created ? [result.area.id] : []),
+      }, create)
+      : await create();
     if (!created) {
       res.json(area);
       return;
@@ -100,10 +126,14 @@ export function responsibilityAreaRoutes(db: Db) {
 
   router.patch("/responsibility-areas/:id", validate(updateResponsibilityAreaSchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
-    assertBoard(req);
+    if (req.actor.type !== "agent") assertBoard(req);
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
-    const updated = await svc.update(row, req.body);
+    const writer = await assertAreaWriter(req, row.companyId);
+    const updated = writer
+      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id] },
+        () => svc.update(row, req.body))
+      : await svc.update(row, req.body);
     await logAreaMutation(req, row.companyId, "responsibility_area.updated", row.id, {
       fields: Object.keys(req.body),
       ...(req.body.status !== undefined ? { fromStatus: row.status, toStatus: updated.status } : {}),
@@ -114,16 +144,36 @@ export function responsibilityAreaRoutes(db: Db) {
 
   router.delete("/responsibility-areas/:id", async (req, res) => {
     await assertResponsibilitiesEnabled();
-    assertBoard(req);
+    if (req.actor.type !== "agent") assertBoard(req);
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
-    const removed = await svc.remove(row);
+    const query = deleteResponsibilityAreaQuerySchema.parse(req.query);
+    const writer = await assertAreaWriter(req, row.companyId);
+    let confirmationId: string | null = null;
+    if (writer) {
+      // Permanent: an agent deletes only after the person accepts its confirmation card.
+      const card = await agentChanges.assertConfirmedDeletion({
+        companyId: row.companyId,
+        agentId: writer.agentId,
+        interactionId: query.confirmationId,
+        key: responsibilityDeletionKey("area", row.id),
+      });
+      confirmationId = card.id;
+    }
+    const remove = () => svc.remove(row, { moveTo: query.moveResponsibilitiesTo ?? null });
+    const removed = writer
+      ? await agentChanges.record({ companyId: row.companyId, ownerUserIds: [writer.personUserId], agentId: writer.agentId, touchedAreaIds: [row.id] }, remove)
+      : await remove();
     if (!removed) {
       res.status(404).json({ error: NOT_FOUND });
       return;
     }
-    await logAreaMutation(req, row.companyId, "responsibility_area.deleted", row.id, { title: row.title });
-    res.json(removed);
+    await logAreaMutation(req, row.companyId, "responsibility_area.deleted", row.id, {
+      title: row.title,
+      ...(query.moveResponsibilitiesTo ? { movedResponsibilitiesTo: query.moveResponsibilitiesTo, moved: removed.moved } : {}),
+      ...(confirmationId ? { confirmationInteractionId: confirmationId } : {}),
+    });
+    res.json({ ...removed.area, movedResponsibilities: removed.moved });
   });
 
   return router;
