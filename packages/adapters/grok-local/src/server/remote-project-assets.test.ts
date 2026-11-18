@@ -1,3 +1,4 @@
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -48,7 +49,7 @@ it("uses the configured remote PATH for its Node staging command", async () => {
   try {
     const cwd=path.join(root,"workspace"),assets=path.join(root,"assets"),bin=path.join(root,"bin"),marker=path.join(root,"node-used");
     await fs.mkdir(cwd);await fs.mkdir(assets);await fs.mkdir(bin);
-    await fs.writeFile(path.join(bin,"node"),"#!/bin/sh\nprintf used > "+JSON.stringify(marker)+"\nexec "+JSON.stringify(process.execPath)+" \"$@\"\n",{mode:0o700});
+    await fs.writeFile(path.join(bin,"node"),"#!/bin/sh\nprintf used > "+shellQuote(marker)+"\nexec "+shellQuote(process.execPath)+" \"$@\"\n",{mode:0o700});
     const prepared=await prepareGrokRemoteProjectAssets({runId:"fixture",target:{kind:"local"},cwd,assets,env:{PATH:bin+path.delimiter+process.env.PATH}});
     expect(await fs.readFile(marker,"utf8")).toBe("used");await prepared.cleanup();
   } finally {await fs.rm(root,{recursive:true,force:true});}
