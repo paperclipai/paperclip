@@ -28,7 +28,7 @@ import {
 import * as sandboxProviderRuntime from "../services/sandbox-provider-runtime.ts";
 import * as environmentsModule from "../services/environments.ts";
 import { logger } from "../middleware/logger.ts";
-import { applyReuseLeaseScope, resolveRunnerEnvironmentForRun } from "../services/runner-environment-lifecycle.js";
+import { applyReuseLeaseScope, isIssueThreadReplyTurn, resolveRunnerEnvironmentForRun } from "../services/runner-environment-lifecycle.js";
 import { environmentService } from "../services/environments.ts";
 import { remoteExecutionHasStopped } from "../services/remote-execution-termination.ts";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -72,6 +72,23 @@ function reusableRuntimeFingerprint(input: {
 }) {
   return createHash("sha256").update(stableStringify(input)).digest("hex");
 }
+
+describe("isIssueThreadReplyTurn", () => {
+  const issue = { assigneeAgentId: "agent-1" };
+
+  it("is true for a comment-driven follow-up turn on an issue the agent owns", () => {
+    expect(isIssueThreadReplyTurn({ issue, agentId: "agent-1", wakeReason: "issue_commented" })).toBe(true);
+    expect(isIssueThreadReplyTurn({ issue, agentId: "agent-1", wakeReason: "issue_reopened_via_comment" })).toBe(true);
+  });
+
+  it("is false for first runs, routines, timers and other agents", () => {
+    for (const wakeReason of ["issue_assigned", "routine_execution", "heartbeat_timer", "issue_comment_mentioned", null, undefined]) {
+      expect(isIssueThreadReplyTurn({ issue, agentId: "agent-1", wakeReason })).toBe(false);
+    }
+    expect(isIssueThreadReplyTurn({ issue, agentId: "agent-2", wakeReason: "issue_commented" })).toBe(false);
+    expect(isIssueThreadReplyTurn({ issue: null, agentId: "agent-1", wakeReason: "issue_commented" })).toBe(false);
+  });
+});
 
 describe("applyReuseLeaseScope", () => {
   const sandbox = (config: Record<string, unknown>) => ({ driver: "sandbox" as const, config });
@@ -1196,6 +1213,23 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       const again = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: true });
       expect(again.lease.lease.providerLeaseId).toBe("k8s-1"); // same conversation resumes its pod
       expect(t.call.mock.calls.filter((c) => c[1] === "environmentResumeLease")).toHaveLength(1);
+      expect(t.acquisitionCount()).toBe(2);
+    });
+
+    it("reuses one pod across comment-driven turns on an ordinary issue, and never across issues", async () => {
+      const t = await setup();
+      const asThreadTurn = (issueId: string, wakeReason: string) => isIssueThreadReplyTurn({
+        issue: { assigneeAgentId: t.seeded.agentId }, agentId: t.seeded.agentId, wakeReason,
+      });
+      expect(asThreadTurn(t.issueIds[0]!, "issue_assigned")).toBe(false); // first run: fresh pod, not retained
+      const first = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: asThreadTurn(t.issueIds[0]!, "issue_commented"), runId: t.seeded.runId });
+      expect(first.lease.lease.leasePolicy).toBe("reuse_by_environment");
+      await t.runtime.releaseRunLeases(first.runId, "released", undefined, "keep_running");
+
+      const other = await t.turn({ issueId: t.issueIds[1]!, conversationTurn: asThreadTurn(t.issueIds[1]!, "issue_commented") });
+      expect(other.lease.lease.providerLeaseId).toBe("k8s-2");
+      const reply = await t.turn({ issueId: t.issueIds[0]!, conversationTurn: asThreadTurn(t.issueIds[0]!, "issue_commented") });
+      expect(reply.lease.lease.providerLeaseId).toBe("k8s-1");
       expect(t.acquisitionCount()).toBe(2);
     });
 

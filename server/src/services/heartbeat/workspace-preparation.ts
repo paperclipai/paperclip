@@ -29,6 +29,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { type ExecutionWorkspace } from "@paperclipai/shared";
 import { heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { getStartupTracer } from "../../instrumentation.js";
+import { isIssueThreadReplyTurn } from "../runner-environment-lifecycle.js";
 import { createHostDuplexObservabilityRecorder } from "../duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "../tool-runtime-metrics.js";
 import { logger } from "../../middleware/logger.js";
@@ -1080,9 +1081,15 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       adapterType: agent.adapterType,
       adapterConfig: parseObject(agent.adapterConfig),
       admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
-      // A turn of the issue's own conversation agent (not any agent on that issue).
+      // A turn of the issue's own conversation agent (not any agent on that issue), or a
+      // comment-driven follow-up turn on an issue this agent owns: both reuse one pod per issue.
       conversationTurn:
-        (issueRef as { conversationAgentId?: string | null } | null)?.conversationAgentId === agent.id,
+        (issueRef as { conversationAgentId?: string | null } | null)?.conversationAgentId === agent.id ||
+        isIssueThreadReplyTurn({
+          issue: issueRef as { assigneeAgentId?: string | null } | null,
+          agentId: agent.id,
+          wakeReason: readNonEmptyString(context.wakeReason),
+        }),
       recoverPluginTask: runOptions.nativeRestartRecovery?.kind === "resume_dead_runner" || runOptions.nativeRestartRecovery?.kind === "bootstrap_incomplete",
       issueId: issueId ?? null,
       heartbeatRunId: run.id,

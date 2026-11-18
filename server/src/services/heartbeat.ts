@@ -2542,6 +2542,7 @@ export function heartbeatService(
             priority: issueContext.priority,
             workMode: issueContext.workMode,
             conversationAgentId: issueContext.conversationAgentId,
+            assigneeAgentId: issueContext.assigneeAgentId,
             reviewPolicy: issueContext.reviewPolicy,
             description: issueContext.description,
             projectId: issueContext.projectId,

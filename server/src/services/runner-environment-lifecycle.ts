@@ -1,5 +1,27 @@
 import type { Environment } from "@paperclipai/shared";
 
+/** Wake reasons that mean a person replied on an issue thread (Slack-connector replies land as comments too). */
+const THREAD_REPLY_WAKE_REASONS = new Set(["issue_commented", "issue_reopened_via_comment"]);
+
+/**
+ * True when this run is a comment-driven follow-up turn on an ordinary issue the
+ * agent owns. Such a turn gets the same one-pod-per-issue reuse as a conversation
+ * turn. A first run (assignment), routine or timer run is not a thread turn and
+ * keeps a fresh pod.
+ */
+export function isIssueThreadReplyTurn(input: {
+  issue: { assigneeAgentId?: string | null } | null | undefined;
+  agentId: string;
+  wakeReason: string | null | undefined;
+}): boolean {
+  return Boolean(
+    input.issue &&
+      input.issue.assigneeAgentId === input.agentId &&
+      input.wakeReason &&
+      THREAD_REPLY_WAKE_REASONS.has(input.wakeReason),
+  );
+}
+
 /** The conversation-pod-reuse view of a sandbox environment for one run.
  *
  * Default ON: on a Kubernetes sandbox environment, a turn of an ongoing agent
