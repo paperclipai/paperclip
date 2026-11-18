@@ -173,6 +173,7 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
         requestedCwd: remoteCwd,
         // The reattach resume tells the provider the reconnect grace (RC-54).
         runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
+        timeoutMs: expect.any(Number),
       });
       expect(acquireAllocation).not.toHaveBeenCalled();
       expect(resumed).toHaveBeenCalledOnce();

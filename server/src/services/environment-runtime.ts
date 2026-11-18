@@ -591,6 +591,8 @@ export interface EnvironmentDriverResumeInput extends EnvironmentDriverLeaseInpu
   warmRunnerIdleTimeoutMs?: number;
   /** The run's remote runner reconnect grace, forwarded to the provider worker only. */
   runnerReconnectGraceMs?: number;
+  /** Upper bound for the provider resume call, so a caller's retry budget bounds total time. */
+  timeoutMs?: number;
 }
 
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
@@ -803,7 +805,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const TRANSIENT_RESUME_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const TRANSIENT_RESUME_HTTP_STATUSES = new Set([408, 425, 429]);
 const TRANSIENT_RESUME_ERROR_CODES = new Set([
   "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
   "CONNECTION_FAILED",
@@ -813,7 +815,7 @@ const EXACT_RESUME_MAX_RETRY_DELAY_MS = 5_000;
 
 export async function retryTransientExactResume<T>(input: {
   budgetMs: number;
-  call: () => Promise<T>;
+  call: (remainingMs: number) => Promise<T>;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<T> {
   const sleep = input.sleep ?? delay;
@@ -821,7 +823,7 @@ export async function retryTransientExactResume<T>(input: {
   let retryDelayMs = EXACT_RESUME_FIRST_RETRY_DELAY_MS;
   while (true) {
     try {
-      return await input.call();
+      return await input.call(Math.max(1, deadline - Date.now()));
     } catch (error) {
       if (!transientSandboxResumeFailure(error)) throw error;
       const jitteredDelayMs = Math.max(1, Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)));
@@ -843,7 +845,8 @@ export function transientSandboxResumeFailure(error: unknown): boolean {
       : null;
   if (status === 429 || (status !== null && status >= 500)) return true;
   const envelope = readEnvironmentResumeErrorDiagnostic(error);
-  if (envelope?.httpStatus !== undefined && TRANSIENT_RESUME_HTTP_STATUSES.has(envelope.httpStatus)) return true;
+  if (envelope?.httpStatus !== undefined
+    && (TRANSIENT_RESUME_HTTP_STATUSES.has(envelope.httpStatus) || (envelope.httpStatus >= 500 && envelope.httpStatus <= 599))) return true;
   if (envelope?.errorCode !== undefined && TRANSIENT_RESUME_ERROR_CODES.has(envelope.errorCode)) return true;
   if (error instanceof JsonRpcCallError && error.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return true;
   // A sandbox still stopping, archiving, or starting can be started shortly.
@@ -2813,7 +2816,7 @@ function createSandboxEnvironmentDriver(
         issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
         ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
-      }, resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000);
+      }, Math.min(resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000, input.timeoutMs ?? Number.POSITIVE_INFINITY));
       if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
         if (resumeReplyConfirmsAbsence(resumed)) throw new RetainedSandboxAbsentError();
         throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");

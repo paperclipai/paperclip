@@ -988,6 +988,7 @@ describe("live remote runner lease reattachment", () => {
     expect(runtime.resumeRunLease).toHaveBeenCalledWith({
       environment: result.environment, lease: savedLease, requestedCwd: "/remote/workspace",
       runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
+      timeoutMs: expect.any(Number),
     });
     expect(result.lease).toEqual(savedLease);
     expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
@@ -1067,6 +1068,7 @@ describe("live remote runner lease reattachment", () => {
     expect(runtime.resumeRunLease).toHaveBeenCalledWith({
       environment: result.environment, lease: savedLease, requestedCwd: "/remote/workspace",
       warmRunnerIdleTimeoutMs: 1_800_000, runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
+      timeoutMs: expect.any(Number),
     });
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
@@ -1157,6 +1159,38 @@ describe("live remote runner lease reattachment", () => {
     expect(result.lease).toMatchObject({ id: savedLease.id, providerLeaseId: "original-sandbox" });
     expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
+  it("bounds every reattach resume call and the total wait by the retry budget", async () => {
+    const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "web server returned an unknown error",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 520 })) });
+    const budgetMs = 1_500;
+    const timeouts: number[] = [];
+    const resumeRunLease = vi.fn(async ({ timeoutMs }: { timeoutMs?: number }) => {
+      timeouts.push(timeoutMs!);
+      await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs!, 400)));
+      throw gateway;
+    });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    const startedAt = Date.now();
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime, reattachResumeRetryBudgetMs: budgetMs })
+      .acquireForRun(input)).rejects.toBe(gateway);
+    expect(Date.now() - startedAt).toBeLessThan(budgetMs + 200);
+    expect(resumeRunLease.mock.calls.length).toBeGreaterThan(1);
+    expect(timeouts[0]).toBeLessThanOrEqual(budgetMs);
+    expect(timeouts.every((timeout, index) => index === 0 || timeout < timeouts[index - 1]!)).toBe(true);
+  });
+  it.each([500, 502, 520, 599])("treats a provider HTTP %i refusal during reattachment as transient", async statusCode => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "gateway",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode })) });
+    const resumeRunLease = vi.fn()
+      .mockRejectedValueOnce(refusal)
+      .mockResolvedValueOnce({ providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/remote/workspace" } });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .resolves.toMatchObject({ lease: { id: savedLease.id } });
+    expect(resumeRunLease).toHaveBeenCalledTimes(2);
   });
   it("does not retry a definite provider refusal during reattachment", async () => {
     const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "conflict",

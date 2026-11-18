@@ -423,8 +423,8 @@ export function environmentRunOrchestrator(
         // budget before short preparation commands (such as project-auth
         // checks) can run. This API cannot acquire a replacement.
         const resumed = await retryTransientExactResume({ budgetMs: reattachResumeRetryBudgetMs,
-          call: () => environmentRuntime.resumeRunLease({
-            environment, lease, requestedCwd: expected.remoteCwd,
+          call: timeoutMs => environmentRuntime.resumeRunLease({
+            environment, lease, requestedCwd: expected.remoteCwd, timeoutMs,
             ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
             ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
           }) }).catch((error: unknown) => {
