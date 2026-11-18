@@ -782,6 +782,13 @@ describe("native status authority", () => {
       .toMatchObject(superseded);
     expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true, hasActivePauseHold: true }))
       .toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    // A blocker for a person or an external owner is bound now, as without a queued request.
+    for (const ownerKind of ["user", "external"] as const) {
+      const owned = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+        blocker: { unblockAction: "Add the deploy key.", boardOwned: false, ownerKind, scope: "task_wide" } });
+      expect(arbitrate({ assessment: owned, agentBlockerRecoverable: true, hasQueuedChatRequest: true }))
+        .toMatchObject({ reasonCode: "native_agent_blocker_needs_person", toStatus: "blocked" });
+    }
   });
 
   it("continues a blocker the agent owns once, then hands it to the board, and never binds it back to the agent", () => {
