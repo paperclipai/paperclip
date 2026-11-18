@@ -6552,7 +6552,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         tasks.push(await seedQueuedIssueRunFixture({ companyId: first.companyId, issueNumber }));
       const outageMs = 5 * 60_000;
       let simulatedMs = 0;
-      const attempts: Array<{ at: number; refused: boolean; runId: string }> = [];
+      const attempts: Array<{ at: number; refused: boolean; runId: string | null }> = [];
       const originalFactory = environmentOrchestrator.environmentRunOrchestrator;
       const factory = vi.spyOn(environmentOrchestrator, "environmentRunOrchestrator").mockImplementation((database, options = {}) => {
         const runtime = originalFactory(database, options).runtime;
@@ -6621,7 +6621,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         const runs = (await Promise.all(tasks.map(task => runsFor(task.agentId)))).flat();
         const waitRunIds = new Set(runs.filter(run => run.scheduledRetryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON).map(run => run.id));
         const waitRefusalsByTick = new Map<number, number>();
-        for (const attempt of attempts.filter(entry => entry.refused && waitRunIds.has(entry.runId)))
+        for (const attempt of attempts.filter(entry => entry.refused && entry.runId !== null && waitRunIds.has(entry.runId)))
           waitRefusalsByTick.set(attempt.at, (waitRefusalsByTick.get(attempt.at) ?? 0) + 1);
         expect([...waitRefusalsByTick.values()].every(count => count === 1)).toBe(true);
         expect(ticks.some(entry => entry.brake === "open")).toBe(true);
