@@ -710,9 +710,6 @@ describe("executeNativeSession recovery", () => {
     expect(checkpoints.some(snapshot => snapshot.terminalTurns?.some(turn => turn.turnId === "turn-recovery"))).toBe(true);
   });
 
-  // A full sandbox disk stops runnerd mid-turn. The transport relaunches it
-  // inside this same execution, so no control-plane restart claim exists, and
-  // the runner reports the turn it started as lost on restore.
   it.each([
     { label: "continues its own turn once when runnerd is restored mid-execution", lostTurnId: "turn-recovery", continues: true },
     { label: "does not continue a lost turn this execution never started", lostTurnId: "turn-elsewhere", continues: false },

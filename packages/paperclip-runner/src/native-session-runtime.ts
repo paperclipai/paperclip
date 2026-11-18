@@ -3101,10 +3101,6 @@ export async function executeNativeSession(
     };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
-      // Two owners may continue a turn runnerd lost on restore: a control
-      // plane restart claim for a recovered session, or this execution for the
-      // turn it started itself when the transport relaunched runnerd mid-run
-      // (for example after the agent filled the sandbox disk).
       const restoredAtStartup = recovered && options.resumeInterruptedTurn === true &&
         event.turnId === persistedSession?.activeTurnId;
       const restoredInThisExecution = !recovered && ownTurnId !== null && event.turnId === ownTurnId;
