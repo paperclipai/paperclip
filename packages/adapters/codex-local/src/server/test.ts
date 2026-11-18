@@ -29,6 +29,7 @@ import {
   buildApiKeyAuthContents,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
+  resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
 } from "./codex-home.js";
@@ -322,10 +323,29 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  if (!targetIsRemote) {
+    // Adapter configuration cannot redirect server-owned managed roots.
+    delete env.PAPERCLIP_HOME;
+    delete env.PAPERCLIP_INSTANCE_ID;
+  }
   const configuredCodexHome = isNonEmpty(env.CODEX_HOME) ? path.resolve(env.CODEX_HOME) : null;
   if (configuredCodexHome) {
     env.CODEX_HOME = configuredCodexHome;
   } else if (!targetIsRemote) {
+    const managedHome = resolveManagedCodexHomeDir(process.env, ctx.companyId);
+    if (!isManagedCodexHomePath(process.env, ctx.companyId, managedHome)) {
+      checks.push({
+        code: "codex_managed_home_invalid",
+        level: "error",
+        message: "Refusing to seed Codex credentials outside the company managed home.",
+      });
+      return {
+        adapterType: ctx.adapterType,
+        status: summarizeStatus(checks),
+        checks,
+        testedAt: new Date().toISOString(),
+      };
+    }
     // Resolve the managed home from the server env only. Adapter-config env
     // must not pick the seed target (PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID).
     // A config-supplied OPENAI_API_KEY still seeds API-key auth explicitly.

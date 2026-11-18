@@ -20,6 +20,33 @@ describe("codex_local testEnvironment managed home", () => {
     vi.unstubAllEnvs();
   });
 
+  it("strips adapter-config managed roots from the local probe subprocess", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-envtest-roots-"));
+    const serverHome = path.join(root, "server-paperclip");
+    const sharedCodexHome = path.join(root, ".codex");
+    const cwd = path.join(root, "workspace");
+    const fakeCodex = path.join(root, "codex");
+    const observed = path.join(root, "observed-roots.txt");
+    try {
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(fakeCodex, `#!/bin/sh\nprintf '%s\\n' "$PAPERCLIP_HOME" "$PAPERCLIP_INSTANCE_ID" > "${observed}"\nexit 1\n`, { mode: 0o755 });
+      vi.stubEnv("OPENAI_API_KEY", "");
+      vi.stubEnv("CODEX_HOME", sharedCodexHome);
+      vi.stubEnv("PAPERCLIP_HOME", serverHome);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      await testEnvironment({
+        companyId: "company-1", adapterType: "codex_local",
+        config: {
+          command: fakeCodex, cwd, engine: "cli",
+          env: { OPENAI_API_KEY: "", PAPERCLIP_HOME: path.join(root, "redirected"), PAPERCLIP_INSTANCE_ID: "redirected" },
+        },
+      });
+      expect(await fs.readFile(observed, "utf8")).toBe("\n\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("ignores adapter-config PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID when seeding the managed Codex home", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-envtest-home-"));
     const serverHome = path.join(root, "server-paperclip");
