@@ -510,6 +510,19 @@ describe.runIf(process.platform === "win32")("managed GitHub launchers on Window
     await expect(readFile(marker)).rejects.toThrow();
   });
 
+  it("keeps arguments as data when the batch tool enables delayed expansion itself", async () => {
+    const { root, first, gh } = await windowsFixture();
+    const argv = path.join(root, "argv.cjs");
+    await writeFile(path.join(first, "gh.cmd"),
+      `@echo off\r\nsetlocal EnableDelayedExpansion\r\n"${process.execPath}" "${argv}" %*\r\n`);
+    const marker = path.join(root, "injected.txt");
+    const args = ["plain", `!x!&echo injected>${marker}`, `x&echo injected>${marker}`,
+      `"&echo injected>${marker}&"`, "^!", "|", "%PATH%"];
+    expect(JSON.parse((await gh(...args)).stdout).args).toEqual(["plain", `&echo injected>${marker}`,
+      `x&echo injected>${marker}`, `"&echo injected>${marker}&"`, "!", "|", "%PATH%"]);
+    await expect(readFile(marker)).rejects.toThrow();
+  });
+
   it("refuses line breaks for batch tools instead of letting cmd.exe split them", async () => {
     const { first, gh, forwarder } = await windowsFixture();
     await writeFile(path.join(first, "gh.cmd"), forwarder);
