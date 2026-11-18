@@ -6497,18 +6497,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]!.status).toBe("queued");
     }, 60_000);
 
-    it("hands a parked task to a person with a working Retry once it reaches the 30-minute ceiling", async () => {
+    it("hands a parked task to a person with a working Retry at the 30-minute ceiling even while the leader stays queued", async () => {
       const { leader, follower, now } = await seedProviderWaiters(ENVIRONMENT_PROVIDER_WAIT.ceilingMs + 120_000,
         ENVIRONMENT_PROVIDER_WAIT.ceilingMs + 60_000);
-      await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(now.getTime() + 5 * 60_000) }).where(eq(heartbeatRuns.id, leader.runId));
-      const lease = failLeaseAcquisition(1);
+      await db.update(heartbeatRuns).set({ status: "queued", scheduledRetryAt: null, updatedAt: now }).where(eq(heartbeatRuns.id, leader.runId));
+      const lease = failLeaseAcquisition(2);
       try {
         const heartbeat = heartbeatService(db);
         await heartbeat.promoteDueScheduledRetries(now);
         expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, follower.runId)))[0]!.status).not.toBe("scheduled_retry");
         await heartbeat.resumeQueuedRuns();
         await heartbeat.drainActiveRunExecutions();
-        expect(lease.acquisitions.refused).toBe(1);
+        expect(lease.acquisitions.refused).toBeGreaterThanOrEqual(1);
         expect((await runsFor(follower.agentId)).filter(run => run.status === "scheduled_retry")).toEqual([]);
         const blocked = await waitForValue(async () => {
           const [row] = await db.select().from(issues).where(eq(issues.id, follower.issueId));

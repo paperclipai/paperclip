@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
-import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
+import { parkScheduledRetryInTx } from "./scheduled-retry-park.js";
 import {
   ENVIRONMENT_PROVIDER_WAIT,
   ENVIRONMENT_PROVIDER_WAIT_KEY,
@@ -41,15 +41,5 @@ export async function parkEnvironmentProviderWaitInTx(tx: Db, run: HeartbeatRun,
   )).limit(1);
   if (!earlier) return false;
   const recheckAt = new Date(now.getTime() + ENVIRONMENT_PROVIDER_WAIT.parkedRecheckMs);
-  await notifyScheduledRetryCancellation(tx, { companyId: run.companyId, runId: run.id });
-  const [parked] = await tx.update(heartbeatRuns).set({
-    scheduledRetryAt: recheckAt,
-    updatedAt: now,
-    contextSnapshot: sql`jsonb_set(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb), '{scheduledRetryAt}', to_jsonb(${recheckAt.toISOString()}::text))`,
-  }).where(and(
-    eq(heartbeatRuns.id, run.id),
-    eq(heartbeatRuns.companyId, run.companyId),
-    eq(heartbeatRuns.status, "scheduled_retry"),
-  )).returning({ id: heartbeatRuns.id });
-  return Boolean(parked);
+  return parkScheduledRetryInTx(tx, run, now, recheckAt);
 }
