@@ -3183,7 +3183,7 @@ function OnboardingWizardInner({
                           else if (id === "gemini_local") setModel(DEFAULT_GEMINI_LOCAL_MODEL);
                           else if (id === "kimi_local") setModel(DEFAULT_KIMI_LOCAL_MODEL);
                           else if (id === "cursor") setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-                          else if (id !== "codex_local") setModel("");
+                          else setModel("");
                         }
                         setConnectPhase("collapsing");
                       }}
