@@ -38,6 +38,7 @@ function destination(onPut?: () => Promise<void>) {
         await onPut?.();
       },
       getObject: async (_companyId: string, key: string) => ({ stream: Readable.from([objects.get(key)!]) }),
+      deleteObject: async (_companyId: string, key: string) => { objects.delete(key); },
     } as unknown as StorageService,
   };
 }
@@ -98,5 +99,8 @@ describe.skipIf(!support.supported)("online skill object copy against PostgreSQL
     expect(result.busy).toBeGreaterThanOrEqual(1);
     const saved = await read(row.id);
     expect(saved.storage).toEqual(newer);
+    expect(saved.upload).toBeNull();
+    expect(target.puts).toBe(2);
+    expect(target.objects.size).toBe(0);
   });
 });

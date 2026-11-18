@@ -72,7 +72,7 @@ type Phase = typeof PHASES[number];
 let running: Promise<OnlineDurableDataMigrationResult> | null = null;
 type Progress = { phase: number; after?: string; limit?: number; timeouts?: number };
 let progress: Progress = { phase: 0 };
-const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 25, skill_objects: 1, skill_snapshots: 50, skill_versions: 50,
+const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 5, skill_objects: 1, skill_snapshots: 50, skill_versions: 50,
   skill_installations: 50, runtime_skill_assets: 50 };
 
 export function resetOnlineDurableDataMigrationProgressForTests() {
@@ -115,7 +115,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
     const page = async (phase: Phase, after: string | undefined, limit: number): Promise<string | null> => {
       switch (phase) {
         case "agent_files": {
-          const result = await owners.agentFiles(db, { apply: true, writersStopped: false, after, limit });
+          const result = await owners.agentFiles(db, { apply: true, writersStopped: false, after, limit, signal });
           for (const row of result.results) {
             if (row.state === "durable") add(counts, "agentFiles");
             else add(deferred, `agent_files:${row.state}`);
@@ -168,7 +168,15 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
     while (progress.phase < PHASES.length) {
       if (spent()) return await finish("budget_exhausted");
       const phase = PHASES[progress.phase]!;
-      const next = await page(phase, progress.after, progress.limit ?? DEFAULT_LIMITS[phase] ?? 1);
+      let next: string | null;
+      try {
+        next = await page(phase, progress.after, progress.limit ?? DEFAULT_LIMITS[phase] ?? 1);
+      } catch (error) {
+        if (signal.reason instanceof BudgetSpent) throw error;
+        const code = error instanceof Error && /^[a-z_]{1,60}$/.test(error.message) ? error.message : "owner_failed";
+        add(deferred, `${phase}:${code}`);
+        next = null;
+      }
       progress = next ? { phase: progress.phase, after: next, limit: progress.limit } : { phase: progress.phase + 1 };
     }
     progress = { phase: 0 };

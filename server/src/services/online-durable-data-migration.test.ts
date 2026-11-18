@@ -63,7 +63,7 @@ describe("online durable-data migration pass", () => {
   it("migrates agent files with live writers, never the offline mode", async () => {
     const agentFiles = vi.fn(async () => ({ results: [], next: null }));
     await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, owners({ agentFiles }).owners);
-    expect(agentFiles).toHaveBeenCalledWith(db, expect.objectContaining({ apply: true, writersStopped: false }));
+    expect(agentFiles).toHaveBeenCalledWith(db, expect.objectContaining({ apply: true, writersStopped: false, limit: 5, signal: expect.any(AbortSignal) }));
   });
 
   it.each([
@@ -142,10 +142,33 @@ describe("online durable-data migration pass", () => {
     expect(fixture.record).toHaveBeenCalledWith(db, expect.objectContaining({ deferred: expect.objectContaining({ "runtime_skill_assets:stalled": 1 }) }));
   });
 
-  it("records a failed pass with the work it finished before rethrowing", async () => {
-    const fixture = owners({ skillObjects: async () => { throw new Error("storage_down"); } });
-    await expect(runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners)).rejects.toThrow("storage_down");
-    expect(fixture.record).toHaveBeenCalledWith(db, { state: "failed", counts: { agentFiles: 1 } });
+  it("defers an owner that fails and revisits earlier owners on the next cycle, so an abandoned claim cannot pin it", async () => {
+    let versionsFail = true;
+    const objectCalls: number[] = [];
+    const fixture = owners({
+      skillObjects: async () => { objectCalls.push(1); versionsFail = objectCalls.length < 2; return { inspected: 1, migrated: 1, busy: 0, after: null }; },
+      skillPackages: () => ({
+        migrateSnapshots: async () => ({ inspected: 0, migrated: 0, after: null }),
+        migrateVersions: async () => {
+          if (versionsFail) throw new Error("skill_package_not_durable");
+          return { inspected: 1, migrated: 1, after: null };
+        },
+      }),
+    });
+    const first = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+    expect(first).toMatchObject({ state: "completed", deferred: expect.objectContaining({ "skill_versions:skill_package_not_durable": 1 }) });
+    expect(fixture.calls).toContain("nativeControllers");
+    const second = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+    expect(objectCalls).toHaveLength(2);
+    expect(second).toMatchObject({ state: "completed", counts: expect.objectContaining({ skillVersions: 1 }) });
+    expect(second.deferred).not.toHaveProperty("skill_versions:skill_package_not_durable");
+  });
+
+  it("names an unexpected owner error without echoing its message", async () => {
+    const fixture = owners({ skillObjects: async () => { throw new Error("connect ECONNREFUSED 10.0.0.1:5432 secret"); } });
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+    expect(result.deferred).toMatchObject({ "skill_objects:owner_failed": 1 });
+    expect(JSON.stringify(result)).not.toContain("secret");
   });
 
   it("runs one pass at a time and shares it with a concurrent caller", async () => {

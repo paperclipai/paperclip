@@ -68,6 +68,11 @@ export async function migrateLocalSkillPackageObjects(db: Db, input: {
       if (!published) {
         if (offline) throw new Error("skill_object_migration_owner_changed");
         busy++;
+        await db.update(snapshots).set({ upload: null }).where(and(eq(snapshots.companyId, row.companyId), eq(snapshots.id, row.id),
+          sql`${snapshots.upload}->>'token' = ${token}`));
+        for (const key of [upload.archiveKey, upload.manifestKey]) {
+          await input.destination.deleteObject(row.companyId, key).catch(() => undefined);
+        }
       }
     } finally { await fs.rm(directory, { recursive: true, force: true }); }
   }
