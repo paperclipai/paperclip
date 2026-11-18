@@ -517,6 +517,7 @@ export {
   createIssueAttachmentMetadataSchema,
   issueDocumentFormatSchema,
   issueDocumentKeySchema,
+  issueDocumentBatchQuerySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueWatchdogSchema,
@@ -647,6 +648,29 @@ export {
   type CreateGoal,
   type UpdateGoal,
 } from "./goal.js";
+
+export {
+  createResponsibilitySchema,
+  proposeResponsibilitySchema,
+  updateResponsibilitySchema,
+  linkResponsibilitySchema,
+  delegateResponsibilitySchema,
+  listResponsibilitiesQuerySchema,
+  createResponsibilityAreaSchema,
+  updateResponsibilityAreaSchema,
+  listResponsibilityAreasQuerySchema,
+  responsibilityLinkLookupQuerySchema,
+  type CreateResponsibilityArea,
+  type UpdateResponsibilityArea,
+  type ListResponsibilityAreasQuery,
+  type ResponsibilityLinkLookupQuery,
+  type CreateResponsibility,
+  type ProposeResponsibility,
+  type UpdateResponsibility,
+  type LinkResponsibility,
+  type DelegateResponsibility,
+  type ListResponsibilitiesQuery,
+} from "./responsibility.js";
 
 export {
   applyOnboardingSeedSchema,

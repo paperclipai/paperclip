@@ -49,6 +49,7 @@ import {
   type EnvironmentRuntimeService,
   type ProviderResourceDisposition,
 } from "./environment-runtime.js";
+import { REUSABLE_SANDBOX_RESUME_BUDGET_MS, retryTransientResumeCall } from "./reusable-sandbox-resume-replacement.js";
 import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
 import type { PluginTaskDescription } from "./environment-task-runtime.js";
 import { unlaunchedPortableTaskLease } from "./plugin-task-ownership.js";
@@ -177,8 +178,10 @@ export function environmentRunOrchestrator(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     environmentRuntime?: EnvironmentRuntimeService;
+    reattachResumeRetryBudgetMs?: number;
   } = {},
 ) {
+  const reattachResumeRetryBudgetMs = options.reattachResumeRetryBudgetMs ?? REUSABLE_SANDBOX_RESUME_BUDGET_MS;
   const environmentsSvc = environmentService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentRuntime = options.environmentRuntime ?? environmentRuntimeService(db, {
@@ -418,11 +421,12 @@ export function environmentRunOrchestrator(
         // controller was offline. Ready the exact lease under its lifecycle
         // budget before short preparation commands (such as project-auth
         // checks) can run. This API cannot acquire a replacement.
-        const resumed = await environmentRuntime.resumeRunLease({
-          environment, lease, requestedCwd: expected.remoteCwd,
-          ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
-          ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
-        }).catch((error: unknown) => {
+        const resumed = await retryTransientResumeCall({ budgetMs: reattachResumeRetryBudgetMs, scope: "known_host",
+          call: timeoutMs => environmentRuntime.resumeRunLease({
+            environment, lease, requestedCwd: expected.remoteCwd, ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
+            ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
+          }) }).catch((error: unknown) => {
           // Confirmed provider absence is a named lease mismatch; other
           // failures (for example a transient refusal) keep their own error.
           if (error instanceof RetainedSandboxAbsentError) throw remoteRecoveryLeaseMismatch("environment_resume", "lease_expired");

@@ -20,6 +20,9 @@ for 90 seconds, the Runner closes that connection and accepts the next one
 within its reconnect grace. A path that broke without a close therefore cannot
 block a replacement controller.
 
+In both modes, Runner enables `TCP_NODELAY` before the WebSocket handshake
+when the connected peer is on loopback.
+
 Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
 Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 

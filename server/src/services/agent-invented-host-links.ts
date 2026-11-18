@@ -12,7 +12,7 @@ import { loadConfig } from "../config.js";
 // status pages agents are told to link.
 export const BOARD_ROUTE_ROOTS = new Set([
   "dashboard", "companies", "company", "skills", "teams-catalog", "org", "agents", "chats", "apps",
-  "projects", "workspaces", "execution-workspaces", "issues", "tasks", "routines", "goals", "artifacts",
+  "projects", "workspaces", "execution-workspaces", "issues", "tasks", "responsibilities", "routines", "goals", "artifacts",
   "tools", "approvals", "costs", "usage", "activity", "audit", "decisions", "inbox", "board-chat", "u",
   "design-guide", "search", "settings", "timeline", "cases", "status", "status-cards",
 ]);

@@ -168,7 +168,6 @@ import {
 } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
 import {
-  AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
   agentDetailSegment,
   agentDetailViewLabel,
@@ -230,21 +229,6 @@ const sourceLabels: Record<string, string> = {
   on_demand: "On-demand",
   automation: "Automation",
 };
-
-/** @deprecated Use AGENT_DETAIL_NAVIGATION for contextual navigation. */
-export const AGENT_DETAIL_TABS = AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items);
-
-const LEGACY_AGENT_DETAIL_TABS = [
-  { value: "dashboard", label: "Dashboard" },
-  { value: "instructions", label: "Instructions" },
-  { value: "skills", label: "Skills" },
-  { value: "configuration", label: "Configuration" },
-  { value: "secrets", label: "Secrets" },
-  { value: "tools", label: "Tools" },
-  { value: "runs", label: "Runs" },
-  { value: "audit", label: "Audit" },
-  { value: "budget", label: "Budget" },
-] as const;
 
 export const DISCARD_AGENT_CONFIG_CHANGES_MESSAGE = "Discard unsaved agent configuration changes?";
 

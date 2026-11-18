@@ -38,7 +38,7 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { useSignOut } from "@/hooks/useSignOut";
 import { queryKeys } from "@/lib/queryKeys";
-import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
@@ -46,6 +46,7 @@ import { TruncatedText } from "./TruncatedText";
 import { FlyoutHeader, FlyoutOptions } from "./ui/flyout";
 
 import { PluginOrganizationSwitcher } from "./PluginOrganizationSwitcher";
+import { useCompanyHomePath } from "@/hooks/useCompanyHomePath";
 
 interface SidebarCompanyMenuProps {
   open?: boolean;
@@ -163,10 +164,10 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
   const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
     useCompany();
   const { openOnboarding } = useDialogActions();
-  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
-  const rail = collapsed && !peeking;
+  const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
+  const { path: homePath } = useCompanyHomePath();
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   const sensors = useSensors(
@@ -227,7 +228,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
     setOpen(false);
     if (isMobile) setSidebarOpen(false);
     if (shouldLeaveCurrentRoute) {
-      navigate(`/${company.issuePrefix}/dashboard`);
+      navigate(`/${company.issuePrefix}${homePath}`);
     }
   }
 
@@ -285,16 +286,13 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange, showChevron = 
                 truncates stays hover-recoverable via title. */}
             <TruncatedText
               marqueeResetKey={open}
-              className={cn(
-                "min-w-0 truncate text-sm font-bold text-foreground",
-                rail && SIDEBAR_RAIL_HIDDEN_LABEL,
-              )}
+              className="min-w-0 truncate text-sm font-bold text-foreground"
               title={currentName ?? undefined}
             >
               {currentName ?? `Select ${switcherNoun}`}
             </TruncatedText>
           </span>
-          {!rail && showChevron && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
+          {showChevron && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

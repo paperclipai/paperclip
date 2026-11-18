@@ -66,6 +66,42 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     }
   });
 
+  it("appends ordinary read receipts in one statement with contiguous sequences under a concurrent writer", async () => {
+    const runId = await makeRun();
+    const statements: string[] = [];
+    const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => statements.push(query) } }) as typeof db;
+    const inputs = Array.from({ length: 146 }, (_, index) => ({
+      companyId, agentId, runId, eventType: "chat_handoff.completed_read", stream: "system", level: "info",
+      payload: { taskId: `task-${index}`, statusVersion: index, nested: ["before\u0000after"] },
+    }));
+    const [receipts] = await Promise.all([
+      appendHeartbeatRunEventBatch(recorded, inputs),
+      appendHeartbeatRunEvent(otherDb, { companyId, agentId, runId, eventType: "run.performance.span", payload: { concurrent: true } }),
+    ]);
+    expect(statements).toHaveLength(1);
+    expect(receipts).toHaveLength(146);
+    for (const [index, receipt] of receipts.entries()) {
+      expect(receipt).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 0, row: { payload: inputs[index].payload } });
+      expect(receipt.row.seq).toBe(receipts[0].row.seq + index);
+    }
+    const events = await readEvents(runId);
+    expect(events.map(event => event.seq)).toEqual(Array.from({ length: 147 }, (_, index) => index + 1));
+    expect((await readRun(runId)).nextEventSeq).toBe(148);
+  });
+
+  it("refuses ordinary batches with mixed bindings or special event effects before writing", async () => {
+    const runId = await makeRun();
+    const input = { companyId, agentId, runId, eventType: "child_task.read" };
+    for (const other of [
+      { ...input, runId: "30000000-0000-4000-8000-000000000099" },
+      { ...input, companyId: "30000000-0000-4000-8000-000000000099" },
+      { ...input, eventType: "native.process_start_requested" },
+    ]) await expect(appendHeartbeatRunEventBatch(db, [input, other])).rejects.toThrow("heartbeat_run_event_batch_unsupported");
+    expect(await readEvents(runId)).toEqual([]);
+    expect((await readRun(runId)).nextEventSeq).toBe(1);
+    expect(await appendHeartbeatRunEventBatch(db, [])).toEqual([]);
+  });
+
   it("persists a decoded receipt in one executed statement", async () => {
     const runId = await makeRun();
     const statements: string[] = [];

@@ -133,10 +133,11 @@ export const REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE = "remote_workspace_prepa
 export class RemoteWorkspacePreparationTimeoutError extends RemoteWorkspaceOperationTimeoutError {
   readonly code = REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE;
 
-  constructor(error: RemoteWorkspaceOperationTimeoutError) {
+  constructor(error: RemoteWorkspaceOperationTimeoutError, message?: string) {
     super("prepare", error.timeoutMs);
     this.name = "RemoteWorkspacePreparationTimeoutError";
     this.cause = error;
+    if (message) this.message = message;
   }
 }
 
