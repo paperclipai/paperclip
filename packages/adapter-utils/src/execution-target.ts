@@ -1721,14 +1721,8 @@ async function githubOperationLauncherBasePath(
   return remotePath;
 }
 
-/**
- * Stable code for a Git context probe that did not complete. Run-failure
- * reporting groups failures by code, never by message, so an uncoded Error
- * here shared one group with every other uncoded setup failure.
- */
 export const EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE = "execution_target_git_context_unavailable";
 
-/** The probe's own outcome only: exit facts, never its output. */
 function gitContextUnavailable(reason: string): Error {
   return Object.assign(new Error(`Could not read execution-target Git context: ${reason}`),
     { code: EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE });

@@ -380,7 +380,6 @@ describe("managed GitHub launcher environment", () => {
     expect(failure).toBeInstanceOf(Error);
     expect(failure).toMatchObject({ code: EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE,
       message: `Could not read execution-target Git context: ${reason}` });
-    // The probe's output can carry credentials and paths; only exit facts are reported.
     expect((failure as Error).message).not.toMatch(/probe-secret|private|banner/);
   });
 
