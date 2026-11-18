@@ -130,6 +130,12 @@ category decides the code only for the generic `adapter_failed` and
 run failure code sets in `server/src/services/continuation-cause.ts`, and a
 test fails when a code in those sets has no telemetry code.
 
+The `adapter_type` dimension on `agent.task_run` and `agent.task_completed`
+reports the harness the agent runs, as `agentHarnessType()` resolves it. A
+Paperclip runner agent therefore reports its underlying harness (for example
+`claude_local` or `codex_local`), not `paperclip_runner`. This is the observed
+runtime, not a reporting alias.
+
 ## Product Lifecycle Events
 
 `model.connected`, `task.created`, `task.completed`, `task.blocked`,

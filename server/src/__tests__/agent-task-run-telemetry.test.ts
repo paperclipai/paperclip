@@ -376,6 +376,19 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     await expect(emitAgentTaskRun(db, run)).resolves.toBeUndefined();
   });
 
+  it.each([
+    { adapterConfig: {}, adapterType: "codex_local" },
+    { adapterConfig: { provider: "acpx", acpxAgent: "claude" }, adapterType: "claude_local" },
+    { adapterConfig: { provider: "opencode" }, adapterType: "opencode_local" },
+  ])("reports a Paperclip runner agent's underlying harness $adapterType as adapterType", async ({ adapterConfig, adapterType }) => {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner", adapterConfig });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
+
+    await emitAgentTaskRun(db, run);
+
+    expect(mockTrackAgentTaskRun.mock.calls[0][1].adapterType).toBe(adapterType);
+  });
+
   it("omits adapterType and agentRole when the agent row is absent", async () => {
     await seedCompanyAndAgent();
     const run = {

@@ -198,6 +198,7 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
+  agentHarnessType,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -16328,7 +16329,7 @@ export function issueRoutes(
             withTelemetryActor({ companyId: issue.companyId, person }, () => trackAgentTaskCompleted(tc, {
               agentRole: actorAgent.role,
               agentId: actorAgent.id,
-              adapterType: actorAgent.adapterType,
+              adapterType: agentHarnessType(actorAgent.adapterType, parseObject(actorAgent.adapterConfig)),
               model,
               taskId: issue.id,
             }));

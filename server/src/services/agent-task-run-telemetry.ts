@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { agentHarnessType, requiresExecutionReconciliation } from "@paperclipai/shared";
 import { PERMANENT_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "./continuation-cause.js";
 import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
@@ -243,7 +243,7 @@ export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void>
       agentId: run.agentId,
       state: run.status,
       ...(agent
-        ? { adapterType: agent.adapterType, agentRole: agent.role }
+        ? { adapterType: agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig)), agentRole: agent.role }
         : {}),
       ...(model ? { model } : {}),
       ...(() => {
