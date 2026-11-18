@@ -139,6 +139,8 @@ import { routineRoutes } from "./routes/routines.js";
 import { routineSuggestionRoutes } from "./routes/routine-suggestions.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { tailscaleConnectionRoutes } from "./routes/tailscale-connections.js";
+import { workloadIdentityPublicRoutes, workloadIdentityRoutes } from "./routes/workload-identity.js";
+import { setWorkloadIdentityConfiguredPublicOrigin } from "./services/workload-identity.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { responsibilityRoutes } from "./routes/responsibilities.js";
@@ -618,6 +620,9 @@ export async function createApp(
   }));
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
   app.use(publicMcpIngress);
+  // Outside clouds fetch these anonymously to verify connection identity tokens.
+  setWorkloadIdentityConfiguredPublicOrigin(opts.authPublicBaseUrl);
+  app.use(workloadIdentityPublicRoutes(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
@@ -866,6 +871,7 @@ export async function createApp(
   }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(tailscaleConnectionRoutes(db));
+  api.use(workloadIdentityRoutes(db));
   api.use(routineSuggestionRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     environmentRoutes(db, {

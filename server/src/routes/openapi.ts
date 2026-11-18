@@ -1424,6 +1424,9 @@ const PUBLIC_OPERATIONS = new Set([
   "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
+  // Outside clouds fetch a company's workload identity issuer anonymously (routes/workload-identity.ts).
+  "GET /oidc/companies/{companyId}/.well-known/openid-configuration",
+  "GET /oidc/companies/{companyId}/jwks.json",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1467,6 +1470,9 @@ const mcpSkillsBoardOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Workload identity status and key rotation are board-only (assertBoard in routes/workload-identity.ts).
+  "GET /api/companies/{companyId}/workload-identity",
+  "POST /api/companies/{companyId}/workload-identity/rotation",
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
@@ -9725,6 +9731,57 @@ registry.registerPath({
     Location: { schema: { type: "string" } }, "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
     "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
   } }, ...tailscaleErrors },
+});
+
+const workloadIdentityParams = z.object({ companyId: z.string().uuid() });
+const workloadIdentityPublicNotFound = { 404: { description: "The company has no published signing key, or this instance has no public HTTPS address" } };
+const workloadIdentityKeyState = z.object({
+  issuer: z.string().url().nullable(),
+  unavailableReason: z.enum(["no_public_url", "not_https", "has_port", "loopback"]).nullable(),
+  keys: z.array(z.object({
+    keyId: z.string(), status: z.enum(["next", "active", "retiring"]),
+    createdAt: z.string().datetime(), statusChangedAt: z.string().datetime(),
+  }).strict()),
+}).strict();
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/.well-known/openid-configuration", tags: ["workload-identity"],
+  summary: "Company workload identity OIDC discovery document",
+  description: "Unauthenticated. Outside clouds read this to verify tokens that name one of the company's connections. Cacheable for five minutes.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({
+    issuer: z.string().url(), jwks_uri: z.string().url(),
+    response_types_supported: z.array(z.string()), subject_types_supported: z.array(z.string()),
+    id_token_signing_alg_values_supported: z.array(z.string()), claims_supported: z.array(z.string()),
+  }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/jwks.json", tags: ["workload-identity"],
+  summary: "Company workload identity public key set",
+  description: "Unauthenticated. Lists only public ES256 keys. Never contains private key members.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({ keys: z.array(z.object({
+    kty: z.literal("EC"), crv: z.string(), x: z.string(), y: z.string(), kid: z.string(), alg: z.literal("ES256"), use: z.literal("sig"),
+  }).strict()) }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/workload-identity", tags: ["workload-identity"],
+  summary: "Company workload identity issuer and key states",
+  description: "Board only. Returns the issuer (or why it is unavailable) and the published keys. No private key material.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(workloadIdentityKeyState), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/workload-identity/rotation", tags: ["workload-identity"],
+  summary: "Rotate the company workload identity signing key",
+  description: "Board only. begin publishes a next key; complete makes it sign after 24 hours of publication; emergency replaces every key at once. Each step writes its activity entry in the same transaction as the key change.",
+  request: { params: workloadIdentityParams, body: jsonBody(z.object({ step: z.enum(["begin", "complete", "emergency"]) }).strict()) },
+  responses: { 200: r.ok(z.object({
+    step: z.enum(["begin", "complete", "emergency"]), keyId: z.string(), created: z.boolean().optional(), state: workloadIdentityKeyState,
+  }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 // ─── Environments ─────────────────────────────────────────────────────────────
