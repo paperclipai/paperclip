@@ -95,7 +95,7 @@ import {
 } from "./KanbanBoard";
 import { buildIssueTree, countDescendants } from "../lib/issue-tree";
 import { getInboxKeyboardSelectionIndex } from "../lib/inbox";
-import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import { hasBlockingShortcutDialog, isInertShortcutScope, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
@@ -1559,6 +1559,7 @@ function StreamlinedIssuesList({
         !(target instanceof HTMLElement) ||
         isKeyboardShortcutTextInputTarget(target) ||
         hasBlockingShortcutDialog(document) ||
+        isInertShortcutScope(rootRef.current) ||
         e.metaKey ||
         e.ctrlKey ||
         e.altKey

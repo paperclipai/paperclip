@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it } from "vitest";
-import { isTaskListSidePanelCloseKey, taskListSidePanelFrame } from "./TaskListSidePanel";
+import { isTaskListCoveredByPanel, isTaskListSidePanelCloseKey, taskListSidePanelFrame } from "./TaskListSidePanel";
+
+describe("isTaskListCoveredByPanel", () => {
+  it("covers the list only while an overlay panel shows a task", () => {
+    expect(isTaskListCoveredByPanel("PAP-1", "overlay")).toBe(true);
+    expect(isTaskListCoveredByPanel(null, "overlay")).toBe(false);
+    expect(isTaskListCoveredByPanel("PAP-1", "docked")).toBe(false);
+  });
+});
 
 describe("taskListSidePanelFrame", () => {
   it("docks the panel at a fixed share beside the list", () => {

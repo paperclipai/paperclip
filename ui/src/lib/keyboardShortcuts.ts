@@ -32,6 +32,11 @@ export function hasBlockingShortcutDialog(root: ParentNode = document): boolean 
   return !!root.querySelector("[role='dialog'][aria-modal='true']");
 }
 
+/** A surface inside an `inert` region, such as a list under an overlay panel, must not act on global shortcuts. */
+export function isInertShortcutScope(root: Element | null): boolean {
+  return !!root?.closest("[inert]");
+}
+
 function isVisibleShortcutTarget(element: HTMLElement): boolean {
   if (!element.isConnected) return false;
   if ("disabled" in element && typeof element.disabled === "boolean" && element.disabled) return false;

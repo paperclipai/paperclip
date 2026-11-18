@@ -37,12 +37,18 @@ interface TaskListSplitProps {
 export function TaskListSplit({ taskRef, onClose, presentation = "docked", children }: TaskListSplitProps) {
   const listScrollRef = useRef<HTMLDivElement>(null);
   useListScrollMemory(listScrollRef);
+  const covered = isTaskListCoveredByPanel(taskRef, presentation);
   return (
     <div data-testid="task-list-split" data-presentation={presentation} className="relative flex h-full min-h-0 md:-my-6 md:-mr-6">
-      <div ref={listScrollRef} className="min-w-0 flex-1 overflow-auto md:py-6 md:pr-6">{children}</div>
+      <div ref={listScrollRef} inert={covered} className="min-w-0 flex-1 overflow-auto md:py-6 md:pr-6">{children}</div>
       {taskRef ? <TaskListSidePanel taskRef={taskRef} onClose={onClose} presentation={presentation} /> : null}
     </div>
   );
+}
+
+/** An overlay covers the list, so the hidden rows leave the Tab order and ignore keys until the panel closes. */
+export function isTaskListCoveredByPanel(taskRef: string | null, presentation: TaskListSidePanelPresentation): boolean {
+  return taskRef !== null && presentation === "overlay";
 }
 
 /** The frame classes for each presentation; `sheet` fills the split, `docked` takes a fixed share beside the list. */
@@ -56,11 +62,16 @@ export function taskListSidePanelFrame(presentation: TaskListSidePanelPresentati
  * the task's title, toolbar and properties toggle out of the list page header.
  */
 export function TaskListSidePanel({ taskRef, onClose, presentation = "docked" }: TaskListSidePanelProps) {
+  const frameRef = useRef<HTMLElement>(null);
+  const overlay = presentation === "overlay";
   useCloseOnEscape(onClose);
+  useOverlayFocus(overlay, frameRef);
   const frame = taskListSidePanelFrame(presentation);
   return (
     <BreadcrumbProvider syncDocumentTitle={false}>
       <SidePanelFrame
+        ref={frameRef}
+        tabIndex={overlay ? -1 : undefined}
         label={`Task ${taskRef}`}
         contentMode="full-bleed"
         presentation={frame.presentation}
@@ -131,6 +142,18 @@ function useListScrollMemory(scrollRef: RefObject<HTMLElement | null>) {
     const raf = requestAnimationFrame(() => applyMainContentScrollTop(scrollRef.current, scrollTop));
     return () => cancelAnimationFrame(raf);
   }, [location.key, navigationType, scrollRef]);
+}
+
+/** The overlay takes focus like a modal sheet, and gives it back to the covered list control when it closes. */
+function useOverlayFocus(active: boolean, frameRef: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    if (!active) return;
+    const previous = document.activeElement;
+    frameRef.current?.focus();
+    return () => {
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, [active, frameRef]);
 }
 
 function useCloseOnEscape(onClose: () => void) {
