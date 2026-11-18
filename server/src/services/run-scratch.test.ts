@@ -492,6 +492,95 @@ describe("run scratch tree removal safety", () => {
     await expect(fs.stat(scratch.markerPath)).resolves.toMatchObject({ isFile: expect.any(Function) });
     await expect(fs.readFile(scratch.markerPath, "utf8")).resolves.toContain(scratch.metadata.runId);
   });
+
+  it("keeps the external target when the marker name is recreated as a symlink before the restore", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("jjjj0000"), root }));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-swap-outside-"));
+    cleanupDirs.add(outside);
+    const sentinel = path.join(outside, "sentinel-restore.txt");
+    await fs.writeFile(sentinel, "external-precious");
+    // By the final rmdir the marker is already unlinked and the directory is
+    // empty: a concurrent writer recreates the marker name as a symlink to an
+    // external file, so the rmdir fails with the name occupied. The restore
+    // must refuse to follow or truncate the symlinked name — an exclusive
+    // create neither follows nor overwrites.
+    let boobyTrapped = false;
+    const walkerOps: RunScratchWalkerOpsOverride = (base) => ({
+      rmdir: async (p) => {
+        if (!boobyTrapped && p.endsWith(`/${path.basename(scratch.dir)}`)) {
+          boobyTrapped = true;
+          await fs.symlink(sentinel, scratch.markerPath);
+        }
+        return base.rmdir(p);
+      },
+    });
+
+    const result = await cleanupHeartbeatRunScratch({ scratch, walkerOps, runTempRootOverride: root });
+
+    expect(boobyTrapped).toBe(true);
+    expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "mount_point_present" });
+    await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("external-precious");
+    await expect(fs.lstat(scratch.markerPath)).resolves.toMatchObject({ isSymbolicLink: expect.any(Function) });
+    await expect(fs.stat(scratch.dir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+  });
+
+  it("restores the marker through the anchored fd when a concurrent writer refills the directory", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("kkkk1111"), root }));
+    // A benign concurrent writer adds a regular file after the marker was
+    // unlinked: the rmdir fails, and the restore must recreate the marker
+    // exclusively so the retry evidence survives the interrupted removal.
+    let refilled = false;
+    const walkerOps: RunScratchWalkerOpsOverride = (base) => ({
+      rmdir: async (p) => {
+        if (!refilled && p.endsWith(`/${path.basename(scratch.dir)}`)) {
+          refilled = true;
+          await fs.writeFile(path.join(scratch.dir, "late.txt"), "late");
+        }
+        return base.rmdir(p);
+      },
+    });
+
+    const result = await cleanupHeartbeatRunScratch({ scratch, walkerOps, runTempRootOverride: root });
+
+    expect(refilled).toBe(true);
+    expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "mount_point_present" });
+    await expect(fs.lstat(scratch.markerPath)).resolves.toMatchObject({ isFile: expect.any(Function) });
+    await expect(fs.readFile(scratch.markerPath, "utf8")).resolves.toContain(scratch.metadata.runId);
+    await expect(fs.readFile(path.join(scratch.dir, "late.txt"), "utf8")).resolves.toBe("late");
+  });
+
+  it("keeps the renamed directory with a restored marker instead of reporting a false removal", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("llll2222"), root }));
+    const moved = path.join(root, `${path.basename(scratch.dir)}-moved`);
+    // Right after the walker unlinks the marker, a concurrent process renames
+    // the emptied directory: the final rmdir then finds the old name missing,
+    // but the inode held open survives under the new name. The cleanup must
+    // not report success and must put the marker back into that inode.
+    let renamed = false;
+    const walkerOps: RunScratchWalkerOpsOverride = (base) => ({
+      unlink: async (p) => {
+        await base.unlink(p);
+        if (!renamed && p.endsWith(`/${HEARTBEAT_RUN_SCRATCH_MARKER}`)) {
+          renamed = true;
+          await fs.rename(scratch.dir, moved);
+        }
+      },
+    });
+
+    const result = await cleanupHeartbeatRunScratch({ scratch, walkerOps, runTempRootOverride: root });
+
+    expect(renamed).toBe(true);
+    expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "unsafe_tree" });
+    await expect(fs.stat(moved)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+    await expect(fs.lstat(path.join(moved, HEARTBEAT_RUN_SCRATCH_MARKER))).resolves.toMatchObject({ isFile: expect.any(Function) });
+    await expect(fs.readFile(path.join(moved, HEARTBEAT_RUN_SCRATCH_MARKER), "utf8")).resolves.toContain(scratch.metadata.runId);
+  });
 });
 
 describe("orphaned run scratch sweep", () => {
@@ -730,6 +819,74 @@ describe("orphaned run scratch sweep", () => {
     expect(await exists(dir)).toBe(true);
   });
 
+  it("keeps a swept directory when the marker name is recreated as a symlink before the restore", async () => {
+    const root = await makeRoot();
+    const dir = await leave(root, "run-r6s");
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-swap-outside-"));
+    cleanupDirs.add(outside);
+    const sentinel = path.join(outside, "sentinel-restore.txt");
+    await fs.writeFile(sentinel, "external-precious");
+    // Same window as the direct-cleanup regression, proven on the legacy
+    // sweep path: the restore must refuse to follow the symlinked marker
+    // name, so no write can land outside the swept directory.
+    let boobyTrapped = false;
+    const walkerOps: RunScratchWalkerOpsOverride = (base) => ({
+      rmdir: async (p) => {
+        if (!boobyTrapped && p.endsWith(`/${path.basename(dir)}`)) {
+          boobyTrapped = true;
+          await fs.symlink(sentinel, path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER));
+        }
+        return base.rmdir(p);
+      },
+    });
+
+    const result = await sweepLegacy(root, {
+      walkerOps,
+      resolveRunStates: states({ "run-r6s": "terminal" }),
+    });
+
+    expect(boobyTrapped).toBe(true);
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toBe(1);
+    await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("external-precious");
+    await expect(fs.lstat(path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER))).resolves.toMatchObject({ isSymbolicLink: expect.any(Function) });
+    expect(await exists(dir)).toBe(true);
+  });
+
+  it("keeps a swept directory that is renamed after its marker is unlinked", async () => {
+    const root = await makeRoot();
+    const dir = await leave(root, "run-r7s");
+    const moved = `${dir}-moved`;
+    // The rename lands in the window between the marker unlink and the final
+    // rmdir: the old name is gone but the inode survives under the moved
+    // name, so the sweep must not count it as removed and must restore the
+    // marker inside the moved directory.
+    let renamed = false;
+    const walkerOps: RunScratchWalkerOpsOverride = (base) => ({
+      unlink: async (p) => {
+        await base.unlink(p);
+        if (!renamed && p.endsWith(`/${HEARTBEAT_RUN_SCRATCH_MARKER}`)) {
+          renamed = true;
+          await fs.rename(dir, moved);
+        }
+      },
+    });
+
+    const result = await sweepLegacy(root, {
+      walkerOps,
+      resolveRunStates: states({ "run-r7s": "terminal" }),
+    });
+
+    expect(renamed).toBe(true);
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toBe(1);
+    expect(await exists(moved)).toBe(true);
+    const marker = path.join(moved, HEARTBEAT_RUN_SCRATCH_MARKER);
+    await expect(fs.lstat(marker)).resolves.toMatchObject({ isFile: expect.any(Function) });
+    await expect(fs.readFile(marker, "utf8")).resolves.toContain("run-r7s");
+    expect(await exists(dir)).toBe(false);
+  });
+
   it("keeps legacy directories that are not provably owned and closed to other writers", async () => {
     const root = await makeRoot();
     const groupWritable = await leave(root, "run-gw");
@@ -856,5 +1013,78 @@ describe("orphaned run temp sweep", () => {
     expect(await exists(main)).toBe(false);
     expect(await exists(fallback)).toBe(false);
     expect(await exists(path.join(root, runTempSegment(runId("0f0f0f0f"))))).toBe(true);
+  });
+
+  it("keeps a swept directory when the marker name is recreated as a symlink before the restore", async () => {
+    const root = await makeTempRoot();
+    const isolated = await makeIsolatedTempRoot();
+    const dir = await leaveTemp(root, runId("nnnn4444"));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-swap-outside-"));
+    cleanupDirs.add(outside);
+    const sentinel = path.join(outside, "sentinel-restore.txt");
+    await fs.writeFile(sentinel, "external-precious");
+    // Same booby-trapped restore as the direct-cleanup regression, proven on
+    // the per-run temp root sweep: the exclusive recreate must refuse the
+    // symlinked marker name and leave the external file untouched.
+    let boobyTrapped = false;
+    const walkerOps: RunScratchWalkerOpsOverride = (base) => ({
+      rmdir: async (p) => {
+        if (!boobyTrapped && p.endsWith(`/${path.basename(dir)}`)) {
+          boobyTrapped = true;
+          await fs.symlink(sentinel, path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER));
+        }
+        return base.rmdir(p);
+      },
+    });
+
+    const result = await sweepOrphanedRunScratch({
+      tmpRoot: isolated,
+      runTempRootOverride: root,
+      walkerOps,
+      resolveRunStates: states({ [runId("nnnn4444")]: "terminal" }),
+    });
+
+    expect(boobyTrapped).toBe(true);
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toBe(1);
+    await expect(fs.readFile(sentinel, "utf8")).resolves.toBe("external-precious");
+    await expect(fs.lstat(path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER))).resolves.toMatchObject({ isSymbolicLink: expect.any(Function) });
+    expect(await exists(dir)).toBe(true);
+  });
+
+  it("keeps a swept directory that is renamed after its marker is unlinked", async () => {
+    const root = await makeTempRoot();
+    const isolated = await makeIsolatedTempRoot();
+    const dir = await leaveTemp(root, runId("pppp6666"));
+    const moved = `${dir}-moved`;
+    // Same rename window as the direct-cleanup regression, proven on the
+    // per-run temp root sweep: the moved directory keeps its retry marker
+    // and is not counted as removed.
+    let renamed = false;
+    const walkerOps: RunScratchWalkerOpsOverride = (base) => ({
+      unlink: async (p) => {
+        await base.unlink(p);
+        if (!renamed && p.endsWith(`/${HEARTBEAT_RUN_SCRATCH_MARKER}`)) {
+          renamed = true;
+          await fs.rename(dir, moved);
+        }
+      },
+    });
+
+    const result = await sweepOrphanedRunScratch({
+      tmpRoot: isolated,
+      runTempRootOverride: root,
+      walkerOps,
+      resolveRunStates: states({ [runId("pppp6666")]: "terminal" }),
+    });
+
+    expect(renamed).toBe(true);
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toBe(1);
+    expect(await exists(moved)).toBe(true);
+    const marker = path.join(moved, HEARTBEAT_RUN_SCRATCH_MARKER);
+    await expect(fs.lstat(marker)).resolves.toMatchObject({ isFile: expect.any(Function) });
+    await expect(fs.readFile(marker, "utf8")).resolves.toContain(runId("pppp6666"));
+    expect(await exists(dir)).toBe(false);
   });
 });

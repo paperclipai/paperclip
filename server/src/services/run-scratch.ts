@@ -196,10 +196,12 @@ type PathStatLike = {
 interface TreeIdentity {
   dev: number;
   ino: number;
+  /** Link count of the directory inode: 0 once the held directory is deleted. */
+  nlink: number;
 }
 
-function identityOf(stats: { dev: number; ino: number }): TreeIdentity {
-  return { dev: stats.dev, ino: stats.ino };
+function identityOf(stats: { dev: number; ino: number; nlink: number }): TreeIdentity {
+  return { dev: stats.dev, ino: stats.ino, nlink: stats.nlink };
 }
 
 /** Anchor for directory-entry operations: resolves inside the fd's directory. */
@@ -235,7 +237,7 @@ export interface RunScratchWalkerOps {
   listDir(fd: number): Promise<Dirent[]>;
   unlink(p: string): Promise<void>;
   rmdir(p: string): Promise<void>;
-  writeFile(p: string, data: string, options?: { mode?: number }): Promise<void>;
+  writeFile(p: string, data: string, options?: { mode?: number; flag?: string }): Promise<void>;
   closeDir(fd: number): Promise<void>;
 }
 
@@ -260,7 +262,7 @@ export function createDefaultRunScratchWalkerOps(): RunScratchWalkerOps {
     listDir: (fd) => fs.readdir(anchoredDirPath(fd), { withFileTypes: true }),
     unlink: (p) => fs.unlink(p),
     rmdir: (p) => fs.rmdir(p),
-    writeFile: (p, data, options) => fs.writeFile(p, data, { mode: options?.mode }),
+    writeFile: (p, data, options) => fs.writeFile(p, data, { mode: options?.mode, flag: options?.flag }),
     async closeDir(fd) {
       const handle = handles.get(fd);
       handles.delete(fd);
@@ -502,7 +504,15 @@ export async function removeRunTempTree(
     const walk = await removeEntriesWithinDevice(verified.fd, verified.identity.dev, ops);
     if (!walk.complete) return { complete: false };
     const removed = await removeDirNameViaParent(dir, verified.identity, ops);
-    return { complete: removed === "removed" || removed === "missing" };
+    if (removed !== "removed" && removed !== "missing") return { complete: false };
+    // A vanished name alone does not prove the inode held open was deleted:
+    // a concurrent rename keeps the tree alive under another name, so only
+    // an unreferenced directory completes the removal.
+    const stillLinked = await ops
+      .statDir(verified.fd)
+      .then((identity) => identity.nlink > 0)
+      .catch(() => true);
+    return { complete: !stillLinked };
   } finally {
     if (verified) await ops.closeDir(verified.fd).catch(() => undefined);
   }
@@ -550,7 +560,20 @@ async function removeMarkedRunScratchDir(
       await restoreMarkerThroughFd(ops, verified.fd, marker);
       throw error;
     }
-    if (removed === "removed" || removed === "missing") return { complete: true };
+    if (removed === "removed" || removed === "missing") {
+      // The name is gone from its parent, but only a dead inode proves the
+      // directory itself was deleted: a concurrent rename leaves the emptied
+      // original — now unmarked — alive wherever it moved to. Fail closed
+      // unless the directory held open is really unreferenced, and put the
+      // marker back into that same inode.
+      const stillLinked = await ops
+        .statDir(verified.fd)
+        .then((identity) => identity.nlink > 0)
+        .catch(() => true);
+      if (!stillLinked) return { complete: true };
+      await restoreMarkerThroughFd(ops, verified.fd, marker);
+      return { complete: false, cause: "unstable" };
+    }
     // The emptied directory could not be removed by name (a concurrent
     // writer refilled it, or the name was swapped after the walk): restore
     // the marker through the anchored fd — the original directory, wherever
@@ -567,8 +590,16 @@ async function restoreMarkerThroughFd(
   fd: number,
   marker: HeartbeatRunScratchMetadata,
 ): Promise<void> {
+  // Exclusive creation (O_CREAT|O_EXCL): a name that concurrently reappeared
+  // — a regular file or a symlink — is neither followed nor truncated, so
+  // the restore can never write outside the verified directory. A concurrent
+  // writer that recreated the marker keeps its copy; when the name is not
+  // free the directory simply stays as it is.
   await ops
-    .writeFile(anchoredEntryPath(fd, HEARTBEAT_RUN_SCRATCH_MARKER), `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 })
+    .writeFile(anchoredEntryPath(fd, HEARTBEAT_RUN_SCRATCH_MARKER), `${JSON.stringify(marker, null, 2)}\n`, {
+      mode: 0o600,
+      flag: "wx",
+    })
     .catch(() => undefined);
 }
 
