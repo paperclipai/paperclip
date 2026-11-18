@@ -85,7 +85,7 @@ try {
     if (executable === "env") fail("env wrappers are unsupported; invoke the selected native command directly");
     const directEntry = commands.findIndex((value,index) => index > 1 && [path.join(repository,"cli/src/index.ts"),path.join(repository,"cli/dist/index.js")].includes(path.resolve(repository,value)));
     const cliIndex = ["paperclip", "paperclipai"].includes(executable) ? 1
-      : ["pnpm", "npm", "npx"].includes(executable) ? commands.findIndex((value, index) => index > 1 && ["paperclip", "paperclipai"].includes(value)) : ["node", "tsx"].includes(executable) ? directEntry : -1;
+      : ["pnpm", "npm", "npx"].includes(executable) ? commands.findIndex((value, index) => index > 1 && /^(?:paperclip|paperclipai)(?:@[^/]+)?$/.test(value)) : ["node", "tsx"].includes(executable) ? directEntry : -1;
     const cliArguments = cliIndex < 0 ? [] : commands.slice(cliIndex + 1);
     if (executable === "npm" && commands.slice(2,cliIndex).some(value => ["run","run-script","exec","x"].includes(value)) && cliArguments[0] === "--") cliArguments.shift();
     const endOptions = cliArguments.indexOf("--");
@@ -124,7 +124,7 @@ try {
     if (optionValue("--api-base")) validateApiBase(optionValue("--api-base"));
     if (optionValue("--paperclip-url")) validateApiBase(optionValue("--paperclip-url"));
     const validateEnvironment = source => {
-      for (const key of Object.keys(source)) if (["PAPERCLIP_AGENT_JWT_SECRET","BETTER_AUTH_SECRET","PAPERCLIP_TOOL_ACTION_SIGNING_SECRET","PAPERCLIP_SECRETS_MASTER_KEY"].includes(key) || key.startsWith("PAPERCLIP_SECRETS_AWS_")) {
+      for (const key of Object.keys(source)) if (["PAPERCLIP_DECISION_SIGNING_SECRET","PAPERCLIP_AGENT_JWT_SECRET","BETTER_AUTH_SECRET","PAPERCLIP_TOOL_ACTION_SIGNING_SECRET","PAPERCLIP_SECRETS_MASTER_KEY"].includes(key) || key.startsWith("PAPERCLIP_SECRETS_AWS_")) {
         if (source[key] !== instanceEnvironment[key]) fail(key + " differs from the selected instance");
       }
       for (const key of Object.keys(source).filter(key => key === 'RUN_LOG_BASE_PATH' || key.startsWith('RUN_LOG_S3_'))) {
