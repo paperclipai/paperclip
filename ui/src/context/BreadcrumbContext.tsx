@@ -47,6 +47,8 @@ export interface BreadcrumbPanelControl {
 interface BreadcrumbProviderProps {
   children: ReactNode;
   companyName?: string | null;
+  /** A nested provider that isolates an embedded page leaves the document title to the page around it. */
+  syncDocumentTitle?: boolean;
 }
 
 const BreadcrumbContext = createContext<BreadcrumbContextValue | null>(null);
@@ -79,7 +81,7 @@ export function buildDocumentTitle(breadcrumbs: Breadcrumb[], companyName?: stri
   return parts.join(" • ");
 }
 
-export function BreadcrumbProvider({ children, companyName }: BreadcrumbProviderProps) {
+export function BreadcrumbProvider({ children, companyName, syncDocumentTitle = true }: BreadcrumbProviderProps) {
   const [breadcrumbs, setBreadcrumbsState] = useState<Breadcrumb[]>([]);
   const [breadcrumbToolbar, setBreadcrumbToolbarState] = useState<ReactNode | null>(null);
   const [breadcrumbPanelControl, setBreadcrumbPanelControlState] =
@@ -103,8 +105,9 @@ export function BreadcrumbProvider({ children, companyName }: BreadcrumbProvider
   }, []);
 
   useEffect(() => {
+    if (!syncDocumentTitle) return;
     document.title = buildDocumentTitle(breadcrumbs, companyName);
-  }, [breadcrumbs, companyName]);
+  }, [breadcrumbs, companyName, syncDocumentTitle]);
 
   return (
     <BreadcrumbContext.Provider

@@ -500,6 +500,10 @@ interface IssuesListProps {
   issueBadgeById?: Map<string, string>;
   onLoadMoreIssues?: () => void;
   onSearchChange?: (search: string) => void;
+  /** List rows open the task here on a plain click or Enter instead of navigating to the task page. */
+  onOpenIssue?: (issue: Issue) => void;
+  /** The task shown beside the list; its row stays highlighted. */
+  openIssueId?: string | null;
   /** Opt in per surface while the canonical task row rolls out across collections. */
   rowPresentation?: IssueRowPresentation;
   /** Opt in per surface while the shared collection toolbar rolls out. */
@@ -748,6 +752,8 @@ function StreamlinedIssuesList({
   issueBadgeById,
   onLoadMoreIssues,
   onSearchChange,
+  onOpenIssue,
+  openIssueId = null,
   rowPresentation = "legacy",
   toolbarContext,
   toolbarPresentation = "legacy",
@@ -1511,6 +1517,7 @@ function StreamlinedIssuesList({
     collapsedGroups: viewState.collapsedGroups,
     collapsedParents: viewState.collapsedParents,
     updateView,
+    onOpenIssue,
   });
   listNavStateRef.current = {
     flatNavEntries,
@@ -1520,6 +1527,7 @@ function StreamlinedIssuesList({
     collapsedGroups: viewState.collapsedGroups,
     collapsedParents: viewState.collapsedParents,
     updateView,
+    onOpenIssue,
   };
 
   const findSelectedNavElement = useCallback((navKey: string) => {
@@ -1614,6 +1622,10 @@ function StreamlinedIssuesList({
           const entry = st.flatNavEntries[currentIndex];
           if (!entry || entry.type !== "issue") return;
           e.preventDefault();
+          if (st.onOpenIssue) {
+            st.onOpenIssue(entry.issue);
+            break;
+          }
           // Navigate from the entry data (like the inbox) rather than the DOM
           // row — the selected row may sit past the mounted render batch.
           const issue = entry.issue;
@@ -2303,6 +2315,7 @@ function StreamlinedIssuesList({
                         stableLayout={enableAgentCreatedVisibilityFilter}
                         issueLinkState={issueLinkState}
                         selected={selectedNavKey === `issue:${issue.id}`}
+                        onOpenIssue={onOpenIssue ? () => onOpenIssue(issue) : undefined}
                         onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
                         treeGuides={depth}
                         chevronInGuide={depth > 0 && hasChildren}
@@ -2349,7 +2362,7 @@ function StreamlinedIssuesList({
                             ) : null}
                           </>
                         )}
-                        className={cn(isMutedIssue && "opacity-70", selectedNavKey === `issue:${issue.id}` && "bg-accent/50 hover:bg-accent/50")}
+                        className={cn(isMutedIssue && "opacity-70", (selectedNavKey === `issue:${issue.id}` || openIssueId === issue.id) && "bg-accent/50 hover:bg-accent/50")}
                         leadingControl={rowPresentation === "task" ? (
                           hasChildren ? (
                             <button

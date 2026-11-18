@@ -265,6 +265,12 @@ describe("instance settings service", () => {
     ).toBe(false);
   });
 
+  it("defaults enableTaskListSidePanel to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableTaskListSidePanel).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableTaskListSidePanel).toBe(false);
+    expect(normalizeExperimentalSettings({ enableTaskListSidePanel: true }).enableTaskListSidePanel).toBe(true);
+  });
+
   it("defaults enableDecisions to false for empty and legacy stored settings", () => {
     expect(normalizeExperimentalSettings(undefined).enableDecisions).toBe(false);
     expect(normalizeExperimentalSettings({}).enableDecisions).toBe(false);

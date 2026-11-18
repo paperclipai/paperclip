@@ -81,6 +81,12 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableGoalsSidebarLink).toBe(false);
   });
 
+  it("defaults the task list side panel off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableTaskListSidePanel).toBe(false);
+  });
+
   it("defaults the sandbox duplex bridge kill switch off", () => {
     const settings = instanceExperimentalSettingsSchema.parse({});
 

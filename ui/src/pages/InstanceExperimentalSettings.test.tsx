@@ -116,6 +116,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableDecisions: false,
     enableFastResponses: false,
     enableGoalsSidebarLink: false,
+    enableTaskListSidePanel: false,
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,

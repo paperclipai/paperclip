@@ -3255,12 +3255,16 @@ function IssueDetailActivityTab({
 export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasksTab"] }) { return <TaskDetailSurface tasksTab={tasksTab} />; }
 
 /** One controller and surface for both task URLs and agent conversations. */
-export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskSidePanelProps["tasksTab"]; conversation?: {
+export function TaskDetailSurface({ conversation, tasksTab, embeddedIssueRef }: { tasksTab?: TaskSidePanelProps["tasksTab"]; conversation?: {
   agent: Agent; issue: Issue | null; ensureIssue: () => Promise<Issue>;
   onReady?: () => void;
-} }) {
+};
+  /** Renders a task beside another page (the Tasks list side panel) instead of from the task route. */
+  embeddedIssueRef?: string;
+}) {
   const { issueId: routeIssueId, companyPrefix } = useParams<{ issueId: string; companyPrefix: string }>();
-  const issueId = conversation ? conversation.issue?.id : routeIssueId;
+  const embedded = embeddedIssueRef !== undefined;
+  const issueId = conversation ? conversation.issue?.id : embeddedIssueRef ?? routeIssueId;
   const [loadingTitleIssueId, setLoadingTitleIssueId] = useState<string | null>(null);
   useEffect(() => setLoadingTitleIssueId(null), [issueId, companyPrefix]);
   const [draftWorkMode, setDraftWorkMode] = useState<IssueWorkMode>("standard");
@@ -6210,7 +6214,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // Resolve external UUID links and wrong-prefix task links from the loaded
   // task's company, not the organization that happened to be selected first.
   useEffect(() => {
-    if (conversation || !loadedIssue) return;
+    if (conversation || embedded || !loadedIssue) return;
     const nextState = resolvedIssueDetailState ?? location.state;
     const taskCompany = loadedIssueCompany;
     const canonicalRef = loadedIssue.identifier ?? loadedIssue.id;
@@ -6243,6 +6247,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     loadedIssue,
     loadedIssueCompany,
     companyPrefix,
+    embedded,
     issueId,
     navigate,
     location.state,
@@ -6490,7 +6495,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const canQuickArchiveFromInbox = !issue?.hiddenAt;
 
   useEffect(() => {
-    if (!issue?.id || !canQuickArchiveFromInbox) return;
+    if (embedded || !issue?.id || !canQuickArchiveFromInbox) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       const action = resolveInboxQuickArchiveKeyAction({
         armed: canQuickArchiveFromInbox,
@@ -6515,9 +6520,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     return () => {
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [archiveFromInbox, canQuickArchiveFromInbox, issue?.id]);
+  }, [archiveFromInbox, canQuickArchiveFromInbox, embedded, issue?.id]);
 
   useEffect(() => {
+    if (embedded) return;
     const clearArmTimeout = () => {
       if (goToInboxShortcutTimeoutRef.current !== null) {
         window.clearTimeout(goToInboxShortcutTimeoutRef.current);
@@ -6605,6 +6611,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       document.removeEventListener("keydown", handleKeyDown, true);
     };
   }, [
+    embedded,
     fileViewerEnabled,
     navigate,
     sourceBreadcrumb.href,
