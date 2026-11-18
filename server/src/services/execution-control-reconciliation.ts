@@ -9,6 +9,7 @@ import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { settledHeartbeat } from "./heartbeat/agent-status.js";
 import {
   agents,
   heartbeatRuns,
@@ -292,7 +293,10 @@ export async function reconcileAbandonedExecutionControl(
           }
           await tx
             .update(agents)
-            .set({ status: "idle", updatedAt: now })
+            // A run settling records a heartbeat, as finalizeAgentStatus does, so
+            // the changed-rows agent rule (recovery/changed-tasks.ts) does not
+            // read it as a pause or resume and re-check the agent's whole backlog.
+            .set({ status: "idle", lastHeartbeatAt: settledHeartbeat(now), updatedAt: now })
             .where(
               and(
                 eq(agents.id, run.agentId),

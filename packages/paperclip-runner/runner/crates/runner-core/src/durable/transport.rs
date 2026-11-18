@@ -32,6 +32,7 @@ const QUEUED_CONTROL_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
+const LISTENER_ACCEPT_INTERVAL: Duration = Duration::from_millis(10);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -252,6 +253,13 @@ impl RunnerTransportEndpoint {
         Ok(())
     }
 
+    pub(crate) fn retry_delay(&self, configured: Duration) -> Duration {
+        match self {
+            Self::Dial(_) => configured,
+            Self::Listen { .. } => configured.min(LISTENER_ACCEPT_INTERVAL),
+        }
+    }
+
     fn open(
         &self,
         max_frame_bytes: usize,
@@ -281,7 +289,7 @@ impl RunnerTransportEndpoint {
                 let deadline = bounded_operation_deadline(connect_deadline, AUTH_TIMEOUT)?;
                 let connector = ca_bundle_path.map(custom_tls_connector).transpose()?;
                 ensure_connection_deadline(deadline)?;
-                stream.set_nonblocking(true).map_err(|error| {
+                configure_prp_tcp_stream(&stream).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "WebSocket stream configuration failed: {error}"
                     ))
@@ -328,7 +336,7 @@ impl RunnerTransportEndpoint {
                         )))
                     }
                 };
-                stream.set_nonblocking(true).map_err(|error| {
+                configure_prp_tcp_stream(&stream).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "runner ingress stream configuration failed: {error}"
                     ))
@@ -383,6 +391,13 @@ impl RunnerTransportEndpoint {
             }
         }
     }
+}
+
+fn configure_prp_tcp_stream(stream: &TcpStream) -> io::Result<()> {
+    if stream.peer_addr()?.ip().is_loopback() {
+        stream.set_nodelay(true)?;
+    }
+    stream.set_nonblocking(true)
 }
 
 fn validate_listener_authority(authority: &str) -> Result<SocketAddr, DurableRunnerError> {
@@ -1763,8 +1778,11 @@ fn hex_nibble(byte: u8) -> Result<u8, DurableRunnerError> {
 mod tests {
     #[cfg(unix)]
     include!("tests/hosted_retention.rs");
+    #[cfg(unix)]
+    include!("tests/acpx_park_relaunch.rs");
     include!("tests/ack_release_poll.rs");
     include!("tests/indeterminate_terminal_ack.rs");
+    include!("tests/loopback_nodelay.rs");
 
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
@@ -1826,6 +1844,13 @@ mod tests {
         let credential = CredentialMaterial::from_token(server_credential.token);
         assert_eq!(payload["credentialId"], credential.credential_id);
         assert_eq!(payload["credentialKind"], server_credential.kind);
+        let warm_transition_id = state
+            .warm_transition
+            .as_ref()
+            .map(|transition| transition.receipt.transition_id.clone());
+        if let Some(id) = &warm_transition_id {
+            assert_eq!(payload["warmTransitionId"], *id);
+        }
         let mut challenge = AuthChallenge {
             credential_id: credential.credential_id.clone(),
             credential_kind: server_credential.kind.to_owned(),
@@ -1845,8 +1870,8 @@ mod tests {
             credential_lease_id: server_credential.lease_id.map(str::to_owned),
             revocation_epoch: server_credential.revocation_epoch,
             server_proof: String::new(),
-            warm_transition_version: None,
-            warm_transition_id: None,
+            warm_transition_version: warm_transition_id.as_ref().map(|_| 1),
+            warm_transition_id,
             recovery_cursor_version: Some(1),
             recovery_acked_source_seq: payload["resume"]["ackedSourceSeq"].as_u64(),
         };
@@ -1881,6 +1906,8 @@ mod tests {
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
                     "serverProof": &challenge.server_proof,
+                    "warmTransitionVersion": challenge.warm_transition_version,
+                    "warmTransitionId": &challenge.warm_transition_id,
                     "recoveryCursorVersion": challenge.recovery_cursor_version,
                     "recoveryAckedSourceSeq": challenge.recovery_acked_source_seq,
                 },
@@ -2170,6 +2197,27 @@ mod tests {
                 "{authority}"
             );
         }
+    }
+
+    #[test]
+    fn listener_checks_its_backlog_sooner_than_a_dial_reconnects() {
+        let configured = Duration::from_millis(250);
+        let listener = RunnerTransportEndpoint::Listen {
+            listener: TcpListener::bind("0.0.0.0:0").unwrap(),
+            path: "/api/runner/v1/connect/run_1".to_owned(),
+        };
+        assert_eq!(listener.retry_delay(configured), LISTENER_ACCEPT_INTERVAL);
+        assert!(LISTENER_ACCEPT_INTERVAL <= Duration::from_millis(25));
+        assert_eq!(
+            listener.retry_delay(Duration::from_millis(1)),
+            Duration::from_millis(1)
+        );
+        let dial = RunnerTransportEndpoint::new(
+            "ws://127.0.0.1:43127/api/runner/v1/connect/run_1",
+            "run_1",
+        )
+        .unwrap();
+        assert_eq!(dial.retry_delay(configured), configured);
     }
 
     #[test]

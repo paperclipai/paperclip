@@ -2,7 +2,7 @@ import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePref
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
-import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
   experimentalApiDocs,
@@ -10459,24 +10459,39 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+const linkPreviewResultSchema = z.object({
+  preview: z.object({
+    target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
+    title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
+    author: z.string().nullable(), updatedAt: z.string().nullable(),
+  }).nullable(),
+  maxAgeMs: z.number(),
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/link-preview",
   tags: ["companies"],
   summary: "Read optional link metadata for the current board user",
-  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. It does not change tasks or schedule background work.",
+  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. Each company/viewer can make 600 lookup requests per minute per server process. Excess requests return 429 with Retry-After; cached batch reads remain available. It does not change tasks or schedule background work.",
   request: { params: z.object({ companyId: z.string() }), query: z.object({ url: z.string().max(2048) }) },
   responses: {
-    200: r.ok(z.object({
-      preview: z.object({
-        target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
-        title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
-        author: z.string().nullable(), updatedAt: z.string().nullable(),
-      }).nullable(),
-      maxAgeMs: z.number(),
-    })),
-    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+    200: r.ok(linkPreviewResultSchema),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 429: r.tooManyRequests,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/link-previews/cached",
+  tags: ["companies"],
+  summary: "Read a batch of stored link statuses without contacting providers",
+  description: `Board-only and company/viewer scoped. Reads at most ${LINK_PREVIEW_BATCH_LIMIT} URLs. Canonical links are reused across tasks. Stale records have maxAgeMs zero; absent records are omitted. This is a read-only cache projection.`,
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ url: z.union([z.string().max(2048), z.array(z.string().max(2048)).min(1).max(LINK_PREVIEW_BATCH_LIMIT)]) }),
+  },
+  responses: { 200: r.ok(z.object({ results: z.record(z.string(), linkPreviewResultSchema) })), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -12467,6 +12482,12 @@ registerCurrentRoute({
   summary: "Revoke a personal tool connection grant delegation",
 });
 
+const managedGoogleAccessRemovalSchema = z.object({
+  provider: z.literal("google"),
+  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "not_ended"]),
+  outcomes: z.array(z.string()).describe("One diagnostic code per refresh token sent to Paperclip Cloud, in order."),
+}).describe("Present only for a Google connection managed by Paperclip Cloud. A failure to end access at Google does not undo the local removal.");
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
@@ -12474,6 +12495,13 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/grants/{grantId}",
   tags: ["tool-access"],
   summary: "Revoke a tool connection grant",
+  description: "Revokes the grant locally, then, for a Google connection managed by Paperclip Cloud, asks Paperclip Cloud to end the grant's access at Google and reports the result in providerAccess.",
+  responses: {
+    200: r.ok(z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registerCurrentRoute({
@@ -12559,6 +12587,42 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+  description: "Removes the connection and its credentials. For a Google connection managed by Paperclip Cloud, removal.providerAccess reports whether access was ended at Google.",
+  query: z.object({ deleteStoredContent: z.enum(["true", "false"]).optional() }),
+  responses: {
+    200: r.ok(z.object({ removal: z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content",
+  tags: ["tool-access"],
+  summary: "Count the content Paperclip stored from a connection's tool calls",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Delete the content Paperclip stored from a connection's tool calls",
+  responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Read the status of the latest stored-content deletion for a connection",
 });
 
 const MACHINE_SIGN_IN_ERRORS = {

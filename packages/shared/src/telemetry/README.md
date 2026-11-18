@@ -120,6 +120,47 @@ value with a salted hash of the per-installation secret.
 Use `trackAgentTaskRun()` to emit this event. The generated contract remains
 the authority for its exact dimensions and optionality.
 
+## Cloud Direct Delivery
+
+Self-hosted installs are unchanged. They post every batch to the collector,
+private references stay hashed by `hashPrivateRef()`, and the collector and
+its loader apply their anonymization. A self-hosted server never loads
+`posthog-node`.
+
+A Paperclip Cloud stack can send telemetry straight to PostHog instead. The
+server turns this on only when the instance is Cloud-managed and
+`PAPERCLIP_POSTHOG_PROJECT_TOKEN`, `PAPERCLIP_CLOUD_STACK_ID`, and
+`PAPERCLIP_POSTHOG_ENVIRONMENT` are set.
+`PAPERCLIP_POSTHOG_DIRECT=0` sends through the collector again. The server owns
+this transport (`server/src/services/posthog-direct/`). This package only
+exposes the `TelemetryTransport` seam on `TelemetryClient`:
+
+- With a transport, each flushed batch goes to the transport and never to the
+  collector. One batch has exactly one sender.
+- A transport with `hashesPrivateRefs: false` makes the typed helpers emit raw
+  task ids. Private source refs (for example a private repository name) are
+  customer content, not identifiers, so they stay hashed on every path and
+  `source_ref_hashed` stays `true` for them.
+- The transport can capture per-event context at track time. That context is
+  never added to the collector envelope.
+
+Cloud is Paperclip's own service under the Cloud terms, so its events carry
+real identifiers: raw agent and task ids, the stack id, and the company and
+acting user ids when known. Event names, dimension names, metadata keys, the
+deterministic event uuid, and enum fallback normalization stay the same as the
+collector path, so existing insights keep working. Request headers from the
+browser SDK only link an event to a browser session. They never set identity
+or grant access. Do not use this path to send fields that are not in the
+generated contract.
+
+On each start, a Cloud server with direct delivery also sends one
+`cloud.workspace_started` event and a workspace `$groupidentify`, straight
+through the PostHog client. Neither is in the generated contract, and neither
+goes through `TelemetryClient` or the collector. The event carries
+`install_hash`, the sha256 of the install id, which is the same value the
+collector stores as `install_id`. It lets an offline job join a workspace's
+pre-switch history. No other event carries `install_hash`.
+
 ### Other Data Paths
 
 This document covers Paperclip Telemetry only. The generated Telemetry

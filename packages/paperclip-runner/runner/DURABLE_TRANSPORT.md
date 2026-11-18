@@ -8,6 +8,15 @@ agent or recovery of its persisted run. On a fresh launch or restart,
 - With `--listen-address 0.0.0.0 --listen-path /api/runner/v1/connect/<run-id>`,
   the Runner listens for Core. `--listen-port` defaults to `43127`.
 
+A dialing Runner waits `--reconnect-delay-ms` (default 250) between
+connection attempts and backs off after a failed one. A listening Runner
+checks for an incoming connection every 10 ms (or sooner, when that delay is
+smaller). It never redials, so a connection does not wait out the reconnect
+delay after a disconnect or an authority rotation.
+
+In both modes, Runner enables `TCP_NODELAY` before the WebSocket handshake
+when the connected peer is on loopback.
+
 Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
 Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 
@@ -306,6 +315,14 @@ retirement names the park request. Cancelling a claim additionally requires its
 claim ID, the unchanged authority and sequence cut, and provider quiescence.
 Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
 suspended lifecycle and provider shutdown path. There is no new checkpoint state.
+
+When a trusted host relaunches an absent Runner from a verified ACPX park, it can
+pass `--acpx-park-relaunch` with the private host-control descriptor. For
+park-eligible ACPX providers, Runner validates the settled checkpoint and keeps
+the claim fence without starting the provider. The authenticated `run.attach`
+opens the provider with the incoming run's bindings and checks live session
+identity and dormancy before committing the attachment. An existing warm
+transition receipt follows the ordinary replay path.
 
 This native loop does not advertise hosted parking support: Launcher retention,
 Core orchestration, provider-specific qualification, and live VM sleep/wake

@@ -8,6 +8,7 @@ import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { motionMilliseconds, motionNumber } from "@/lib/onboarding-motion-tokens";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 export interface AgentSetupPromptProps {
   /** The complete text to preview and copy; never truncated on the clipboard. */
@@ -244,7 +245,7 @@ export function AgentSetupPrompt({
                 className="agent-setup-preview resize-none rounded-lg bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed"
               />
             ) : (
-              <pre tabIndex={0} aria-label="Setup prompt" className="agent-setup-preview m-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed text-muted-foreground">{prompt}</pre>
+              <pre tabIndex={0} aria-label="Setup prompt" className={cn("agent-setup-preview m-0 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-muted/50 p-3 pt-5 font-mono text-xs leading-relaxed text-muted-foreground", ANALYTICS_NO_CAPTURE_CLASS)}>{prompt}</pre>
             )}
           </div>
 

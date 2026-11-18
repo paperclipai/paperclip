@@ -19,7 +19,6 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Link } from "@/lib/router";
 import { ClassicWorkspaceSetting } from "@/components/ClassicWorkspaceSetting";
 import { describeError } from "@/api/errors";
 
@@ -309,18 +308,6 @@ export function InstanceExperimentalSettings() {
         </div>
 
         <ExperimentalToggleCard
-          title="Assistant connections (MCP)"
-          description="Connect Codex, Claude, and other assistants to your Paperclip organization. People sign in, select an organization once, and approve access to review work, delegate tasks, and add feedback."
-          footnote={<>Requires an authenticated instance with a configured public URL. Takes effect immediately. Turning this off blocks assistant calls and event delivery; work already delegated continues.{experimentalQuery.data?.enablePublicMcp && <> <Link className="underline" to="/apps/assistant-connection">Set up an assistant connection</Link></>}</>}
-          checked={experimentalQuery.data?.enablePublicMcp === true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enablePublicMcp: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enablePublicMcp"
-          managed={managedKeys.enablePublicMcp}
-          ariaLabel="Toggle assistant connections experimental setting"
-        />
-
-        <ExperimentalToggleCard
           title="Beta skills"
           description="Allow agents to pin beta releases of the Paperclip core skill. Disabling this returns every agent to the default live skill without removing saved pins."
           checked={enableBetaSkills}
@@ -521,7 +508,7 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="Grok Bot"
           description="Connect an existing Grok Bot as an agent. Verify routine delivery and an authenticated reply before assigning work."
-          footnote="Requires Assistant connections (MCP), Paperclip Runner, and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
+          footnote="Requires Paperclip Runner and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
           checked={experimentalQuery.data?.enableGrokBot === true}
           onCheckedChange={checked => toggleMutation.mutate({ enableGrokBot: checked })}
           disabled={toggleMutation.isPending}
@@ -557,7 +544,7 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="OpenAI Dot"
           description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
-          footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
+          footnote="Requires an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
           checked={experimentalQuery.data?.enableOpenAiDot === true}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableOpenAiDot: checked })}
           disabled={toggleMutation.isPending}

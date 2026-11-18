@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { profileIdentityCases } from "./identity-profile.js";
+import { profileIdentityCases, settledFieldValue } from "./identity-profile.js";
 import { companyLifecycleIdentityCases } from "./identity-company-lifecycle.js";
 import type { IdentityObservation } from "./identity-support.js";
 function valid(id: string): IdentityObservation {
@@ -71,5 +71,13 @@ describe("personal identity and company lifecycle oracles", () => {
   it("does not accept a changed company/employee as a personal profile edit", () => {
     const o = valid("navigation-preferences.edit-profile"); o.agents[0]!.name = "Alex Chen";
     expect(profileIdentityCases[0]!.grade(o).passed).toBe(false);
+  });
+  it("reads the reloaded display name once the form fills, not the empty first read (cohort 16)", async () => {
+    // Cohort 16 saved the name correctly, but a one-shot read right after reload saw "" before the form filled.
+    const reads = ["", "", "Alex Chen"]; let calls = 0;
+    const field = { inputValue: async () => reads[Math.min(calls++, reads.length - 1)]! };
+    await expect(settledFieldValue(field, "Alex Chen", 1_000, 1)).resolves.toBe("Alex Chen");
+    // A name that never arrives is reported as what the person sees, so the grade still fails it.
+    await expect(settledFieldValue({ inputValue: async () => "Alex Former" }, "Alex Chen", 20, 1)).resolves.toBe("Alex Former");
   });
 });

@@ -69,7 +69,7 @@ export type {
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport =
-  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice";
+  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice" | "plugin";
 export type ToolConnectionPurpose = "tool" | "channel" | "ai";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership =
@@ -113,6 +113,7 @@ export interface ToolRedactedValueSummary {
   sha256?: string | null;
   redactedFields?: string[];
   artifactId?: string | null;
+  contentDeletedAt?: string;
 }
 
 export type VercelConnectPrincipalMode = "app" | "user";
@@ -426,11 +427,69 @@ export interface ToolConnectionRemovalSummary {
     appSubjectCleanup: "not_applicable" | "manage_in_vercel";
     manageUrl: string;
   } | null;
+  providerAccess?: ManagedGoogleAccessRemoval | null;
 }
+
+export type ManagedGoogleRevocationOutcome =
+  | "revoked"
+  | "other_connections_remain"
+  | "provider_revocation_failed"
+  | "binding_not_known"
+  | "provider_revocation_disabled"
+  | "revocation_in_progress"
+  | "revocation_not_available"
+  | "broker_unavailable"
+  | "broker_error"
+  | "credential_unavailable"
+  | "unexpected_error";
+
+export interface ManagedGoogleAccessRemoval {
+  provider: "google";
+  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "not_ended";
+  outcomes: ManagedGoogleRevocationOutcome[];
+}
+
+export type ConnectionGrantRevocationResult = ConnectionGrant & {
+  providerAccess?: ManagedGoogleAccessRemoval | null;
+};
 
 export interface ToolConnectionRemovalResult {
   connection: ToolConnection;
   removal: ToolConnectionRemovalSummary;
+}
+
+export interface ToolConnectionStoredContentCounts {
+  toolCalls: number;
+  approvals: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+}
+
+export interface ToolConnectionContentDeletionCounts {
+  toolCalls: number;
+  approvals: number;
+  auditEvents: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+  itemsInProgress: number;
+}
+
+export type ToolConnectionContentDeletionStatus = "pending" | "completed";
+
+export interface ToolConnectionContentDeletion {
+  id: string;
+  status: ToolConnectionContentDeletionStatus;
+  requestedAt: string;
+  completedAt: string | null;
+  retrying: boolean;
+  counts: ToolConnectionContentDeletionCounts;
+}
+
+export interface ToolConnectionStoredContent {
+  stored: ToolConnectionStoredContentCounts;
+  deletion: ToolConnectionContentDeletion | null;
 }
 
 export type ConnectionTokenScope = string | string[];

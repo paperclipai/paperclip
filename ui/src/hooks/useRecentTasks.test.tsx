@@ -22,7 +22,7 @@ vi.mock("@/api/issues", () => ({ issuesApi: { get: getIssue, summaries } }));
 
 const task = (updatedAt: number, title: string, status: "todo" | "done" = "todo") => ({
   id: "issue-1", companyId: "company-1", identifier: "TASK-1", title, status,
-  updatedAt: new Date(updatedAt), hiddenAt: null, projectId: null,
+  updatedAt: new Date(updatedAt), hiddenAt: null, projectId: null, isParticipantForMe: true,
 });
 const storageKey = getRecentTasksStorageKey("company-1", "user-1");
 // Node 24 uses jsdom Storage; newer Node versions use the setup's storage shim.
@@ -159,7 +159,7 @@ describe("recent task synchronization", () => {
     ));
     await flush();
     expect(readRecentTasks(storageKey, "company-1")).toHaveLength(1);
-    expect(container.textContent).toBe("Unavailable:todo");
+    expect(container.textContent).toBe("");
     expect(summaries).toHaveBeenCalledTimes(1);
     expect(getIssue).not.toHaveBeenCalled();
   });
@@ -201,6 +201,94 @@ describe("recent task synchronization", () => {
     await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="empty" /></QueryClientProvider>));
     await flush();
     expect(summaries).not.toHaveBeenCalled();
+  });
+
+  it.each(["account", "company"])("retains confirmed rows after a new batch fails, without crossing %s scopes", async (change) => {
+    const personal = task(10, "My work");
+    recordRecentTask(personal, "user-1", 10);
+    summaries.mockResolvedValue([personal]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="retained" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+
+    summaries.mockRejectedValue(new ApiError("Unavailable", 503, null));
+    await act(async () => { recordRecentTask({ ...task(20, "Unverified"), id: "unknown" }, "user-1"); });
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(2);
+
+    const companyId = change === "company" ? "company-2" : "company-1";
+    const userId = change === "account" ? "user-2" : "user-1";
+    recordRecentTask({ ...personal, companyId, title: "Unverified other scope" }, userId);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="retained" companyId={companyId} userId={userId} /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("");
+  });
+
+  it("debounces personal reorders even when storage contains an unverified candidate", async () => {
+    const older = task(10, "Older");
+    const newer = { ...task(20, "Newer"), id: "newer" };
+    const unknown = { ...task(30, "Unverified"), id: "unknown", isParticipantForMe: undefined };
+    [older, newer, unknown].forEach((issue, index) => recordRecentTask(issue, "user-1", index + 1));
+    summaries.mockResolvedValue([older, newer, unknown]);
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="debounced" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("Newer:todo,Older:todo");
+    vi.useFakeTimers();
+    try {
+      await act(async () => { recordRecentTask(older, "user-1", 100); });
+      expect(container.textContent).toBe("Newer:todo,Older:todo");
+      await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+      expect(container.textContent).toBe("Newer:todo,Older:todo");
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(container.textContent).toBe("Older:todo,Newer:todo");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hides unverified visits and removes automated history only after a successful participation read", async () => {
+    const personal = { ...task(10, "My work"), isParticipantForMe: true };
+    const automated = { ...task(20, "Routine scan"), id: "routine", isParticipantForMe: false };
+    recordRecentTask(personal, "user-1");
+    recordRecentTask(automated, "user-1");
+    let resolve!: (rows: unknown[]) => void;
+    summaries.mockReturnValueOnce(new Promise(done => { resolve = done; })).mockResolvedValue([personal]);
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="participation" /></QueryClientProvider>));
+    expect(container.textContent).toBe("");
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(2);
+    await act(async () => { resolve([personal, automated]); });
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual([personal.id]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).not.toHaveProperty("isParticipantForMe");
+  });
+
+  it("does not trust a participation flag from local storage or a full-detail cache", async () => {
+    localStorage.setItem(storageKey, JSON.stringify([{ ...task(10, "Imported review"), recordedAt: 10 }]));
+    const cache = client();
+    cache.setQueryData(queryKeys.issues.detail("issue-1"), task(20, "Cached review"));
+    summaries.mockResolvedValue([{ ...task(30, "Review finished"), isParticipantForMe: false }]);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="imported" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("");
+    expect(readRecentTasks(storageKey, "company-1")).toEqual([]);
+  });
+
+  it("admits an automated task after the viewer participates despite a cached negative result", async () => {
+    const automated = { ...task(10, "Review"), isParticipantForMe: false };
+    recordRecentTask(automated, "user-1");
+    summaries.mockResolvedValue([automated]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="joined" /></QueryClientProvider>));
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1")).toEqual([]);
+    summaries.mockResolvedValue([{ ...automated, isParticipantForMe: true }]);
+    await act(async () => { recordRecentTask(automated, "user-1", 100); });
+    await flush();
+    expect(container.textContent).toBe("Review:todo");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.recordedAt).toBe(100);
   });
 
   it("fetches a 25-task history in one request", async () => {
@@ -282,7 +370,7 @@ describe("recent task synchronization", () => {
     await act(async () => { resolveFirst([]); });
     await flush();
     expect(readRecentTasks(storageKey, "company-1").some(entry => entry.id === added.id)).toBe(true);
-    expect(container.textContent).toContain("New task");
+    expect(container.textContent).not.toContain("New task");
   });
 
   it("isolates an account switch while the old request is pending", async () => {

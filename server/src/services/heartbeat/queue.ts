@@ -12,7 +12,7 @@ import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, reche
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueGraphRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
-import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
+import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, isPersonRequestedRun, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
 import { reserveAutomaticRunStart } from "../recovery/automatic-run-brake.js";
 import { queuedRunDispatchFacts } from "./queued-run-line.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
@@ -2527,7 +2527,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       claimed: (run: QueuedRunCandidate) => { const entry = byRun.get(run); if (entry) dispatcher.claimed(entry); },
       personRun: (run: QueuedRunCandidate) => {
         const entry = byRun.get(run);
-        return Boolean(entry && queuedRunDispatchClass(entry, now) === "person");
+        return Boolean(entry && queuedRunDispatchClass(entry, now) === "person" && isPersonRequestedRun(entry));
       },
       personOrigin: (run: QueuedRunCandidate) => personOriginChecked ? byRun.get(run)?.requestedByUser ?? false : undefined,
     };
@@ -2859,7 +2859,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     if (reason === "issue_comment_mentioned" || enrichedContextSnapshot.wakeReason === "issue_comment_mentioned") return null;
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
-      if (taskRetryActorId && conversation) await assertTaskRetryConversationAllowed(db, conversation, taskRetryActorId);
+      if (taskRetryActorId && conversation) assertTaskRetryConversationAllowed(conversation, taskRetryActorId);
       if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
       if (isConversation(conversation)) {
         if (opts.manualUserWake && conversation!.conversationUserId !== opts.requestedByActorId) {
@@ -2867,7 +2867,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         }
         if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
         if (isWaitingConversation(conversation) && !hasIndependentConversationWakeCause()) return null;
       }
     }
@@ -3825,7 +3824,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           }
 
           if (taskRetryActorId) {
-            await assertTaskRetryConversationAllowed(tx as unknown as Db, issue, taskRetryActorId);
+            assertTaskRetryConversationAllowed(issue, taskRetryActorId);
             if (await retireSupersededTaskRetry(tx as unknown as Db, {
               companyId: issue.companyId, issueId: issue.id, requestId: opts.taskRetryRequestId!,
               sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId)!,

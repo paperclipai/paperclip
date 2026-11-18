@@ -4,9 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type FocusEventHandler,
   type KeyboardEvent,
-  type MouseEventHandler,
   type PointerEvent,
   type ReactNode,
 } from "react";
@@ -16,14 +14,6 @@ const DEFAULT_SIDEBAR_WIDTH = 240;
 const MIN_SIDEBAR_WIDTH = 208;
 const MAX_SIDEBAR_WIDTH = 420;
 const SIDEBAR_WIDTH_STEP = 16;
-
-// Collapsed icon rail. Width is chosen so the icon is *centered* in the rail,
-// which keeps the active/hover highlight symmetric around it (PAP-10676):
-// the icon's left edge sits at nav px-3 (12) + item px-3 (12) = 24px, so a
-// matching 24px trailing margin (12 item px-3 + 12 nav px-3) yields
-// 24 + 16 (icon) + 24 = 64. The icon's left edge is unchanged from the expanded
-// layout, so icons stay pixel-identical across states.
-export const SIDEBAR_RAIL_WIDTH = 64;
 
 function clampSidebarWidth(width: number) {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
@@ -57,49 +47,17 @@ type SidebarShellProps = {
   children: ReactNode;
   /** Whether the sidebar occupies space at all (mobile back-compat / hidden). */
   open: boolean;
-  /** Pinned collapsed (rail) mode. Desktop-only; the caller gates this. */
-  collapsed?: boolean;
-  /** Ephemeral hover/focus peek. Only meaningful while collapsed. */
-  peeking?: boolean;
   resizable?: boolean;
   storageKey?: string;
   className?: string;
-  /** Forwarded to the overlay panel so Layout can wire peek triggers. */
-  onPanelMouseEnter?: MouseEventHandler<HTMLDivElement>;
-  onPanelMouseLeave?: MouseEventHandler<HTMLDivElement>;
-  onPanelFocusCapture?: FocusEventHandler<HTMLDivElement>;
-  onPanelBlurCapture?: FocusEventHandler<HTMLDivElement>;
 };
 
-/**
- * Layout shell for the desktop sidebar. Owns the persisted expanded width and
- * renders two layers:
- *  - an in-flow spacer that reserves `reservedWidth` (rail when collapsed,
- *    expanded width otherwise) so content to the right only reflows on pin, and
- *  - an absolutely-positioned panel of `panelWidth` (rail at rest, expanded
- *    while peeking) that overlays content — with shadow/raised z-index — when it
- *    is wider than the reserved spacer.
- *
- * The icon-alignment guarantee comes for free: collapsing is a pure width
- * change with `overflow-hidden` clipping the labels; item padding/icon markup
- * are never touched, so the left-aligned icon stays pixel-identical.
- *
- * Opening/closing is intentionally instant (no width transition): the pin toggle
- * and peek snap between rail and expanded widths so the content never appears to
- * slide. Resizing the drag handle is likewise direct.
- */
 export function SidebarShell({
   children,
   open,
-  collapsed = false,
-  peeking = false,
   resizable = false,
   storageKey = "paperclip.sidebar.width",
   className,
-  onPanelMouseEnter,
-  onPanelMouseLeave,
-  onPanelFocusCapture,
-  onPanelBlurCapture,
 }: SidebarShellProps) {
   const [width, setWidth] = useState(() => readStoredSidebarWidth(storageKey));
   const [isResizing, setIsResizing] = useState(false);
@@ -112,24 +70,8 @@ export function SidebarShell({
     setWidth(storedWidth);
   }, [storageKey]);
 
-  // Unified width function (plan §5): one code path for every pinned state.
-  const expandedWidth = open ? width : 0;
-  const reservedWidth = !open ? 0 : collapsed ? SIDEBAR_RAIL_WIDTH : expandedWidth;
-  const panelWidth = !open ? 0 : collapsed && !peeking ? SIDEBAR_RAIL_WIDTH : expandedWidth;
-  const isOverlay = panelWidth > reservedWidth;
-
-  // The drag handle can only resize the expanded width, so it is disabled while
-  // collapsed (the rail width is a fixed constant, not user-resizable).
-  const canResize = resizable && open && !collapsed;
-
-  const reservedStyle = useMemo(
-    () => ({ width: `${reservedWidth}px` }),
-    [reservedWidth],
-  );
-  const panelStyle = useMemo(
-    () => ({ width: `${panelWidth}px` }),
-    [panelWidth],
-  );
+  const canResize = resizable && open;
+  const sidebarStyle = useMemo(() => ({ width: open ? `${width}px` : "0px" }), [open, width]);
 
   const commitWidth = useCallback(
     (nextWidth: number) => {
@@ -195,24 +137,10 @@ export function SidebarShell({
   );
 
   return (
-    <div className={cn("relative h-full shrink-0", className)} style={reservedStyle}>
+    <div className={cn("relative h-full shrink-0", className)} style={sidebarStyle}>
       <div
-        className={cn(
-          "absolute inset-y-0 left-0 flex flex-col overflow-hidden",
-          // Open/close is instant (PAP-10676): no width transition so the rail and
-          // expanded states snap without any sliding motion.
-          // Overlay styling only while the panel is wider than its reserved
-          // spacer (i.e. peeking) so it floats above content without reflow.
-          isOverlay
-            ? "z-30 border-r border-border bg-background shadow-lg"
-            : "z-0",
-        )}
-        style={panelStyle}
-        data-sidebar-overlay={isOverlay ? "" : undefined}
-        onMouseEnter={onPanelMouseEnter}
-        onMouseLeave={onPanelMouseLeave}
-        onFocusCapture={onPanelFocusCapture}
-        onBlurCapture={onPanelBlurCapture}
+        className="absolute inset-y-0 left-0 flex flex-col overflow-hidden z-0"
+        style={sidebarStyle}
       >
         {children}
         {canResize ? (

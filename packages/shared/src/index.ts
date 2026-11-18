@@ -331,9 +331,19 @@ export {
   getRecommendedConnectionMethod,
   isConnectableAppSlug,
   isAppStoreVisibleSlug,
+  listPluginAppDefinitions,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
+  setPluginAppDefinitions,
 } from "./app-definitions.js";
+export {
+  connectionSourceSlug,
+  isPluginAppSlug,
+  parsePluginAppSlug,
+  pluginAppDefinition,
+  pluginAppSlug,
+  reviewedToolRisk,
+} from "./plugin-apps.js";
 export { isConnectorFeatureEnabled, nativeConnectorRequiresCustomerOAuthApp } from "./connector-availability.js";
 export { getAppDefinitionForApplicationKey } from "./connector-identity.js";
 export {
@@ -353,7 +363,7 @@ export {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
-export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
+export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema, reviewedToolsSchema, pluginMethodToolsSchema, PLUGIN_CONNECTOR_TOOL_NAME } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
 export * from "./types/chat-github.js";
 export * from "./validators/chat-github.js";
@@ -378,6 +388,15 @@ export {
   type McpRemoteHeaderCheck,
   type McpRemoteHeaderRejection,
 } from "./mcp-remote-headers.js";
+export {
+  PAPERCLIP_PEER_MCP_PATH,
+  isSamePaperclipInstance,
+  PAPERCLIP_PEER_INSTRUCTIONS_TEMPLATE_ID,
+  paperclipPeerAgentInstructions,
+  paperclipPeerFromMcpUrl,
+  paperclipPeerInstructionTemplate,
+  type PaperclipPeer,
+} from "./paperclip-peer.js";
 export {
   checkOAuthEndpointUrl,
   isSafeOAuthEndpointUrl,
@@ -1542,6 +1561,14 @@ export type {
   ToolConnectionInstallTargetType,
   ToolConnectionRemovalResult,
   ToolConnectionRemovalSummary,
+  ManagedGoogleAccessRemoval,
+  ManagedGoogleRevocationOutcome,
+  ConnectionGrantRevocationResult,
+  ToolConnectionStoredContent,
+  ToolConnectionStoredContentCounts,
+  ToolConnectionContentDeletion,
+  ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionStatus,
   ConnectionAudienceMember,
   ConnectionGrant,
   ConnectionGrantCapabilities,
@@ -1680,6 +1707,10 @@ export type {
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
   AppDefinition,
+  AppPluginSource,
+  AppReviewedTools,
+  PluginConnectorToolDef,
+  PluginConnectorTools,
   ConnectionMethodDef,
   FieldDef,
   OAuthRedirectConstraints,
@@ -2434,6 +2465,7 @@ export {
   currentUserProfileSchema,
   authSessionSchema,
   browserTracingConfigSchema,
+  browserAnalyticsConfigSchema,
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
@@ -2460,6 +2492,7 @@ export {
   type CurrentUserProfile,
   type AuthSession,
   type BrowserTracingConfig,
+  type BrowserAnalyticsConfig,
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,
@@ -2976,7 +3009,7 @@ export {
   TASK_IDENTITY_CHANGED_FIELD,
   issueActivityChangesTaskIdentity,
 } from "./issue-activity-identity.js";
-export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
+export { LINK_PREVIEW_BATCH_LIMIT, type LinkPreviewBatchResult, recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
 export * from "./mcp-apps.js";
 export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
