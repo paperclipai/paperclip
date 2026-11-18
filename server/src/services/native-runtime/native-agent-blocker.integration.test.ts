@@ -15,7 +15,7 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
-import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_HINT } from "./native-environment-blocker.js";
+import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_HINT, NATIVE_ENVIRONMENT_BLOCKER_MESSAGE } from "./native-environment-blocker.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE, NATIVE_AGENT_BLOCKER_HINT } from "./native-agent-blocker.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
 import { requestTaskRetry } from "../task-retry.js";
@@ -112,7 +112,10 @@ describe("native run that reports a task-wide blocker it owns", () => {
     expect(first.issue).toMatchObject({ status: "in_progress", unblockDescriptor: null });
     expect(first.retries).toHaveLength(1);
     expect(first.retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: NATIVE_ENVIRONMENT_BLOCKER_CODE,
+      error: NATIVE_ENVIRONMENT_BLOCKER_MESSAGE,
       contextSnapshot: { forceFreshSession: true, livenessContinuationInstruction: NATIVE_ENVIRONMENT_BLOCKER_HINT } });
+    expect(NATIVE_ENVIRONMENT_BLOCKER_MESSAGE).not.toContain("unavailable");
+    expect(NATIVE_ENVIRONMENT_BLOCKER_HINT).toContain("Check whether that blocker still applies");
     expect(await ownerWakes(issueId)).toEqual([]);
     const second = await runTurn(issueId, { done: true }, first.retries[0]!.id);
     expect(second.issue.status).toBe("done");
