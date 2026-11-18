@@ -12,7 +12,7 @@ Related: [production checklist](../plans/2026-11-17-google-workspace-production-
 [code-fix plan](../plans/2026-11-17-google-workspace-code-fixes.md),
 [connector doc](../connections/GOOGLE-WORKSPACE.md).
 
-Last updated: November 17, 2026 (night).
+Last updated: November 18, 2026.
 
 ## Decisions
 
@@ -98,13 +98,12 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
   to REST.
 - **What we send to the reviewers.** Not decided: the new staging tester or
   something else. Whatever it is must use the separate Google app (below).
-- **How the staging tester reaches the separate Google app.** The broker
-  cannot point one workspace at a different Google client (see
-  "Environments"). Recommendation: add a per-workspace client override to the
-  broker so reviewers see the real flow.
-- **Reviewer login on staging.** The scoped reviewer password login is
-  hard-coded to the production tester. The client override above does not fix
-  this; how to enable the login on staging is still undecided.
+- **Staging tester on the separate Google app.** The broker now has a
+  per-workspace client override; it is not switched on for the tester yet.
+  The remaining steps and their order are in "Environments".
+- **Reviewer login on staging.** The broker now allows the scoped reviewer
+  password login on the staging tester host. Its secret is not set yet; no
+  broker change is needed.
 - **AI-agent client and REST.** Whether an OAuth client marked for AI agents
   may call the REST APIs rather than MCP. To check before the staging tester is
   wired.
@@ -127,12 +126,11 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 
 ## Next steps
 
-1. Cloud broker changes: limit the unified profile to the 14; cap extra
-   reported scopes instead of failing; stop offering Chat, People and Search
-   on the verified client; turn on revoke support; add a per-workspace Google
-   client override.
-2. Create the staging tester (`googletester.staging.paperclip.app`).
-3. Live acceptance on the staging tester.
+1. Deploy the Cloud broker changes to production. They are merged and live
+   on staging (see "Cloud broker"); the production deploy is manual and
+   waits for Dotta.
+2. Point the staging tester at the separate Google app (see "Environments").
+3. Finish live acceptance on the staging tester.
 4. Switch services to REST one at a time, each after its live test.
 5. Revoke at Google when the last connection is removed.
 6. Security scans.
@@ -143,23 +141,43 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 | Name | Address | Notes |
 | --- | --- | --- |
 | Earlier tester | `googletester.paperclip.app` (company prefix `GOO`) | On **production**. Used for earlier tests. Hard to deploy to; do not build on it further. |
-| New tester | `googletester.staging.paperclip.app` | **To be created** on staging. Engineering qualification happens here. |
+| New tester | `googletester.staging.paperclip.app` (company prefix `GOO`) | **Created November 18** on staging. Engineering qualification happens here. State below. |
 | Test 02 | In the private handoff | Staging stack used for the October proof. Holds Dotta's own Gmail grant, so not for reviewers. |
 | Reviewer destination | Undecided | See "Still open". |
 
-Creating the staging tester (as reported by the Nov 17 read-only audit; not yet
-done):
+Staging tester state (November 18):
 
-1. On the staging account site, create an organization with the slug
-   `googletester`. That gives `googletester.staging.paperclip.app`.
-2. Pin its app version with the Cloud repository's deploy-stack command.
-3. Turn on `enableGoogleWorkspaceConnector`.
+- Organization slug `googletester`; the stack id is in staging fleet admin.
+  Agent `Workspace Tester` runs OpenCode on DeepSeek V4.1 Flash 1017 through
+  a company OpenRouter connection (a dedicated key with a spending limit).
+- `enableGoogleWorkspaceConnector` is on through a fleet-admin override.
+- It runs an app build from before the disconnect-revoke change, because no
+  Cloud composition existed yet for a newer commit. Redeploy, then test
+  disconnect.
+- **Passed, on staging's default Google client and Google's MCP transport:**
+  picker and disclosure, a 10-scope request, consent, connection test calls
+  (list labels, search, read the synthetic email in full, create a draft),
+  "Delete data", and a real agent task that found the synthetic email by its
+  marker, returned the full body and left an unsent draft (about 2 minutes).
+- **Not yet on the separate Google app.** That app is External, In
+  Production, 0 of 100 users, with the six REST APIs enabled and the staging
+  broker callback registered on its one web client. The staging environment
+  has the alternate client ID. Still needed, in this order: Dotta adds a
+  client secret and stores it as the one-time bootstrap secret, then the
+  stack list variable is set, then a staging deploy, then reconnect. Setting
+  the stack list before the secret exists fails every staging deploy.
+- Reviewer password login for this host is supported by the broker but its
+  secret is not set yet.
 
-Two obstacles (reported):
+Found while testing:
 
-- The broker cannot point one workspace at the separate Google app. Every
-  workspace in an environment uses that environment's one Google client.
-- The scoped reviewer password login is hard-coded to the production tester.
+- Google's live MCP server offered 34 of our 36 allowlisted actions on the
+  tester; `gmail__list_threads` and `gmail__search_messages` were missing.
+  `gmail__get_draft` was offered live even though Google's published
+  reference does not list it, so the reference and the live server differ.
+- Write actions default to "Allowed" with no approval step. Dotta to decide.
+- The connection audit page shows internal tool names and raw ids.
+- The REST tools have not been run against real Google yet.
 
 Reviewer login: Google's reviewers could not use our normal sign-in, so we
 gave them **a custom password** for the Paperclip login. Any reviewer
@@ -228,17 +246,22 @@ Known mismatches to clean up (after #22001 the app side matches the 14):
 
 ## Cloud broker (paperclip-cloud)
 
-As reported by a read-only audit on November 17. Not re-verified here.
+First reported by a read-only audit on November 17. The changes listed below
+were then built and merged on November 17 and 18. They are live on **staging
+only**; production still runs the old broker.
 
 - The profile registry is at `src/connections/providers.ts`.
 - One Google client per environment, shared by all profile groups. Staging's
   client differs from production's.
 - `workspace.all` is enabled on staging only.
 - There is no `gmail.archive` profile.
-- A revoke endpoint exists, but every Google profile has revocation turned off.
-- There is no per-workspace client override.
+- Revocation is on for Google profiles, with a ledger of provider grants.
+- A per-stack alternate Google client exists (for the tester). It is chosen
+  only from the enrolled stack id.
+- The scoped reviewer password login allows the production and the staging
+  tester hosts.
 
-Changes needed in the broker:
+Changes made in the broker (staging):
 
 | Change | Why |
 | --- | --- |
