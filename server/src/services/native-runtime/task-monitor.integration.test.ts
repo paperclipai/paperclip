@@ -136,6 +136,16 @@ describeEmbeddedPostgres("native task monitors", () => {
     await expect(value.call({ idempotencyKey: "review-clear", monitor: null }))
       .resolves.toMatchObject({ taskId: value.issueId, replayed: false });
     expect((await value.read()).monitorNextCheckAt).toBeNull();
+    for (const existing of [{ scheduledBy: "board", recoveryPolicy: "escalate_to_board" },
+      { scheduledBy: "assignee", recoveryPolicy: "create_recovery_issue" }, { scheduledBy: "board" },
+      { scheduledBy: "assignee", serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME }]) {
+      await db.update(issues).set({ executionPolicy: { ...policy, monitor: { ...value.monitor, ...existing } },
+        monitorNextCheckAt: new Date(value.monitor.nextCheckAt) }).where(eq(issues.id, value.issueId));
+      for (const monitor of [null, value.monitor]) {
+        await expect(value.call({ idempotencyKey: `review-replace-${randomUUID()}`, monitor })).rejects.toThrow(/runtime:manage/);
+      }
+      expect((await value.read()).monitorNextCheckAt?.toISOString()).toBe(value.monitor.nextCheckAt);
+    }
   });
 
   it("rechecks the responsible user's permissions before mutation and replay", async () => {

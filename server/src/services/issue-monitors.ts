@@ -28,13 +28,21 @@ export function applyActorMonitorScheduledBy(
   );
 }
 
+type SelfWakeMonitor = { recoveryPolicy?: string | null; serviceName?: string | null; scheduledBy?: string | null };
+
+function isSelfWakeMonitor(monitor: SelfWakeMonitor | null) {
+  return !monitor || ((monitor.recoveryPolicy ?? "wake_owner") === "wake_owner"
+    && monitor.serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+    && (monitor.scheduledBy ?? "assignee") === "assignee");
+}
+
 export async function assertCanManageIssueMonitor(
   accessSvc: Pick<ReturnType<typeof accessService>, "decide">,
   req: { actor: AuthorizationActor },
   companyId: string,
   assigneeAgentId: string | null,
   monitorChanged: boolean,
-  ownTask?: { monitor: { recoveryPolicy?: string | null } | null },
+  ownTask?: { monitor: SelfWakeMonitor | null; existing: SelfWakeMonitor | null },
 ) {
   if (!monitorChanged) return;
   if (req.actor.type === "board") return;
@@ -51,7 +59,8 @@ export async function assertCanManageIssueMonitor(
     ownTask &&
     isAssignee &&
     runtimeDecision.reason === "deny_low_trust_boundary" &&
-    (ownTask.monitor?.recoveryPolicy ?? "wake_owner") === "wake_owner";
+    isSelfWakeMonitor(ownTask.monitor) &&
+    isSelfWakeMonitor(ownTask.existing);
   if (!runtimeDecision.allowed && !ownTaskSelfWake) {
     throw forbidden(
       runtimeDecision.explanation,
