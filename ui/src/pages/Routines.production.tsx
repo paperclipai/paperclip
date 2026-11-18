@@ -1,5 +1,5 @@
 import { useRoutineListView } from "../hooks/useRoutineListView";
-import { filterRoutines } from "../lib/routine-list-view";
+import { filterRoutines, routineFilterKeys } from "../lib/routine-list-view";
 import { RoutineTable } from "../components/RoutineTable";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -1163,18 +1163,18 @@ export function Routines() {
               }}
             />
           ) : null}
-          {visibleRoutines.length === 0 ? (
+          {visibleRoutines.length === 0 && !routineViewState.statuses.length ? (
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No active routines. Use Create routine to define the first recurring workflow."
+                message="No active routines. Use New routine to define the first recurring workflow."
               />
             </div>
           ) : sortedRoutines.length === 0 ? (
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message={folderSelection === "all" ? "No routines match this view." : "This folder is empty."}
+                message={query.trim() ? "No routines match your search." : routineFilterKeys.some(key => routineViewState[key].length) || folderSelection === "all" ? "No routines match this view." : "This folder is empty."}
               />
               {folderSelection !== "all" ? (
                 <div className="mt-3 flex justify-center">

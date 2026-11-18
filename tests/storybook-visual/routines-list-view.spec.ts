@@ -6,10 +6,13 @@ for (const theme of ["light", "dark"]) {
   test(`routine columns and filters in ${theme}`, async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", error => errors.push(error.message));
+    page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
     await page.goto(`/iframe.html?id=routines-list-view--default&viewMode=story&globals=theme:${theme}`);
     const toolbar = page.getByRole("toolbar", { name: "Routines controls" });
     await expect(page.getByRole("row").filter({ hasText: "Weekly project review" })).toBeVisible();
-    await expect(toolbar.locator("button, input, a").filter({ visible: true })).toHaveCount(8);
+    expect(await toolbar.locator("button, input, a").filter({ visible: true }).evaluateAll(elements => elements.map(element => element.getAttribute("aria-label") ?? element.textContent))).toEqual([
+      "New routine", "Search routines", "Sort routines", "Filter routines", "Group routines", "Routine columns", "View all tasks",
+    ]);
     await expect(page.getByRole("columnheader")).toHaveText(["Routine", "Project", "Agent", "Responsible user", "Last run", "Enabled", "Actions"]);
     await page.screenshot({ path: `test-results/routines-${theme}.png`, fullPage: true });
     await toolbar.getByRole("button", { name: "Filter routines", exact: true }).click();
@@ -44,5 +47,6 @@ test("linked filters open on current and classic pages and mobile stays within t
   await page.goto("/iframe.html?id=routines-list-view--default&viewMode=story");
   await expect(page.getByRole("button", { name: "Routine columns" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "Dismiss folder suggestion", exact: true }).click();
   await page.screenshot({ path: "test-results/routines-mobile.png", fullPage: true });
 });

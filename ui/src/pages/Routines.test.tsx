@@ -1285,6 +1285,18 @@ describe("Routines page", () => {
     } finally { await act(() => root.unmount()); client.clear(); }
   });
 
+  it("shows a filtered empty state when the enabled filter excludes all routines", async () => {
+    currentSearch = "statuses=paused";
+    routinesListMock.mockResolvedValue([createRoutine({ status: "active" })]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => { root.render(<QueryClientProvider client={client}><Routines /></QueryClientProvider>); await flush(); });
+      await vi.waitFor(() => expect(container.textContent).toContain("No routines match this view."));
+      expect(container.textContent).not.toContain("define the first recurring workflow");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
   it("links View all tasks to the routine-filtered task list", async () => {
     routinesListMock.mockResolvedValue([]);
     const root = createRoot(container);

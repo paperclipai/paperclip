@@ -183,6 +183,14 @@ The change creates a routine revision and applies to future automatic tasks.
 Existing tasks keep their responsibility. Manual runs use the person who starts
 them. Agents cannot transfer routine responsibility.
 
+The Routines list shows the agent and responsible user in adjacent columns.
+People can choose project, agent, responsible user, last run, and enabled columns.
+Search, sort, group, and project, agent, enabled, responsible user, and source
+filters are saved in the URL when changed. A shared filter URL takes precedence
+over locally saved filters. Each signed-in person keeps their latest filters,
+column choices, grouping, sorting, and collapsed groups in local storage for
+each company. An explicit empty filter URL clears saved filters.
+
 
 ### Task collection creation filters
 

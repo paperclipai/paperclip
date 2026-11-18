@@ -27,6 +27,7 @@ const meta = {
   beforeEach: () => {
     localStorage.removeItem(routineViewStorageKey("company-storybook", "user-board"));
     return prepareFixtureApi([
+      { path: "/api/workspace-preferences/me", read: () => ({ userId: "user-board", coordinatorWorkspaceEnabled: false, updatedAt: null }) },
       { path: "/api/companies/company-storybook/routines", read: () => routines },
       { path: "/api/companies/company-storybook/folders", read: () => ({ folders: [], allCount: routines.length, unfiledCount: routines.length }) },
       { path: "/api/companies/company-storybook/user-directory", read: () => ({ users: [
@@ -39,5 +40,5 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
-export const LinkedFilters: Story = { parameters: { initialEntries: ["/PAP/routines?projects=project-runtime&responsibleUsers=person-alex&statuses=active"] } };
+export const LinkedFilters: Story = { parameters: { initialEntries: [`/PAP/routines?projects=${storybookProjects[0].id}&responsibleUsers=person-alex&statuses=active`] } };
 export const Classic: Story = { args: { classic: true } };
