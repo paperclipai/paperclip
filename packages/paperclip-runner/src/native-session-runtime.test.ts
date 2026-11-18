@@ -721,8 +721,9 @@ describe("executeNativeSession recovery", () => {
       pendingRuntimeRequests: [], lineage: [],
       terminalTurns: [{ turnId: lostTurnId, fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
     };
-    const startTurn = vi.fn<NativeSession["startTurn"]>(async (): ReturnType<NativeSession["startTurn"]> => ({
-      turnId: startTurn.mock.calls.length === 1 ? "turn-recovery" : "turn-continuation",
+    let turnStarts = 0;
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({
+      turnId: ++turnStarts === 1 ? "turn-recovery" : "turn-continuation",
     }));
     const session: NativeSession = {
       identity: () => identity,
