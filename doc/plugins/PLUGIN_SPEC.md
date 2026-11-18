@@ -528,7 +528,7 @@ apps?: AppDefinition[];
   declared value. The gateway enforces the deadline and gives the worker call
   1 s more, so callers always see the gateway's `tool_timeout`. Worker calls
   cannot be cancelled, so a timed-out call may still finish in the worker;
-  write tools should be idempotent on the call's idempotency key.
+  write tools should be idempotent on their arguments so a retry is safe.
   Authentication is `none` or `api_key`. The gateway keeps every decision
   (grant, policy, approval, rate limit, audit) and calls the worker's
   `executeTool` with `runContext.connection` (`id`, `appSlug`, `methodKey`,
