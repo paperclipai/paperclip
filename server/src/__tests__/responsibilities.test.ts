@@ -177,7 +177,38 @@ describeEmbeddedPostgres("responsibility routes", () => {
     ]) {
       expect(res.status).toBe(404);
       expect(res.body.error).toBe("Responsibilities are not enabled");
+      // The code lets an agent tell "turned off" from "nothing there".
+      expect(res.body.code).toBe("responsibilities_disabled");
     }
+  });
+
+  it("reads and proposes for the person an agent's run works for when no owner is named", async () => {
+    await enable();
+    const company = await seedCompany();
+    const agent = await seedAgent(company.id);
+    const board = createApp(db, localBoardActor());
+    const mine = await createResponsibility(board, company.id, { title: "Fundraising" });
+    const forOwner = createApp(db, {
+      ...agentActor(company.id, agent.id),
+      onBehalfOfUserId: OWNER,
+      onBehalfOfMemberships: [{ companyId: company.id, membershipRole: "owner", status: "active" }],
+    });
+
+    const listed = await request(forOwner).get(`/api/companies/${company.id}/responsibilities`);
+    expect(listed.status).toBe(200);
+    expect(listed.body.ownerUserId).toBe(OWNER);
+    expect(listed.body.responsibilities.map((row: { id: string }) => row.id)).toEqual([mine.id]);
+
+    const proposed = await request(forOwner).post(`/api/companies/${company.id}/responsibilities`).send({ title: "Hiring", ...METRIC });
+    expect(proposed.status).toBe(201);
+    expect(proposed.body).toMatchObject({ ownerUserId: OWNER, status: "proposed" });
+
+    // A named owner still wins, and a run that works for no person must name one.
+    const other = await request(forOwner).get(`/api/companies/${company.id}/responsibilities?ownerUserId=other-user`);
+    expect(other.body.ownerUserId).toBe("other-user");
+    const unbound = await request(createApp(db, agentActor(company.id, agent.id))).get(`/api/companies/${company.id}/responsibilities`);
+    expect(unbound.status).toBe(422);
+    expect(unbound.body.error).toContain("this run works for no person");
   });
 
   it("refuses a half-filled bar, and derives status from the metric", async () => {

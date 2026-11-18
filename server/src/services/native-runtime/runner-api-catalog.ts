@@ -58,6 +58,10 @@ function dedicatedTools(method: string, path: string): string[] {
   if (/\/companies\/\{[^}]+\}\/agent-hires$/.test(path) && method === "POST") return ["hire_agent"];
   if (/\/projects$/.test(path)) return method === "GET" ? ["list_projects"] : method === "POST" ? ["create_project"] : [];
   if (/\/project-repositories$/.test(path) && method === "GET") return ["list_project_repositories"];
+  if (/\/companies\/\{[^}]+\}\/responsibilities$/.test(path) && method === "GET") return ["list_responsibilities"];
+  if (/\/companies\/\{[^}]+\}\/responsibility-areas$/.test(path) && method === "GET") return ["list_responsibilities"];
+  if (/\/responsibilities\/\{[^}]+\}$/.test(path) && method === "GET") return ["get_responsibility"];
+  if (/\/responsibility-links\/lookup$/.test(path) && method === "GET") return ["find_responsibilities_for"];
   if (/\/issues\/\{[^}]+\}\/comments$/.test(path)) return method === "GET" ? ["get_task_history"] : ["report_progress"];
   if (/\/issues\/\{[^}]+\}\/documents/.test(path)) return method === "DELETE" ? [] : method === "GET" ? ["list_documents", "read_document", "list_document_revisions"] : ["write_document"];
   if (/\/case-handoffs$/.test(path) && method === "POST") return ["handoff_case", "create_case"];

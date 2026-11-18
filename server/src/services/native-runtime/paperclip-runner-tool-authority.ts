@@ -50,7 +50,7 @@ import { buildLowTrustSourceTrust, isLowTrustQuarantined, LOW_TRUST_QUARANTINED_
 import { handoffPlanContext } from "./handoff-plan-context.js";
 import { callCreateSkillTool, callUpdateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
-import { callResponsibilityTool, isResponsibilityTool, RESPONSIBILITY_TOOL_NAMES } from "../responsibility-tools.js";
+import { callResponsibilityTool, isResponsibilityTool, RESPONSIBILITY_TOOL_NAMES, responsibilityToolsDisabledError } from "../responsibility-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -965,6 +965,8 @@ export class PaperclipRunnerToolAuthority {
       case "list_responsibilities":
       case "get_responsibility":
       case "find_responsibilities_for": {
+        // Hidden tools stay refused when called by name; the routes also re-check the live setting.
+        if (this.binding.responsibilitiesEnabled !== true) throw responsibilityToolsDisabledError();
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = this.#apiToken(context);
         if (!apiUrl || !token) throw new Error("Responsibility tool authentication is unavailable");

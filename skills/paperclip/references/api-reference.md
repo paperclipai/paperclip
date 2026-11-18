@@ -1499,6 +1499,17 @@ POST /api/issues/{issueId}/routine-suggestions
 { "title": "Weekly competitor pricing summary", "instructions": "Check the pricing pages of Acme, Globex and Initech and summarize what changed since the last summary.", "cadence": { "frequency": "weekly", "dayOfWeek": "monday", "time": "09:00" }, "message": "Want me to put this summary together every Monday morning?" }
 ```
 
+### Areas and responsibilities
+
+A person's responsibilities are saved records, each optionally filed under an area (experimental, `enableResponsibilities`). Prefer the dedicated tools `list_responsibilities`, `get_responsibility` and `find_responsibilities_for`; these are the routes behind them. While the feature is off every route returns `404` with code `responsibilities_disabled`: report that the feature is off, not that the person has none.
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET    | `/api/companies/:companyId/responsibilities` | One person's areas, responsibilities (with health and counts), proposals, totals and the company's work filed under no responsibility (`loose`). `ownerUserId` defaults to the person your run works for; `includeLetGo=true` adds let-go ones |
+| GET    | `/api/companies/:companyId/responsibility-areas` | The company's areas; `includeArchived=true` adds archived ones |
+| GET    | `/api/responsibilities/:responsibilityId` | One responsibility with its projects, tasks and routines (`linkId` set when filed directly) and the skills of the agents doing its work |
+| GET    | `/api/companies/:companyId/responsibility-links/lookup` | The responsibilities one item is under; send exactly one of `issueId`, `projectId` or `routineId` |
+
 ### Responsibility bars
 
 A bar conversation is a task a person opens from a responsibility to agree how its success is measured (experimental). Its prompt carries a **Bar conversation** block with the responsibility's facts, the templates and these calls. Only the person can apply a bar, by accepting your proposal.

@@ -48,6 +48,11 @@ export const findResponsibilitiesForToolInput = z.object({
   id: z.string().trim().min(1).max(200),
 }).strict();
 
+/** The tool-facing denial while the instance has the feature off. */
+export function responsibilityToolsDisabledError() {
+  return new HttpError(404, RESPONSIBILITIES_TURNED_OFF_MESSAGE, { code: RESPONSIBILITIES_DISABLED_CODE });
+}
+
 type ApiCall = (method: "GET", path: string) => Promise<unknown>;
 
 function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fetch): ApiCall {
@@ -61,7 +66,7 @@ function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fet
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (result?.code === RESPONSIBILITIES_DISABLED_CODE) {
-        throw new HttpError(404, RESPONSIBILITIES_TURNED_OFF_MESSAGE, { code: RESPONSIBILITIES_DISABLED_CODE });
+        throw responsibilityToolsDisabledError();
       }
       throw new HttpError(response.status, typeof result?.error === "string" ? result.error : `Responsibility tool failed (${response.status})`,
         typeof result?.code === "string" ? { code: result.code } : undefined);
