@@ -85,6 +85,13 @@ When a controller is registered, the comparison uses its current live cursor.
 The local marker written for external checkpoint storage does not replace that
 authority.
 
+A local session keeps its provider home directly in the session root
+(`<instance>/runtime/paperclip-runner/durable-sessions/<scope>/codex-home`). It holds
+the same kind of state plus everything Codex downloads on startup and the session's
+copy of its assigned skills, typically more than 100 MB per session. Nothing reads it
+once the session's resume pointer is gone, so it expires under the same rules as a
+failover copy, in the same transaction. A session with both expires both together.
+
 An hourly background sweep expires the copy once the session can only resume by
 reopening closed work. It checks at most 200 sessions and expires at most 50 per
 batch, starting two minutes after readiness. A copy expires when all of these hold:
@@ -107,7 +114,8 @@ native session instead of resuming the expired one. The copy is atomically renam
 If one appeared, or the check fails, the rename is undone. Only a confirmed copy is
 renamed to `.expired-<UUID>` and deleted asynchronously. A later sweep restores an
 unconfirmed `.retiring-*` copy when `current` is missing, drops it when a newer
-`current` exists, and finishes an interrupted deletion.
+`current` exists, and finishes an interrupted deletion. A local provider home is
+renamed the same way, to `.retiring-<UUID>` and `.expired-<UUID>` in the session root.
 The rest of the session directory, including its control-plane state, is kept.
 
 | Environment variable | Default | Effect |

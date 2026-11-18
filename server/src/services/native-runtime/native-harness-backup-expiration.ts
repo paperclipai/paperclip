@@ -46,6 +46,10 @@ const SETTLED_FINALIZATION_PHASES = ["committed", "terminal_failure"];
 const LIVE_LEASE_STATUSES = ["active", "released", "retained", "pending_cleanup"];
 const CLOSED_ISSUE_STATUSES = ["done", "cancelled"];
 const MAX_CONTROL_PLANE_STATE_BYTES = 4 * 1024 * 1024;
+// A local session keeps its provider home in the session root. Once the
+// session can only resume by reopening closed work, it is as disposable as a
+// failover copy: a reopened issue starts a fresh provider session elsewhere.
+const LOCAL_PROVIDER_HOME = "codex-home";
 const CHECKPOINT_EXPIRATION_MAX_FAILED_PASSES = 3;
 
 export type NativeHarnessBackupExpirationOptions = {
@@ -148,6 +152,27 @@ async function allocatedBytes(target: string): Promise<number> {
     }
   }
   return bytes;
+}
+
+type RetentionTarget = { path: string; parent: string };
+
+/** The disposable session copies in a root: a remote failover copy and a local provider home. */
+async function retentionTargets(root: string): Promise<RetentionTarget[]> {
+  const backupRoot = path.join(root, "failover-backups");
+  const targets: RetentionTarget[] = [];
+  for (const target of [
+    { path: path.join(backupRoot, "current"), parent: backupRoot },
+    { path: path.join(root, LOCAL_PROVIDER_HOME), parent: root },
+  ]) {
+    if (await isRealDirectory(target.path)) targets.push(target);
+  }
+  return targets;
+}
+
+async function newestModification(targets: RetentionTarget[]): Promise<number> {
+  let newest = Number.NEGATIVE_INFINITY;
+  for (const target of targets) newest = Math.max(newest, (await fs.stat(target.path)).mtime.getTime());
+  return newest;
 }
 
 async function readSessionIdentity(root: string): Promise<SessionIdentity | null> {
@@ -471,10 +496,9 @@ export function nativeHarnessBackupExpirationService(
     checkpointCursor = null;
   }
 
-  async function settleLeftovers(backupRoot: string) {
-    const current = path.join(backupRoot, "current");
-    for (const name of (await fs.readdir(backupRoot).catch(missingPath)) ?? []) {
-      const target = path.join(backupRoot, name);
+  async function settleLeftovers(parent: string, current: string) {
+    for (const name of (await fs.readdir(parent).catch(missingPath)) ?? []) {
+      const target = path.join(parent, name);
       if (name.startsWith(RETIRING_PREFIX) && UUID_PATTERN.test(name.slice(RETIRING_PREFIX.length))) {
         if (!(await isRealDirectory(current))) await fs.rename(target, current);
         else await removeBackupTree(target);
@@ -495,24 +519,34 @@ export function nativeHarnessBackupExpirationService(
     const skip = (reason: string) => {
       result.skipped[reason] = (result.skipped[reason] ?? 0) + 1;
     };
-    const backupRoot = path.join(root, "failover-backups");
-    const current = path.join(backupRoot, "current");
-    if (!options.dryRun) await settleLeftovers(backupRoot);
-    if (!(await isRealDirectory(current))) return skip("no_backup");
+    if (!options.dryRun) {
+      await settleLeftovers(path.join(root, "failover-backups"), path.join(root, "failover-backups", "current"));
+      await settleLeftovers(root, path.join(root, LOCAL_PROVIDER_HOME));
+    }
+    const targets = await retentionTargets(root);
+    if (!targets.length) return skip("no_backup");
     if (await fs.lstat(path.join(root, "cleanup-activation.json")).then(() => true, () => false)) {
       return skip("cleanup_active");
     }
     if (options.isSessionBusy(scopeDigest)) return skip("session_active");
-    const backupStat = await fs.stat(current);
-    if (backupStat.mtime >= options.closedBefore) return skip("recent_backup");
+    if (await newestModification(targets) >= options.closedBefore.getTime()) return skip("recent_backup");
     const identity = await readSessionIdentity(root);
     if (!identity) return skip("identity_unknown");
 
-    const bytes = await allocatedBytes(current);
-    const id = randomUUID();
-    const retiring = path.join(backupRoot, `${RETIRING_PREFIX}${id}`);
-    const trash = path.join(backupRoot, `${EXPIRED_PREFIX}${id}`);
-    let retired = false;
+    let bytes = 0;
+    for (const target of targets) bytes += await allocatedBytes(target.path);
+    const moves = targets.map((target) => {
+      const id = randomUUID();
+      return { current: target.path, retiring: path.join(target.parent, `${RETIRING_PREFIX}${id}`),
+        trash: path.join(target.parent, `${EXPIRED_PREFIX}${id}`) };
+    });
+    const retired: typeof moves = [];
+    const restore = async () => {
+      while (retired.length) {
+        const move = retired.pop()!;
+        await fs.rename(move.retiring, move.current);
+      }
+    };
     let decision: { reason: string } | { cleared: number; bytes: number };
     try {
       decision = await db.transaction(async (tx) => {
@@ -520,15 +554,16 @@ export function nativeHarnessBackupExpirationService(
           scopeDigest, identity, closedBefore: options.closedBefore,
         });
         if ("reason" in blocker) return blocker;
-        if ((await fs.stat(current)).mtime >= options.closedBefore) return { reason: "recent_backup" };
+        if (await newestModification(targets) >= options.closedBefore.getTime()) return { reason: "recent_backup" };
         if (options.dryRun) return { cleared: 0, bytes };
         if (options.isSessionBusy(scopeDigest)) return { reason: "session_active" };
         await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
-        await fs.rename(current, retiring);
-        retired = true;
+        for (const move of moves) {
+          await fs.rename(move.current, move.retiring);
+          retired.push(move);
+        }
         if (await hasLiveRun(tx as unknown as Db, blocker, identity.normalizedSessionId)) {
-          await fs.rename(retiring, current);
-          retired = false;
+          await restore();
           return { reason: "live_run" };
         }
         const cleared = await tx.delete(agentTaskSessions).where(and(
@@ -539,7 +574,7 @@ export function nativeHarnessBackupExpirationService(
         return { cleared: cleared.length, bytes };
       });
     } catch (error) {
-      if (retired) await fs.rename(retiring, current);
+      await restore();
       throw error;
     }
     if ("reason" in decision) return skip(decision.reason);
@@ -547,8 +582,8 @@ export function nativeHarnessBackupExpirationService(
     result.candidateBytes += decision.bytes;
     if (options.dryRun) return;
     result.clearedTaskSessions += decision.cleared;
-    await fs.rename(retiring, trash);
-    await removeBackupTree(trash);
+    for (const move of moves) await fs.rename(move.retiring, move.trash);
+    for (const move of moves) await removeBackupTree(move.trash);
     result.expired++;
     result.reclaimedBytes += decision.bytes;
   }
@@ -898,12 +933,12 @@ export function nativeHarnessBackupExpirationService(
     const base = path.resolve(defaults.stateBase ?? nativeHarnessStateBase());
     const root = path.join(base, scopeDigest);
     if (!SCOPE_PATTERN.test(scopeDigest) || !(await isRealDirectory(root))) return null;
-    const backupRoot = path.join(root, "failover-backups");
-    if (!(await isRealDirectory(backupRoot))) return null;
-    if (!defaults.dryRun) await settleLeftovers(backupRoot);
-    const current = path.join(backupRoot, "current");
-    const stat = await fs.lstat(current).catch(missingPath);
-    if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
+    if (!defaults.dryRun) {
+      await settleLeftovers(path.join(root, "failover-backups"), path.join(root, "failover-backups", "current"));
+      await settleLeftovers(root, path.join(root, LOCAL_PROVIDER_HOME));
+    }
+    const targets = await retentionTargets(root);
+    if (!targets.length) return null;
     const identity = await readSessionIdentity(root);
     if (!identity) return null;
     const assessment = (await assessSessionRetention(db, [{ key: scopeDigest, identity, scopeDigest }],
@@ -919,7 +954,7 @@ export function nativeHarnessBackupExpirationService(
     }
     if (assessment.reason || assessment.closedAt === null) return { ...source, dueAt: null };
     const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
-    return { ...source, dueAt: Math.max(stat!.mtime.getTime(), assessment.closedAt) + retentionMs + 1 };
+    return { ...source, dueAt: Math.max(await newestModification(targets), assessment.closedAt) + retentionMs + 1 };
   }
 
   async function backupScopes(after?: string, limit = 100) {
