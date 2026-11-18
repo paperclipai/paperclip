@@ -87,19 +87,15 @@ export async function readProviderPackLayers(root: string, expectedDigest: strin
 // Copy first, then hash the private copy: no shared hardlinks, no mutation of
 // the older image, and no time-of-check/time-of-use trust in its contents.
 // The runner requires its pack to be physical files inside the pack, so image
-// bytes are never linked. Bytes this pack repeats under several paths (one
-// OpenCode binary in three packages, one Node in two provider runtimes) are
-// stored once: later paths hardlink to the first private copy, and a path the
-// image lacks is copied from the same bytes under another image path instead
-// of being transferred.
+// bytes are never linked. `providerPackReusePlan` decides how repeated bytes
+// are stored once; this program only follows that plan.
 const reuseScript = `
 (async()=>{
  const fs=require('node:fs'),p=require('node:path'),c=require('node:crypto');
  const spec=JSON.parse(Buffer.from(process.argv[1],'base64').toString('utf8'));
  const f=fs.promises;await f.mkdir(p.dirname(spec.target),{recursive:true,mode:448});
  await f.mkdir(spec.target,{mode:448});
- const missing=[],copies=new Map(),bySha=new Map();
- for(const entry of spec.files){if(!bySha.has(entry.sha256))bySha.set(entry.sha256,[]);bySha.get(entry.sha256).push(entry.path)}
+ const missing=[],copied=new Set();
  const regularPath=async(root,relative)=>{
    let current=root;if(!(await f.lstat(current)).isDirectory())return false;
    const parts=relative.split('/');
@@ -109,12 +105,11 @@ const reuseScript = `
  };
  for(const [index,entry] of spec.files.entries()){
    const target=p.join(spec.target,entry.path);let reused=false;
-   const copy=copies.get(entry.sha256);
-   if(copy&&copy.mode===entry.mode){try{
-     await f.mkdir(p.dirname(target),{recursive:true,mode:448});await f.link(copy.path,target);continue;
+   const linkTo=entry.linkTo.find(earlier=>copied.has(earlier));
+   if(linkTo!==undefined){try{
+     await f.mkdir(p.dirname(target),{recursive:true,mode:448});await f.link(p.join(spec.target,spec.files[linkTo].path),target);continue;
    }catch{await f.unlink(target).catch(()=>{});}}
-   const sources=[entry.path,...bySha.get(entry.sha256).filter(path=>path!==entry.path)];
-   for(const root of spec.roots){for(const relative of sources){try{
+   for(const root of spec.roots){for(const relative of entry.sources){try{
      if(!await regularPath(root,relative))continue;
      const source=p.join(root,relative);if((await f.lstat(source)).size!==entry.bytes)continue;
      await f.mkdir(p.dirname(target),{recursive:true,mode:448});
@@ -126,15 +121,38 @@ const reuseScript = `
      if(!matches)throw Error('digest mismatch');
      await f.chmod(target,entry.mode);reused=true;break;
    }catch{await f.unlink(target).catch(()=>{});}}if(reused)break;}
-   if(reused)copies.set(entry.sha256,{path:target,mode:entry.mode});
+   if(reused)copied.add(index);
    else missing.push(index);
  }
  console.log(JSON.stringify(missing));
 })().catch(()=>process.exitCode=1);
 `;
 
+export type ProviderPackReuseStep = {
+  /** Image paths to copy these bytes from, own path first, then other paths with the same bytes. */
+  sources: string[];
+  /** Earlier entries with the same bytes and mode; hardlink to the first that was copied privately. */
+  linkTo: number[];
+};
+
+/** Store repeated bytes once: the first private copy of each digest and mode is
+ * shared by hardlinks, and a path the image lacks may come from a same-bytes twin. */
+export function providerPackReusePlan(files: readonly Pick<FileLayer, "path" | "sha256" | "mode">[]): ProviderPackReuseStep[] {
+  const pathsBySha = new Map<string, string[]>();
+  for (const file of files) pathsBySha.set(file.sha256, [...(pathsBySha.get(file.sha256) ?? []), file.path]);
+  const earlierByShaAndMode = new Map<string, number[]>();
+  return files.map((file, index) => {
+    const key = `${file.sha256}:${file.mode}`;
+    const linkTo = [...(earlierByShaAndMode.get(key) ?? [])];
+    earlierByShaAndMode.set(key, [...linkTo, index]);
+    return { sources: [file.path, ...pathsBySha.get(file.sha256)!.filter(path => path !== file.path)], linkTo };
+  });
+}
+
 export function providerPackLayersArgument(archive: ProviderPackLayers, targetPath: string, reuseRoots: readonly string[]) {
-  const spec = Buffer.from(JSON.stringify({ target: targetPath, roots: reuseRoots, files: archive.files })).toString("base64");
+  const plan = providerPackReusePlan(archive.files);
+  const files = archive.files.map((file, index) => ({ ...file, ...plan[index] }));
+  const spec = Buffer.from(JSON.stringify({ target: targetPath, roots: reuseRoots, files })).toString("base64");
   return Buffer.byteLength(spec) > 120_000 ? null : spec;
 }
 

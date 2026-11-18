@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
+import { providerPackReusePlan } from "./provider-pack-layers.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
 
@@ -120,11 +121,12 @@ const otherTwinPath = "provider-assets/kimi/linux-x64/runtime/node/bin/tool";
 
 /** A pack that repeats one large binary under three paths, like the OpenCode
  * binary in a release pack, with an older image that has it under one path. */
-async function repeatedBytesFixture() {
+async function repeatedBytesFixture(modes: Record<string, number> = {}) {
   const { root, pack } = await fixture();
   for (const relative of [toolPath, twinPath, otherTwinPath]) {
     await fs.mkdir(path.dirname(path.join(pack, relative)), { recursive: true });
-    await fs.writeFile(path.join(pack, relative), Buffer.alloc(2 * 1024 * 1024, 9), { mode: 0o755 });
+    await fs.writeFile(path.join(pack, relative), Buffer.alloc(2 * 1024 * 1024, 9));
+    await fs.chmod(path.join(pack, relative), modes[relative] ?? 0o755);
   }
   await createProviderPackLayers(pack);
   const archive = (await readProviderPackArchive(pack, digest))!;
@@ -154,6 +156,37 @@ it.skipIf(!tar || !hasZstd)("stores repeated bytes once, from an image file unde
   // Only the small-file overlay crosses the network, and the image is unchanged.
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
   expect((await fs.readdir(image, { recursive: true })).sort()).toEqual(before);
+});
+
+it("plans one private copy per digest and mode, with same-bytes twins as copy sources", () => {
+  const a = "a".repeat(64), b = "b".repeat(64);
+  expect(providerPackReusePlan([
+    { path: "one", sha256: a, mode: 0o755 },
+    { path: "two", sha256: a, mode: 0o644 },
+    { path: "three", sha256: a, mode: 0o755 },
+    { path: "four", sha256: a, mode: 0o644 },
+    { path: "other", sha256: b, mode: 0o755 },
+  ])).toEqual([
+    { sources: ["one", "two", "three", "four"], linkTo: [] },
+    { sources: ["two", "one", "three", "four"], linkTo: [] },
+    { sources: ["three", "one", "two", "four"], linkTo: [0] },
+    { sources: ["four", "one", "two", "three"], linkTo: [1] },
+    { sources: ["other"], linkTo: [] },
+  ]);
+});
+
+it.skipIf(!tar || !hasZstd)("keeps one private copy per mode when the same bytes repeat with different modes", async () => {
+  const { root, pack, image, archive } = await repeatedBytesFixture({ [twinPath]: 0o644 });
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
+  const [tool, twin, other] = await Promise.all([toolPath, twinPath, otherTwinPath].map(relative => fs.lstat(path.join(targetPath, relative))));
+  expect(other!.ino).toBe(tool!.ino);
+  expect(twin!.ino).not.toBe(tool!.ino);
+  expect(twin!.mode & 0o777).toBe(0o644);
+  expect(tool!.mode & 0o777).toBe(0o755);
+  expect(await fs.readFile(path.join(targetPath, twinPath))).toEqual(await fs.readFile(path.join(pack, twinPath)));
+  expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
 });
 
 it.skipIf(!tar || !hasZstd)("transfers repeated bytes when no image has them, and does not reuse a changed twin", async () => {
