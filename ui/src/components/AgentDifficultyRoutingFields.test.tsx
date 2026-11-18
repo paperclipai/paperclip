@@ -48,10 +48,12 @@ describe("AgentDifficultyRoutingFields", () => {
 
   it("edits a tier and drops an effort the new model does not support", () => {
     const onChange = render({ enabled: true, tiers: { L3: { model: "big", effort: "max" } } });
-    expect(container.querySelectorAll("select")).toHaveLength(6);
+    expect(container.querySelectorAll("select")).toHaveLength(8);
     select("L1 (Simple) effort", "low");
     expect(onChange).toHaveBeenLastCalledWith({ enabled: true, tiers: { L1: { effort: "low" }, L3: { model: "big", effort: "max" } } });
     select("L3 (Hard) model", "small");
     expect(onChange).toHaveBeenLastCalledWith({ enabled: true, tiers: { L3: { model: "small" } } });
+    select("Escalation model", "big");
+    expect(onChange).toHaveBeenLastCalledWith({ enabled: true, tiers: { L3: { model: "big", effort: "max" } }, escalation: { model: "big" } });
   });
 });

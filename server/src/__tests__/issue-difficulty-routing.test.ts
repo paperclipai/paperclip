@@ -6,9 +6,9 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
-import { activityLog, agents, companies, companyMemberships, createDb, decisionInvocations, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, companies, companyMemberships, createDb, decisionInvocations, heartbeatRuns, issues } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
-import type { DifficultyRoutingConfig } from "@paperclipai/shared";
+import { nextDifficultyEscalationStep, type DifficultyRoutingConfig } from "@paperclipai/shared";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { decisionModelService } from "../services/decision-models.js";
 import { decisionReceipt, type DecisionProviderOutcome } from "../services/decision-model-provider.js";
@@ -210,5 +210,127 @@ describe("difficulty routing helpers", () => {
     expect(((requestBody.state as Record<string, string>).description).length).toBe(6000);
     expect(((requestBody.state as Record<string, string>).title).length).toBe(500);
     expect(Object.keys((requestBody.questions.difficulty as { criteria: Record<string, string> }).criteria)).toEqual(["L1", "L2", "L3"]);
+  });
+});
+
+describe("issue difficulty escalation", () => {
+  const escalatingConfig: DifficultyRoutingConfig = { ...routingConfig, escalation: { model: "gpt-ultra", effort: "high" } };
+
+  async function escalationFixture(options: { config?: DifficultyRoutingConfig } = {}) {
+    const f = await fixture({ runtimeConfig: { difficultyRouting: options.config ?? escalatingConfig } });
+    const first = await f.resolve();
+    expect(first).toMatchObject({ applied: true, routing: { tier: "L1", model: "gpt-mini" } });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(Date.now() + 1000) }).where(eq(heartbeatRuns.id, f.runId));
+    const finishRun = async (runId: string, status: string, errorCode: string | null = null) =>
+      db.update(heartbeatRuns).set({ status, errorCode, finishedAt: new Date(Date.now() + 2000) }).where(eq(heartbeatRuns.id, runId));
+    const nextRun = async (wake?: { reason: string; actorType: string; reopenedFrom?: string }) => {
+      const runId = randomUUID();
+      let wakeupRequestId: string | null = null;
+      if (wake) {
+        wakeupRequestId = randomUUID();
+        await db.insert(agentWakeupRequests).values({ id: wakeupRequestId, companyId: f.companyId, agentId: f.agentId, source: "automation",
+          reason: wake.reason, requestedByActorType: wake.actorType, requestedByActorId: "alice" });
+      }
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "running", invocationSource: "on_demand",
+        responsibleUserId: "alice", wakeupRequestId, contextSnapshot: { issueId: f.issueId, ...(wake?.reopenedFrom ? { reopenedFrom: wake.reopenedFrom } : {}) } });
+      const resolve = async () => resolveIssueDifficultyRouting({ db, decide: decisionModelService(db, { provider: f.provider }).decide, agent: f.agent, runId, issue: await f.loadIssue() });
+      return { runId, resolve };
+    };
+    return { ...f, finishRun, nextRun };
+  }
+
+  it("moves up one tier per failed run and uses the escalation model only after the last tier failed", async () => {
+    const f = await escalationFixture();
+    const failed = await f.nextRun();
+    expect(await failed.resolve()).toMatchObject({ routing: { model: "gpt-mini" } });
+    await f.finishRun(failed.runId, "failed", "adapter_failed");
+    const second = await f.nextRun();
+    expect(await second.resolve()).toMatchObject({ applied: true, adapterConfig: { model: "gpt-main", modelReasoningEffort: "medium" },
+      routing: { tier: "L2", model: "gpt-main", effort: "medium",
+        escalation: { reason: "run_failed", step: "tier", fromTier: "L1", fromModel: "gpt-mini", fromEffort: "low", triggerRunId: failed.runId } } });
+    // Rating the same run again does not move another step.
+    expect(await second.resolve()).toMatchObject({ routing: { tier: "L2", model: "gpt-main" } });
+    await f.finishRun(second.runId, "timed_out");
+    const third = await f.nextRun();
+    expect(await third.resolve()).toMatchObject({ routing: { tier: "L3", model: "gpt-max", escalation: { step: "tier", fromTier: "L2" } } });
+    await f.finishRun(third.runId, "failed", "adapter_failed");
+    const fourth = await f.nextRun();
+    expect(await fourth.resolve()).toMatchObject({ adapterConfig: { model: "gpt-ultra", modelReasoningEffort: "high" },
+      routing: { tier: "L3", model: "gpt-ultra", effort: "high", escalation: { step: "escalation", fromTier: "L3", fromModel: "gpt-max", triggerRunId: third.runId } } });
+    const stored = (await f.loadIssue()).difficultyRouting as { escalation: { escalatedAt: string } };
+    expect(stored).toMatchObject({ model: "gpt-ultra", escalation: { step: "escalation" } });
+    await f.finishRun(fourth.runId, "failed", "adapter_failed");
+    expect(await (await f.nextRun()).resolve())
+      .toMatchObject({ routing: { model: "gpt-ultra", escalation: { escalatedAt: stored.escalation.escalatedAt } } });
+    expect(f.provider).toHaveBeenCalledOnce();
+  });
+
+  it("skips tiers that do not change the model or effort", () => {
+    const claude: DifficultyRoutingConfig = { enabled: true,
+      tiers: { L1: { model: "sonnet", effort: "low" }, L2: { model: "opus", effort: "medium" }, L3: { model: "opus", effort: "high" } },
+      escalation: { model: "fable", effort: "high" } };
+    expect(nextDifficultyEscalationStep(claude, "L1")).toEqual({ step: "tier", tier: "L2" });
+    expect(nextDifficultyEscalationStep(claude, "L2")).toEqual({ step: "tier", tier: "L3" });
+    expect(nextDifficultyEscalationStep(claude, "L3")).toEqual({ step: "escalation" });
+    const sameTop = { ...claude, tiers: { ...claude.tiers, L3: { model: "opus", effort: "medium" } } };
+    expect(nextDifficultyEscalationStep(sameTop, "L2")).toEqual({ step: "escalation" });
+    expect(nextDifficultyEscalationStep({ ...claude, escalation: undefined }, "L1")).toBeNull();
+  });
+
+  it("does not escalate after a success, a platform failure, or a quota failure", async () => {
+    const f = await escalationFixture();
+    for (const [status, errorCode] of [["succeeded", null], ["failed", "provider_quota"], ["failed", "server_shutdown_interrupted"], ["cancelled", null]] as const) {
+      const run = await f.nextRun();
+      await run.resolve();
+      await f.finishRun(run.runId, status, errorCode);
+      const next = await (await f.nextRun()).resolve();
+      expect(next).toMatchObject({ routing: { model: "gpt-mini" } });
+      expect((next as { routing: { escalation?: unknown } }).routing.escalation).toBeUndefined();
+    }
+  });
+
+  it("moves one step per review round that requests changes", async () => {
+    const f = await escalationFixture();
+    const requestChanges = (count: number) => db.update(issues)
+      .set({ executionState: { status: "changes_requested", changesRequestedCount: count } as never }).where(eq(issues.id, f.issueId));
+    await requestChanges(1);
+    expect(await (await f.nextRun()).resolve())
+      .toMatchObject({ routing: { tier: "L2", escalation: { reason: "changes_requested", triggerRunId: null, triggerDecisionId: "changes_requested:1" } } });
+    const sameRound = await f.nextRun();
+    expect(await sameRound.resolve()).toMatchObject({ routing: { tier: "L2" } });
+    await f.finishRun(sameRound.runId, "succeeded");
+    expect(await (await f.nextRun()).resolve()).toMatchObject({ routing: { tier: "L2" } });
+    await requestChanges(2);
+    expect(await (await f.nextRun()).resolve()).toMatchObject({ routing: { tier: "L3", escalation: { triggerDecisionId: "changes_requested:2" } } });
+  });
+
+  it("escalates when a user reopens a done task, but not for an agent or a blocked task", async () => {
+    const f = await escalationFixture();
+    expect(await (await f.nextRun({ reason: "issue_reopened_via_comment", actorType: "agent", reopenedFrom: "done" })).resolve())
+      .toMatchObject({ routing: { model: "gpt-mini" } });
+    expect(await (await f.nextRun({ reason: "issue_reopened_via_comment", actorType: "user", reopenedFrom: "blocked" })).resolve())
+      .toMatchObject({ routing: { model: "gpt-mini" } });
+    expect(await (await f.nextRun({ reason: "issue_commented", actorType: "user" })).resolve())
+      .toMatchObject({ routing: { model: "gpt-mini" } });
+    expect(await (await f.nextRun({ reason: "issue_reopened_via_comment", actorType: "user", reopenedFrom: "done" })).resolve())
+      .toMatchObject({ routing: { tier: "L2", model: "gpt-main", escalation: { reason: "reopened", step: "tier" } } });
+  });
+
+  it("leaves manual tiers, agents without an escalation setting, and no-op escalations alone", async () => {
+    const manual = await escalationFixture();
+    await db.update(issues).set({ difficultyRouting: { ...((await manual.loadIssue()).difficultyRouting as object), source: "manual" } as never }).where(eq(issues.id, manual.issueId));
+    const manualRun = await manual.nextRun();
+    await manualRun.resolve();
+    await manual.finishRun(manualRun.runId, "failed", "adapter_failed");
+    expect(await (await manual.nextRun()).resolve()).toMatchObject({ routing: { source: "manual", model: "gpt-mini" } });
+
+    for (const config of [routingConfig, { enabled: true, tiers: { L1: { model: "gpt-mini", effort: "low" } }, escalation: { model: "gpt-mini", effort: "low" } }]) {
+      const f = await escalationFixture({ config });
+      const run = await f.nextRun();
+      await run.resolve();
+      await f.finishRun(run.runId, "timed_out");
+      const next = await (await f.nextRun()).resolve();
+      expect((next as { routing: { escalation?: unknown } }).routing.escalation).toBeUndefined();
+    }
   });
 });

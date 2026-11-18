@@ -19,12 +19,42 @@ export type DifficultyTierSetting = z.infer<typeof tierSettingSchema>;
 export const difficultyRoutingConfigSchema = z.object({
   enabled: z.boolean(),
   tiers: z.object({ L1: tierSettingSchema.optional(), L2: tierSettingSchema.optional(), L3: tierSettingSchema.optional() }).strict().default({}),
+  /**
+   * Stronger model and effort for a task after its top tier did not solve it.
+   * Setting it turns on escalation: a task first moves up one tier at a time,
+   * and uses this setting only after its last tier also did not solve it.
+   */
+  escalation: tierSettingSchema.optional(),
 }).strict();
 export type DifficultyRoutingConfig = z.infer<typeof difficultyRoutingConfigSchema>;
 
 /** What rated an automatic tier: the company decision model, the agent's own subscription CLI, or fixed rules. */
 export const DIFFICULTY_CLASSIFIERS = ["decision_model", "agent_cli", "rules"] as const;
 export type DifficultyClassifier = (typeof DIFFICULTY_CLASSIFIERS)[number];
+
+/** Why an automatic tier was replaced by the agent's escalation setting. */
+export const DIFFICULTY_ESCALATION_REASONS = ["run_failed", "changes_requested", "reopened"] as const;
+export type DifficultyEscalationReason = (typeof DIFFICULTY_ESCALATION_REASONS)[number];
+
+/**
+ * "tier": the task moved up one tier (for example L2 to L3).
+ * "escalation": the task moved from its last tier to the escalation setting. This is the final step.
+ */
+export const DIFFICULTY_ESCALATION_STEPS = ["tier", "escalation"] as const;
+export type DifficultyEscalationStep = (typeof DIFFICULTY_ESCALATION_STEPS)[number];
+
+export const issueDifficultyEscalationSchema = z.object({
+  reason: z.enum(DIFFICULTY_ESCALATION_REASONS),
+  step: z.enum(DIFFICULTY_ESCALATION_STEPS),
+  fromTier: difficultyTierSchema,
+  /** Review decision that caused this step, so one decision causes at most one step. */
+  triggerDecisionId: z.string().nullable(),
+  fromModel: z.string().nullable(),
+  fromEffort: z.string().nullable(),
+  triggerRunId: z.string().uuid().nullable(),
+  escalatedAt: z.string(),
+}).strict();
+export type IssueDifficultyEscalation = z.infer<typeof issueDifficultyEscalationSchema>;
 
 export const issueDifficultyRoutingSchema = z.object({
   tier: difficultyTierSchema,
@@ -36,6 +66,8 @@ export const issueDifficultyRoutingSchema = z.object({
   confidence: z.number().min(0).max(1).nullable(),
   decidedAt: z.string(),
   decisionInvocationId: z.string().uuid().nullable(),
+  /** Set when the task moved to the escalation setting. model and effort then hold the escalation values. */
+  escalation: issueDifficultyEscalationSchema.optional(),
 }).strict();
 export type IssueDifficultyRouting = z.infer<typeof issueDifficultyRoutingSchema>;
 
@@ -84,6 +116,38 @@ export function hasManualModelOrEffortOverride(adapterConfig: Record<string, unk
     const value = adapterConfig[key];
     return typeof value === "string" ? value.trim().length > 0 : value !== undefined && value !== null;
   });
+}
+
+/** True when the escalation setting would change the model or effort of the given tier. */
+export function difficultyEscalationAvailable(config: DifficultyRoutingConfig, tier: DifficultyTier): boolean {
+  const escalation = config.escalation;
+  if (!escalation?.model && !escalation?.effort) return false;
+  const current = config.tiers[tier];
+  return (escalation.model ?? current?.model) !== current?.model || (escalation.effort ?? current?.effort) !== current?.effort;
+}
+
+/**
+ * The next step up from a tier that did not solve a task, or null when there is
+ * none. Escalation is on only when the agent has an escalation setting. A task
+ * first moves up through the configured tiers that change the model or effort.
+ * It reaches the escalation setting only from the last of them, so an expensive
+ * escalation model is used only after the strongest tier did not solve the task.
+ */
+export function nextDifficultyEscalationStep(
+  config: DifficultyRoutingConfig, tier: DifficultyTier,
+): { step: "tier"; tier: DifficultyTier } | { step: "escalation" } | null {
+  if (!config.escalation?.model && !config.escalation?.effort) return null;
+  const current = config.tiers[tier];
+  for (const next of DIFFICULTY_TIERS.slice(DIFFICULTY_TIERS.indexOf(tier) + 1)) {
+    const setting = config.tiers[next];
+    if (setting && (setting.model !== current?.model || setting.effort !== current?.effort)) return { step: "tier", tier: next };
+  }
+  return difficultyEscalationAvailable(config, tier) ? { step: "escalation" } : null;
+}
+
+/** The tier setting with the escalation values applied on top. */
+export function difficultyEscalationSetting(config: DifficultyRoutingConfig, tier: DifficultyTier): DifficultyTierSetting {
+  return { ...(config.tiers[tier] ?? {}), ...(config.escalation ?? {}) };
 }
 
 export function readDifficultyRoutingConfig(runtimeConfig: Record<string, unknown> | null | undefined): DifficultyRoutingConfig | null {

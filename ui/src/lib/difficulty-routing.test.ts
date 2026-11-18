@@ -41,3 +41,34 @@ describe("difficulty routing helpers", () => {
     })).toBe("Manual: L3 · agent default model");
   });
 });
+
+describe("difficulty escalation helpers", () => {
+  const base = { enabled: true, tiers: { L3: { model: "claude-opus-5-5", effort: "high" } } };
+
+  it("sets and clears the escalation setting", () => {
+    const withEscalation = setDifficultyTierSetting(base, "escalation", { model: "claude-fable-5-2", effort: "high" });
+    expect(withEscalation).toEqual({ ...base, escalation: { model: "claude-fable-5-2", effort: "high" } });
+    expect(setDifficultyTierSetting(withEscalation, "escalation", { model: "", effort: "" })).toEqual(base);
+  });
+
+  it("saves a change that only touches the escalation setting", () => {
+    const saved = { difficultyRouting: base };
+    const next = setDifficultyTierSetting(base, "escalation", { model: "claude-fable-5-2" });
+    expect(runtimeConfigWithDifficultyRouting(saved, undefined, next).difficultyRouting).toEqual(next);
+  });
+
+  it("shows why a task escalated", () => {
+    expect(formatIssueDifficultyRouting({
+      tier: "L3", source: "auto", agentId: null, model: "claude-fable-5-2", effort: "high", confidence: null,
+      decidedAt: "2026-11-17T00:00:00.000Z", decisionInvocationId: null,
+      escalation: { reason: "run_failed", step: "escalation", fromTier: "L3", triggerDecisionId: null,
+        fromModel: "claude-opus-5-5", fromEffort: "high", triggerRunId: null, escalatedAt: "2026-11-17T01:00:00.000Z" },
+    })).toBe("Auto: L3 · claude-fable-5-2 · high · escalated: previous run failed");
+    expect(formatIssueDifficultyRouting({
+      tier: "L3", source: "auto", agentId: null, model: "claude-opus-5-5", effort: "high", confidence: null,
+      decidedAt: "2026-11-17T00:00:00.000Z", decisionInvocationId: null,
+      escalation: { reason: "changes_requested", step: "tier", fromTier: "L2", triggerDecisionId: "changes_requested:1",
+        fromModel: "claude-opus-5-5", fromEffort: "medium", triggerRunId: null, escalatedAt: "2026-11-17T01:00:00.000Z" },
+    })).toBe("Auto: L3 · claude-opus-5-5 · high · escalated from L2: changes requested");
+  });
+});
