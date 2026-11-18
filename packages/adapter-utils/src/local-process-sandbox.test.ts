@@ -65,6 +65,20 @@ describe("local process sandbox", () => {
       )).resolves.toEqual({ path: scratch, access: "rw" });
     });
 
+    it("mounts a collision-fallback scratch directory whose mkdtemp suffix has uppercase letters", async () => {
+      // prepareHeartbeatRunScratch falls back to `mkdtemp(root, "<segment>-")`
+      // when two runs share the first eight run id characters, and mkdtemp
+      // suffixes draw from both letter cases.
+      const { home } = await makeScratchRoot();
+      const fallback = path.join(home, ".pctmp", "abcd1234-fWJEH1");
+      await fs.mkdir(fallback);
+      await writeMarker(fallback, "run-1");
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: fallback, PAPERCLIP_RUN_ID: "run-1" },
+        { homeDir: home },
+      )).resolves.toEqual({ path: fallback, access: "rw" });
+    });
+
     it("mounts nothing without a run identity, a scratch value, or a marker", async () => {
       const { home, scratch } = await makeScratchRoot();
       await writeMarker(scratch, "run-1");
@@ -102,6 +116,13 @@ describe("local process sandbox", () => {
       await writeMarker(odd, "run-1");
       await expect(resolveRunScratchSandboxMount(
         { PAPERCLIP_RUN_SCRATCH_DIR: odd, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
+      )).resolves.toBeNull();
+      // Uppercase never starts a segment: only mkdtemp suffixes carry it.
+      const upperFirst = path.join(home, ".pctmp", "Abcd1234");
+      await fs.mkdir(upperFirst);
+      await writeMarker(upperFirst, "run-1");
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: upperFirst, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
       )).resolves.toBeNull();
       // Relative values never mount.
       await expect(resolveRunScratchSandboxMount({ PAPERCLIP_RUN_SCRATCH_DIR: "relative", PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home }))

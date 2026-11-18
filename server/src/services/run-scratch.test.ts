@@ -282,7 +282,7 @@ describe("run scratch tree removal safety", () => {
     const lstat = async (p: string) => {
       const stats = await realLstat(p);
       return p === path.join(dir, "mountpoint")
-        ? { dev: stats.dev + 1, isDirectory: () => stats.isDirectory(), isSymbolicLink: () => stats.isSymbolicLink() }
+        ? { ...stats, dev: stats.dev + 1, isDirectory: () => stats.isDirectory(), isSymbolicLink: () => stats.isSymbolicLink() }
         : stats;
     };
 
@@ -302,7 +302,7 @@ describe("run scratch tree removal safety", () => {
     const lstat = async (p: string) => {
       const stats = await realLstat(p);
       return p === path.join(scratch.dir, "mountpoint")
-        ? { dev: stats.dev + 1, isDirectory: () => stats.isDirectory(), isSymbolicLink: () => stats.isSymbolicLink() }
+        ? { ...stats, dev: stats.dev + 1, isDirectory: () => stats.isDirectory(), isSymbolicLink: () => stats.isSymbolicLink() }
         : stats;
     };
 
@@ -323,7 +323,7 @@ describe("run scratch tree removal safety", () => {
     const lstat = async (p: string) => {
       const stats = await realLstat(p);
       return mounted && p === path.join(scratch.dir, "mountpoint")
-        ? { dev: stats.dev + 1, isDirectory: () => stats.isDirectory(), isSymbolicLink: () => stats.isSymbolicLink() }
+        ? { ...stats, dev: stats.dev + 1, isDirectory: () => stats.isDirectory(), isSymbolicLink: () => stats.isSymbolicLink() }
         : stats;
     };
 
@@ -398,6 +398,39 @@ describe("run scratch tree removal safety", () => {
       await reconcileRetainedAiCleanup(scope).catch(() => undefined);
       release();
     }
+  });
+
+  it("keeps the marker and the external target when a child directory is swapped for a symlink mid-walk", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("hhhh8888"), root }));
+    const child = path.join(scratch.dir, "child");
+    await fs.mkdir(child);
+    await fs.writeFile(path.join(child, "inside.txt"), "x");
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-swap-outside-"));
+    cleanupDirs.add(outside);
+    await fs.writeFile(path.join(outside, "sentinel.txt"), "external-precious");
+    // Swap the verified directory for a symlink after its lstat returns but
+    // before the walker descends into it.
+    let swapped = false;
+    const realLstat = (p: string) => fs.lstat(p);
+    const lstat = async (p: string) => {
+      const stats = await realLstat(p);
+      if (!swapped && p === child) {
+        swapped = true;
+        await fs.rename(child, `${child}-moved`);
+        await fs.symlink(outside, child);
+      }
+      return stats;
+    };
+
+    const result = await cleanupHeartbeatRunScratch({ scratch, lstat: lstat as typeof realLstat, runTempRootOverride: root });
+
+    expect(result).toEqual({ removed: false, dir: scratch.dir, reason: "unsafe_tree" });
+    await expect(fs.readFile(path.join(outside, "sentinel.txt"), "utf8")).resolves.toBe("external-precious");
+    await expect(fs.stat(scratch.markerPath)).resolves.toMatchObject({ isFile: expect.any(Function) });
+    await expect(fs.readFile(scratch.markerPath, "utf8")).resolves.toContain(scratch.metadata.runId);
+    await expect(fs.lstat(child)).resolves.toMatchObject({ isSymbolicLink: expect.any(Function) });
   });
 });
 
@@ -564,6 +597,57 @@ describe("orphaned run scratch sweep", () => {
       await reconcileRetainedAiCleanup(scope).catch(() => undefined);
       release();
     }
+  });
+
+  it("keeps the tree, the marker and the external target when a swept child is swapped for a symlink mid-walk", async () => {
+    const root = await makeRoot();
+    const dir = await leave(root, "run-swap");
+    const child = path.join(dir, "child");
+    await fs.mkdir(child);
+    await fs.writeFile(path.join(child, "inside.txt"), "x");
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-swap-outside-"));
+    cleanupDirs.add(outside);
+    await fs.writeFile(path.join(outside, "sentinel.txt"), "external-precious");
+    // Swap the verified directory for a symlink after its lstat returns but
+    // before the walker descends into it.
+    let swapped = false;
+    const realLstat = (p: string) => fs.lstat(p);
+    const lstat = async (p: string) => {
+      const stats = await realLstat(p);
+      if (!swapped && p === child) {
+        swapped = true;
+        await fs.rename(child, `${child}-moved`);
+        await fs.symlink(outside, child);
+      }
+      return stats;
+    };
+
+    const result = await sweepLegacy(root, {
+      lstat: lstat as typeof realLstat,
+      resolveRunStates: states({ "run-swap": "terminal" }),
+    });
+
+    expect(result.removed).toEqual([]);
+    expect(await exists(path.join(outside, "sentinel.txt"))).toBe(true);
+    expect(await exists(path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER))).toBe(true);
+    expect(await exists(dir)).toBe(true);
+  });
+
+  it("keeps legacy directories that are not provably owned and closed to other writers", async () => {
+    const root = await makeRoot();
+    const groupWritable = await leave(root, "run-gw");
+    await fs.chmod(groupWritable, 0o770);
+    const worldWritableMarker = await leave(root, "run-wm");
+    await fs.chmod(path.join(worldWritableMarker, HEARTBEAT_RUN_SCRATCH_MARKER), 0o666);
+    const safelyOwned = await leave(root, "run-ok");
+
+    const result = await sweepLegacy(root, {
+      resolveRunStates: states({ "run-gw": "terminal", "run-wm": "terminal", "run-ok": "terminal" }),
+    });
+
+    expect(result.removed).toEqual([safelyOwned]);
+    expect(await exists(groupWritable)).toBe(true);
+    expect(await exists(worldWritableMarker)).toBe(true);
   });
 });
 

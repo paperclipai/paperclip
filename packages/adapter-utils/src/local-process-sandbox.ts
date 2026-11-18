@@ -72,7 +72,10 @@ const UNIX_SOCKET_PATH_MAX_BYTES = 107;
 const NETWORK_PROXY_TEMP_PREFIX = "paperclip-network-sandbox-";
 const RUN_SCRATCH_MARKER_FILENAME = ".paperclip-run-scratch.json";
 const RUN_SCRATCH_ROOT_DIRNAME = ".pctmp";
-const RUN_SCRATCH_SEGMENT_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
+// The deterministic segment is lowercase (run ids are sanitized to lowercase),
+// but the collision fallback appends a `mkdtemp` suffix, which uses both
+// letter cases — the whole segment must stay within the same shape and length.
+const RUN_SCRATCH_SEGMENT_RE = /^[a-z0-9][A-Za-z0-9._-]{0,31}$/;
 
 function normalizeAbsolutePath(candidate: string, label: string): string {
   const trimmed = candidate.trim();
