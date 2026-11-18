@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -22,7 +22,11 @@ import {
 import { createChatInboundAuthority } from "../services/chat-channels/inbound/authorization.ts";
 import { createTeamsFeedbackVotes } from "../services/chat-channels/microsoft-teams/feedback.ts";
 import type { TeamsFeedbackEvent } from "../services/chat-channels/microsoft-teams/feedback-loop.ts";
-import type { RuntimeContext } from "../services/chat-channels/runtime-types.ts";
+import type {
+  DbOrTransaction,
+  EndpointRow,
+  RuntimeContext,
+} from "../services/chat-channels/runtime-types.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -172,7 +176,15 @@ describeEmbeddedPostgres("Teams native feedback votes", () => {
     return { companyId, issueId, endpointId, agentCommentId, linkedUserId, guestPrincipalId: guestPrincipal!.id };
   }
 
-  function votes() {
+  type PrincipalAuthorization = (
+    tx: DbOrTransaction,
+    endpoint: EndpointRow,
+    principalId: string,
+  ) => Promise<{ allowed: boolean; userId: string | null }>;
+
+  function votes(
+    wrapAuthorization: (authorize: PrincipalAuthorization) => PrincipalAuthorization = (authorize) => authorize,
+  ) {
     const { lockCurrentPrincipalAuthorization } = createChatInboundAuthority(db, {
       voiceStore: {
         authorizePrincipal: async () => {
@@ -182,7 +194,15 @@ describeEmbeddedPostgres("Teams native feedback votes", () => {
       runtimeCallbackEndpoint: async () => null,
     });
     return createTeamsFeedbackVotes(db, {
-      lockCurrentPrincipalAuthorization,
+      lockCurrentPrincipalAuthorization: wrapAuthorization(lockCurrentPrincipalAuthorization),
+      runtimeCallbackEndpoint: async (tx, endpointId, _context, statuses) => {
+        const [endpoint] = await tx
+          .select()
+          .from(chatEndpoints)
+          .where(eq(chatEndpoints.id, endpointId))
+          .for("no key update");
+        return endpoint && statuses.includes(endpoint.status) ? endpoint : null;
+      },
       runtimeCallbackRecord: async (endpointId) => {
         const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpointId));
         return endpoint
@@ -192,8 +212,11 @@ describeEmbeddedPostgres("Teams native feedback votes", () => {
     });
   }
 
-  async function submit(event: Partial<TeamsFeedbackEvent>) {
-    await votes().handleTeamsFeedback(
+  async function submit(
+    event: Partial<TeamsFeedbackEvent>,
+    wrapAuthorization?: (authorize: PrincipalAuthorization) => PrincipalAuthorization,
+  ) {
+    await votes(wrapAuthorization).handleTeamsFeedback(
       {
         endpointId: seed.endpointId,
         provider: "microsoft-teams",
@@ -244,6 +267,53 @@ describeEmbeddedPostgres("Teams native feedback votes", () => {
     );
     const [company] = await db.select().from(companies).where(eq(companies.id, seed.companyId));
     expect(company?.feedbackDataSharingEnabled).toBe(false);
+  });
+
+  it("keeps the voter's access locked until the vote and its activity commit", async () => {
+    let authorizedTransactionId: string | null = null;
+    let downgrade: Promise<unknown> | null = null;
+    await submit({ vote: "up", reason: "Clear answer." }, (authorize) => async (tx, endpoint, principalId) => {
+      const authorization = await authorize(tx, endpoint, principalId);
+      const [current] = await tx.execute<{ id: string }>(
+        sql`select (txid_current() % 4294967296)::text as id`,
+      );
+      authorizedTransactionId = current!.id;
+      downgrade = db
+        .update(companyMemberships)
+        .set({ membershipRole: "viewer" })
+        .where(and(eq(companyMemberships.companyId, seed.companyId), eq(companyMemberships.principalId, seed.linkedUserId)))
+        .execute();
+      downgrade.catch(() => undefined);
+      await expect
+        .poll(async () => {
+          const [row] = await db.execute<{ waiting: boolean }>(sql`select exists (
+            select 1 from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock' and query ilike '%company_memberships%'
+          ) as waiting`);
+          return row!.waiting;
+        }, { timeout: 5_000, interval: 10 })
+        .toBe(true);
+      return authorization;
+    });
+    await downgrade;
+
+    expect(authorizedTransactionId).not.toBeNull();
+    const [vote] = await db
+      .select({ vote: feedbackVotes.vote, writer: sql<string>`${feedbackVotes}.xmin::text` })
+      .from(feedbackVotes)
+      .where(eq(feedbackVotes.companyId, seed.companyId));
+    expect(vote).toEqual({ vote: "up", writer: authorizedTransactionId });
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, seed.companyId), eq(activityLog.action, "issue.feedback_vote_saved")));
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({ actorType: "user", actorId: seed.linkedUserId });
+
+    await submit({ vote: "down", reason: "Missed the deadline." });
+    const rows = await savedVotes();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ vote: "up", reason: "Clear answer." });
   });
 
   it("attributes an admitted unlinked person to their chat principal", async () => {

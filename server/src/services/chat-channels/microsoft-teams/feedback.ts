@@ -9,7 +9,11 @@ import {
   issues,
 } from "@paperclipai/db";
 import { logger } from "../../../middleware/logger.js";
-import { logActivity } from "../../activity-log.js";
+import {
+  logActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "../../activity-log.js";
 import { externalThreadIdentityCondition } from "../../chat-control-chronology.js";
 import type { ChatSdkCallbackEvent } from "../../chat-sdk-runtime.js";
 import { normalizeMicrosoftTeamsExternalPrincipalId } from "../../chat-teams-credentials.js";
@@ -18,8 +22,10 @@ import { nonDirectDestinationAllowed } from "../inbound/surfaces.js";
 import type { PublicationTransportInput } from "../publications/types.js";
 import type {
   DbOrTransaction,
+  DbTransaction,
   EndpointRecord,
   EndpointRow,
+  LifecycleRuntimeFence,
   RuntimeContext,
 } from "../runtime-types.js";
 import type { TeamsFeedbackEvent } from "./feedback-loop.js";
@@ -30,6 +36,12 @@ type TeamsFeedbackVoteOptions = {
     context: RuntimeContext,
     statuses: EndpointRow["status"][],
   ) => Promise<EndpointRecord | null>;
+  runtimeCallbackEndpoint: (
+    tx: DbTransaction,
+    endpointId: string,
+    context: LifecycleRuntimeFence,
+    statuses: EndpointRow["status"][],
+  ) => Promise<EndpointRow | null>;
   lockCurrentPrincipalAuthorization: (
     tx: DbOrTransaction,
     endpoint: EndpointRow,
@@ -70,14 +82,19 @@ export function createTeamsFeedbackVotes(
   db: Db,
   options: TeamsFeedbackVoteOptions,
 ) {
-  const { runtimeCallbackRecord, lockCurrentPrincipalAuthorization } = options;
+  const {
+    runtimeCallbackRecord,
+    runtimeCallbackEndpoint,
+    lockCurrentPrincipalAuthorization,
+  } = options;
   const feedback = feedbackService(db);
 
   async function ratedAgentComment(
+    tx: DbTransaction,
     endpoint: EndpointRow,
     event: TeamsFeedbackEvent,
   ) {
-    return db
+    return tx
       .select({
         commentId: issueComments.id,
         issueId: issues.id,
@@ -124,14 +141,14 @@ export function createTeamsFeedbackVotes(
       )
       .orderBy(desc(chatConversations.sessionGeneration))
       .limit(1)
+      .for("share", { of: [chatConversations, issueComments] })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function voteAuthor(
+  async function feedbackPrincipal(
     endpoint: EndpointRow,
-    conversation: typeof chatConversations.$inferSelect,
     event: TeamsFeedbackEvent,
-  ): Promise<{ authorUserId: string; linked: boolean } | null> {
+  ): Promise<{ id: string } | null> {
     const [principal] = await db
       .select({ id: chatExternalPrincipals.id })
       .from(chatExternalPrincipals)
@@ -153,36 +170,43 @@ export function createTeamsFeedbackVotes(
         ),
       )
       .limit(1);
-    if (!principal) return null;
-    return db.transaction(async (tx) => {
-      const resource =
-        conversation.resourceId && !conversation.isDirectMessage
-          ? await tx
-              .select()
-              .from(chatEndpointResources)
-              .where(
-                and(
-                  eq(chatEndpointResources.companyId, endpoint.companyId),
-                  eq(chatEndpointResources.endpointId, endpoint.id),
-                  eq(chatEndpointResources.id, conversation.resourceId),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : null;
-      const destinationAllowed = conversation.isDirectMessage
-        ? endpoint.allowDirectMessages
-        : nonDirectDestinationAllowed(endpoint, resource);
-      if (!destinationAllowed) return null;
-      const authorization = await lockCurrentPrincipalAuthorization(
-        tx,
-        endpoint,
-        principal.id,
-      );
-      if (!authorization.allowed) return null;
-      return authorization.userId
-        ? { authorUserId: authorization.userId, linked: true }
-        : { authorUserId: `chat:${principal.id}`, linked: false };
-    });
+    return principal ?? null;
+  }
+
+  async function voteAuthor(
+    tx: DbTransaction,
+    endpoint: EndpointRow,
+    conversation: typeof chatConversations.$inferSelect,
+    principalId: string,
+  ): Promise<{ authorUserId: string; linked: boolean } | null> {
+    const resource =
+      conversation.resourceId && !conversation.isDirectMessage
+        ? await tx
+            .select()
+            .from(chatEndpointResources)
+            .where(
+              and(
+                eq(chatEndpointResources.companyId, endpoint.companyId),
+                eq(chatEndpointResources.endpointId, endpoint.id),
+                eq(chatEndpointResources.id, conversation.resourceId),
+              ),
+            )
+            .for("update")
+            .then((rows) => rows[0] ?? null)
+        : null;
+    const destinationAllowed = conversation.isDirectMessage
+      ? endpoint.allowDirectMessages
+      : nonDirectDestinationAllowed(endpoint, resource);
+    if (!destinationAllowed) return null;
+    const authorization = await lockCurrentPrincipalAuthorization(
+      tx,
+      endpoint,
+      principalId,
+    );
+    if (!authorization.allowed) return null;
+    return authorization.userId
+      ? { authorUserId: authorization.userId, linked: true }
+      : { authorUserId: `chat:${principalId}`, linked: false };
   }
 
   async function recordTeamsFeedback(
@@ -194,43 +218,60 @@ export function createTeamsFeedbackVotes(
       "active",
     ]);
     if (!record || record.endpoint.provider !== "microsoft-teams") return;
-    const endpoint = record.endpoint;
-    const target = await ratedAgentComment(endpoint, callback.event);
-    if (!target) return;
-    const author = await voteAuthor(
-      endpoint,
-      target.conversation,
-      callback.event,
-    );
-    if (!author) return;
-    const result = await feedback.saveIssueVote({
-      issueId: target.issueId,
-      targetType: "issue_comment",
-      targetId: target.commentId,
-      vote: callback.event.vote,
-      reason: callback.event.reason,
-      authorUserId: author.authorUserId,
-      allowSharing: false,
-      recordSharingConsent: false,
+    const principal = await feedbackPrincipal(record.endpoint, callback.event);
+    if (!principal) return;
+    const publications: ActivityPublication[] = [];
+    await db.transaction(async (tx) => {
+      const endpoint = await runtimeCallbackEndpoint(
+        tx,
+        callback.endpointId,
+        context,
+        ["active"],
+      );
+      if (!endpoint || endpoint.provider !== "microsoft-teams") return;
+      const target = await ratedAgentComment(tx, endpoint, callback.event);
+      if (!target) return;
+      const author = await voteAuthor(
+        tx,
+        endpoint,
+        target.conversation,
+        principal.id,
+      );
+      if (!author) return;
+      const result = await feedback.saveIssueVoteInTransaction(tx, {
+        issueId: target.issueId,
+        targetType: "issue_comment",
+        targetId: target.commentId,
+        vote: callback.event.vote,
+        reason: callback.event.reason,
+        authorUserId: author.authorUserId,
+        allowSharing: false,
+        recordSharingConsent: false,
+      });
+      await logActivity(
+        tx as unknown as Db,
+        {
+          companyId: endpoint.companyId,
+          actorType: author.linked ? "user" : "system",
+          actorId: author.authorUserId,
+          action: "issue.feedback_vote_saved",
+          entityType: "issue",
+          entityId: target.issueId,
+          details: {
+            identifier: target.issueIdentifier,
+            targetType: result.vote.targetType,
+            targetId: result.vote.targetId,
+            vote: result.vote.vote,
+            hasReason: Boolean(result.vote.reason),
+            sharingEnabled: result.sharingEnabled,
+            source: "chat:microsoft-teams",
+            endpointId: endpoint.id,
+          },
+        },
+        publications,
+      );
     });
-    await logActivity(db, {
-      companyId: endpoint.companyId,
-      actorType: author.linked ? "user" : "system",
-      actorId: author.authorUserId,
-      action: "issue.feedback_vote_saved",
-      entityType: "issue",
-      entityId: target.issueId,
-      details: {
-        identifier: target.issueIdentifier,
-        targetType: result.vote.targetType,
-        targetId: result.vote.targetId,
-        vote: result.vote.vote,
-        hasReason: Boolean(result.vote.reason),
-        sharingEnabled: result.sharingEnabled,
-        source: "chat:microsoft-teams",
-        endpointId: endpoint.id,
-      },
-    });
+    for (const publication of publications) publishActivity(publication);
   }
 
   async function handleTeamsFeedback(
