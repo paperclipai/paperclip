@@ -48,7 +48,6 @@ export function responsibilityAreaRoutes(db: Db) {
   async function loadForBoardWrite(req: Request, res: Response) {
     const row = await getAccessibleResource(req, res, svc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return null;
-    assertCompanyAccess(req, row.companyId);
     return row;
   }
 

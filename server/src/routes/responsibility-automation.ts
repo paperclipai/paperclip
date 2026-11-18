@@ -159,7 +159,6 @@ export function responsibilityAutomationRoutes(
     const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
     assertBoard(req);
-    assertCompanyAccess(req, issue.companyId);
     res.json(await conversations.conversationFor(issue));
   });
 
@@ -168,7 +167,6 @@ export function responsibilityAutomationRoutes(
     const source = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!source) return;
     assertBoard(req);
-    assertCompanyAccess(req, source.companyId);
     await assertBoardCanAssignTasks(req, source.companyId);
     const actor = getActorInfo(req);
     const agentId = req.body.agentId ?? await conversations.defaultAgentId(source, req.body.responsibilityId);
@@ -239,7 +237,6 @@ export function responsibilityAutomationRoutes(
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent in this automation conversation can propose an automation");
     }
-    assertCompanyAccess(req, issue.companyId);
     const { interaction, replacedIds } = await conversations.propose(issue, req.body, {
       agentId: req.actor.agentId,
       runId: req.actor.runId ?? null,
@@ -262,7 +259,6 @@ export function responsibilityAutomationRoutes(
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
-      assertCompanyAccess(req, issue.companyId);
       await assertBoardCanAssignTasks(req, issue.companyId);
       const accepted = await conversations.accept(issue, req.params.interactionId as string, req.body, {
         userId: boardUserId(req),
@@ -337,7 +333,6 @@ export function responsibilityAutomationRoutes(
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
-      assertCompanyAccess(req, issue.companyId);
       const interaction = await conversations.decline(issue, req.params.interactionId as string, { userId: boardUserId(req) });
       await log(req, {
         companyId: issue.companyId,
@@ -357,7 +352,6 @@ export function responsibilityAutomationRoutes(
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent that runs this standing check can report on it");
     }
-    assertCompanyAccess(req, routine.companyId);
     const reported = await standingChecks.report(routine, req.body, {
       agentId: req.actor.agentId,
       runId: req.actor.runId ?? null,

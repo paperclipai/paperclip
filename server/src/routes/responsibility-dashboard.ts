@@ -224,7 +224,6 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent in this dashboard conversation can propose changes");
     }
-    assertCompanyAccess(req, issue.companyId);
     const { interaction, replacedIds } = await svc.propose(issue, req.body, {
       agentId: req.actor.agentId,
       runId: req.actor.runId ?? null,
@@ -247,7 +246,6 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
-      assertCompanyAccess(req, issue.companyId);
       const { ownerUserId } = await svc.ownerForConversation(issue);
       assertWriter(req, issue.companyId, ownerUserId);
       const accepted = await svc.accept(issue, req.params.interactionId as string, { userId: boardUserId(req) }, { keep: req.body.keep });
@@ -289,7 +287,6 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
-      assertCompanyAccess(req, issue.companyId);
       const { ownerUserId } = await svc.ownerForConversation(issue);
       assertWriter(req, issue.companyId, ownerUserId);
       const interaction = await svc.decline(issue, req.params.interactionId as string, { userId: boardUserId(req) });
@@ -309,7 +306,6 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     const version = await getAccessibleResource(req, res, versions.getById(req.params.id as string), VERSION_NOT_FOUND);
     if (!version) return;
     assertBoard(req);
-    assertCompanyAccess(req, version.companyId);
     assertWriter(req, version.companyId, version.ownerUserId);
     const restored = await versions.restore(version, { userId: getActorInfo(req).actorId });
     await logEvents(req, version.companyId, restored.events);

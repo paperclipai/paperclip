@@ -14,7 +14,7 @@ import { accessService, heartbeatService, issueReferenceService, issueService, l
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { responsibilityBarService } from "../services/responsibility-bars.js";
 import { responsibilityService } from "../services/responsibilities.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
@@ -95,7 +95,6 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
     const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return;
     assertBoard(req);
-    assertCompanyAccess(req, row.companyId);
     res.json(await svc.conversation(row));
   });
 
@@ -107,7 +106,6 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
       const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
       if (!row) return;
       assertBoard(req);
-      assertCompanyAccess(req, row.companyId);
       assertWriter(req, row);
       const actor = getActorInfo(req);
       const agentId = req.body.agentId ?? await svc.defaultAgentId(row);
@@ -176,7 +174,6 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
     if (req.actor.type !== "agent" || !req.actor.agentId) {
       throw forbidden("Only the agent in this bar conversation can propose a bar");
     }
-    assertCompanyAccess(req, issue.companyId);
     const { interaction, replacedIds } = await svc.propose(issue, req.body, {
       agentId: req.actor.agentId,
       runId: req.actor.runId ?? null,
@@ -199,7 +196,6 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
-      assertCompanyAccess(req, issue.companyId);
       const { responsibility } = await svc.responsibilityForConversation(issue);
       assertWriter(req, responsibility);
       const accepted = await svc.accept(issue, req.params.interactionId as string, { userId: boardUserId(req) }, {
@@ -273,7 +269,6 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
       assertBoard(req);
-      assertCompanyAccess(req, issue.companyId);
       const { responsibility } = await svc.responsibilityForConversation(issue);
       assertWriter(req, responsibility);
       const interaction = await svc.decline(issue, req.params.interactionId as string, { userId: boardUserId(req) });

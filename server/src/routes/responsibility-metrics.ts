@@ -12,7 +12,7 @@ import { authorizationDeniedDetails, issueReadSqlCondition, projectReadSqlCondit
 import { accessService, logActivity } from "../services/index.js";
 import { responsibilityMetricService } from "../services/responsibility-metrics.js";
 import { responsibilityService, type ResponsibilityReadScope } from "../services/responsibilities.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
 const NOT_FOUND = "Responsibility not found";
@@ -41,7 +41,6 @@ export function responsibilityMetricRoutes(db: Db) {
   async function loadForRead(req: Request, res: Response) {
     const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return null;
-    assertCompanyAccess(req, row.companyId);
     if (req.actor.type !== "board" && req.actor.type !== "agent") throw forbidden("Board or agent access required");
     if (req.actor.type === "agent") {
       const decision = await access.decide({ actor: req.actor, action: "company_scope:read", resource: { type: "company", companyId: row.companyId } });

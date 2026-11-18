@@ -5,7 +5,7 @@ import { authorizationDeniedDetails, issueReadSqlCondition, projectReadSqlCondit
 import { accessService } from "../services/index.js";
 import { responsibilityService, type ResponsibilityReadScope } from "../services/responsibilities.js";
 import { clampRecentRunsLimit, responsibilityRunsService } from "../services/responsibility-runs.js";
-import { assertCompanyAccess, getAccessibleResource } from "./authz.js";
+import { getAccessibleResource } from "./authz.js";
 
 const NOT_FOUND = "Responsibility not found";
 
@@ -32,7 +32,6 @@ export function responsibilityRunRoutes(db: Db) {
   async function loadForRead(req: Request, res: Response) {
     const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
     if (!row) return null;
-    assertCompanyAccess(req, row.companyId);
     if (req.actor.type !== "board" && req.actor.type !== "agent") throw forbidden("Board or agent access required");
     if (req.actor.type === "agent") {
       const decision = await access.decide({ actor: req.actor, action: "company_scope:read", resource: { type: "company", companyId: row.companyId } });
