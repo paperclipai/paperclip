@@ -306,19 +306,14 @@ export async function createAssignedMcpTools(input: {
   const searchPageBytes = input.delivery === "on_demand" ? 32 * 1024 : SEARCH_PAGE_BYTES;
   const schemaChunkCharacters = input.delivery === "on_demand" ? 16 * 1024 : SCHEMA_CHUNK_CHARACTERS;
 
-  // Agents often pass the gateway name or display name they read in a result
-  // description instead of the returned alias. Resolve only to this session's
-  // pinned catalog, and only when the reference names exactly one tool, so
-  // the lookup never grants a tool that the alias would not.
-  function resolveAssignedName(reference: string): string | undefined {
+  function resolveAssignedName(reference: string, argument: "name" | "schemaTool"): string | undefined {
     const trimmed = reference.trim();
     if (tools.has(trimmed)) return trimmed;
-    for (const field of ["name", "displayName"] as const) {
-      const matches = [...tools].filter(([, { tool }]) => tool[field] === trimmed);
-      if (matches.length === 1) return matches[0]![0];
-      if (matches.length > 1) return undefined;
+    const matches = [...tools].filter(([, { tool }]) => tool.name === trimmed || tool.displayName === trimmed);
+    if (matches.length > 1) {
+      throw new Error(`assigned_mcp_tool_unknown: ${argument} matches more than one assigned tool. Use the exact ${argument === "name" ? "name" : "inputSchemaRef"} returned by paperclip_search_assigned_tools.`);
     }
-    return undefined;
+    return matches[0]?.[0];
   }
 
   async function search(argumentsValue: unknown, currentWorkMode?: WorkMode) {
@@ -349,7 +344,7 @@ export async function createAssignedMcpTools(input: {
         permits(fresh) && permits(fresh, currentWorkMode);
     });
     if (hasSchemaTool) {
-      const reference = resolveAssignedName(args.schemaTool as string);
+      const reference = resolveAssignedName(args.schemaTool as string, "schemaTool");
       const selected = authorized.find(([name]) => name === reference);
       if (!selected) throw new Error("assigned_mcp_tool_unknown: schemaTool must match an authorized inputSchemaRef. Omit schemaTool to search assigned tools, then use an exact inputSchemaRef from the results.");
       const schema = JSON.stringify(selected[1].schema);
@@ -408,7 +403,7 @@ export async function createAssignedMcpTools(input: {
         const args = object(parameters);
         if (typeof args.name !== "string") throw new Error("assigned_mcp_tool_invalid_arguments");
         parameters = object(args.arguments);
-        const resolved = resolveAssignedName(args.name);
+        const resolved = resolveAssignedName(args.name, "name");
         if (!resolved) {
           throw new Error("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools. Search assigned tools again and use the returned name.");
         }
