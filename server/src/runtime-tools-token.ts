@@ -13,6 +13,9 @@ export interface RuntimeToolsTokenClaims {
 }
 
 const TOKEN_TTL_SECONDS = 60 * 60;
+const GITHUB_CREDENTIALS_TTL_SECONDS = 30 * 24 * 60 * 60;
+/** Ceiling for credentials that leave the host (sandbox pods, remote targets). */
+export const REMOTE_GITHUB_CREDENTIALS_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 function secret() {
   return process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()
@@ -45,8 +48,15 @@ export function createRuntimeToolsToken(input: {
   runId: string;
   responsibleUserId: string;
   scope?: RuntimeToolsTokenClaims["scope"];
+  /** Upper bound on the scope's default lifetime; it can only shorten it. */
+  maxTtlSeconds?: number;
 }) {
   if (!secret()) return null;
+  // A cap can only shorten the lifetime; an invalid cap must never silently disable it.
+  if (input.maxTtlSeconds !== undefined && !(Number.isFinite(input.maxTtlSeconds) && input.maxTtlSeconds >= 1)) {
+    throw new Error("maxTtlSeconds must be a finite number of at least 1");
+  }
+  const maxTtl = input.maxTtlSeconds === undefined ? undefined : Math.floor(input.maxTtlSeconds);
   const now = Math.floor(Date.now() / 1000);
   const instanceId = resolvePaperclipInstanceId();
   const claims: RuntimeToolsTokenClaims = {
@@ -57,7 +67,10 @@ export function createRuntimeToolsToken(input: {
     scope: input.scope ?? "connection_intents",
     iat: now,
     // Broker tokens remain scoped to a live run, which is rechecked on every use.
-    exp: now + (input.scope === "github_credentials" ? 30 * 24 * 60 * 60 : TOKEN_TTL_SECONDS),
+    exp: now + Math.min(
+      input.scope === "github_credentials" ? GITHUB_CREDENTIALS_TTL_SECONDS : TOKEN_TTL_SECONDS,
+      maxTtl ?? Number.POSITIVE_INFINITY,
+    ),
     instance_id: instanceId,
   };
   const signingInput = `${encode({ alg: "HS256", typ: "JWT" })}.${encode(claims)}`;

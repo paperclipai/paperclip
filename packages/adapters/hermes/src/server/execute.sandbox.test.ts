@@ -240,6 +240,21 @@ function hermesCall(): ProcessCall & { unsetNames: string[] } {
 }
 
 describe("Hermes execute on a sandbox target (TECH-8174)", () => {
+  it("never puts the persistent agent identity key in the pod env (TECH-8988)", async () => {
+    const privateKeyPem = "-----BEGIN PRIVATE KEY-----\nPERSISTENT-IDENTITY-SENTINEL-8988\n-----END PRIVATE KEY-----\n";
+    await execute(ctx({
+      config: { env: { OPENAI_API_KEY: PROVIDER_KEY, PAPERCLIP_AGENT_PRIVATE_KEY: "configured-override-8988" } },
+      extra: { agentIdentity: { keyId: "sha256:key", publicKeyPem: "PUBLIC-PEM", privateKeyPem } },
+    }));
+    const call = hermesCall();
+    expect(call.options.env.PAPERCLIP_AGENT_PRIVATE_KEY).toBeUndefined();
+    expect(call.options.env.PAPERCLIP_AGENT_PUBLIC_KEY).toBeUndefined();
+    expect(call.options.env.PAPERCLIP_AGENT_KEY_ID).toBeUndefined();
+    const everything = JSON.stringify([h.processCalls, h.shellCalls, h.shipped]);
+    expect(everything).not.toContain("PERSISTENT-IDENTITY-SENTINEL-8988");
+    expect(everything).not.toContain("configured-override-8988");
+  });
+
   it("runs Hermes in the sandbox with a shipped home, the prompt in a file, and only sandbox paths in env", async () => {
     const result = await execute(ctx());
 

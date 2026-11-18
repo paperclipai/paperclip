@@ -47,6 +47,11 @@ Native output deltas also buffer potential key fragments before persistence.
 Raw provider trace contents are suppressed for identity-enabled runs; trace
 routing, timing, and interpretation metadata remain available.
 
+Sandbox and SSH execution targets of legacy (non-native) adapters do not receive
+the identity at all (TECH-8988): the host withholds it from `adapter.execute`, so a
+pod or remote host never holds the persistent private key. The native
+`paperclip_runner` path still passes it to its runner.
+
 Managed remote providers, including Cursor Cloud, receive the same private key
 as managed local processes. Selecting a runtime therefore trusts its host with
 the agent's persistent identity: the agent and its host can retain the key and

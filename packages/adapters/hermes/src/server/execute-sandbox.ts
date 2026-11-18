@@ -45,6 +45,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { createRunHome, type RunHome } from "@paperclipai/adapter-utils/run-home";
 import {
+  AGENT_IDENTITY_ENV_KEYS,
   buildPaperclipAgentPromptTemplate,
   buildPaperclipEnv,
   joinPromptSections,
@@ -596,6 +597,8 @@ async function executeHermesInSandbox(
     // bridge env below supplies a run-scoped bridge token instead (fork #416).
     delete env.PAPERCLIP_API_KEY;
     delete env.PAPERCLIP_WAKE_PAYLOAD_JSON;
+    // The persistent per-agent identity key stays on the host (TECH-8988); nothing in the pod signs with it.
+    for (const key of AGENT_IDENTITY_ENV_KEYS) delete env[key];
     // The host PATH means nothing in the sandbox (the image provides it).
     delete env.PATH;
     for (const key of Object.keys(env)) {

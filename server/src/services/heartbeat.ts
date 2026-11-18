@@ -369,7 +369,7 @@ import {
 } from "./provider-trace-store.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
 
-import { createRuntimeToolsToken } from "../runtime-tools-token.js";
+import { createRuntimeToolsToken, REMOTE_GITHUB_CREDENTIALS_TTL_SECONDS } from "../runtime-tools-token.js";
 import {
   parseObject,
 } from "../adapters/utils.js";
@@ -2918,12 +2918,14 @@ export function heartbeatService(
           cwd: executionWorkspace.cwd,
           env: gitExecutionEnv,
           brokerUrl: configuredPaperclipApiBaseUrl() ?? "",
+          // Use stays gated on a live run; for a sandbox/remote target the exp is also capped at 7 days.
           createBrokerToken: () => createRuntimeToolsToken({
             agentId: agent.id,
             companyId: agent.companyId,
             runId: run.id,
             responsibleUserId: responsibleUserId ?? "",
             scope: "github_credentials",
+            ...(executionTarget?.kind === "remote" ? { maxTtlSeconds: REMOTE_GITHUB_CREDENTIALS_TTL_SECONDS } : {}),
           })?.token ?? "",
         }));
         githubLauncherLocation = githubLaunchers.cleanupLocation;

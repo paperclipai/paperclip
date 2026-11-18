@@ -70,6 +70,12 @@ any new fork patch; remove one when the patch is upstreamed.
 - `packages/shared/src/app-definitions/rh-scheduler-mcp.json`
 - `packages/adapters/hermes/src/gateway/`
 
+## Sandbox credential limits (TECH-8988)
+
+- `server/src/runtime-tools-token.ts` GitHub broker token cap for remote targets
+- `server/src/services/heartbeat/runtime-execution.ts` agent identity withheld from remote targets
+- `server/src/services/heartbeat.ts` broker token capped for remote targets
+
 ## Slack file text extraction (TECH-8958)
 
 - `server/src/services/connectors/slack-file-content.ts`

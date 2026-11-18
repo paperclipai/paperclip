@@ -119,6 +119,26 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
 
+  const identity = { keyId: "sha256:key", publicKeyPem: "PUBLIC", privateKeyPem: "PRIVATE" };
+  it("still gives the agent identity to local runs (TECH-8988)", async () => {
+    const { input, adapter } = await fixture();
+    input.config.agentIdentity = identity;
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute.mock.calls[0]![0].agentIdentity).toEqual(identity);
+  });
+
+  it.each([
+    { kind: "remote", transport: "sandbox", providerKey: "kubernetes" },
+    { kind: "remote", transport: "ssh", remoteCwd: "/remote", spec: {} },
+  ])("withholds the persistent agent identity from a $transport target (TECH-8988)", async executionTarget => {
+    const { input, adapter } = await fixture();
+    input.config.agentIdentity = identity;
+    input.workspace.executionTarget = executionTarget as never;
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute.mock.calls[0]![0].agentIdentity).toBeUndefined();
+    expect(JSON.stringify(adapter.execute.mock.calls[0]![0])).not.toContain("PRIVATE");
+  });
+
   it("delivers connection tools to task-bound runs", async () => {
     const { input } = await fixture();
     await executeHeartbeatRuntime(db, input);

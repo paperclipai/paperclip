@@ -868,7 +868,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             input.effects.onLegacyAdapterEntered();
             return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
               getFreshSessionHandoff,
-              agentIdentity,
+              // The persistent identity key never leaves the host for sandbox/ssh targets (TECH-8988).
+              agentIdentity: executionTarget?.kind === "remote" ? undefined : agentIdentity,
               observability,
               runId: run.id,
               agent,
