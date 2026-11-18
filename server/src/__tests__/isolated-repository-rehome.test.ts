@@ -440,14 +440,14 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(git(f.target, "config", "--local", "--get", "core.longpaths")).toBe("true");
   });
 
-  it("keeps an expired isolated recipe until its replacement preserves long paths", async () => {
+  it("keeps an already-expired isolated recipe until its replacement preserves long paths", async () => {
     const f = await fixture({ issueStatus: "done" });
     if (process.platform === "win32") git(f.cwd, "config", "--unset-all", "core.symlinks");
-    git(f.cwd, "config", "core.longpaths", "true");
     git(f.sharedPath, "config", "core.longpaths", "false");
     const expired = await expireReconstructableGitWorkspace(db, await f.row(), { dryRun: false, expireBase: false, now: new Date(),
       restorePoint: { storage: getStorageService(), notBefore: new Date(Date.now() - DAY_MS), keyDurable: true } });
     expect(expired.expired).toBe(true);
+    git(f.clone, "config", "core.longpaths", "true");
     git(f.clone, "config", "core.symlinks", "false");
     const row = await f.row();
     expect(await rehomeExpiredIsolatedRestoration(db, row)).toEqual(row);

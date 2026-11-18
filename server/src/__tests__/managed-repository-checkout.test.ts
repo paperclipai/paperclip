@@ -41,15 +41,17 @@ describe("atomic managed repository publication", () => {
       },
     });
   });
-  it("accepts reproducible long-path config for standalone and linked checkouts", async () => {
+  it("keeps standalone and linked checkouts when long-path config cannot be restored", async () => {
     const { root, source, target } = await fixture();
     await materializeManagedProjectWorkspace(target, { repoUrl: source });
     if (process.platform === "win32") await execFile("git", ["-C", target, "config", "--unset-all", "core.symlinks"]);
     await execFile("git", ["-C", target, "config", "core.longpaths", "true"]);
-    await expect(assertReproducibleGitFiles(target)).resolves.toEqual([]);
+    await expect(assertReproducibleGitFiles(target)).rejects.toThrow("unsupported_local_git_config");
     const linked = path.join(root, "linked");
     await execFile("git", ["-C", target, "worktree", "add", "-b", "linked", linked]);
-    await expect(assertReproducibleGitFiles(linked)).resolves.toEqual([]);
+    await expect(assertReproducibleGitFiles(linked)).rejects.toThrow("unsupported_local_git_config");
+    expect(await readFile(path.join(target, "source.txt"), "utf8")).toBe("initial\n");
+    expect(await readFile(path.join(linked, "source.txt"), "utf8")).toBe("initial\n");
   });
   it.each(["missing", "false", "duplicate", "true"])("requires a replacement base to preserve long-path support: %s", async value => {
     const { source, target } = await fixture();

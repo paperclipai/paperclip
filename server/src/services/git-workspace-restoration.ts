@@ -567,7 +567,8 @@ export async function assertReproducibleLocalGitConfig(cwd: string, signal?: Abo
     if (await gitCacheCommand(cwd, ["config", "--local", "--null", "--get-all", "core.longpaths"], signal) !== "true\0") {
       throw new Error("unsupported_local_git_config");
     }
-    if (replacementCwd) await assertGitLongPathsSupported(replacementCwd, signal);
+    if (!replacementCwd) throw new Error("unsupported_local_git_config");
+    await assertGitLongPathsSupported(replacementCwd, signal);
   }
 }
 
