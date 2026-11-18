@@ -555,9 +555,11 @@ export function readConnectionIntentOAuthOutcome(
 }
 
 export function isMissingOAuthStateMessage(
-  event: Pick<MessageEvent, "origin" | "data">,
+  event: Pick<MessageEvent, "origin" | "data" | "source">,
   expectedOrigin: string,
+  activePopup: Window | null,
 ): boolean {
+  if (!activePopup || event.source !== activePopup) return false;
   if (event.origin !== expectedOrigin || !event.data || typeof event.data !== "object") return false;
   const message = event.data as { type?: unknown; interactionId?: unknown; outcome?: unknown; code?: unknown };
   return message.type === "paperclip.connection-intent.oauth"
@@ -966,7 +968,7 @@ function StandardConnectionSetupFlow({
     let disposed = false;
     const receiveOAuthOutcome = async (event: MessageEvent) => {
       const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, connectionIntentId);
-      if (!outcome && isMissingOAuthStateMessage(event, window.location.origin)) {
+      if (!outcome && isMissingOAuthStateMessage(event, window.location.origin, oauthPopupRef.current)) {
         setOAuthPhase("error");
         setOAuthError(oauthFailureMessage("oauth_state_missing"));
         return;

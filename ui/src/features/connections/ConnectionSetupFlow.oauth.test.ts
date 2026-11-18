@@ -295,14 +295,22 @@ describe("connection intent OAuth failure reasons", () => {
 
 describe("missing sign-in state messages", () => {
   const missing = { type: "paperclip.connection-intent.oauth", outcome: "failed", code: "oauth_state_missing" };
+  const activePopup = {} as Window;
+  const oldPopup = {} as Window;
+  const from = (data: unknown, source: Window | null, eventOrigin = origin) => ({ origin: eventOrigin, data, source });
 
-  it("accepts a same-origin missing-state failure without an interaction id", () => {
-    expect(isMissingOAuthStateMessage(event(missing), origin)).toBe(true);
+  it("accepts a missing-state failure from this setup's active sign-in window", () => {
+    expect(isMissingOAuthStateMessage(from(missing, activePopup), origin, activePopup)).toBe(true);
+  });
+
+  it("ignores a missing-state failure from an old sign-in window", () => {
+    expect(isMissingOAuthStateMessage(from(missing, oldPopup), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from(missing, oldPopup), origin, null)).toBe(false);
   });
 
   it("rejects other origins, other codes, and messages bound to an interaction", () => {
-    expect(isMissingOAuthStateMessage(event(missing, "https://evil.test"), origin)).toBe(false);
-    expect(isMissingOAuthStateMessage(event({ ...missing, code: "oauth_state_expired" }), origin)).toBe(false);
-    expect(isMissingOAuthStateMessage(event({ ...missing, interactionId }), origin)).toBe(false);
+    expect(isMissingOAuthStateMessage(from(missing, activePopup, "https://evil.test"), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from({ ...missing, code: "oauth_state_expired" }, activePopup), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from({ ...missing, interactionId }, activePopup), origin, activePopup)).toBe(false);
   });
 });
