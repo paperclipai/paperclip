@@ -6,7 +6,7 @@ import type { TaskChatMarkerItem } from "./task-chat-model";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/lib/router";
 import { timeAgo } from "@/lib/timeAgo";
-import { formatProviderLimitMessage } from "@/lib/provider-limit-message";
+import { useProviderLimitMessage } from "@/hooks/useProviderLimitMessage";
 
 const VARIANT_ICON = {
   session_start: CircleDot,
@@ -35,8 +35,8 @@ export function TaskChatMarker({
   const Icon = item.tone === "neutral" ? Square : VARIANT_ICON[item.variant];
   const interrupted = item.variant === "interrupted" && item.tone !== "neutral";
   const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
-  const label = formatProviderLimitMessage(item.label);
-  const detail = item.detail ? formatProviderLimitMessage(item.detail) : item.detail;
+  const label = useProviderLimitMessage(item.label);
+  const detail = useProviderLimitMessage(item.detail ?? "", !item.collapsible || open);
   const handleTryAgain = () => {
     void Promise.resolve()
       .then(() => onTryAgain?.())

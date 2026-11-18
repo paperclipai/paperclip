@@ -73,7 +73,7 @@ import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
-import { formatProviderLimitMessage } from "../lib/provider-limit-message";
+import { ProviderLimitMessage } from "../components/ProviderLimitMessage";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
 import { Tabs } from "@/components/ui/tabs";
@@ -3366,7 +3366,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
               <ProviderFailureNotice failure={readProviderFailure(run.resultJson?.providerFailure)!} />
             ) : run.error && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400">{formatProviderLimitMessage(run.error)}</span>
+                <span className="text-red-600 dark:text-red-400"><ProviderLimitMessage>{run.error}</ProviderLimitMessage></span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}

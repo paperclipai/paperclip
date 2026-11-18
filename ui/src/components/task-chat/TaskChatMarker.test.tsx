@@ -48,6 +48,8 @@ describe("TaskChatMarker", () => {
     const details = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]');
     expect(details?.textContent).toContain("in 44 minutes (Nov 18, 2099, 12:17 PM");
     expect(details?.textContent).not.toContain(resetAt.toISOString());
+    flushSync(() => vi.advanceTimersByTime(60_000));
+    expect(details?.textContent).toContain("in 43 minutes (Nov 18, 2099, 12:17 PM");
   });
 
   it.each(["production", "streamlined"] as const)("renders old failure markers without divider rules in %s mode", (mode) => {

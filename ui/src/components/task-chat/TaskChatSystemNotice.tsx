@@ -2,7 +2,7 @@ import { useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "@/components/Wor
 import { WorkspaceBaseRefRecoveryNotice } from "@/components/WorkspaceBaseRefRecoveryNotice";
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "@/components/DispositionRecoveryNotice";
 import { useId, useState } from "react";
-import { formatProviderLimitMessage } from "@/lib/provider-limit-message";
+import { useProviderLimitMessage } from "@/hooks/useProviderLimitMessage";
 import {
   ChevronDown,
   CircleCheck,
@@ -65,7 +65,7 @@ export function TaskChatSystemNotice({
   const streamlined = useStreamlinedTaskChatPresentation();
   const [open, setOpen] = useState(Boolean(item.presentation?.detailsDefaultOpen));
   const detailsId = useId();
-  const body = formatProviderLimitMessage(item.text);
+  const body = useProviderLimitMessage(item.text);
   const { title, tone, detail } = humanizeSystemNotice({
     body,
     presentation: item.presentation,

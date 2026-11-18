@@ -67,6 +67,8 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     const details = container.querySelector('[data-testid="task-chat-system-notice-details"]');
     expect(details?.textContent).toContain("in 44 minutes (Nov 18, 2099, 12:17 PM");
     expect(details?.textContent).not.toContain(resetAt.toISOString());
+    flushSync(() => vi.advanceTimersByTime(60_000));
+    expect(details?.textContent).toContain("in 43 minutes (Nov 18, 2099, 12:17 PM");
   });
 
   it("collapses to a humanized one-liner with relative time and hides the raw body", () => {
