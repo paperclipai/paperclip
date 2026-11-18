@@ -90,6 +90,10 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
       PaperclipIdentityProvider: {
         Type: "AWS::IAM::OIDCProvider",
         Condition: "CreateProvider",
+        // Other connections from this company's issuer may trust the same provider, so updating
+        // or deleting this stack must never remove it.
+        DeletionPolicy: "Retain",
+        UpdateReplacePolicy: "Retain",
         Properties: {
           Url: input.issuer,
           ClientIdList: [AWS_MCP_STS_AUDIENCE],

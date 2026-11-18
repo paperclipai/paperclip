@@ -128,6 +128,7 @@ describe("AwsRoleSetup", () => {
     // A role this template made is updated by deploying the same stack again.
     const own = awsAgentSetupPrompt({ ...READY, savedRoleArn: ROLE_ARN } as Ready);
     expect(own).toContain("creates the stack, or updates it if it already exists");
+    expect(own).toContain("If the stack paperclip-conn-1 already exists, keep its current value");
     expect(own).not.toContain("Do not deploy the template.");
   });
 

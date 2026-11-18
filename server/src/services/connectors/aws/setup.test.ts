@@ -32,6 +32,8 @@ describe("awsRoleSetup", () => {
       { "Fn::Sub": `arn:\${AWS::Partition}:iam::\${AWS::AccountId}:oidc-provider/${HOST}` },
     ]);
     expect(t.Resources.PaperclipIdentityProvider).toMatchObject({ Condition: "CreateProvider", Properties: { Url: ISSUER, ClientIdList: ["sts.amazonaws.com"] } });
+    // A stack update that stops creating the provider, or a stack deletion, must not remove a provider other roles trust.
+    expect(t.Resources.PaperclipIdentityProvider).toMatchObject({ DeletionPolicy: "Retain", UpdateReplacePolicy: "Retain" });
     expect(t.Conditions.CreateProvider).toEqual({ "Fn::Equals": [{ Ref: "CreateIdentityProvider" }, "true"] });
     expect(t.Parameters.AccessPolicyArn.Default).toBe("arn:aws:iam::aws:policy/ReadOnlyAccess");
     expect(setup.trustPolicy).toMatchObject({ Statement: [{ Principal: { Federated: `arn:aws:iam::ACCOUNT_ID:oidc-provider/${HOST}` } }] });
