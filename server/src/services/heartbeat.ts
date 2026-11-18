@@ -4403,11 +4403,15 @@ export function heartbeatService(
       }
       if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
-          eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+          eq(agentWakeupRequests.companyId, run.companyId),
+          or(eq(agentWakeupRequests.agentId, run.agentId),
+            sql`${agentWakeupRequests.payload}->'_paperclipStageHandoff' is not null`),
           eq(agentWakeupRequests.status, "deferred_issue_execution"),
           sql`${agentWakeupRequests.payload}->>'issueId' = ${String(latestRun.contextSnapshot?.issueId)}`,
         )).limit(1);
-        if (pending) await (pending.payload?.queuedCommentInterrupt
+        if (pending) await (pending.payload?._paperclipStageHandoff
+          ? heartbeatQueue.resumeDeferredExecutionReceipts({ companyId: run.companyId, requestId: pending.id })
+          : pending.payload?.queuedCommentInterrupt
           ? resumeQueuedCommentInterrupt(run.companyId, pending.id)
           : releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true })).catch(err => {
           logger.error({ err, runId: run.id }, "failed to promote legacy comment queue after cleanup");

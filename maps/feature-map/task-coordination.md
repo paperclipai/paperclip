@@ -47,6 +47,13 @@ Manual: Block one task on another, finish the prerequisite, and observe the depe
 
 Automated: [execution policy](../../server/src/__tests__/issue-execution-policy.test.ts), [tree control](../../server/src/__tests__/issue-tree-control-service.test.ts), and [signoff browser suite](../../tests/e2e/signoff-policy.spec.ts) target these layers. A linked suite is not a claim that its current run is green.
 
+Stage handoffs preserve a current review, approval, or changes-requested request
+while the outgoing executor cleans up its lease. Cleanup and restart use the same
+saved receipt. Current stage, ownership, Stop, pause and budget checks still apply.
+Targeted coverage: [admission and restart](../../server/src/__tests__/heartbeat-undispatched-execution-wait.test.ts)
+and [lease cleanup through process output](../../server/src/__tests__/deferred-execution-receipt-work.test.ts).
+These tests do not establish deployment or provider review quality.
+
 Manual: Complete implementation under a review-required policy and confirm it waits for the required review outcome. Exercise rejection and later approval. Pause the parent while child work is pending, then verify resumption respects budget and ownership gates.
 
 Resume removes the pause without changing task status. Its wake count includes only

@@ -1,3 +1,4 @@
+import { stageHandoffIdentity, isCurrentStageHandoff } from "../services/heartbeat/stage-handoff.js";
 import { createServer } from "node:http";
 import { conflict, HttpError } from "../errors.js";
 import { setImmediate as immediate } from "node:timers/promises";
@@ -152,6 +153,58 @@ describe("deferred receipt durable dispatch", () => {
         runs: remaining.map(run => ({ id: run.id, at: run.scheduledRetryAt, error: run.errorCode })) })).toHaveLength(0);
     });
   }
+  it.each([false, true])("resumes a canonical stage through committed lease cleanup and saves process output (restart=%s)", async restart => {
+    vi.useRealTimers();
+    const f = await fixture(), predecessorId = randomUUID(), stageId = randomUUID();
+    await db.insert(agents).values({ id: predecessorId, companyId: f.companyId, name: "Outgoing executor", status: "idle", adapterType: "process" });
+    const [predecessor] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: predecessorId,
+      runtimeMode: "legacy", status: "cancelled", finishedAt: new Date(), errorCode: "issue_reassigned",
+      contextSnapshot: { issueId: f.issue.id }, runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+      resultJson: { conversationContinuation: "continue_conversation_v1", reassignmentStopConfirmed: true } }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issue.id,
+      heartbeatRunId: predecessor.id, provider: "local", status: "active" }).returning();
+    const state = { status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: f.agent.id, userId: null },
+      returnAssignee: { type: "agent", agentId: predecessorId, userId: null },
+      completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null };
+    const [canonical] = await db.update(issues).set({ status: "in_review", executionState: state,
+      executionPolicy: { mode: "normal", commentRequired: false, stages: [{ id: stageId, type: "review", participants: [state.currentParticipant] }] },
+    }).where(eq(issues.id, f.issue.id)).returning();
+    const wake = { source: "assignment" as const, triggerDetail: "system" as const, reason: "execution_review_requested",
+      requestedByActorType: "agent" as const, requestedByActorId: predecessorId, stageHandoff: stageHandoffIdentity(canonical.statusVersion, state),
+      payload: { issueId: f.issue.id }, contextSnapshot: { issueId: f.issue.id, wakeReason: "execution_review_requested", source: "issue.execution_stage" } };
+    expect(isCurrentStageHandoff(canonical, f.agent.id, wake.reason, wake.stageHandoff)).toBe(true);
+    await heartbeat.wakeup(f.agent.id, wake);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    if (restart) heartbeat = heartbeatService(db);
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+    await waitForReal(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
+    const idleStatements = statements.length;
+    await new Promise(resolve => realTimeout(resolve, 100));
+    expect(statements).toHaveLength(idleStatements);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id)))[0].runId).toBeNull();
+    await environmentService(db).releaseLease(lease.id, "released", { cleanupStatus: "success" });
+    let runId: string | null = null;
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]);
+      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
+      expect(saved.runId).toBeTruthy(); runId = saved.runId;
+    }, { timeout: 40_000 });
+    await waitForReal(async () => {
+      await heartbeat.drainActiveRunExecutions();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+      expect(run.startedAt).not.toBeNull(); expect(run.stdoutExcerpt).toContain("receipt-proof");
+    }, { timeout: 15_000 });
+    await heartbeat.wakeup(f.agent.id, wake); await heartbeat.resumeQueuedRuns();
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'execution_review_requested'`))).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]).toMatchObject({ status: "in_review", executionState: { status: "pending" } });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    await quiet();
+  }, 60_000);
   it("is quiet after empty reconstruction and terminal receipt history", async () => {
     const f = await fixture();
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,

@@ -90,6 +90,13 @@ resolve_review; legacy agent REST disposition.
 Policy: Task visibility/mutation, task-assignment and ownership policy; review audience
 independent; tree controls board-only.
 
+Server stage wakes carry internal provenance tied to the saved task status version,
+stage, participant and decision. Public wake payloads cannot grant that provenance.
+Deferred cleanup resumes use ordinary admission and dispatch gates. See
+[stage handoff owner](../../server/src/services/heartbeat/stage-handoff.ts) and
+[queue admission](../../server/src/services/heartbeat/queue.ts). This is source scope;
+it does not add an agent-facing operation or broaden the verified access baseline.
+
 Evidence: `source-only` —
 [implementation](../../server/src/routes/issue-tree-control.ts#L95) at the reviewed
 commit above.

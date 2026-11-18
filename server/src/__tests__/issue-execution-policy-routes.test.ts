@@ -748,6 +748,7 @@ describe("issue execution policy routes", () => {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
       status: "todo",
+      statusVersion: 0,
       assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       assigneeUserId: null,
       createdByUserId: "local-board",
@@ -769,6 +770,7 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      statusVersion: 1,
       updatedAt: new Date(),
     }));
 
@@ -782,6 +784,12 @@ describe("issue execution policy routes", () => {
       .send({ status: "in_review", executionPolicy: policy });
 
     expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "44444444-4444-4444-8444-444444444444",
+      expect.objectContaining({ reason: "execution_review_requested",
+        stageHandoff: { statusVersion: 1, stateDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      }),
+    ));
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       expect.objectContaining({

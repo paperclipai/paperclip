@@ -664,3 +664,23 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+## Durable execution-stage handoffs
+
+Review, approval, and changes-requested wakes carry a server-created stage
+identity. The identity binds the task status version to the current participant,
+stage, return assignee, and last decision. Caller payloads cannot set it.
+
+When the prior executor still holds an environment lease, queue admission saves
+the handoff as a deferred wake receipt. Environment cleanup and startup recovery
+resume that receipt through normal admission. They recheck company and agent
+pauses, budget limits, Stop evidence, task ownership, and stage identity. Dispatch
+checks the identity again under the task lock. Concurrent recovery reuses the
+same receipt, and obsolete handoffs are cancelled. The existing delivery worker
+sleeps after reconciliation until an eligibility event arrives.
+
+Regression coverage is in `heartbeat-undispatched-execution-wait.test.ts`,
+`deferred-execution-receipt-work.test.ts`, and
+`issue-execution-policy-routes.test.ts`. These tests exercise queue persistence,
+cleanup, restart, Stop, stale stages, and duplicate admission. They do not prove
+that a live model completes the review.
