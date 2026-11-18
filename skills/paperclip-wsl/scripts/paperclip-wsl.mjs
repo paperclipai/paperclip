@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { parseEnv } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -24,39 +25,54 @@ try {
   if (process.platform === "win32") {
     if (args[0] === "--linux-entry") fail("configured Linux Node resolved to a Windows executable");
     const child = spawnSync("wsl.exe", ["--distribution", config.distro, "--user", config.user,
-      "--cd", config.checkout, "--exec", config.node, `${config.checkout}/${relativeScript}`, "--linux-entry", ...args], { stdio: "inherit", shell: false });
+      "--cd", config.checkout, "--exec", config.node, `${config.checkout}/${relativeScript}`, "--linux-entry", Buffer.from(JSON.stringify(config)).toString("base64url"), ...args], { stdio: "inherit", shell: false });
     if (child.error) throw child.error;
     process.exitCode = child.status ?? 1;
   } else {
     if (process.platform !== "linux") fail("this configured workflow requires Linux");
-    const commands = args[0] === "--linux-entry" ? args.slice(1) : args;
+    let commands = args;
+    if (args[0] === "--linux-entry") {
+      const expected = JSON.parse(Buffer.from(args[1] ?? "", "base64url").toString("utf8"));
+      const fields = [...new Set([...Object.keys(config), ...Object.keys(expected)])].sort();
+      if (fields.some(key => JSON.stringify(config[key]) !== JSON.stringify(expected[key]))) fail("Windows and Linux profiles differ");
+      commands = args.slice(2);
+    }
     if (fs.realpathSync(config.checkout) !== fs.realpathSync(repository)) fail("different Linux checkout selected");
     if (fs.realpathSync(process.execPath) !== fs.realpathSync(config.node) || !nativePath(fs.realpathSync(process.execPath))) fail("unexpected Node executable");
     if (os.userInfo().username !== config.user) fail("different Linux user selected");
     if (process.env.WSL_DISTRO_NAME && process.env.WSL_DISTRO_NAME !== config.distro) fail("different WSL distribution selected");
     const instance = path.join(config.paperclipHome, "instances", config.instanceId);
-    for (const [key, expected] of [["PAPERCLIP_HOME", config.paperclipHome], ["PAPERCLIP_INSTANCE_ID", config.instanceId]]) {
-      if (process.env[key] && process.env[key] !== expected) fail(`${key} selects another instance`);
-    }
     const selectedConfig = path.join(instance, "config.json");
-    if (process.env.PAPERCLIP_CONFIG && path.resolve(repository, process.env.PAPERCLIP_CONFIG) !== selectedConfig) fail("PAPERCLIP_CONFIG selects another instance");
-    for (const key of ["DATABASE_URL", "DATABASE_MIGRATION_URL"]) {
-      if (process.env[key] !== undefined) fail(`${key} overrides the selected instance; configure its config file instead`);
-    }
-    if (process.env.PORT !== undefined && Number(process.env.PORT) !== config.port) fail("PORT differs from the selected instance");
     const settings = JSON.parse(fs.readFileSync(selectedConfig, "utf8"));
     if (settings.server?.port !== config.port) fail("instance port differs from the local profile");
-    const dataPaths = [settings.database?.embeddedPostgresDataDir, settings.storage?.localDisk?.baseDir, settings.secrets?.localEncrypted?.keyFilePath].filter(Boolean);
-    if (dataPaths.some((value) => !nativePath(value))) fail("instance still contains Windows data paths");
-    const bins = config.binPaths ?? [path.dirname(config.node), "/usr/local/bin", "/usr/bin", "/bin"];
-    if (!Array.isArray(bins) || bins.some((value) => !nativePath(value))) fail("tool directories must be native Linux paths");
-    for (const [key, expected] of [
-      ["PAPERCLIP_STORAGE_LOCAL_DIR", settings.storage?.localDisk?.baseDir],
-      ["PAPERCLIP_SECRETS_MASTER_KEY_FILE", settings.secrets?.localEncrypted?.keyFilePath],
-      ["PAPERCLIP_DB_BACKUP_DIR", settings.database?.backup?.dir],
-    ]) if (process.env[key] !== undefined && (!expected || path.resolve(repository, process.env[key]) !== path.resolve(expected))) fail(`${key} differs from the selected instance`);
-    const environment = { ...process.env, PATH: bins.join(":"), PAPERCLIP_HOME: config.paperclipHome, PAPERCLIP_INSTANCE_ID: config.instanceId, PAPERCLIP_CONFIG: selectedConfig };
-    for (const key of ["CARGO_HOME", "RUSTUP_HOME"]) if (config[key]) { if (!nativePath(config[key])) fail(`invalid ${key}`); environment[key] = config[key]; }
+    const dataPaths = [settings.database?.embeddedPostgresDataDir, settings.database?.backup?.dir, settings.storage?.localDisk?.baseDir, settings.secrets?.localEncrypted?.keyFilePath].filter(Boolean);
+    if (dataPaths.some(value => !nativePath(value))) fail("instance still contains Windows data paths");
+    const configuredBins = config.binPaths ?? ["/usr/local/bin", "/usr/bin", "/bin"];
+    if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
+    const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
+    const validateEnvironment = source => {
+      for (const [key, expected] of [["PAPERCLIP_HOME", config.paperclipHome], ["PAPERCLIP_INSTANCE_ID", config.instanceId]]) {
+        if (source[key] !== undefined && source[key] !== expected) fail(key + " selects another instance");
+      }
+      if (source.PAPERCLIP_CONFIG !== undefined && path.resolve(repository, source.PAPERCLIP_CONFIG) !== selectedConfig) fail("PAPERCLIP_CONFIG selects another instance");
+      for (const key of ["DATABASE_URL", "DATABASE_MIGRATION_URL"]) {
+        if (source[key] !== undefined) fail(key + " overrides the selected instance; configure its config file instead");
+      }
+      if (source.PORT !== undefined && Number(source.PORT) !== config.port) fail("PORT differs from the selected instance");
+      for (const [key, expected] of [
+        ["PAPERCLIP_STORAGE_LOCAL_DIR", settings.storage?.localDisk?.baseDir],
+        ["PAPERCLIP_SECRETS_MASTER_KEY_FILE", settings.secrets?.localEncrypted?.keyFilePath],
+        ["PAPERCLIP_DB_BACKUP_DIR", settings.database?.backup?.dir],
+      ]) if (source[key] !== undefined && (!expected || path.resolve(repository, source[key]) !== path.resolve(expected))) fail(key + " differs from the selected instance");
+    };
+    validateEnvironment(process.env);
+    for (const filename of [path.join(instance, ".env"), path.join(repository, ".env"), path.join(repository, "server", ".env")]) {
+      if (fs.existsSync(filename)) validateEnvironment(parseEnv(fs.readFileSync(filename, "utf8")));
+    }
+    if (process.env.WSL_DISTRO_NAME && !config.capacityPath) fail("capacityPath must select the Windows volume that contains the WSL virtual disk");
+    if (config.capacityPath !== undefined && (!config.capacityPath.startsWith("/mnt/") || !/^[a-z]$/.test(config.capacityPath.split("/")[2]))) fail("capacityPath must select a Windows host volume");
+    const environment = { ...process.env, PATH: bins.join(":"), PAPERCLIP_HOME: config.paperclipHome, PAPERCLIP_INSTANCE_ID: config.instanceId, PAPERCLIP_CONFIG: selectedConfig, PAPERCLIP_DISABLE_CWD_ENV_FILE: "true" };
+    for (const key of ["CARGO_HOME", "RUSTUP_HOME"]) if (config[key]) { if (!nativePath(config[key])) fail("invalid " + key); environment[key] = config[key]; }
     const capacity = fs.statfsSync(config.capacityPath ?? config.paperclipHome);
     const availableBytes = capacity.bavail * capacity.bsize;
     if (availableBytes < (config.minimumFreeBytes ?? 10 * 1024 ** 3)) fail("insufficient free host storage");
@@ -73,6 +89,8 @@ try {
       if (resolved.status !== 0 || !nativePath(fs.realpathSync(resolved.stdout.trim()))) fail(`non-native or unavailable command: ${command}`);
     };
     resolveCommand("git"); resolveCommand("pnpm");
+    const selectedNode = run("which", ["node"]);
+    if (selectedNode.status !== 0 || fs.realpathSync(selectedNode.stdout.trim()) !== fs.realpathSync(config.node)) fail("PATH selects another Node executable");
     if (commands[0] === "preflight") {
       const libc = run("getconf", ["GNU_LIBC_VERSION"]);
       const libcVersion = /^glibc (\d+\.\d+)$/.exec(libc.stdout?.trim() ?? "");
