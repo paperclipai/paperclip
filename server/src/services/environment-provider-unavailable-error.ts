@@ -19,7 +19,7 @@ const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 // own cancellation) are excluded: retrying cannot repair either.
 const TRANSIENT_ERROR_CODES = new Set([
   "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENETUNREACH",
-  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "CONNECTION_FAILED",
 ]);
 
 /**

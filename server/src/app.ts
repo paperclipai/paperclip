@@ -151,6 +151,7 @@ import { responsibilityStatusReportRoutes } from "./routes/responsibility-status
 import { responsibilityMetricRoutes } from "./routes/responsibility-metrics.js";
 import { responsibilityRunRoutes } from "./routes/responsibility-runs.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
+import { onboardingChatRoutes } from "./routes/onboarding-chat.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
@@ -891,6 +892,7 @@ export async function createApp(
   api.use(responsibilityMetricRoutes(db));
   api.use(responsibilityRunRoutes(db));
   api.use(onboardingSeedRoutes(db));
+  api.use(onboardingChatRoutes(db, connectionIntentHeartbeat));
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(voiceSessionRoutes(db, chatChannels.voice));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));

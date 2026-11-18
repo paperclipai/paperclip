@@ -417,6 +417,7 @@ export const RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND = "responsibility_status_u
  * packages/shared/src/responsibility-dashboard.ts.
  */
 export const RESPONSIBILITY_DASHBOARD_ORIGIN_KIND = "responsibility_dashboard";
+export const ONBOARDING_CHAT_ORIGIN_KIND = "onboarding_chat";
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
@@ -429,6 +430,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  ONBOARDING_CHAT_ORIGIN_KIND,
   "chat_channel",
   RESPONSIBILITY_BAR_ORIGIN_KIND,
   AUTOMATION_CONVERSATION_ORIGIN_KIND,

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { companies } from "@paperclipai/db";
 import type { Db, agents, agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
 import { AUTOMATION_CONVERSATION_ORIGIN_KIND, FAST_RESPONSE_AGENT_GUIDANCE, ONBOARDING_FIRST_TASK_ORIGIN_KIND, RESPONSIBILITY_BAR_ORIGIN_KIND, RESPONSIBILITY_DASHBOARD_ORIGIN_KIND, RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND, fastResponseHistoryBody, isValidIanaTimeZone } from "@paperclipai/shared";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
@@ -257,7 +259,11 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     : null;
   if (personTimeZone) context.paperclipConversationTimeZone = personTimeZone;
   else delete context.paperclipConversationTimeZone;
+  const [chatCompany] = issueRef?.conversationAgentId && !issueRef.identifier
+    ? await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, agent.companyId))
+    : [];
   const taskMarkdownInput = {
+    companyPrefix: chatCompany?.issuePrefix,
     coordinatorWorkspace: Boolean(coordinatorWorkspace),
     personTimeZone,
     conferenceRoomEnabled: experimentalInstanceSettings.enableConferenceRoomChat === true,
@@ -346,6 +352,8 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,
+    onboardingChat: issueContext?.originKind === "onboarding_chat",
+    onboardingGreeting: context.wakeReason === "onboarding_chat_greeting",
     issue: issueRef
       ? {
           id: issueRef.id,

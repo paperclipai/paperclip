@@ -84,6 +84,7 @@ const apiPrefixes: Record<string, string> = {
   "link-previews.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "onboarding-chat.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -1316,6 +1317,22 @@ describe("openapi routes", () => {
     const callback = spec.paths["/api/tools/oauth/tailscale/callback"].get;
     expect(callback.responses["303"].headers).toMatchObject({ Location: { schema: { type: "string" } }, "Cache-Control": { schema: { enum: ["no-store"] } } });
     expect(callback.parameters).toContainEqual(expect.objectContaining({ in: "query", name: "state", required: true, schema: expect.objectContaining({ maxLength: 128 }) }));
+  });
+
+  it("documents board-owned onboarding chat and visible welcome operations", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/chats/{agentRef}/onboarding";
+    for (const path of [base, `${base}/greeting`]) {
+      const operation = spec.paths[path]?.post;
+      expect(operation).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["200"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation.responses["404"]).toBeDefined();
+    }
+    expect(spec.paths[`${base}/greeting`].post.responses["200"].content["application/json"].schema)
+      .toMatchObject({ type: "object", required: ["started"], properties: { started: { type: "boolean" } } });
   });
 
   it("covers the mounted server routes exactly", () => {
