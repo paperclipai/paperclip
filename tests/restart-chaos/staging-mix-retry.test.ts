@@ -10,6 +10,7 @@ import {
 } from "./staging-mix-retry.js";
 import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 import { completionEvidence } from "./wake-evidence.js";
+import { COMPLETION_INCOMPLETE_KEY } from "./follow-up-delivery.js";
 
 const wave = (argv: string[]) => {
   const command = parseCommand(argv);
@@ -613,6 +614,45 @@ describe("a recovery continuation of a follow-up run that never committed (w-202
       const after = runsAfterDone("t128", evidence, anchor);
       expect(after.started).toEqual([]);
       expect(after.answeredFollowUp.map(turn => turn.runId)).toEqual([answering, continuation]);
+      expect(completionOnce(completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  const withLineage = (lineage: { context?: Record<string, unknown>; retryOfRunId?: string }): WakeEvidenceFile => {
+    const evidence = t128();
+    evidence.runs = evidence.runs!.map(run => run.runId === continuation
+      ? { ...run, retryOfRunId: lineage.retryOfRunId ?? null, contextSnapshot: { wakeReason: "issue_recovery_action_restored", ...lineage.context } } : run);
+    evidence.wakes = evidence.wakes!.map(wake => wake.id === "88d1a3e0" ? { ...wake, payload: { recoveryActionId: "8d383ed2" } } : wake);
+    return evidence;
+  };
+
+  it.each([
+    { name: "only previousRunId", lineage: { context: { previousRunId: answering } } },
+    { name: "only executionContinuation.interruptedRunId", lineage: { context: { executionContinuation: { interruptedRunId: answering } } } },
+    { name: "only the retry_of_run_id column", lineage: { retryOfRunId: answering } },
+  ])("passes when the continuation carries $name", ({ lineage }) => {
+    const evidence = withLineage(lineage);
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started).toEqual([]);
+      expect(completionOnce(completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  it("still fails a continuation with no lineage to the answering run", () => {
+    const evidence = withLineage({});
+    for (const completion of both(evidence)) {
+      expect(completionOnce(completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 38a8772f, 833314ed each reported completion" });
+    }
+  });
+
+  it("passes when the answering run's done result was rejected as incomplete", () => {
+    const evidence = t128("done");
+    evidence.wakes!.push({ id: "incomplete-wake", reason: "issue_continuation_needed", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: null, createdAt: 1_794_945_400_000, payload: { continuationIdempotencyKey: COMPLETION_INCOMPLETE_KEY } });
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started).toEqual([]);
       expect(completionOnce(completion)).toMatchObject({ ok: true, detail: "runs=1" });
     }
   });

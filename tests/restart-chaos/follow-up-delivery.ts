@@ -6,6 +6,7 @@ export interface DeliveryRun {
   startedAt?: number | null;
   wakeupRequestId: string | null;
   contextSnapshot?: unknown;
+  retryOfRunId?: string | null;
   providerTurnStarted?: boolean | null;
 }
 
@@ -71,15 +72,21 @@ export function undeliveredFollowUpRuns(evidence: DeliveryEvidence): Set<string>
   return followUpDeliveries(evidence).undelivered;
 }
 
-export function continuedRunId(run: Pick<DeliveryRun, "contextSnapshot">, wake: DeliveryWake | undefined): string | null {
+export function continuedRunId(run: Pick<DeliveryRun, "contextSnapshot" | "retryOfRunId">, wake: DeliveryWake | undefined): string | null {
+  const context = object(run.contextSnapshot);
   const payload = object(wake?.payload);
-  const id = [object(run.contextSnapshot).retryOfRunId, object(payload._paperclipWakeContext).retryOfRunId, payload.retryOfRunId]
+  const id = [run.retryOfRunId, context.retryOfRunId, context.previousRunId, object(context.executionContinuation).interruptedRunId,
+    object(payload._paperclipWakeContext).retryOfRunId, payload.retryOfRunId]
     .find((value): value is string => typeof value === "string" && value.length > 0);
   return id ?? null;
 }
 
+export function committedCompletion(run: { runId: string | null; acceptedDisposition?: string | null } | undefined, rejected: ReadonlySet<string>): boolean {
+  return run?.acceptedDisposition === "done" && !(run.runId && rejected.has(run.runId));
+}
+
 export function followUpAnsweringRuns(evidence: { runs?: ReadonlyArray<DeliveryRun & { acceptedDisposition?: string | null }>;
-  wakes?: readonly DeliveryWake[] } | null): Set<string> {
+  wakes?: readonly DeliveryWake[] } | null, rejected: ReadonlySet<string>): Set<string> {
   const answering = new Set(laterAnswers(evidence).keys());
   if (!evidence) return answering;
   const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
@@ -87,7 +94,7 @@ export function followUpAnsweringRuns(evidence: { runs?: ReadonlyArray<DeliveryR
   const byId = new Map(runs.map(run => [run.runId, run]));
   for (const run of [...runs].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
     const predecessor = continuedRunId(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined);
-    if (predecessor && answering.has(predecessor) && byId.get(predecessor)?.acceptedDisposition !== "done") answering.add(run.runId);
+    if (predecessor && answering.has(predecessor) && !committedCompletion(byId.get(predecessor), rejected)) answering.add(run.runId);
   }
   return answering;
 }
