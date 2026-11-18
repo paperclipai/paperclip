@@ -40,6 +40,18 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime sandbox", () => {
+  it.each([false, true])("blocks account-synced Claude extensions before launch and recovery (%s)", async recovery => {
+    const fixture = await sandboxFixture("claude");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude" });
+    const file = join(sandbox.agentHomeDirectory, "settings.json");
+    if (recovery) await writeFile(file, JSON.stringify({ syncClaudeAiPlugins: true, syncClaudeAiSkills: true, disableClaudeAiConnectors: false }));
+    await sandbox.initializeOwnedConfiguration!();
+    expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
+      syncClaudeAiPlugins: false, syncClaudeAiSkills: false, disableClaudeAiConnectors: true,
+    });
+  });
+
+
   it.each([false, true])("allows selected task secrets in Codex shells (agent identity: %s)", async identity => {
     const fixture = await sandboxFixture("codex");
     const pages = { PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "task-pages-secret", CUSTOM_TOKEN: "task-service-secret" };

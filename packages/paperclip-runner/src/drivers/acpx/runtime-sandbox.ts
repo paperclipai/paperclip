@@ -441,6 +441,9 @@ export async function prepareAcpxRuntimeSandbox(input: {
       `${JSON.stringify({
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
+        syncClaudeAiPlugins: false,
+        syncClaudeAiSkills: false,
+        disableClaudeAiConnectors: true,
         ...(input.binding.claudeEffort ? { effortLevel: input.binding.claudeEffort } : {}),
         permissions: {
           ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")

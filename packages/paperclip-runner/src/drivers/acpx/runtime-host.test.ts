@@ -635,6 +635,9 @@ describe("ACPX runtime host", () => {
       expect(launches[1]!.env.CLAUDE_CODE_DISABLE_CRON).toBe("1");
       expect(launches[1]!.settings).toEqual({
         ...previousReleaseSettings,
+        syncClaudeAiPlugins: false,
+        syncClaudeAiSkills: false,
+        disableClaudeAiConnectors: true,
         permissions: { ...previousReleaseSettings.permissions, deny: ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"] },
       });
       expect(await readFile(transcript, "utf8")).toContain("saved by the previous release");
