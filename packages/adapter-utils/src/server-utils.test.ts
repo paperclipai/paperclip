@@ -41,6 +41,8 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
+  capPaperclipWakePayloadForEnv,
+  MAX_WAKE_PAYLOAD_ENV_BYTES,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
@@ -4274,5 +4276,112 @@ describe("wake continuation comment ownership", () => {
       executionContinuation: { ...continuation([]), objective },
     }, { suppressIssueDescription: true });
     expect(legacy).toContain(`"objective":"${objective}"`);
+  });
+});
+
+describe("stringifyPaperclipWakePayload env-size cap (spawn E2BIG guard)", () => {
+  // Build an AGE-741-style append-only monitor thread: many large digests.
+  const buildLongThread = (count: number, bodyBytes: number) => ({
+    reason: "issue_commented",
+    issue: {
+      id: "issue-741",
+      identifier: "AGE-741",
+      title: "MHA · client monitoring thread",
+      description: null,
+      descriptionTruncated: false,
+      status: "in_progress",
+    },
+    commentWindow: {
+      requestedCount: count,
+      includedCount: count,
+      missingCount: 0,
+    },
+    comments: Array.from({ length: count }, (_, i) => ({
+      id: `c-${i}`,
+      issueId: "issue-741",
+      body: `monitor digest ${i} ` + "x".repeat(bodyBytes),
+      createdAt: "2026-11-18T00:00:00.000Z",
+      bodyTruncated: false,
+    })),
+    fallbackFetchNeeded: false,
+  });
+
+  it("leaves a small payload untrimmed (cap is a no-op under budget)", () => {
+    const serialized = stringifyPaperclipWakePayload(buildLongThread(2, 64));
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized!, "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+    const parsed = JSON.parse(serialized!);
+    expect(parsed.comments).toHaveLength(2);
+    expect(parsed.truncated).toBe(false);
+    expect(parsed.fallbackFetchNeeded).toBe(false);
+  });
+
+  it("caps a long append-only thread under the env budget so spawn cannot E2BIG", () => {
+    // Uncapped, this thread serializes to well over the env budget.
+    const long = buildLongThread(400, 2 * 1024);
+    const rawBytes = Buffer.byteLength(JSON.stringify(long), "utf8");
+    expect(rawBytes).toBeGreaterThan(MAX_WAKE_PAYLOAD_ENV_BYTES);
+
+    const serialized = stringifyPaperclipWakePayload(long);
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized!, "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+
+    const parsed = JSON.parse(serialized!);
+    // Trimming is disclosed so the agent fetches the full thread from the API.
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.fallbackFetchNeeded).toBe(true);
+    expect(parsed.missingCount).toBeGreaterThan(0);
+    // The newest comments are retained; oldest are shed first.
+    expect(parsed.comments.length).toBeGreaterThan(0);
+    expect(parsed.comments.length).toBeLessThan(400);
+    expect(parsed.comments.at(-1).id).toBe("c-399");
+    expect(parsed.includedCount).toBe(parsed.comments.length);
+    expect(parsed.missingCount).toBe(400 - parsed.comments.length);
+  });
+
+  it("truncates retained comment bodies when the budget fits only trimmed bodies", () => {
+    // Two comments, each far larger than the budget; the budget is big enough
+    // to hold both once their bodies are truncated to the per-comment cap.
+    const huge = buildLongThread(2, 200 * 1024);
+    const serialized = stringifyPaperclipWakePayload(huge, {
+      budgetBytes: 16 * 1024,
+    });
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized!, "utf8")).toBeLessThanOrEqual(16 * 1024);
+
+    const parsed = JSON.parse(serialized!);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.fallbackFetchNeeded).toBe(true);
+    // Both comments survive (min retained), but their bodies are capped.
+    expect(parsed.comments).toHaveLength(2);
+    for (const comment of parsed.comments) {
+      expect(comment.bodyTruncated).toBe(true);
+      expect(Buffer.byteLength(comment.body, "utf8")).toBeLessThanOrEqual(
+        4 * 1024,
+      );
+    }
+  });
+
+  it("stays under an arbitrary tiny budget by dropping to the last resort", () => {
+    const serialized = stringifyPaperclipWakePayload(buildLongThread(50, 4 * 1024), {
+      budgetBytes: 2 * 1024,
+    });
+    expect(serialized).not.toBeNull();
+    const parsed = JSON.parse(serialized!);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.fallbackFetchNeeded).toBe(true);
+  });
+
+  it("exposes capPaperclipWakePayloadForEnv as a no-op under budget", () => {
+    const serialized = stringifyPaperclipWakePayload(buildLongThread(2, 32))!;
+    const normalized = JSON.parse(serialized) as Parameters<
+      typeof capPaperclipWakePayloadForEnv
+    >[0];
+    const { trimmed } = capPaperclipWakePayloadForEnv(normalized);
+    expect(trimmed).toBe(false);
   });
 });
