@@ -308,7 +308,7 @@ each step is verified before the next one starts.
 #### Prerequisites
 
 - [ ] Production runs a release that contains #22006, #22012, #22052 and
-      #22057 (and #2d company_id if merged by then). Check the running app
+      #22057 (and the Phase 2d `company_id` PR if merged by then). Check the running app
       version of the canary stack before each step.
 - [ ] Dotta signs in to `admin.paperclip.app` in the coordinator's browser
       pane (the coordinator has no production admin access).
