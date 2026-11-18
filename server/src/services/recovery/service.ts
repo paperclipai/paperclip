@@ -1960,6 +1960,23 @@ export function recoveryService(
       .then((rows) => Boolean(rows[0]));
   }
 
+  async function hasActiveBoardEscalation(companyId: string, issueId: string) {
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          eq(issueRecoveryActions.ownerType, "board"),
+          sql`${issueRecoveryActions.wakePolicy} ->> 'type' = 'board_escalation'`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function hasQueuedIssueWake(
     companyId: string,
     issueId: string,
@@ -6108,6 +6125,7 @@ export function recoveryService(
       healed: 0,
       existingWakeSkipped: 0,
       selfBlockedSkipped: 0,
+      boardEscalationSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -6281,6 +6299,11 @@ export function recoveryService(
         // stamps a new cycle, so the ready-state key never repeats).
         if (await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
           result.selfBlockedSkipped += 1;
+          continue;
+        }
+
+        if (await hasActiveBoardEscalation(companyId, candidate.id)) {
+          result.boardEscalationSkipped += 1;
           continue;
         }
 
