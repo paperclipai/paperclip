@@ -1,7 +1,8 @@
 // TECH-9007: the file bridge waits inside the sandbox instead of polling the
 // queue from the host every 100 ms, and the run-log tail waits for new output.
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile, appendFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile, appendFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -33,7 +34,7 @@ type ExecInput = {
 };
 
 // Runs each sandbox command as a local shell, like a pod exec, and records it.
-function createLocalRunner(extraEnv: Record<string, string> = {}) {
+function createLocalRunner(extraEnv: Record<string, string> = {}, shellPath = "/bin/sh") {
   const scripts: string[] = [];
   const runner = {
     scripts,
@@ -47,7 +48,7 @@ function createLocalRunner(extraEnv: Record<string, string> = {}) {
         args[1] = `printf '%s' "$PAPERCLIP_TEST_STDIN" | (${args[1]})`;
       }
       try {
-        const result = await execFile(input.command === "bash" ? "/bin/bash" : "/bin/sh", args, {
+        const result = await execFile(input.command === "bash" ? "/bin/bash" : shellPath, args, {
           cwd: input.cwd,
           env,
           maxBuffer: 32 * 1024 * 1024,
@@ -310,6 +311,351 @@ describe("sandbox callback bridge blocking wait (TECH-9007)", { timeout: 30_000 
     setTimeout(() => void writeFile(path.join(root, "new.json"), "{}", "utf8"), 150);
     expect(await client.waitForJsonFiles!(root, { waitMs: 3_000, ignore: ["known.json"] })).toEqual(["known.json", "new.json"]);
     expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+});
+
+// TECH-8174 fix B: the wait exec returns small request bodies inline and the
+// response write also removes the request file, so a request costs one exec of
+// its own (the write) instead of four (size, read, write, remove).
+const isWrite = (script: string) => script.includes("response_path=");
+const isSize = (script: string) => script.includes("wc -c");
+const isRead = (script: string) => !isWait(script) && (script.includes("| base64") || script.startsWith("base64 <"));
+const isRemove = (script: string) => script.startsWith("rm -rf ");
+const perRequestExecs = (scripts: string[]) => scripts.filter((script) => !isWait(script) && !isPlainList(script));
+
+describe("sandbox callback bridge inline bodies and folded removal (TECH-8174)", { timeout: 30_000 }, () => {
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    while (cleanups.length > 0) await cleanups.pop()!().catch(() => undefined);
+  });
+
+  async function setup(options: {
+    routePolicies?: SandboxCallbackBridgeRoutePolicy[];
+    handle?: (request: { id: string; path: string }) => Promise<void>;
+    wrapClient?: (client: SandboxCallbackBridgeQueueClient) => SandboxCallbackBridgeQueueClient;
+    maxBodyBytes?: number;
+  } = {}) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-fold-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const queueDir = path.join(root, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const runner = createLocalRunner();
+    const baseClient = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: root, timeoutMs: 30_000, waitInSandbox: true });
+    const client = options.wrapClient ? options.wrapClient(baseClient) : baseClient;
+    const handled: Array<{ id: string; body: string }> = [];
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      routePolicies: options.routePolicies,
+      ...(options.maxBodyBytes ? { maxBodyBytes: options.maxBodyBytes } : {}),
+      authorizeRequest: () => null,
+      handleRequest: async (request) => {
+        handled.push({ id: request.id, body: String(request.body) });
+        await options.handle?.({ id: request.id, path: request.path });
+        return { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ id: request.id }) };
+      },
+    });
+    let stopped = false;
+    const stop = async (drainTimeoutMs?: number) => {
+      if (stopped) return;
+      stopped = true;
+      await worker.stop(drainTimeoutMs === undefined ? {} : { drainTimeoutMs });
+    };
+    cleanups.push(() => stop(10));
+    const enqueue = async (id: string, options: { path?: string; method?: string; body?: string } = {}) => {
+      const file = path.join(directories.requestsDir, `${id}.json`);
+      const payload = {
+        id, method: options.method ?? "GET", path: options.path ?? "/api/agents/me", query: "", headers: {},
+        body: options.body ?? "", createdAt: new Date().toISOString(),
+      };
+      await writeFile(`${file}.tmp`, `${JSON.stringify(payload)}\n`, "utf8");
+      await rename(`${file}.tmp`, file);
+    };
+    const response = async (id: string) => {
+      const raw = await readFile(path.join(directories.responsesDir, `${id}.json`), "utf8").catch(() => null);
+      return raw === null ? null : (JSON.parse(raw) as { status: number; body?: string });
+    };
+    const pendingRequests = async () =>
+      (await readdir(directories.requestsDir).catch(() => [] as string[])).filter((name) => name.endsWith(".json"));
+    return { runner, stop, enqueue, response, pendingRequests, handled, directories };
+  }
+
+  it("serves a small request with one exec of its own: the write that also removes the request", async () => {
+    const bridge = await setup();
+    await sleep(300);
+    const before = bridge.runner.scripts.length;
+    await bridge.enqueue("one", { method: "POST", path: "/api/issues/x/comments", body: JSON.stringify({ body: "hi" }) });
+    await waitFor(async () => (await bridge.response("one")) !== null && (await bridge.pendingRequests()).length === 0, 3_000, "served");
+    await sleep(200);
+    const execs = perRequestExecs(bridge.runner.scripts.slice(before));
+    expect(execs).toHaveLength(1);
+    expect(isWrite(execs[0]!)).toBe(true);
+    expect(bridge.runner.scripts.some(isSize)).toBe(false);
+    expect(bridge.runner.scripts.some(isRead)).toBe(false);
+    expect(bridge.runner.scripts.some(isRemove)).toBe(false);
+    expect(bridge.handled).toEqual([{ id: "one", body: JSON.stringify({ body: "hi" }) }]);
+    expect((await bridge.response("one"))?.status).toBe(200);
+  });
+
+  it("falls back to the size and read execs for a request above the inline limit", async () => {
+    const bridge = await setup();
+    await sleep(300);
+    const big = JSON.stringify({ body: "x".repeat(40 * 1024) });
+    await bridge.enqueue("big", { method: "POST", path: "/api/issues/x/comments", body: big });
+    await waitFor(async () => (await bridge.response("big")) !== null && (await bridge.pendingRequests()).length === 0, 3_000, "served");
+    expect(bridge.handled).toEqual([{ id: "big", body: big }]);
+    expect(bridge.runner.scripts.filter(isSize)).toHaveLength(1);
+    expect(bridge.runner.scripts.filter(isRead)).toHaveLength(1);
+    expect(bridge.runner.scripts.filter(isWrite)).toHaveLength(1);
+    expect(bridge.runner.scripts.some(isRemove)).toBe(false);
+  });
+
+  it("keeps the size limits: 413 above the envelope limit, 400 for an inlined over-limit body", async () => {
+    // 1 KiB body limit: the envelope limit is 6 KiB + 64 KiB.
+    const bridge = await setup({ maxBodyBytes: 1024 });
+    await sleep(300);
+    await bridge.enqueue("huge", { method: "POST", path: "/api/issues/x/comments", body: JSON.stringify({ body: "y".repeat(80 * 1024) }) });
+    await waitFor(async () => (await bridge.response("huge")) !== null, 3_000, "rejected");
+    expect((await bridge.response("huge"))?.status).toBe(413);
+    // Small enough to come inline, but its body is over the 1 KiB limit.
+    await bridge.enqueue("over", { method: "POST", path: "/api/issues/x/comments", body: JSON.stringify({ body: "y".repeat(2 * 1024) }) });
+    await waitFor(async () => (await bridge.response("over")) !== null, 3_000, "rejected");
+    expect((await bridge.response("over"))?.status).toBe(400);
+    expect(bridge.handled).toHaveLength(0);
+    await waitFor(async () => (await bridge.pendingRequests()).length === 0, 2_000, "requests removed");
+  });
+
+  it("serves a burst of 20 in order, none lost, with no size, read or remove execs", async () => {
+    const bridge = await setup();
+    await sleep(200);
+    const ids = Array.from({ length: 20 }, (_, index) => `burst-${String(index).padStart(2, "0")}`);
+    await Promise.all(ids.map((id) => bridge.enqueue(id, { method: "POST", path: "/api/issues/x/comments", body: JSON.stringify({ id }) })));
+    await waitFor(async () => (await bridge.pendingRequests()).length === 0 && bridge.handled.length === ids.length, 15_000, "burst drained")
+      .catch(async (error) => {
+        throw new Error(`${(error as Error).message}: handled=${JSON.stringify(bridge.handled.map((entry) => entry.id))} pending=${JSON.stringify(await bridge.pendingRequests())} scripts=${bridge.runner.scripts.length}`);
+      });
+    expect(bridge.handled.map((entry) => entry.id)).toEqual(ids);
+    expect(bridge.handled.map((entry) => entry.body)).toEqual(ids.map((id) => JSON.stringify({ id })));
+    for (const id of ids) expect((await bridge.response(id))?.status).toBe(200);
+    expect(bridge.runner.scripts.filter(isWrite)).toHaveLength(ids.length);
+    expect(bridge.runner.scripts.some((script) => isSize(script) || isRead(script) || isRemove(script))).toBe(false);
+  });
+
+  it("serves a burst of 20 with route policies on, each handled once", async () => {
+    const bridge = await setup({
+      routePolicies: [{ method: "POST", path: /^\/memory\/add$/, deadlineMs: 5_000, maxConcurrent: 2 }],
+    });
+    await sleep(200);
+    const ids = Array.from({ length: 20 }, (_, index) => `routed-${String(index).padStart(2, "0")}`);
+    await Promise.all(ids.map((id, index) => bridge.enqueue(id, index % 2 === 0
+      ? { method: "POST", path: "/memory/add", body: "{}" }
+      : {})));
+    await waitFor(async () => (await bridge.pendingRequests()).length === 0 && bridge.handled.length === ids.length, 15_000, "burst drained");
+    await sleep(300);
+    expect([...bridge.handled.map((entry) => entry.id)].sort()).toEqual(ids);
+    // The sequential lane keeps its order.
+    const ordinary = bridge.handled.map((entry) => entry.id).filter((id) => ids.indexOf(id) % 2 === 1);
+    expect(ordinary).toEqual(ids.filter((_, index) => index % 2 === 1));
+    expect(bridge.runner.scripts.filter(isWrite)).toHaveLength(ids.length);
+    expect(bridge.runner.scripts.some((script) => isSize(script) || isRead(script) || isRemove(script))).toBe(false);
+  });
+
+  it("does not run a request twice when the write/remove exec result is lost", async () => {
+    let dropped = 0;
+    const bridge = await setup({
+      wrapClient: (client) => ({
+        ...client,
+        writeResponseFile: async (responsePath, body, options) => {
+          const result = await client.writeResponseFile!(responsePath, body, options);
+          if (dropped === 0) {
+            // The exec ran in the pod (response written, request removed), but
+            // the host lost its result.
+            dropped += 1;
+            throw new Error("exec websocket dropped");
+          }
+          return result;
+        },
+      }),
+    });
+    await sleep(200);
+    await bridge.enqueue("lost-ack", { method: "POST", path: "/api/issues/x/comments", body: "{}" });
+    await waitFor(async () => bridge.runner.scripts.filter(isWrite).length >= 2, 3_000, "write retried");
+    await sleep(600);
+    expect(bridge.handled.map((entry) => entry.id)).toEqual(["lost-ack"]);
+    expect((await bridge.response("lost-ack"))?.status).toBe(200);
+    expect(await bridge.pendingRequests()).toEqual([]);
+  });
+
+  it("does not run a request twice when its removal fails, and removes it later", async () => {
+    let removalFails = true;
+    const removes: string[] = [];
+    const bridge = await setup({
+      wrapClient: (client) => ({
+        ...client,
+        // The response lands but the folded removal does not happen.
+        writeResponseFile: async (responsePath, body, options) => {
+          const { removeRequestPath: _skip, ...rest } = options ?? {};
+          const result = await client.writeResponseFile!(responsePath, body, rest);
+          return { wrote: result.wrote, removedRequest: false };
+        },
+        remove: async (remotePath) => {
+          removes.push(remotePath);
+          if (removalFails) throw new Error("rm failed");
+          return client.remove(remotePath);
+        },
+      }),
+    });
+    await sleep(200);
+    await bridge.enqueue("sticky", { method: "POST", path: "/api/issues/x/comments", body: "{}" });
+    await waitFor(async () => (await bridge.response("sticky")) !== null, 3_000, "answered");
+    // The gateway consumes the response; the request file stays behind.
+    await rm(path.join(bridge.directories.responsesDir, "sticky.json"));
+    await sleep(1_200);
+    expect(bridge.handled.map((entry) => entry.id)).toEqual(["sticky"]);
+    expect(await bridge.pendingRequests()).toEqual(["sticky.json"]);
+    // No stray second response was written for it.
+    expect(await bridge.response("sticky")).toBeNull();
+    removalFails = false;
+    await waitFor(async () => (await bridge.pendingRequests()).length === 0, 8_000, "lingering request removed");
+    expect(bridge.handled.map((entry) => entry.id)).toEqual(["sticky"]);
+    expect(removes.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("teardown drain 503s a queued request and leaves an answered one alone", async () => {
+    let releaseFirst: (() => void) | null = null;
+    let removalFails = true;
+    const bridge = await setup({
+      handle: async (request) => {
+        if (request.id === "first") await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      },
+      wrapClient: (client) => ({
+        ...client,
+        writeResponseFile: async (responsePath, body, options) => {
+          if (!responsePath.endsWith("answered.json")) return client.writeResponseFile!(responsePath, body, options);
+          const { removeRequestPath: _skip, ...rest } = options ?? {};
+          const result = await client.writeResponseFile!(responsePath, body, rest);
+          return { wrote: result.wrote, removedRequest: false };
+        },
+        remove: async (remotePath) => {
+          if (removalFails && remotePath.endsWith("answered.json")) throw new Error("rm failed");
+          return client.remove(remotePath);
+        },
+      }),
+    });
+    await sleep(200);
+    await bridge.enqueue("answered", { method: "POST", path: "/api/issues/x/comments", body: "{}" });
+    await waitFor(async () => (await bridge.response("answered")) !== null, 3_000, "answered");
+    await rm(path.join(bridge.directories.responsesDir, "answered.json"));
+    await bridge.enqueue("first");
+    await waitFor(() => releaseFirst !== null, 3_000, "first started");
+    await bridge.enqueue("queued");
+    removalFails = false;
+    setTimeout(() => releaseFirst?.(), 400);
+    await bridge.stop(200);
+    expect((await bridge.response("queued"))?.status).toBe(503);
+    expect(bridge.handled.map((entry) => entry.id)).toEqual(["answered", "first"]);
+    // The answered request got no drain 503, and its file is gone.
+    expect(await bridge.response("answered")).toBeNull();
+    await waitFor(async () => !(await bridge.pendingRequests()).includes("answered.json"), 2_000, "answered removed");
+  });
+});
+
+describe("sandbox queue client inline listing and folded removal (TECH-8174)", { timeout: 30_000 }, () => {
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    while (cleanups.length > 0) await cleanups.pop()!().catch(() => undefined);
+  });
+
+  // Ubuntu CI's /bin/sh is dash; also run under dash explicitly when present.
+  const shells = ["/bin/sh", "/bin/dash"].filter((shell) => existsSync(shell));
+
+  for (const shell of shells) {
+    it(`returns small bodies inline and lists the rest (${shell})`, async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-inline-"));
+      cleanups.push(() => rm(root, { recursive: true, force: true }));
+      const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner: createLocalRunner({}, shell), remoteCwd: root, timeoutMs: 30_000, waitInSandbox: true,
+      });
+      const small = `${JSON.stringify({ id: "a", body: "é ünïcode" })}\n`;
+      const exact = "z".repeat(100);
+      await writeFile(path.join(root, "a.json"), small, "utf8");
+      await writeFile(path.join(root, "b.json"), "x".repeat(101), "utf8");
+      await writeFile(path.join(root, "c.json"), exact, "utf8");
+      await writeFile(path.join(root, "d.json"), "{}", "utf8");
+      await writeFile(path.join(root, "e.json"), "", "utf8");
+      const result = await client.waitForJsonFiles!(root, { waitMs: 0, ignore: ["d.json"], inlineMaxBytes: 100 });
+      expect(Array.isArray(result)).toBe(false);
+      const { files, inline } = result as { files: string[]; inline: ReadonlyMap<string, string> };
+      expect(files).toEqual(["a.json", "b.json", "c.json", "d.json", "e.json"]);
+      // b is over the limit, d is ignored, e is empty: listed only.
+      expect([...inline.entries()].sort()).toEqual([["a.json", small], ["c.json", exact]]);
+    });
+
+    it(`wakes within about 50 ms and returns the new body inline (${shell})`, async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-inline-wake-"));
+      cleanups.push(() => rm(root, { recursive: true, force: true }));
+      const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner: createLocalRunner({}, shell), remoteCwd: root, timeoutMs: 30_000, waitInSandbox: true,
+      });
+      let writtenAt = Number.POSITIVE_INFINITY;
+      setTimeout(() => {
+        void writeFile(path.join(root, "new.json.tmp"), "{\"id\":\"new\"}\n", "utf8").then(() => {
+          // Set before the rename, so the wait cannot return first.
+          writtenAt = Date.now();
+          return rename(path.join(root, "new.json.tmp"), path.join(root, "new.json"));
+        });
+      }, 300);
+      const result = await client.waitForJsonFiles!(root, { waitMs: 5_000, inlineMaxBytes: 32 * 1024 });
+      const returnedAt = Date.now();
+      const { files, inline } = result as { files: string[]; inline: ReadonlyMap<string, string> };
+      expect(files).toEqual(["new.json"]);
+      expect(inline.get("new.json")).toBe("{\"id\":\"new\"}\n");
+      // One 50 ms step plus the shell's exit (about 60-100 ms here); the bound
+      // leaves room for a loaded CI host.
+      expect(returnedAt - writtenAt).toBeGreaterThanOrEqual(0);
+      expect(returnedAt - writtenAt).toBeLessThan(1_000);
+    });
+
+    it(`writes the response and removes the request in one exec (${shell})`, async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-fold-write-"));
+      cleanups.push(() => rm(root, { recursive: true, force: true }));
+      const runner = createLocalRunner({}, shell);
+      const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: root, timeoutMs: 30_000, waitInSandbox: true });
+      const requestPath = path.join(root, "requests", "r.json");
+      const responsePath = path.join(root, "responses", "r.json");
+      await mkdir(path.dirname(requestPath), { recursive: true });
+      await writeFile(requestPath, "{}", "utf8");
+      expect(await client.writeResponseFile!(responsePath, "{\"status\":200}\n", { requestPath, removeRequestPath: requestPath }))
+        .toEqual({ wrote: true, removedRequest: true });
+      expect(runner.scripts).toHaveLength(1);
+      expect(await readFile(responsePath, "utf8")).toBe("{\"status\":200}\n");
+      expect(existsSync(requestPath)).toBe(false);
+      // A retry after a lost result writes nothing and still reports the removal.
+      expect(await client.writeResponseFile!(responsePath, "{\"status\":500}\n", { requestPath, removeRequestPath: requestPath }))
+        .toEqual({ wrote: false, removedRequest: true });
+      expect(await readFile(responsePath, "utf8")).toBe("{\"status\":200}\n");
+      // An answered request whose file is still there is removed, not answered again.
+      await writeFile(requestPath, "{}", "utf8");
+      expect(await client.writeResponseFile!(responsePath, "{\"status\":500}\n", { removeRequestPath: requestPath }))
+        .toEqual({ wrote: false, removedRequest: true });
+      expect(existsSync(requestPath)).toBe(false);
+      expect(existsSync(`${responsePath}.paperclip-write.lock`)).toBe(false);
+    });
+  }
+
+  it("keeps the old write and listing for providers without the in-sandbox wait", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-fold-off-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const runner = createLocalRunner();
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({ runner, remoteCwd: root, timeoutMs: 30_000 });
+    const requestPath = path.join(root, "requests", "r.json");
+    const responsePath = path.join(root, "responses", "r.json");
+    await mkdir(path.dirname(requestPath), { recursive: true });
+    await writeFile(requestPath, "{}", "utf8");
+    expect(await client.writeResponseFile!(responsePath, "{}\n", { requestPath, removeRequestPath: requestPath }))
+      .toEqual({ wrote: true });
+    expect(existsSync(requestPath)).toBe(true);
+    expect(runner.scripts[0]).not.toContain("remove_path=");
   });
 });
 

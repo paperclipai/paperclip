@@ -1090,6 +1090,70 @@ describe("sandbox callback bridge", () => {
     ).resolves.toEqual([]);
   });
 
+  it("relays through the real gateway with inline bodies and the folded removal (TECH-8174)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-inline-e2e-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge inline e2e\n", "utf8");
+
+    const execRunner = createExecRunner();
+    const scripts: string[] = [];
+    const runner = {
+      execute: async (input: Parameters<typeof execRunner.execute>[0]) => {
+        scripts.push(input.args?.[1] ?? "");
+        return execRunner.execute(input);
+      },
+    };
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const prepared = await prepareCommandManagedRuntime(queueRuntimeInput(runner, remoteWorkspaceDir, localWorkspaceDir, bridgeAsset));
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const seen: Array<{ id: string; body: string }> = [];
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createCommandManagedSandboxCallbackBridgeQueueClient({
+        runner, remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000, waitInSandbox: true,
+      }),
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async (request) => {
+        seen.push({ id: request.id, body: String(request.body) });
+        return { status: 200, headers: { "content-type": "application/json" }, body: String(request.body) };
+      },
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner, remoteCwd: remoteWorkspaceDir, assetRemoteDir: prepared.assetDirs.bridge, queueDir, bridgeToken, timeoutMs: 30_000,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    const before = scripts.length;
+    const bodies = Array.from({ length: 5 }, (_, index) => JSON.stringify({ n: index, text: "é".repeat(index) }));
+    const responses = await Promise.all(bodies.map((body) => fetch(`${bridge.baseUrl}/api/agents/me`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${bridgeToken}`, "content-type": "application/json" },
+      body,
+    })));
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200, 200]);
+    expect((await Promise.all(responses.map((response) => response.text()))).sort()).toEqual([...bodies].sort());
+    expect(seen.map((entry) => entry.body).sort()).toEqual([...bodies].sort());
+    const requestExecs = scripts.slice(before).filter((script) => !script.includes("ignore="));
+    // One write per request, each also removing its request file; no size,
+    // read or separate remove execs.
+    expect(requestExecs.filter((script) => script.includes("response_path=") && script.includes("remove_path="))).toHaveLength(5);
+    expect(requestExecs.filter((script) => !script.includes("response_path="))).toEqual([]);
+    await expect(readdir(directories.requestsDir).then((entries) => entries.filter((entry) => entry.endsWith(".json"))))
+      .resolves.toEqual([]);
+  });
+
   it("rejects non-JSON request bodies and full queues at the bridge server", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-server-guards-"));
     cleanupDirs.push(rootDir);

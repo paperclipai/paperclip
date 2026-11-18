@@ -117,6 +117,16 @@ const SANDBOX_BLOCKING_WAIT_PROVIDER_KEYS: ReadonlySet<string> = new Set(["kuber
 export function sandboxProviderSupportsBlockingBridgeWait(providerKey: string | null | undefined): boolean {
   return typeof providerKey === "string" && SANDBOX_BLOCKING_WAIT_PROVIDER_KEYS.has(providerKey);
 }
+// TECH-8174: the wait exec returns small request envelopes inline, so a
+// request needs no separate size and read execs. Bodies above the per-file
+// limit, and files listed after the exec's base64 output passed its budget,
+// take the old read path. The budget bounds one exec's output at about 1 MB.
+const BRIDGE_INLINE_REQUEST_MAX_BYTES = 32 * 1024;
+const BRIDGE_INLINE_OUTPUT_BUDGET_BYTES = 1024 * 1024;
+// An inline body is a snapshot from the listing. Use it only this soon after
+// the listing; later the worker re-reads the file, as before, so a request
+// whose caller gave up (the gateway deletes its file) is still skipped.
+const BRIDGE_INLINE_REQUEST_FRESH_MS = 2_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 export const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -429,6 +439,13 @@ export interface SandboxCallbackBridgeDirectories {
   logFile: string;
 }
 
+export interface SandboxCallbackBridgeWaitResult {
+  // The same sorted listing `listJsonFiles` returns.
+  files: string[];
+  // File name to its whole content, for the small files the client inlined.
+  inline?: ReadonlyMap<string, string>;
+}
+
 export interface SandboxCallbackBridgeQueueClient {
   makeDir(remotePath: string): Promise<void>;
   // Optional batched directory create. The built-in clients create every
@@ -443,20 +460,32 @@ export interface SandboxCallbackBridgeQueueClient {
   // covers a whole idle window instead of one exec per poll interval. A client
   // without it keeps the list-and-sleep loop. The command-managed client adds
   // it only when created with `waitInSandbox: true`.
+  //
+  // With `inlineMaxBytes` (TECH-8174) the client may also return the content of
+  // listed files that are not in `ignore`, so the worker needs no separate
+  // size and read execs for a small request. A file is inlined only when its
+  // whole content fits in `inlineMaxBytes`; any other file is only listed, and
+  // the worker reads it the usual way. A client may ignore the option and
+  // return a plain listing.
   waitForJsonFiles?(
     remotePath: string,
-    options: { waitMs: number; ignore?: readonly string[] },
-  ): Promise<string[]>;
+    options: { waitMs: number; ignore?: readonly string[]; inlineMaxBytes?: number },
+  ): Promise<string[] | SandboxCallbackBridgeWaitResult>;
   fileSize?(remotePath: string): Promise<number>;
   readTextFile(remotePath: string, maxBytes?: number): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
+  // `removeRequestPath` (TECH-8174): also delete this request file in the same
+  // operation, after the response decision (written, or not written because
+  // the request is gone or already answered). A client that did so returns
+  // `removedRequest: true`; otherwise the worker removes the file itself.
   writeResponseFile?(
     responsePath: string,
     body: string,
     options?: {
       requestPath?: string | null;
+      removeRequestPath?: string | null;
     },
-  ): Promise<{ wrote: boolean }>;
+  ): Promise<{ wrote: boolean; removedRequest?: boolean }>;
   rename(fromPath: string, toPath: string): Promise<void>;
   remove(remotePath: string): Promise<void>;
 }
@@ -831,6 +860,59 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .sort((left, right) => left.localeCompare(right));
+  // The wait exec's listing with inline bodies (TECH-8174). Uses `$dir` and
+  // `$ignore` from the wait script. Each file is one `F <name>` line (listed
+  // only), or a `B <name>` line, its first `maxBytes + 1` bytes in base64 and a
+  // `.` line. The host inlines a body only when it decodes to 1..maxBytes
+  // bytes, so an oversized file, a file that vanished (empty output) or a
+  // frame cut short falls back to the normal read. Once the base64 output
+  // passes the budget, the remaining files are only listed.
+  const inlineListScript = (maxBytes: number) => [
+    "if [ -d \"$dir\" ]; then",
+    "  total=0",
+    "  for file in \"$dir\"/*.json; do",
+    "    [ -f \"$file\" ] || continue",
+    "    name=${file##*/}",
+    "    case \"$ignore\" in *\" $name \"*) printf 'F %s\\n' \"$name\"; continue ;; esac",
+    `    if [ "$total" -ge ${BRIDGE_INLINE_OUTPUT_BUDGET_BYTES} ]; then printf 'F %s\\n' "$name"; continue; fi`,
+    `    body=$(head -c ${maxBytes + 1} "$file" 2>/dev/null | base64)`,
+    "    total=$((total + ${#body}))",
+    "    printf 'B %s\\n%s\\n.\\n' \"$name\" \"$body\"",
+    "  done",
+    "fi",
+  ];
+  const parseInlineListing = (stdout: string, maxBytes: number): SandboxCallbackBridgeWaitResult => {
+    const files: string[] = [];
+    const inline = new Map<string, string>();
+    let current: string | null = null;
+    let chunks: string[] = [];
+    for (const rawLine of stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (current !== null) {
+        if (line !== ".") {
+          chunks.push(line);
+          continue;
+        }
+        const encoded = chunks.join("");
+        if (/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+          const bytes = Buffer.from(encoded, "base64");
+          if (bytes.length > 0 && bytes.length <= maxBytes) inline.set(current, bytes.toString("utf8"));
+        }
+        current = null;
+        chunks = [];
+        continue;
+      }
+      const name = line.slice(2).trim();
+      if (name.length === 0) continue;
+      if (line.startsWith("F ")) {
+        files.push(name);
+      } else if (line.startsWith("B ")) {
+        files.push(name);
+        current = name;
+      }
+    }
+    return { files: files.sort((left, right) => left.localeCompare(right)), inline };
+  };
 
   return {
     makeDir: async (remotePath) => {
@@ -860,6 +942,7 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       const waitMs = Math.max(0, Math.min(Math.trunc(options.waitMs), Math.floor(timeoutMs / 2)));
       const rounds = Math.floor(waitMs / BRIDGE_IN_SANDBOX_WAIT_STEP_MS);
       const ignore = ` ${(options.ignore ?? []).join(" ")} `;
+      const inlineMaxBytes = Math.max(0, Math.trunc(options.inlineMaxBytes ?? 0));
       const result = await runShell(
         input.runner,
         input.remoteCwd,
@@ -882,13 +965,13 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
           // and never spins.
           `  if sleep ${BRIDGE_IN_SANDBOX_WAIT_STEP_MS / 1000} 2>/dev/null; then n=$((n + 1)); else sleep 1; n=$((n + ${Math.round(1000 / BRIDGE_IN_SANDBOX_WAIT_STEP_MS)})); fi`,
           "done",
-          ...listScript(remotePath),
+          ...(inlineMaxBytes > 0 ? inlineListScript(inlineMaxBytes) : listScript(remotePath)),
         ].join("\n"),
         timeoutMs,
         shellCommand,
       );
       requireSuccessfulResult(`wait for ${remotePath}`, result);
-      return parseListing(result.stdout);
+      return inlineMaxBytes > 0 ? parseInlineListing(result.stdout, inlineMaxBytes) : parseListing(result.stdout);
     },
     fileSize: async (remotePath) => {
       const result = await runChecked(`size ${remotePath}`, `wc -c < ${shellQuote(remotePath)}`);
@@ -951,6 +1034,18 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       const tempPath = `${responsePath}.tmp`;
       const lockDir = `${responsePath}.paperclip-write.lock`;
       const requestPath = options.requestPath?.trim() || "";
+      // TECH-8174: fold the request removal into this exec. Kubernetes only
+      // (the same gate as the in-sandbox wait), so every other provider keeps
+      // its exact command sequence. The removal never fails the write: a
+      // failed `rm` reports `removed:false` and the worker removes the file
+      // itself.
+      const removePath = input.waitInSandbox === true ? options.removeRequestPath?.trim() || "" : "";
+      const finish = (wrote: boolean) => removePath
+        ? [
+            "if rm -f \"$remove_path\" 2>/dev/null; then removed=true; else removed=false; fi",
+            `printf '{"wrote":${wrote},"removed":%s}\\n' "$removed"`,
+          ]
+        : [`printf '{"wrote":${wrote}}\\n'`];
       const result = await runShell(
         input.runner,
         input.remoteCwd,
@@ -961,22 +1056,23 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
           `temp_path=${shellQuote(tempPath)}`,
           `lock_dir=${shellQuote(lockDir)}`,
           `request_path=${shellQuote(requestPath)}`,
+          ...(removePath ? [`remove_path=${shellQuote(removePath)}`] : []),
           "mkdir -p \"$response_dir\"",
           ...buildRemotePidLockAcquireScript("\"$lock_dir\"", "Timed out acquiring sandbox callback bridge response lock."),
           ...buildRemotePidLockCleanupScript("\"$lock_dir\"", [
             "rm -f \"$temp_path\"",
           ]),
           "if [ -n \"$request_path\" ] && [ ! -f \"$request_path\" ]; then",
-          "  printf '{\"wrote\":false}\\n'",
+          ...finish(false).map((line) => `  ${line}`),
           "  exit 0",
           "fi",
           "if [ -f \"$response_path\" ]; then",
-          "  printf '{\"wrote\":false}\\n'",
+          ...finish(false).map((line) => `  ${line}`),
           "  exit 0",
           "fi",
           "cat > \"$temp_path\"",
           "mv \"$temp_path\" \"$response_path\"",
-          "printf '{\"wrote\":true}\\n'",
+          ...finish(true),
         ].join("\n"),
         timeoutMs,
         shellCommand,
@@ -984,8 +1080,10 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
       );
       requireSuccessfulResult(`write bridge response ${responsePath}`, result);
       try {
+        const parsed = JSON.parse(result.stdout.trim());
         return {
-          wrote: JSON.parse(result.stdout.trim())?.wrote === true,
+          wrote: parsed?.wrote === true,
+          ...(removePath ? { removedRequest: parsed?.removed === true } : {}),
         };
       } catch (error) {
         throw new Error(
@@ -1051,15 +1149,22 @@ async function writeBridgeResponse(
   responsePath: string,
   response: SandboxCallbackBridgeResponse,
   options: { requireRequestPath?: boolean } = {},
-) {
+): Promise<{ removedRequest: boolean }> {
   const body = `${JSON.stringify(response)}\n`;
   if (client.writeResponseFile) {
-    await client.writeResponseFile(responsePath, body, options.requireRequestPath === false ? {} : { requestPath });
-    return;
+    // Ask the client to remove the request file in the same operation
+    // (TECH-8174). A client that does not report the removal leaves it to the
+    // caller.
+    const result = await client.writeResponseFile(responsePath, body, {
+      ...(options.requireRequestPath === false ? {} : { requestPath }),
+      removeRequestPath: requestPath,
+    });
+    return { removedRequest: result?.removedRequest === true };
   }
   const tempPath = `${responsePath}.tmp`;
   await client.writeTextFile(tempPath, body);
   await client.rename(tempPath, responsePath);
+  return { removedRequest: false };
 }
 
 export async function startSandboxCallbackBridgeWorker(input: {
@@ -1254,14 +1359,57 @@ export async function startSandboxCallbackBridgeWorker(input: {
     cancelWait?: () => void;
   };
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
+  // Request files that already got a terminal response (TECH-8174). The
+  // response write also removes the request file, but the removal can fail or
+  // be lost with the exec result, and the attempt drops its guard when it ends. A file listed again after that
+  // must never run its handler a second time, so the worker owns a request
+  // from its first attempt until a listing that started after the answer no
+  // longer shows the file. Such a file is not processed, not waited on, gets
+  // no drain 503, and its removal is retried. Request ids are fresh UUIDs, so
+  // a name never comes back once the file is gone. The value is the answer's
+  // sequence number, so "started after the answer" does not depend on the
+  // clock's resolution.
+  const answeredFiles = new Map<string, number>();
+  let answerSeq = 0;
+  const markAnswered = (fileName: string) => {
+    answerSeq += 1;
+    answeredFiles.set(fileName, answerSeq);
+  };
+  const removeRequestFile = async (fileName: string) => {
+    await withTimeout(
+      input.client.remove(path.posix.join(directories.requestsDir, fileName)),
+      iterationTimeoutMs,
+      `Sandbox callback bridge remove answered request ${fileName}`,
+    ).catch(() => undefined);
+  };
+  // Reconcile the answered set with a listing that started when `answerSeq`
+  // was `seqAtListStart`. The removal retry runs in the background, one at a
+  // time per file, so a hung channel never holds up the poll loop.
+  const removingAnswered = new Set<string>();
+  const reconcileAnsweredFiles = (fileNames: readonly string[], seqAtListStart: number) => {
+    if (answeredFiles.size === 0) return;
+    const listed = new Set(fileNames);
+    for (const [fileName, seq] of [...answeredFiles]) {
+      if (seq > seqAtListStart) continue;
+      if (!listed.has(fileName)) {
+        answeredFiles.delete(fileName);
+      } else if (!inFlightRequestGuards.has(fileName) && !removingAnswered.has(fileName)) {
+        removingAnswered.add(fileName);
+        void removeRequestFile(fileName).finally(() => removingAnswered.delete(fileName));
+      }
+    }
+  };
 
-  const processRequestFile = async (fileName: string) => {
+  // `inlineBody` is the request envelope the wait exec returned with the
+  // listing (TECH-8174), and when it was listed.
+  const processRequestFile = async (fileName: string, inlineBody?: { raw: string; listedAt: number }) => {
     // Skip a request that already has an active attempt. The guard map holds only
     // in-flight attempts; the attempt's finally removes its guard when it ends. A
     // file that still has a guard is in flight, or it waits for its aborted-handler
     // 504 backstop. A second attempt would register a new guard and re-run the host
-    // mutation, so the mutation could apply twice.
-    if (inFlightRequestGuards.has(fileName)) {
+    // mutation, so the mutation could apply twice. A file that already got its
+    // terminal response is skipped for the same reason.
+    if (inFlightRequestGuards.has(fileName) || answeredFiles.has(fileName)) {
       return;
     }
     const requestPath = path.posix.join(directories.requestsDir, fileName);
@@ -1345,12 +1493,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let lastWriteError = "Sandbox callback bridge could not write the handler response.";
       for (let attempt = 1; attempt <= MAX_BACKSTOP_WRITE_ATTEMPTS; attempt += 1) {
         try {
-          await withTimeout(
+          const { removedRequest } = await withTimeout(
             writeBridgeResponse(input.client, requestPath, responsePath, response),
             iterationTimeoutMs,
             `Sandbox callback bridge write response for ${response.id}`,
           );
-          await input.client.remove(requestPath).catch(() => undefined);
+          markAnswered(fileName);
+          if (!removedRequest) await input.client.remove(requestPath).catch(() => undefined);
           return;
         } catch (error) {
           lastWriteError = error instanceof Error ? error.message : String(error);
@@ -1377,12 +1526,22 @@ export async function startSandboxCallbackBridgeWorker(input: {
         armSequentialTimer();
         releaseIntake = await intakeLane.acquire();
       }
+      // A fresh inline body from the wait exec replaces the size and read
+      // execs (TECH-8174). A stale one is dropped: the read below then sees a
+      // file the gateway removed for a caller that gave up. This bounds the
+      // snapshot-to-handler window at the freshness limit, like the old
+      // read-to-handler window.
+      const inlineRaw = inlineBody && Date.now() - inlineBody.listedAt <= BRIDGE_INLINE_REQUEST_FRESH_MS
+        ? inlineBody.raw
+        : undefined;
       // Bound the read and its encoded/parsed copies before allocating. Built-in
       // clients stat first so a high configured file limit does not reserve that
       // whole limit for a tiny request. Older clients use the conservative cap.
-      const envelopeBytes = input.client.fileSize
-        ? await input.client.fileSize(requestPath).catch(() => maxEnvelopeBytes)
-        : maxEnvelopeBytes;
+      const envelopeBytes = inlineRaw !== undefined
+        ? Buffer.byteLength(inlineRaw)
+        : input.client.fileSize
+          ? await input.client.fileSize(requestPath).catch(() => maxEnvelopeBytes)
+          : maxEnvelopeBytes;
       if (envelopeBytes > maxEnvelopeBytes) {
         await finalize({
           id: fileName.replace(/\.json$/i, ""), status: 413,
@@ -1403,7 +1562,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       let raw: string;
       try {
-        raw = await input.client.readTextFile(requestPath, readLimit);
+        raw = inlineRaw ?? await input.client.readTextFile(requestPath, readLimit);
       } catch (error) {
         // The gateway deletes a request file when its caller stops waiting
         // (client-side timeout cleanup). A read that fails because the file is
@@ -1625,7 +1784,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
     const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
     for (let attempt = 1; attempt <= MAX_BACKSTOP_WRITE_ATTEMPTS; attempt += 1) {
       try {
-        await withTimeout(
+        const { removedRequest } = await withTimeout(
           writeBridgeResponse(input.client, requestPath, responsePath, {
             id: requestId,
             status: 504,
@@ -1642,8 +1801,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
           `Sandbox callback bridge write 504 backstop for ${requestId}`,
         );
         // The 504 backstop reached the caller. Remove the request file, so the
-        // poll loop does not list it again and re-run the mutation.
-        await input.client.remove(requestPath).catch(() => undefined);
+        // poll loop does not list it again and re-run the mutation. The
+        // answered mark covers a removal that failed.
+        markAnswered(fileName);
+        if (!removedRequest) await input.client.remove(requestPath).catch(() => undefined);
         return;
       } catch (error) {
         console.warn(
@@ -1735,6 +1896,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
     ).catch(() => [] as string[]);
     for (const fileName of fileNames) {
       const guard = inFlightRequestGuards.get(fileName);
+      if (answeredFiles.has(fileName)) {
+        // The request already got its terminal response; only its removal was
+        // lost. A 503 now could overwrite nothing useful and would only leave
+        // a stray response file. Retry the removal instead.
+        await removeRequestFile(fileName);
+        continue;
+      }
       if (guard?.route && options.abandonInFlight) {
         // A route request runs under its own deadline, not the sequential
         // lane's timeout or the watchdog. The recovery pass leaves it alone.
@@ -1793,10 +1961,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
       // request is unclaimed or abandoned, so its host mutation never ran; a later
       // 503 stays exactly-once.
       let wrote503 = false;
+      let removedRequest = false;
       let lastWriteError = "Sandbox callback bridge could not write the recovery 503.";
       for (let attempt = 1; attempt <= MAX_BACKSTOP_WRITE_ATTEMPTS; attempt += 1) {
         try {
-          await withTimeout(
+          ({ removedRequest } = await withTimeout(
             writeBridgeResponse(input.client, requestPath, responsePath, {
               id: responseId,
               status: 503,
@@ -1808,7 +1977,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
             }),
             iterationTimeoutMs,
             `Sandbox callback bridge write 503 for ${requestId}`,
-          );
+          ));
           wrote503 = true;
           break;
         } catch (error) {
@@ -1823,8 +1992,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
       }
       if (wrote503) {
         // The 503 landed. Remove the request file, so the poll loop does not
-        // re-process it.
-        await input.client.remove(requestPath).catch(() => undefined);
+        // re-process it. The answered mark covers a removal that failed.
+        markAnswered(fileName);
+        if (!removedRequest) await input.client.remove(requestPath).catch(() => undefined);
       } else {
         // Every 503 write failed. Keep the request file for a later recovery pass.
         console.warn(
@@ -1872,14 +2042,14 @@ export async function startSandboxCallbackBridgeWorker(input: {
   // its timers and lane slots, so the poll loop keeps serving other requests
   // while a slow route runs. Each attempt runs under the same run-parent span as
   // the sequential path.
-  const startRequestAttempt = (fileName: string) => {
+  const startRequestAttempt = (fileName: string, inlineBody?: { raw: string; listedAt: number }) => {
     dispatchedFiles.add(fileName);
     inFlight += 1;
     const task: Promise<void> = Promise.resolve().then(async () => {
       try {
         await (input.runtimeSpan
-          ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () => processRequestFile(fileName))
-          : runWithRuntimeParent(input.getRuntimeParentContext?.(), () => processRequestFile(fileName)));
+          ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () => processRequestFile(fileName, inlineBody))
+          : runWithRuntimeParent(input.getRuntimeParentContext?.(), () => processRequestFile(fileName, inlineBody)));
       } catch (error) {
         await recoverFromRequestFailure(error);
       } finally {
@@ -1979,25 +2149,33 @@ export async function startSandboxCallbackBridgeWorker(input: {
       let consecutivePollFailures = 0;
       while (true) {
         let fileNames: string[];
+        // Request bodies the wait exec returned with the listing (TECH-8174).
+        let inline: ReadonlyMap<string, string> | undefined;
         // Wait in the sandbox while the run is live. During the stop drain use
         // plain listings, so the drain timing stays exactly as before.
         // After a failed iteration, probe with plain listings until one
         // succeeds, so recovery and the watchdog behave as before.
         const waiting = idleWaitMs > 0 && !stopping && consecutivePollFailures === 0;
         const listStartedAt = Date.now();
+        const seqAtListStart = answerSeq;
         try {
           if (waiting && input.client.waitForJsonFiles) {
             // Files that already have an attempt stay in the queue until their
             // response is written. Ignore them, or the wait returns at once.
-            const ignore = [...new Set([...inFlightRequestGuards.keys(), ...dispatchedFiles])];
+            // Answered files are skipped too until their removal shows.
+            const ignore = [...new Set([...inFlightRequestGuards.keys(), ...dispatchedFiles, ...answeredFiles.keys()])];
             // The exec gets the same overhead budget as a plain listing on top
             // of the wait window.
             const waitCall = withTimeout(
-              input.client.waitForJsonFiles(directories.requestsDir, { waitMs: idleWaitMs, ignore }),
+              input.client.waitForJsonFiles(directories.requestsDir, {
+                waitMs: idleWaitMs,
+                ignore,
+                inlineMaxBytes: Math.min(BRIDGE_INLINE_REQUEST_MAX_BYTES, maxEnvelopeBytes),
+              }),
               idleWaitMs + iterationTimeoutMs,
               "Sandbox callback bridge wait for requests",
             );
-            const woke = await new Promise<string[] | null>((resolve, reject) => {
+            const woke = await new Promise<string[] | SandboxCallbackBridgeWaitResult | null>((resolve, reject) => {
               wakeForStop = () => resolve(null);
               waitCall.then(resolve, reject);
             }).finally(() => {
@@ -2009,7 +2187,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
               waitCall.catch(() => undefined);
               continue;
             }
-            fileNames = woke;
+            if (Array.isArray(woke)) {
+              fileNames = woke;
+            } else {
+              fileNames = woke.files;
+              inline = woke.inline;
+            }
           } else {
             fileNames = await withTimeout(
               input.client.listJsonFiles(directories.requestsDir),
@@ -2045,8 +2228,11 @@ export async function startSandboxCallbackBridgeWorker(input: {
         // an exec storm against a real sandbox channel, and with an in-memory
         // client a pure-microtask loop that starves every timer in the process
         // (including the guard's own backstop and abort timers).
+        const listedAt = Date.now();
+        // Forget answered files that are gone, retry the removal of the rest.
+        reconcileAnsweredFiles(fileNames, seqAtListStart);
         const actionableFileNames = fileNames.filter(
-          (fileName) => !inFlightRequestGuards.has(fileName) && !dispatchedFiles.has(fileName),
+          (fileName) => !inFlightRequestGuards.has(fileName) && !dispatchedFiles.has(fileName) && !answeredFiles.has(fileName),
         );
         if (actionableFileNames.length === 0) {
           lastSuccessfulIterationAt = Date.now();
@@ -2062,10 +2248,21 @@ export async function startSandboxCallbackBridgeWorker(input: {
           }
           continue;
         }
+        let startedThisPass = 0;
         for (const fileName of actionableFileNames) {
           if (stopping && Date.now() >= stopDeadline) break;
+          const inlineRaw = inline?.get(fileName);
+          const inlineBody = inlineRaw === undefined ? undefined : { raw: inlineRaw, listedAt };
+          // The sequential pass went on long enough that this listing's
+          // bodies are stale. List again instead of reading each remaining
+          // file: the next wait returns at once with fresh bodies, one exec
+          // for the rest of the batch. Order is kept: the listing is sorted.
+          // Never break before the first request of a pass, so every pass
+          // makes progress (that one falls back to the normal read).
+          if (!tracked && inlineBody && startedThisPass > 0 && Date.now() - listedAt > BRIDGE_INLINE_REQUEST_FRESH_MS) break;
+          startedThisPass += 1;
           if (tracked) {
-            startRequestAttempt(fileName);
+            startRequestAttempt(fileName, inlineBody);
             continue;
           }
           inFlight += 1;
@@ -2082,10 +2279,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
             await withTimeout(
               input.runtimeSpan
                 ? input.runtimeSpan(CALLBACK_BRIDGE_RELAY_REQUEST_SPAN, () =>
-                    processRequestFile(fileName),
+                    processRequestFile(fileName, inlineBody),
                   )
                 : runWithRuntimeParent(input.getRuntimeParentContext?.(), () =>
-                    processRequestFile(fileName),
+                    processRequestFile(fileName, inlineBody),
                   ),
               iterationTimeoutMs,
               `Sandbox callback bridge process request ${fileName}`,
