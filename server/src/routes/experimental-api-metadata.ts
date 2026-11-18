@@ -63,6 +63,20 @@ export const experimentalApiMetadata: Record<string, { successStatuses: number[]
     "boardOnly": false,
     "source": "server/src/routes/cases.ts"
   },
+  "PUT /api/cases/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/cases.ts"
+  },
+  "DELETE /api/cases/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/cases.ts"
+  },
   "PUT /api/cases/{id}/documents/{key}": {
     "successStatuses": [
       200
