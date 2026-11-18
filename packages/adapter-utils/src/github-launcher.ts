@@ -20,9 +20,13 @@ if (process.env.PAPERCLIP_GITHUB_OPERATION_ACTIVE) {
 const directory = path.dirname(fs.realpathSync(process.argv[1]));
 const program = path.basename(process.argv[1]);
 const originalPath = (process.env.PATH || '').split(path.delimiter).filter(p => {
+  if (process.platform === 'win32' ? !path.win32.isAbsolute(p) : !path.isAbsolute(p)) return false;
   try { return fs.realpathSync(p) !== directory; } catch { return true; }
 });
-const executable = originalPath.map(p => path.join(p, program)).find(p => {
+const extensions = process.platform === 'win32'
+  ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(ext => /^\.[a-z0-9]+$/i.test(ext))
+  : [''];
+const executable = originalPath.flatMap(p => extensions.map(ext => path.join(p, program + ext))).find(p => {
   try { fs.accessSync(p, fs.constants.X_OK); return fs.statSync(p).isFile(); } catch { return false; }
 });
 if (!['git', 'gh'].includes(program) || !executable) {
@@ -49,6 +53,31 @@ const connectorRepositoryTools = new Map([['create', 'create_repository'], ['new
 function connectorRepositoryTool(args) {
   if (program !== 'gh' || args[0] !== 'repo' || args.includes('--help') || args.includes('-h')) return null;
   return connectorRepositoryTools.get(args[1]) || null;
+}
+const cmdMeta = /([()\][%!^"\x60<>&|;, *?])/g;
+function cmdQuote(arg) {
+  let quoted = String(arg).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
+  quoted = ('"' + quoted + '"').replace(cmdMeta, '^$1');
+  return quoted.replace(cmdMeta, '^$1');
+}
+function spawnResolved(file, args, env) {
+  if (process.platform !== 'win32' || !/\.(bat|cmd)$/i.test(file)) {
+    return spawn(file, args, { env, stdio: 'inherit' });
+  }
+  if (args.some(arg => /[\r\n\0]/.test(arg))) {
+    process.stderr.write('Paperclip: GitHub batch_argument_rejected; line breaks cannot be passed to a batch file.\n');
+    process.exitCode = 1;
+    return null;
+  }
+  const root = [env.SystemRoot, env.SYSTEMROOT].find(value => value && path.win32.isAbsolute(value)) || 'C:\\Windows';
+  const shell = path.win32.join(root, 'System32', 'cmd.exe');
+  const line = [file.replace(cmdMeta, '^$1'), ...args.map(cmdQuote)].join(' ');
+  if (line.length + 2 > 8191) {
+    process.stderr.write('Paperclip: GitHub batch_command_too_long; the arguments exceed the cmd.exe line limit.\n');
+    process.exitCode = 1;
+    return null;
+  }
+  return spawn(shell, ['/d', '/s', '/v:off', '/c', '"' + line + '"'], { env, stdio: 'inherit', windowsVerbatimArguments: true });
 }
 async function main() {
   let env = { ...process.env };
@@ -85,7 +114,7 @@ ${options.brokerFile ? String.raw`
   } catch { diagnostic('configuration_directory_unavailable'); }
   {
     for (const key of Object.keys(env)) {
-      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/.test(key)) delete env[key];
+      if (/^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*)$/i.test(key)) delete env[key];
     }
     Object.assign(env, {
       GH_CONFIG_DIR: configDirectory, SSH_AUTH_SOCK: '',
@@ -166,7 +195,8 @@ ${options.brokerFile ? String.raw`
   env.ZDOTDIR = configDirectory;
   env.BASH_ENV = '/dev/null';
   env.GIT_SSH_COMMAND = 'ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=none -o BatchMode=yes';
-  const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
+  const child = spawnResolved(executable, process.argv.slice(2), env);
+  if (!child) return;
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
   child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
@@ -178,7 +208,10 @@ main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_fail
 /** Override inherited credentials even when adapters merge the host environment later. */
 export function githubBrokerEnvironment(input: Record<string, unknown>, broker: { url: string; token: string }): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(input)) if (typeof value === "string") env[key] = value;
+  const credential = /^(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_AUTHOR_.*|GIT_COMMITTER_.*|GIT_CONFIG_.*|GIT_ASKPASS|SSH_ASKPASS|SSH_AUTH_SOCK|GIT_SSH.*|PAPERCLIP_GITHUB_OPERATION_ACTIVE)$/i;
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "string" && !(credential.test(key) && key !== key.toUpperCase())) env[key] = value;
+  }
   for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_COUNT", "PAPERCLIP_GITHUB_OPERATION_ACTIVE"]) env[key] = "";
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) env[key] = "";

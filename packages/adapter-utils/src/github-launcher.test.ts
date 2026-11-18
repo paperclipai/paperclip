@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -439,4 +439,111 @@ it("captures the current task broker file once per invocation and never falls ba
   await rm(path.join(bin, "broker.json"));
   expect((await run()).stdout).toBe("anonymous");
   expect(captured).toEqual(["Bearer first-run", "Bearer next-run"]);
+});
+
+describe.runIf(process.platform === "win32")("managed GitHub launchers on Windows", () => {
+  async function windowsFixture() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-windows-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), first = path.join(root, "first"), second = path.join(root, "second");
+    for (const dir of [managed, first, second]) await mkdir(dir);
+    await writeFile(path.join(managed, "gh"), githubLauncherSource());
+    const argv = path.join(root, "argv.cjs");
+    await writeFile(argv, "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN || null }))");
+    const env: NodeJS.ProcessEnv = { ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
+      GH_CONFIG_DIR: path.join(root, "config"),
+      PATH: [managed, first, second, path.join(process.env.SystemRoot ?? "C:\\Windows", "System32")].join(path.delimiter) };
+    delete env.PAPERCLIP_GITHUB_OPERATION_ACTIVE;
+    const gh = (...args: string[]) => exec(process.execPath, [path.join(managed, "gh"), ...args], { env, cwd: root, timeout: 20_000 });
+    const forwarder = `@echo off\r\n"${process.execPath}" "${argv}" %*\r\n`;
+    return { root, first, second, gh, forwarder, env };
+  }
+
+  it.each(["gh.cmd", "gh.CMD", "gh.bat", "gh.BAT"])("runs a %s tool and passes harmless arguments", async file => {
+    const { first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, file), forwarder);
+    const result = await gh("--version");
+    expect(JSON.parse(result.stdout)).toEqual({ args: ["--version"], token: null });
+    expect(result.stderr).not.toContain("launcher_setup_failed");
+  });
+
+  it("discards relative PATH entries instead of executing a tool planted in the working directory", async () => {
+    const { root, first, gh, env } = await windowsFixture();
+    await writeFile(path.join(root, "gh.cmd"), "@echo off\r\necho planted\r\n");
+    await writeFile(path.join(first, "gh.cmd"), "@echo off\r\necho trusted\r\n");
+    for (const entry of ["", ".", "relative"]) {
+      env.PATH = [entry, first].join(path.delimiter);
+      expect((await gh()).stdout.trim()).toBe("trusted");
+    }
+  });
+
+  it("removes mixed-case inherited credentials before running a batch tool", async () => {
+    const { first, gh, env } = await windowsFixture();
+    env.Gh_Token = "fake-host-token";
+    env.git_askpass = "fake-host-askpass";
+    await writeFile(path.join(first, "gh.cmd"), "@echo off\r\nset GH_TOKEN\r\nset GIT_ASKPASS\r\nexit /b 0\r\n");
+    const output = (await gh()).stdout;
+    expect(output).not.toContain("fake-host-token");
+    expect(output).not.toContain("fake-host-askpass");
+    const filtered = githubBrokerEnvironment({ Gh_Token: "fake", git_askpass: "fake" }, { url: "", token: "" });
+    expect(filtered).not.toHaveProperty("Gh_Token");
+    expect(filtered).not.toHaveProperty("git_askpass");
+  });
+
+  it("follows PATH order before PATHEXT order", async () => {
+    const { first, second, gh } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), "@echo off\r\necho first-cmd\r\n");
+    await writeFile(path.join(second, "gh.bat"), "@echo off\r\necho second-bat\r\n");
+    expect((await gh()).stdout.trim()).toBe("first-cmd");
+    await writeFile(path.join(first, "gh.bat"), "@echo off\r\necho first-bat\r\n");
+    expect((await gh()).stdout.trim()).toBe("first-bat");
+  });
+
+  it("passes cmd.exe metacharacters to a batch tool as data, never as commands", async () => {
+    const { root, first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    const marker = path.join(root, "injected.txt");
+    const args = ["plain", "a b", "", " ", `x&echo injected>${marker}`, "|", "a|b", "<in", ">out", "(", ")", "^", "^^",
+      "%PATH%", "%%", "!PATH!", "\"", "\"\"", "q\"uote", "\\", "trail\\", "trail\\\\", "\\\"",
+      `a\\"&echo injected>${marker}&\\"`, `"&echo injected>${marker}&"`, "*", "?", "a,b", "a;b", "a=b", "%~dp0", "%1", "%*", "ünicode-ação"];
+    expect(JSON.parse((await gh(...args)).stdout).args).toEqual(args);
+    await expect(readFile(marker)).rejects.toThrow();
+  });
+
+  it("keeps arguments as data when the batch tool enables delayed expansion itself", async () => {
+    const { root, first, gh } = await windowsFixture();
+    const argv = path.join(root, "argv.cjs");
+    await writeFile(path.join(first, "gh.cmd"),
+      `@echo off\r\nsetlocal EnableDelayedExpansion\r\n"${process.execPath}" "${argv}" %*\r\n`);
+    const marker = path.join(root, "injected.txt");
+    const args = ["plain", `!x!&echo injected>${marker}`, `x&echo injected>${marker}`,
+      `"&echo injected>${marker}&"`, "^!", "|", "%PATH%"];
+    expect(JSON.parse((await gh(...args)).stdout).args).toEqual(["plain", `&echo injected>${marker}`,
+      `x&echo injected>${marker}`, `"&echo injected>${marker}&"`, "!", "|", "%PATH%"]);
+    await expect(readFile(marker)).rejects.toThrow();
+  });
+
+  it("refuses line breaks for batch tools instead of letting cmd.exe split them", async () => {
+    const { first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    await expect(gh("line\nbreak")).rejects.toMatchObject({ code: 1, stdout: "",
+      stderr: expect.stringContaining("batch_argument_rejected") });
+  });
+
+  it("refuses arguments that would overflow the cmd.exe command line", async () => {
+    const { first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    await expect(gh("x".repeat(9000))).rejects.toMatchObject({ code: 1, stdout: "",
+      stderr: expect.stringContaining("batch_command_too_long") });
+  });
+
+  it.each(["."])("never resolves cmd.exe from a %j SystemRoot", async systemRoot => {
+    const { root, first, gh, forwarder, env } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    await mkdir(path.join(root, systemRoot, "System32"), { recursive: true });
+    await copyFile(process.execPath, path.join(root, systemRoot, "System32", "cmd.exe"));
+    for (const key of Object.keys(env)) if (key.toLowerCase() === "systemroot") delete env[key];
+    env.SystemRoot = systemRoot;
+    expect(JSON.parse((await gh("safe")).stdout).args).toEqual(["safe"]);
+  });
 });
