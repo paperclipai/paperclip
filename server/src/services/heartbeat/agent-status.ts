@@ -5,6 +5,7 @@ import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../../telemetry.js";
+import { withTelemetryCompany } from "../../telemetry-company-scope.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { publishLiveEvent } from "../live-events.js";
 import { finishedIdleRun, finishedIdleWake, finishedFailedIdleLease } from "../idle-work-proof.js";
@@ -116,7 +117,7 @@ export function createHeartbeatAgentStatus(db: Db) {
     if (!result?.updated) return;
     if (result.isFirstHeartbeat) {
       const client = getTelemetryClient();
-      if (client) trackAgentFirstHeartbeat(client, { agentRole: result.updated.role, agentId: result.updated.id });
+      if (client) withTelemetryCompany(result.updated.companyId, () => trackAgentFirstHeartbeat(client, { agentRole: result.updated.role, agentId: result.updated.id }));
     }
     publishStatus(result.updated, outcome);
   }

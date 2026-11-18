@@ -5,7 +5,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { trackAgentTaskRun, trackCompanyImported, trackRoutineCreated } from "@paperclipai/shared/telemetry";
+import { trackAgentTaskRun, trackCompanyImported, trackRoutineCreated, trackRoutineRun } from "@paperclipai/shared/telemetry";
 
 const hoisted = vi.hoisted(() => ({ instanceRoot: "", posthogNodeLoads: 0 }));
 
@@ -31,6 +31,7 @@ import {
   capturePostHogEventContext,
   postHogRequestContextMiddlewareForEnv,
 } from "../services/posthog-direct/request-context.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { serverVersion } from "../version.js";
 
 const COLLECTOR = "http://collector.test/ingest";
@@ -118,6 +119,44 @@ describe("server telemetry sender selection", () => {
         batchId: parsed.batchId,
       }),
     );
+  });
+
+  it("self-hosted: a background company scope leaves the collector envelope byte-identical", async () => {
+    const client = initTelemetry({ enabled: true }, { env: {} })!;
+    await withTelemetryCompany("company-bg", async () => {
+      await Promise.resolve();
+      trackAgentTaskRun(client, { agentId: "agent-1", state: "succeeded" });
+      trackRoutineRun(client, { source: "schedule", status: "issue_created" });
+    });
+    await shutdownTelemetry();
+
+    expect(hoisted.posthogNodeLoads).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = String((fetchMock.mock.calls[0]![1] as RequestInit).body);
+    const parsed = JSON.parse(body);
+    expect(body).toBe(
+      JSON.stringify({
+        app: "paperclip",
+        schemaVersion: "1",
+        installId: readState().installId,
+        version: serverVersion,
+        events: [
+          { name: "server.started", occurredAt: parsed.events[0].occurredAt, dimensions: { os_platform: process.platform } },
+          {
+            name: "agent.task_run",
+            occurredAt: parsed.events[1].occurredAt,
+            dimensions: { agent_id: "agent-1", state: "succeeded" },
+          },
+          {
+            name: "routine.run",
+            occurredAt: parsed.events[2].occurredAt,
+            dimensions: { source: "schedule", status: "issue_created" },
+          },
+        ],
+        batchId: parsed.batchId,
+      }),
+    );
+    expect(body).not.toContain("company");
   });
 
   it("self-hosted: ignores posthog-js tracing headers", async () => {
@@ -344,5 +383,53 @@ describe("server telemetry sender selection", () => {
     const routine = posthog.captured.find((message) => message.event === "routine.created")!;
     expect(routine.distinctId).toBe("workspace:stack-123");
     expect(routine.properties).not.toHaveProperty("$session_id");
+  });
+
+  it("Cloud: background events carry the company in scope", async () => {
+    const posthog = fakePostHog();
+    const client = initTelemetry({ enabled: true }, { env: CLOUD_ENV, postHogFactory: posthog.factory })!;
+    await withTelemetryCompany("company-bg", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      trackAgentTaskRun(client, { agentId: "agent-1", state: "succeeded" });
+    });
+    withTelemetryCompany("company-bg", () => trackRoutineRun(client, { source: "schedule", status: "issue_created" }));
+    trackRoutineCreated(client);
+    await shutdownTelemetry();
+
+    const run = posthog.captured.find((message) => message.event === "agent.task_run")!;
+    expect(run.distinctId).toBe("workspace:stack-123");
+    expect(run.properties).toMatchObject({ company_id: "company-bg", stack_id: "stack-123", $process_person_profile: false });
+    expect(run.properties).not.toHaveProperty("user_id");
+    const routineRun = posthog.captured.find((message) => message.event === "routine.run")!;
+    expect(routineRun.properties).toMatchObject({ company_id: "company-bg", stack_id: "stack-123" });
+    const unscoped = posthog.captured.find((message) => message.event === "routine.created")!;
+    expect(unscoped.properties).not.toHaveProperty("company_id");
+  });
+
+  it("Cloud: a live request's company wins over a background company scope", async () => {
+    const posthog = fakePostHog();
+    initTelemetry({ enabled: true }, { env: CLOUD_ENV, postHogFactory: posthog.factory });
+    const app = express();
+    app.use(postHogRequestContextMiddlewareForEnv(CLOUD_ENV)!);
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "user-1", source: "session" };
+      next();
+    });
+    app.post("/companies/:companyId/routines", (_req, res) => {
+      withTelemetryCompany("company-bg", () => trackRoutineCreated(getTelemetryClient()!));
+      res.json({});
+    });
+    app.post("/runs", (_req, res) => {
+      withTelemetryCompany("company-bg", () => trackRoutineCreated(getTelemetryClient()!));
+      res.json({});
+    });
+    await request(app).post("/companies/company-9/routines").expect(200);
+    await request(app).post("/runs").expect(200);
+    await shutdownTelemetry();
+
+    const routines = posthog.captured.filter((message) => message.event === "routine.created");
+    expect(routines).toHaveLength(2);
+    expect(routines[0]!.properties).toMatchObject({ company_id: "company-9", user_id: "user-1" });
+    expect(routines[1]!.properties).toMatchObject({ company_id: "company-bg", user_id: "user-1" });
   });
 });

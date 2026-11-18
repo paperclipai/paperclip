@@ -9,6 +9,43 @@ const issue = {
 };
 
 describe("heartbeat task markdown rendering", () => {
+  it("tells agents on ordinary tasks when to offer a routine, only while routine offers are enabled", () => {
+    for (const nativeRunner of [true, false]) {
+      const markdown = buildPaperclipTaskMarkdown({ issue, nativeRunner, routineSuggestionsEnabled: true })!;
+      expect(markdown).toContain("Routine offer:");
+      expect(markdown).toContain("POST /api/issues/task-1/routine-suggestions");
+      expect(markdown).toContain("Do not offer for one-off work");
+      expect(markdown).toContain("just before finish_task");
+      expect(buildPaperclipTaskMarkdown({ issue, nativeRunner })).not.toContain("Routine offer:");
+    }
+    // Chats, Ask and Plan work are not repeatable task completions.
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId: "agent-1" }, routineSuggestionsEnabled: true }))
+      .not.toContain("Routine offer:");
+    for (const workMode of ["ask", "planning"]) {
+      expect(buildPaperclipTaskMarkdown({ issue: { ...issue, workMode }, routineSuggestionsEnabled: true })).not.toContain("Routine offer:");
+    }
+  });
+
+  it("carries signup context and proposal boundaries into every onboarding chat turn, greeting only on arrival", () => {
+    const input = { issue: { ...issue, conversationAgentId: "agent", description: '{"initialIdea":"Launch a newsletter"}' },
+      nativeRunner: true, coordinatorWorkspace: true, onboardingChat: true };
+    const greeting = buildPaperclipTaskMarkdown({ ...input, onboardingGreeting: true });
+    expect(greeting).toContain("Welcome turn:");
+    expect(greeting).toContain("so it streams to the user");
+    for (const includeDescription of [true, false]) {
+      const followup = buildPaperclipTaskMarkdown({ ...input, includeDescription });
+      expect(followup).toContain("Launch a newsletter");
+      expect(followup).toContain("concrete goal and clear exit criteria");
+      expect(followup).toContain("begin a structured interview only when they request");
+      expect(followup).toContain('interactionKind: "suggest_tasks"');
+      expect(followup).toContain("acceptance creates the task atomically");
+      expect(followup).toContain("omit projectId from the suggestion");
+      expect(followup).not.toContain("Coordinator task proposals:");
+      expect(followup).toContain("An explicit task-creation request authorizes creating it directly");
+      expect(followup).not.toContain("Welcome turn:");
+    }
+    expect(buildPaperclipTaskMarkdown({ issue })).not.toContain("Onboarding conversation:");
+  });
   it.each([true, false])("keeps native task clarification in the current task on full and resumed assignments (description=%s)", (includeDescription) => {
     const markdown = buildPaperclipTaskMarkdown({
       issue: { ...issue, description: "Write a blog post about our launch." },

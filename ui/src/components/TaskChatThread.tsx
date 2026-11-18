@@ -489,6 +489,14 @@ function durableInputLabel(
     return interaction.title ?? "Review items";
   if (interaction.kind === "connection_intent")
     return interaction.title ?? "Connect service";
+  if (interaction.kind === "suggest_routine")
+    return interaction.title ?? "Routine offer";
+  if (interaction.kind === "propose_responsibility_bar")
+    return interaction.title ?? "Proposed bar";
+  if (interaction.kind === "propose_automation")
+    return interaction.title ?? "Proposed automation";
+  if (interaction.kind === "propose_dashboard_changes")
+    return interaction.title ?? "Proposed dashboard changes";
   if (
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan"
@@ -1401,8 +1409,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         continue;
       }
       const createdAtMs = toMs(interaction.createdAt);
+      // A routine offer follows the same run's completion message even when
+      // the agent made it before that message was saved.
       const handoffAtMs =
-        interaction.kind === "request_confirmation" && interaction.sourceRunId
+        (interaction.kind === "request_confirmation" || interaction.kind === "suggest_routine"
+          || interaction.kind === "propose_responsibility_bar" || interaction.kind === "propose_automation"
+          || interaction.kind === "propose_dashboard_changes") && interaction.sourceRunId
           ? latestSameRunHandoffTimestamp({
               interactionCreatedAtMs: createdAtMs,
               sourceRunId: interaction.sourceRunId,
@@ -2787,6 +2799,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         (interaction) =>
           interaction.status === "pending" &&
           interaction.kind !== "connection_intent" &&
+          interaction.kind !== "suggest_routine" &&
+          // A proposed bar stays in the conversation; the agent does not wait on it.
+          interaction.kind !== "propose_responsibility_bar" &&
+          // Nor does a proposed automation.
+          interaction.kind !== "propose_automation" &&
+          // Nor do proposed dashboard changes.
+          interaction.kind !== "propose_dashboard_changes" &&
           !(coordinatorEnabled && interaction.kind === "suggest_tasks") &&
           !shouldHideInteractionCard(interaction),
       )

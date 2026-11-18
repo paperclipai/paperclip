@@ -102,12 +102,6 @@ vi.mock("./AgentContextualSidebar", () => ({
   ),
 }));
 
-vi.mock("./RoutineContextualSidebar", () => ({
-  RoutineContextualSidebar: ({ routineId }: { routineId: string }) => (
-    <div>Routine sidebar {routineId}</div>
-  ),
-}));
-
 vi.mock("./SkillsContextualSidebar", () => ({
   SkillsContextualSidebar: () => <div>Skills sidebar</div>,
 }));
@@ -885,7 +879,7 @@ describe("Layout", () => {
     });
   });
 
-  it("keeps global navigation beside Agent and Routine details", async () => {
+  it("keeps global navigation beside Agent details", async () => {
     async function renderAt(pathname: string) {
       currentPathname = pathname;
       const root = createRoot(container);
@@ -907,7 +901,6 @@ describe("Layout", () => {
         "/PAP/agents/briefing-analyst/runs/run-1",
         "Agent sidebar briefing-analyst",
       ],
-      ["/PAP/routines/routine-1/overview", "Routine sidebar routine-1"],
     ] as const) {
       const root = await renderAt(pathname);
       expect(container.textContent).toContain(sidebarText);
@@ -957,7 +950,7 @@ describe("Layout", () => {
       expect(container.textContent).toContain("Main company nav");
       if (pathname.includes("/agents/")) expect(container.textContent).toContain("Agent sidebar");
       else expect(container.textContent).not.toContain("Agent sidebar");
-      expect(container.textContent).not.toContain("Routine sidebar");
+      if (pathname.includes("/routines/")) expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
 
       await act(async () => {
         root.unmount();
@@ -1027,7 +1020,7 @@ describe("Layout", () => {
 
       expect(container.textContent).toContain("Main company nav");
       expect(container.textContent).not.toContain("Agent sidebar");
-      expect(container.textContent).not.toContain("Routine sidebar");
+      if (pathname.includes("/routines/")) expect(container.querySelector("[data-secondary-sidebar]")).toBeNull();
 
       await act(async () => {
         root.unmount();

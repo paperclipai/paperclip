@@ -18,6 +18,7 @@ import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
+import { registerIssueDocumentBatchRoute } from "./issue-document-batch.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
 import { listIssueNavigationState, listIssueSummaries } from "../services/issue-summaries.js";
@@ -25,8 +26,8 @@ import { listIssueStatusBlockerAttention } from "../services/issue-status-presen
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
-import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
-import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
+import { recordChildTaskRead, recordChildTaskReads } from "../services/native-runtime/native-child-completion-delivery.js";
+import { recordCompletedHandoffRead, recordCompletedHandoffReads } from "../services/chat-completion-delivery.js";
 import { recordDeclinedInteractionRead } from "../services/chat-interaction-outcome-report.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
@@ -207,6 +208,7 @@ import {
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
@@ -11446,6 +11448,18 @@ export function issueRoutes(
     },
   );
 
+  registerIssueDocumentBatchRoute(router, db, {
+    filterReadable: filterIssuesForActor,
+    recordReads: async (req, issues) => {
+      if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) return;
+      const input = { companyId: req.params.companyId as string, agentId: req.actor.agentId, runId: req.actor.runId };
+      await recordCompletedHandoffReads(db, { ...input, tasks: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the completed handoffs a run read"));
+      await recordChildTaskReads(db, { ...input, children: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the child tasks a run read"));
+    },
+  });
+
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(
@@ -16691,13 +16705,13 @@ export function issueRoutes(
               typeof actorAgent.adapterConfig?.model === "string"
                 ? actorAgent.adapterConfig.model
                 : undefined;
-            trackAgentTaskCompleted(tc, {
+            withTelemetryCompany(issue.companyId, () => trackAgentTaskCompleted(tc, {
               agentRole: actorAgent.role,
               agentId: actorAgent.id,
               adapterType: actorAgent.adapterType,
               model,
               taskId: issue.id,
-            });
+            }));
           }
         }
       }
@@ -19904,7 +19918,7 @@ export function issueRoutes(
         return;
       }
       const issue = await svc.create(companyId, {
-        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        title: `Chat with ${agent.name}`, generateConversationTitle: true, assigneeAgentId: agent.id,
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
         conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
       });

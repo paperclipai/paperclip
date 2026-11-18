@@ -155,7 +155,7 @@ import {
       ).toBe(false);
       expect(
         (
-          await issueService(db).list(companyId, { q: results[0].identifier! })
+          await issueService(db).list(companyId, { q: results[0].title })
         ).some((issue) => issue.id === results[0].id),
       ).toBe(true);
       expect(
@@ -1051,6 +1051,13 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("an empty history means no earlier text is retained");
     expect(AGENT_CHAT_DIRECTIVE).toContain("do not reconstruct it from the current file, its wording, or the activity log");
     expect(AGENT_CHAT_DIRECTIVE).toContain("say plainly that no earlier version was saved, and ask the person for the text they want");
+  });
+
+  it("uses the company prefix for links in an unnumbered standing chat", () => {
+    const prompt = buildPaperclipTaskMarkdown({ companyPrefix: "BOB", coordinatorWorkspace: true,
+      issue: { id: "chat", identifier: null, title: "Chat", workMode: "standard", conversationAgentId: "agent" } });
+    expect(prompt).toContain("/BOB/agents/");
+    expect(prompt).not.toContain("/<prefix>/");
   });
 
   it("points chat at the teams catalog for ready-made teams and stops the search there", () => {
