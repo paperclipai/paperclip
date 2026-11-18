@@ -150,8 +150,17 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     actor: ActorInfo | undefined,
     options: { forceRefresh?: boolean },
   ): Promise<Record<string, string>> {
-    // The same grant the gateway uses (the default organization grant for a shared connection), so both share one cached token.
-    const grant = await vaultGrantForConnection(connection, actor);
+    // The same grant the gateway uses, so both share one cached token and a shared connection never reads
+    // a personal key: a shared connection uses only its active default organization grant.
+    const grant = connection.credentialPolicy === "shared"
+      ? (await db.select().from(connectionGrants).where(and(
+          eq(connectionGrants.companyId, connection.companyId),
+          eq(connectionGrants.connectionId, connection.id),
+          eq(connectionGrants.kind, "organization"),
+          eq(connectionGrants.isDefault, true),
+          eq(connectionGrants.status, "active"),
+        )).limit(1))[0] ?? null
+      : await vaultGrantForConnection(connection, actor);
     try {
       return await resolveAwsMcpAuthorization({
         minter: awsMcpMinter, connection, grant, forceRefresh: options.forceRefresh,

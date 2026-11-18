@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, companyMemberships, createDb, toolConnections } from "@paperclipai/db";
+import { agents, companies, companyMemberships, connectionGrants, createDb, toolConnections } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
@@ -133,6 +133,28 @@ describe("AWS connector with minted credentials", () => {
     expect(aws.createMcpToken.mock.calls.length).toBe(mintsBefore + 1);
     expect(await call()).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
     expect(requests.at(-1)!.headers.get("authorization")).not.toBe(lastAuthorization);
+  });
+
+  it("a shared connection never reads a personal grant's keys", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAwsConnector: true });
+    const { org } = await company();
+    const { service, aws } = harness();
+    const connected = await service.connectGalleryApp(org.id, {
+      galleryKey: "aws", connectionMethodKey: "aws-access-key",
+      configValues: { endpointRegion: "us-east-1", accessLevel: "full" },
+      credentialValues: { "credentials.accessKeyId": ACCESS_KEY_ID, "credentials.secretAccessKey": SECRET_ACCESS_KEY },
+    }, actor);
+    const [organization] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    // A leftover personal grant for the same person, with refs that are not the organization's keys.
+    await db.insert(connectionGrants).values({
+      companyId: org.id, connectionId: connected.connectionId, kind: "user", subjectUserId: actor.actorId, status: "active",
+      credentialSecretRefs: [{ secretId: randomUUID(), versionSelector: "latest", configPath: "credentials.accessKeyId" }],
+    });
+    await service.checkHealth(connected.connectionId, actor);
+    expect(aws.createMcpToken).toHaveBeenLastCalledWith(expect.objectContaining({
+      credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+    }));
+    expect(organization!.kind).toBe("organization");
   });
 
   it("access key: a personal connection reads its owner's keys", async () => {
