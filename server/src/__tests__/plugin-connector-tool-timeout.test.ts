@@ -134,6 +134,15 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(f.workers.calls.at(-1)).toMatchObject({ timeoutMs: 6_000 });
   });
 
+  it("prefers an explicit caller timeout below the declared value", async () => {
+    const f = await setup(pluginManifestV1Schema.parse(slowManifest({ timeoutMs: 30_000 })) as PaperclipPluginManifestV1);
+    const { buildReport } = await connectReports(f);
+    const call = await settleAfter(f, () => f.gateway.executeTool({ sessionToken: f.token, tool: buildReport.name, parameters: {},
+      timeoutMs: 5_000, idempotencyKey: randomUUID() }), 5_000);
+    expect(call).toMatchObject(timedOut);
+    expect(f.workers.calls.at(-1)).toMatchObject({ timeoutMs: 6_000 });
+  });
+
   it("waits 30 s for plugin tools that declare no timeout", async () => {
     const f = await setup(pluginManifestV1Schema.parse(slowManifest()) as PaperclipPluginManifestV1);
     const { buildReport } = await connectReports(f);

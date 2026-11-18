@@ -115,6 +115,11 @@ export function pluginConnectionToolTimeoutMs(
   return tool?.timeoutMs ?? method?.timeoutMs ?? PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS;
 }
 
+// The gateway enforces the tool deadline itself; the worker RPC gets this much
+// longer so the gateway's tool_timeout always fires first and callers see one
+// consistent error. The worker protocol has no cancellation, so a timed-out
+// call can still finish in the worker: write tools must be idempotent on the
+// gateway idempotency key, as they already are for any connector.
 const PLUGIN_CONNECTOR_RPC_GRACE_MS = 1_000;
 
 /**
