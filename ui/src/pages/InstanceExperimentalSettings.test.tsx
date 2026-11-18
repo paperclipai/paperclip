@@ -97,6 +97,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
     enableGoogleWorkspaceConnector: false,
+    enableAwsConnector: false,
     enablePaperclipNotebook: false,
     enableCases: false,
     enableAgentChat: false,
@@ -112,6 +113,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableBetaSkills: false,
     enableSummaries: false,
     enableStatusCards: false,
+    enableResponsibilities: false,
     enableDecisions: false,
     enableFastResponses: false,
     enableGoalsSidebarLink: false,
@@ -280,18 +282,10 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(container.textContent).not.toContain("MCP aggregators");
   });
 
-  it("defaults assistant connections off and persists an explicit toggle in both directions", async () => {
+  it("does not offer an assistant connections toggle now that the feature is always on", async () => {
     await renderPage();
-    const selector = 'button[aria-label="Toggle assistant connections experimental setting"]';
-    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("work already delegated continues");
-    for (const enabled of [true, false]) {
-      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
-      await flushReact();
-      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enablePublicMcp: enabled });
-      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
-      expect(Boolean(container.querySelector('a[href="/BUT/apps/assistant-connection"]'))).toBe(enabled);
-    }
+    expect(container.querySelector('button[aria-label="Toggle assistant connections experimental setting"]')).toBeNull();
+    expect(container.textContent).not.toContain("Assistant connections (MCP)");
   });
 
   it("saves the personal Muse opt-in separately and names independent readiness evidence", async () => {
@@ -309,7 +303,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
     const selector = 'button[aria-label="Toggle OpenAI Dot experimental setting"]';
     expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL");
+    expect(container.textContent).toContain("Requires an authenticated instance with a public HTTPS URL");
     for (const enabled of [true, false]) {
       await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
       await flushReact();

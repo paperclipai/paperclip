@@ -7,6 +7,10 @@ import { accountingForScheduledRetry, executionFailureRetryCount } from "../exec
 import { NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_CONTINUATION_DELAY_MS, NATIVE_TOOL_RECEIPT_LIMIT_HINT,
   NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS, NATIVE_TOOL_RECEIPT_LIMIT_MESSAGE, nativeRunHasStopRequest } from "./native-tool-receipt-limit.js";
+import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_HINT, NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES, NATIVE_ENVIRONMENT_BLOCKER_MESSAGE,
+  NATIVE_ENVIRONMENT_BLOCKER_RETRY_DELAY_MS } from "./native-environment-blocker.js";
+import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_CONTINUATION_DELAY_MS, NATIVE_AGENT_BLOCKER_HINT,
+  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MESSAGE } from "./native-agent-blocker.js";
 import { NativeStatusRaceError } from "./status-decision-committer.js";
 
 type NativeRetryTarget = {
@@ -53,6 +57,40 @@ export async function materializeNativeToolReceiptLimitContinuation(input: Nativ
       livenessContinuationSourceRunId: run.id,
       livenessContinuationReason: NATIVE_TOOL_RECEIPT_LIMIT_CODE,
       livenessContinuationInstruction: NATIVE_TOOL_RECEIPT_LIMIT_HINT,
+    }),
+  });
+}
+
+export async function materializeNativeEnvironmentBlockerRetry(input: NativeRetryTarget) {
+  return materializeNativeFreshSessionRetry(input, {
+    reason: NATIVE_ENVIRONMENT_BLOCKER_CODE,
+    maxRetries: NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES,
+    delayMs: attempt => NATIVE_ENVIRONMENT_BLOCKER_RETRY_DELAY_MS * 2 ** (attempt - 1),
+    message: NATIVE_ENVIRONMENT_BLOCKER_MESSAGE,
+    idempotencyPrefix: "native-environment-blocker",
+    exhaustedError: "native_environment_blocker_retry_exhausted",
+    refuseStopped: true,
+    context: run => ({
+      livenessContinuationSourceRunId: run.id,
+      livenessContinuationReason: NATIVE_ENVIRONMENT_BLOCKER_CODE,
+      livenessContinuationInstruction: NATIVE_ENVIRONMENT_BLOCKER_HINT,
+    }),
+  });
+}
+
+export async function materializeNativeAgentBlockerContinuation(input: NativeRetryTarget) {
+  return materializeNativeFreshSessionRetry(input, {
+    reason: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
+    maxRetries: NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS,
+    delayMs: () => NATIVE_AGENT_BLOCKER_CONTINUATION_DELAY_MS,
+    message: NATIVE_AGENT_BLOCKER_MESSAGE,
+    idempotencyPrefix: "native-agent-blocker",
+    exhaustedError: "native_agent_blocker_continuation_exhausted",
+    refuseStopped: true,
+    context: run => ({
+      livenessContinuationSourceRunId: run.id,
+      livenessContinuationReason: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
+      livenessContinuationInstruction: NATIVE_AGENT_BLOCKER_HINT,
     }),
   });
 }

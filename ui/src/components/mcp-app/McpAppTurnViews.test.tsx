@@ -32,9 +32,9 @@ class FakeIntersectionObserver {
   takeRecords() { return []; }
 }
 
-async function render(count: number) {
+async function render(input: number | McpAppViewSummary[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(queryKeys.mcpApps.views("issue-1"), views(count));
+  client.setQueryData(queryKeys.mcpApps.views("issue-1"), typeof input === "number" ? views(input) : input);
   const container = document.createElement("div");
   const root = createRoot(container);
   await act(async () => root.render(
@@ -52,6 +52,38 @@ afterEach(() => {
 });
 
 describe("McpAppTurnViews", () => {
+  const identityViews = (): McpAppViewSummary[] => views(4).map((view) => ({
+    ...view,
+    id: `profile-${view.id}`,
+    applicationName: "GitHub",
+    toolName: "mcp.github:get-me",
+    upstreamToolName: "get_me",
+    resourceUri: "ui://github-mcp-server/get-me",
+  }));
+
+  it("renders no cards or documents for repeated saved GitHub identity lookups", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const { container, root } = await render(identityViews());
+    expect(container.childElementCount).toBe(0);
+    expect(observers).toHaveLength(0);
+    expect(detail).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
+  it("counts only visible widgets toward the per-run limit", async () => {
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+    const { container, root } = await render([...identityViews(), ...views(7)]);
+    expect(container.querySelectorAll("[data-testid=mcp-app-turn-view]")).toHaveLength(5);
+    expect(container.textContent).not.toContain("Get me");
+    const more = [...container.querySelectorAll("button")].find((button) => button.textContent === "Show 2 more");
+    expect(more).toBeTruthy();
+    await act(async () => more!.click());
+    expect(container.querySelectorAll("[data-testid=mcp-app-turn-view]")).toHaveLength(7);
+    expect(container.textContent).not.toContain("Get me");
+    expect(detail).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it("loads a view's document only when it nears the viewport", async () => {
     vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
     vi.stubGlobal("navigation", { addEventListener: () => undefined });

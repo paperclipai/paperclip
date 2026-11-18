@@ -85,6 +85,7 @@ export interface RunLogStore {
   recordVerifiedSourcePrefix?(handle: RunLogHandle, sourceCursor: number): Promise<void>;
   finalize(handle: RunLogHandle, options?: { computeDigest?: boolean }): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  remove?(handle: RunLogHandle, signal?: AbortSignal): Promise<void>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
   // in-flight mirror is not enabled.
@@ -494,6 +495,14 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       };
     },
 
+    async remove(handle, signal) {
+      if (handle.store !== "local_file") throw new Error("Invalid local run log backend");
+      signal?.throwIfAborted();
+      await retireInflightMirror(handle.logRef);
+      await fs.rm(resolveWithin(basePath, handle.logRef), { force: true });
+      if (s3) await s3.provider.deleteObject({ objectKey: s3Key(handle.logRef), signal });
+    },
+
     async flushInflightMirrors() {
       if (!s3 || inflightMirrorMs <= 0) return;
       const flushEntry = async (logRef: string, entry: InflightMirrorEntry) => {
@@ -558,20 +567,13 @@ export function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
   };
 }
 
-let cachedStore: RunLogStore | null = null;
+export function runLogBaseRef(handle: RunLogHandle): string {
+  const base = handle.store === "local_file" ? handle.logRef.replace(/\.ndjson$/, "") : handle.logRef.replace(/\.archive$/, "");
+  if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(base)) throw new Error("Invalid run log reference");
+  return base;
+}
 
-export function getRunLogStore() {
-  if (cachedStore) return cachedStore;
-  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  const local = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
-  const s3 = resolveRunEvidenceStorage();
-  const external = s3 ? createObjectRunLogStore({
-    provider: s3.provider, keyPrefix: s3.keyPrefix || "run-logs",
-    assertWriterAuthority: async input => {
-      if (!input.assertWriterAuthority) throw new Error("Object run logs require admitted writer authority");
-      await input.assertWriterAuthority();
-    },
-  }) : null;
+export function composeRunLogStore(local: RunLogStore, external: RunLogStore | null): RunLogStore {
   const writer = external ?? local;
   function writable(handle: RunLogHandle) {
     if (handle.store === "s3_archive") throw new Error("Historical run log archives are read-only");
@@ -579,7 +581,7 @@ export function getRunLogStore() {
     if (!external) throw new Error("Object run log storage is not configured");
     return external;
   }
-  cachedStore = {
+  return {
     begin: input => {
       if (input.previousStore === "s3_archive") throw new Error("Historical run log archives are read-only");
       if (input.previousStore === "local_file") return local.begin(input);
@@ -603,8 +605,36 @@ export function getRunLogStore() {
       }
       return local.read(handle, opts);
     },
+    remove: async (handle, signal) => {
+      if (!local.remove) throw new Error("Run log removal is unavailable");
+      const base = runLogBaseRef(handle);
+      if (external?.remove) {
+        await external.remove({ store: "s3_segments", logRef: base }, signal);
+        await external.remove({ store: "s3_archive", logRef: `${base}.archive` }, signal);
+      } else if (handle.store !== "local_file") {
+        throw new Error("Object run log storage is not configured");
+      }
+      await local.remove({ store: "local_file", logRef: `${base}.ndjson` }, signal);
+    },
     flushInflightMirrors: async () => { await Promise.all([local.flushInflightMirrors?.(), external?.flushInflightMirrors?.()]); },
   };
+}
+
+let cachedStore: RunLogStore | null = null;
+
+export function getRunLogStore() {
+  if (cachedStore) return cachedStore;
+  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+  const local = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const s3 = resolveRunEvidenceStorage();
+  const external = s3 ? createObjectRunLogStore({
+    provider: s3.provider, keyPrefix: s3.keyPrefix || "run-logs",
+    assertWriterAuthority: async input => {
+      if (!input.assertWriterAuthority) throw new Error("Object run logs require admitted writer authority");
+      await input.assertWriterAuthority();
+    },
+  }) : null;
+  cachedStore = composeRunLogStore(local, external);
   return cachedStore;
 }
 

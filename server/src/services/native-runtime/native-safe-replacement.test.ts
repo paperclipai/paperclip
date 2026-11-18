@@ -226,6 +226,74 @@ const support = externalDatabaseUrl
         }
       },
     );
+    it.each(["remote_sandbox", "remote_unconfirmed_action", "remote_completed_action", "remote_started_only_action",
+      "remote_failed_exit_action", "local_codex", "unknown_provider"] as const)(
+      "continues a transport failure whose stop can never be proven locally without waiting for a person (%s)",
+      async (mode) => {
+        const source = await seed();
+        const workspace = await mkdtemp(join(tmpdir(), "paperclip-remote-transport-"));
+        const remote = mode.startsWith("remote_");
+        try {
+          await db.update(heartbeatRuns).set({ finishedAt: new Date(), errorCode: "provider_transport_failed",
+            runnerProfileJson: mode === "unknown_provider" ? {} : { nativeExecutionInput: {
+              provider: { kind: remote ? "opencode" : "codex" }, workspace: { cwd: workspace } } } })
+            .where(eq(heartbeatRuns.id, source.runId));
+          await db.update(nativeRunFinalizations).set({ failureCode: "provider_transport_failed", failureDetail: {} })
+            .where(eq(nativeRunFinalizations.runId, source.runId));
+          if (remote) await db.insert(environmentLeases).values({ companyId: source.companyId,
+            issueId: source.issueId, heartbeatRunId: source.runId, provider: "fake-sandbox", providerLeaseId: "sandbox-1",
+            status: "released", releasedAt: new Date(), cleanupStatus: "success" });
+          if (mode === "remote_unconfirmed_action") await appendHeartbeatRunEvent(db, {
+            companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+            eventType: "tool.execution.started", stream: "system",
+            payload: { name: "send_email", executionId: "unconfirmed-send", transport: "mcp" },
+          });
+          if (mode === "remote_completed_action" || mode === "remote_started_only_action" || mode === "remote_failed_exit_action") {
+            const execution = { schema: "paperclip.tool.execution.v1", executionId: "prt_1e7c7089f001EN3I04Bfmz",
+              transport: "mcp", name: "send_email" };
+            await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+              eventType: "tool.execution.started", stream: "system",
+              payload: { prpEvent: { payload: { ...execution, status: "running" } } } });
+            if (mode !== "remote_started_only_action") await appendHeartbeatRunEvent(db, { companyId: source.companyId,
+              runId: source.runId, agentId: source.agentId, eventType: "tool.execution.completed", stream: "system",
+              payload: { prpEvent: { payload: { ...execution, status: "completed",
+                exitCode: mode === "remote_failed_exit_action" ? 1 : 0 } } } });
+          }
+          const verifyStoppedSession = vi.fn(async () => null);
+          invalidateNativeReplacementDiscovery(db);
+          await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+          const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+          const holds = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+          if (!remote) {
+            expect(verifyStoppedSession).toHaveBeenCalled();
+            expect(decision!.failureDetail?.replacementDenied).toBeUndefined();
+            expect(holds).toHaveLength(0);
+            return;
+          }
+          if (mode === "remote_unconfirmed_action" || mode === "remote_started_only_action" || mode === "remote_failed_exit_action") {
+            expect(decision!.failureDetail?.replacementDenied).toBe("uncertain_external_action");
+            expect(holds).toMatchObject([{ status: "active", cause: "uncertain_external_action",
+              nextAction: expect.stringContaining("send_email") }]);
+            expect(decision!.failureDetail?.unconfirmedActions).toEqual(["send_email"]);
+            await settleUnrecoverableExecutions(db);
+            const [continued] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+            expect(continued!.evidence).toMatchObject({ freshContinuation: { unverifiedActions: ["send_email"] },
+              executionReconciliation: { outcomeEvidence: expect.stringContaining("unverified outcomes: send_email") } });
+            return;
+          }
+          expect(decision!.failureDetail?.replacementDenied).toBe("provider_failure_meaning_unverified");
+          expect(decision!.failureDetail?.unconfirmedActions).toBeUndefined();
+          expect(holds).toMatchObject([{ status: "active", cause: "provider_failure_meaning_unverified" }]);
+          await settleUnrecoverableExecutions(db);
+          const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+          expect(settled).toMatchObject({ status: "resolved", outcome: "restored",
+            evidence: { freshContinuation: { trigger: "recovery_refused", sourceRunId: source.runId, unverifiedActions: [] },
+              continuationDelivery: "pending" } });
+        } finally {
+          await rm(workspace, { recursive: true, force: true });
+        }
+      },
+    );
     it("wakes a completed replacement scan after actual local stop proof commits", async () => {
       const source = await seed(2);
       const workspace = await mkdtemp(join(tmpdir(), "paperclip-late-stop-"));

@@ -201,6 +201,20 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
       executionTargetKind: "local" })).toMatchObject({ recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true });
   });
 
+  it("retries a fresh launch whose provider pack could not be verified, and holds a reattachment", async () => {
+    const fixture = await seed(), runId = randomUUID(), runnerInstanceId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: fixture.scope.issueId,
+      nativeSessionId: fixture.scope.normalizedSessionId, runnerInstanceId, status: "running", runtimeMode: "native" });
+    const bootstrap = { binding: { companyId, issueId: fixture.scope.issueId, runId }, transientIngressFailure: false,
+      identity: { runId, normalizedSessionId: fixture.scope.normalizedSessionId, runnerInstanceId,
+        environmentLeaseId: fixture.native.environmentLeaseId, turnId: `turn-${runId}`, itemId: `item-${runId}` } };
+    const evidence = (fresh: boolean) => nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: "remote",
+      sourceFailureCode: "runner_remote_provider_verification_unavailable", ...(fresh ? { bootstrap } : {}) });
+    expect(await evidence(true)).toMatchObject({ recoveryMode: "bootstrap_retry", providerSessionEstablished: false,
+      providerEventsExist: false, checkpointExists: false });
+    expect((await evidence(false)).recoveryMode).toBe("ambiguous_state");
+  });
+
   it("retries a remote follow-up whose own server stopped serving before its runner, carrying only the predecessor session", async () => {
     // Daytona wave s9203: a graceful drain closed the runtime API listener while
     // a follow-up was still preparing. Its only checkpoint was the settled

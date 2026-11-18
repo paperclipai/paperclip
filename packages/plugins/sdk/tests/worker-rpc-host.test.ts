@@ -1245,6 +1245,50 @@ describe("AI connection router RPC", () => {
   });
 });
 
+describe("plugin connector RPC", () => {
+  const connectorManifest = (tools: unknown) => ({ id: "fixture.connector", apiVersion: 1, version: "1.0.0", displayName: "Connector", description: "Fixture",
+    author: "Tests", categories: ["connector"], capabilities: ["connectors.provide"], entrypoints: {},
+    apps: [{ schemaVersion: 1, slug: "records", name: "Records", description: "Records", categories: ["data"], branding: { logoUrl: "/brands/apps/api-key-generic.svg" },
+      urlPatterns: [], methods: [{ key: "default", transport: "plugin", auth: "none", ownershipModes: ["customer"], whenToUse: "Use", guidanceMd: "Use", riskTier: "S1", tools }] }] });
+  async function host(setup: Parameters<typeof definePlugin>[0]["setup"]) {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const worker = startWorkerRpcHost({ plugin: definePlugin({ setup }), stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: unknown) => void>();
+    reader.on("line", line => { const response = parseMessage(line); if (isJsonRpcResponse(response)) { pending.get(String(response.id))?.(response); pending.delete(String(response.id)); } });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => { const id = String(++sequence); pending.set(id, value => resolve(value as JsonRpcResponse)); input.write(serializeMessage(createRequest(method, params, id))); });
+    return { call, stop: () => { worker.stop(); reader.close(); input.destroy(); output.destroy(); } };
+  }
+  const staticTools = { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] };
+
+  it("refuses to start when a declared static tool has no handler", async () => {
+    const worker = await host(async () => {});
+    try {
+      const initialized = await worker.call("initialize", { manifest: connectorManifest(staticTools), config: {}, databaseNamespace: null }) as { error?: { message: string } };
+      expect(initialized.error?.message).toContain('declares tool "lookup"');
+    } finally { worker.stop(); }
+  });
+
+  it("routes connector calls and tool lists to their handlers with the connection", async () => {
+    let received: unknown;
+    const worker = await host(async (ctx) => {
+      ctx.connectors.register("records", "lookup", async (params, runCtx) => { received = { params, runCtx }; return { content: "found" }; });
+      ctx.connectors.listTools("records", async (connection) => [{ name: `for_${connection.id}`, risk: "read", parametersSchema: { type: "object" } }]);
+    });
+    try {
+      expect((await worker.call("initialize", { manifest: connectorManifest(staticTools), config: {}, databaseNamespace: null }) as { error?: unknown }).error).toBeUndefined();
+      const connection = { id: "conn", appSlug: "records", methodKey: "default", grantId: "grant", settings: { region: "eu" } };
+      const runContext = { agentId: "agent", runId: "run", companyId: "company", projectId: "", connection };
+      expect((await worker.call("executeTool", { toolName: "lookup", appSlug: "records", parameters: { id: "1" }, runContext }) as { result: unknown }).result).toEqual({ content: "found" });
+      expect(received).toEqual({ params: { id: "1" }, runCtx: runContext });
+      expect((await worker.call("executeTool", { toolName: "lookup", appSlug: "records", parameters: {}, runContext: { ...runContext, connection: undefined } }) as { error?: unknown }).error).toBeTruthy();
+      expect((await worker.call("listConnectorTools", { companyId: "company", appSlug: "records", connection }) as { result: unknown }).result)
+        .toEqual({ tools: [{ name: "for_conn", risk: "read", parametersSchema: { type: "object" } }] });
+    } finally { worker.stop(); }
+  });
+});
+
 describe("Durable lifecycle inbox RPC", () => {
   it("sends company-scoped reads and acknowledgments through the worker SDK", async () => {
     const input = new PassThrough(), output = new PassThrough();

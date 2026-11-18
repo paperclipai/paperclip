@@ -12,7 +12,7 @@
  * (reported in the grade and ledger, never fails the task). The split comes
  * from the false-positive audit over saved waves; see README "Universal checks".
  */
-import { PREPARATION_LIMIT_MS } from "./grader.js";
+import { PREPARATION_LIMIT_MS, PROVIDER_TURN_LIMIT_MS } from "./grader.js";
 import type { RunSample, TaskRecord, TaskSample } from "./types.js";
 
 export type UniversalId = "U1" | "U2" | "U3" | "U4" | "U5";
@@ -138,7 +138,8 @@ export function liveOwner(sample: TaskSample, queuedFor: ReadonlyMap<string, num
     if (run.status === "running") {
       if (run.toolInFlight || run.processAlive) return `run ${run.id} running (tool or process alive)`;
       const evidence = Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0);
-      const silentLimit = run.preparing ? Math.max(bounds.silentRunMs, PREPARATION_LIMIT_MS) : bounds.silentRunMs;
+      const silentLimit = run.preparing ? Math.max(bounds.silentRunMs, PREPARATION_LIMIT_MS)
+        : run.providerTurnActive ? Math.max(bounds.silentRunMs, PROVIDER_TURN_LIMIT_MS) : bounds.silentRunMs;
       if (!evidence || sample.at - evidence <= silentLimit) return `run ${run.id} ${run.preparing ? "preparing" : "running"}`;
     }
     if (run.status === "queued" || run.status === "scheduled_retry") {

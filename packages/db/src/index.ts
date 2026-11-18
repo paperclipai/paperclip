@@ -1,5 +1,7 @@
 export {
   createDb,
+  databaseClientOptionsFromEnv,
+  type DatabaseClientOptions,
   withDedicatedDbConnection,
   closeDedicatedDbConnections,
   DEDICATED_CONNECTION_IDLE_MAX,

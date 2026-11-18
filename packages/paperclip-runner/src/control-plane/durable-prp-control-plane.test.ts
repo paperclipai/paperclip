@@ -202,6 +202,43 @@ it("proves a launched bootstrap never authenticated after its credentials were i
   } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
+it("resumes a checkpoint saved for the parked build on a relaunched newer build, across a restart before authentication", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-relaunched-build-cutover-"));
+  const relaunched = { version: "0.3.1", digest: `sha256:${"b".repeat(64)}` };
+  let checkpoint!: DurablePrpCheckpoint;
+  const parked = new DurablePrpControlPlane({ stateDirectory: resolve(root, "parked"), identity, expectedRunnerVersion, expectedRunnerDigest });
+  parked.setCheckpointPersistence(async value => { checkpoint = value; });
+  let claiming: DurablePrpControlPlane | undefined, restarted: DurablePrpControlPlane | undefined;
+  let client: AuthenticatedClient | null = null;
+  try {
+    parked.queueCommand("session.open", { reuse: "same_session" });
+    await parked.flushCheckpoint();
+    await parked.stop();
+    expect(checkpoint).toMatchObject({ runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest });
+    checkpoint.restoreSessionDirectory(resolve(root, "claiming"));
+    claiming = new DurablePrpControlPlane({ stateDirectory: resolve(root, "claiming", "control-plane"), identity,
+      expectedRunnerVersion: checkpoint.runnerVersion, expectedRunnerDigest: checkpoint.runnerDigest });
+    claiming.setCheckpointPersistence(async value => { checkpoint = value; });
+    const ticket = claiming.issueBootstrapTicket();
+    claiming.acceptRelaunchedRunner(ticket, relaunched);
+    await claiming.flushCheckpoint();
+    expect(checkpoint).toMatchObject({ runnerVersion: relaunched.version, runnerDigest: relaunched.digest });
+    await claiming.stop();
+    checkpoint.restoreSessionDirectory(resolve(root, "restarted"));
+    restarted = new DurablePrpControlPlane({ stateDirectory: resolve(root, "restarted", "control-plane"), identity,
+      expectedRunnerVersion: checkpoint.runnerVersion, expectedRunnerDigest: checkpoint.runnerDigest });
+    await restarted.start();
+    expect(await authenticate(restarted, ticket, identity, expectedRunnerDigest, undefined, false, 1, 0, expectedRunnerVersion)).toBeNull();
+    client = await authenticate(restarted, ticket, identity, relaunched.digest, undefined, false, 1, 0, relaunched.version);
+    expect(client).not.toBeNull();
+    expect(restarted.activeRunnerConnectionCount()).toBe(1);
+  } finally {
+    client?.socket.destroy();
+    await claiming?.stop(); await restarted?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it("hands the ticket refresh to the process owner for the first launch only", () => {
   const launches: RunnerProcessLaunchSpec[] = [];
   const refreshBootstrapTicket = vi.fn(async () => "fresh-ticket");
@@ -3189,6 +3226,7 @@ async function authenticate(
   withoutWarmCapability = false,
   protocolMax = 1,
   acknowledgedSourceSeq = 0,
+  runnerVersion = expectedRunnerVersion,
 ): Promise<AuthenticatedClient | null> {
   const { socket, reader } = await upgradeSocket(controlPlane.connectUrl);
   const material = credentialMaterial(token);
@@ -3196,6 +3234,7 @@ async function authenticate(
   (hello.payload as Record<string, unknown>).protocolMax = protocolMax;
   (hello.payload as Record<string, unknown>).resume = { ackedSourceSeq: acknowledgedSourceSeq, nextSourceEventSeq: acknowledgedSourceSeq + 1 };
   (hello.payload as Record<string, unknown>).runnerDigest = runnerDigest;
+  (hello.payload as Record<string, unknown>).runnerVersion = runnerVersion;
   if (warmTransitionId !== undefined)
     (hello.payload as Record<string, unknown>).warmTransitionId =
       warmTransitionId;

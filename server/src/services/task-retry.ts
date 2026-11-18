@@ -13,7 +13,6 @@ import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
 import { createSystemRecovery, readSystemRecovery, savedFilesUnrecoverable } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
-import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
 import { authorizationService } from "./authorization.js";
 import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
@@ -43,13 +42,11 @@ export async function taskRetryMutationAllowed(db: Db, input: {
   return permission.allowed;
 }
 
-export async function assertTaskRetryConversationAllowed(
-  db: Db,
+export function assertTaskRetryConversationAllowed(
   issue: { conversationAgentId?: string | null; conversationUserId?: string | null },
   actorId: string,
 ) {
   if (!issue.conversationAgentId) return;
-  if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
   if (issue.conversationUserId !== actorId) throw forbidden("Only the conversation owner can retry a chat run");
 }
 
@@ -296,7 +293,7 @@ function admitTaskRetry(input: TaskRetryRequest) {
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
       eq(issues.id, input.issueId))).for("update");
     if (!issue) throw notFound("Task not found");
-    await assertTaskRetryConversationAllowed(db, issue, input.actorId);
+    assertTaskRetryConversationAllowed(issue, input.actorId);
     const key = `task-retry:${input.idempotencyKey}`;
     const [sameRequest] = await tx.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.idempotencyKey, key)));
@@ -660,8 +657,7 @@ export async function reconcileTaskChatRetryReceipts(db: Db, scope: { companyId?
           requestId: wake.id, sourceRunId: intent.sourceRunId })) return "denied";
         if (!await taskRetryMutationAllowed(tx as unknown as Db, { companyId: wake.companyId, issueId,
           actorId: intent.actorId, actorSource: intent.actorSource })) return "denied";
-        if (issue.conversationAgentId && (issue.conversationUserId !== intent.actorId ||
-            !(await instanceSettingsService(tx as unknown as Db).getExperimental()).enableAgentChat)) return "denied";
+        if (issue.conversationAgentId && issue.conversationUserId !== intent.actorId) return "denied";
         if (adapterExecutionControls.has(intent.sourceRunId) ||
             await hasPendingRunCleanup(tx as unknown as Db, wake.companyId, intent.sourceRunId)) return "waiting";
         return "ready";

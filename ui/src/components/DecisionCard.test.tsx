@@ -9,6 +9,7 @@ import { DecisionCard, type DecisionIssueRef } from "./DecisionCard";
 import type { Decision, DecisionEffectExecution } from "../api/decisions";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 let container: HTMLDivElement | null = null;
 let root: Root | null = null;
@@ -317,5 +318,17 @@ describe("DecisionCard", () => {
     });
     expect(expired.textContent).toContain("target issues were completed");
     expect(expired.textContent).not.toContain("expiry deadline");
+  });
+});
+
+describe("DecisionCard session replay", () => {
+  it("keeps agent-written option labels, descriptions and field labels out of session replay", () => {
+    const el = render({ decision: mkDecision({
+      options: [{ id: "reply", label: "Reply to Globex renewal", description: "Draft answer to jane@globex.com", effects: [{ type: "comment_on_issue", targetIssueId: "issue-target", staleness: "lenient", bodyMarkdown: "nudge" }] }],
+      inputs: [{ id: "note", label: "Note for jane@globex.com", type: "text" }] as unknown as Decision["inputs"],
+    }) });
+    expect(replayLeaks("Reply to Globex renewal", el)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Draft answer to jane@globex.com", el)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Note for jane@globex.com", el)).toEqual({ rendered: true, recorded: false });
   });
 });

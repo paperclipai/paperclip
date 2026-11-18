@@ -1,4 +1,5 @@
 import { assertSupportedConnection } from "../connections/setup-policy.js";
+import { isAwsMcpConnection } from "../../connectors/aws/mcp-credentials.js";
 import { usesClientCredentials } from "../oauth/client-credentials.js";
 import { vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
@@ -8,7 +9,8 @@ import { oauthConfig } from "../oauth/metadata.js";
 import { projectedConnectionHeaders } from "../connection-methods.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
-import { GOOGLE_WORKSPACE_SERVICES, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, type GoogleWorkspaceService } from "@paperclipai/shared";
+import { listGoogleWorkspaceRest, probeGoogleWorkspaceRest } from "../../google-workspace-rest-dispatch.js";
+import { GOOGLE_WORKSPACE_SERVICES, GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, type GoogleWorkspaceService } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "../../connection-permission-errors.js";
 import { mcpDiscoveryHttpFailure, withMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { BROWSER_USE_TOOLS, MCP_SKILLS_EXTENSION_ID } from "@paperclipai/shared";
@@ -62,6 +64,9 @@ import type { OAuthCredentialStore } from "../oauth/credential-store.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import type { ToolRemoteHttp } from "../remote-http.js";
 import { normalizeToolDescriptor, type McpToolDescriptor } from "./descriptors.js";
+import { listPluginConnectionTools, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "../../plugin-connector-runtime.js";
+import { findPluginWorkerUnavailableError } from "../../plugin-worker-unavailable-error.js";
+import { resolveConnectionGrantSecret } from "../../connection-credentials.js";
 import { googleWorkspaceServicesUnavailable, unsupportedToolConnectionTransport } from "./failures.js";
 
 const URL_CREDENTIAL_PARAMETER = /token|secret|passw|api[-_]?key|^key$|auth|signature|^sig$|session|credential/i;
@@ -113,6 +118,34 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentials;
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercel;
   const { assertConnectorConnectionSetupEnabled } = setupPolicy;
+  async function googleWorkspaceRestTools(
+    connection: typeof toolConnections.$inferSelect,
+    service: GoogleWorkspaceService,
+    credentialHeaders: Record<string, string>,
+    grantedScopes: readonly string[],
+    actor?: ActorInfo,
+  ): Promise<McpToolDescriptor[]> {
+    const fetch = (url: string, init: RequestInit) => requestRemoteHttpEndpoint(new URL(url), init);
+    let probe = await probeGoogleWorkspaceRest({ service, credentialHeaders, grantedScopes, fetch });
+    if (!probe.ok && probe.authFailure === "unauthenticated"
+      && connection.authKind === "oauth" && connection.credentialSource === "paperclip_vault") {
+      const refreshed = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor, { forceRefresh: true })) };
+      probe = await probeGoogleWorkspaceRest({ service, credentialHeaders: refreshed, grantedScopes, fetch });
+      if (!probe.ok && probe.authFailure === "unauthenticated" && isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)) {
+        const grant = await vaultGrantForConnection(connection, actor);
+        if (grant) {
+          await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: now() })
+            .where(and(eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId)));
+        }
+      }
+    }
+    if (!probe.ok && probe.authFailure === "unauthenticated") {
+      throw unprocessable("Google did not accept this connection's sign-in. Reconnect Google Workspace.", { code: "oauth_reauthorization_required" });
+    }
+    if (!probe.ok) throw new HttpError(502, probe.message, { code: "google_workspace_rest_probe_failed", service });
+    return listGoogleWorkspaceRest(service).map((tool) => normalizeToolDescriptor(tool))
+      .filter((tool): tool is McpToolDescriptor => tool !== null);
+  }
   async function remoteTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
@@ -136,7 +169,9 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       // One credential authority, no child connections or implied service grants.
       const catalogs = await Promise.allSettled(services.map(async (service) => {
         const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[GOOGLE_WORKSPACE_SERVICES[service]];
-        const tools = await remoteTools(connection, headers, actor, profile.serverUrl, [], listOptions);
+        const tools = GOOGLE_WORKSPACE_TOOL_TRANSPORT[service] === "paperclip_rest"
+          ? await googleWorkspaceRestTools(connection, service, headers, scopes, actor)
+          : await remoteTools(connection, headers, actor, profile.serverUrl, [], listOptions);
         return tools.map((tool) => ({ ...tool, name: googleWorkspaceToolName(service, tool.name) }))
           .filter((tool) => isGoogleWorkspaceToolGranted(tool.name, scopes));
       }));
@@ -310,6 +345,14 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     if (isInsufficientConnectionScope(response)) {
       await response.body?.cancel().catch(() => undefined);
       throw unprocessable(INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, { code: "oauth_insufficient_scope", connectionId: connection.id });
+    }
+    if (response.status === 401 && isAwsMcpConnection(connection)) {
+      // A refused AWS token: mint a fresh one and list again (listing has no side effects).
+      headers = {
+        ...projectedConnectionHeaders(connection),
+        ...(await resolveCredentialHeaders(connection, actor, { forceRefresh: true })),
+      };
+      response = await relistAfterCredentialRefresh();
     }
     if (
       response.status === 401 &&
@@ -581,6 +624,25 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     await agentmailApi(key).whoami();
   }
 
+  /**
+   * The credential a dynamic plugin connector may need to list its tools: the
+   * connection's default grant, resolved for this one call only.
+   */
+  async function pluginListingCredential(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
+    if (connection.authKind !== "api_key") return undefined;
+    // The same grant selection (and owner checks) as every other credential
+    // read for this connection and caller.
+    const grant = await credentials.vaultGrantForConnection(connection, actor);
+    const ref = grant?.credentialSecretRefs.find((candidate) => candidate.configPath.startsWith("credentials."));
+    if (!grant || !ref) return undefined;
+    const { value } = await resolveConnectionGrantSecret(db, connection, grant, ref, {
+      consumerType: "tool_connection", consumerId: connection.id,
+      actorType: actor?.actorType === "agent" ? "agent" : actor?.actorType === "user" ? "user" : "system",
+      actorId: actor?.actorId ?? null, responsibleUserId: grant.subjectUserId,
+    });
+    return { kind: "api_key" as const, value };
+  }
+
   async function discoverTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
@@ -611,6 +673,16 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     if (isAgentMailConnection(connection)) {
       await validateAgentMailConnection(connection);
       return [];
+    }
+    if (connection.transport === "plugin") {
+      try {
+        return await listPluginConnectionTools(db, connection, await pluginListingCredential(connection, actor));
+      } catch (error) {
+        if (findPluginWorkerUnavailableError(error)) {
+          throw unprocessable(error instanceof Error ? error.message : "This connector's plugin is not running right now.", { code: PLUGIN_CONNECTOR_UNAVAILABLE_CODE, retryable: true });
+        }
+        throw error;
+      }
     }
     if (connection.transport === "mcp_remote")
       return remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices, listOptions);

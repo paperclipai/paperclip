@@ -1,4 +1,6 @@
 import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
+import { assertPluginConnectionWorker, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "../../plugin-connector-runtime.js";
+import { findPluginWorkerUnavailableError } from "../../plugin-worker-unavailable-error.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
@@ -130,8 +132,19 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           });
         for (const grant of grantsToCheck)
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
-      } else if (isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) {
+      } else if (isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)
+        || connection.transport === "plugin") {
+        // A plugin-served connector is healthy when its tools can be listed
+        // and its plugin's worker is running to serve them.
         await discoverTools(connection, undefined, actor);
+        if (connection.transport === "plugin") {
+          try {
+            await assertPluginConnectionWorker(db, connection);
+          } catch (error) {
+            if (!findPluginWorkerUnavailableError(error)) throw error;
+            throw unprocessable(error instanceof Error ? error.message : "This connector's plugin is not running right now.", { code: PLUGIN_CONNECTOR_UNAVAILABLE_CODE, retryable: true });
+          }
+        }
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
       } else if (connection.transport === "mcp_remote") {

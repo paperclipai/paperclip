@@ -98,6 +98,12 @@ a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list and shows each task once. Project
 groups omit tasks already shown in the other sections and disappear when empty.
 
+Opening a personal task moves it to the top of sidebar Recents. A visit to a
+nested task moves its parent group. Coordinator Recents lets you pin tasks, agent
+chats, and projects above More. The pin button appears on the current row or
+when a row is hovered or focused with the keyboard. Shortcuts share the saved
+order with pinned pages and stay available as Recents changes.
+
 Sidebar Recents shows readable direct subtasks below a recent parent. Each group
 can fold independently, starts with at most ten children, and loads more on
 request. Waiting external chat children remain visible in explicit child lists.
@@ -468,6 +474,12 @@ An optional announcement card shares product news with board users on opening
 or returning to Paperclip. Dismissals persist per user across companies and
 browsers within an instance. Operators can disable fetching independently of
 telemetry. See [Announcements](ANNOUNCEMENTS.md).
+
+The self-hosted GitHub star prompt only enrolls companies first observed with
+fewer than five completed tasks. Companies already at five or more are skipped.
+The browser saves eligibility per company across visits. Eligible companies see
+the prompt at most once when they reach five completed tasks. Cloud instances
+and unfinished onboarding remain excluded.
 
 ### Agent chat discovery
 

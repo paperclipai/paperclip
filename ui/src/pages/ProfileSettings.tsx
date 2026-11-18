@@ -11,6 +11,7 @@ import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
 import { DesktopNotificationsSettings } from "@/components/DesktopNotificationsSettings";
+import { ProductAnalyticsSetting } from "@/components/ProductAnalyticsSetting";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -291,6 +292,8 @@ export function ProfileSettings() {
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
         <DesktopNotificationsSettings />
+
+        <ProductAnalyticsSetting config={sessionQuery.data.browserAnalytics} />
       </section>
     </div>
   );

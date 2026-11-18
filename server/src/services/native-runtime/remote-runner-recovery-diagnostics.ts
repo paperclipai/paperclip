@@ -206,6 +206,27 @@ function verifyGeneration() {
     process.exit(46);
   }
 }
+function awaitExitingProcess() {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const until = Date.now() + 1000;
+  while (Date.now() < until) {
+    let state;
+    try {
+      const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+      state = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[0];
+    } catch (error) {
+      if (error.code === "ENOENT") process.exit(45);
+      return;
+    }
+    if (state === "Z" || state === "X" || state === "x") process.exit(45);
+    try { process.kill(Number(pid), 0); }
+    catch (error) {
+      if (error.code === "ESRCH") process.exit(45);
+      return;
+    }
+    Atomics.wait(pause, 0, 0, 50);
+  }
+}
 requireLiveProcess();
 const commandPath = "/proc/" + pid + "/cmdline";
 if (process.platform !== "linux" && !expectedGeneration && !fs.existsSync(commandPath)) process.exit(0);
@@ -219,6 +240,7 @@ catch (error) {
 if (expectedGeneration) verifyGeneration();
 if (!args.includes("--runner-id") || !args.includes(runnerId)) {
   requireLiveProcess();
+  if (expectedGeneration && args.join("") === "") awaitExitingProcess();
   process.exit(48);
 }
 ' "$pid" "$expected_runner_id"` + ' "${5:-}"',

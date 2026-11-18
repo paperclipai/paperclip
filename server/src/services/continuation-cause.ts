@@ -64,6 +64,8 @@ const TRANSIENT_SETUP_FAILURE_CODES = [
   "workspace_git_scan_timeout", "workspace_git_scan_saturated", "repository_catalog_unavailable",
 ] as const;
 
+export const SETUP_FAILURE_CODES = ["setup_failed", ...TRANSIENT_SETUP_FAILURE_CODES] as const;
+
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 

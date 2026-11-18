@@ -154,6 +154,9 @@ for this workload; everything else from
 - **Browser page-load tracing** on hosted instances needs
   `PAPERCLIP_BROWSER_TRACES_ENDPOINT`. See
   [browser performance tracing](browser-performance-tracing.md).
+- **Browser product analytics** (PostHog) on Paperclip Cloud needs
+  `PAPERCLIP_POSTHOG_PROJECT_TOKEN` and `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`.
+  See [Cloud browser product analytics](cloud-browser-analytics.md).
 
 ## Sentry Error Monitoring
 

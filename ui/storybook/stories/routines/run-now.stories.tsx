@@ -1,7 +1,4 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { Routes, Route } from "@/lib/router";
-import { RoutineDetail } from "@/pages/RoutineDetail";
-import { ToastViewport } from "@/components/ToastViewport";
 import { expect, userEvent, within, waitFor } from "storybook/test";
 import { baseRoutine } from "../../fixtures/routineWebhooks";
 import { storybookIssues } from "../../fixtures/paperclipData";
@@ -9,27 +6,15 @@ import {
   prepareFixtureApi,
   type FixtureState,
 } from "../../support/capability-gaps/api";
+import { RoutedRoutinePage } from "../../support/routines/RoutedRoutinePage";
 let submitted: Record<string, unknown> | null = null;
-function RunRoutine() {
-  return (
-    <>
-      <Routes>
-        <Route
-          path="/PAP/routines/:routineId/:section?"
-          element={<RoutineDetail />}
-        />
-      </Routes>
-      <ToastViewport />
-    </>
-  );
-}
 const meta = {
   id: "feature-routine-run-now",
   title:
     "Automation and structured work/Routines, schedules, and triggers/Run now",
-  component: RunRoutine,
+  component: RoutedRoutinePage,
   parameters: {
-    layout: "padded",
+    layout: "fullscreen",
     initialEntries: ["/PAP/routines/routine-gap"],
     paperclip: {
       "capabilities": [
@@ -38,7 +23,7 @@ const meta = {
       "status": "current",
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "RoutineDetail manual-run dialog with required input, captured variables, pending/error/success and read states. Fictional dispatch receipt; real scheduling, coalescing, workspace authority and execution remain separate."
+      "notes": "Routed RoutineDetail in the app shell; Run now in the page header opens the manual-run dialog with required input, captured variables, pending/error/success and read states. Fictional dispatch receipt; real scheduling, coalescing, workspace authority and execution remain separate."
     },
   },
   beforeEach: ({ parameters }) => {
@@ -93,7 +78,7 @@ const meta = {
       parameters.fixtureState as FixtureState,
     ).cleanup;
   },
-} satisfies Meta<typeof RunRoutine>;
+} satisfies Meta<typeof RoutedRoutinePage>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Overview: Story = {};

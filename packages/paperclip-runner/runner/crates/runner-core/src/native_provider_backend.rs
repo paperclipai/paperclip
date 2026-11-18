@@ -403,6 +403,15 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         Ok(())
     }
 
+    fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.defer_parked_acpx_restore(),
+            _ => Err(DurableRunnerError::invalid(
+                "parked ACPX recovery requires an ACPX checkpoint",
+            )),
+        }
+    }
+
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         self.select_recovery()?;
         self.selected

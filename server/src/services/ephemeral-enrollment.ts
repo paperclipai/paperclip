@@ -9,6 +9,11 @@ import { cloudTenantPrimaryCompanyId, getCloudStackContext } from "./cloud-insta
 import { resolveDecisionSigningSecret } from "./decision-signing.js";
 import { assertEphemeralServerConfig, ephemeralServerEnabled, readEphemeralServerDataEligibility } from "./ephemeral-server-contract.js";
 
+export async function readOnlineEphemeralEnrollmentEligibility(db: Db) {
+  const { eligible, blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
+  return { eligible, blockers, ephemeralServer: ephemeralServerEnabled() };
+}
+
 export async function prepareOnlineEphemeralEnrollment(db: Db, attemptId: string, control: Pick<CloudControlClaims, "requestId" | "exp">) {
   const stackId = getCloudStackContext()?.stackId;
   const commit = readBuildCommit();
