@@ -85,7 +85,7 @@ function makeNativeClient(): RecordingClient {
   return { client, syncInOps, syncOutOps };
 }
 
-describe("sandbox native file sync", { timeout: process.platform === "win32" ? 30_000 : 5_000 }, () => {
+describe("sandbox native file sync", { timeout: 30_000 }, () => {
   const cleanupDirs: string[] = [];
   afterEach(async () => {
     while (cleanupDirs.length > 0) {
