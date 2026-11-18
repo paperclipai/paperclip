@@ -6,6 +6,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
+import type { RequestOptions } from "../api/client";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
 
 let currentSearch = "";
@@ -20,7 +22,7 @@ async function act(callback: () => void | Promise<void>) {
 
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
-const foldersListMock = vi.fn<(companyId: string, kind: string) => Promise<FolderListResult>>();
+const foldersListMock = vi.fn<(companyId: string, kind: string, options?: RequestOptions) => Promise<FolderListResult>>();
 const issuesListMock = vi.fn<(companyId: string, filters?: Record<string, unknown>) => Promise<Issue[]>>();
 const markdownEditorRenderMock = vi.fn((props: { mentions?: Array<{ id: string; name: string }> }) => props);
 const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
@@ -64,7 +66,7 @@ vi.mock("../api/routines", () => ({
 
 vi.mock("../api/folders", () => ({
   foldersApi: {
-    list: (companyId: string, kind: string) => foldersListMock(companyId, kind),
+    list: (companyId: string, kind: string, options?: RequestOptions) => foldersListMock(companyId, kind, options),
     create: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
@@ -611,6 +613,148 @@ describe("Routines page", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("reveals routines with their folder navigation after a delayed folder read", async () => {
+    routinesListMock.mockResolvedValue([createRoutine({ title: "Delayed folder routine", folderId: "folder-1" })]);
+    let resolveFolders!: (result: FolderListResult) => void;
+    foldersListMock.mockReturnValue(new Promise((resolve) => { resolveFolders = resolve; }));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>);
+      await flush();
+    });
+    await act(async () => { await flush(); });
+    expect(container.textContent).not.toContain("Delayed folder routine");
+
+    await act(async () => {
+      resolveFolders({
+        kind: "routine", allCount: 1, unfiledCount: 0,
+        folders: [{
+          id: "folder-1", companyId: "company-1", kind: "routine", parentId: null,
+          name: "Reporting", slug: "reporting", systemKey: null, path: "reporting",
+          depth: 1, color: "indigo", position: 0, itemCount: 1,
+          createdAt: new Date(), updatedAt: new Date(),
+        }],
+      });
+      await flush();
+    });
+    await act(async () => { await flush(); });
+    expect(container.textContent).toContain("Delayed folder routine");
+    expect(container.querySelector('nav[aria-label="routines folders"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Unknown folder");
+
+    const folderKey = queryKeys.folders.list("company-1", "routine");
+    const cachedFolders = queryClient.getQueryData<FolderListResult>(folderKey)!;
+    const routineLink = container.querySelector('a[href="/routines/routine-1"]');
+    let resolveRefresh!: (result: FolderListResult) => void;
+    foldersListMock.mockReturnValueOnce(new Promise((resolve) => { resolveRefresh = resolve; }));
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: folderKey });
+      await flush();
+    });
+    expect(container.textContent).toContain("Delayed folder routine");
+    expect(container.querySelector('a[href="/routines/routine-1"]')).toBe(routineLink);
+    await act(async () => { resolveRefresh(cachedFolders); await flush(); });
+    foldersListMock.mockRejectedValueOnce(new Error("Folder refresh failed"));
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: folderKey });
+      await flush();
+    });
+    await act(async () => { await flush(); });
+    expect(container.querySelector('a[href="/routines/routine-1"]')).toBe(routineLink);
+    expect(container.querySelector('nav[aria-label="routines folders"]')).not.toBeNull();
+    expect(container.textContent).toContain("Reporting");
+    expect(container.textContent).not.toContain("Unknown folder");
+    await act(async () => { root.unmount(); });
+  });
+
+  it.each(["all", "folder-1", "unfiled"])("keeps routines readable after a folder read fails, then restores the %s filter on retry", async (selection) => {
+    currentSearch = selection === "all" ? "" : `folder=${selection}`;
+    routinesListMock.mockResolvedValue([
+      createRoutine({ title: "Filed routine", folderId: "folder-1" }),
+      createRoutine({ id: "routine-2", title: "Loose routine", folderId: null }),
+    ]);
+    foldersListMock.mockRejectedValueOnce(new Error("Folder read failed"));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>);
+        await flush();
+      });
+      await act(async () => { await flush(); });
+      expect(container.textContent).toContain("Filed routine");
+      expect(container.textContent).toContain("Loose routine");
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      expect(container.textContent).not.toContain("Unknown folder");
+      expect(container.textContent).not.toContain("Create your first folder");
+      expect(Array.from(container.querySelectorAll("button")).some(button => button.textContent === "New folder")).toBe(false);
+      expect(container.textContent).not.toContain("All routines");
+
+      foldersListMock.mockResolvedValue({
+        kind: "routine", allCount: 2, unfiledCount: 1,
+        folders: [{
+          id: "folder-1", companyId: "company-1", kind: "routine", parentId: null,
+          name: "Reporting", slug: "reporting", systemKey: null, path: "reporting",
+          depth: 1, color: "indigo", position: 0, itemCount: 1,
+          createdAt: new Date(), updatedAt: new Date(),
+        }],
+      });
+      const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry");
+      expect(retry).toBeTruthy();
+      await act(async () => { retry!.click(); await flush(); });
+      await act(async () => { await flush(); });
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector('nav[aria-label="routines folders"]')).not.toBeNull();
+      expect(container.textContent).toContain("Reporting");
+      if (selection === "unfiled") {
+        expect(container.textContent).not.toContain("Filed routine");
+      } else {
+        expect(container.textContent).toContain("Filed routine");
+      }
+      if (selection === "folder-1") {
+        expect(container.textContent).not.toContain("Loose routine");
+      } else {
+        expect(container.textContent).toContain("Loose routine");
+      }
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
+  it("bounds a stalled folder request and leaves routines accessible with a retry", async () => {
+    const actual = await vi.importActual<typeof import("../api/folders")>("../api/folders");
+    routinesListMock.mockResolvedValue([createRoutine({ title: "Accessible after timeout", folderId: "folder-1" })]);
+    foldersListMock.mockImplementation((companyId, _kind, options) => actual.foldersApi.list(companyId, "routine", options));
+    const fetchMock = vi.fn<typeof fetch>(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(() => root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(container.textContent).not.toContain("Accessible after timeout");
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(container.textContent).toContain("Accessible after timeout");
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      expect(container.textContent).toContain("Retry");
+      expect(container.textContent).not.toContain("Unknown folder");
+      expect(container.textContent).not.toContain("Create your first folder");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("defaults the routines list to folder mode with inline folder sections", async () => {

@@ -6,6 +6,7 @@ import type { AnchorHTMLAttributes } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaseDocumentRevisions } from "@/api/cases";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 import { CaseRevisionRail } from "./CaseRevisionRail";
 
 function act(callback: () => void) {
@@ -120,6 +121,20 @@ describe("CaseRevisionRail", () => {
     act(() => rev1Button!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flush();
     expect(container.querySelector('[data-testid="md"]')?.textContent).toBe("# First version");
+    act(() => root.unmount());
+  });
+
+  it("keeps revision diff lines out of session replay", async () => {
+    mockCasesApi.listRevisions.mockResolvedValue(revisions);
+    const root = await render();
+    const compare = Array.from(container.querySelectorAll("button")).find((b) => /compare|diff/i.test(b.textContent ?? "") || /compare|diff/i.test(b.getAttribute("aria-label") ?? ""));
+    expect(compare).toBeTruthy();
+    act(() => compare!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(replayLeaks("Second version", dialog!)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("First version", dialog!)).toEqual({ rendered: true, recorded: false });
     act(() => root.unmount());
   });
 });

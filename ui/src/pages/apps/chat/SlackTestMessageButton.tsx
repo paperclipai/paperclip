@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { queryKeys } from "@/lib/queryKeys";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export function SlackTestMessageButton({ endpointId }: { endpointId: string }) {
   const queryClient = useQueryClient();
@@ -63,7 +64,7 @@ export function SlackTestMessageButton({ endpointId }: { endpointId: string }) {
       {describeError(send.error).body} <button className="underline" onClick={reset}>Dismiss</button>
     </div>}
     <Dialog open={accounts !== null} onOpenChange={(open) => { if (!open && !send.isPending) setAccounts(null); }}>
-      <DialogContent>
+      <DialogContent className={ANALYTICS_MASK_CLASS}>
         <DialogHeader>
           <DialogTitle>Connect your Slack account</DialogTitle>
           <DialogDescription>Choose your account. Messages to this agent will use your Paperclip permissions.</DialogDescription>
@@ -73,7 +74,7 @@ export function SlackTestMessageButton({ endpointId }: { endpointId: string }) {
           {accounts?.filter(account => `${account.name} ${account.id}`.toLowerCase().includes(search.toLowerCase())).map(account =>
             <label key={account.id} className="flex cursor-pointer items-center gap-3 rounded-md border border-border p-3 text-sm">
               <input type="radio" name="slack-account" value={account.id} checked={selected === account.id} onChange={() => setSelected(account.id)} />
-              <span>{account.name} <span className="text-muted-foreground">({account.id})</span></span>
+              <span className={ANALYTICS_MASK_CLASS}>{account.name} <span className="text-muted-foreground">({account.id})</span></span>
             </label>)}
           {accounts?.length === 0 && <p className="text-sm text-muted-foreground">No available accounts found in this Slack workspace.</p>}
         </div>

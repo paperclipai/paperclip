@@ -141,6 +141,19 @@ fields.
 - The values are transient secret input, as on `submit`. Do not save them in
   task state, lease metadata, journals, logs, results or durable replay records.
 
+A provider can return `resumeRelaunchedRunnerVersion: 1` from `describe`. Core
+then adds `relaunchedRunnerVersion: 1` to every `resume`. With this field, a
+provider that must start the Runner again can start it on a different Runner
+build. Use a build whose version can read the parked Runner's state: the same
+version, or a newer semantic version. A prerelease is older than its release.
+Report that build as `runner: { version, digest }` on the `resumed` result.
+Core accepts the build only when its version can read the parked state. Core
+then expects that build when the Runner authenticates. Core treats any other
+build as `unavailable`. Without `relaunchedRunnerVersion`, start the Runner
+again only on the parked build, and do not add `runner` to the result. Older
+strict Core schemas reject `resumeRelaunchedRunnerVersion` in a description, so
+advertise it only to a Core version that supports it.
+
 The `resume` result has a closed `outcome`:
 
 - `resumed`: the same logical session is exclusively reserved for this claimant,

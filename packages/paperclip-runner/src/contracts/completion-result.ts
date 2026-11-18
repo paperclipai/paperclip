@@ -17,7 +17,19 @@ export const PRP_BLOCKER_ALREADY_REPORTED_MESSAGE =
 export const PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE = PRP_BLOCKER_ALREADY_REPORTED_MESSAGE +
   " Paperclip continues this environment or tool blocker automatically in a fresh session that checks the saved work.";
 
-const PRP_ENVIRONMENT_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["environment_unavailable", "tool_unavailable"]);
+export const PRP_ENVIRONMENT_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["environment_unavailable", "tool_unavailable"]);
+export const PRP_PERSON_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["permission_denied", "credential_missing", "policy_restricted", "budget_exhausted"]);
+
+export function isPrpAutomaticallyContinuedBlocker(result: {
+  reportedWorkDisposition?: unknown;
+  blocker?: { owner?: { kind?: unknown } | null; reasonCode?: unknown } | null;
+} | null | undefined): boolean {
+  if (result?.reportedWorkDisposition !== "blocked") return false;
+  const ownerKind = result.blocker?.owner?.kind;
+  const reasonCode = typeof result.blocker?.reasonCode === "string" ? result.blocker.reasonCode : "";
+  return (ownerKind === "system" && !PRP_PERSON_BLOCKER_REASON_CODES.has(reasonCode))
+    || (ownerKind === "agent" && PRP_ENVIRONMENT_BLOCKER_REASON_CODES.has(reasonCode));
+}
 
 /** Feedback for a later report in a turn that already committed a different one. */
 export function prpSemanticResultConflictMessage(committed: {
@@ -25,7 +37,7 @@ export function prpSemanticResultConflictMessage(committed: {
   blocker?: { owner?: { kind?: string } | null; reasonCode?: string } | null;
 } | null | undefined): string {
   if (committed?.reportedWorkDisposition !== "blocked") return PRP_RESULT_ALREADY_ACCEPTED_MESSAGE;
-  return committed.blocker?.owner?.kind === "system" && PRP_ENVIRONMENT_BLOCKER_REASON_CODES.has(committed.blocker.reasonCode ?? "")
+  return isPrpAutomaticallyContinuedBlocker(committed)
     ? PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE : PRP_BLOCKER_ALREADY_REPORTED_MESSAGE;
 }
 export const PRP_SEMANTIC_TOOL_NAMES = [
@@ -166,7 +178,7 @@ const artifactsSchema = {
   },
 } as const;
 
-const waitContinuationSchema = {
+const waitContinuationProperties = {
   type: "object",
   description:
     "Required when reportedWorkDisposition is yielded. Use response_wake for a response wait, or monitor only after a real monitor is persisted on the current task. Include kind, summary, and a stable idempotencyKey.",
@@ -183,7 +195,21 @@ const waitContinuationSchema = {
     idempotencyKey: { type: "string", minLength: 1 },
     handoffId: { type: "string", minLength: 1, description: "Exact server-issued handoff ID; required for case_handoff." },
   },
-  allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
+} as const;
+
+const waitContinuationCondition = {
+  if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] },
+  then: { required: ["handoffId"] },
+} as const;
+
+const waitContinuationSchema = {
+  ...waitContinuationProperties,
+  allOf: [waitContinuationCondition],
+} as const;
+
+const providerWaitContinuationSchema = {
+  ...waitContinuationProperties,
+  ...waitContinuationCondition,
 } as const;
 
 const commonResultProperties = {
@@ -391,7 +417,7 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
     // tool calls. Give non-yielding results an explicit absence value instead
     // of forcing callers to invent a response-wake continuation.
     continuation: {
-      ...waitContinuationSchema,
+      ...providerWaitContinuationSchema,
       type: ["object", "null"],
       description:
         "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",

@@ -1,4 +1,4 @@
-import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema } from "@paperclipai/shared";
+import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema, issueDocumentBatchQuerySchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -1424,6 +1424,9 @@ const PUBLIC_OPERATIONS = new Set([
   "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
+  // Outside clouds fetch a company's workload identity issuer anonymously (routes/workload-identity.ts).
+  "GET /oidc/companies/{companyId}/.well-known/openid-configuration",
+  "GET /oidc/companies/{companyId}/jwks.json",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1467,6 +1470,11 @@ const mcpSkillsBoardOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Workload identity status and key rotation are board-only (assertBoard in routes/workload-identity.ts).
+  "GET /api/companies/{companyId}/workload-identity",
+  "POST /api/companies/{companyId}/workload-identity/rotation",
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
@@ -4429,6 +4437,26 @@ registry.registerPath({
 // ─── Issues ──────────────────────────────────────────────────────────────────
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding",
+  tags: ["issues"],
+  summary: "Open the current board user's onboarding chat",
+  description: "Requires Agent Chat and company access. Reuses the caller's existing conversation or creates an unnumbered standing chat with onboarding context. Creates no execution task or project and starts no agent turn.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
+  tags: ["issues"],
+  summary: "Start the visible onboarding chat's live welcome",
+  description: "Call after the chat is visible. Requires an existing conversation owned by the caller. Returns started=true when a welcome is queued or already pending, or false when the conversation no longer needs a welcome. Retries failed or timed-out attempts and preserves normal agent admission gates.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(z.object({ started: z.boolean() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/chats",
   tags: ["issues"],
@@ -4776,6 +4804,16 @@ registry.registerPath({
   summary: "Delete a work product",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issue-documents",
+  tags: ["issues"],
+  summary: "Bulk read one document key across issue IDs",
+  description: "Read current documents for 1–200 comma-separated task UUIDs in one request. Company and task read permissions apply. Unreadable, hidden, foreign and nonexistent tasks are omitted; a readable task without this key returns document:null. Items follow first-requested ID order with duplicates removed. includeBody defaults to true; includeBody=false returns revision metadata and updatedAt without loading bodies, for cache validation. No break-glass access. Responses over 8 MiB fail with 413; split the IDs into smaller requests. Native helpers can use save_api_response then download_artifact to relay the complete batch without per-task calls. Verify every requested ID is present before treating the inventory as complete.",
+  request: { params: z.object({ companyId: z.string().uuid() }), query: issueDocumentBatchQuerySchema },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 413: { description: "Split the document batch into smaller requests" }, 429: { description: "At most two active reads per actor and eight per server instance; retry after an active read finishes", headers: { "Retry-After": { schema: { type: "string", enum: ["1"] } } } } },
 });
 
 registry.registerPath({
@@ -9695,6 +9733,57 @@ registry.registerPath({
   } }, ...tailscaleErrors },
 });
 
+const workloadIdentityParams = z.object({ companyId: z.string().uuid() });
+const workloadIdentityPublicNotFound = { 404: { description: "The company has no published signing key, or this instance has no public HTTPS address" } };
+const workloadIdentityKeyState = z.object({
+  issuer: z.string().url().nullable(),
+  unavailableReason: z.enum(["no_public_url", "not_https", "has_port", "loopback"]).nullable(),
+  keys: z.array(z.object({
+    keyId: z.string(), status: z.enum(["next", "active", "retiring"]),
+    createdAt: z.string().datetime(), statusChangedAt: z.string().datetime(),
+  }).strict()),
+}).strict();
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/.well-known/openid-configuration", tags: ["workload-identity"],
+  summary: "Company workload identity OIDC discovery document",
+  description: "Unauthenticated. Outside clouds read this to verify tokens that name one of the company's connections. Cacheable for five minutes.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({
+    issuer: z.string().url(), jwks_uri: z.string().url(),
+    response_types_supported: z.array(z.string()), subject_types_supported: z.array(z.string()),
+    id_token_signing_alg_values_supported: z.array(z.string()), claims_supported: z.array(z.string()),
+  }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/jwks.json", tags: ["workload-identity"],
+  summary: "Company workload identity public key set",
+  description: "Unauthenticated. Lists only public ES256 keys. Never contains private key members.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({ keys: z.array(z.object({
+    kty: z.literal("EC"), crv: z.string(), x: z.string(), y: z.string(), kid: z.string(), alg: z.literal("ES256"), use: z.literal("sig"),
+  }).strict()) }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/workload-identity", tags: ["workload-identity"],
+  summary: "Company workload identity issuer and key states",
+  description: "Board only. Returns the issuer (or why it is unavailable) and the published keys. No private key material.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(workloadIdentityKeyState), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/workload-identity/rotation", tags: ["workload-identity"],
+  summary: "Rotate the company workload identity signing key",
+  description: "Board only. begin publishes a next key; complete makes it sign after 24 hours of publication; emergency replaces every key at once. Each step writes its activity entry in the same transaction as the key change.",
+  request: { params: workloadIdentityParams, body: jsonBody(z.object({ step: z.enum(["begin", "complete", "emergency"]) }).strict()) },
+  responses: { 200: r.ok(z.object({
+    step: z.enum(["begin", "complete", "emergency"]), keyId: z.string(), created: z.boolean().optional(), state: workloadIdentityKeyState,
+  }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
 // ─── Environments ─────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -12482,6 +12571,12 @@ registerCurrentRoute({
   summary: "Revoke a personal tool connection grant delegation",
 });
 
+const managedGoogleAccessRemovalSchema = z.object({
+  provider: z.literal("google"),
+  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "not_ended"]),
+  outcomes: z.array(z.string()).describe("One diagnostic code per refresh token sent to Paperclip Cloud, in order."),
+}).describe("Present only for a Google connection managed by Paperclip Cloud. A failure to end access at Google does not undo the local removal.");
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
@@ -12489,6 +12584,13 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/grants/{grantId}",
   tags: ["tool-access"],
   summary: "Revoke a tool connection grant",
+  description: "Revokes the grant locally, then, for a Google connection managed by Paperclip Cloud, asks Paperclip Cloud to end the grant's access at Google and reports the result in providerAccess.",
+  responses: {
+    200: r.ok(z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registerCurrentRoute({
@@ -12574,6 +12676,42 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+  description: "Removes the connection and its credentials. For a Google connection managed by Paperclip Cloud, removal.providerAccess reports whether access was ended at Google.",
+  query: z.object({ deleteStoredContent: z.enum(["true", "false"]).optional() }),
+  responses: {
+    200: r.ok(z.object({ removal: z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content",
+  tags: ["tool-access"],
+  summary: "Count the content Paperclip stored from a connection's tool calls",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Delete the content Paperclip stored from a connection's tool calls",
+  responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Read the status of the latest stored-content deletion for a connection",
 });
 
 const MACHINE_SIGN_IN_ERRORS = {

@@ -18,6 +18,7 @@ import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
+import { registerIssueDocumentBatchRoute } from "./issue-document-batch.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
 import { listIssueNavigationState, listIssueSummaries } from "../services/issue-summaries.js";
@@ -25,8 +26,8 @@ import { listIssueStatusBlockerAttention } from "../services/issue-status-presen
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
-import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
-import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
+import { recordChildTaskRead, recordChildTaskReads } from "../services/native-runtime/native-child-completion-delivery.js";
+import { recordCompletedHandoffRead, recordCompletedHandoffReads } from "../services/chat-completion-delivery.js";
 import { recordDeclinedInteractionRead } from "../services/chat-interaction-outcome-report.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
@@ -72,8 +73,6 @@ import {
   markExecutionReconciliation,
 } from "../services/execution-recovery-resolution.js";
 import {
-  storedSteeringAcknowledgement,
-  reconcileSteeredIdentity,
   reserveSteeredIdentity,
   acceptSteeredIdentity,
   rejectSteeredIdentity,
@@ -424,7 +423,6 @@ import {
 import {
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
-  steerNativeSession,
 } from "../services/native-runtime/native-session-executor.js";
 import {
   buildQueuedCommentQueueSnapshot,
@@ -432,6 +430,7 @@ import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
+import { deliverSteeredMessage, steeringDeliveryIsUncertain } from "../services/queued-comment-steering.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -9759,7 +9758,6 @@ export function issueRoutes(
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     // An Agent Chat run starts only for the conversation's owner.
     if (issue.conversationAgentId) {
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       if (req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can compact a chat agent's context");
     }
@@ -10445,7 +10443,6 @@ export function issueRoutes(
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     if (issue.conversationAgentId) {
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can retry a chat run");
     }
@@ -11449,6 +11446,18 @@ export function issueRoutes(
       res.json({ refreshed: results });
     },
   );
+
+  registerIssueDocumentBatchRoute(router, db, {
+    filterReadable: filterIssuesForActor,
+    recordReads: async (req, issues) => {
+      if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId) return;
+      const input = { companyId: req.params.companyId as string, agentId: req.actor.agentId, runId: req.actor.runId };
+      await recordCompletedHandoffReads(db, { ...input, tasks: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the completed handoffs a run read"));
+      await recordChildTaskReads(db, { ...input, children: issues })
+        .catch(error => logger.warn({ err: error, runId: input.runId }, "could not record the child tasks a run read"));
+    },
+  });
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
@@ -17952,7 +17961,6 @@ export function issueRoutes(
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (req.actor.userId !== issue.conversationUserId) {
           throw forbidden("Only the conversation owner can interrupt a chat to send queued messages");
         }
@@ -18205,18 +18213,10 @@ export function issueRoutes(
             commentId, lock: true,
           });
           steeringDeliveryAttempted = true;
-          const acknowledgement =
-            (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
-              companyId: issue.companyId, runId: locked.activeRun.id, messageId: commentId,
-            })) ??
-            (await steerNativeSession({
-              runId: locked.activeRun.id,
-              message: entry.comment.body,
-              correlationId: commentId,
-              onAcknowledged: steeringIdentity
-                ? () => reconcileSteeredIdentity(db, steeringIdentity)
-                : undefined,
-            }));
+          const acknowledgement = await deliverSteeredMessage(db, {
+            executor: tx, companyId: issue.companyId, runId: locked.activeRun.id,
+            messageId: commentId, message: entry.comment.body, identity: steeringIdentity,
+          });
           // PRP ingestion allocates event sequences on this row. Locking it
           // while awaiting the provider prevents its durable ACK from arriving.
           // Re-read under lock after ACK so concurrent run receipts are retained.
@@ -18284,10 +18284,7 @@ export function issueRoutes(
           });
         });
       } catch (error) {
-        const uncertain =
-          steeringDeliveryAttempted &&
-          (!(error instanceof NativeSessionSteeringError) ||
-            error.code === "steering_timeout");
+        const uncertain = steeringDeliveryIsUncertain(error, steeringDeliveryAttempted);
         if (steeringIdentity && !uncertain)
           await rejectSteeredIdentity(db, steeringIdentity);
 
@@ -19899,7 +19896,6 @@ export function issueRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
-    if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const conversations = await svc.listConversations(companyId, req.actor.userId);
     res.json(await withConversationReadState(db, companyId, req.actor.userId, await filterIssuesForActor(req, conversations)));
   });
@@ -19910,7 +19906,6 @@ export function issueRoutes(
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
-      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
       const resolved = await agentsSvc.resolveByReference(companyId, req.params.agentRef as string);
       if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
       if (!resolved.agent) throw notFound("Agent not found");
@@ -19922,7 +19917,7 @@ export function issueRoutes(
         return;
       }
       const issue = await svc.create(companyId, {
-        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        title: `Chat with ${agent.name}`, generateConversationTitle: true, assigneeAgentId: agent.id,
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
         conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
       });
@@ -19946,7 +19941,6 @@ export function issueRoutes(
       );
       if (!issue) return;
       if (issue.conversationAgentId && req.actor.type === "board") {
-        if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
         if (!req.body.clientRequestId) throw unprocessable("Chat messages require a clientRequestId for safe retries");
@@ -21161,9 +21155,6 @@ export function issueRoutes(
       if (issue.companyId !== companyId) {
         res.status(422).json({ error: "Issue does not belong to company" });
         return;
-      }
-      if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
-        throw notFound("Agent Chat is disabled");
       }
       if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
         throw forbidden("Only the conversation owner can upload attachments");

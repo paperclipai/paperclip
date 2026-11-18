@@ -111,8 +111,10 @@ describe("codex remote execution", () => {
     };
   }
 
-  it.each([undefined, "acp"])("admits managed SSH ACP through the public execution entry (engine=%s)", async engine => {
+  it.each([undefined, "acp"].flatMap(engine => (["copy", "in_place"] as const).map(mode => ({ engine, mode }))))(
+    "admits managed SSH ACP through the public execution entry (engine=$engine, workspace=$mode)", async ({ engine, mode }) => {
     const ctx = managedSshAcpContext(engine);
+    ctx.executionTarget.workspaceRealization.mode = mode;
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>("@paperclipai/adapter-utils/server-utils");
     const bin = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-client-probe-"));
     cleanupDirs.push(bin);
@@ -140,13 +142,12 @@ describe("codex remote execution", () => {
     }
   });
 
-  it.each(["host auth", "legacy auth", "missing account", "in-place", "confinement", "missing SSH client"])("rejects unsupported SSH ACP at the public execution entry: %s", async reason => {
+  it.each(["host auth", "legacy auth", "missing account", "confinement", "missing SSH client"])("rejects unsupported SSH ACP at the public execution entry: %s", async reason => {
     const ctx = managedSshAcpContext("acp");
     const originalResolve = ensureCommandResolvable.getMockImplementation()!;
     if (reason === "host auth") ctx.executionTarget.spec.useHostAuth = true;
     if (reason === "legacy auth") ctx.executionTarget.spec.useHostAuth = undefined;
     if (reason === "missing account") delete ctx.config.managedAiConnection;
-    if (reason === "in-place") ctx.executionTarget.workspaceRealization.mode = "in_place";
     if (reason === "confinement") ctx.config.filesystemScope = "workspace";
     const previousPath = process.env.PATH;
     if (reason === "missing SSH client") {

@@ -7,6 +7,15 @@ function asEventDimension<T extends string>(value: RawDimension<T>): T {
   return value as T;
 }
 
+/**
+ * Emitted form of a private task reference. The default collector path always
+ * hashes it with `hashPrivateRef()`. Only a client whose transport declares
+ * `hashesPrivateRefs: false` (Paperclip Cloud direct delivery) emits the raw id.
+ */
+function emitPrivateRef(client: TelemetryClient, value: string): string {
+  return client.privateRefsHashed === false ? value : client.hashPrivateRef(value);
+}
+
 export function trackInstallStarted(client: TelemetryClient): void {
   client.track("install.started", {});
 }
@@ -28,6 +37,8 @@ export function trackCompanyImported(
     isPrivate: boolean;
   },
 ): void {
+  // A private source ref is customer content (for example a private repository
+  // name), not an identifier. It stays hashed on every path, Cloud included.
   const ref = dims.isPrivate ? client.hashPrivateRef(dims.sourceRef) : dims.sourceRef;
   client.track("company.imported", {
     source_type: asEventDimension(dims.sourceType),
@@ -120,7 +131,7 @@ export function trackAgentTaskCompleted(
     agent_id: dims.agentId,
     adapter_type: asEventDimension(dims.adapterType),
     ...(dims.model ? { model: dims.model } : {}),
-    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
+    ...(dims.taskId ? { task_id: emitPrivateRef(client, dims.taskId) } : {}),
   });
 }
 
@@ -149,7 +160,7 @@ export function trackAgentTaskRun(
     ...(dims.inputTokens === undefined ? {} : { input_tokens: dims.inputTokens }),
     ...(dims.outputTokens === undefined ? {} : { output_tokens: dims.outputTokens }),
     ...(dims.cachedTokens === undefined ? {} : { cached_tokens: dims.cachedTokens }),
-    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
+    ...(dims.taskId ? { task_id: emitPrivateRef(client, dims.taskId) } : {}),
   });
 }
 

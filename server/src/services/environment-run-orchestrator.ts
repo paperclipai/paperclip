@@ -1,6 +1,6 @@
 import { RetainedSandboxAbsentError } from "./retained-sandbox-absent-error.js";
 import { freshWorkspaceSchema } from "@paperclipai/plugin-sdk";
-import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRepositoryPath } from "./remote-workspaces.js";
+import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRepositoryPath, supportsSshRemoteWorkspace } from "./remote-workspaces.js";
 /**
  * Centralized environment run orchestrator.
  *
@@ -49,6 +49,7 @@ import {
   type EnvironmentRuntimeService,
   type ProviderResourceDisposition,
 } from "./environment-runtime.js";
+import { REUSABLE_SANDBOX_RESUME_BUDGET_MS, retryTransientResumeCall } from "./reusable-sandbox-resume-replacement.js";
 import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
 import type { PluginTaskDescription } from "./environment-task-runtime.js";
 import { unlaunchedPortableTaskLease } from "./plugin-task-ownership.js";
@@ -177,8 +178,10 @@ export function environmentRunOrchestrator(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     environmentRuntime?: EnvironmentRuntimeService;
+    reattachResumeRetryBudgetMs?: number;
   } = {},
 ) {
+  const reattachResumeRetryBudgetMs = options.reattachResumeRetryBudgetMs ?? REUSABLE_SANDBOX_RESUME_BUDGET_MS;
   const environmentsSvc = environmentService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const environmentRuntime = options.environmentRuntime ?? environmentRuntimeService(db, {
@@ -257,7 +260,7 @@ export function environmentRunOrchestrator(
           environmentId: input.environment.id,
           driver: input.environment.driver,
           cause: transient
-            ? new EnvironmentProviderUnavailableError({ environmentName: input.environment.name,
+            ? new EnvironmentProviderUnavailableError({ environmentId: input.environment.id, environmentName: input.environment.name,
               driver: input.environment.driver, evidence: transient, cause: err })
             : err,
         },
@@ -418,11 +421,12 @@ export function environmentRunOrchestrator(
         // controller was offline. Ready the exact lease under its lifecycle
         // budget before short preparation commands (such as project-auth
         // checks) can run. This API cannot acquire a replacement.
-        const resumed = await environmentRuntime.resumeRunLease({
-          environment, lease, requestedCwd: expected.remoteCwd,
-          ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
-          ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
-        }).catch((error: unknown) => {
+        const resumed = await retryTransientResumeCall({ budgetMs: reattachResumeRetryBudgetMs, scope: "known_host",
+          call: timeoutMs => environmentRuntime.resumeRunLease({
+            environment, lease, requestedCwd: expected.remoteCwd, ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
+            ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
+          }) }).catch((error: unknown) => {
           // Confirmed provider absence is a named lease mismatch; other
           // failures (for example a transient refusal) keep their own error.
           if (error instanceof RetainedSandboxAbsentError) throw remoteRecoveryLeaseMismatch("environment_resume", "lease_expired");
@@ -559,15 +563,15 @@ export function environmentRunOrchestrator(
     };
     const remoteAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
     if (remoteAuthority && persistedExecutionWorkspace) {
-      if (adapterType !== "paperclip_runner" || environment.driver !== "sandbox") {
-        throw new EnvironmentRunError("unsupported_adapter_environment", "Remote workspace storage requires a qualified native sandbox");
+      if (!(adapterType === "paperclip_runner" && environment.driver === "sandbox") && !supportsSshRemoteWorkspace(adapterType, environment.driver)) {
+        throw new EnvironmentRunError("unsupported_adapter_environment", "Remote workspace storage requires a supported remote environment");
       }
       const target = withAcquisitionReceipt(await resolveEnvironmentExecutionTarget({
         db, companyId, adapterType, environment, leaseId: lease.id, leaseMetadata: lease.metadata,
         lease, environmentRuntime, duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       }));
-      if (!target || target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
-        throw new EnvironmentRunError("transport_resolution_failed", "Remote workspace storage requires a sandbox file transport");
+      if (!target || target.kind !== "remote" || (target.transport === "sandbox" && (!target.runner || target.runnerTask))) {
+        throw new EnvironmentRunError("transport_resolution_failed", "Remote workspace storage requires a remote file transport");
       }
       const prepared = await prepareRemoteWorkspace({
         db, workspace: persistedExecutionWorkspace, runId: heartbeatRunId, lease, target,
@@ -596,6 +600,7 @@ export function environmentRunOrchestrator(
       input.executionWorkspace.cwd = prepared.remoteRoot;
       const executionTarget: AdapterExecutionTarget = {
         ...target, remoteCwd: prepared.remoteRoot,
+        ...(target.transport === "ssh" ? { spec: { ...target.spec, remoteCwd: prepared.remoteRoot } } : {}),
         workspaceRealization: { mode: "in_place", authoritativeRoot: prepared.remoteRoot,
           pathAliases: [], outboundRestorePaths: [] },
       };

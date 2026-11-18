@@ -1763,7 +1763,9 @@ describe("remote runner process supervision", () => {
       stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
       ensureArtifact: async () => { throw stagingError; },
     })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {} });
-    await expect(handle.completion).rejects.toBe(stagingError);
+    // With no reserve to release, the full disk is named so recovery stops retrying.
+    await expect(handle.completion).rejects.toMatchObject({
+      message: expect.stringMatching(/^sandbox_disk_full: /), cause: stagingError });
     expect(execute).not.toHaveBeenCalled();
     expect(handle.child.pid).toBeUndefined();
     expect(handle.isExitConfirmed?.()).toBe(true);

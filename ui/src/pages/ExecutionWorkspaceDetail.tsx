@@ -51,6 +51,7 @@ import {
   sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type WorkspaceFormState = {
   name: string;
@@ -1566,9 +1567,9 @@ export function ExecutionWorkspaceDetail() {
                           {operation.finishedAt ? ` → ${formatDateTime(operation.finishedAt)}` : ""}
                         </div>
                         {operation.stderrExcerpt ? (
-                          <div className="whitespace-pre-wrap break-words text-xs text-destructive">{operation.stderrExcerpt}</div>
+                          <div className={cn("whitespace-pre-wrap break-words text-xs text-destructive", ANALYTICS_MASK_CLASS)}>{operation.stderrExcerpt}</div>
                         ) : operation.stdoutExcerpt ? (
-                          <div className="whitespace-pre-wrap break-words text-xs text-muted-foreground">{operation.stdoutExcerpt}</div>
+                          <div className={cn("whitespace-pre-wrap break-words text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>{operation.stdoutExcerpt}</div>
                         ) : null}
                       </div>
                       <StatusPill className="self-start">{operation.status}</StatusPill>

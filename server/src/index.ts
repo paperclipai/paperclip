@@ -18,6 +18,7 @@ import { registerMergeConfirmationWork } from "./services/merged-pr-confirmation
 import { registerNativeHarnessBackupExpirationWork } from "./services/native-runtime/native-harness-backup-expiration-work.js";
 import { registerGitHubConnectionEventWork, registerGitHubConnectionContinuityWork } from "./services/github-connection-work.js";
 import { registerProviderTraceRetentionWork } from "./services/provider-trace-retention-work.js";
+import { registerToolConnectionContentDeletionWork } from "./services/tool-connection-content-deletion-work.js";
 import { registerRunEvidenceMigrationWork } from "./services/run-evidence-migration-work.js";
 import { registerSkillVersionRetentionWork } from "./services/skill-version-retention-work.js";
 import { registerDatabaseBackupWork } from "./services/database-backup-work.js";
@@ -212,7 +213,7 @@ import { abortInFlightMultipartUploads } from "./storage/s3-multipart.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
-import { initTelemetry, getTelemetryClient } from "./telemetry.js";
+import { initTelemetry, getTelemetryClient, shutdownTelemetry } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
@@ -1446,6 +1447,10 @@ async function startServerWithDatabaseTeardown(
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
   trackHeartbeatSchedulerWork(providerTraceRetentionWork.ready);
   server.on("close", providerTraceRetentionWork.stop);
+  const toolConnectionContentDeletionWork = registerToolConnectionContentDeletionWork(db, deliveryWork,
+    () => !heartbeatSchedulerStopped && !isWarmStandby());
+  trackHeartbeatSchedulerWork(toolConnectionContentDeletionWork.ready);
+  server.on("close", toolConnectionContentDeletionWork.stop);
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
   const nativeRunnerEvidenceRetentionWorker = config.nativeHarnessBackupExpirationEnabled
@@ -2276,6 +2281,7 @@ async function startServerWithDatabaseTeardown(
       await runEvidenceMigrationWork?.stop();
     });
     await preDrain.run("provider_trace_retention_stop", () => providerTraceRetentionWork.stop());
+    await preDrain.run("tool_connection_content_deletion_stop", () => toolConnectionContentDeletionWork.stop());
     await preDrain.run("skill_version_retention_dispose", async () => {
       await skillVersionRetentionWorker?.dispose();
     });
@@ -2361,14 +2367,13 @@ async function startServerWithDatabaseTeardown(
       });
     }
 
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      telemetryClient.stop();
+    if (getTelemetryClient()) {
       await runBoundedShutdownStep({
         step: "telemetry_flush",
         signal,
         timeoutMs: 5_000,
-        run: () => telemetryClient.flush(),
+        // Flushes queued events, then closes the Cloud PostHog client if any.
+        run: () => shutdownTelemetry(),
         log: logger,
       });
     }

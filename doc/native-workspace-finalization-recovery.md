@@ -576,6 +576,7 @@ receipts fail closed. Older sessions without a receipt retain the strict current
 release gate; a sandbox's own manifest cannot supply missing launch authority.
 
 Remote provider-pack verification retries an interrupted read at most once.
+The retry waits one second so a fast gateway failure has time to recover.
 Each command retains its 30-second transport timeout. A timeout, signal, absent
 exit status, or transport exception does not prove artifact incompatibility.
 Two inconclusive attempts hold the original run with
