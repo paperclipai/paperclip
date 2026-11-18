@@ -6,7 +6,8 @@ import { and, desc, eq, inArray, isNull, not, notInArray, sql, type SQL } from "
 import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
 import { nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, environmentLeases, heartbeatRuns, issueApprovals, issueRecoveryActions,
-  issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, projects, type Db } from "@paperclipai/db";
+  issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, projects, statusDecisions, type Db } from "@paperclipai/db";
+import { NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-runtime/native-agent-blocker.js";
 import { unionAll } from "drizzle-orm/pg-core";
 import { EXECUTION_RECONCILIATION_CAUSES, HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
 import { captureTaskInterruptionFailure } from "../sentry.js";
@@ -115,6 +116,7 @@ type ProjectionState = {
   automaticDispositionAt?: number;
   waitingContinuation?: { queuedAt: number; personRequested: boolean };
   recoveryHandedToPerson?: boolean;
+  agentBlockerNeedsPerson?: boolean;
 };
 
 // A task read reports the change that made a task fail, not every later read of
@@ -257,7 +259,8 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
   // Retry took effect: the saved result is being applied again.
   if (run.status === "succeeded" && run.nativeFinalizationRetryPending)
     return { ...base, state: "working", recoveryStep: "finishing_recovery" };
-  if (run.status === "succeeded" && !wait && !run.nativeFinalizationRetry) return base;
+  if (run.status === "succeeded" && !wait && !run.nativeFinalizationRetry) return issue.status === "blocked" && input.agentBlockerNeedsPerson
+    ? { ...base, responsibility: "user", state: "waiting_for_user", canRetry: true, userAction: "unblock" } : base;
   const providerFailure = run.status === "failed" || run.status === "scheduled_retry"
     ? readProviderFailure(run.resultJson?.providerFailure) : null;
   if (providerFailure) base.providerFailure = providerFailure;
@@ -732,6 +735,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     sql`coalesce(${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}', '') <> 'resuming'`,
   )) : [];
   const ownerStopRequired = new Set(ownerStops.map(row => `${row.issueId}:${row.runId}`));
+  const blockedSucceededRunIds = runs.filter(run => run.status === "succeeded"
+    && selected.some(issue => issue.id === run.issueId && issue.status === "blocked")).map(run => run.id);
+  const agentBlockerHandoffRunIds = new Set(blockedSucceededRunIds.length ? (await db.select({ runId: statusDecisions.runId })
+    .from(statusDecisions).where(and(eq(statusDecisions.companyId, companyId), inArray(statusDecisions.runId, blockedSucceededRunIds),
+      eq(statusDecisions.reasonCode, NATIVE_AGENT_BLOCKER_HANDOFF_CODE), eq(statusDecisions.applicationState, "applied"))))
+    .map(row => row.runId) : []);
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
   // A Retry belongs to the run it observed. New conversation work supersedes
@@ -837,6 +846,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       automaticDispositionAt: automaticDispositionAt.get(issue.id),
       waitingContinuation: waitingContinuationFor(facts.run),
       recoveryHandedToPerson: handedToPerson.has(issue.id),
+      agentBlockerNeedsPerson: agentBlockerHandoffRunIds.has(facts.run?.id ?? ""),
       interruptWait: interruptWaitFor(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,

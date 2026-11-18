@@ -324,6 +324,9 @@ describe("semantic result conflict feedback", () => {
     expect(prpSemanticResultConflictMessage(blocked("system", "tool_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
     expect(prpSemanticResultConflictMessage(blocked("user", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
     expect(prpSemanticResultConflictMessage(blocked("system", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("system", "tool_output_failure"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("agent", "tool_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("agent", "work_incomplete"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
     expect(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE).not.toContain("automatically");
   });
 
