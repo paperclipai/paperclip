@@ -13,7 +13,7 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 | Item | Owner | State | Evidence / link |
 | --- | --- | --- | --- |
 | Phase 0 A: install ID stability + Cloud ingest URL source | subagent | done. Stacks run on Railway with a `/paperclip` volume (state.json persists), except `single-ephemeral` stacks (new ID each boot). Legacy three-service stacks had ephemeral disks, and 126 of 166 live staging stacks are unclaimed warm-pool stacks: this explains the ID churn. No supported way to read state.json per stack. Env vars are set by fleet `env_config` campaigns (drain + restart; fleet keys override per-stack). `PAPERCLIP_TELEMETRY_ENDPOINT` lives in the fleet managed-env store. Staging vs production: separate fleets, and `isCloudStagingInstance()` by host. Production admin returned 401 | paperclip-cloud `src/providers/railway.ts:515-521`, `src/fleet/campaigns.ts:5545-5558`, `src/registry/model.ts:1300-1310` |
-| Phase 0 B: compliance checklist status | subagent | done. Blocker for ANY production token: Terms §8 says telemetry "does not identify individual users" and Privacy §2 says "anonymized". No subprocessor list, no consent banner (website already runs GA4 + X pixel without consent), no SOC 2 program, DPA status unknown. Workspace delete (`paperclip-cloud` `SleepController.deleteStackInner`) makes no PostHog call; no self-serve account deletion | paperclip-website `web/app/terms/page.tsx:146-165`, `web/app/privacy/page.tsx:59-61` |
+| Phase 0 B: compliance checklist status | subagent | done. Original finding (2026-11-17): Terms §8 and Privacy §2 promised anonymized telemetry, which blocked any production token; resolved the same day by paperclip-website#200 (see the policy and terms row below). Consent: EU/EEA/UK/Swiss banner shipped in #22186. Still open: no subprocessor list, no SOC 2 program, PostHog DPA status unknown. No automatic PostHog deletion, by decision | paperclip-website `web/app/terms/page.tsx:146-165`, `web/app/privacy/page.tsx:59-61` |
 | Phase 0 C: PostHog entitlements | coordinator | done: session replay available pay-as-you-go ($0 now); Group analytics add-on NOT enabled (needs Dotta; not blocking: events carry `stack_id`, and the history join uses link events, not group properties); product analytics projected $1,186 this period from 40.1M events, almost all OSS | PostHog billing page, 2026-11-17 |
 | Phase 1: server direct sender | subagent | merged 55b692d; live on staging | https://github.com/paperclipai/paperclip/pull/22006 |
 | Phase 2: browser analytics | subagent | merged 8172d27; live on staging | https://github.com/paperclipai/paperclip/pull/22012 |
@@ -314,11 +314,11 @@ each step is verified before the next one starts.
       below (the single list of required PRs and what each enables).
 - [ ] Dotta signs in to `admin.paperclip.app` in the coordinator's browser
       pane (the coordinator has no production admin access).
-- [x] Decision: consent approach for browser analytics (Step 4). Dotta chose
-      option 1, the EU/UK consent banner (2026-11-18). Its PR must be merged
-      and in the production release before Step 4.
-- [ ] PostHog: set a billing limit on Session replay before Step 4, so a spike
-      cannot run up the bill.
+- [x] Decision: consent approach for browser analytics (Stage B). Dotta chose
+      option 1, the EU/UK consent banner (2026-11-18), merged in #22186. It
+      must be live on every production stack before Stage B is staged.
+- [ ] PostHog: set a billing limit on Session replay before Stage B, so a
+      spike cannot run up the bill.
 - [ ] PostHog: set the project's internal/test account filter to exclude
       `environment = staging`.
 
