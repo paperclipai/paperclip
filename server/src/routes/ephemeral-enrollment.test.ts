@@ -13,6 +13,8 @@ const prepare = vi.hoisted(() => vi.fn());
 const eligibility = vi.hoisted(() => vi.fn());
 vi.mock("../services/ephemeral-enrollment.js", () => ({ prepareOnlineEphemeralEnrollment: prepare,
   readOnlineEphemeralEnrollmentEligibility: eligibility }));
+const migrate = vi.hoisted(() => vi.fn());
+vi.mock("../services/online-durable-data-migration.js", () => ({ runOnlineDurableDataMigration: migrate }));
 const pair = generateKeyPairSync("ed25519");
 const jwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "enrollment-fixture", alg: "EdDSA", use: "sig" };
 const path = "/api/instance/ephemeral-enrollment/prepare";
@@ -102,4 +104,23 @@ it("refuses a prepare assertion on the eligibility read", async () => {
   const result = await request(app()).get(eligibilityPath).set(CLOUD_CONTROL_HEADER, assertion("ephemeral-enrollment:prepare"));
   expect(result.status).toBe(401);
   expect(eligibility).not.toHaveBeenCalled();
+});
+
+const migratePath = "/api/instance/ephemeral-enrollment/migrate";
+
+it("runs one bounded online migration pass for a signed migrate assertion", async () => {
+  migrate.mockResolvedValue({ state: "completed", counts: { agentFiles: 2 }, deferred: {}, eligible: true, blockers: [] });
+  const result = await request(app()).post(migratePath).set(CLOUD_CONTROL_HEADER, assertion("ephemeral-enrollment:migrate")).send({});
+  expect(result.status).toBe(200);
+  expect(result.headers["cache-control"]).toBe("no-store");
+  expect(result.body).toEqual({ state: "completed", counts: { agentFiles: 2 }, deferred: {}, eligible: true, blockers: [] });
+  expect(migrate).toHaveBeenCalledWith(expect.anything(), { budgetMs: 60_000 });
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it("refuses an unsigned migrate, a tenant admin, another action, and caller-supplied options", async () => {
+  for (const tenant of [false, true]) expect((await request(app(tenant)).post(migratePath).send({})).status).toBe(403);
+  expect((await request(app()).post(migratePath).set(CLOUD_CONTROL_HEADER, assertion("ephemeral-enrollment:eligibility")).send({})).status).toBe(401);
+  expect((await request(app()).post(migratePath).set(CLOUD_CONTROL_HEADER, assertion("ephemeral-enrollment:migrate")).send({ budgetMs: 1 })).status).toBe(400);
+  expect(migrate).not.toHaveBeenCalled();
 });
