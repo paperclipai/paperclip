@@ -5,6 +5,7 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  findIssueBlockersResolvedWakeForStateKey,
 } from "./issue-dependency-wakeups.js";
 
 const dependentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -18,18 +19,24 @@ type WakeRow = {
   status: string;
   idempotencyKey: string | null;
   requestedAt: Date;
+  joinedRunStatus?: string | null;
 };
 
 function dbWithWakes(rows: WakeRow[]): Db {
+  const result = rows.map((row) => ({ joinedRunStatus: null, ...row }));
+  const query = {
+    leftJoin() {
+      return query;
+    },
+    where() {
+      return Promise.resolve(result);
+    },
+  };
   return {
     select() {
       return {
         from() {
-          return {
-            where() {
-              return Promise.resolve(rows);
-            },
-          };
+          return query;
         },
       };
     },
@@ -227,5 +234,73 @@ describe("findExistingIssueBlockersResolvedWakeForReadyState", () => {
       readyState,
     );
     expect(completed).toBeNull();
+  });
+});
+
+describe("findIssueBlockersResolvedWakeForStateKey", () => {
+  const readyState = {
+    companyId,
+    dependentIssueId,
+    blockerIssueIds: [blockerIssueId],
+    blockedTransitionAt: secondCycle,
+  };
+  const stateKey = buildIssueBlockersResolvedWakeStateKey(readyState);
+
+  it("applies the ready-state rule to a racing emitter with the same key", async () => {
+    const statuses = [
+      "queued",
+      "deferred_issue_execution",
+      "claimed",
+      "completed",
+      "coalesced",
+      "skipped",
+      "failed",
+      "cancelled",
+    ];
+    const covered: string[] = [];
+    for (const status of statuses) {
+      const rows = [{ id: `wake-${status}`, status, idempotencyKey: stateKey, requestedAt: secondCycle }];
+      const underLock = await findIssueBlockersResolvedWakeForStateKey(dbWithWakes(rows), {
+        companyId,
+        issueId: dependentIssueId,
+        idempotencyKey: stateKey,
+      });
+      const beforeLock = await findExistingIssueBlockersResolvedWakeForReadyState(dbWithWakes(rows), readyState);
+      expect(underLock?.id ?? null).toBe(beforeLock?.id ?? null);
+      if (underLock) covered.push(status);
+    }
+    expect(covered).toEqual(["queued", "deferred_issue_execution", "claimed", "completed"]);
+  });
+
+  it("counts a wake that joined a waiting, running, or succeeded run", async () => {
+    const covered: string[] = [];
+    for (const joinedRunStatus of [
+      "queued", "scheduled_retry", "running", "succeeded",
+      "failed", "cancelled", "timed_out", "interrupted", null,
+    ]) {
+      const rows = [{ id: "wake-joined", status: "coalesced", idempotencyKey: stateKey, requestedAt: secondCycle, joinedRunStatus }];
+      const found = await findIssueBlockersResolvedWakeForStateKey(dbWithWakes(rows), {
+        companyId,
+        issueId: dependentIssueId,
+        idempotencyKey: stateKey,
+      });
+      if (found) covered.push(String(joinedRunStatus));
+    }
+    expect(covered).toEqual(["queued", "scheduled_retry", "running", "succeeded"]);
+  });
+
+  it("does not query for per-edge or missing keys", async () => {
+    const db = {
+      select() {
+        throw new Error("unexpected query");
+      },
+    } as unknown as Db;
+    const perEdgeKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+      dependentIssueId,
+      resolvedBlockerIssueId: blockerIssueId,
+    });
+    const issueId = dependentIssueId;
+    expect(await findIssueBlockersResolvedWakeForStateKey(db, { companyId, issueId, idempotencyKey: perEdgeKey })).toBeNull();
+    expect(await findIssueBlockersResolvedWakeForStateKey(db, { companyId, issueId, idempotencyKey: null })).toBeNull();
   });
 });
