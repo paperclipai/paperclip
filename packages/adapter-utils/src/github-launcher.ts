@@ -60,20 +60,22 @@ ${options.brokerFile ? String.raw`
   delete env.PAPERCLIP_API_URL;
   delete env.PAPERCLIP_API_KEY;
   delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
+  env.PAPERCLIP_GITHUB_BROKER_URL = '';
+  env.PAPERCLIP_GITHUB_BROKER_TOKEN = '';
+  // An unreadable file (for example during a rewrite) keeps the last location.
+  // Only a missing file, or one without a broker, means the task's access ended.
   const readBroker = () => {
-    env.PAPERCLIP_GITHUB_BROKER_URL = '';
-    env.PAPERCLIP_GITHUB_BROKER_TOKEN = '';
-    try {
-      const broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8'));
-      if (typeof broker.url === 'string' && typeof broker.token === 'string') {
-        env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
-        env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
-      }
-    } catch {}
+    let broker;
+    try { broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8')); }
+    catch (error) { return error && error.code === 'ENOENT' ? 'absent' : 'unreadable'; }
+    if (!broker || typeof broker.url !== 'string' || typeof broker.token !== 'string') return 'absent';
+    env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
+    env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
+    return 'present';
   };
   readBroker();
 ` : String.raw`
-  const readBroker = () => {};
+  const readBroker = () => 'present';
 `}
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   let connected = false;
@@ -115,8 +117,9 @@ ${options.brokerFile ? String.raw`
       // managed identity, so a failed request is retried before giving up.
       // Busy (409) responses and transport failures keep separate budgets, and
       // the body is read inside the retry so a failed read is retried too.
-      // Transport failures retry until the recovery deadline, reading the
-      // broker location again so a replacement broker is used once published.
+      // Transport failures and 503 responses retry until the recovery deadline,
+      // reading the broker location again so a replacement is used once published.
+      // Authentication denials (401/403) still end the request at once.
       const recoveryDeadline = Date.now() + ${brokerRecoveryMs};
       let transportFailures = 0, conflicts = 0, result;
       for (;;) {
@@ -128,6 +131,12 @@ ${options.brokerFile ? String.raw`
               'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
             body: '{}',
           });
+          // A sandbox gateway that outlived its controller answers 503 until
+          // the replacement broker is published, so it waits like a refusal.
+          if (response.status === 503 && Date.now() < recoveryDeadline) {
+            await response.arrayBuffer().catch(() => {});
+            throw new Error('broker unavailable');
+          }
           if (response.status === 409 && conflicts < 29) {
             conflicts += 1;
             await response.arrayBuffer();
@@ -145,8 +154,7 @@ ${options.brokerFile ? String.raw`
           }
           await new Promise(resolve => setTimeout(resolve, Math.min(500 * transportFailures, 2000)));
           // A removed broker file means the task's access ended; nothing will return.
-          readBroker();
-          if (!(env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL) || !env.PAPERCLIP_GITHUB_BROKER_TOKEN) throw error;
+          if (readBroker() === 'absent') throw error;
         }
       }
       if (!response.ok) {
