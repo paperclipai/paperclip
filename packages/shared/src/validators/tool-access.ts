@@ -1,5 +1,6 @@
 import { connectionAgentInstructionsSchema } from "../connection-instructions.js";
 import { isRemoteMcpConnectorMethod } from "../remote-mcp-connectors.js";
+import { APP_DEFINITIONS } from "../app-definitions.generated.js";
 import { z } from "zod";
 import {
   CONNECTION_TOKEN_ISSUANCE_PATHS,
@@ -107,6 +108,13 @@ export const toolRateLimitWindowKindSchema = z.enum(TOOL_RATE_LIMIT_WINDOW_KINDS
 const safeKeyPattern = /^[a-z0-9][a-z0-9._:-]*$/i;
 const sensitiveConfigKeyPattern =
   /^(access[-_]?key([-_]?id)?|api[-_]?key|authorization|bearer|client[-_]?secret|credential|credentials|jwt|password|passwd|private[-_]?key|refresh[-_]?token|secret|secret[-_]?access[-_]?key|secret[-_]?key|session[-_]?token|token)$/i;
+
+/** Minted-credential methods (AWS role) save a draft first: the provider must trust a connection that already exists. */
+function methodMintsCredentials(galleryKey: unknown, methodKey: unknown): boolean {
+  if (typeof galleryKey !== "string" || typeof methodKey !== "string") return false;
+  return Boolean(APP_DEFINITIONS.find((app) => app.slug === galleryKey)?.methods
+    .find((method) => method.key === methodKey)?.credentialMinter);
+}
 
 function rejectSensitiveConfigKeys(value: unknown, ctx: z.RefinementCtx, path: Array<string | number> = []) {
   if (!value || typeof value !== "object") return;
@@ -500,8 +508,9 @@ export const connectToolAppSchema = z.object({
   if ((value.grantKind === "agent") !== Boolean(value.subjectAgentId)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectAgentId"], message: "subjectAgentId is required exactly for an agent grant" });
   }
-  if (value.saveDraft && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["saveDraft"], message: "Draft saving requires a remote MCP connector" });
+  if (value.saveDraft && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)
+    && !methodMintsCredentials(value.galleryKey, value.connectionMethodKey)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["saveDraft"], message: "Draft saving requires a remote MCP connector or a method with minted credentials" });
   }
   if (value.authMode && value.galleryKey && !isRemoteMcpConnectorMethod(value.galleryKey, value.connectionMethodKey)) {
     ctx.addIssue({

@@ -12,6 +12,10 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { AWS_MCP_READ_ONLY_SESSION_POLICIES, type AwsMcpClients } from "../services/connectors/aws/mcp-credentials.js";
 import { resetWorkloadIdentityKeyCacheForTests, workloadIdentityService } from "../services/workload-identity.js";
 import { forgetMcpHttpSessions } from "../services/mcp-http.js";
+import express from "express";
+import request from "supertest";
+import { toolAccessRoutes } from "../routes/tool-access.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 const actor = { actorType: "user" as const, actorId: "aws-test-user", actorSource: "local_implicit" as const };
 const ACCESS_KEY_ID = "AKIAEXAMPLE1234567";
@@ -75,6 +79,46 @@ describe("AWS connector with minted credentials", () => {
     const common = { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 as const }], remoteHttpRequest: send, awsMcpClients: aws };
     return { aws, requests, rejected, service: toolAccessService(db, common), gateway: createToolGatewayService(db, { ...common, toolActionSigningSecret: "fixture-signing-key" }) };
   }
+
+  it("saves a role draft through the API and returns what to configure in AWS", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAwsConnector: true });
+    const { org } = await company();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: actor.actorId, source: "local_implicit", isInstanceAdmin: true } as Express.Request["actor"]; next(); });
+    app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: null }));
+    app.use(errorHandler);
+    const roleArn = "arn:aws:iam::123456789012:role/agents/paperclip-ops";
+    const draft = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+      galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
+      configValues: { roleArn, endpointRegion: "us-east-1", accessLevel: "read_only" },
+    });
+    expect(draft.status, JSON.stringify(draft.body)).toBeLessThan(300);
+    const connectionId = draft.body.connectionId as string;
+    const setup = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200);
+    const issuer = `https://acme.paperclip.app/oidc/companies/${org.id}`;
+    expect(setup.body).toMatchObject({
+      available: true, issuer, audience: "sts.amazonaws.com", subject: `connection:${connectionId}`,
+      accountId: "123456789012", roleName: "paperclip-ops", rolePath: "/agents/", issuerPublished: true, addressChanged: false,
+    });
+    const host = issuer.replace("https://", "");
+    const template = JSON.parse(setup.body.cloudFormationTemplate);
+    const role = template.Resources.PaperclipRole.Properties;
+    expect(role).toMatchObject({ RoleName: "paperclip-ops", Path: "/agents/" });
+    expect(role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals).toEqual({
+      [`${host}:aud`]: "sts.amazonaws.com", [`${host}:sub`]: `connection:${connectionId}`,
+    });
+    expect(template.Resources.PaperclipIdentityProvider.Properties.Url).toBe(issuer);
+    expect(setup.body.trustPolicy.Statement[0].Principal.Federated).toBe(`arn:aws:iam::123456789012:oidc-provider/${host}`);
+    expect(JSON.stringify(setup.body)).not.toMatch(/secret|private/i);
+
+    const keyDraft = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+      galleryKey: "aws", connectionMethodKey: "aws-access-key", saveDraft: true,
+      configValues: { endpointRegion: "us-east-1", accessLevel: "read_only" },
+      credentialValues: { "credentials.accessKeyId": ACCESS_KEY_ID, "credentials.secretAccessKey": SECRET_ACCESS_KEY },
+    });
+    await request(app).get(`/api/tool-connections/${keyDraft.body.connectionId}/aws-setup`).expect(422);
+  });
 
   it("stays unavailable until the experimental setting is on", async () => {
     const { org } = await company();

@@ -1,4 +1,5 @@
 import { connectionIntentsApi } from "@/api/connection-intents";
+import { AwsRoleSetup, awsSetupErrorMessage } from "./AwsRoleSetup";
 import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { bindAccount } from "@/lib/account-scope";
 import { StepHeader } from "./ConnectionSetupHeader";
@@ -803,6 +804,12 @@ function StandardConnectionSetupFlow({
   // A draft that sign-in already created, to be resumed with an operator's own
   // OAuth client when automatic registration was refused.
   const customerClientResumeRef = useRef<string | null>(null);
+  // AWS role setup saves a draft first, so the customer can create a role that trusts
+  // exactly this connection; the panel then tests the same draft.
+  const [awsRoleDraftId, setAwsRoleDraftId] = useState<string | null>(null);
+  const [awsRoleError, setAwsRoleError] = useState<string | null>(null);
+  const awsRoleDraftRef = useRef<string | null>(null);
+  const awsRoleTestingRef = useRef(false);
   const hydratedResumeConnectionIdRef = useRef<string | null>(null);
   const [hydratedResumeConnectionId, setHydratedResumeConnectionId] = useState<string | null>(null);
   // Finishing a resumed unauthenticated/API-key draft activates that exact row.
@@ -1508,7 +1515,15 @@ function StandardConnectionSetupFlow({
           trimmedGalleryName || connectEntry.name,
           requestedGrantKind,
         );
+        // AWS role: the first connect saves a draft (reusing an earlier one); "Test connection" resumes it.
+        const awsRoleDraftFirst = connectEntry.slug === "aws" && connectionMethodKey === "aws-role"
+          && !resumeConnectionId && !reconnectConnectionId && !awsRoleTestingRef.current;
+        if (awsRoleDraftFirst && awsRoleDraftRef.current && !customerClientResumeRef.current) {
+          customerClientResumeRef.current = awsRoleDraftRef.current;
+        }
+        awsRoleTestingRef.current = false;
         result = await toolsApi.connectApp(selectedCompanyId!, {
+          ...(awsRoleDraftFirst ? { saveDraft: true } : {}),
           ...(connectEntry.slug === "google-workspace" && workspaceSelectionRef.current ? { workspaceServices: workspaceSelectionRef.current } : {}),
           galleryKey: connectEntry.slug,
           ...(instructionValue ? { agentInstructions: instructionValue } : {}),
@@ -1612,11 +1627,21 @@ function StandardConnectionSetupFlow({
       }
       oauthPopupRef.current?.close();
       oauthPopupRef.current = null;
+      if (entry?.slug === "aws" && result.connection?.status === "draft" && result.catalog.length === 0) {
+        awsRoleDraftRef.current = result.connectionId;
+        setAwsRoleError(null);
+        setAwsRoleDraftId(result.connectionId);
+        return;
+      }
       acceptConnectedResult(result);
     },
     onError: (error) => {
       oauthPopupRef.current?.close();
       oauthPopupRef.current = null;
+      if (awsRoleDraftId) {
+        setAwsRoleError(awsSetupErrorMessage(error));
+        return;
+      }
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
         ? (error.body as { details?: { code?: unknown } }).details
         : null;
@@ -2532,7 +2557,21 @@ function StandardConnectionSetupFlow({
     : undefined;
   const aiMethod = reconnectAiMethod ?? entry?.methods.find(method => method.key === connectionMethodKey)?.ai
     ?? (!connectionMethodKey && entry?.methods.every(method => method.ai) ? entry.methods[0]?.ai : undefined);
-  const credentialStep = entry ? renderCredentialStep?.({ app: entry, name: galleryName || entry.name, grantKind: effectiveGrantKind, agentIds: [...installAgentIds], allAgents: installChoice === "all", onBack: () => backToGallery() }) ?? (aiMethod && selectedCompanyId ? <><AiConnectionCredentialStep
+  const awsRoleStep = entry?.slug === "aws" && awsRoleDraftId ? (
+    <AwsRoleSetup
+      connectionId={awsRoleDraftId}
+      error={awsRoleError}
+      testing={connectMutation.isPending}
+      onBack={() => { setAwsRoleDraftId(null); setAwsRoleError(null); }}
+      onTest={() => {
+        setAwsRoleError(null);
+        awsRoleTestingRef.current = true;
+        customerClientResumeRef.current = awsRoleDraftId;
+        connectApp();
+      }}
+    />
+  ) : undefined;
+  const credentialStep = awsRoleStep ?? (entry ? renderCredentialStep?.({ app: entry, name: galleryName || entry.name, grantKind: effectiveGrantKind, agentIds: [...installAgentIds], allAgents: installChoice === "all", onBack: () => backToGallery() }) ?? (aiMethod && selectedCompanyId ? <><AiConnectionCredentialStep
     defaults={reconnectConnection ? undefined : connectionDefaults}
     companyId={selectedCompanyId} provider={aiMethod.provider} fixedMethod={Boolean(aiConnection && aiConnection.mode !== "responsible_user")} initialMethod={reconnectConnection?.connectionPurpose === "ai" ? (reconnectConnection.config?.ai as { method: "subscription" | "api_key" }).method : aiMethod.method}
     connectionId={reconnectConnection?.connectionPurpose === "ai" ? reconnectConnection.id : undefined}
@@ -2541,7 +2580,7 @@ function StandardConnectionSetupFlow({
     agentIds={[...installAgentIds]} allAgents={installChoice === "all"}
     onCancel={() => onCancel ? onCancel() : navigate("/apps")}
     onComplete={result => { onComplete?.({ connectionId: result.connectionId }); if (!onComplete) navigate(`/apps/${result.connectionId}/permissions`); }}
-  /></> : undefined) : undefined;
+  /></> : undefined) : undefined);
   // One screen per connector (PAP-659): a selected app has a single step, so
   // its stepper collapses to nothing rather than showing one lonely dot.
   const stepLabels = reconnectConnection?.connectionPurpose === "ai" ? ["Reconnect account"] : credentialStep !== undefined

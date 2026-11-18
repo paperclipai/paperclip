@@ -1090,6 +1090,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(await svc.getMachineSignIn(existing.companyId, existing.id));
   });
 
+  router.get("/tool-connections/:connectionId/aws-setup", managementGuard("connections:configure", "GET /tool-connections/:connectionId/aws-setup"), async (req, res) => {
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json(await svc.getAwsSetup(existing.companyId, existing.id));
+  });
+
   router.post("/tool-connections/:connectionId/machine-sign-in/test", managementGuard("connections:configure", "POST /tool-connections/:connectionId/machine-sign-in/test"), validate(testMachineSignInSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;

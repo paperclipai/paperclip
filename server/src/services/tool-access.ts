@@ -1,5 +1,6 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
-import { AWS_MCP_ISSUER_CONFIG_KEY, awsMcpMethodUsesIssuer, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { AWS_MCP_ISSUER_CONFIG_KEY, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { awsRoleSetup } from "./connectors/aws/setup.js";
 import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
@@ -97,7 +98,7 @@ import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, pap
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
 import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
-import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -4000,6 +4001,28 @@ export function toolAccessService(
     return preflightConnectionMetadata(app, method, method.defaults, serverUrl, () => options.now?.() ?? new Date());
   }
 
+  /** The values and template a customer needs to create an AWS role for this connection. */
+  async function getAwsSetup(companyId: string, connectionId: string): Promise<AwsConnectionSetup> {
+    const [row] = await db.select().from(toolConnections)
+      .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
+    if (!row) throw notFound("Tool connection not found");
+    const roleArn = asRecord(row.config.methodConfig).roleArn;
+    if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role" || typeof roleArn !== "string") {
+      throw unprocessable("This connection does not use an AWS role.", { code: "aws_role_setup_unavailable" });
+    }
+    const origin = workloadIdentityIssuerOrigin();
+    const current = origin.available ? workloadIdentityIssuer(origin.origin, companyId) : null;
+    const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
+    const issuer = typeof recorded === "string" ? recorded : current;
+    if (!issuer) return { available: false, reason: origin.available ? "no_public_url" : origin.reason };
+    return {
+      available: true,
+      ...awsRoleSetup({ issuer, connectionId: row.id, roleArn }),
+      issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
+      addressChanged: current !== null && current !== issuer,
+    };
+  }
+
   return {
     /** Identity-only verification: no bot installation/repository access required. */
     verifyPersonalGitHubIdentity: async (companyId: string, connectionId: string, userId: string) => {
@@ -4108,6 +4131,7 @@ export function toolAccessService(
     rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
     completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
     getMachineSignIn: clientCredentials.getMachineSignIn,
+    getAwsSetup,
 
     reconnectGalleryApp: withPluginApps(reconnectGalleryApp),
 

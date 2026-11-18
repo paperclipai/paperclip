@@ -87,30 +87,37 @@ sequenceDiagram
 
 ## Administrator setup
 
-The role method uses three steps, because the role must trust a connection
-that already exists:
+The role method takes two steps, because the role must trust a connection that
+already exists. The setup screen walks through them:
 
 1. Turn on **AWS connector** in Instance Settings, Experimental.
-2. **Save a draft.** Call `connectGalleryApp` with `saveDraft: true`, the role
-   ARN to be created, the endpoint region and the access level. Paperclip
-   creates the connection without contacting AWS. It also publishes the
-   company's issuer, so AWS can validate it in the next step.
-3. In the AWS account:
-   - Register the issuer `https://<instance>/oidc/companies/<companyId>` as an
-     IAM OIDC identity provider with audience `sts.amazonaws.com`.
-   - Create the role. Its trust policy allows
-     `sts:AssumeRoleWithWebIdentity` only when `<issuer host/path>:sub` equals
-     `connection:<connectionId>` and `:aud` equals `sts.amazonaws.com`.
-   - Attach `AWSMCPSignInOAuthAccessPolicy` and the permissions agents need.
-4. **Resume** with `resumeConnectionId`. Paperclip mints a token, lists the
-   tools, and the connection becomes active.
+2. In Connectors, open AWS. Enter the role ARN you will create (account ID and
+   role name), the endpoint region and the access level, then click
+   **Connect**.
+3. Paperclip saves a draft without contacting AWS and publishes the company's
+   issuer. The screen then shows two ways to create the role:
+   - **CloudFormation (recommended).** Download the template. It is generated
+     for this connection, so it needs no edits. In the CloudFormation console,
+     create a stack in that account from the downloaded file. Set
+     `CreateIdentityProvider` to `false` if the account already has an identity
+     provider for this issuer, and change `AccessPolicyArn` to let agents make
+     changes. Acknowledge that the stack creates IAM resources
+     (`CAPABILITY_NAMED_IAM`).
+   - **By hand.** Add an IAM OpenID Connect provider with the shown provider URL
+     and audience. Create the role with the shown trust policy, which trusts only
+     `connection:<id>`. Attach `AWSMCPSignInOAuthAccessPolicy` and the agents'
+     permissions.
+4. Click **Test connection**. Paperclip mints a token, lists the tools and
+   finishes setup. If AWS refuses, the screen shows why, in place.
+
+The screen reads `GET /api/tool-connections/{connectionId}/aws-setup`, which
+returns the issuer, audience, subject, trust policy and template, and never a
+secret. AWS hosts quick-create links only for templates stored in Amazon S3, so
+Paperclip offers a download instead of a hosted template.
 
 For the access-key method, create a dedicated IAM user with
 `AWSMCPSignInOAuthAccessPolicy`, `sts:GetFederationToken` and the agents'
 permissions. Then connect with the key. Setup lists the tools immediately.
-
-A guided setup screen and a CloudFormation template are planned next. Until
-then, the generic setup form and these steps apply.
 
 **Verify:** the connection lists 8 tools. A test call of `aws___run_script` that
 runs `ListBuckets` succeeds. With read-only access, a `CreateBucket` call is

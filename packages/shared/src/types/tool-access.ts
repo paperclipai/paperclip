@@ -1292,6 +1292,28 @@ export interface MachineSignInPublicKey {
 }
 
 /** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
+/** What to configure in AWS for an AWS role connection (`GET /tool-connections/:id/aws-setup`). */
+export type AwsConnectionSetup =
+  | { available: false; reason: "no_public_url" | "not_https" | "has_port" | "loopback" }
+  | {
+      available: true;
+      issuer: string;
+      audience: string;
+      subject: string;
+      providerHost: string;
+      roleArn: string;
+      accountId: string;
+      roleName: string;
+      rolePath: string;
+      trustPolicy: Record<string, unknown>;
+      cloudFormationTemplate: string;
+      cloudFormationConsoleUrl: string;
+      /** True when the company's issuer has a published key, so AWS can validate it. */
+      issuerPublished: boolean;
+      /** True when the instance's current address differs from the issuer recorded at setup. */
+      addressChanged: boolean;
+    };
+
 export interface MachineSignInStatus {
   connectionId: string;
   method: "paperclip_key" | "client_secret";

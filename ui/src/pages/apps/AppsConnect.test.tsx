@@ -34,6 +34,7 @@ const getConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
+const getAwsSetupMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const getCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
 const startCloudConnectorEnrollmentMock = vi.hoisted(() => vi.fn());
@@ -82,6 +83,7 @@ const GOOGLE_CALENDAR = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "
 const GOOGLE_DRIVE = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
 const GMAIL = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "gmail")!;
 const PAGERDUTY = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "pagerduty")!;
+const AWS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "aws")!;
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -93,6 +95,7 @@ vi.mock("@/api/tools", () => ({
     getConnection: (id: string) => getConnectionMock(id),
     getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
+    getAwsSetup: (connectionId: string) => getAwsSetupMock(connectionId),
     startOAuth: (connectionId: string, input?: unknown) => startOAuthMock(connectionId, input),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
@@ -2536,6 +2539,52 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       galleryKey: "circleback",
       connectionMethodKey: "mcp-oauth",
     })));
+  });
+
+  it("sets up an AWS role in two steps: save a draft, show what to create in AWS, then test the same draft", async () => {
+    mockParams.appKey = "aws";
+    experimentalMock.mockResolvedValue({ enableAwsConnector: true });
+    listGalleryMock.mockResolvedValueOnce({ apps: [AWS] });
+    const roleArn = "arn:aws:iam::123456789012:role/paperclip-agents";
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "aws-draft", connection: { id: "aws-draft", status: "draft" }, application: { id: "app-aws", name: "AWS" },
+      catalog: [], actions: { readOnly: [], canMakeChanges: [] }, suggestedDefaults: {},
+    });
+    getAwsSetupMock.mockResolvedValue({
+      available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
+      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1", roleArn,
+      accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
+      issuerPublished: true, addressChanged: false,
+    });
+    await render();
+    const roleInput = container.querySelector<HTMLInputElement>('input[placeholder="arn:aws:iam::123456789012:role/paperclip-agents"]');
+    expect(roleInput).toBeTruthy();
+    await act(async () => { setInputValue(roleInput!, roleArn); });
+    await flushReact();
+    await act(async () => { buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
+      galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
+      configValues: expect.objectContaining({ roleArn }),
+    }));
+    expect(finishAppMock).not.toHaveBeenCalled();
+    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-draft");
+    expect(container.textContent).toContain("Create it with CloudFormation");
+    expect(container.textContent).toContain("123456789012");
+
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "aws-draft", connection: { id: "aws-draft", status: "active" }, application: { id: "app-aws", name: "AWS" },
+      catalog: [{ id: "entry-1", toolName: "aws___run_script" }],
+      actions: { readOnly: [], canMakeChanges: [{ catalogEntryId: "entry-1", name: "aws___run_script" }] }, suggestedDefaults: {},
+    });
+    await act(async () => { buttonByText("Test connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    const testCall = connectAppMock.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(testCall).toMatchObject({ galleryKey: "aws", connectionMethodKey: "aws-role", resumeConnectionId: "aws-draft" });
+    expect(testCall.saveDraft).toBeUndefined();
+    expect(finishAppMock).toHaveBeenCalledWith("company-1", "aws-draft", expect.anything());
   });
 
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
