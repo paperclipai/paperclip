@@ -64,22 +64,33 @@ export function routineFieldsChanged(draft: RoutineFormDraft, saved: RoutineForm
 
 type ScheduleDraft = RoutineFormDraft["schedule"];
 
-/** Creates, changes or removes the routine's first schedule so it matches the form. Removal is undoable server-side (archived). */
-export async function syncRoutineSchedule(routineId: string, triggers: readonly RoutineTrigger[], schedule: ScheduleDraft) {
-  const existing = primarySchedule(triggers);
-  if (!existing && !schedule) return false;
-  if (existing && !schedule) {
+/**
+ * Creates, changes or removes the schedule the form opened with (by id, never
+ * "whichever schedule is first now"), so retrying a partly saved form cannot
+ * touch another schedule. Removal is undoable server-side (archived).
+ * Returns the schedule the form now stands for.
+ */
+export async function syncRoutineSchedule(
+  routineId: string,
+  triggers: readonly RoutineTrigger[],
+  scheduleId: string | null,
+  schedule: ScheduleDraft,
+): Promise<{ changed: boolean; scheduleId: string | null }> {
+  const existing = scheduleId ? triggers.find((trigger) => trigger.id === scheduleId) ?? null : null;
+  if (!schedule) {
+    if (!existing) return { changed: false, scheduleId: null };
     await routinesApi.updateTrigger(existing.id, { archived: true });
-    return true;
+    return { changed: true, scheduleId: null };
   }
-  if (!schedule) return false;
   if (!existing) {
-    await routinesApi.createTrigger(routineId, { kind: "schedule", cronExpression: schedule.cronExpression, timezone: schedule.timezone });
-    return true;
+    const created = await routinesApi.createTrigger(routineId, { kind: "schedule", cronExpression: schedule.cronExpression, timezone: schedule.timezone });
+    return { changed: true, scheduleId: created.trigger.id };
   }
-  if (existing.cronExpression === schedule.cronExpression && (existing.timezone ?? "UTC") === schedule.timezone) return false;
+  if (existing.cronExpression === schedule.cronExpression && (existing.timezone ?? "UTC") === schedule.timezone) {
+    return { changed: false, scheduleId: existing.id };
+  }
   await routinesApi.updateTrigger(existing.id, { cronExpression: schedule.cronExpression, timezone: schedule.timezone });
-  return true;
+  return { changed: true, scheduleId: existing.id };
 }
 
 /** Moves the routine's direct responsibility link from `from` to `to` (either may be empty). */
@@ -94,15 +105,20 @@ export async function syncRoutineResponsibility(routineId: string, from: string,
   return true;
 }
 
-/** Plain-language prefix for a save that partly went through, so nobody thinks nothing was saved. */
+export type RoutineSavePart = "details" | "schedule" | "responsibility";
+
+const SAVE_PART_LABELS: Record<RoutineSavePart, string> = {
+  details: "the routine’s details",
+  schedule: "the schedule",
+  responsibility: "the responsibility",
+};
+
+/** A save that partly went through: says what was saved, what was not, and that saving again finishes it. */
 export class PartialRoutineSaveError extends Error {
-  constructor(part: "schedule" | "responsibility", cause: unknown) {
-    const detail = cause instanceof Error && cause.message ? ` ${cause.message}` : "";
-    super(
-      part === "schedule"
-        ? `Your other changes were saved, but the schedule couldn’t be updated.${detail}`
-        : `Your other changes were saved, but the responsibility couldn’t be updated.${detail}`,
-    );
+  constructor(saved: readonly RoutineSavePart[], failed: RoutineSavePart, cause: unknown) {
+    const detail = cause instanceof Error && cause.message ? ` (${cause.message})` : "";
+    const savedText = saved.map((part) => SAVE_PART_LABELS[part]).join(" and ");
+    super(`Saved ${savedText}, but ${SAVE_PART_LABELS[failed]} couldn’t be updated${detail}. Save again to finish.`);
     this.name = "PartialRoutineSaveError";
   }
 }

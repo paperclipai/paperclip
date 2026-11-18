@@ -7,7 +7,7 @@ import { WebhookUrlWarning } from "@/components/routine-triggers/WebhookUrlWarni
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { webhookHealth, webhookTitle, type WebhookHealth } from "./routine-summary";
+import { WEBHOOK_STATUS_COPY, webhookStatusKey, webhookTitle, type WebhookStatusKey } from "./routine-summary";
 
 export type WebhookSender = "custom" | "github";
 
@@ -39,43 +39,17 @@ const SENDERS = [
   { sender: "github", label: "GitHub", Icon: GitBranch },
 ] as const;
 
-const STATUS: Record<WebhookHealth, { icon: typeof Radio; tone: string; title: string; detail: string }> = {
-  setup: {
-    icon: Radio,
-    tone: "text-muted-foreground",
-    title: "Waiting for a test event",
-    detail: "Send one from your app. Test events never start the routine.",
-  },
-  testing: {
-    icon: Radio,
-    tone: "text-muted-foreground",
-    title: "Testing",
-    detail: "Send an event from your app. It won’t start the routine. Real events are ignored until you finish testing.",
-  },
-  waiting: {
-    icon: Radio,
-    tone: "text-muted-foreground",
-    title: "Ready",
-    detail: "The next event starts this routine.",
-  },
-  receiving: {
-    icon: CheckCircle2,
-    tone: "text-(--status-task-done)",
-    title: "Receiving events",
-    detail: "Each event starts this routine.",
-  },
-  rejected: {
-    icon: AlertCircle,
-    tone: "text-destructive",
-    title: "The last event was rejected",
-    detail: "The key didn’t match. Replace the key, then paste the new one into your app.",
-  },
-  paused: {
-    icon: PauseCircle,
-    tone: "text-muted-foreground",
-    title: "Paused",
-    detail: "Events are ignored until you resume this webhook.",
-  },
+const STATUS_LOOK: Record<WebhookStatusKey, { icon: typeof Radio; tone: string }> = {
+  setup: { icon: Radio, tone: "text-muted-foreground" },
+  setup_testing: { icon: Radio, tone: "text-muted-foreground" },
+  testing: { icon: Radio, tone: "text-muted-foreground" },
+  waiting: { icon: Radio, tone: "text-muted-foreground" },
+  receiving: { icon: CheckCircle2, tone: "text-(--status-task-done)" },
+  rejected: { icon: AlertCircle, tone: "text-destructive" },
+  test_rejected: { icon: AlertCircle, tone: "text-destructive" },
+  test_received: { icon: CheckCircle2, tone: "text-(--status-task-done)" },
+  ignored_while_paused: { icon: PauseCircle, tone: "text-muted-foreground" },
+  paused: { icon: PauseCircle, tone: "text-muted-foreground" },
 };
 
 export function RoutineWebhookDialog({
@@ -102,30 +76,12 @@ export function RoutineWebhookDialog({
 
   const github = trigger?.signingMode === "github_hmac";
   const bearer = trigger?.signingMode === "bearer";
-  const health = trigger ? webhookHealth(trigger) : null;
-  // Only test deliveries count: a webhook put back into test mode still carries its last real delivery.
-  const testDelivery = trigger?.setupPending && trigger.lastWebhookDelivery?.test ? trigger.lastWebhookDelivery : null;
-  const testReceived = testDelivery?.status === "received";
-  const status = health
-    ? testReceived
-      ? { icon: CheckCircle2, tone: "text-(--status-task-done)", title: "Test event received", detail: "The connection works. No task was created." }
-      : testDelivery?.status === "rejected"
-        ? STATUS.rejected
-        : !routineActive && health !== "setup" && health !== "testing"
-          ? {
-              icon: PauseCircle,
-              tone: "text-muted-foreground",
-              title: "Ignoring events while the routine is paused",
-              detail: "Turn the routine on to start it from this webhook. Until then the sending app gets an error.",
-            }
-          : STATUS[health]
-    : null;
-  const StatusIcon = status?.icon;
   const inTest = testing && Boolean(trigger?.setupPending);
-  const statusDetail =
-    inTest && status === STATUS.setup
-      ? "Send one from your app. It won’t start the routine. Real events are ignored until you finish testing."
-      : status?.detail;
+  const statusKey = trigger ? webhookStatusKey(trigger, { routineActive, testing: inTest }) : null;
+  const status = statusKey ? { ...STATUS_LOOK[statusKey], ...WEBHOOK_STATUS_COPY[statusKey] } : null;
+  const testReceived = statusKey === "test_received";
+  const StatusIcon = status?.icon;
+  const statusDetail = status?.detail;
   const canTest = Boolean(onStartTest) && trigger != null && !trigger.setupPending && trigger.enabled;
   const url = trigger?.webhookUrl ?? "";
 
@@ -201,13 +157,13 @@ export function RoutineWebhookDialog({
                   <Button variant="outline" size="sm" onClick={onReplaceKey}>Replace key</Button>
                 </div>
               )}
-              {secret ? (
+              {secret || trigger.signingMode === "none" ? (
                 <AgentInstructions
                   value={webhookAgentInstructions(
                     github ? "github" : "custom",
                     routineTitle,
                     url,
-                    secret,
+                    secret ?? "",
                     Boolean(trigger.setupPending),
                     webhookInstructionSigningMode(trigger.signingMode),
                   )}

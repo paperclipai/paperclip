@@ -100,6 +100,23 @@ describe("RoutineEditDialog", () => {
     expect(document.body.textContent).toContain("Discard your changes?");
   });
 
+  it("keeps the draft open while saving, whatever closes it", async () => {
+    const onOpenChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <RoutineEditDialog open onOpenChange={onOpenChange} initial={initial} agents={[]} projects={[]} people={people}
+          secrets={[]} saving onSave={onSave} onCreateSecret={vi.fn()} />,
+      );
+      await flush();
+    });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await act(async () => { await flush(); });
+    const close = document.querySelector<HTMLButtonElement>('[data-slot="dialog-close"], button[aria-label="Close"]');
+    if (close) await act(async () => { close.click(); await flush(); });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
   it("does not offer clearing a responsible user, which the server cannot do", async () => {
     await render();
     const picker = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((element) => element.textContent?.includes("Riley Board"))!;

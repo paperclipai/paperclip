@@ -73,6 +73,8 @@ export function webhookAgentInstructions(
       : [
           "This webhook is enabled. Deliveries can start the routine and create tasks.",
         ]),
-    "Store the key securely; do not put it in source control or logs.",
+    signingMode === "none"
+      ? "Store the URL securely; do not put it in source control or logs."
+      : "Store the key securely; do not put it in source control or logs.",
   ].join("\n");
 }

@@ -35,5 +35,7 @@ it("gives no key instructions for a webhook without a key", () => {
   const instructions = webhookAgentInstructions("custom", "Deploys", "https://paperclip.example/webhook", "", false, webhookInstructionSigningMode("none"));
   expect(instructions).toContain("Its URL is the shared secret");
   expect(instructions).not.toContain("Secret key:");
+  expect(instructions).toContain("Store the URL securely");
+  expect(instructions).not.toContain("Store the key securely");
   expect(webhookInstructionSigningMode("something-new")).toBe("app_webhook");
 });

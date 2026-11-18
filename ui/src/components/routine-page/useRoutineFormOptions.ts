@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CompanySecret } from "@paperclipai/shared";
+import type { Agent, CompanySecret, Project } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { responsibilitiesApi } from "@/api/responsibilities";
@@ -13,6 +13,11 @@ import { buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "@/lib/c
 import { queryKeys } from "@/lib/queryKeys";
 import type { RoutineResponsibilityOption } from "./RoutineEditDialog";
 import type { RoutinePerson } from "./RoutinePage";
+
+// Stable empty lists, so memoized consumers do not rebuild while reads are pending.
+const NO_AGENTS: Agent[] = [];
+const NO_PROJECTS: Project[] = [];
+const NO_SECRETS: CompanySecret[] = [];
 
 /**
  * Everything the routine page and the edit/create form choose from: agents,
@@ -52,14 +57,18 @@ export function useRoutineFormOptions(
   });
 
   // Failed reads are reported, never shown as empty choices.
-  const views = [
-    { action: "load agents", view: useQueryView(agentsQuery) },
-    { action: "load projects", view: useQueryView(projectsQuery) },
-    { action: "load people", view: useQueryView(directoryQuery) },
-    { action: "load secrets", view: useQueryView(secretsQuery) },
-    { action: "load responsibilities", view: useQueryView(responsibilitiesQuery) },
-  ];
-  const loadErrors = views
+  const agentsView = useQueryView(agentsQuery);
+  const projectsView = useQueryView(projectsQuery);
+  const peopleView = useQueryView(directoryQuery);
+  const secretsView = useQueryView(secretsQuery);
+  const responsibilitiesView = useQueryView(responsibilitiesQuery);
+  const loadErrors = [
+    { action: "load agents", view: agentsView },
+    { action: "load projects", view: projectsView },
+    { action: "load people", view: peopleView },
+    { action: "load secrets", view: secretsView },
+    { action: "load responsibilities", view: responsibilitiesView },
+  ]
     .filter(({ view }) => view.kind === "error")
     .map(({ action, view }) => ({ action, error: view.error, retry: view.retry, retrying: view.isFetching }));
 
@@ -116,12 +125,12 @@ export function useRoutineFormOptions(
   return {
     agents,
     /** Includes terminated agents, so a routine's saved agent still shows by name. */
-    allAgents: allAgents ?? [],
+    allAgents: allAgents ?? NO_AGENTS,
     projects,
     /** Includes archived projects, so a routine's saved project still shows by name. */
-    allProjects: allProjects ?? [],
+    allProjects: allProjects ?? NO_PROJECTS,
     people,
-    secrets: secretsQuery.data ?? [],
+    secrets: secretsQuery.data ?? NO_SECRETS,
     mentions,
     responsibilitiesOn,
     responsibilities,
@@ -130,6 +139,6 @@ export function useRoutineFormOptions(
     /** Reads that failed, each with a retry. */
     loadErrors,
     /** People could not be loaded, so a saved responsible user cannot be named. */
-    peopleFailed: views[2]!.view.kind === "error" && !members,
+    peopleFailed: peopleView.kind === "error" && !members,
   };
 }

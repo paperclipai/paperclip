@@ -48,6 +48,8 @@ import {
   instructionsPreview,
   nextScheduledRun,
   routineAutomationState,
+  routinePausedNotice,
+  routineStatusDetail,
   webhookHealth,
   webhookTitle,
 } from "./routine-summary";
@@ -385,11 +387,18 @@ function Instructions({
         </div>
       ) : (
         <>
-          {renderBody(
-            <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
-              {expanded ? markdown : preview}
-            </MarkdownBody>,
-          )}
+          {/* Comments anchor to the full text, so the comment layer only wraps it when the whole text shows. */}
+          {expanded || !truncated
+            ? renderBody(
+                <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
+                  {markdown}
+                </MarkdownBody>,
+              )
+            : (
+                <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
+                  {preview}
+                </MarkdownBody>
+              )}
           {truncated && !forceExpanded ? (
             <Button
               variant="ghost"
@@ -449,31 +458,8 @@ export function RoutinePage({
   const archived = state === "archived";
   const active = state === "active";
   const hasSchedule = schedules.some((trigger) => trigger.enabled);
-  const pausedNotice =
-    state === "paused" || state === "draft"
-      ? webhooks.length > 0 && hasSchedule
-        ? "Scheduled runs are skipped and webhook events are ignored until this routine is on."
-        : webhooks.length > 0
-          ? "Webhook events are ignored until this routine is on. The sending app gets an error."
-          : hasSchedule
-            ? "Scheduled runs are skipped until this routine is on."
-            : null
-      : null;
-
-  const statusDetail =
-    state === "draft"
-      ? null
-      : state === "archived"
-        ? "No longer runs"
-        : state === "paused"
-          ? "Run now still works"
-          : nextRun
-            ? `Next run ${formatNextRun(nextRun)}`
-            : hasEnabledWebhook
-              ? "Runs when a webhook arrives"
-              : standingCheck
-                ? "Checked each time the agent wakes up"
-                : "Only runs when you start it";
+  const pausedNotice = routinePausedNotice({ state, hasWebhooks: webhooks.length > 0, hasSchedule });
+  const statusDetail = routineStatusDetail({ state, nextRun, hasEnabledWebhook, hasStandingCheck: Boolean(standingCheck) });
 
   return (
     <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-x-12 gap-y-10 px-4 py-8 md:px-8 lg:grid-cols-5">

@@ -7,6 +7,38 @@ import type { RoutineWebhookDialogProps, WebhookSender } from "./RoutineWebhookD
 /** A webhook key to show once, e.g. after a version restore recreated the webhook. */
 export type PendingWebhookKey = { triggerId: string; webhookUrl: string; webhookSecret: string };
 
+/** Enough of a restored webhook to show its URL and new key before the routine refresh lists it. */
+function restoredPlaceholder(key: PendingWebhookKey): RoutineTrigger {
+  const now = new Date();
+  return {
+    id: key.triggerId,
+    companyId: "",
+    routineId: "",
+    kind: "webhook",
+    label: null,
+    enabled: true,
+    cronExpression: null,
+    timezone: null,
+    nextRunAt: null,
+    lastFiredAt: null,
+    publicId: null,
+    webhookUrl: key.webhookUrl,
+    setupPending: false,
+    lastWebhookDelivery: null,
+    secretId: null,
+    signingMode: "app_webhook",
+    replayWindowSec: null,
+    lastRotatedAt: null,
+    lastResult: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    updatedByAgentId: null,
+    updatedByUserId: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 /**
  * Wires the webhook dialog to the trigger API: create (setup mode), replace
  * key, pause/resume, remove, and test mode. Every change is saved right away;
@@ -27,6 +59,8 @@ export function useRoutineWebhookDialog({
   const [open, setOpen] = useState(false);
   const [triggerId, setTriggerId] = useState<string | null>(null);
   const [created, setCreated] = useState<RoutineTrigger | null>(null);
+  /** A restored webhook's URL, shown with its new key until the refreshed routine lists it. */
+  const [restored, setRestored] = useState<PendingWebhookKey | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +69,9 @@ export function useRoutineWebhookDialog({
   const busyRef = useRef(false);
 
   const saved = triggerId ? triggers.find((trigger) => trigger.id === triggerId) ?? null : null;
-  const trigger = saved ?? (created && created.id === triggerId ? created : null);
+  const trigger = saved
+    ?? (created && created.id === triggerId ? created : null)
+    ?? (restored && restored.triggerId === triggerId ? restoredPlaceholder(restored) : null);
   // A webhook created in this dialog is in first setup; any other webhook in
   // setup mode was put back into test mode (or left mid-setup) and offers Finish testing.
   const testing = Boolean(trigger?.setupPending) && created?.id !== trigger?.id;
@@ -63,6 +99,7 @@ export function useRoutineWebhookDialog({
   const show = useCallback((next: RoutineTrigger | null, key: string | null = null) => {
     setTriggerId(next?.id ?? null);
     setCreated(null);
+    setRestored(null);
     setSecret(key);
     setError(null);
     setOpen(true);
@@ -73,6 +110,7 @@ export function useRoutineWebhookDialog({
     if (!next) return false;
     setTriggerId(next.triggerId);
     setCreated(null);
+    setRestored(next);
     setSecret(next.webhookSecret);
     setError(null);
     setOpen(true);

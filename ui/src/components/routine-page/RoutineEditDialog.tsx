@@ -160,8 +160,10 @@ export function RoutineEditDialog({
     onSave(flushed ? { ...draft, env: Object.keys(flushed).length > 0 ? flushed : null } : draft);
   };
 
+  /** Escape, the close button and Cancel all come here. Nothing closes while a save is running, so a failed save keeps the draft and its error. */
   const requestClose = () => {
-    if (dirty && !saving) setConfirmingDiscard(true);
+    if (saving) return;
+    if (dirty) setConfirmingDiscard(true);
     else onOpenChange(false);
   };
 

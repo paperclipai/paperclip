@@ -90,6 +90,7 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
+import { planTriggerUpdate } from "./routine-trigger-update-plan.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -2817,8 +2818,11 @@ export function routineService(
         if (existing.kind === "webhook" && current.signingMode !== "none") {
           assertAgentWebhookAuthenticated(actor, patch.signingMode);
         }
-        const startsTesting = patch.setupPending === true && !current.setupPending;
-        const finishesTesting = patch.setupPending === false && current.setupPending;
+        const plan = planTriggerUpdate(patch, {
+          kind: existing.kind,
+          setupPending: current.setupPending,
+          lastWebhookDelivery: current.lastWebhookDelivery ?? null,
+        });
         if (patch.setupPending === true) {
           if (patch.archived ?? current.archived) throw conflict("This webhook was removed");
           if (!(patch.enabled ?? current.enabled)) throw conflict("Turn the webhook on before testing it");
@@ -2829,13 +2833,6 @@ export function routineService(
           if (!lockedRoutine) throw notFound("Routine not found");
           if (lockedRoutine.status === "archived") throw conflict("This routine is archived");
         }
-        // Ending a test on a webhook that was already receiving real events puts
-        // back its last real delivery, so it does not look brand new.
-        // A test delivery always records `previous` (null when there was no real
-        // delivery), so ending the test also drops a stale test result.
-        const lastDelivery = current.lastWebhookDelivery;
-        const restoresDelivery = finishesTesting && Boolean(lastDelivery?.test) && lastDelivery !== null && "previous" in lastDelivery;
-        const restoredDelivery = restoresDelivery ? lastDelivery?.previous ?? null : null;
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [updated] = await txDb
           .update(routineTriggers)
@@ -2843,7 +2840,7 @@ export function routineService(
             label: patch.label === undefined ? existing.label : patch.label,
             enabled: patch.enabled ?? existing.enabled,
             ...(patch.setupPending !== undefined ? { setupPending: patch.setupPending } : {}),
-            ...(restoresDelivery ? { lastWebhookDelivery: restoredDelivery } : {}),
+            ...(plan.restoredDelivery ? { lastWebhookDelivery: plan.restoredDelivery.value } : {}),
             ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
             cronExpression,
             timezone,
@@ -2863,12 +2860,7 @@ export function routineService(
           .where(eq(routines.id, existing.routineId))
           .then((rows) => rows[0] ?? null);
         if (!routine) throw notFound("Routine not found");
-        const changeSummary = startsTesting
-          ? "Started testing webhook"
-          : finishesTesting
-            ? restoredDelivery ? "Finished testing webhook" : "Finished webhook setup or test"
-            : `Updated ${existing.kind} trigger`;
-        const appended = await appendRoutineRevision(txDb, routine, actor, { changeSummary });
+        const appended = await appendRoutineRevision(txDb, routine, actor, { changeSummary: plan.changeSummary });
         return { trigger: updated as RoutineTrigger, revision: appended.revision };
       });
       return result;

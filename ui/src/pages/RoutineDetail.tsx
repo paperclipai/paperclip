@@ -25,6 +25,8 @@ import {
 import { RoutineWebhookDialog } from "@/components/routine-page/RoutineWebhookDialog";
 import {
   PartialRoutineSaveError,
+  primarySchedule,
+  type RoutineSavePart,
   buildRoutineResponsibilityChoices,
   routineFieldsChanged,
   routineFieldsPayload,
@@ -87,11 +89,16 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [removedWebhooks, setRemovedWebhooks] = useState<RoutineTrigger[]>([]);
   const [runOpen, setRunOpen] = useState(false);
-  const [commentsOpen, setCommentsOpen] = useState(false);
+  // A link to one instruction comment opens the whole text with its comments.
+  const [commentsOpen, setCommentsOpen] = useState(
+    () => typeof window !== "undefined" && window.location.hash.startsWith("#document-description"),
+  );
   /** The revision the open form started from; refreshed after this person's own changes. */
   const baseRevisionRef = useRef<{ id: string | null; number: number } | null>(null);
   /** The direct responsibility when the form opened; Save only moves the link when the person changed it. */
   const editResponsibilityRef = useRef("");
+  /** The schedule the form opened with, by id; Save changes only this one. */
+  const editScheduleIdRef = useRef<string | null>(null);
   const [pageRemoved, setPageRemoved] = useState<RoutineTrigger[]>([]);
   const editOpenRef = useRef(false);
   editOpenRef.current = editOpen;
@@ -238,7 +245,8 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
         && draft.responsibleUserId !== saved.responsibleUserId
         && latest.canChangeResponsibleUser !== false;
       let warnings: string | null = null;
-      let savedSomething = false;
+      // Each step records what it saved, so a retry after a partial failure only does what is left.
+      const savedParts: RoutineSavePart[] = [];
       if (routineFieldsChanged(draft, saved) || responsibleUserChanged) {
         const updated = await routinesApi.update(routineId, {
           ...routineFieldsPayload(draft),
@@ -247,15 +255,17 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
         });
         baseRevisionRef.current = { id: updated.latestRevisionId, number: updated.latestRevisionNumber };
         warnings = configurationWarningMessages(updated);
-        savedSomething = true;
+        savedParts.push("details");
       }
       try {
-        if (await syncRoutineSchedule(routineId, latest.triggers, draft.schedule)) {
-          savedSomething = true;
+        const schedule = await syncRoutineSchedule(routineId, latest.triggers, editScheduleIdRef.current, draft.schedule);
+        editScheduleIdRef.current = schedule.scheduleId;
+        if (schedule.changed) {
+          savedParts.push("schedule");
           await refreshRoutine();
         }
       } catch (error) {
-        if (savedSomething) throw new PartialRoutineSaveError("schedule", error);
+        if (savedParts.length > 0) throw new PartialRoutineSaveError(savedParts, "schedule", error);
         throw error;
       }
       if (options.responsibilitiesOn) {
@@ -263,8 +273,9 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
           if (await syncRoutineResponsibility(routineId, editResponsibilityRef.current, draft.responsibilityId)) {
             await queryClient.invalidateQueries({ queryKey: queryKeys.responsibilities.all });
           }
+          editResponsibilityRef.current = draft.responsibilityId;
         } catch (error) {
-          if (savedSomething) throw new PartialRoutineSaveError("responsibility", error);
+          if (savedParts.length > 0) throw new PartialRoutineSaveError(savedParts, "responsibility", error);
           throw error;
         }
       }
@@ -311,6 +322,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
       return;
     }
     editResponsibilityRef.current = responsibilityId;
+    editScheduleIdRef.current = primarySchedule(current.triggers)?.id ?? null;
     setEditInitial(routineToDraft(current, responsibilityId));
     baseRevisionRef.current = { id: current.latestRevisionId, number: current.latestRevisionNumber };
     setSaveConflict(false);
@@ -324,6 +336,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
       const fresh = await refreshRoutine();
       const responsibilityId = await loadDirectResponsibility();
       editResponsibilityRef.current = responsibilityId;
+      editScheduleIdRef.current = primarySchedule(fresh.triggers)?.id ?? null;
       baseRevisionRef.current = { id: fresh.latestRevisionId, number: fresh.latestRevisionNumber };
       setEditInitial(routineToDraft(fresh, responsibilityId));
       setSaveConflict(false);
@@ -432,6 +445,16 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   }, [actions, actionsInToolbar, setBreadcrumbToolbar]);
 
   const routineProjectId = routine?.projectId ?? null;
+  const routineAgentId = routine?.assigneeAgentId ?? null;
+  // Stable between refreshes, so the form's pickers do not rebuild their indexes on every poll.
+  const agents = useMemo(
+    () => withCurrent<RoutinePageAgent>(options.agents, options.allAgents, routineAgentId),
+    [options.agents, options.allAgents, routineAgentId],
+  );
+  const projects = useMemo(
+    () => withCurrent<RoutinePageProject>(options.projects, options.allProjects, routineProjectId),
+    [options.projects, options.allProjects, routineProjectId],
+  );
   const responsibilityChoices = useMemo(
     () => buildRoutineResponsibilityChoices({
       links: linkEntries ?? [],
@@ -460,8 +483,6 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   }
   if (!routine) return <EmptyState icon={AlertCircle} message="We couldn't load this routine." />;
 
-  const agents = withCurrent<RoutinePageAgent>(options.agents, options.allAgents, routine.assigneeAgentId);
-  const projects = withCurrent<RoutinePageProject>(options.projects, options.allProjects, routine.projectId);
   const agent = options.allAgents.find((candidate) => candidate.id === routine.assigneeAgentId)
     ?? (routine.assignee ? { id: routine.assignee.id, name: routine.assignee.name, urlKey: routine.assignee.urlKey } : null);
   const project = options.allProjects.find((candidate) => candidate.id === routine.projectId)

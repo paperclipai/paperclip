@@ -17,6 +17,46 @@ export const ROUTINE_STATE_LABELS: Record<RoutineAutomationState, string> = {
   archived: "Archived",
 };
 
+/** What a paused or draft routine skips; null when it would not run on its own anyway. */
+export function routinePausedNotice({
+  state,
+  hasWebhooks,
+  hasSchedule,
+}: {
+  state: RoutineAutomationState;
+  hasWebhooks: boolean;
+  hasSchedule: boolean;
+}): string | null {
+  if (state !== "paused" && state !== "draft") return null;
+  if (hasWebhooks && hasSchedule) return "Scheduled runs are skipped and webhook events are ignored until this routine is on.";
+  if (hasWebhooks) return "Webhook events are ignored until this routine is on. The sending app gets an error.";
+  if (hasSchedule) return "Scheduled runs are skipped until this routine is on.";
+  return null;
+}
+
+/** The line beside the status switch: when the routine runs next, or why it does not. */
+export function routineStatusDetail({
+  state,
+  nextRun,
+  hasEnabledWebhook,
+  hasStandingCheck,
+  now,
+}: {
+  state: RoutineAutomationState;
+  nextRun: Date | null;
+  hasEnabledWebhook: boolean;
+  hasStandingCheck: boolean;
+  now?: Date;
+}): string | null {
+  if (state === "draft") return null;
+  if (state === "archived") return "No longer runs";
+  if (state === "paused") return "Run now still works";
+  if (nextRun) return `Next run ${formatNextRun(nextRun, now)}`;
+  if (hasEnabledWebhook) return "Runs when a webhook arrives";
+  if (hasStandingCheck) return "Checked each time the agent wakes up";
+  return "Only runs when you start it";
+}
+
 export function nextScheduledRun(triggers: readonly RoutineTrigger[]): Date | null {
   return triggers
     .filter((trigger) => trigger.kind === "schedule" && trigger.enabled && trigger.nextRunAt)
@@ -69,6 +109,56 @@ export const WEBHOOK_HEALTH_LABELS: Record<WebhookHealth, string> = {
   rejected: "Key rejected",
   receiving: "Receiving events",
   waiting: "Waiting for the first event",
+};
+
+/** Which status the webhook dialog shows; each key has one entry in WEBHOOK_STATUS_COPY. */
+export type WebhookStatusKey =
+  | WebhookHealth
+  | "setup_testing"
+  | "test_received"
+  | "test_rejected"
+  | "ignored_while_paused";
+
+export function webhookStatusKey(
+  trigger: RoutineTrigger,
+  { routineActive, testing }: { routineActive: boolean; testing: boolean },
+): WebhookStatusKey {
+  const health = webhookHealth(trigger);
+  // Only test deliveries count: a webhook put back into test mode still carries its last real delivery.
+  const testDelivery = trigger.setupPending && trigger.lastWebhookDelivery?.test ? trigger.lastWebhookDelivery : null;
+  if (testDelivery?.status === "received") return "test_received";
+  if (testDelivery?.status === "rejected") return "test_rejected";
+  if (!routineActive && health !== "setup" && health !== "testing") return "ignored_while_paused";
+  if (health === "setup" && testing) return "setup_testing";
+  return health;
+}
+
+export const WEBHOOK_STATUS_COPY: Record<WebhookStatusKey, { title: string; detail: string }> = {
+  setup: { title: "Waiting for a test event", detail: "Send one from your app. Test events never start the routine." },
+  setup_testing: {
+    title: "Waiting for a test event",
+    detail: "Send one from your app. It won’t start the routine. Real events are ignored until you finish testing.",
+  },
+  testing: {
+    title: "Testing",
+    detail: "Send an event from your app. It won’t start the routine. Real events are ignored until you finish testing.",
+  },
+  waiting: { title: "Ready", detail: "The next event starts this routine." },
+  receiving: { title: "Receiving events", detail: "Each event starts this routine." },
+  rejected: {
+    title: "The last event was rejected",
+    detail: "The key didn’t match. Replace the key, then paste the new one into your app.",
+  },
+  test_rejected: {
+    title: "The last event was rejected",
+    detail: "The key didn’t match. Replace the key, then paste the new one into your app.",
+  },
+  test_received: { title: "Test event received", detail: "The connection works. No task was created." },
+  ignored_while_paused: {
+    title: "Ignoring events while the routine is paused",
+    detail: "Turn the routine on to start it from this webhook. Until then the sending app gets an error.",
+  },
+  paused: { title: "Paused", detail: "Events are ignored until you resume this webhook." },
 };
 
 /** Plain-language lines for saved run rules that differ from the defaults. Empty for most routines. */
