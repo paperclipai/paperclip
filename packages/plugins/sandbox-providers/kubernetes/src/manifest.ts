@@ -41,6 +41,19 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Inline kubeconfig YAML. Paste a kubeconfig or an existing Paperclip secret reference; pasted values are stored as company secrets.",
           },
+          auth: {
+            type: "object",
+            description:
+              "EKS IAM auth instead of a kubeconfig: the server signs short-lived EKS tokens with its own AWS identity (for example the ECS task role). The cluster name and endpoint must match an entry in the deployment's PAPERCLIP_K8S_EKS_IAM_ALLOWED_CLUSTERS (<clusterName>=<endpoint>, comma-separated).",
+            properties: {
+              type: { type: "string", enum: ["eks-iam"] },
+              clusterName: { type: "string", description: "EKS cluster name." },
+              region: { type: "string", description: "AWS region of the cluster, e.g. us-east-1." },
+              endpoint: { type: "string", description: "Cluster API endpoint (https://...eks.amazonaws.com)." },
+              caData: { type: "string", description: "Base64 cluster CA (certificate-authority-data)." },
+            },
+            required: ["type", "clusterName", "region", "endpoint", "caData"],
+          },
           namespacePrefix: {
             type: "string",
             description: "Prefix for the per-company tenant namespace (default: paperclip-).",
@@ -156,6 +169,7 @@ const manifest: PaperclipPluginManifestV1 = {
         anyOf: [
           { required: ["inCluster"] },
           { required: ["kubeconfig"] },
+          { required: ["auth"] },
         ],
       },
     },

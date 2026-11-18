@@ -181,6 +181,40 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   "@paperclipai/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
 };
 
+/**
+ * EKS IAM auth for `@paperclipai/plugin-kubernetes` (TECH-8817). The plugin
+ * worker signs EKS tokens itself with the AWS SDK default credential chain,
+ * so it needs the pointers to the server's own AWS identity: on ECS the
+ * container credential endpoint (a relative URI, not a key), or a web-identity
+ * token file, plus the region. Forwarded only to the trusted first-party
+ * kubernetes plugin, and only when the operator opted in by naming the allowed
+ * clusters, so a deployment that does not use eks-iam never hands the task
+ * role to a plugin worker. No static AWS keys are forwarded.
+ */
+const KUBERNETES_PLUGIN_PACKAGE = "@paperclipai/plugin-kubernetes";
+const EKS_IAM_ALLOWED_CLUSTERS_ENV = "PAPERCLIP_K8S_EKS_IAM_ALLOWED_CLUSTERS";
+const EKS_IAM_ENV_PASSTHROUGH = [
+  EKS_IAM_ALLOWED_CLUSTERS_ENV,
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+  "AWS_WEB_IDENTITY_TOKEN_FILE",
+  "AWS_ROLE_ARN",
+  "AWS_ROLE_SESSION_NAME",
+  "AWS_REGION",
+  "AWS_DEFAULT_REGION",
+];
+
+// Same parse as the plugin (`eksIamAllowedClusters`): at least one
+// `<clusterName>=<endpoint>` entry with both halves non-empty.
+function hasEksIamAllowedCluster(value: string | undefined): boolean {
+  return (value ?? "").split(",").some((entry) => {
+    const eq = entry.indexOf("=");
+    return eq > 0 && entry.slice(0, eq).trim().length > 0 && entry.slice(eq + 1).trim().length > 0;
+  });
+}
+
 export function buildPluginWorkerEnv(input: {
   manifest: Pick<PaperclipPluginManifestV1, "capabilities"> & {
     environmentDrivers?: ReadonlyArray<{ driverKey: string }>;
@@ -217,7 +251,19 @@ export function buildPluginWorkerEnv(input: {
       )
       ? credentialEntry.envVars
       : [];
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
+  const eksIamKeys =
+    installOriginTrusted
+      && input.packageName === KUBERNETES_PLUGIN_PACKAGE
+      && (input.manifest.environmentDrivers ?? []).some((driver) => driver.driverKey === "kubernetes")
+      && hasEksIamAllowedCluster(processEnv[EKS_IAM_ALLOWED_CLUSTERS_ENV])
+      ? EKS_IAM_ENV_PASSTHROUGH
+      : [];
+  for (const key of [
+    ...ADAPTER_ENV_PASSTHROUGH,
+    ...K8S_IN_CLUSTER_ENV_PASSTHROUGH,
+    ...credentialKeys,
+    ...eksIamKeys,
+  ]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;

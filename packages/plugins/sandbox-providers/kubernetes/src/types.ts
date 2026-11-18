@@ -57,10 +57,32 @@ export const resourceQuotaSchema = z
     };
   });
 
+/**
+ * EKS IAM auth (TECH-8817): the plugin worker signs a short-lived EKS token
+ * with the server's own AWS identity (the ECS task role). Nothing secret is
+ * stored; the endpoint and CA are public cluster facts.
+ */
+export const eksIamAuthSchema = z
+  .object({
+    type: z.literal("eks-iam"),
+    clusterName: z.string().regex(/^[0-9A-Za-z][A-Za-z0-9_-]{0,99}$/, "Invalid EKS cluster name"),
+    region: z.string().regex(/^[a-z]{2}(-[a-z]+)+-\d$/, "Invalid AWS region"),
+    // The token is a bearer credential for the server's IAM identity; only an
+    // EKS API endpoint may receive it.
+    endpoint: z
+      .string()
+      .regex(/^https:\/\/[A-Za-z0-9.-]+\.eks\.amazonaws\.com(\.cn)?$/, "endpoint must be an https EKS API endpoint"),
+    caData: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/, "caData must be the base64 cluster CA"),
+  })
+  .strict();
+
+export type EksIamAuthConfig = z.infer<typeof eksIamAuthSchema>;
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
     kubeconfig: z.string().optional(),
+    auth: eksIamAuthSchema.optional(),
 
     namespacePrefix: z.string().regex(/^[a-z0-9-]{1,32}$/).default("paperclip-"),
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
@@ -158,11 +180,15 @@ export const kubernetesProviderConfigSchema = z
     backend: z.enum(["sandbox-cr", "job"]).default("sandbox-cr"),
   })
   .refine(
-    (cfg) => cfg.inCluster || cfg.kubeconfig,
+    (cfg) => cfg.inCluster || cfg.kubeconfig || cfg.auth,
     {
       message:
         "kubernetes provider requires one of `inCluster` or `kubeconfig`",
     },
+  )
+  .refine(
+    (cfg) => !cfg.auth || (!cfg.inCluster && !cfg.kubeconfig?.trim()),
+    { message: "`auth` (eks-iam) cannot be combined with `inCluster` or `kubeconfig`" },
   );
 
 export type KubernetesProviderConfig = z.infer<typeof kubernetesProviderConfigSchema>;

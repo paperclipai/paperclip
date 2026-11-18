@@ -6,14 +6,36 @@ import {
   NetworkingV1Api,
   RbacAuthorizationV1Api,
 } from "@kubernetes/client-node";
+import {
+  EKS_IAM_AUTH_PROVIDER_NAME,
+  EksIamAuthenticator,
+  assertEksIamClusterAllowed,
+  getEksTokenSource,
+  type EksTokenSource,
+} from "./eks-iam-auth.js";
+import type { EksIamAuthConfig } from "./types.js";
 
 export interface CreateKubeConfigInput {
   inCluster?: boolean;
   kubeconfig?: string;
+  auth?: EksIamAuthConfig;
 }
 
-export function createKubeConfig(input: CreateKubeConfigInput): KubeConfig {
+export function createKubeConfig(
+  input: CreateKubeConfigInput,
+  deps: { tokenSource?: EksTokenSource; env?: NodeJS.ProcessEnv } = {},
+): KubeConfig {
   const kc = new KubeConfig();
+  if (input.auth?.type === "eks-iam") {
+    const { clusterName, region, endpoint, caData } = input.auth;
+    assertEksIamClusterAllowed(input.auth, deps.env);
+    kc.addAuthenticator(new EksIamAuthenticator(deps.tokenSource ?? getEksTokenSource(clusterName, region)));
+    kc.loadFromClusterAndUser(
+      { name: clusterName, server: endpoint, caData, skipTLSVerify: false },
+      { name: "paperclip-server", authProvider: { name: EKS_IAM_AUTH_PROVIDER_NAME, config: {} } },
+    );
+    return kc;
+  }
   if (input.inCluster) {
     kc.loadFromCluster();
     return kc;

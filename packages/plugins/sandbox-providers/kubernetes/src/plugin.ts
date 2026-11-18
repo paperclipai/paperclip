@@ -26,6 +26,7 @@ import {
   type KubernetesLeaseMetadata,
 } from "./types.js";
 import { createKubeConfig, makeKubeClients } from "./kube-client.js";
+import { eksIamNotAllowedMessage, isEksIamClusterAllowed } from "./eks-iam-auth.js";
 import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
@@ -269,6 +270,7 @@ async function resolveSyncPodExec(
   const kc = createKubeConfig({
     inCluster: config.inCluster,
     kubeconfig: config.kubeconfig,
+    auth: config.auth,
   });
   const clients = makeKubeClients(kc);
   const timeoutMs = config.podActivityDeadlineSec * 1000;
@@ -373,7 +375,7 @@ function trackLeaseExecStart(params: PluginEnvironmentExecuteParams): () => void
     podName: typeof lease.metadata?.podName === "string" ? lease.metadata.podName : null,
     backend: "sandbox-cr",
     clients: makeKubeClients(
-      createKubeConfig({ inCluster: config.data.inCluster, kubeconfig: config.data.kubeconfig }),
+      createKubeConfig({ inCluster: config.data.inCluster, kubeconfig: config.data.kubeconfig, auth: config.data.auth }),
     ),
     idleTtlMs: config.data.runnerIdleTimeoutMs,
   });
@@ -412,6 +414,7 @@ async function executeInLease(
   const kc = createKubeConfig({
     inCluster: config.inCluster,
     kubeconfig: config.kubeconfig,
+    auth: config.auth,
   });
   const clients = makeKubeClients(kc);
 
@@ -791,6 +794,9 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
+    if (cfg.auth && !isEksIamClusterAllowed(cfg.auth)) {
+      return { ok: false, errors: [eksIamNotAllowedMessage(cfg.auth)] };
+    }
     const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
@@ -834,6 +840,7 @@ const plugin = definePlugin({
       const kc = createKubeConfig({
         inCluster: config.inCluster,
         kubeconfig: config.kubeconfig,
+        auth: config.auth,
       });
       const clients = makeKubeClients(kc);
       // Reachability check: list pods in the tenant namespace. If the namespace
@@ -905,6 +912,7 @@ const plugin = definePlugin({
     const kc = createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      auth: config.auth,
     });
     const clients = makeKubeClients(kc);
 
@@ -1090,6 +1098,7 @@ const plugin = definePlugin({
     const kc = createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      auth: config.auth,
     });
     const clients = makeKubeClients(kc);
 
@@ -1226,6 +1235,7 @@ const plugin = definePlugin({
     const kc = createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      auth: config.auth,
     });
     const clients = makeKubeClients(kc);
 
@@ -1285,6 +1295,7 @@ const plugin = definePlugin({
     const kc = createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
+      auth: config.auth,
     });
     const clients = makeKubeClients(kc);
 

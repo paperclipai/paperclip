@@ -55,6 +55,16 @@ Create a `sandbox` environment with `driver: kubernetes`. One of these auth fiel
 - `inCluster: true` — use the in-pod ServiceAccount credentials (when paperclip-server runs inside the same cluster).
 - `kubeconfig: <YAML>` — inline kubeconfig (stored as a company secret).
 - `kubeconfigSecretRef: <secret-uuid>` — reference to an existing Paperclip secret.
+- `auth: { type: "eks-iam", clusterName, region, endpoint, caData }` — EKS IAM auth with the server's own AWS identity (for example the ECS task role); no secret is stored. See below.
+
+### EKS IAM auth (`auth.type: "eks-iam"`)
+
+The plugin worker signs a short-lived EKS token itself (a presigned STS `GetCallerIdentity` URL with `x-k8s-aws-id: <clusterName>` signed in, as `aws eks get-token` does) from the AWS SDK default credential chain. It caches one token per cluster in memory, mints a new one when less than 5 minutes of its 14-minute life are left, and attaches it to every API request and every exec/watch WebSocket connect. The token never enters the environment config. `endpoint` must be the `https://...eks.amazonaws.com` API endpoint and `caData` the base64 cluster CA (both from `aws eks describe-cluster`).
+
+Operator setup:
+
+- Set `PAPERCLIP_K8S_EKS_IAM_ALLOWED_CLUSTERS` on the server to comma-separated `<clusterName>=<endpoint>` pairs, e.g. `paperclip-prod-sandbox=https://ABC.gr7.us-east-1.eks.amazonaws.com`. An environment can use eks-iam only with a cluster name and endpoint that match an entry. Only when it is set does the server forward its AWS credential pointers (`AWS_CONTAINER_CREDENTIALS_*`, web identity, region; never static keys) to this plugin's worker.
+- Give the server's IAM role an EKS access entry (type `STANDARD`) mapping it to a Kubernetes group bound to the plugin's RBAC. No IAM policy is needed for `sts:GetCallerIdentity`.
 
 Common optional fields:
 

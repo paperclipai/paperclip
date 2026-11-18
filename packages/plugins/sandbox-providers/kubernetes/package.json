@@ -48,6 +48,7 @@
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },
   "dependencies": {
+    "@aws-sdk/credential-provider-node": "^3.972.84",
     "@kubernetes/client-node": "^1.0.0",
     "zod": "^3.24.2"
   },
