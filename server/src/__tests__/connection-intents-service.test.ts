@@ -1202,6 +1202,20 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(result?.reason).toMatch(/reconnect/i);
   });
 
+  it("does not name another person's expired private connection", async () => {
+    const f = await accessFixture("sentry");
+    await db.update(connectionGrants).set({ kind: "user", subjectUserId: "other-user" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.id));
+    await db.update(toolConnections).set({
+      name: "Private Sentry of another person", authKind: "oauth", credentialPolicy: "per_user",
+      status: "draft", enabled: false, healthStatus: "error", lastError: "oauth_reauthorization_required",
+    }).where(eq(toolConnections.id, f.connection.id));
+    const result = (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(result).toBeDefined();
+    expect(result?.reason).not.toContain("Private Sentry of another person");
+  });
+
   it("creates a scoped access card and atomically accepts repeated clicks without granting other agents", async () => {
     const f = await accessFixture();
     const request = await f.service.request(f.claims, "composio", { connectionId: f.connection.id, toolNames: ["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_MANAGE_CONNECTIONS"] });

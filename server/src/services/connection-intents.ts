@@ -540,12 +540,14 @@ export function connectionIntentService(db: Db) {
         && (aiOnly ? connection.connectionPurpose === "ai" : connection.connectionPurpose !== "ai"));
       // Indexed descriptions can contain private workspace metadata, including
       // for catalog providers. Check each configured connection's audience first.
+      const visibleConnectionIds = new Set<string>();
       const catalogs = await Promise.all(matching.map(async (connection) => {
         const { grants } = await access.listConnectionGrants(connection.id, run.companyId);
         const authorized = grants.some((grant) => grant.status === "active" && (
           grant.kind === "organization" || (grant.kind === "user" && grant.subjectUserId === run.responsibleUserId)
           || (grant.kind === "agent" && grant.subjectAgentId === agent.id)
         ));
+        if (authorized) visibleConnectionIds.add(connection.id);
         const entries = authorized ? await indexedCatalog(connection.id, run.companyId) : [];
         authorizedCatalogs.set(connection.id, entries);
         return entries;
@@ -577,8 +579,9 @@ export function connectionIntentService(db: Db) {
       }));
       // A rejected refresh disables the connection; name it so the agent can
       // report the exact human action instead of a generic attention state.
-      const expired = matching.find(connection => connection.lastError === "oauth_reauthorization_required"
-        || connection.lastError === "oauth_refresh_missing");
+      // Only a connection in this caller's audience may be named.
+      const expired = matching.find(connection => visibleConnectionIds.has(connection.id)
+        && (connection.lastError === "oauth_reauthorization_required" || connection.lastError === "oauth_refresh_missing"));
       candidates.push({ score, nameScore, item: {
         service, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
         methods, source: app.source,
