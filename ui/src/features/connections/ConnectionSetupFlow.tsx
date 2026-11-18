@@ -554,14 +554,24 @@ export function readConnectionIntentOAuthOutcome(
     : null;
 }
 
-/** Read the Paperclip-authored failure code a failed sign-in window sent back. */
+export function isMissingOAuthStateMessage(
+  event: Pick<MessageEvent, "origin" | "data">,
+  expectedOrigin: string,
+): boolean {
+  if (event.origin !== expectedOrigin || !event.data || typeof event.data !== "object") return false;
+  const message = event.data as { type?: unknown; interactionId?: unknown; outcome?: unknown; code?: unknown };
+  return message.type === "paperclip.connection-intent.oauth"
+    && message.interactionId === undefined
+    && message.outcome === "failed"
+    && message.code === "oauth_state_missing";
+}
+
 export function readConnectionIntentOAuthFailureCode(data: unknown): string | null {
   if (!data || typeof data !== "object") return null;
   const code = (data as { code?: unknown }).code;
   return typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : null;
 }
 
-/** Plain-language reason for a failed sign-in, keyed by the server's failure code. */
 export function oauthFailureMessage(code: string | null): string {
   switch (code) {
     case "oauth_state_expired":
@@ -956,6 +966,11 @@ function StandardConnectionSetupFlow({
     let disposed = false;
     const receiveOAuthOutcome = async (event: MessageEvent) => {
       const outcome = readConnectionIntentOAuthOutcome(event, window.location.origin, connectionIntentId);
+      if (!outcome && isMissingOAuthStateMessage(event, window.location.origin)) {
+        setOAuthPhase("error");
+        setOAuthError(oauthFailureMessage("oauth_state_missing"));
+        return;
+      }
       if (outcome === "connected") {
         setOAuthPhase("entry");
         setAuthorizationFallbackUrl(null);

@@ -6,6 +6,7 @@ import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
+  isMissingOAuthStateMessage,
   oauthFailureMessage,
   readConnectionIntentOAuthFailureCode,
   readConnectionIntentOAuthOutcome,
@@ -289,5 +290,19 @@ describe("connection intent OAuth failure reasons", () => {
     const fallback = oauthFailureMessage("oauth_callback_http_500");
     expect(fallback).toBe("Authorization did not complete. Try again when you’re ready.");
     expect(fallback).not.toContain("oauth_");
+  });
+});
+
+describe("missing sign-in state messages", () => {
+  const missing = { type: "paperclip.connection-intent.oauth", outcome: "failed", code: "oauth_state_missing" };
+
+  it("accepts a same-origin missing-state failure without an interaction id", () => {
+    expect(isMissingOAuthStateMessage(event(missing), origin)).toBe(true);
+  });
+
+  it("rejects other origins, other codes, and messages bound to an interaction", () => {
+    expect(isMissingOAuthStateMessage(event(missing, "https://evil.test"), origin)).toBe(false);
+    expect(isMissingOAuthStateMessage(event({ ...missing, code: "oauth_state_expired" }), origin)).toBe(false);
+    expect(isMissingOAuthStateMessage(event({ ...missing, interactionId }), origin)).toBe(false);
   });
 });

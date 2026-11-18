@@ -196,11 +196,10 @@ export function filterVisibleToolConnections<T extends {
 const OAUTH_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
 export function connectionIntentOAuthOutcomeHtml(input: {
-  interactionId: string;
+  interactionId: string | null;
   issueId: string | null;
   outcome: "connected" | "declined" | "failed";
   openerOrigin?: string | null;
-  /** Paperclip-authored failure code, so the opener can say why sign-in failed. */
   code?: string | null;
 }) {
   // The callback window is only a signal. Connection identity and every
@@ -208,7 +207,7 @@ export function connectionIntentOAuthOutcomeHtml(input: {
   // interaction id instead of trusting provider-window data.
   const message = JSON.stringify({
     type: "paperclip.connection-intent.oauth",
-    interactionId: input.interactionId,
+    ...(input.interactionId ? { interactionId: input.interactionId } : {}),
     outcome: input.outcome,
     ...(input.outcome === "failed" && input.code && OAUTH_FAILURE_CODE_PATTERN.test(input.code)
       ? { code: input.code }
@@ -1306,6 +1305,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const claimId = typeof req.query.claim_id === "string" ? req.query.claim_id : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState && req.get("accept")?.includes("text/html") === true) {
+      res.type("html").send(connectionIntentOAuthOutcomeHtml({
+        interactionId: null,
+        issueId: null,
+        outcome: "failed",
+        code: "oauth_state_missing",
+      }));
+      return;
+    }
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired OAuth state");
     }
@@ -1383,8 +1391,6 @@ function connectorEnrollmentPrincipal(req: Request): string {
       const details = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object"
         ? callbackError.details as Record<string, unknown>
         : null;
-      // Record why a managed-connector sign-in failed. The HTML response is
-      // 200, so without this row the reason is lost to support and the user.
       await logActivity(db, {
         companyId: pendingState.companyId,
         actorType: "user",
@@ -1440,6 +1446,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const error = typeof req.query.error === "string" ? req.query.error : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState && req.get("accept")?.includes("text/html") === true) {
+      res.type("html").send(connectionIntentOAuthOutcomeHtml({
+        interactionId: null,
+        issueId: null,
+        outcome: "failed",
+        code: "oauth_state_missing",
+      }));
+      return;
+    }
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired Vercel Connect state");
     }
@@ -1539,6 +1554,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     // `error` code to its own copy instead of reflecting them (PAP-17108).
     const iss = typeof req.query.iss === "string" ? req.query.iss : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
+    if (!pendingState && req.get("accept")?.includes("text/html") === true) {
+      res.type("html").send(connectionIntentOAuthOutcomeHtml({
+        interactionId: null,
+        issueId: null,
+        outcome: "failed",
+        code: "oauth_state_missing",
+      }));
+      return;
+    }
     if (!pendingState || !hasCompanyAccess(req, pendingState.companyId)) {
       throw badRequest("Invalid or expired OAuth state");
     }
