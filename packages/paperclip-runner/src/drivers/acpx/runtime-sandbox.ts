@@ -434,6 +434,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   }
   const initializeOwnedConfiguration = input.agent === "claude" ? async () => {
     const pluginsDirectory = await ensurePrivateDirectory(join(agentHomeDirectory, "plugins"), agentHomeDirectory);
+    await writePrivateFile(join(pluginsDirectory, "known_marketplaces.json"), "{}\n");
     await writePrivateFile(join(pluginsDirectory, "installed_plugins.json"), `${JSON.stringify({ version: 2, plugins: {} })}\n`);
     // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
     // picker aliases such as "sonnet". Its supported availableModels setting

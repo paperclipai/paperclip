@@ -48,7 +48,9 @@ describe("ACPX runtime sandbox", () => {
     const plugins = join(sandbox.agentHomeDirectory, "plugins");
     await mkdir(plugins, { recursive: true });
     await writeFile(join(plugins, "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "old@cloud": [{ scope: "user", installPath: join(plugins, "cache", "old") }] } }));
+    await writeFile(join(plugins, "known_marketplaces.json"), JSON.stringify({old:{source:{source:"github",repo:"other/market"}}}));
     await sandbox.initializeOwnedConfiguration!();
+    expect(JSON.parse(await readFile(join(plugins, "known_marketplaces.json"), "utf8"))).toEqual({});
     expect(JSON.parse(await readFile(join(plugins, "installed_plugins.json"), "utf8"))).toEqual({ version: 2, plugins: {} });
     expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
       syncClaudeAiPlugins: false, syncClaudeAiSkills: false, disableClaudeAiConnectors: true,

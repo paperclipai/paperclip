@@ -119,7 +119,9 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       if (restoring) spawnProvider();
       const guard = created.protocolGuardFactory!();
-      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      const load = { id: 0, method: "session/load", params: { sessionId: "backend-1" } };
+      guard("outbound", load);
+      expect(load).toMatchObject({ params: { _meta: { claudeCode: { options: { managedSettings: { strictKnownMarketplaces: [{ source: "skills-dir" }] } } } } } });
       guard("inbound", { id: 0, result: { configOptions: [{ id: "effort", currentValue: "default" }] } });
       guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
       guard("inbound", { id: 1, result: { configOptions: [{ id: "effort", currentValue: input.value }] } });
@@ -439,6 +441,10 @@ describe("Codex ACPX runtime adapter", () => {
         guard("outbound", request);
         // Grok binds its model at open even when no effort is selected.
         expect(request.params._meta).toEqual({ rules: options.systemInstructions ?? "", modelId: options.profile.reportedModelId });
+      } else if (agent === "claude") {
+        const request = { method: "session/new", params: { cwd: "/w" } };
+        created.protocolGuardFactory!()("outbound",request);
+        expect(request).toMatchObject({params:{_meta:{claudeCode:{options:{managedSettings:{strictKnownMarketplaces:[{source:"skills-dir"}]}}}}}});
       } else expect(created.protocolGuardFactory).toBeUndefined();
       if (agent === "copilot") {
         expect(() => port.startTurn({ text: "\n/yolo on", requestId: "bad" })).toThrow(/admitted permission policy/);
