@@ -304,6 +304,14 @@ describe("AWS connector with minted credentials", () => {
       await service.checkHealth(connected.connectionId, actor).catch(() => undefined);
       const [moved] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
       expect(moved!.healthMessage).toContain("address changed");
+      // Reconnect opens the AWS step for a finished connection, set up for the current address.
+      await service.finishGalleryAppConnection(org.id, connected.connectionId, {
+        enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents",
+      }, actor);
+      expect(await service.getAwsSetup(org.id, connected.connectionId)).toMatchObject({
+        available: true, issuer: `https://renamed.paperclip.app/oidc/companies/${org.id}`,
+        savedRoleArn: "arn:aws:iam::123456789012:role/paperclip-agents",
+      });
       // After the administrator registers the new address in AWS, reconnecting records it and works again.
       const reconnected = await service.connectGalleryApp(org.id, { ...roleInput, reconnectConnectionId: connected.connectionId }, actor);
       expect(reconnected.catalog).toHaveLength(2);

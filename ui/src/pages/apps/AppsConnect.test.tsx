@@ -2618,6 +2618,51 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
   });
 
+  it("lets a reconnect change an AWS role connection's role ARN on the AWS step", async () => {
+    experimentalMock.mockResolvedValue({ enableAwsConnector: true });
+    listGalleryMock.mockResolvedValue({ apps: [AWS] });
+    const oldArn = "arn:aws:iam::123456789012:role/paperclip-aws-conn";
+    const newArn = "arn:aws:iam::210987654321:role/paperclip-aws-conn";
+    const existing = {
+      id: "aws-conn", companyId: "company-1", name: "AWS", status: "active", enabled: true, authKind: "api_key", credentialPolicy: "shared",
+      transport: "mcp_remote", applicationId: "app-aws",
+      config: { sourceTemplateKey: "aws", connectionMethodKey: "aws-role", url: "https://aws-mcp.us-east-1.api.aws/mcp",
+        methodConfig: { roleArn: oldArn, endpointRegion: "us-east-1", accessLevel: "read_only" } },
+    };
+    listConnectionsMock.mockResolvedValue({ connections: [existing] });
+    listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-aws", companyId: "company-1", name: "AWS", applicationKey: "app-gallery:aws:x", metadata: { sourceTemplateKey: "aws" } }] });
+    getConnectionMock.mockResolvedValue(existing);
+    mockSearch.value = "source=aws&reconnect=aws-conn";
+    getAwsSetupMock.mockResolvedValue({
+      available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
+      subject: "connection:aws-conn", providerHost: "acme.paperclip.app/oidc/companies/company-1",
+      roleName: "paperclip-aws-conn", savedRoleArn: oldArn, accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
+      issuerPublished: true,
+    });
+    await render();
+    const connect = [...container.querySelectorAll("button")].find((b) => /^(Connect|Reconnect)/.test(b.textContent?.trim() ?? "") && !b.disabled);
+    expect(connect).toBeTruthy();
+    await act(async () => { connect!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    // Nothing is sent yet: reconnect opens the AWS step with the saved role ARN, which stays editable.
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(getAwsSetupMock).toHaveBeenCalledWith("aws-conn");
+    const input = container.querySelector<HTMLInputElement>("#aws-role-arn")!;
+    expect(input.value).toBe(oldArn);
+    await act(async () => { setInputValue(input, newArn); });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "aws-conn", connection: { id: "aws-conn", status: "active" }, application: { id: "app-aws", name: "AWS" },
+      catalog: [{ id: "entry-1", toolName: "aws___list_regions" }],
+      actions: { readOnly: [{ catalogEntryId: "entry-1", name: "aws___list_regions" }], canMakeChanges: [] }, suggestedDefaults: {},
+    });
+    await act(async () => { buttonByText("Test connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    const call = connectAppMock.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(call).toMatchObject({ reconnectConnectionId: "aws-conn", configValues: expect.objectContaining({ roleArn: newArn }) });
+    expect(call.saveDraft).toBeUndefined();
+  });
+
   it("enables Neon's Connect button only once the API key is entered, with pin and read-only optional", async () => {
     mockParams.appKey = "neon";
     listGalleryMock.mockResolvedValueOnce({ apps: [NEON] });

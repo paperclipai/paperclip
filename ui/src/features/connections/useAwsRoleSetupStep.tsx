@@ -7,19 +7,21 @@ import { AwsRoleSetup, awsSetupErrorMessage } from "./AwsRoleSetup";
  * for request options, hands back results, and renders the step:
  * the first Connect saves a draft (reusing one saved earlier) without a role ARN,
  * the AWS step shows how to create the role, and Test connection resumes the
- * draft with the role ARN the customer pasted back.
+ * draft with the role ARN the customer pasted back. Reconnect opens the same
+ * step for the existing connection, so its role ARN can change.
  */
-export function useAwsRoleSetupStep({ appSlug, methodKey, reconnecting, resumeConnection }: {
+export function useAwsRoleSetupStep({ appSlug, methodKey, reconnectConnectionId, resumeConnection }: {
   appSlug: string | undefined;
   methodKey: string | null | undefined;
-  reconnecting: boolean;
+  reconnectConnectionId: string | null;
   /** The connection the flow was opened to resume, if any. */
   resumeConnection: Pick<ToolConnection, "id" | "status" | "config"> | null;
 }) {
   const [stage, setStage] = useState<{ connectionId: string; error: string | null } | null>(null);
   // The draft this setup saved (kept across Back, so Connect updates it) and whether the next connect is the test.
   const draft = useRef<{ id: string | null; testing: boolean; roleArn: string | null }>({ id: null, testing: false, roleArn: null });
-  const active = appSlug === "aws" && methodKey === "aws-role" && !reconnecting;
+  const awsRole = appSlug === "aws" && methodKey === "aws-role";
+  const active = awsRole && !reconnectConnectionId;
   const resumingDraft = resumeConnection?.status === "draft"
     && resumeConnection.config?.sourceTemplateKey === "aws"
     && resumeConnection.config?.connectionMethodKey === "aws-role";
@@ -40,12 +42,23 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnecting, resumeCo
   }, [appSlug, methodKey]);
 
   return {
+    /**
+     * True when Connect should open the AWS step instead of sending a request: reconnecting
+     * an AWS role connection shows the step (with its saved role ARN) before anything is tested.
+     */
+    openForReconnect(): boolean {
+      if (!awsRole || !reconnectConnectionId || draft.current.testing) return false;
+      draft.current = { id: reconnectConnectionId, testing: false, roleArn: null };
+      setStage({ connectionId: reconnectConnectionId, error: null });
+      return true;
+    },
     /** Extra connect request fields; call once per connect. */
     requestOptions(resumeConnectionId: string | null | undefined): {
       saveDraft?: true; resumeConnectionId?: string; configValues?: { roleArn: string };
     } {
       const { testing, roleArn } = draft.current;
       draft.current.testing = false;
+      if (awsRole && reconnectConnectionId) return testing && roleArn ? { configValues: { roleArn } } : {};
       if (!active) return {};
       const saveDraft = (!resumeConnectionId || resumingDraft) && !testing;
       const resumeId = !resumeConnectionId ? draft.current.id : null;

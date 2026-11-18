@@ -1297,7 +1297,7 @@ function StandardConnectionSetupFlow({
     [connectionsQuery.data, resumeConnectionId],
   );
   const awsRoleSetup = useAwsRoleSetupStep({
-    appSlug: entry?.slug, methodKey: connectionMethodKey, reconnecting: Boolean(reconnectConnectionId), resumeConnection,
+    appSlug: entry?.slug, methodKey: connectionMethodKey, reconnectConnectionId: reconnectConnectionId ?? null, resumeConnection,
   });
   const resumeApplication = useMemo(
     () => resumeConnection
@@ -1670,6 +1670,7 @@ function StandardConnectionSetupFlow({
     const method = connectEntry
       ? availableToolConnectionMethod(connectEntry, connectionMethodKey || null)
       : null;
+    if (awsRoleSetup.openForReconnect()) return;
     if (connectEntry?.slug === "google-workspace" && !workspaceSelectionRef.current) {
       setWorkspaceConnection(identityConnection ?? undefined);
       setWorkspaceConsent(() => () => {
@@ -1682,7 +1683,7 @@ function StandardConnectionSetupFlow({
       reserveOAuthPopup();
     }
     mutateConnect(entryOverride);
-  }, [connectionMethodKey, entry, identityConnection, linkAuthMode, zapierSource, mutateConnect, reserveOAuthPopup]);
+  }, [awsRoleSetup, connectionMethodKey, entry, identityConnection, linkAuthMode, zapierSource, mutateConnect, reserveOAuthPopup]);
 
   useEffect(() => {
     if (!requestedAppKey || galleryQuery.isLoading || !galleryQuery.data) return;

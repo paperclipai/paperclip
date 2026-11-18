@@ -4013,9 +4013,13 @@ export function toolAccessService(
     const origin = workloadIdentityIssuerOrigin();
     if (!origin.available) return { available: false, reason: origin.reason };
     const issuer = workloadIdentityIssuer(origin.origin, companyId);
-    // Paperclip signs only as its current address, so AWS setup for an older one could never pass the test.
+    // Paperclip signs only as its current address, so a draft set up for an older one could never pass
+    // the test: it is saved again first. Reconnecting a connection records the current address, so it
+    // gets setup for that address.
     const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
-    if (typeof recorded === "string" && recorded !== issuer) return { available: false, reason: "address_changed" };
+    if (row.status === "draft" && typeof recorded === "string" && recorded !== issuer) {
+      return { available: false, reason: "address_changed" };
+    }
     const methodConfig = asRecord(row.config.methodConfig);
     const setup = awsRoleSetup({
       issuer, connectionId: row.id, accessLevel: methodConfig.accessLevel === "full" ? "full" : "read_only",
