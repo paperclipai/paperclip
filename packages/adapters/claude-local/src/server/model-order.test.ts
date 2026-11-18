@@ -16,6 +16,7 @@ describe("sortClaudeModels", () => {
       { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4" },
       { id: "claude-3-7-sonnet-20250219", label: "Claude Sonnet 3.7" },
       { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
+      { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
       { id: "claude-3-5-haiku-20241022", label: "Claude Haiku 3.5" },
       { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
       { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
@@ -27,11 +28,12 @@ describe("sortClaudeModels", () => {
       "claude-fable-5-1",
       "claude-opus-5-5",
       "claude-sonnet-4-20250514",
-      "claude-haiku-4-5-20251001",
+      "claude-haiku-5-5",
       // older releases, grouped by family, newest first, alias before dated snapshot
       "claude-opus-4-8",
       "claude-opus-4-8-20260529",
       "claude-3-7-sonnet-20250219",
+      "claude-haiku-4-5-20251001",
       "claude-3-5-haiku-20241022",
     ]);
   });

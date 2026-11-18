@@ -44,7 +44,7 @@ export const models = [
   { id: "claude-mythos-5", label: "Claude Mythos 5" },
   { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
   { id: "claude-fable-5", label: "Claude Fable 5" },
   { id: "claude-opus-5", label: "Claude Opus 5" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
@@ -54,6 +54,7 @@ export const models = [
   { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
 ];
 
 export const agentConfigurationDoc = `# claude_local agent configuration
@@ -96,6 +97,7 @@ Operational fields:
 Notes:
 - Claude Opus 5.5 uses model ID \`claude-opus-5-5\` and requires Claude Code v2.1.280 or later.
 - Claude Sonnet 5.5 uses model ID \`claude-sonnet-5-5\` and requires Claude Code v2.1.284 or later.
+- Claude Haiku 5.5 uses model ID \`claude-haiku-5-5\` and requires Claude Code v2.1.293 or later.
 - filesystemScope and networkScope are spawn-level confinement and are orthogonal to Claude permission flags. Both require Bubblewrap on the host and explicit engine="cli"; default or explicit ACP is rejected because ACP confinement is not yet supported. networkScope="allowlist" injects HTTP_PROXY/HTTPS_PROXY for the CLI while its private network namespace blocks direct sockets, so every required provider/API hostname must be listed explicitly.
 - The Claude ACP lane requires Node >=24.11.0 and @agentclientprotocol/claude-agent-acp to be installed with this adapter package. Missing prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
 - For ACP runs, model selection is passed through ANTHROPIC_MODEL at ACP server startup; Paperclip-managed Claude permissions and ephemeral skill materialization are handled by the shared ACP engine.
