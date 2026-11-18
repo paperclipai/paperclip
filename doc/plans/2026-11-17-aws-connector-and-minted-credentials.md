@@ -163,9 +163,11 @@ Minting then works as follows:
    - Session name: `paperclip-<connection name>`, so CloudTrail shows which
      connection acted.
    - Duration: one hour.
-   - Read-scope tokens add the AWS managed `ReadOnlyAccess` policy as a
-     session policy (`PolicyArns`). The session can then do at most what the
-     role allows and what read-only allows.
+   - Read-scope tokens add two AWS managed policies as session policies
+     (`PolicyArns`): `ReadOnlyAccess` and `AWSMCPSignInOAuthAccessPolicy`.
+     The session can then do at most what the role allows and what those
+     allow. The spike showed that the second one is required: with
+     `ReadOnlyAccess` alone, the token exchange in step 2 is refused.
    - With no role ARN, the dedicated IAM user's key is used directly. A
      read-only scope still applies, via a `GetFederationToken` session policy.
 2. Sign-in `CreateOAuth2TokenWithIAM`:
@@ -182,9 +184,13 @@ Agents never receive the token. They see AWS tools the way they see any
 connector's tools, through the control-plane MCP endpoint they're already
 connected to:
 
-1. The agent calls the `aws___call_aws` tool with the operation it wants
-   (an AWS CLI-style command and its parameters), or calls `aws___run_script`
-   with a short Python script that chains several calls.
+1. The agent calls `aws___run_script` with a short Python script. Inside it,
+   `await call_boto3(service_name=..., operation_name=..., region_name=..., params=...)`
+   makes one AWS API call; `operation_name` is the PascalCase API name, such as
+   `ListBuckets`. A script can chain and parallelize calls. The server in the
+   spike account did not offer `aws___call_aws`, so the design does not rely on
+   it. The region is passed per call, so no default-region metadata is needed;
+   the connection's agent instructions name the default region.
 2. The gateway on the control plane checks policy, attaches the connection's
    bearer token, and forwards the call to AWS's hosted MCP server.
 3. **AWS runs the operation on its side.** That includes `run_script`, which
@@ -201,10 +207,10 @@ need the CLI is option D, which is a later opt-in.
 - Tools are discovered with a minted token and published to the catalog as
   for any remote MCP connector.
 - Reviewed risk:
-  - `aws___call_aws` and `aws___run_script` are writes.
+  - `aws___run_script` is a write. It is the only tool that calls AWS APIs.
   - Documentation, skill, region and task tools are reads.
   - `aws___get_presigned_url` is a write, because it can grant upload access.
-- **Read-only agents keep `aws___call_aws`, called with a read-scope token.**
+- **Read-only agents keep `aws___run_script`, called with a read-scope token.**
   AWS then refuses anything that isn't read-only, which beats hiding the
   main tool. Writes need an agent granted write scope, plus the normal approval
   policy.
@@ -242,12 +248,55 @@ client registration. Verify it in the spike.
 
 | # | Deliverable | Proof |
 |---|---|---|
-| 0 | Spike with a test AWS account (`~/.secrets`): assume a role, exchange for a token, list and call tools from Node. Check that a `ReadOnlyAccess` session policy carries into the token (through `AssumeRoleWithWebIdentity`, `AssumeRole` and `GetFederationToken`); that AWS accepts a JWT issued by a tunnelled local issuer URL, what the call inputs of `aws___call_aws` look like, whether region metadata can be sent, latency of the mint and the first call, and that the DCR OAuth method works. | Findings recorded in this doc |
+| 0 | **Done 2026-11-18, see "Spike findings".** Spike with a test AWS account (`~/.secrets`): assume a role, exchange for a token, list and call tools from Node. Check that a `ReadOnlyAccess` session policy carries into the token (through `AssumeRoleWithWebIdentity`, `AssumeRole` and `GetFederationToken`); that AWS accepts a JWT issued by a tunnelled local issuer URL, what the call inputs of `aws___call_aws` look like, whether region metadata can be sent, latency of the mint and the first call, and that the DCR OAuth method works. | Findings recorded in this doc |
 | 1 | Minted-credential source in the gateway: minter interface, cache, single retry on 401, health reasons. | Red/green tests: cache hit and expiry, a 401 leads to one re-mint, mint failure sets health, nothing persisted or logged |
 | 1b | Per-company workload-identity issuer (`/oidc/companies/<companyId>`): signing key stored in the database, encrypted with the vault master key; discovery and JWKS routes, key rotation, JWT signing for a connection. Built in [the issuer PR](./2026-11-17-workload-identity-issuer.md). Built generically, because GCP and Azure accept the same kind of federation. | Red/green tests; AWS accepts a token from a staging instance |
 | 2 | AWS minter (role via OIDC, and access key), app definition, setup screen, CloudFormation template, reviewed tools, and `doc/connections/AWS.md` following the connector playbook. | Real-provider proof: a read-only agent's write is refused by AWS; a write agent's write succeeds after approval |
 | 3 | Paperclip Cloud staging verification. | An AWS task completed on a staging stack |
 | Later | Option D (sandbox credentials for Terraform/CDK). Further minters as connectors need them, such as GCP service-account impersonation or Azure client credentials. Each needs its own check of what the provider supports. | Separate plans |
+
+## Spike findings (2026-11-18)
+
+The spike ran against the Paperclip dev AWS account (`paperclip-dev` profile).
+It used the merged issuer code (paperclipai/paperclip#22083) served over a
+temporary public HTTPS tunnel. All spike resources were deleted afterwards.
+
+| Check | Result |
+|---|---|
+| AWS accepts a Paperclip-signed connection token (`AssumeRoleWithWebIdentity`) | Yes. The role session appears as `assumed-role/<role>/<session name>`. |
+| Another connection's token assumes this connection's role | No: `AccessDenied`. The `sub` condition isolates connections. |
+| Role credentials to an AWS MCP bearer token (`CreateOAuth2TokenWithIAM`, `client_credentials`, resource `aws-mcp.amazonaws.com`) | Yes. The token lasts 3,599 seconds and has no refresh token. |
+| MCP `initialize` and `tools/list` with that bearer | Yes. 8 tools: `aws___run_script` (write), `aws___get_presigned_url` (write), and read tools for documentation, skills, regions, regional availability and task status. **No `aws___call_aws`.** |
+| Read through `run_script` (`sts:GetCallerIdentity`) | Success |
+| Write through `run_script` (`s3:CreateBucket`) | Success with a full-scope token |
+| Read-only session policy | `ListBuckets` succeeds. `DeleteBucket` is refused by AWS: "no session policy allows the s3:DeleteBucket action". |
+| Read-only session policy with only `ReadOnlyAccess` | The token exchange fails: `signin:CreateOAuth2Token` is not allowed. Add `AWSMCPSignInOAuthAccessPolicy` too. |
+| Access-key method: the key directly, then the token exchange | Yes |
+| Access-key method: `GetFederationToken` with read-only session policies, then the token exchange | Yes |
+| Paperclip Cloud front door forwards the issuer paths | Yes, after paperclipai/paperclip-cloud#1646. Staging returns the app's 404 for a company without a key. |
+
+Timings (ms, from a laptop to us-east-1):
+
+| Step | Time |
+|---|---|
+| Sign the token | 17–43 |
+| `AssumeRoleWithWebIdentity` | 547–974 |
+| `CreateOAuth2TokenWithIAM` | 188–221 |
+| MCP `initialize` | 420–464 |
+| MCP `tools/list` | 352–400 |
+| First `run_script` call | 9,074 (sandbox cold start) |
+| Later `run_script` call | 1,907 |
+
+Implications for the build:
+- Cache the minted bearer per connection and scope for about 55 minutes.
+  Minting costs about 0.8 s and happens once an hour.
+- `run_script` is the main tool, so a write tool does all real work. A
+  read-only scope must be enforced by AWS, with the session policy above, not
+  by hiding the tool.
+- The first `run_script` call in a session can take about 9 s. The gateway
+  timeout for this connector must allow for that.
+- Not tested: "sign in with AWS as yourself" (DCR OAuth). It needs a browser,
+  and it isn't part of v1.
 
 ## Success criteria
 
