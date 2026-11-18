@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execute } from "./execute.js";
+import { sessionCodec } from "./index.js";
 
 // A managed AI connection materializes its credential into a fresh mkdtemp
 // directory for every run and removes it when the run ends. These tests drive
@@ -17,7 +18,7 @@ const home = process.env.CODEX_HOME;
 const readAuth = () => { try { return fs.readFileSync(path.join(home, "auth.json"), "utf8"); } catch (e) { return "ERR:" + e.code; } };
 const startAuth = readAuth();
 const finish = () => {
-  fs.writeFileSync(process.env.TEST_CAPTURE, JSON.stringify({ codexHome: home, startAuth, endAuth: readAuth() }));
+  fs.writeFileSync(process.env.TEST_CAPTURE, JSON.stringify({ codexHome: home, startAuth, endAuth: readAuth(), argv: process.argv.slice(2) }));
   console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-1" }));
   console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "ok" } }));
   console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } }));
@@ -33,7 +34,7 @@ if (gate) {
 else finish();
 `;
 
-type Capture = { codexHome: string; startAuth: string; endAuth: string };
+type Capture = { codexHome: string; startAuth: string; endAuth: string; argv: string[] };
 
 const ENV_KEYS = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "CODEX_HOME"] as const;
 let root: string;
@@ -79,6 +80,8 @@ interface RunOptions {
   gate?: string;
   started?: string;
   timeoutSec?: number;
+  sessionParams?: Record<string, unknown> | null;
+  context?: Record<string, unknown>;
 }
 
 /** Materialize a per-run connection home (as the server does), run, then remove it. */
@@ -125,9 +128,14 @@ async function run(options: RunOptions = {}) {
     const result = await execute({
       runId: `run-${runNumber}`,
       agent: { id: agentId, companyId: "company-1", name: "Agent", adapterType: "codex_local", adapterConfig: config },
-      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      runtime: {
+        sessionId: null,
+        sessionParams: options.sessionParams ?? null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
       config,
-      context: {},
+      context: options.context ?? {},
       authToken: "run-token",
       onLog: async () => {},
     });
@@ -221,6 +229,64 @@ describe("codex execute — managed AI connection runtime home reuse", () => {
     const next = await run();
     expect([a.capture!.codexHome, runB.capture!.codexHome]).toContain(next.capture!.codexHome);
     expect(await generatedHomes()).toHaveLength(2);
+  });
+
+  it("resumes a conversation in the secondary home that holds it", async () => {
+    const gateA = path.join(root, "gate-a");
+    const startedA = path.join(root, "started-a");
+    const runA = run({ gate: gateA, started: startedA });
+    await waitForFile(startedA);
+    const b = await run();
+    await fs.writeFile(gateA, "go");
+    const a = await runA;
+    expect(b.capture!.codexHome).not.toBe(a.capture!.codexHome);
+    // The saved session names the home its conversation lives in, and survives
+    // the session codec the server stores it through.
+    const saved = sessionCodec.deserialize(sessionCodec.serialize(b.result.sessionParams ?? null));
+    expect(saved).toMatchObject({ sessionId: "thread-1", codexRuntimeHome: path.basename(b.capture!.codexHome) });
+    // Both homes are free now; continuing B's conversation must return to B's home.
+    const resumed = await run({ sessionParams: saved });
+    expect(resumed.result.errorMessage).toBeNull();
+    expect(resumed.capture!.codexHome).toBe(b.capture!.codexHome);
+    expect(resumed.capture!.argv).toContain("thread-1");
+    // A fresh conversation still starts in the primary home.
+    expect((await run()).capture!.codexHome).toBe(a.capture!.codexHome);
+  });
+
+  it("never follows links or shared files an agent left in the reused home", async () => {
+    const home = (await run()).capture!.codexHome;
+    const outside = path.join(root, "outside");
+    await fs.mkdir(path.join(outside, "skills"), { recursive: true });
+    for (const name of ["config.toml", "config.json", "instructions.md"]) {
+      await fs.writeFile(path.join(outside, name), "host-owned");
+      await fs.rm(path.join(home, name), { force: true });
+      await fs.symlink(path.join(outside, name), path.join(home, name));
+    }
+    await fs.rm(path.join(home, "skills"), { recursive: true, force: true });
+    await fs.symlink(path.join(outside, "skills"), path.join(home, "skills"));
+    const context = {
+      paperclipManagedMcp: {
+        managedMcpOnly: true,
+        gateways: [{ name: "gateway", endpointPath: "/mcp/gateway", bearerToken: "bearer-for-this-run" }],
+      },
+    };
+    const second = await run({ context });
+    expect(second.result.errorMessage).toBeNull();
+    expect(second.capture!.codexHome).toBe(home);
+    for (const name of ["config.toml", "config.json", "instructions.md"]) {
+      expect(await fs.readFile(path.join(outside, name), "utf8")).toBe("host-owned");
+      expect((await fs.lstat(path.join(home, name)).catch(() => null))?.isSymbolicLink() ?? false).toBe(false);
+    }
+    expect(await fs.readdir(path.join(outside, "skills"))).toEqual([]);
+    expect((await fs.lstat(path.join(home, "skills"))).isDirectory()).toBe(true);
+    expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toContain("bearer-for-this-run");
+
+    // A hard link to a host file is not followed either.
+    await fs.rm(path.join(home, "config.toml"));
+    await fs.link(path.join(outside, "config.toml"), path.join(home, "config.toml"));
+    expect((await run({ context })).capture!.codexHome).toBe(home);
+    expect(await fs.readFile(path.join(outside, "config.toml"), "utf8")).toBe("host-owned");
+    expect((await fs.stat(path.join(home, "config.toml"))).nlink).toBe(1);
   });
 
   it("runs many overlapping runs of one agent without failures and reuses their homes afterwards", async () => {

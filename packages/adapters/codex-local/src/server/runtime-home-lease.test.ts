@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acquireRuntimeHomeLease } from "./runtime-home-lease.js";
 
 const DIGEST = "d".repeat(64);
@@ -12,6 +12,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(parent, { recursive: true, force: true });
 });
 
@@ -71,5 +72,76 @@ describe("acquireRuntimeHomeLease", () => {
     await lease.release();
     await lease.release();
     expect(await fs.readFile(leaseFile(0), "utf8")).toBe(foreign);
+  });
+
+  it("keeps a lease another acquisition took while a release was still removing its file", async () => {
+    const realRm = fs.rm.bind(fs);
+    let releaseRemoving = false;
+    let unblock!: () => void;
+    const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+    vi.spyOn(fs, "rm").mockImplementation(async (target, options) => {
+      if (target === leaseFile(0) && !releaseRemoving) {
+        releaseRemoving = true;
+        await blocked;
+      }
+      return realRm(target, options);
+    });
+    const first = await acquireRuntimeHomeLease(parent, DIGEST, "run-1");
+    const releasing = first.release();
+    for (let i = 0; i < 200 && !releaseRemoving; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(releaseRemoving).toBe(true);
+    // The release has read its lease and is about to remove it; a new holder arrives now.
+    const second = await acquireRuntimeHomeLease(parent, DIGEST, "run-2");
+    unblock();
+    await releasing;
+    const raw = await fs.readFile(`${second.home}.lease`, "utf8");
+    expect(JSON.parse(raw).runId).toBe("run-2");
+    await second.release();
+  });
+
+  it("never removes a live lease that replaced the stale one it was recovering", async () => {
+    const stale = JSON.stringify({ pid: 2 ** 22 + 12345, nonce: "dead-process", token: "stale" });
+    const live = JSON.stringify({ pid: process.ppid, nonce: "other-live-process", token: "live" });
+    const third = JSON.stringify({ pid: process.ppid, nonce: "third-live-process", token: "third" });
+    await fs.writeFile(leaseFile(0), stale);
+    const realReadFile = fs.readFile.bind(fs);
+    const realRename = fs.rename.bind(fs);
+    let replaced = false;
+    // Another process recovers the same stale lease and takes the slot right
+    // after this process has read it.
+    vi.spyOn(fs, "readFile").mockImplementation((async (target: string, options: unknown) => {
+      const raw = await (realReadFile as (t: string, o: unknown) => Promise<string>)(target, options);
+      if (target === leaseFile(0) && raw === stale && !replaced) {
+        replaced = true;
+        await fs.unlink(leaseFile(0));
+        await fs.writeFile(leaseFile(0), live);
+      }
+      return raw;
+    }) as typeof fs.readFile);
+    // A third process acquires the slot whenever its lease file is briefly absent.
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      await realRename(from, to);
+      if (from === leaseFile(0)) await fs.writeFile(leaseFile(0), third, { flag: "wx" }).catch(() => {});
+    });
+    const lease = await acquireRuntimeHomeLease(parent, DIGEST, "run-1");
+    expect(replaced).toBe(true);
+    expect(lease.home).toBe(path.join(parent, `${DIGEST}-1`));
+    expect(await realReadFile(leaseFile(0), "utf8")).toBe(live);
+    await lease.release();
+  });
+
+  it("prefers the requested slot of this digest and falls back to the first free slot", async () => {
+    const preferred = await acquireRuntimeHomeLease(parent, DIGEST, "run-1", { preferredHome: `${DIGEST}-2` });
+    expect(preferred.home).toBe(path.join(parent, `${DIGEST}-2`));
+    const busy = await acquireRuntimeHomeLease(parent, DIGEST, "run-2", { preferredHome: `${DIGEST}-2` });
+    expect(busy.home).toBe(path.join(parent, DIGEST));
+    for (const preferredHome of ["../escape", `${"e".repeat(64)}-1`, `${DIGEST}-64`, `${DIGEST}-01`, path.join(parent, `${DIGEST}-3`)]) {
+      const ignored = await acquireRuntimeHomeLease(parent, DIGEST, "run-x", { preferredHome });
+      expect(ignored.home).toBe(path.join(parent, `${DIGEST}-1`));
+      await ignored.release();
+    }
+    await preferred.release();
+    await busy.release();
+    expect((await fs.readdir(parent)).filter((name) => !/^d{64}(-\d+)?$/.test(name))).toEqual([]);
   });
 });

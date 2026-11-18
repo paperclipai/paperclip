@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -18,6 +18,20 @@ import path from "node:path";
  * fully written temp file). It records the owning process and a per-process
  * nonce, so a lease left by a crashed or restarted server is recognised as
  * stale and taken over.
+ *
+ * Ownership rules that keep a live lease from being removed:
+ * - A holder stays in `heldLeases` until its own lease file is gone, so this
+ *   process never judges a lease stale while its release is still removing it.
+ * - A lease is only ever removed in place, never moved aside, so the slot is
+ *   never briefly free while it is still held.
+ * - Recovering a stale lease first claims a recovery marker named after that
+ *   exact lease content (atomic `wx`). Only the claimant re-reads the lease and
+ *   removes it, and only when it still holds that same stale content. A
+ *   competing recoverer of the same generation loses the claim; a new lease has
+ *   different content, so it can never match a stale generation.
+ *
+ * A caller resuming a conversation can ask for the slot that holds it
+ * (`preferredHome`); the first free slot is used when that one is taken.
  */
 
 const PROCESS_NONCE = randomUUID();
@@ -37,8 +51,25 @@ export interface RuntimeHomeLease {
   release: () => Promise<void>;
 }
 
+export interface AcquireRuntimeHomeLeaseOptions {
+  /** Basename of a slot of this digest to try first (`<digest>` or `<digest>-<n>`). */
+  preferredHome?: string | null;
+}
+
 function slotHome(parentDir: string, digest: string, slot: number): string {
   return path.join(parentDir, slot === 0 ? digest : `${digest}-${slot}`);
+}
+
+/** The slot index named by `preferredHome` when it is a slot of `digest`, else null. */
+function parsePreferredSlot(digest: string, preferredHome: string | null | undefined): number | null {
+  if (typeof preferredHome !== "string") return null;
+  if (preferredHome === digest) return 0;
+  const prefix = `${digest}-`;
+  if (!preferredHome.startsWith(prefix)) return null;
+  const suffix = preferredHome.slice(prefix.length);
+  if (!/^[1-9][0-9]*$/.test(suffix)) return null;
+  const slot = Number(suffix);
+  return slot < MAX_SLOTS ? slot : null;
 }
 
 function processIsAlive(pid: number): boolean {
@@ -92,23 +123,26 @@ async function createLease(leaseFile: string, contents: string): Promise<boolean
 }
 
 /**
- * Remove a lease judged stale. The rename is atomic, and the moved file is
- * checked again so that a lease another process created in the meantime is
- * put back instead of removed.
+ * Remove a lease judged stale, without ever removing a live one. The recovery
+ * marker is keyed by the stale content, so exactly one recoverer per stale
+ * generation re-reads and removes it. The marker is removed afterwards: a later
+ * recoverer of the same generation then re-reads a different (or no) lease and
+ * leaves it alone, because lease contents are never reused.
  */
 async function removeStaleLease(leaseFile: string, staleRaw: string): Promise<void> {
-  const aside = `${leaseFile}.${PROCESS_NONCE}.${randomUUID()}.stale`;
+  const generation = createHash("sha256").update(staleRaw).digest("hex").slice(0, 32);
+  const marker = `${leaseFile}.recover-${generation}`;
   try {
-    await fs.rename(leaseFile, aside);
+    await fs.writeFile(marker, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
     throw error;
   }
-  const moved = await readLease(aside);
-  if (moved !== null && moved !== staleRaw) {
-    await fs.link(aside, leaseFile).catch(() => {});
+  try {
+    if ((await readLease(leaseFile)) === staleRaw) await fs.rm(leaseFile, { force: true });
+  } finally {
+    await fs.rm(marker, { force: true });
   }
-  await fs.rm(aside, { force: true });
 }
 
 async function tryAcquireSlot(leaseFile: string, contents: string): Promise<boolean> {
@@ -131,14 +165,18 @@ export async function acquireRuntimeHomeLease(
   parentDir: string,
   digest: string,
   runId?: string,
+  options: AcquireRuntimeHomeLeaseOptions = {},
 ): Promise<RuntimeHomeLease> {
+  const preferredSlot = parsePreferredSlot(digest, options.preferredHome);
+  const slots = Array.from({ length: MAX_SLOTS }, (_, slot) => slot);
+  if (preferredSlot !== null) slots.unshift(...slots.splice(preferredSlot, 1));
   const queueKey = path.resolve(parentDir, digest);
   const previous = acquireQueues.get(queueKey) ?? Promise.resolve();
   const acquisition = previous.catch(() => {}).then(async () => {
     await fs.mkdir(parentDir, { recursive: true });
     const token = randomUUID();
     const contents = JSON.stringify({ pid: process.pid, nonce: PROCESS_NONCE, token, ...(runId ? { runId } : {}) });
-    for (let slot = 0; slot < MAX_SLOTS; slot += 1) {
+    for (const slot of slots) {
       const home = slotHome(parentDir, digest, slot);
       const leaseFile = `${home}.lease`;
       heldLeases.add(token);
@@ -155,9 +193,15 @@ export async function acquireRuntimeHomeLease(
         release: async () => {
           if (released) return;
           released = true;
-          heldLeases.delete(token);
-          const raw = await readLease(leaseFile).catch(() => null);
-          if (raw !== null && parseHolder(raw)?.token === token) await fs.rm(leaseFile, { force: true });
+          // Stay a live holder until the file is gone: otherwise a concurrent
+          // acquisition could judge this lease stale, replace it, and then lose
+          // its new lease to this removal.
+          try {
+            const raw = await readLease(leaseFile).catch(() => null);
+            if (raw !== null && parseHolder(raw)?.token === token) await fs.rm(leaseFile, { force: true });
+          } finally {
+            heldLeases.delete(token);
+          }
         },
       } satisfies RuntimeHomeLease;
     }
