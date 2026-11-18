@@ -150,6 +150,9 @@ runtime boundary:
 - company-wide `runtime:manage` stays denied, but the assignee may use
   `set_task_monitor` to schedule or clear a self-wake on its own in-boundary
   task; monitors that create recovery tasks or escalate to the board are denied
+- that self-wake is allowed only when the agent, project and task policies
+  alone resolve the same low-trust boundary as the run, so the woken run keeps
+  the same limits; a boundary carried only by the run snapshot is denied
 
 When the task's project has no configured workspace and no layer specifies a
 workspace strategy, sandbox execution uses a private directory for that company

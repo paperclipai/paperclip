@@ -47,9 +47,6 @@ export async function assertCanManageIssueMonitor(
     action: "runtime:manage",
     resource: { type: "company", companyId },
   });
-  // A low-trust reviewer may schedule or clear a self-wake on its own task.
-  // The caller has already checked task access inside the trust boundary.
-  // Recovery that creates tasks or escalates still needs runtime:manage.
   const ownTaskSelfWake =
     ownTask &&
     isAssignee &&

@@ -2545,7 +2545,7 @@ export class PaperclipRunnerToolAuthority {
     let replayed = false;
     let replayStatus: string | null = null;
     let replayMonitor: ReturnType<typeof summarizeIssueMonitor> | null = null;
-    const authorizeTarget = async (tx: Db, context: { run: typeof heartbeatRuns.$inferSelect }) => {
+    const authorizeTarget = async (tx: Db, context: { run: typeof heartbeatRuns.$inferSelect; actor: typeof agents.$inferSelect }) => {
       // A second owned task may itself be writing another task: fail on lock
       // contention instead of taking opposite issue/run locks and deadlocking.
       const [target] = await tx.select().from(issues).where(and(
@@ -2561,7 +2561,17 @@ export class PaperclipRunnerToolAuthority {
         } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
-      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true, { monitor: input.monitor });
+      const project = target.projectId
+        ? (await tx.select().from(projects).where(and(eq(projects.id, target.projectId), eq(projects.companyId, this.binding.companyId))))[0] ?? null
+        : null;
+      const taskSources = { companyId: this.binding.companyId, agent: context.actor, project, issue: target };
+      const taskTrust = resolveCoreTrustPreset(taskSources);
+      const runTrust = resolveCoreTrustPreset({ ...taskSources,
+        run: { companyId: this.binding.companyId, executionPolicy: context.run.contextSnapshot?.executionPolicy } });
+      const wakeKeepsTrust = taskTrust.kind === "low_trust_review" && runTrust.kind === "low_trust_review"
+        && canonicalJson(taskTrust.boundary) === canonicalJson(runTrust.boundary);
+      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true,
+        wakeKeepsTrust ? { monitor: input.monitor } : undefined);
       if (target.assigneeAgentId !== this.binding.agentId || target.assigneeUserId ||
           !["in_progress", "in_review"].includes(target.status)) {
         throw forbidden("Monitors require an in-progress or in-review task assigned to this agent");

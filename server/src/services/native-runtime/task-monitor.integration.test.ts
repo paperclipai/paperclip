@@ -121,6 +121,7 @@ describeEmbeddedPostgres("native task monitors", () => {
       trustBoundary: { mode: "low_trust_review", companyId: value.companyId, rootIssueId: value.issueId } } };
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: value.issueId, executionPolicy: policy } })
       .where(eq(heartbeatRuns.id, value.runId));
+    await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, value.issueId));
     await db.insert(issues).values({ id: otherId, companyId: value.companyId,
       title: "Owned task outside the review boundary", status: "in_progress", assigneeAgentId: value.agentId });
     await expect(value.call({ idempotencyKey: "review-check", monitor: value.monitor }))
