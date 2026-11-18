@@ -54,7 +54,8 @@ they set no cookies.
    valid two-letter code in it, `browserAnalytics.consentRequired` is `true`
    for the EU and EEA countries (and their outermost regions and Svalbard), the
    UK (and the Crown Dependencies and Gibraltar) and Switzerland, and `false`
-   for every other country.
+   for every other known country. The aliases `UK` and `EL` count as `GB` and
+   `GR`. A value that is not a known two-letter code gives `null`.
 2. Otherwise `consentRequired` is `null`, and the browser decides from its time
    zone. It asks when the zone starts with
    `Europe/`, is an EU, EEA or UK zone outside Europe (for example

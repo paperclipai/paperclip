@@ -39,10 +39,32 @@ const CONSENT_REQUIRED_TIME_ZONES = new Set([
 
 const UNKNOWN_TIME_ZONES = new Set(["", "UTC", "GMT", "UCT", "Universal", "Zulu", "Greenwich"]);
 
+const COUNTRY_ALIASES = new Map([
+  ["UK", "GB"],
+  ["EL", "GR"],
+]);
+
+let regionNames: Intl.DisplayNames | null | undefined;
+
+function isKnownRegion(code: string): boolean {
+  if (regionNames === undefined) {
+    try {
+      regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+    } catch {
+      regionNames = null;
+    }
+  }
+  if (!regionNames) return true;
+  const name = regionNames.of(code);
+  return !!name && name !== code && name !== "Unknown Region";
+}
+
 export function countryRequiresAnalyticsConsent(country: string | null | undefined): boolean | null {
-  const code = country?.trim().toUpperCase();
-  if (!code || !/^[A-Z]{2}$/.test(code) || code === "XX") return null;
-  return CONSENT_REQUIRED_COUNTRIES.has(code);
+  const raw = country?.trim().toUpperCase();
+  if (!raw || !/^[A-Z]{2}$/.test(raw)) return null;
+  const code = COUNTRY_ALIASES.get(raw) ?? raw;
+  if (CONSENT_REQUIRED_COUNTRIES.has(code)) return true;
+  return isKnownRegion(code) ? false : null;
 }
 
 export function timeZoneRequiresAnalyticsConsent(timeZone: string | null | undefined): boolean {
