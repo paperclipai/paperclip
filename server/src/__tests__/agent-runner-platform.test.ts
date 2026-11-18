@@ -91,9 +91,9 @@ describe("local runner platform probe", () => {
   });
   it.skipIf(platform.value !== "linux")("keeps a completed libc probe when startup blocks the event loop", async () => {
     const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-    const measured = actual.execFileSync("getconf", ["GNU_LIBC_VERSION"], { encoding: "utf8" }).trim().split(/\s+/)[1];
+    const measured = "2.39";
     probe.execFile.mockImplementation((command, args, options, callback) => {
-      const child = actual.execFile(command, args, options, callback);
+      const child = actual.execFile(process.execPath, ["-e", "process.stdout.write('glibc 2.39\\n')"], options, callback);
       const until = performance.now() + 1_300;
       while (performance.now() < until) { /* Simulate synchronous module evaluation during startup. */ }
       return child;

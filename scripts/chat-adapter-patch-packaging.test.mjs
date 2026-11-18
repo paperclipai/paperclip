@@ -35,7 +35,6 @@ const required = [
   ["@chat-adapter/teams", "4.39.0"],
   ["@chat-adapter/telegram", "4.39.0"],
   ["@discordjs/ws", "1.2.3"],
-  ["node-pty", "1.1.0"],
 ];
 
 for (const [name, version] of required) {

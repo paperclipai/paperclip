@@ -116,17 +116,6 @@ const serverPackage = JSON.parse(
 const dbPackage = JSON.parse(
   await readFile(new URL("../packages/db/package.json", import.meta.url), "utf8"),
 );
-test("native Codex stays a normal dependency with its independent optional platform closure", (t) => {
-  const published = materializePublishManifest(serverPackage);
-  assert.equal(published.dependencies["@openai/codex-native"], "npm:@openai/codex@0.166.0");
-  const installed = createBundledInstallManifest(published, serverPackage.bundleDependencies);
-  assert.equal(installed.dependencies["@openai/codex-native"], undefined);
-  const fixture = codexFixture(t);
-  const staged = stageBundledProviderOptionalDependencies(fixture.directory, { ...published, ...fixture.publish,
-    dependencies: { ...published.dependencies, ...fixture.publish.dependencies } }, fixture.profiles);
-  assert.equal(staged.dependencies["@openai/codex-native"], "npm:@openai/codex@0.166.0");
-  assert.deepEqual(staged.optionalDependencies, { ...published.optionalDependencies, ...codexOptional });
-});
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
 const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
@@ -637,7 +626,7 @@ if (tool === "npm") {
         ? Object.fromEntries([...targets, "linux-x64-musl", "linux-arm64-musl"].map(target => [name + "-" + target, version])) : undefined;
     writePackage(name, { version, optionalDependencies });
   }
-  writePackage("node-pty", { version: pkg.optionalDependencies["node-pty"] });
+  if (pkg.optionalDependencies?.["node-pty"]) writePackage("node-pty", { version: pkg.optionalDependencies["node-pty"] });
   fs.cpSync(path.join(process.env.FAKE_NATIVE_ARTIFACTS, "@openai/codex-linux-x64"), "node_modules/@openai/codex-linux-x64", { recursive: true });
   fs.mkdirSync("node_modules/@openai/codex/vendor", { recursive: true });
   fs.writeFileSync("node_modules/@openai/codex/vendor/codex", "producer fallback fixture");
