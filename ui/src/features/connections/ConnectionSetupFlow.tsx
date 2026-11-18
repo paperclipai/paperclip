@@ -554,6 +554,37 @@ export function readConnectionIntentOAuthOutcome(
     : null;
 }
 
+/** Read the Paperclip-authored failure code a failed sign-in window sent back. */
+export function readConnectionIntentOAuthFailureCode(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const code = (data as { code?: unknown }).code;
+  return typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : null;
+}
+
+/** Plain-language reason for a failed sign-in, keyed by the server's failure code. */
+export function oauthFailureMessage(code: string | null): string {
+  switch (code) {
+    case "oauth_state_expired":
+    case "oauth_state_missing":
+      return "The sign-in took too long or was already used. Try again and finish signing in within a few minutes.";
+    case "oauth_session_mismatch":
+      return "Sign-in finished in a different Paperclip session. Stay signed in to Paperclip in this browser and try again.";
+    case "oauth_redirect_origin_unsupported":
+      return "Sign-in returned to a different Paperclip address than the one you started from. Open Paperclip at its usual address and try again.";
+    case "oauth_token_exchange_failed":
+    case "oauth_token_endpoint_rejected":
+    case "oauth_access_token_missing":
+      return "The provider accepted your sign-in but didn’t give Paperclip access. Try again; if it keeps happening, check that your account or organization allows this app.";
+    case "oauth_insufficient_scope":
+    case "oauth_scope_grant_invalid":
+      return "The provider didn’t grant the access Paperclip asked for. Try again and approve every requested permission.";
+    case "github_installation_required":
+      return "GitHub access is required. Install Paperclip and grant at least one repository, then try again.";
+    default:
+      return "Authorization did not complete. Try again when you’re ready.";
+  }
+}
+
 export interface ConnectionSetupFlowProps {
   /** Optional settings composed into the standard credential form above its footer. */
   additionalSettings?: ReactNode;
@@ -952,7 +983,7 @@ function StandardConnectionSetupFlow({
       }
       if (outcome !== "failed") return;
       setOAuthPhase("error");
-      setOAuthError("Authorization did not complete. Try again when you’re ready.");
+      setOAuthError(oauthFailureMessage(readConnectionIntentOAuthFailureCode(event.data)));
     };
     window.addEventListener("message", receiveOAuthOutcome);
     return () => { disposed = true; window.removeEventListener("message", receiveOAuthOutcome); };

@@ -6,6 +6,8 @@ import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
+  oauthFailureMessage,
+  readConnectionIntentOAuthFailureCode,
   readConnectionIntentOAuthOutcome,
   retainedResumeMatches,
   retainedReconnectMatches,
@@ -262,5 +264,30 @@ describe("retained reconnect target matching", () => {
       reconnectConnection: connection,
       reconnectApplication: curated,
     })).toBe(false);
+  });
+});
+
+describe("connection intent OAuth failure reasons", () => {
+  it("explains an expired sign-in instead of a generic failure", () => {
+    const code = readConnectionIntentOAuthFailureCode({
+      type: "paperclip.connection-intent.oauth",
+      interactionId,
+      outcome: "failed",
+      code: "oauth_state_expired",
+    });
+    expect(code).toBe("oauth_state_expired");
+    expect(oauthFailureMessage(code)).toMatch(/took too long/);
+  });
+
+  it("explains a sign-in finished in another Paperclip session", () => {
+    expect(oauthFailureMessage("oauth_session_mismatch")).toMatch(/different Paperclip session/);
+  });
+
+  it("ignores malformed codes and never shows a raw code", () => {
+    expect(readConnectionIntentOAuthFailureCode({ code: "<script>" })).toBeNull();
+    expect(readConnectionIntentOAuthFailureCode(null)).toBeNull();
+    const fallback = oauthFailureMessage("oauth_callback_http_500");
+    expect(fallback).toBe("Authorization did not complete. Try again when you’re ready.");
+    expect(fallback).not.toContain("oauth_");
   });
 });

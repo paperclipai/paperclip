@@ -193,11 +193,15 @@ export function filterVisibleToolConnections<T extends {
     || Boolean(actor.userId && connection.createdByUserId === actor.userId));
 }
 
+const OAUTH_FAILURE_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+
 export function connectionIntentOAuthOutcomeHtml(input: {
   interactionId: string;
   issueId: string | null;
   outcome: "connected" | "declined" | "failed";
   openerOrigin?: string | null;
+  /** Paperclip-authored failure code, so the opener can say why sign-in failed. */
+  code?: string | null;
 }) {
   // The callback window is only a signal. Connection identity and every
   // authorization URL stay server-side; the opener refreshes the task from the
@@ -206,6 +210,9 @@ export function connectionIntentOAuthOutcomeHtml(input: {
     type: "paperclip.connection-intent.oauth",
     interactionId: input.interactionId,
     outcome: input.outcome,
+    ...(input.outcome === "failed" && input.code && OAUTH_FAILURE_CODE_PATTERN.test(input.code)
+      ? { code: input.code }
+      : {}),
   }).replace(/</g, "\\u003c");
   const issuePath = input.issueId
     ? `/issues/${encodeURIComponent(input.issueId)}`
@@ -336,6 +343,7 @@ export function toolAccessRoutes(
       issueId: string | null;
       outcome: "connected" | "declined" | "failed";
       openerOrigin?: string | null;
+      code?: string | null;
     },
   ) {
     res.type("html").send(connectionIntentOAuthOutcomeHtml(input));
@@ -1389,6 +1397,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           issueId: pendingState.issueId,
           outcome,
           openerOrigin: pendingState.returnTo,
+          code: typeof details?.code === "string" ? details.code : null,
         });
         return;
       }
@@ -1589,6 +1598,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           issueId: pendingState.issueId,
           outcome,
           openerOrigin: pendingState.returnTo,
+          code: callbackFailureCode,
         });
         return;
       }

@@ -83,6 +83,32 @@ describe("connection intent OAuth callback document", () => {
     },
   );
 
+  it("tells the opener why a failed sign-in failed, using only safe codes", () => {
+    const failed = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "oauth_state_expired",
+    });
+    expect(failed).toContain('"code":"oauth_state_expired"');
+
+    const unsafe = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "</script><b>",
+    });
+    expect(unsafe).not.toContain('"code"');
+
+    const connected = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "connected",
+      code: "oauth_state_expired",
+    });
+    expect(connected).not.toContain('"code"');
+  });
+
   it("can return a localhost callback outcome to the numeric-loopback opener", () => {
     const html = connectionIntentOAuthOutcomeHtml({
       interactionId: "interaction-123",
