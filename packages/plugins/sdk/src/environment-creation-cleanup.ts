@@ -32,12 +32,21 @@ export const ENVIRONMENT_ACQUISITION_PROVIDER_STATES = [
 ] as const;
 export type PluginEnvironmentAcquisitionProviderState = typeof ENVIRONMENT_ACQUISITION_PROVIDER_STATES[number];
 
+const ACQUIRE_ERROR_SCHEMA = "paperclip/environment-acquire-error/v1";
+
+function acquisitionDiagnosticContainer(error: unknown): object | null {
+  if (error instanceof PluginEnvironmentAcquisitionError) return error;
+  if (readEnvironmentCreationCleanupError(error)) {
+    return error instanceof PluginEnvironmentCreationCleanupError ? error : (error as { data?: object }).data ?? null;
+  }
+  const data = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "data")?.value : undefined;
+  return data && typeof data === "object" && Object.getOwnPropertyDescriptor(data, "schema")?.value === ACQUIRE_ERROR_SCHEMA
+    ? data : null;
+}
+
 export function readEnvironmentAcquisitionDiagnostic(error: unknown): PluginEnvironmentAcquisitionDiagnostic | null {
   try {
-    // Diagnostics never make an invalid ownership envelope usable for cleanup.
-    if (!readEnvironmentCreationCleanupError(error)) return null;
-    const container = error instanceof PluginEnvironmentCreationCleanupError
-      ? error : (error as { data?: object }).data;
+    const container = acquisitionDiagnosticContainer(error);
     const value = container && Object.getOwnPropertyDescriptor(container, "acquisitionDiagnostic")?.value;
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const fields = Object.getOwnPropertyDescriptors(value);
@@ -68,6 +77,16 @@ export class PluginEnvironmentCreationCleanupError extends AggregateError {
     super(errors, message);
     this.name = "PluginEnvironmentCreationCleanupError";
     this.cleanup = cleanup;
+    this.acquisitionDiagnostic = acquisitionDiagnostic;
+  }
+}
+
+export class PluginEnvironmentAcquisitionError extends Error {
+  readonly acquisitionDiagnostic: PluginEnvironmentAcquisitionDiagnostic;
+
+  constructor(message: string, acquisitionDiagnostic: PluginEnvironmentAcquisitionDiagnostic, cause?: unknown) {
+    super(message, { cause });
+    this.name = "PluginEnvironmentAcquisitionError";
     this.acquisitionDiagnostic = acquisitionDiagnostic;
   }
 }

@@ -1,4 +1,9 @@
-import { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
+import {
+  PluginEnvironmentAcquisitionError,
+  PluginEnvironmentCreationCleanupError,
+  environmentCreationCleanupErrorData,
+  readEnvironmentAcquisitionDiagnostic,
+} from "./environment-creation-cleanup.js";
 import {
   providerErrorDiagnostic,
   sanitizeProviderErrorDiagnostic,
@@ -35,7 +40,14 @@ export function environmentAcquireErrorData(error: unknown): unknown {
   if (cleanup && typeof cleanup === "object") {
     return providerDiagnostic ? { ...cleanup, providerDiagnostic } : cleanup;
   }
-  return providerDiagnostic ? { schema: SCHEMA, providerDiagnostic } : undefined;
+  const acquisitionDiagnostic = error instanceof PluginEnvironmentAcquisitionError
+    ? readEnvironmentAcquisitionDiagnostic(error) : null;
+  if (!providerDiagnostic && !acquisitionDiagnostic) return undefined;
+  return {
+    schema: SCHEMA,
+    ...(providerDiagnostic ? { providerDiagnostic } : {}),
+    ...(acquisitionDiagnostic ? { acquisitionDiagnostic } : {}),
+  };
 }
 
 /** Host side: read and re-validate the provider diagnostic from an RPC error. */
