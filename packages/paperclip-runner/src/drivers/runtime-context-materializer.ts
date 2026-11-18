@@ -15,6 +15,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
+import { ensureCodexSkillHome, touchCodexSkillHome, writeCodexSkillHomeMarker } from "./codex-skill-home.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 
@@ -337,15 +338,28 @@ export async function prepareIsolatedCodexHome(input: {
   codexHome: string;
   sourceCodexHome?: string | null;
   apiKey?: string | null;
-}): Promise<void> {
-  await materializeNativeRuntimeSkills(
-    input.context,
-    join(input.codexHome, "skills"),
-  );
+  /** Shared skill home store; when set, skills are not copied into this home. */
+  skillHomeStoreRoot?: string;
+}): Promise<{ skillHome: string | null }> {
+  let skillHome: string | null = null;
+  if (input.skillHomeStoreRoot && input.context) {
+    // Also migrates sessions that still carry a per-session skills copy.
+    await releaseMaterializedNativeRuntimeSkills(join(input.codexHome, "skills"));
+    const ensured = await ensureCodexSkillHome({ storeRoot: input.skillHomeStoreRoot, context: input.context });
+    await writeCodexSkillHomeMarker(input.codexHome, ensured.digest);
+    await touchCodexSkillHome(input.skillHomeStoreRoot, ensured.digest);
+    skillHome = ensured.home;
+  } else {
+    await materializeNativeRuntimeSkills(
+      input.context,
+      join(input.codexHome, "skills"),
+    );
+  }
 
   const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, providerConfig);
+  return { skillHome };
 }
 
 async function writeIsolatedCodexConfig(input: CodexAuthInput, providerConfig: string): Promise<void> {

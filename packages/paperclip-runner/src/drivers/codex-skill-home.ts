@@ -164,6 +164,50 @@ export async function ensureCodexSkillHome(input: {
   return { home, digest, created };
 }
 
+/**
+ * Shared skill homes reach Codex through HOME, which Codex honours on Mac and
+ * Linux only. Preconfigured (user-owned) homes and remote Runner filesystems
+ * keep the per-session copy until they are qualified separately.
+ */
+export function usesCodexSkillHome(
+  options: {
+    provider?: string;
+    homeMode?: "isolated" | "preconfigured";
+    runnerFilesystemRoot?: string;
+    codexSkillHomeStoreRoot?: string;
+  },
+  platform: NodeJS.Platform | string = process.platform,
+): boolean {
+  return (options.provider ?? "codex") === "codex"
+    && options.homeMode !== "preconfigured"
+    && !options.runnerFilesystemRoot
+    && Boolean(options.codexSkillHomeStoreRoot)
+    && platform !== "win32";
+}
+
+/** Recovery keeps the skill set a session launched with, or fails before launch. */
+export async function resolveRecordedCodexSkillHome(input: {
+  codexHome: string;
+  storeRoot: string;
+  context: NativeRuntimeContextSnapshot | null;
+}): Promise<string> {
+  const digest = await readCodexSkillHomeMarker(input.codexHome);
+  if (!digest) throw new Error("codex_skill_home_unavailable");
+  const home = join(input.storeRoot, digest);
+  try {
+    await verifyCodexSkillHome(home);
+    await touchCodexSkillHome(input.storeRoot, digest);
+    return home;
+  } catch {
+    if (!input.context || codexSkillHomeDigest(input.context) !== digest) {
+      throw new Error("codex_skill_home_unavailable");
+    }
+  }
+  const ensured = await ensureCodexSkillHome({ storeRoot: input.storeRoot, context: input.context });
+  await touchCodexSkillHome(input.storeRoot, digest);
+  return ensured.home;
+}
+
 export async function touchCodexSkillHome(storeRoot: string, digest: string): Promise<void> {
   if (!DIGEST_PATTERN.test(digest)) throw new Error("codex_skill_home_digest_invalid");
   await writeFile(join(storeRoot, `${digest}.last-used`), "", { mode: 0o600 });
