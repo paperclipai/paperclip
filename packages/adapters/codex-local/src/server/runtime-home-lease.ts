@@ -25,10 +25,11 @@ import path from "node:path";
  * - A lease is only ever removed in place, never moved aside, so the slot is
  *   never briefly free while it is still held.
  * - Recovering a stale lease first claims a recovery marker named after that
- *   exact lease content (atomic `wx`). Only the claimant re-reads the lease and
- *   removes it, and only when it still holds that same stale content. A
- *   competing recoverer of the same generation loses the claim; a new lease has
- *   different content, so it can never match a stale generation.
+ *   exact lease content (created atomically, like a lease). Only the claimant
+ *   re-reads the lease and removes it, and only when it still holds that same
+ *   stale content. A competing recoverer of the same generation loses the
+ *   claim; a new lease has different content, so it can never match a stale
+ *   generation. A marker left by a recoverer that died is recovered the same way.
  *
  * A caller resuming a conversation can ask for the slot that holds it
  * (`preferredHome`); the first free slot is used when that one is taken.
@@ -36,6 +37,7 @@ import path from "node:path";
 
 const PROCESS_NONCE = randomUUID();
 const MAX_SLOTS = 64;
+const MAX_RECOVERY_DEPTH = 4;
 const heldLeases = new Set<string>();
 const acquireQueues = new Map<string, Promise<unknown>>();
 
@@ -123,35 +125,41 @@ async function createLease(leaseFile: string, contents: string): Promise<boolean
 }
 
 /**
- * Remove a lease judged stale, without ever removing a live one. The recovery
- * marker is keyed by the stale content, so exactly one recoverer per stale
- * generation re-reads and removes it. The marker is removed afterwards: a later
- * recoverer of the same generation then re-reads a different (or no) lease and
- * leaves it alone, because lease contents are never reused.
+ * Remove a file judged stale (a lease, or an abandoned recovery marker), without
+ * ever removing a live one. The recovery marker is keyed by the stale content,
+ * so exactly one recoverer per stale generation re-reads and removes it. The
+ * marker is created atomically with the recoverer's holder record and removed
+ * afterwards: a later recoverer of the same generation then re-reads a
+ * different (or no) file and leaves it alone, because contents are never
+ * reused. A marker whose recoverer died before removing it is itself stale and
+ * recovered the same way, so a crash between the two writes strands nothing.
  */
-async function removeStaleLease(leaseFile: string, staleRaw: string): Promise<void> {
+async function removeStaleFile(file: string, staleRaw: string, claim: string, depth = 0): Promise<void> {
   const generation = createHash("sha256").update(staleRaw).digest("hex").slice(0, 32);
-  const marker = `${leaseFile}.recover-${generation}`;
-  try {
-    await fs.writeFile(marker, `${process.pid}\n`, { mode: 0o600, flag: "wx" });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
-    throw error;
+  const marker = `${file}.recover-${generation}`;
+  if (!(await createLease(marker, claim))) {
+    if (depth >= MAX_RECOVERY_DEPTH) return;
+    const markerRaw = await readLease(marker);
+    if (markerRaw !== null && !holderIsLive(parseHolder(markerRaw))) {
+      await removeStaleFile(marker, markerRaw, claim, depth + 1);
+    }
+    return;
   }
   try {
-    if ((await readLease(leaseFile)) === staleRaw) await fs.rm(leaseFile, { force: true });
+    if ((await readLease(file)) === staleRaw) await fs.rm(file, { force: true });
   } finally {
     await fs.rm(marker, { force: true });
   }
 }
 
 async function tryAcquireSlot(leaseFile: string, contents: string): Promise<boolean> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  // One attempt may clear an abandoned marker and the next the stale lease.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     if (await createLease(leaseFile, contents)) return true;
     const raw = await readLease(leaseFile);
     if (raw === null) continue;
     if (holderIsLive(parseHolder(raw))) return false;
-    await removeStaleLease(leaseFile, raw);
+    await removeStaleFile(leaseFile, raw, contents);
   }
   return false;
 }

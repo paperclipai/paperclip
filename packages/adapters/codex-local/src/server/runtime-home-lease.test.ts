@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -127,6 +128,30 @@ describe("acquireRuntimeHomeLease", () => {
     expect(replaced).toBe(true);
     expect(lease.home).toBe(path.join(parent, `${DIGEST}-1`));
     expect(await realReadFile(leaseFile(0), "utf8")).toBe(live);
+    await lease.release();
+  });
+
+  it("recovers a stale lease whose earlier recoverer died before removing it", async () => {
+    const stale = JSON.stringify({ pid: 2 ** 22 + 12345, nonce: "dead-process", token: "stale" });
+    await fs.writeFile(leaseFile(0), stale);
+    const generation = createHash("sha256").update(stale).digest("hex").slice(0, 32);
+    const deadRecoverer = JSON.stringify({ pid: 2 ** 22 + 12346, nonce: "dead-recoverer", token: "r" });
+    await fs.writeFile(`${leaseFile(0)}.recover-${generation}`, deadRecoverer);
+    const lease = await acquireRuntimeHomeLease(parent, DIGEST, "run-1");
+    expect(lease.home).toBe(path.join(parent, DIGEST));
+    await lease.release();
+    expect((await fs.readdir(parent)).filter((name) => name.includes(".recover-"))).toEqual([]);
+  });
+
+  it("leaves a stale lease alone while a live recoverer holds its marker", async () => {
+    const stale = JSON.stringify({ pid: 2 ** 22 + 12345, nonce: "dead-process", token: "stale" });
+    await fs.writeFile(leaseFile(0), stale);
+    const generation = createHash("sha256").update(stale).digest("hex").slice(0, 32);
+    const liveRecoverer = JSON.stringify({ pid: process.ppid, nonce: "other-live-process", token: "r" });
+    await fs.writeFile(`${leaseFile(0)}.recover-${generation}`, liveRecoverer);
+    const lease = await acquireRuntimeHomeLease(parent, DIGEST, "run-1");
+    expect(lease.home).toBe(path.join(parent, `${DIGEST}-1`));
+    expect(await fs.readFile(leaseFile(0), "utf8")).toBe(stale);
     await lease.release();
   });
 

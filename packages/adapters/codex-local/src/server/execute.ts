@@ -92,9 +92,9 @@ import {
   stageCodexHomeForSync,
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
-  removeUnsafeCodexHomeEntries,
   type ManagedCodexMcpGateway,
 } from "./codex-home.js";
+import { removeUnsafeCodexHomeEntries } from "./codex-home-cleanup.js";
 import {
   CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
   CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,
