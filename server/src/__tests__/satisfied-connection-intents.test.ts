@@ -434,6 +434,31 @@ describePostgres("already available connection requests", () => {
     expect(wakeup).toHaveBeenCalledWith(f.agentId, expect.objectContaining({ requestedByActorType: "system", idempotencyKey: `connection-intent:${f.intent.id}:expired`, contextSnapshot: expect.objectContaining({ refreshTools: true, responsibleUserId: "connection-owner" }) }));
   });
 
+  it.each(["blocked", "todo", "backlog"] as const)("retires a satisfied card on a %s task without waking its agent", async (status) => {
+    const f = await seed(); const wakeup = vi.fn().mockResolvedValue(null);
+    await db.update(issues).set({ status }).where(eq(issues.id, f.issueId));
+    const worker = connectionIntentDeliveryService(db, { wakeup });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0]).toMatchObject({ status: "expired", resolvedByUserId: null,
+      result: { outcome: "expired", connectionId: f.connection.id } });
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+    expect(wakeup).not.toHaveBeenCalled();
+    expect((await db.select().from(issues))[0].status).toBe(status);
+    expect(await db.select().from(activityLog)).toEqual([expect.objectContaining({ actorType: "system", action: "issue.thread_interaction_resolved" })]);
+    expect(await worker.hasPending()).toBe(false);
+  });
+
+  it("keeps a blocked task's card pending until its connection is usable", async () => {
+    const f = await seed();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId));
+    await db.update(connectionGrants).set({ status: "revoked" });
+    expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 0 });
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    await db.update(connectionGrants).set({ status: "active" });
+    expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 1 });
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+  });
+
   it("rechecks access after a restart before it delivers the saved continuation", async () => {
     const f = await seed();
     await satisfiedConnectionIntentService(db).sweepPending();

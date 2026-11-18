@@ -276,7 +276,55 @@ export interface ToolRunContext {
    * has no project. Check the value before you use it as a project ID.
    */
   projectId: string;
+  /**
+   * The connection this call runs on. Present only for tools of a plugin
+   * connector (`ctx.connectors.register`). The host resolves it from the
+   * gateway session; tool arguments can never change it.
+   */
+  connection?: ToolRunConnection;
 }
+
+/**
+ * A credential the host resolved for one connector call. It is valid for
+ * that call only; the worker never reads the vault and never sees another
+ * connection's credential.
+ */
+export interface ConnectionCredential {
+  kind: "api_key";
+  value: string;
+}
+
+/** The connection a plugin connector tool runs on. */
+export interface ToolRunConnection {
+  /** Connection id. */
+  id: string;
+  /** The app slug as declared in the manifest (not namespaced). */
+  appSlug: string;
+  /** The connection method key from the manifest. */
+  methodKey: string;
+  /** The grant whose credential the host resolved for this call. */
+  grantId: string;
+  /** Per-connection settings, validated against the method's `settingsSchema`. */
+  settings: Record<string, unknown>;
+  /** Present when the method authenticates. */
+  credential?: ConnectionCredential;
+}
+
+/** The connection passed to `ctx.connectors.listTools`. */
+export type ConnectorToolListConnection = Omit<ToolRunConnection, "grantId"> & { grantId?: string };
+
+/** One tool a dynamic plugin connector offers for a connection. */
+export interface ConnectorToolDescriptor {
+  /** Lowercase letters, digits and underscores. */
+  name: string;
+  displayName?: string;
+  description?: string;
+  risk: "read" | "write" | "destructive";
+  parametersSchema: Record<string, unknown>;
+}
+
+/** Tool run context for a plugin connector tool: `connection` is always present. */
+export type ConnectorToolRunContext = ToolRunContext & { connection: ToolRunConnection };
 
 /**
  * Result returned from a plugin tool handler.
@@ -1051,6 +1099,41 @@ export interface PluginToolsClient {
     name: string,
     declaration: Pick<PluginToolDeclaration, "displayName" | "description" | "parametersSchema">,
     fn: (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>,
+  ): void;
+}
+
+/**
+ * `ctx.connectors` — serve the tools of connectors this plugin declares in
+ * `apps` with `transport: "plugin"`.
+ *
+ * Requires the `connectors.provide` capability. Declaring a connector grants
+ * no tools: agents get them only from a connection installed for them or for
+ * the whole company, exactly like built-in connectors.
+ */
+export interface PluginConnectorsClient {
+  /**
+   * Register the handler for one tool of a plugin connector. Every static
+   * tool in the manifest needs a handler before `setup` returns, or the worker
+   * fails to start.
+   *
+   * @param appSlug - App slug as declared in the manifest
+   * @param toolName - Tool name (`[a-z0-9_]`)
+   * @param fn - Handler. `runCtx.connection` identifies the connection, its
+   *   settings and the credential the host resolved for this call.
+   */
+  register(
+    appSlug: string,
+    toolName: string,
+    fn: (params: unknown, runCtx: ConnectorToolRunContext) => Promise<ToolResult>,
+  ): void;
+  /**
+   * Provide the tool list of a `tools: { kind: "dynamic" }` connector for one
+   * connection. The host caches the result in the connection's catalog and
+   * refreshes it on connect, on settings change and on request.
+   */
+  listTools(
+    appSlug: string,
+    fn: (connection: ConnectorToolListConnection) => Promise<ConnectorToolDescriptor[]>,
   ): void;
 }
 
@@ -2302,6 +2385,9 @@ export interface PluginContext {
 
   /** Register agent tool handlers. Requires `agent.tools.register`. */
   tools: PluginToolsClient;
+
+  /** Serve plugin connector tools. Requires `connectors.provide`. */
+  connectors: PluginConnectorsClient;
 
   /** Write plugin metrics. Requires `metrics.write`. */
   metrics: PluginMetricsClient;

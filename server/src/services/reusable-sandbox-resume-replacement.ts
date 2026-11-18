@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { readEnvironmentResumeErrorDiagnostic } from "@paperclipai/plugin-sdk";
+import { type EnvironmentRetryScope, isRetryableEnvironmentErrorCode, isRetryableEnvironmentHttpStatus, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentResumeErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
 import { environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
@@ -45,6 +45,77 @@ export function sandboxStateTransitionFailure(error: unknown): boolean {
     if (/state change in progress|\bis still [a-z_]+ at its start deadline\b|\bis still settling cancelled work\b/i.test(message)) return true;
   }
   return false;
+}
+
+export const RESUME_RETRY_FIRST_DELAY_MS = 250;
+export const RESUME_RETRY_MAX_DELAY_MS = 5_000;
+
+/** The jittered wait before the next resume attempt, from the current base delay. */
+export function jitteredResumeRetryDelayMs(baseDelayMs: number): number {
+  return Math.max(1, Math.round(baseDelayMs * (0.75 + Math.random() * 0.5)));
+}
+
+export function nextResumeRetryBaseDelayMs(baseDelayMs: number): number {
+  return Math.min(baseDelayMs * 2, RESUME_RETRY_MAX_DELAY_MS);
+}
+
+export function isPluginRpcDeadline(error: unknown): boolean {
+  return error instanceof JsonRpcCallError && error.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT;
+}
+
+/**
+ * Whether a refused resume may pass when repeated. Only structured evidence
+ * counts: the provider status or errno (on the error or in the validated plugin
+ * envelope), the plugin RPC deadline, or a sandbox still changing state. Free
+ * text counts only for a few transport phrases. The status and errno policy is
+ * the SDK's, shared with lease acquisition; `scope` says whether this run
+ * already reached the host.
+ */
+export function transientSandboxResumeFailure(error: unknown, scope: EnvironmentRetryScope = "first_acquisition"): boolean {
+  const candidate = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  if (isRetryableEnvironmentHttpStatus(candidate.status) || isRetryableEnvironmentHttpStatus(candidate.statusCode)) return true;
+  const envelope = readEnvironmentResumeErrorDiagnostic(error);
+  if (isRetryableEnvironmentHttpStatus(envelope?.httpStatus) || isRetryableEnvironmentErrorCode(envelope?.errorCode, scope)) return true;
+  if (isPluginRpcDeadline(error)) return true;
+  if (sandboxStateTransitionFailure(error)) return true;
+  if (typeof candidate.code === "string" && isRetryableEnvironmentErrorCode(candidate.code.toUpperCase(), scope)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(rate limit(ed)?|connection reset|socket hang up|service unavailable)\b/i.test(message);
+}
+
+/** Whether a refused resume was a transport deadline, from its failure label or its envelope errno. */
+export function resumeFailureTimedOut(error: unknown): boolean {
+  const code = readEnvironmentResumeErrorDiagnostic(error)?.errorCode;
+  return sandboxProviderFailureLabel(error).label === "transport_timeout" || code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT";
+}
+
+/**
+ * Resume the exact lease, repeating transient refusals. The first attempt keeps
+ * the provider's configured start deadline. When it ran out that deadline, the
+ * failure is final. Otherwise `budgetMs`, counted from the first failure, bounds
+ * every later wait and call.
+ */
+export async function retryTransientResumeCall<T>(input: {
+  budgetMs: number;
+  scope: EnvironmentRetryScope;
+  call: (timeoutMs: number | undefined) => Promise<T>;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<T> {
+  const sleep = input.sleep ?? (ms => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  let deadline: number | null = null;
+  let baseDelayMs = RESUME_RETRY_FIRST_DELAY_MS;
+  while (true) {
+    try {
+      return await input.call(deadline === null ? undefined : Math.max(1, deadline - Date.now()));
+    } catch (error) {
+      if (!transientSandboxResumeFailure(error, input.scope) || (deadline === null && isPluginRpcDeadline(error))) throw error;
+      deadline ??= Date.now() + input.budgetMs;
+      const waitMs = jitteredResumeRetryDelayMs(baseDelayMs);
+      if (Date.now() + waitMs >= deadline) throw error;
+      await sleep(waitMs);
+      baseDelayMs = nextResumeRetryBaseDelayMs(baseDelayMs);
+    }
+  }
 }
 
 export async function reusableSandboxLeaseIsIdle(input: {

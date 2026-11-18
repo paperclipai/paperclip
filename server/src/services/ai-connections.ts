@@ -10,7 +10,6 @@ import {
   type Db,
   authUsers,
   adapterAuthSessions,
-  aiConnectionDefaults,
   aiProviderDefaults,
   agents,
   heartbeatRuns,
@@ -211,13 +210,6 @@ export function aiConnectionService(db: Db) {
         );
       const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
       if (metadata.routing) throw unprocessable("Custom providers use an explicit connection selection on the agent.");
-      // Keep old servers' method preferences intact during an additive rollout.
-      await tx.insert(aiConnectionDefaults)
-        .values({ companyId, userId, ...metadata, grantId })
-        .onConflictDoUpdate({
-          target: [aiConnectionDefaults.companyId, aiConnectionDefaults.userId, aiConnectionDefaults.provider, aiConnectionDefaults.method],
-          set: { grantId, updatedAt: new Date() },
-        });
       await tx.insert(aiProviderDefaults)
         .values({ companyId, userId, provider: metadata.provider, grantId })
         .onConflictDoUpdate({
@@ -263,7 +255,7 @@ export function aiConnectionService(db: Db) {
         errorCode: "connection_unavailable", message: "Reconnect or enable this connection to check its account details." };
     }
     // Unsupported methods must not open their credentials just to report this limit.
-    const value = metadata.provider === "anthropic" && metadata.method === "subscription" && !metadata.routing
+    const value = ["anthropic", "openai"].includes(metadata.provider) && metadata.method === "subscription" && !metadata.routing
       ? await credential(row, 0, { actorType: "user", actorId: userId, ...audit, responsibleUserId: userId }) : "";
     return { ...identity, ...await probeAiAccountIdentity(metadata, value) };
   }
@@ -923,16 +915,6 @@ export function aiConnectionService(db: Db) {
         .where(eq(toolConnections.id, id));
       await syncConnectionCredentialBindings(tx, savedConnection, refs);
       if (input.ownership === "personal" && !routing) {
-        await tx
-          .insert(aiConnectionDefaults)
-          .values({
-            companyId,
-            userId,
-            provider: input.provider,
-            method: input.method,
-            grantId,
-          })
-          .onConflictDoNothing();
         await tx.insert(aiProviderDefaults).values({ companyId, userId, provider: input.provider, grantId }).onConflictDoNothing();
       }
       if (!reconnect) {

@@ -6,6 +6,41 @@ import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, 
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
+  it("lets a transient gateway failure recover before spending the final verification attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const availableAt = Date.now() + 1_000;
+      const execute = vi.fn(async () => {
+        if (Date.now() < availableAt) throw new Error("Request failed with status code 502");
+        return ok;
+      });
+      const result = runRemoteProviderVerification(execute, "pack").then(
+        value => ({ value }), error => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(999);
+      expect(execute).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toEqual({ value: ok });
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("still holds after two gateway failures without scheduling another attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi.fn().mockRejectedValue(new Error("Request failed with status code 502"));
+      const result = runRemoteProviderVerification(execute, "pack").catch(error => error);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await result).toMatchObject({ message: "runner_remote_provider_verification_unavailable: pack unavailable after 2 verification attempts (Request failed with status code 502)" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each([
     { ...ok, exitCode: null, timedOut: true },
     { ...ok, exitCode: null },

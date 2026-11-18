@@ -40,11 +40,71 @@ describe("AI account identity", () => {
   it("does not call a provider for API keys or other sign-in methods", async () => {
     const request = fixture({});
     expect((await probeAiAccountIdentity({ provider: "anthropic", method: "api_key" }, "", request)).errorCode).toBe("unsupported");
-    expect((await probeAiAccountIdentity({ provider: "openai", method: "subscription" }, "", request)).errorCode).toBe("unsupported");
+    expect((await probeAiAccountIdentity({ provider: "google", method: "subscription" }, "", request)).errorCode).toBe("unsupported");
     expect(request).not.toHaveBeenCalled();
   });
 
-  it("aborts a stalled real response body while unrelated requests remain responsive", async () => {
+  const openai = { provider: "openai", method: "subscription" } as const;
+  const openaiCredential = JSON.stringify({ tokens: { access_token: "selected-openai-bearer", account_id: "selected-workspace" } });
+
+  it("reads the selected OpenAI workspace rather than the default or first workspace", async () => {
+    const request = fixture({ default_account_id: "other-workspace", accounts: {
+      "other-workspace": { account: { account_id: "other-workspace", name: "Other team", structure: "workspace" } },
+      "selected-workspace": { account: { account_id: "selected-workspace", name: "Example business", structure: "workspace", private_field: "private-provider-data" } },
+    } });
+    const result = await probeAiAccountIdentity(openai, openaiCredential, request);
+    expect(result).toMatchObject({ status: "available", organizationLabel: "Example business" });
+    expect(request).toHaveBeenCalledWith("https://chatgpt.com/backend-api/wham/accounts/check", expect.objectContaining({
+      redirect: "error", signal: expect.any(AbortSignal),
+      headers: { Authorization: "Bearer selected-openai-bearer", "ChatGPT-Account-Id": "selected-workspace" },
+    }));
+    for (const value of ["selected-openai-bearer", "selected-workspace", "private-provider-data", "Other team"]) {
+      expect(JSON.stringify(result)).not.toContain(value);
+    }
+  });
+
+  it("supports the provider's list response and legacy saved credentials", async () => {
+    const result = await probeAiAccountIdentity(openai, JSON.stringify({ accessToken: "selected-openai-bearer", accountId: "selected-workspace" }),
+      fixture({ accounts: [{ id: "selected-workspace", name: "Example business", structure: "workspace" }] }));
+    expect(result).toMatchObject({ status: "available", organizationLabel: "Example business" });
+  });
+
+  it("identifies a personal workspace when OpenAI supplies its type without a name", async () => {
+    expect(await probeAiAccountIdentity(openai, openaiCredential, fixture({ accounts: {
+      "selected-workspace": { account: { account_id: "selected-workspace", structure: "personal" } },
+    } }))).toMatchObject({ status: "available", organizationLabel: "Personal workspace" });
+  });
+
+  it.each([
+    {},
+    { accounts: [{ id: "other-workspace", name: "Other team" }] },
+    { accounts: [{ id: "selected-workspace", name: "First" }, { id: "selected-workspace", name: "Second" }] },
+    { accounts: { "selected-workspace": { account: { account_id: "other-workspace", name: "Wrong team" } } } },
+    { accounts: [{ id: "selected-workspace", name: "Deactivated team", is_deactivated: true }] },
+    { accounts: [{ id: "selected-workspace", name: "Unsafe\nname" }] },
+    { accounts: [{ id: "selected-workspace", name: "x".repeat(255) }] },
+    { accounts: [{ id: "selected-workspace", structure: "workspace" }] },
+  ])("does not guess the OpenAI workspace from an incomplete or ambiguous response %j", async profile => {
+    expect(await probeAiAccountIdentity(openai, openaiCredential, fixture(profile))).toMatchObject({
+      status: "unavailable", errorCode: "invalid_response", organizationLabel: null,
+    });
+  });
+
+  it.each(["", "not-json", "{}", JSON.stringify({ tokens: { access_token: "bearer" } })])("does not make an unscoped OpenAI request for %s", async credential => {
+    const request = fixture({});
+    expect(await probeAiAccountIdentity(openai, credential, request)).toMatchObject({ status: "unavailable", errorCode: "authentication_required" });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403, 429, 500])("reports OpenAI HTTP %s without leaking details or naming another provider", async status => {
+    const result = await probeAiAccountIdentity(openai, openaiCredential, fixture({ error: "private-provider-error" }, status));
+    expect(result.status).toBe(status === 401 || status === 403 ? "unavailable" : "error");
+    expect(result.organizationLabel).toBeNull();
+    expect(result.message).not.toContain("Anthropic");
+    expect(JSON.stringify(result)).not.toContain("private-provider-error");
+  });
+
+  it.each([metadata, openai])("aborts a stalled $provider response body while unrelated requests remain responsive", async provider => {
     const server = createServer((req, res) => {
       if (req.url === "/profile") { res.writeHead(200, { "Content-Type": "application/json" }); res.flushHeaders(); }
       else res.end("responsive");
@@ -57,7 +117,7 @@ describe("AI account identity", () => {
     const timeout = AbortSignal.timeout.bind(AbortSignal);
     const deadline = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => timeout(100));
     try {
-      const pending = probeAiAccountIdentity(metadata, "selected-credential", (_url, init) => fetch(`${origin}/profile`, init));
+      const pending = probeAiAccountIdentity(provider, provider.provider === "openai" ? openaiCredential : "selected-credential", (_url, init) => fetch(`${origin}/profile`, init));
       expect(await (await fetch(`${origin}/unrelated`)).text()).toBe("responsive");
       const result = await pending;
       expect(result.status).toBe("error");

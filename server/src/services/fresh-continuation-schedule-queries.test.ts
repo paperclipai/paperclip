@@ -6,7 +6,7 @@ import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { BACKLOG_CONTINUATION_MAX_AGE_MS, freshContinuationCheckDue, heldExecutionWhere, heldExecutionsAwaitingFreshContinuation,
   nextFreshContinuationCheckAt, recentInterruptionSourceSql } from "./fresh-continuation-fallback.js";
-import { continuationCauseIsSystemOwnedSql, continuesAutomaticallySql, recoveryRunSql } from "./continuation-cause.js";
+import { SETUP_FAILURE_CODES, continuationCauseIsSystemOwnedSql, continuesAutomaticallySql, recoveryRunSql } from "./continuation-cause.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -35,7 +35,15 @@ function previousRecentInterruptionSourceSql(now: Date) {
   const systemRetriedSource = sql`(${continuationCauseIsSystemOwnedSql("source")}
     and coalesce(source.context_snapshot->>'wakeReason', '') <> 'task_retry' and not coalesce(source.context_snapshot ? 'explicitUserContinuation', false)
     and exists (select 1 from ${heartbeatRuns} held where ${refusedLater} and ${recoveryRunSql("held")}))`;
-  const recent = source(sql`(${continuesAutomaticallySql("source")} or ${systemRetriedSource})
+  const setupFailedAfterWork = sql`(coalesce(source.result_json#>>'{executionRecovery,providerWorkStarted}', '') <> 'false'
+    and source.error_code in (${sql.join(SETUP_FAILURE_CODES.map(code => sql`${code}`), sql`, `)})
+    and exists (select 1 from ${issueRecoveryActions} saved where saved.company_id = source.company_id
+      and saved.source_issue_id = ${input.issueId}
+      and (saved.evidence->>'runId' = source.id::text or (saved.evidence->>'runId' is null and saved.evidence->>'sourceRunId' = source.id::text))
+      and saved.evidence ?| array['workspaceRestoreRecovery', 'workspaceRestoreFailure', 'systemRecovery']
+      and coalesce(saved.evidence#>>'{systemRecovery,state}', '') <> 'exhausted'))`;
+  const recent = source(sql`(${continuesAutomaticallySql("source")} or ${systemRetriedSource}
+      or (${continuationCauseIsSystemOwnedSql("source")} and ${setupFailedAfterWork}))
     and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
   return sql`(${recent} or ${personAsked})`;
 }
@@ -140,7 +148,7 @@ suite("fresh-continuation schedule queries", () => {
       const finishedMinutesAgo = pick([30, 120, 600, 1_200, 1_430, 1_450, 2_000, 4_000]);
       const sourceLink = pick(["native", "issue", "context"]);
       const errorCode = pick(["process_lost", "native_session_interrupted", "server_shutdown_interrupted", "controller_lease_lost",
-        "adapter_failed", "reusable_sandbox_resume_failed", "budget_exceeded", null]);
+        "adapter_failed", "reusable_sandbox_resume_failed", "setup_failed", "budget_exceeded", null]);
       const sourceCreated = chance(0.92);
       if (sourceCreated) {
         const finished = chance(0.92) ? at(finishedMinutesAgo) : null;

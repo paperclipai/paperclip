@@ -10,6 +10,8 @@ import { useToast } from "@/context/ToastContext";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { gatewaysQueryKey } from "../NewGatewayDialog";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /**
  * Advanced tab — raw protocol/transport details, config JSON and the archive
@@ -102,7 +104,7 @@ export function GatewayAdvancedPanel({
             Copy JSON
           </Button>
         </div>
-        <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-muted-foreground">
+        <pre className={cn("max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
           {rawConfig}
         </pre>
       </section>

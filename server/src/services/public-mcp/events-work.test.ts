@@ -390,7 +390,7 @@ describe.skipIf(!support.supported)("MCP event committed work", () => {
 
   it("restores retry and abandoned claim deadlines on restart", async () => {
     const f = await fixture(); await f.subscribe(); await f.start(); status = 503;
-    await activity(); await delivered(1);
+    status = 503; await activity(); await delivered(1);
     const [pending] = await db.select().from(mcpEventDeliveries);
     expect(pending.finishedAt).toBeNull(); expect(pending.attempts).toBe(1);
     const claimAt = Date.now() + 30_000;
@@ -400,11 +400,10 @@ describe.skipIf(!support.supported)("MCP event committed work", () => {
     expect((await db.select().from(mcpEventDeliveries))[0].outcome).toBe("delivered"); await quiet();
   });
 
-  it("wakes on reenable and cancels retries when unsubscribed", async () => {
+  it("keeps delivering after a stored legacy off value and cancels retries when unsubscribed", async () => {
     const f = await fixture(); await f.subscribe(); await f.start();
     await instanceSettingsService(db).updateExperimental({ enablePublicMcp: false }); await settle();
-    await activity(); await settle(); await quiet(); expect(received).toEqual([]);
-    status = 503; await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true }); await delivered(1);
+    status = 503; await activity(); await delivered(1);
     await service.unsubscribe(f.principal, f.input); await settle(); await quiet(); expect(coordinator.nextWakeAt()).toBeNull();
   });
 

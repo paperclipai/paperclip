@@ -20,7 +20,6 @@ vi.mock("@/context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false, setSidebarOpen: vi.fn() }),
 }));
 vi.mock("./SidebarNavItem", () => ({
-  SidebarNavExpandedProvider: ({ children }: { children: React.ReactNode }) => children,
   SidebarNavItem: (props: { to: string; label: string; active?: boolean }) => {
     sidebarNavItemMock(props);
     return <a href={props.to} aria-current={props.active ? "page" : undefined}>{props.label}</a>;

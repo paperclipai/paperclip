@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition, pluginAppDefinition, pluginAppSlug, setPluginAppDefinitions } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type RequestOptions } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -459,6 +459,34 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).not.toHaveBeenCalled();
   });
 
+  it("sends a plugin connector's settings from its settings schema", async () => {
+    const app = pluginAppDefinition("example.records", {
+      schemaVersion: 1, slug: "records", name: "Records", description: "Look up records", categories: ["data"],
+      branding: { logoUrl: "/brands/apps/api-key-generic.svg" }, urlPatterns: [],
+      methods: [{ key: "api-key", label: "API key", transport: "plugin", auth: "api_key", ownershipModes: ["customer"],
+        whenToUse: "Use an API key.", guidanceMd: "Paste a key.", riskTier: "S2",
+        credentialFields: [{ key: "apiKey", label: "API key", type: "password", required: true, placeholder: "key", secret: true }],
+        settingsSchema: { type: "object", properties: { workspace: { type: "string", title: "Workspace" } }, required: ["workspace"] },
+        tools: { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] } }],
+    });
+    setPluginAppDefinitions([app]);
+    try {
+      listGalleryMock.mockResolvedValue({ apps: [app] });
+      await render(undefined, false, <ConnectionSetupFlow serviceSlug={app.slug} />);
+      const key = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+      const workspace = [...container.querySelectorAll<HTMLInputElement>('input:not([type="password"])')].find(input => !input.disabled)!;
+      expect(buttonByText("Connect")?.disabled).toBe(true);
+      await act(async () => setInputValue(key, "records-key"));
+      await act(async () => setInputValue(workspace, "acme"));
+      await act(async () => buttonByText("Connect")?.click());
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: app.slug,
+        connectionMethodKey: "api-key", settings: { workspace: "acme" }, credentialValues: { "credentials.apiKey": "records-key" } }));
+    } finally {
+      setPluginAppDefinitions([]);
+    }
+  });
+
   it("opens the saved AI sign-in and reuses a completed account", async () => {
     mockSearch.value = "aiLogin=saved-login";
     const setup = vi.spyOn(aiConnectionsApi, "loginSetup").mockResolvedValue({
@@ -471,6 +499,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(connectAppMock).not.toHaveBeenCalled();
     await act(async () => buttonByText("View connection")?.click());
     expect(mockNavigate).toHaveBeenCalledWith("/apps/saved-account/permissions");
+  });
+
+  it("shows an unavailable state for a plugin connector the host no longer provides", async () => {
+    mockSearch.value = `source=${pluginAppSlug("example.meetings", "circleback")}`;
+    listGalleryMock.mockResolvedValue({ apps: [] });
+    await render();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("This connector is unavailable. Ask an instance admin to enable its plugin.");
+    expect(connectAppMock).not.toHaveBeenCalled();
   });
 
   it("shows an unavailable saved sign-in without creating a replacement", async () => {

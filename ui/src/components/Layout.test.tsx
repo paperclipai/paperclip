@@ -50,13 +50,9 @@ const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 const mockPluginSlotContexts = vi.hoisted(
   () => [] as Array<Record<string, unknown>>,
 );
-const mockSetPeeking = vi.hoisted(() => vi.fn());
-const mockSetForceCollapsed = vi.hoisted(() => vi.fn());
 const mockSidebarState = vi.hoisted(() => ({
   sidebarOpen: true,
   isMobile: false,
-  collapsed: false,
-  peeking: false,
 }));
 let currentPathname = "/PAP/dashboard";
 
@@ -265,14 +261,7 @@ vi.mock("../context/SidebarContext", () => ({
     sidebarOpen: mockSidebarState.sidebarOpen,
     setSidebarOpen: mockSetSidebarOpen,
     toggleSidebar: vi.fn(),
-    toggleCollapsed: vi.fn(),
-    collapsed: mockSidebarState.collapsed,
-    peeking: mockSidebarState.peeking,
-    setPeeking: mockSetPeeking,
-    setForceCollapsed: mockSetForceCollapsed,
     isMobile: mockSidebarState.isMobile,
-    routeRequestsCollapsed: false,
-    setRouteRequestsCollapsed: vi.fn(),
   }),
 }));
 
@@ -422,10 +411,6 @@ describe("Layout", () => {
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
     mockSidebarState.isMobile = false;
-    mockSidebarState.collapsed = false;
-    mockSidebarState.peeking = false;
-    mockSetPeeking.mockClear();
-    mockSetForceCollapsed.mockClear();
   });
 
   afterEach(() => {
@@ -519,102 +504,6 @@ describe("Layout", () => {
     });
   });
 
-  it("collapses atomically when the pointer is still over the sidebar (no re-peek) — PAP-10676", async () => {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    const renderLayout = async () => {
-      await act(async () => {
-        renderLayoutView(root, queryClient);
-      });
-      await flushReact();
-    };
-
-    // The SidebarShell overlay panel carries the peek mouse handlers.
-    const panel = () =>
-      [...container.querySelectorAll<HTMLElement>("div")].find(
-        (el) =>
-          el.className.includes("inset-y-0") &&
-          el.className.includes("overflow-hidden"),
-      );
-    const hover = (el: HTMLElement) => {
-      // React derives onMouseEnter from a mouseover crossing in from outside.
-      el.dispatchEvent(
-        new MouseEvent("mouseover", {
-          bubbles: true,
-          relatedTarget: document.body,
-        }),
-      );
-    };
-
-    // Expanded, then hover the panel so the pointer is registered as inside.
-    await renderLayout();
-    const expandedPanel = panel();
-    expect(expandedPanel).toBeTruthy();
-    await act(async () => {
-      hover(expandedPanel!);
-    });
-
-    // Collapse while the pointer is still over the panel.
-    mockSidebarState.collapsed = true;
-    await renderLayout();
-    // The peek is cancelled atomically on collapse.
-    expect(mockSetPeeking).toHaveBeenCalledWith(false);
-
-    // A lingering/spurious hover while collapsed must NOT re-open the peek.
-    mockSetPeeking.mockClear();
-    const railPanel = panel();
-    await act(async () => {
-      hover(railPanel!);
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 80));
-    });
-    expect(mockSetPeeking).not.toHaveBeenCalledWith(true);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("opens the peek when hovering a collapsed rail (positive control for the hover sim)", async () => {
-    mockSidebarState.collapsed = true;
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    await act(async () => {
-      renderLayoutView(root, queryClient);
-    });
-    await flushReact();
-
-    const panel = [...container.querySelectorAll<HTMLElement>("div")].find(
-      (el) =>
-        el.className.includes("inset-y-0") &&
-        el.className.includes("overflow-hidden"),
-    );
-    expect(panel).toBeTruthy();
-    await act(async () => {
-      panel!.dispatchEvent(
-        new MouseEvent("mouseover", {
-          bubbles: true,
-          relatedTarget: document.body,
-        }),
-      );
-    });
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 80));
-    });
-    // A normal collapsed-rail hover (not just-collapsed) opens the peek.
-    expect(mockSetPeeking).toHaveBeenCalledWith(true);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
   it("retains settings navigation and route content beside the proposed sandbox sidebar", async () => {
     currentPathname = "/PAP/company/settings/access";
     mockDesignSandbox.enabled = true;
@@ -699,7 +588,7 @@ describe("Layout", () => {
 
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).toContain("Company settings sidebar");
-    expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+    expect(container.querySelector<HTMLElement>(".sidebar-shell-panel")?.style.width).toBe("240px");
 
     await act(async () => {
       root.unmount();
@@ -1092,7 +981,7 @@ describe("Layout", () => {
     }
   });
 
-  it("keeps the global rail beside Skills navigation in the legacy shell", async () => {
+  it("keeps the global sidebar beside Skills navigation in the legacy shell", async () => {
     currentPathname = "/PAP/skills/studio";
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableApps: true,
@@ -1111,7 +1000,7 @@ describe("Layout", () => {
 
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).toContain("Skills sidebar");
-    expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+    expect(container.querySelector<HTMLElement>(".sidebar-shell-panel")?.style.width).toBe("240px");
 
     await act(async () => {
       root.unmount();

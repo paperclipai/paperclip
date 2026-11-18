@@ -1,8 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
 import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
@@ -13,7 +15,8 @@ import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/work
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH } from "./remote-workspace-archive-io.js";
 
-export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
+export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>
+  | (Extract<AdapterExecutionTarget, { transport: "ssh" }> & { runner: CommandManagedRuntimeRunner });
 
 async function transferArchive(target: RemoteWorkspaceTarget, direction: "syncIn" | "syncOut",
   operations: SandboxSyncOperation[], byteSize: number) {
@@ -30,9 +33,32 @@ const checkoutConfiguredRefScript = String.raw`if(input.ref){const remoteRef=inp
  await git(['checkout','--detach',selected.stdout.trim()]);}`;
 
 export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | null): RemoteWorkspaceTarget {
+  if (target?.kind === "remote" && target.transport === "ssh") {
+    return { ...target, runner: createSshCommandManagedRuntimeRunner({ spec: { ...target.spec, remoteCwd: target.remoteCwd }, fileSync: true }) };
+  }
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask
     || !target.runner.syncIn || !target.runner.syncOut) throw new Error("remote_workspace_transport_unsupported");
   return target;
+}
+
+export async function syncRemoteWorkspaceRecoveryDirectory(input: {
+  target: RemoteWorkspaceTarget; sourcePath: string; targetPath: string;
+}) {
+  if (input.target.transport === "sandbox") {
+    await input.target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
+      kind: "directory", sourcePath: input.sourcePath, targetPath: input.targetPath,
+    }] }]);
+    return;
+  }
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-recovery-transfer-"));
+  try {
+    const archivePath = path.join(scratch, "recovery.pcws");
+    const captured = await captureRemoteWorkspaceDirectory({ cwd: input.sourcePath, archivePath });
+    const restorationIdentity = createHash("sha256").update(JSON.stringify([input.targetPath, captured.manifestDigest])).digest("hex");
+    const restored = await restoreRemoteWorkspaceDirectory({ target: input.target, remoteCwd: input.targetPath,
+      archivePath, manifestDigest: captured.manifestDigest, restorationIdentity });
+    await cleanupRemoteWorkspaceArchive({ target: input.target, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
+  } finally { await removeTaskDirectoryTree(scratch); }
 }
 
 /** The workspace archive is built inside the sandbox, so a full sandbox disk stops the save. */
@@ -107,10 +133,11 @@ export const REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE = "remote_workspace_prepa
 export class RemoteWorkspacePreparationTimeoutError extends RemoteWorkspaceOperationTimeoutError {
   readonly code = REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE;
 
-  constructor(error: RemoteWorkspaceOperationTimeoutError) {
+  constructor(error: RemoteWorkspaceOperationTimeoutError, message?: string) {
     super("prepare", error.timeoutMs);
     this.name = "RemoteWorkspacePreparationTimeoutError";
     this.cause = error;
+    if (message) this.message = message;
   }
 }
 

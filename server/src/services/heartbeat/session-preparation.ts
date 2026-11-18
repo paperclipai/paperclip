@@ -153,16 +153,14 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
         : null,
     };
   const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata(sessionConfigMetadataInput);
-  const compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = [];
-  const importedManagedInstructions = Boolean(taskSession && sessionConfigMetadataInput.managedInstructions?.contentHash
-    && readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint);
+  const storedFingerprint = taskSession ? readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint : undefined;
+  const storedFingerprintDiffers = Boolean(taskSession) && storedFingerprint !== sessionConfigMetadata.fingerprint;
+  const compatibleInputs: SessionMetadataInput[] = [];
+  const importedManagedInstructions = Boolean(storedFingerprintDiffers && sessionConfigMetadataInput.managedInstructions?.contentHash);
   if (importedManagedInstructions) {
-    compatibleConfigMetadata.push(await buildEffectiveRunSessionConfigMetadata({
-      ...sessionConfigMetadataInput, retainManagedInstructionPaths: true,
-    }));
+    compatibleInputs.push({ ...sessionConfigMetadataInput, retainManagedInstructionPaths: true });
   }
-  if (managedAiRuntime && aiBinding && taskSession &&
-    readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson)?.fingerprint !== sessionConfigMetadata.fingerprint) {
+  if (managedAiRuntime && aiBinding && taskSession && storedFingerprintDiffers) {
     const revisions = requestedAiBinding?.mode === "router"
       ? await db.select().from(agentConfigRevisions).where(and(eq(agentConfigRevisions.companyId, agent.companyId), eq(agentConfigRevisions.agentId, agent.id))).orderBy(desc(agentConfigRevisions.createdAt), desc(agentConfigRevisions.id)).limit(21)
       : [];
@@ -174,13 +172,17 @@ export async function prepareHeartbeatSession(db: Db, input: HeartbeatSessionPre
       storedIdentity: taskSession.sessionParamsJson?.paperclipAiCredentialIdentity,
       sessionIdentity: managedAiRuntime.sessionIdentity, credentialIdentity: managedAiRuntime.identity, revisions,
     });
-    compatibleConfigMetadata.push(...await Promise.all(candidates.flatMap(candidate => [
-      buildEffectiveRunSessionConfigMetadata({ ...sessionConfigMetadataInput, ...candidate }),
-      ...(importedManagedInstructions ? [buildEffectiveRunSessionConfigMetadata({
-        ...sessionConfigMetadataInput, ...candidate, retainManagedInstructionPaths: true,
-      })] : []),
-    ])));
+    compatibleInputs.push(...candidates.flatMap(candidate => [
+      { ...sessionConfigMetadataInput, ...candidate },
+      ...(importedManagedInstructions ? [{ ...sessionConfigMetadataInput, ...candidate, retainManagedInstructionPaths: true }] : []),
+    ]));
   }
+  const legacyInputs = storedFingerprintDiffers
+    ? [sessionConfigMetadataInput, ...compatibleInputs].map(candidate => ({ ...candidate, legacyComposition: true }))
+    : [];
+  const compatibleConfigMetadata: EffectiveRunSessionConfigMetadata[] = await Promise.all(
+    [...compatibleInputs, ...legacyInputs].map(candidate => buildEffectiveRunSessionConfigMetadata(candidate)),
+  );
   const configuredModel =
     readConfiguredModelFromAdapterConfig(runtimeConfig);
   if (context.refreshTools === true && agent.adapterType !== "paperclip_runner") {
