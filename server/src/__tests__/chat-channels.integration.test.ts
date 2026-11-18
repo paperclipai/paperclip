@@ -7546,12 +7546,25 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
         ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } })
         : undefined);
-      await expect(githubChatReviewService(db, f.providerFetch).execute({
-        companyId: f.companyId,
-        agentId: f.assignedAgentId,
-        issueId: task.id,
-        runId: run.id,
-      }, "read_pull_request", { section: "metadata" })).rejects.toThrow("older pull request head");
+      const staleSession = { companyId: f.companyId, agentId: f.assignedAgentId, issueId: task.id, runId: run.id };
+      // The run of the older head stops with a terminal outcome. It does not
+      // read the newer head, because its authority is bound to the older commit.
+      const superseded = githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" });
+      await expect(superseded).rejects.toMatchObject({
+        status: 409,
+        details: { reasonCode: "github_review_superseded", retryable: false, requestedCommit: "b".repeat(40),
+          currentCommit: "c".repeat(40), newerReviewQueued: true },
+      });
+      await expect(superseded).rejects.toThrow(/older pull request head.*newer automatic review for that commit is already queued.*Stop this review/s);
+      f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
+        ? Response.json({ ...payload.pull_request, head: { sha: "d".repeat(40) } })
+        : undefined);
+      const unqueued = githubChatReviewService(db, f.providerFetch).execute(staleSession, "read_pull_request", { section: "metadata" });
+      await expect(unqueued).rejects.toMatchObject({
+        status: 409,
+        details: { reasonCode: "github_review_superseded", currentCommit: "d".repeat(40), newerReviewQueued: false },
+      });
+      await expect(unqueued).rejects.toThrow(/no newer automatic review is queued.*Stop this review/s);
     });
     async function reviewCheckWorkerFixture(status: "running" | "failed" = "failed") {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
