@@ -440,3 +440,55 @@ it("captures the current task broker file once per invocation and never falls ba
   expect((await run()).stdout).toBe("anonymous");
   expect(captured).toEqual(["Bearer first-run", "Bearer next-run"]);
 });
+
+// A control-plane restart stops the task's broker while its provider keeps
+// running. The replacement broker is published to broker.json a few seconds later.
+it("waits for a replacement task broker instead of running without credentials", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-outage-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const stopped = createServer();
+  await new Promise<void>(resolve => stopped.listen(0, "127.0.0.1", resolve));
+  const stoppedUrl = `http://127.0.0.1:${(stopped.address() as { port: number }).port}`;
+  await new Promise<void>(resolve => stopped.close(() => resolve()));
+  const replacement = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: req.headers.authorization!.slice(7) + "-credential" } }));
+  });
+  await new Promise<void>(resolve => replacement.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => new Promise<void>(resolve => replacement.close(() => resolve())));
+  const replacementUrl = `http://127.0.0.1:${(replacement.address() as { port: number }).port}`;
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: stoppedUrl, token: "stopped-run" }));
+  const operation = exec(path.join(bin, "gh"), [], { env: { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}` } });
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: replacementUrl, token: "reattached-run" }));
+  const result = await operation;
+  expect(result.stdout).toBe("reattached-run-credential");
+  expect(result.stderr).not.toContain("continuing without managed credentials");
+  expect(result.stderr).not.toMatch(/stopped-run|reattached-run/);
+}, 20_000);
+
+it("stops waiting for an unreachable task broker once its broker file is removed", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-ended-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const stopped = createServer();
+  await new Promise<void>(resolve => stopped.listen(0, "127.0.0.1", resolve));
+  const stoppedUrl = `http://127.0.0.1:${(stopped.address() as { port: number }).port}`;
+  await new Promise<void>(resolve => stopped.close(() => resolve()));
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: stoppedUrl, token: "ended-run" }));
+  const started = Date.now();
+  const operation = exec(path.join(bin, "gh"), [], { env: { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}` } });
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  await rm(path.join(bin, "broker.json"));
+  const result = await operation;
+  expect(result.stdout).toBe("anonymous");
+  expect(result.stderr).toContain("broker_transport_unavailable");
+  expect(Date.now() - started).toBeLessThan(10_000);
+}, 20_000);
