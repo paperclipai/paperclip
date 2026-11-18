@@ -24,12 +24,12 @@ const meta = {
     layout: "fullscreen", initialEntries: ["/PAP/routines"],
     paperclip: { capabilities: ["routines/management"], status: "current", implementation: "production", boundary: "fixtures", notes: "Both production Routines pages with real search, filter, sort, group, columns and local view persistence. API reads use fictional fixtures. Manual execution and routine creation are outside this story's acceptance scope." },
   },
-  beforeEach: () => {
+  beforeEach: ({ parameters }) => {
     localStorage.removeItem(routineViewStorageKey("company-storybook", "user-board"));
     return prepareFixtureApi([
       { path: "/api/workspace-preferences/me", read: () => ({ userId: "user-board", coordinatorWorkspaceEnabled: false, updatedAt: null }) },
       { path: "/api/companies/company-storybook/routines", read: () => routines },
-      { path: "/api/companies/company-storybook/folders", read: () => ({ folders: [], allCount: routines.length, unfiledCount: routines.length }) },
+      { path: "/api/companies/company-storybook/folders", read: () => ({ folders: parameters.withFolders ? [{ id: "folder-review", name: "Reviews", kind: "routine", parentId: null, position: 0, itemCount: 0 }] : [], allCount: routines.length, unfiledCount: routines.length }) },
       { path: "/api/companies/company-storybook/user-directory", read: () => ({ users: [
         { principalId: "user-board", status: "active", user: { name: "Taylor Morgan", email: "taylor@example.test", image: null } },
         { principalId: "person-alex", status: "active", user: { name: "Alex Chen", email: "alex@example.test", image: null } },
@@ -42,3 +42,6 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 export const LinkedFilters: Story = { parameters: { initialEntries: [`/PAP/routines?projects=${storybookProjects[0].id}&responsibleUsers=person-alex&statuses=active`] } };
 export const Classic: Story = { args: { classic: true } };
+export const ClassicSelection: Story = { args: { classic: true }, parameters: { withFolders: true } };
+
+export const ClassicRuns: Story = { args: { classic: true }, parameters: { initialEntries: ["/PAP/routines?tab=runs"] } };

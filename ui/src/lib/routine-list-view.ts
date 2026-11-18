@@ -63,6 +63,9 @@ export function writeRoutineViewParams(current: URLSearchParams, view: RoutineVi
 export function routineViewStorageKey(companyId: string, userId: string) {
   return `paperclip:routines-view:${companyId}:user:${userId}`;
 }
+export function matchesRoutineStatus(status: string, statuses: readonly string[]) {
+  return statuses.length ? statuses.includes(status) : status !== "archived";
+}
 export function filterRoutines<T extends { title: string; description?: string | null; projectId: string | null; assigneeAgentId: string | null; responsibleUserId?: string | null; status: string; originKind?: string }>(rows: T[], view: RoutineViewState): T[] {
   const terms = view.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
   const selections = Object.fromEntries(routineFilterKeys.map(key => [key, new Set(view[key])])) as Record<RoutineFilterKey, Set<string>>;
@@ -72,6 +75,6 @@ export function filterRoutines<T extends { title: string; description?: string |
     return terms.every(term => text.includes(term))
       && matches("projects", row.projectId) && matches("agents", row.assigneeAgentId)
       && matches("responsibleUsers", row.responsibleUserId) && matches("origins", row.originKind ?? "manual")
-      && (view.statuses.length ? matches("statuses", row.status) : row.status !== "archived");
+      && matchesRoutineStatus(row.status, view.statuses);
   });
 }

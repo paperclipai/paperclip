@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { defaultRoutineView, routineViewStorageKey } from "@/lib/routine-list-view";
 import { useRoutineListView } from "./useRoutineListView";
+import { authApi } from "@/api/auth";
 
 vi.mock("@/lib/router", async () => {
   const router = await import("react-router-dom");
@@ -83,5 +84,52 @@ describe("routine view persistence", () => {
     expect(current[0].columns).toEqual(["assignee"]);
     expect(current[0].agents).toEqual(["a1"]);
     expect(new URLSearchParams(search).get("agents")).toBe("a1");
+  });
+
+  it("restores and saves local-trusted preferences without an account", async () => {
+    client.setQueryData(queryKeys.auth.session, null);
+    client.setQueryData(queryKeys.health, { deploymentMode: "local_trusted" });
+    localStorage.setItem("paperclip:routines-view:c1", JSON.stringify({ groupBy: "none", sortField: "created" }));
+    await render();
+    expect(current[0].groupBy).toBe("none");
+    await act(() => current[1]({ columns: ["assignee"], collapsedGroups: ["g1"] }));
+    expect(JSON.parse(localStorage.getItem(routineViewStorageKey("c1", "local-board"))!)).toMatchObject({ columns: ["assignee"], collapsedGroups: ["g1"] });
+    await act(() => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(current[0].columns).toEqual(["assignee"]);
+  });
+
+  it("retains controls changed while the session is loading", async () => {
+    client.removeQueries({ queryKey: queryKeys.auth.session });
+    let resolveSession!: (value: Awaited<ReturnType<typeof authApi.getSession>>) => void;
+    vi.mocked(authApi.getSession).mockReturnValue(new Promise(resolve => { resolveSession = resolve; }));
+    localStorage.setItem(routineViewStorageKey("c1", "u1"), JSON.stringify({ ...defaultRoutineView, columns: ["project"], groupBy: "none" }));
+    await render();
+    await act(() => current[1]({ columns: ["assignee"], collapsedGroups: ["g1"] }));
+    await act(async () => { resolveSession({ user: { id: "u1" } } as Awaited<ReturnType<typeof authApi.getSession>>); });
+    await vi.waitFor(() => expect(client.getQueryData(queryKeys.auth.session)).toMatchObject({ user: { id: "u1" } }));
+    await vi.waitFor(() => expect(current[0].groupBy).toBe("none"));
+    expect(current[0].columns).toEqual(["assignee"]);
+    expect(JSON.parse(localStorage.getItem(routineViewStorageKey("c1", "u1"))!)).toMatchObject({ columns: ["assignee"], collapsedGroups: ["g1"] });
+  });
+
+  it("does not use local-board preferences for an unsigned authenticated deployment", async () => {
+    client.setQueryData(queryKeys.auth.session, null);
+    client.setQueryData(queryKeys.health, { deploymentMode: "authenticated" });
+    await render();
+    await act(() => current[1]({ columns: ["assignee"] }));
+    expect(localStorage.getItem(routineViewStorageKey("c1", "local-board"))).toBeNull();
+  });
+
+  it("keeps personal filters when changing columns on a shared link", async () => {
+    localStorage.setItem(routineViewStorageKey("c1", "u1"), JSON.stringify({ ...defaultRoutineView, projects: ["personal"], groupBy: "none" }));
+    await render("c1", "/routines?projects=shared");
+    await act(() => current[1]({ columns: ["assignee"] }));
+    expect(current[0].projects).toEqual(["shared"]);
+    expect(JSON.parse(localStorage.getItem(routineViewStorageKey("c1", "u1"))!)).toMatchObject({ projects: ["personal"], columns: ["assignee"] });
+    await act(() => current[1]({ statuses: ["paused"] }));
+    await act(() => current[1]({ collapsedGroups: ["g1"] }));
+    expect(JSON.parse(localStorage.getItem(routineViewStorageKey("c1", "u1"))!)).toMatchObject({ projects: ["shared"], statuses: ["paused"], collapsedGroups: ["g1"] });
   });
 });

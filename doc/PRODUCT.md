@@ -190,6 +190,7 @@ filters are saved in the URL when changed. A shared filter URL takes precedence
 over locally saved filters. Each signed-in person keeps their latest filters,
 column choices, grouping, sorting, and collapsed groups in local storage for
 each company. An explicit empty filter URL clears saved filters.
+A trusted local installation without accounts uses a local board preference key.
 
 
 ### Task collection creation filters

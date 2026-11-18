@@ -1,6 +1,6 @@
 import type { AgentAppearance } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { MoreHorizontal, Play, LoaderCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -56,33 +56,8 @@ export function nextRoutineStatus(currentStatus: string, enabled: boolean) {
   return enabled ? "active" : "paused";
 }
 
-export function RoutineListRow<TRoutine extends RoutineListRowItem>({
-  routine,
-  columns,
-  userById,
-  projectById,
-  agentById,
-  runningRoutineId,
-  statusMutationRoutineId,
-  href,
-  configureLabel = "Edit",
-  managedByLabel,
-  secondaryDetails,
-  runNowButton = false,
-  disableRunNow = false,
-  disableToggle = false,
-  hideArchiveAction = false,
-  divider = true,
-  selected = false,
-  selectMode = false,
-  extraMenuItems,
-  onSelectChange,
-  onRunNow,
-  onToggleEnabled,
-  onToggleArchived,
-}: {
+type RoutineRowProps<TRoutine extends RoutineListRowItem> = {
   routine: TRoutine;
-  columns?: RoutineColumn[];
   userById?: Map<string, CompanyUserProfile>;
   projectById: Map<string, RoutineListProjectSummary>;
   agentById: Map<string, RoutineListAgentSummary>;
@@ -105,7 +80,36 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   onRunNow: (routine: TRoutine) => void;
   onToggleEnabled: (routine: TRoutine, enabled: boolean) => void;
   onToggleArchived?: (routine: TRoutine) => void;
-}) {
+};
+
+function openRoutineFromRow(event: MouseEvent<HTMLDivElement>) {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  if ((event.target as Element).closest("a, button, input, [role='switch'], [role='checkbox']")) return;
+  event.currentTarget.querySelector<HTMLAnchorElement>("[data-routine-link]")?.click();
+}
+
+function routineRowParts<TRoutine extends RoutineListRowItem>({
+  routine,
+  userById,
+  projectById,
+  agentById,
+  runningRoutineId,
+  statusMutationRoutineId,
+  href,
+  configureLabel = "Edit",
+  managedByLabel,
+  secondaryDetails,
+  runNowButton = false,
+  disableRunNow = false,
+  disableToggle = false,
+  hideArchiveAction = false,
+  selected = false,
+  extraMenuItems,
+  onSelectChange,
+  onRunNow,
+  onToggleEnabled,
+  onToggleArchived,
+}: RoutineRowProps<TRoutine>) {
   const enabled = routine.status === "active";
   const isArchived = routine.status === "archived";
   const isStatusPending = statusMutationRoutineId === routine.id;
@@ -121,18 +125,28 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
   const lastRunCell = <span>{formatLastRunTimestamp(routine.lastRun?.triggeredAt)}{routine.lastRun ? ` · ${formatRoutineRunStatus(routine.lastRun.status)}` : ""}</span>;
   const enabledCell = <div className="flex items-center gap-2" onClick={event => { event.preventDefault(); event.stopPropagation(); }}><ToggleSwitch size="lg" checked={enabled} onCheckedChange={() => onToggleEnabled(routine, enabled)} disabled={isStatusPending || isArchived || disableToggle} aria-label={enabled ? `Disable ${routine.title}` : `Enable ${routine.title}`} /><span className="text-xs text-muted-foreground">{isArchived ? "Archived" : isDraft ? "Draft" : enabled ? "On" : "Off"}</span></div>;
   const cellByColumn = { project: projectCell, assignee: agentCell, responsibleUser: userCell, lastRun: lastRunCell, enabled: enabledCell };
-  return (
-    <Link
-      to={href}
-      role={columns ? "row" : undefined}
-      style={columns ? { gridTemplateColumns: routineColumnGrid(columns, selectMode) } : undefined}
-      className={`${columns ? "routine-table-grid group" : "group flex flex-col gap-3 sm:flex-row sm:items-center"} px-3 py-3 transition-colors hover:bg-accent/50 no-underline text-inherit${divider ? " border-b border-border last:border-b-0" : ""}`}
-    >
-      {selectMode ? (
-        <div
+  const title = (
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link data-routine-link to={href} className="truncate text-sm font-medium no-underline text-inherit">{routine.title}</Link>
+          {(isArchived || routine.status === "paused" || isDraft) ? (
+            <span className="text-xs text-muted-foreground">
+              {isArchived ? "archived" : isDraft ? "draft" : "paused"}
+            </span>
+          ) : null}
+          {managedByLabel ? (
+            <span className="text-xs text-muted-foreground">{managedByLabel}</span>
+          ) : null}
+        </div>
+        {secondaryDetails ? (
+          <div className="text-xs text-muted-foreground">{secondaryDetails}</div>
+        ) : null}
+      </div>
+  );
+  const selection = (
+<div
           className="flex items-start pt-0.5 sm:pt-1"
           onClick={(event) => {
-            event.preventDefault();
             event.stopPropagation();
           }}
         >
@@ -144,27 +158,9 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
             onChange={(event) => onSelectChange?.(routine, event.target.checked)}
           />
         </div>
-      ) : null}
-      <div role={columns ? "cell" : undefined} className="min-w-0 flex-1 space-y-1.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{routine.title}</span>
-          {(isArchived || routine.status === "paused" || isDraft) ? (
-            <span className="text-xs text-muted-foreground">
-              {isArchived ? "archived" : isDraft ? "draft" : "paused"}
-            </span>
-          ) : null}
-          {managedByLabel ? (
-            <span className="text-xs text-muted-foreground">{managedByLabel}</span>
-          ) : null}
-        </div>
-        {!columns ? <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">{projectCell}{agentCell}{userById ? userCell : null}{lastRunCell}</div> : null}
-        {secondaryDetails ? (
-          <div className="text-xs text-muted-foreground">{secondaryDetails}</div>
-        ) : null}
-      </div>
-
-      {columns?.map(column => <div role="cell" key={column} className="min-w-0 truncate text-xs text-muted-foreground">{cellByColumn[column]}</div>)}
-      <div role={columns ? "cell" : undefined} className="flex items-center justify-end gap-3" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+  );
+  const actions = (
+      <div className="flex items-center justify-end gap-3" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
         {runNowButton ? (
           <Button
             variant="outline"
@@ -178,7 +174,7 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           </Button>
         ) : null}
 
-        {!columns ? enabledCell : null}
+
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -220,6 +216,29 @@ export function RoutineListRow<TRoutine extends RoutineListRowItem>({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-    </Link>
   );
+  return { title, selection, actions, cellByColumn };
+}
+
+/** Column rows keep table and title-link semantics on separate elements. */
+export function RoutineTableRow<TRoutine extends RoutineListRowItem>(props: RoutineRowProps<TRoutine> & { columns: RoutineColumn[]; userById: Map<string, CompanyUserProfile> }) {
+  const { title, selection, actions, cellByColumn } = routineRowParts(props);
+  return <div role="row" onClick={openRoutineFromRow} style={{ gridTemplateColumns: routineColumnGrid(props.columns, props.selectMode) }} className={`routine-table-grid group cursor-pointer px-3 py-3 transition-colors hover:bg-accent/50${props.divider !== false ? " border-b border-border last:border-b-0" : ""}`}>
+    {props.selectMode ? <div role="cell">{selection}</div> : null}
+    <div role="cell" className="min-w-0">{title}</div>
+    {props.columns.map(column => <div role="cell" key={column} className="min-w-0 truncate text-xs text-muted-foreground">{cellByColumn[column]}</div>)}
+    <div role="cell">{actions}</div>
+  </div>;
+}
+
+/** Plugin-managed lists retain their compact metadata layout. */
+export function RoutineListRow<TRoutine extends RoutineListRowItem>(props: RoutineRowProps<TRoutine>) {
+  const { title, actions, cellByColumn } = routineRowParts(props);
+  return <div onClick={openRoutineFromRow} className={`group flex flex-col gap-3 px-3 py-3 transition-colors hover:bg-accent/50 sm:flex-row sm:items-center cursor-pointer${props.divider !== false ? " border-b border-border last:border-b-0" : ""}`}>
+    <div className="min-w-0 flex-1 space-y-1.5">
+      {title}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">{cellByColumn.project}{cellByColumn.assignee}{cellByColumn.lastRun}</div>
+    </div>
+    {cellByColumn.enabled}{actions}
+  </div>;
 }

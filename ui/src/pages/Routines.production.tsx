@@ -1,5 +1,7 @@
 import { useRoutineListView } from "../hooks/useRoutineListView";
-import { filterRoutines, routineFilterKeys } from "../lib/routine-list-view";
+import { routineFilterKeys } from "../lib/routine-list-view";
+import { buildRoutineFilterOptions, selectRoutineRows } from "../lib/routine-list-data";
+export { sortRoutines } from "../lib/routine-list-data";
 import { RoutineTable } from "../components/RoutineTable";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -33,7 +35,7 @@ import { describeError } from "../api/errors";
 import { PageTabBar } from "../components/PageTabBar";
 import { InlineEntitySelector, type InlineEntityOption } from "../components/InlineEntitySelector";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
-import { RoutineListRow, nextRoutineStatus } from "../components/RoutineList";
+import { RoutineTableRow, nextRoutineStatus } from "../components/RoutineList";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -43,7 +45,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { RoutinesToolbar, type RoutineGroupBy, type RoutineSortField, type RoutineSortDir } from "@/components/RoutinesToolbar";
+import { RoutinesToolbar, type RoutineGroupBy } from "@/components/RoutinesToolbar";
 import {
   Select,
   SelectContent,
@@ -97,15 +99,6 @@ type RoutineGroup = {
 
 const builtInRoutineGroupKey = "__built_in_routines";
 
-function timestampValue(value: Date | string | null | undefined) {
-  if (!value) return Number.NEGATIVE_INFINITY;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
-}
-
-function compareNullableText(left: string | null | undefined, right: string | null | undefined) {
-  return (left ?? "").localeCompare(right ?? "", undefined, { sensitivity: "base" });
-}
 
 type RoutineFolderGroupMeta = { name: string; position?: number | null };
 
@@ -232,30 +225,6 @@ export function buildRoutineSections(
   ];
 }
 
-export function sortRoutines(
-  routines: RoutineListItem[],
-  sortField: RoutineSortField,
-  sortDir: RoutineSortDir,
-): RoutineListItem[] {
-  const direction = sortDir === "asc" ? 1 : -1;
-  return [...routines].sort((left, right) => {
-    let result = 0;
-
-    if (sortField === "title") {
-      result = compareNullableText(left.title, right.title);
-    } else if (sortField === "created") {
-      result = timestampValue(left.createdAt) - timestampValue(right.createdAt);
-    } else if (sortField === "lastRun") {
-      result = timestampValue(left.lastRun?.triggeredAt ?? left.lastTriggeredAt) -
-        timestampValue(right.lastRun?.triggeredAt ?? right.lastTriggeredAt);
-    } else {
-      result = timestampValue(left.updatedAt) - timestampValue(right.updatedAt);
-    }
-
-    if (result !== 0) return result * direction;
-    return compareNullableText(left.title, right.title);
-  });
-}
 
 function buildRoutinesTabHref(tab: RoutinesTab) {
   return tab === "runs" ? "/routines?tab=runs" : "/routines";
@@ -627,48 +596,10 @@ export function Routines() {
   );
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, routineExecutionIssues), [liveRuns, routineExecutionIssues]);
   const userById = useMemo(() => buildCompanyUserProfileMap(companyMembers?.users), [companyMembers]);
-  const filterOptions = useMemo(() => ({
-    projects: [{ id: "__none", name: "No project" }, ...(projects ?? []).map(project => ({ id: project.id, name: project.name }))],
-    agents: [{ id: "__none", name: "No default agent" }, ...(agents ?? []).map(agent => ({ id: agent.id, name: agent.name }))],
-    responsibleUsers: [{ id: "__none", name: "No responsible user" }, ...Array.from(userById, ([id, profile]) => ({ id, name: profile.label }))],
-    statuses: [{ id: "active", name: "Enabled" }, { id: "paused", name: "Paused" }, { id: "archived", name: "Archived" }],
-    origins: [...new Set(["manual", "built_in_agent_bundle", ...(routines ?? []).map(routine => routine.originKind ?? "manual")])].map(id => ({ id, name: id === "manual" ? "Custom" : id === "built_in_agent_bundle" ? "Built-in" : id.replaceAll("_", " ") })),
-  }), [projects, agents, userById, routines]);
-  const visibleRoutines = useMemo(
-    () => (routines ?? []).filter((routine) => routineViewState.statuses.length ? routineViewState.statuses.includes(routine.status) : routine.status !== "archived"),
-    [routines, routineViewState.statuses],
-  );
-  const folderFilteredRoutines = useMemo(() => {
-    if (routineViewState.groupBy !== "folder") return visibleRoutines;
-    if (folderSelection === "all") return visibleRoutines;
-    if (folderSelection === "unfiled") return visibleRoutines.filter((routine) => !routine.folderId);
-    return visibleRoutines.filter((routine) => routine.folderId === folderSelection);
-  }, [folderSelection, routineViewState.groupBy, visibleRoutines]);
-  // Rail counts reflect the page's visible scope (archived hidden), not raw DB
-  // counts (ux-spec §5.3).
-  const railFolderResult = useMemo(() => {
-    if (!routineFolders) return routineFolders;
-    const counts = new Map<string, number>();
-    let unfiled = 0;
-    for (const routine of visibleRoutines) {
-      if (routine.folderId) counts.set(routine.folderId, (counts.get(routine.folderId) ?? 0) + 1);
-      else unfiled += 1;
-    }
-    return {
-      ...routineFolders,
-      allCount: visibleRoutines.length,
-      unfiledCount: unfiled,
-      folders: routineFolders.folders.map((folder) => ({
-        ...folder,
-        itemCount: counts.get(folder.id) ?? 0,
-      })),
-    };
-  }, [routineFolders, visibleRoutines]);
-  const filteredRoutines = useMemo(() => filterRoutines(folderFilteredRoutines, routineViewState),
-    [folderFilteredRoutines, routineViewState]);
-  const sortedRoutines = useMemo(
-    () => sortRoutines(filteredRoutines, routineViewState.sortField, routineViewState.sortDir),
-    [filteredRoutines, routineViewState.sortDir, routineViewState.sortField],
+  const filterOptions = useMemo(() => buildRoutineFilterOptions({ projects: projects ?? [], agents: agents ?? [], userById, routines: routines ?? [] }), [projects, agents, userById, routines]);
+  const { visibleRoutines, sortedRoutines, railFolderResult } = useMemo(
+    () => selectRoutineRows(routines ?? [], routineViewState, routineFolders, folderSelection),
+    [routines, routineViewState, routineFolders, folderSelection],
   );
   const routineSections = useMemo(
     () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById, folderById),
@@ -776,7 +707,9 @@ export function Routines() {
 
   return (
     <div className="space-y-6">
+      <h1 className="sr-only">Routines</h1>
       <RoutinesToolbar
+        showListControls={activeTab === "routines"}
         query={query} onQueryChange={query => updateRoutineView({ query })}
         sortField={routineViewState.sortField} sortDir={routineViewState.sortDir} groupBy={routineViewState.groupBy}
         onSortChange={(sortField, sortDir) => updateRoutineView({ sortField, sortDir })}
@@ -1211,7 +1144,7 @@ export function Routines() {
                     <CollapsibleContent>
                       <RoutineTable columns={routineViewState.columns} label={group.label ?? "Routines"} selectMode={selectMode}>
                       {group.items.map((routine) => (
-                        <RoutineListRow
+                        <RoutineTableRow
                           key={routine.id}
                           routine={routine}
                           columns={routineViewState.columns}

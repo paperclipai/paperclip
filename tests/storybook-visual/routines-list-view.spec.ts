@@ -1,7 +1,8 @@
 import { expect, test } from "@playwright/test";
+import { routineViewStorageKey } from "../../ui/src/lib/routine-list-view";
 
 test.use({ viewport: { width: 1440, height: 900 } });
-const storageKey = "paperclip:routines-view:company-storybook:user:user-board";
+const storageKey = routineViewStorageKey("company-storybook", "user-board");
 for (const theme of ["light", "dark"]) {
   test(`routine columns and filters in ${theme}`, async ({ page }) => {
     const errors: string[] = [];
@@ -49,4 +50,29 @@ test("linked filters open on current and classic pages and mobile stays within t
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole("button", { name: "Dismiss folder suggestion", exact: true }).click();
   await page.screenshot({ path: "test-results/routines-mobile.png", fullPage: true });
+});
+
+test("Classic selection keeps column headings aligned and exposes routine links", async ({ page }) => {
+  await page.goto("/iframe.html?id=routines-list-view--classic-selection&viewMode=story");
+  await page.getByRole("button", { name: "Select", exact: true }).click();
+  const row = page.getByRole("row").filter({ hasText: "Daily company summary" });
+  await expect(row.getByRole("link", { name: "Daily company summary", exact: true })).toHaveAttribute("href", /\/routines\/daily-summary$/);
+  const heading = page.getByRole("columnheader", { name: "Routine", exact: true });
+  const title = row.getByRole("cell").nth(1);
+  const headingBox = await heading.boundingBox();
+  const titleBox = await title.boundingBox();
+  expect(Math.abs(headingBox!.x - titleBox!.x)).toBeLessThan(1);
+  await row.getByRole("checkbox", { name: "Select Daily company summary" }).check();
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/routines-classic-selection.png", fullPage: true });
+});
+
+
+test("Classic Recent Runs hides routine list controls", async ({ page }) => {
+  await page.goto("/iframe.html?id=routines-list-view--classic-runs&viewMode=story");
+  const toolbar = page.getByRole("toolbar", { name: "Routines controls" });
+  await expect(toolbar.getByRole("button", { name: "New routine", exact: true })).toBeVisible();
+  await expect(toolbar.getByRole("link", { name: "View all tasks" })).toBeVisible();
+  await expect(toolbar.getByRole("textbox", { name: "Search routines" })).toHaveCount(0);
+  await expect(toolbar.getByRole("button", { name: "Routine columns" })).toHaveCount(0);
 });

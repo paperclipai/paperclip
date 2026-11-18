@@ -1281,6 +1281,7 @@ describe("Routines page", () => {
       expect(Array.from(rows[0].querySelectorAll('[role="columnheader"]'), cell => cell.textContent)).toEqual(["Routine", "Agent", "Responsible user", "Actions"]);
       expect(rows[1].textContent).toContain("Agent One");
       expect(rows[1].textContent).toContain("Taylor");
+      expect(rows[1].querySelector('a[href="/routines/match"]')?.textContent).toBe("Linked routine");
       expect(rows[1].querySelector('button[aria-label="Run now: Linked routine"]')?.textContent).toBe("");
     } finally { await act(() => root.unmount()); client.clear(); }
   });

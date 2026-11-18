@@ -11,7 +11,8 @@ import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMe
 export type { RoutineGroupBy, RoutineSortField, RoutineSortDir } from "@/lib/routine-list-view";
 export type RoutineFilterOptions = Partial<Record<RoutineFilterKey, { id: string; name: string }[]>>;
 
-export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, groupBy, onSortChange, onGroupChange, onNewFolder, onCreateRoutine, tasksHref, filters = defaultRoutineView, filterOptions = {}, onFiltersChange, columns = defaultRoutineView.columns, onColumnsChange }: {
+export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, groupBy, onSortChange, onGroupChange, onNewFolder, onCreateRoutine, tasksHref, filters = defaultRoutineView, filterOptions = {}, onFiltersChange, columns = defaultRoutineView.columns, onColumnsChange, showListControls = true }: {
+  showListControls?: boolean;
   query: string;
   onQueryChange: (value: string) => void;
   sortField: RoutineSortField;
@@ -33,6 +34,7 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
   return <FlyoutAppearanceProvider appearance="refreshed"><div data-canonical-toolbar="routines" role="toolbar" aria-label="Routines controls" className="design-page-toolbar">
     <Button variant="outline" className="design-toolbar-button" data-toolbar-primary onClick={onCreateRoutine}><Plus aria-hidden />New routine</Button>
     <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+      {showListControls ? <>
       <ToolbarSearch query={query} onQueryChange={onQueryChange} label="Search routines" placeholder="Search routines…" />
       <Popover>
         <PopoverTrigger asChild><Button variant="outline" className="design-toolbar-button design-toolbar-icon" title="Sort" aria-label="Sort routines"><ArrowUpDown aria-hidden /></Button></PopoverTrigger>
@@ -54,10 +56,11 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
           <FlyoutHeader className="task-filters-header"><span>Filters{activeFilters ? ` (${activeFilters})` : ""}</span>{activeFilters ? <Button variant="ghost" onClick={() => onFiltersChange?.(Object.fromEntries(routineFilterKeys.map(key => [key, []])))}>Clear</Button> : null}</FlyoutHeader>
           <div className="task-filters-grid">
             {([["projects", "Project"], ["agents", "Agent"], ["statuses", "Enabled"], ["responsibleUsers", "Responsible user"], ["origins", "Source"]] as const).map(([key, title]) => {
+              const selected = new Set(filters[key]);
               const options = filterOptions[key] ?? [];
               const visible = options.filter(option => option.name.toLowerCase().includes((optionQueries[key] ?? "").toLowerCase()));
               return <FilterGroup key={key} title={title} optionsKey={key} searchLabel={options.length > 6 ? title.toLowerCase() : undefined} query={optionQueries[key] ?? ""} onQueryChange={value => setOptionQueries(current => ({ ...current, [key]: value }))}>
-                {visible.map(option => <FilterRow key={option.id} label={option.name} checked={filters[key].includes(option.id)} onToggle={() => onFiltersChange?.({ [key]: filters[key].includes(option.id) ? filters[key].filter(value => value !== option.id) : [...filters[key], option.id] })} />)}
+                {visible.map(option => <FilterRow key={option.id} label={option.name} checked={selected.has(option.id)} onToggle={() => onFiltersChange?.({ [key]: selected.has(option.id) ? filters[key].filter(value => value !== option.id) : [...filters[key], option.id] })} />)}
                 {!visible.length ? <p className="text-xs text-muted-foreground">No options</p> : null}
               </FilterGroup>;
             })}
@@ -78,6 +81,7 @@ export function RoutinesToolbar({ query, onQueryChange, sortField, sortDir, grou
           <DropdownMenuSeparator /><DropdownMenuItem onSelect={() => onColumnsChange?.([...defaultRoutineView.columns])}>Reset columns</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      </> : null}
       {tasksHref ? <Button variant="outline" className="design-toolbar-button" asChild><Link to={tasksHref}>View all tasks</Link></Button> : null}
     </div>
   </div></FlyoutAppearanceProvider>;
