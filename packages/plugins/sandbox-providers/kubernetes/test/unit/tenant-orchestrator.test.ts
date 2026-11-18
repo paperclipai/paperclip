@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { podQuotaNeed } from "../../src/quota-math.js";
 import {
   assertPodCapacity,
   ensureTenant,
@@ -164,6 +165,19 @@ describe("ResourceQuota reconciliation", () => {
     expect(Object.keys(arg.body).sort()).toEqual(["apiVersion", "kind", "metadata", "spec"]);
   });
 
+  it("moves an existing namespace from the old 20 CPU / 40Gi default to the derived default on the next ensure", async () => {
+    const { parseKubernetesProviderConfig } = await import("../../src/types.js");
+    const resourceQuota = parseKubernetesProviderConfig({ inCluster: true }).resourceQuota;
+    const { clients, replace } = clientsWithQuota({
+      pods: "20", "requests.cpu": "10", "requests.memory": "20Gi", "limits.cpu": "20", "limits.memory": "40Gi",
+    });
+    await ensureTenant(clients as never, { ...input, resourceQuota });
+    expect(replace).toHaveBeenCalledTimes(1);
+    expect(replace.mock.calls[0][0].body.spec.hard).toEqual({
+      pods: "20", "requests.cpu": "5", "requests.memory": "10Gi", "limits.cpu": "40", "limits.memory": "80Gi",
+    });
+  });
+
   it("leaves an already matching quota alone", async () => {
     const { clients, replace } = clientsWithQuota(desiredHard);
     await ensureTenant(clients as never, input);
@@ -268,6 +282,48 @@ describe("assertPodCapacity", () => {
       assertPodCapacity(quotaClients({ hard: { pods: "20" }, used: { pods: "19" } }) as never, "ns"),
     ).resolves.toBeUndefined();
     await expect(assertPodCapacity(quotaClients(undefined) as never, "ns")).resolves.toBeUndefined();
+  });
+
+  it("fails the 11th pod fast when CPU limits are exhausted although the pod count is not (old 20 CPU quota)", async () => {
+    const need = podQuotaNeed();
+    const clients = quotaClients({
+      hard: { pods: "20", "limits.cpu": "20", "limits.memory": "40Gi" },
+      used: { pods: "10", "limits.cpu": "20", "limits.memory": "40Gi" },
+    });
+    await expect(assertPodCapacity(clients as never, "paperclip-acme", need)).rejects.toThrow(/Over capacity.*limits\.cpu/);
+    // Without a pod size the check is pod-count only, as before.
+    await expect(assertPodCapacity(clients as never, "paperclip-acme")).resolves.toBeUndefined();
+  });
+
+  it("fails fast on memory limits and requests too, and admits a pod that still fits", async () => {
+    const need = podQuotaNeed();
+    const memFull = quotaClients({
+      hard: { pods: "20", "limits.cpu": "40", "limits.memory": "80Gi" },
+      used: { pods: "19", "limits.cpu": "38", "limits.memory": "78Gi" },
+    });
+    await expect(assertPodCapacity(memFull as never, "ns", need)).rejects.toThrow(/limits\.memory/);
+    const fits = quotaClients({
+      hard: { pods: "20", "limits.cpu": "40", "limits.memory": "80Gi", "requests.cpu": "5", "requests.memory": "10Gi" },
+      used: { pods: "19", "limits.cpu": "38", "limits.memory": "76Gi", "requests.cpu": "4750m", "requests.memory": "9728Mi" },
+    });
+    await expect(assertPodCapacity(fits as never, "ns", need)).resolves.toBeUndefined();
+    const reqFull = quotaClients({
+      hard: { pods: "20", "requests.cpu": "5" },
+      used: { pods: "19", "requests.cpu": "4900m" },
+    });
+    await expect(assertPodCapacity(reqFull as never, "ns", need)).rejects.toThrow(/requests\.cpu/);
+  });
+
+  it("uses spec.hard over a lagging status.hard, so a freshly raised quota admits the run", async () => {
+    const clients = {
+      core: {
+        readNamespacedResourceQuota: vi.fn().mockResolvedValue({
+          spec: { hard: { pods: "20", "limits.cpu": "40" } },
+          status: { hard: { pods: "20", "limits.cpu": "20" }, used: { pods: "10", "limits.cpu": "20" } },
+        }),
+      },
+    };
+    await expect(assertPodCapacity(clients as never, "ns", podQuotaNeed())).resolves.toBeUndefined();
   });
 
   it("never blocks a run when the quota cannot be read", async () => {

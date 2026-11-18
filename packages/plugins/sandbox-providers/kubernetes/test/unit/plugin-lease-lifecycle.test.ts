@@ -326,6 +326,91 @@ describe("quota guard and pod-ready budget", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  const DEFAULT_HARD = { pods: "20", "requests.cpu": "5", "requests.memory": "10Gi", "limits.cpu": "40", "limits.memory": "80Gi" };
+
+  const usedWith = (cpu: string, pods: string) => ({
+    pods, "limits.cpu": cpu, "limits.memory": "40Gi", "requests.cpu": "2", "requests.memory": "5Gi",
+  });
+
+  function cpuFullClients(usedCpu: string, create = vi.fn().mockResolvedValue({ metadata: { uid: "uid-new" } })) {
+    const exists = vi.fn().mockResolvedValue({});
+    return {
+      create,
+      clients: {
+        core: {
+          readNamespace: exists,
+          readNamespacedServiceAccount: exists,
+          readNamespacedLimitRange: exists,
+          // Pod count has room (10 of 20) but CPU limits are at the cap.
+          readNamespacedResourceQuota: vi.fn().mockResolvedValue({
+            spec: { hard: DEFAULT_HARD },
+            status: { hard: DEFAULT_HARD, used: usedWith(usedCpu, "10") },
+          }),
+          createNamespacedSecret: vi.fn().mockResolvedValue({}),
+          deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+          deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+          readNamespacedPod: vi.fn().mockRejectedValue(notFound()),
+          listNamespacedPod: vi.fn().mockResolvedValue({ items: [] }),
+        },
+        rbac: { readNamespacedRole: exists, readNamespacedRoleBinding: exists },
+        networking: { readNamespacedNetworkPolicy: exists },
+        custom: {
+          getNamespacedCustomObject: vi.fn().mockResolvedValue({ status: {} }),
+          createNamespacedCustomObject: create,
+          deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+        },
+      },
+    };
+  }
+
+  it("fails the pod that would exceed the CPU limits quota immediately, not after the pod-ready wait", async () => {
+    const { clients, create } = cpuFullClients("40");
+    h.clients = clients;
+    await expect(
+      plugin.definition.onEnvironmentAcquireLease!({
+        driverKey: "kubernetes", companyId: "acme", environmentId: "env-1",
+        config: { ...CONFIG, companySlug: "cpu-full" }, runId: "run-1",
+      } as never),
+    ).rejects.toThrow(/Over capacity.*limits\.cpu/);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("admits a pod when CPU limits still have room for one more default pod", async () => {
+    const { clients, create } = cpuFullClients("38");
+    h.clients = clients;
+    const lease = await plugin.definition.onEnvironmentAcquireLease!({
+      driverKey: "kubernetes", companyId: "acme", environmentId: "env-1",
+      config: { ...CONFIG, companySlug: "cpu-room" }, runId: "run-1",
+    } as never);
+    expect(lease.providerLeaseId).toMatch(/^pc-/);
+    expect(create).toHaveBeenCalled();
+  });
+
+  it("evicts the longest-idle conversation pod when CPU limits (not the pod count) would be exceeded", async () => {
+    const { clients, create } = cpuFullClients("40");
+    // After the idle pod is deleted its CPU frees up.
+    (clients.core.readNamespacedResourceQuota as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ spec: { hard: DEFAULT_HARD }, status: { hard: DEFAULT_HARD, used: usedWith("40", "10") } })
+      .mockResolvedValueOnce({ spec: { hard: DEFAULT_HARD }, status: { hard: DEFAULT_HARD, used: usedWith("40", "10") } })
+      .mockResolvedValue({ spec: { hard: DEFAULT_HARD }, status: { hard: DEFAULT_HARD, used: usedWith("38", "9") } });
+    h.clients = clients;
+    const { trackReusableLease } = await import("../../src/reuse-registry.js");
+    trackReusableLease(
+      {
+        namespace: "paperclip-cpu-evict", name: "pc-idle-chat", secretName: "pc-idle-chat-env", podName: null,
+        backend: "sandbox-cr", clients: clients as never, idleTtlMs: 300_000,
+      },
+      Date.now() - 120_000,
+    );
+    const lease = await plugin.definition.onEnvironmentAcquireLease!({
+      driverKey: "kubernetes", companyId: "acme", environmentId: "env-1",
+      config: { ...CONFIG, companySlug: "cpu-evict" }, runId: "run-new",
+    } as never);
+    expect(lease.providerLeaseId).toMatch(/^pc-/);
+    expect(clients.custom.deleteNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({ name: "pc-idle-chat" }));
+    expect(create).toHaveBeenCalled();
+  });
+
   it("execute returns a clear over-capacity failure (not a hang) when the quota rejects the pod", async () => {
     h.clients = {
       custom: {
@@ -652,6 +737,15 @@ describe("reusable conversation pods", () => {
       conversationPodReuse: false,
       runnerIdleTimeoutMs: 120_000,
     });
+  });
+
+  it("does not persist an unset resourceQuota when normalizing a saved config", async () => {
+    const unset = await plugin.definition.onEnvironmentValidateConfig!({ driverKey: "kubernetes", config: { inCluster: true } });
+    expect(unset.normalizedConfig).not.toHaveProperty("resourceQuota");
+    const set = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes", config: { inCluster: true, resourceQuota: { pods: "30" } },
+    });
+    expect(set.normalizedConfig?.resourceQuota).toEqual({ pods: "30" });
   });
 
   it("tracks idle time only for leases the server marked reusable, and the reaper deletes them after the TTL", async () => {

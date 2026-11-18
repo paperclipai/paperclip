@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { adapterRegistrySchema } from "./adapter-registry.js";
 import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
+import { defaultQuotaForPods, type QuotaValues } from "./quota-math.js";
 
 /** Default idle TTL for a reusable (kept-running) pod: 5 minutes. */
 export const DEFAULT_REUSABLE_IDLE_TTL_MS = 300_000;
@@ -16,24 +17,45 @@ const quantity = z.string().regex(quantityRegex, "Invalid Kubernetes quantity");
  * Per-company (tenant namespace) ResourceQuota. `pods` is the cap on concurrent
  * sandbox pods per company; the others bound aggregate CPU/memory.
  */
-export const DEFAULT_RESOURCE_QUOTA = {
-  pods: "20",
-  requestsCpu: "10",
-  requestsMemory: "20Gi",
-  limitsCpu: "20",
-  limitsMemory: "40Gi",
-} as const;
+export const DEFAULT_QUOTA_PODS = 20;
+export const DEFAULT_RESOURCE_QUOTA = defaultQuotaForPods(DEFAULT_QUOTA_PODS);
 
 /** Default budget for a sandbox pod to become Ready before failing the run. */
 export const DEFAULT_POD_READY_TIMEOUT_SEC = 90;
 
-export const resourceQuotaSchema = z.object({
-  pods: z.string().regex(/^[1-9]\d*$/, "pods must be a positive integer").default(DEFAULT_RESOURCE_QUOTA.pods),
-  requestsCpu: quantity.default(DEFAULT_RESOURCE_QUOTA.requestsCpu),
-  requestsMemory: quantity.default(DEFAULT_RESOURCE_QUOTA.requestsMemory),
-  limitsCpu: quantity.default(DEFAULT_RESOURCE_QUOTA.limitsCpu),
-  limitsMemory: quantity.default(DEFAULT_RESOURCE_QUOTA.limitsMemory),
-});
+// Unset CPU/memory fields are derived from `pods` (and the per-pod defaults), so
+// raising or lowering only `pods` keeps every pod the cap allows admissible.
+export const resourceQuotaSchema = z
+  .object({
+    pods: z.string().regex(/^[1-9]\d*$/, "pods must be a positive integer").default(DEFAULT_RESOURCE_QUOTA.pods),
+    requestsCpu: quantity.optional(),
+    requestsMemory: quantity.optional(),
+    limitsCpu: quantity.optional(),
+    limitsMemory: quantity.optional(),
+  })
+  .transform((q): QuotaValues => {
+    const derived = defaultQuotaForPods(Number(q.pods));
+    // Saved configs written by the first plugin version carry its old default
+    // CPU/memory values explicitly (20 CPU / 40Gi of limits, which admits 10
+    // pods). Nobody chose those values, so treat that exact set as unset.
+    // Matched on the four CPU/memory values only: an operator who raised just
+    // `pods` under the old version also stored them untouched.
+    if (
+      q.requestsCpu === "10" &&
+      q.requestsMemory === "20Gi" &&
+      q.limitsCpu === "20" &&
+      q.limitsMemory === "40Gi"
+    ) {
+      return derived;
+    }
+    return {
+      pods: q.pods,
+      requestsCpu: q.requestsCpu ?? derived.requestsCpu,
+      requestsMemory: q.requestsMemory ?? derived.requestsMemory,
+      limitsCpu: q.limitsCpu ?? derived.limitsCpu,
+      limitsMemory: q.limitsMemory ?? derived.limitsMemory,
+    };
+  });
 
 export const kubernetesProviderConfigSchema = z
   .object({

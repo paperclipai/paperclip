@@ -55,6 +55,7 @@ import {
   trackReusableLease,
 } from "./reuse-registry.js";
 import { scrubPod } from "./pod-scrub.js";
+import { podQuotaNeed, type PodQuotaNeed } from "./quota-math.js";
 import {
   appendNetworkEgressDenyHint,
   createScopedNetworkEgressPolicyOrReleaseWorkload,
@@ -103,6 +104,7 @@ async function describePodReadyTimeout(
   sandboxName: string,
   err: SandboxCrTimeoutError,
   budgetMs: number,
+  need?: PodQuotaNeed,
 ): Promise<string> {
   // A full quota only explains the timeout if this sandbox's pod was never
   // admitted. If the pod exists it is counted in `used`, and a slow start at
@@ -113,7 +115,7 @@ async function describePodReadyTimeout(
     .catch(() => false);
   if (!podExists) {
     try {
-      await assertPodCapacity(clients, namespace);
+      await assertPodCapacity(clients, namespace, need);
     } catch (capacityErr) {
       if (capacityErr instanceof OverCapacityError) return capacityErr.message;
     }
@@ -282,7 +284,7 @@ async function resolveSyncPodExec(
       });
     } catch (err) {
       if (err instanceof SandboxCrTimeoutError) {
-        throw new Error(await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs));
+        throw new Error(await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs, podQuotaNeed(config.defaultResources)));
       }
       throw err;
     }
@@ -330,12 +332,13 @@ function isManagedReusableLease(metadata: Record<string, unknown> | null | undef
 async function waitForPodCapacity(
   clients: ReturnType<typeof makeKubeClients>,
   namespace: string,
+  need: PodQuotaNeed,
   timeoutMs = 20_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {
-      await assertPodCapacity(clients, namespace);
+      await assertPodCapacity(clients, namespace, need);
       return;
     } catch (err) {
       if (!(err instanceof OverCapacityError) || Date.now() >= deadline) throw err;
@@ -465,7 +468,7 @@ async function executeInLease(
           };
         }
         if (err instanceof SandboxCrTimeoutError) {
-          const message = await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs);
+          const message = await describePodReadyTimeout(clients, namespace, lease.providerLeaseId, err, readyBudgetMs, podQuotaNeed(config.defaultResources));
           if (message.startsWith("Over capacity")) {
             // The pod never started because the company quota is full: report
             // it the same way as the fail-fast path, not as a run timeout.
@@ -801,7 +804,14 @@ const plugin = definePlugin({
         );
       }
     }
-    return { ok: true, normalizedConfig: cfg as Record<string, unknown>, warnings: warnings.length > 0 ? warnings : undefined };
+    // Do not persist a quota the operator never set: stored derived values would
+    // freeze today's defaults and stop them following `pods` or future defaults.
+    const normalized: Record<string, unknown> = { ...cfg };
+    const rawQuota = (params.config as Record<string, unknown> | null | undefined)?.resourceQuota;
+    // Persist only what the operator wrote (validated above), never the derived tuple.
+    if (rawQuota === undefined || rawQuota === null) delete normalized.resourceQuota;
+    else normalized.resourceQuota = rawQuota;
+    return { ok: true, normalizedConfig: normalized, warnings: warnings.length > 0 ? warnings : undefined };
   },
 
   async onEnvironmentProbe(
@@ -902,6 +912,9 @@ const plugin = definePlugin({
     // exist before we try to create the Job.
     const adapterDefaults = getAdapterDefaults(effectiveAdapterType, config.adapters);
 
+    // What one more pod adds to the quota (CPU/memory limits and requests).
+    const quotaNeed = podQuotaNeed(config.defaultResources);
+
     await ensureTenantCached(clients, {
       namespace,
       companyId: params.companyId,
@@ -916,14 +929,14 @@ const plugin = definePlugin({
     // Fail fast (no queue) when the company's pod quota is already full, rather
     // than creating a Sandbox whose pod the quota will never admit.
     try {
-      await assertPodCapacity(clients, namespace);
+      await assertPodCapacity(clients, namespace, quotaNeed);
     } catch (err) {
       // Idle reusable conversation pods hold company quota. Before refusing a
       // new run, evict the longest-idle one; its conversation just pays a cold
       // start on its next turn. If there is nothing to evict, fail fast.
       if (!(err instanceof OverCapacityError) || !(await evictLongestIdleLease(namespace))) throw err;
       // The evicted pod still counts against the quota while it terminates.
-      await waitForPodCapacity(clients, namespace);
+      await waitForPodCapacity(clients, namespace, quotaNeed);
     }
 
     const jobName = `pc-${newRunUlidDns()}`;

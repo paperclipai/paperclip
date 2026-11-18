@@ -1,6 +1,7 @@
 import type { KubeClients } from "./kube-client.js";
 import { buildNetworkPolicyManifests } from "./network-policy.js";
 import { buildCiliumNetworkPolicyManifest } from "./cilium-network-policy.js";
+import { parseCpuMilli, parseMemoryBytes, type PodQuotaNeed } from "./quota-math.js";
 
 export interface EnsureTenantInput {
   namespace: string;
@@ -432,8 +433,12 @@ function parseWholeNumber(value: string | undefined): number | null {
  * quota will never admit. Best-effort: a missing quota or API error never
  * blocks a run (the bounded Ready wait still applies).
  */
-export async function assertPodCapacity(clients: KubeClients, namespace: string): Promise<void> {
-  let quota: { status?: { hard?: Record<string, string>; used?: Record<string, string> } };
+export async function assertPodCapacity(
+  clients: KubeClients,
+  namespace: string,
+  need?: PodQuotaNeed,
+): Promise<void> {
+  let quota: { spec?: { hard?: Record<string, string> }; status?: { hard?: Record<string, string>; used?: Record<string, string> } };
   try {
     quota = (await clients.core.readNamespacedResourceQuota({
       name: RESOURCE_QUOTA_NAME,
@@ -450,9 +455,31 @@ export async function assertPodCapacity(clients: KubeClients, namespace: string)
     }
     return;
   }
-  const hard = parseWholeNumber(quota.status?.hard?.pods);
+  // Prefer spec.hard (what reconcile just wrote); status.hard can lag it until the
+  // quota controller catches up, which would reject a run the new quota admits.
+  const hardLimits = { ...quota.status?.hard, ...quota.spec?.hard };
+  const hard = parseWholeNumber(hardLimits.pods);
   const used = parseWholeNumber(quota.status?.used?.pods);
   if (hard !== null && used !== null && used >= hard) {
     throw new OverCapacityError(namespace, `${used} of ${hard} pods in use`);
+  }
+  if (!need) return;
+  // CPU and memory: the new pod must fit under every hard limit, or Kubernetes
+  // will refuse to create it and the run would sit out the whole pod-ready wait.
+  const dimensions: Array<{ key: string; parse: (v: string | undefined) => number; add: number; label: string }> = [
+    { key: "limits.cpu", parse: parseCpuMilli, add: need.limitsCpuMilli, label: "CPU limits (millicores)" },
+    { key: "limits.memory", parse: parseMemoryBytes, add: need.limitsMemoryBytes, label: "memory limits (bytes)" },
+    { key: "requests.cpu", parse: parseCpuMilli, add: need.requestsCpuMilli, label: "CPU requests (millicores)" },
+    { key: "requests.memory", parse: parseMemoryBytes, add: need.requestsMemoryBytes, label: "memory requests (bytes)" },
+  ];
+  for (const { key, parse, add, label } of dimensions) {
+    const dimHard = parse(hardLimits[key]);
+    const dimUsed = parse(quota.status?.used?.[key]);
+    if (add > 0 && Number.isFinite(dimHard) && Number.isFinite(dimUsed) && dimUsed + add > dimHard) {
+      throw new OverCapacityError(
+        namespace,
+        `${key}: ${dimUsed} used + ${add} for one more pod exceeds ${dimHard} (${label})`,
+      );
+    }
   }
 }

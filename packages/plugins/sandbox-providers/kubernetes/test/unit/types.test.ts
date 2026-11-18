@@ -41,10 +41,10 @@ describe("kubernetesProviderConfigSchema", () => {
     const parsed = parseKubernetesProviderConfig({ inCluster: true });
     expect(parsed.resourceQuota).toEqual({
       pods: "20",
-      requestsCpu: "10",
-      requestsMemory: "20Gi",
-      limitsCpu: "20",
-      limitsMemory: "40Gi",
+      requestsCpu: "5",
+      requestsMemory: "10Gi",
+      limitsCpu: "40",
+      limitsMemory: "80Gi",
     });
     expect(parsed.podReadyTimeoutSec).toBe(90);
   });
@@ -57,8 +57,30 @@ describe("kubernetesProviderConfigSchema", () => {
     });
     expect(parsed.resourceQuota.pods).toBe("3");
     expect(parsed.resourceQuota.limitsCpu).toBe("6");
-    expect(parsed.resourceQuota.limitsMemory).toBe("40Gi");
+    // Unset fields are derived from pods (3 x 4Gi), not from the 20-pod default.
+    expect(parsed.resourceQuota.limitsMemory).toBe("12Gi");
+    expect(parsed.resourceQuota.requestsCpu).toBe("750m");
     expect(parsed.podReadyTimeoutSec).toBe(45);
+  });
+
+  it("treats the exact old default tuple saved by the first plugin version as unset", () => {
+    const old = { pods: "20", requestsCpu: "10", requestsMemory: "20Gi", limitsCpu: "20", limitsMemory: "40Gi" };
+    expect(parseKubernetesProviderConfig({ inCluster: true, resourceQuota: old }).resourceQuota).toEqual({
+      pods: "20", requestsCpu: "5", requestsMemory: "10Gi", limitsCpu: "40", limitsMemory: "80Gi",
+    });
+    // Only `pods` raised under the old version: the stored old CPU/memory follow pods.
+    expect(
+      parseKubernetesProviderConfig({ inCluster: true, resourceQuota: { ...old, pods: "30" } }).resourceQuota,
+    ).toMatchObject({ pods: "30", limitsCpu: "60", limitsMemory: "120Gi" });
+    // A deliberate partial override of the old tuple is still honored.
+    expect(
+      parseKubernetesProviderConfig({ inCluster: true, resourceQuota: { ...old, limitsCpu: "30" } }).resourceQuota.limitsCpu,
+    ).toBe("30");
+  });
+
+  it("derives every CPU and memory cap from the pod cap so every allowed pod fits", () => {
+    const q = parseKubernetesProviderConfig({ inCluster: true, resourceQuota: { pods: "30" } }).resourceQuota;
+    expect(q).toEqual({ pods: "30", requestsCpu: "7500m", requestsMemory: "15Gi", limitsCpu: "60", limitsMemory: "120Gi" });
   });
 
   it("rejects an invalid pod quota or quantity", () => {

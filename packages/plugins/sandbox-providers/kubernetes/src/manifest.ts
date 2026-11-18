@@ -1,7 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.kubernetes-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0-alpha.3";
+const PLUGIN_VERSION = "0.1.0-alpha.4";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -135,10 +135,10 @@ const manifest: PaperclipPluginManifestV1 = {
               "Per-company ResourceQuota for the tenant namespace. `pods` caps concurrent sandbox pods per company; a run that would exceed it fails fast with an over-capacity error (no queue). Changes are applied to existing namespaces on the next lease acquire.",
             properties: {
               pods: { type: "string", description: "Max concurrent pods per company (default: \"20\")." },
-              requestsCpu: { type: "string", description: "Aggregate CPU requests (default: \"10\")." },
-              requestsMemory: { type: "string", description: "Aggregate memory requests (default: \"20Gi\")." },
-              limitsCpu: { type: "string", description: "Aggregate CPU limits (default: \"20\")." },
-              limitsMemory: { type: "string", description: "Aggregate memory limits (default: \"40Gi\")." },
+              requestsCpu: { type: "string", description: "Aggregate CPU requests (default: 250m x pods)." },
+              requestsMemory: { type: "string", description: "Aggregate memory requests (default: 512Mi x pods)." },
+              limitsCpu: { type: "string", description: "Aggregate CPU limits (default: 2 x pods; each pod defaults to a 2 CPU limit)." },
+              limitsMemory: { type: "string", description: "Aggregate memory limits (default: 4Gi x pods; each pod defaults to a 4Gi limit)." },
             },
           },
           adapterType: {
