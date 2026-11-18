@@ -4,8 +4,6 @@ import { activityLog, agents, agentWakeupRequests, companies, createDb, EMBEDDED
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-// Callback tests use a guarded db that must never be touched; the task cap query is
-// covered by the database-wiring tests below, so skip it only for guarded dbs.
 const guardedDbs = vi.hoisted(() => new WeakSet<object>());
 vi.mock("../recovery/task-automatic-attempts.js", async (importOriginal) => {
   const original = await importOriginal<typeof import("../recovery/task-automatic-attempts.js")>();
