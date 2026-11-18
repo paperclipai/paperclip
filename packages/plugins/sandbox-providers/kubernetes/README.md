@@ -103,6 +103,8 @@ When a company is at its pod quota there is **no queue**: a new run fails fast w
 
 The over-capacity pre-check and idle-pod eviction account for CPU and memory limits and requests too, not only the pod count: a pod that would exceed any hard limit fails in about a second with `Over capacity` (naming the limit) instead of waiting out the pod-ready timeout, and idle conversation pods are evicted when CPU or memory would be exceeded.
 
+**Server-wide run limit (separate from the quota).** The Paperclip server also limits how many Kubernetes sandbox runs run at once across all companies, because the server process itself saturates at about 20 concurrent sandbox runs (TECH-8174). Set it with `PAPERCLIP_MAX_CONCURRENT_SANDBOX_RUNS` on the server (default 20, `0` turns it off; the effective value is logged at startup). Unlike the quota, this limit **queues**: a run over it stays `queued` with a "Waiting for a sandbox slot" run event and starts as soon as a running sandbox run ends. Conversation turns go first, then companies with fewer running sandbox runs, then oldest first. The per-company quota and its `Over capacity` fail-fast are unchanged.
+
 ### Pod reuse per conversation (on by default)
 
 On every Kubernetes sandbox environment, **turns of an ongoing agent conversation reuse one pod per conversation** with no extra configuration. The second and later turns skip pod creation and image start (assets and the bridge are still set up fresh each turn). Plain task runs, routines and timers keep a fresh pod per run, released at the end of the run. It applies to every adapter except `paperclip_runner`, which owns its own warm-session lifecycle. Pi, Claude and Hermes conversation turns all reuse, and all are scrubbed and scoped the same way.

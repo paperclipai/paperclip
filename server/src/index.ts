@@ -119,6 +119,11 @@ import {
   toolAccessService,
   workspaceOperationService,
 } from "./services/index.js";
+import {
+  MAX_CONCURRENT_SANDBOX_RUNS_ENV,
+  SANDBOX_RUN_SLOT_PROVIDERS,
+  sandboxRunSlots,
+} from "./services/heartbeat/sandbox-run-slots.js";
 import { questionResponseDeliveryService } from "./services/question-response-delivery.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
@@ -1852,6 +1857,13 @@ async function startServerWithDatabaseTeardown(
         }
 
         const promotion = await timeStartupRecovery("scheduled_retries", () => heartbeat.promoteDueScheduledRetries());
+        const sandboxRunLimit = sandboxRunSlots.limit();
+        logger.info(
+          { maxConcurrentSandboxRuns: sandboxRunLimit, providers: [...SANDBOX_RUN_SLOT_PROVIDERS] },
+          sandboxRunLimit > 0
+            ? `server-wide sandbox run limit: ${sandboxRunLimit} (${MAX_CONCURRENT_SANDBOX_RUNS_ENV}); runs over it wait in the queue`
+            : `server-wide sandbox run limit is off (${MAX_CONCURRENT_SANDBOX_RUNS_ENV}=0)`,
+        );
         await timeStartupRecovery("queued_runs", () => heartbeat.resumeQueuedRuns());
         const recoveredGoalActions = await timeStartupRecovery("goal_actions", () => heartbeat.recoverPendingSessionGoalActions());
         if (

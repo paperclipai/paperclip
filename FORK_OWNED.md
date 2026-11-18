@@ -92,6 +92,13 @@ any new fork patch; remove one when the patch is upstreamed.
 - `packages/adapter-utils/src/sandbox-bridge-start-fold.test.ts`
 - `packages/adapters/hermes/src/server/execute-sandbox.prompt-staging.test.ts`
 
+## Server-wide sandbox run limit (TECH-9015)
+
+- `server/src/services/heartbeat/sandbox-run-slots.ts` server-wide limit on concurrent sandbox runs; runs over it wait in the queue
+- `server/src/services/heartbeat/sandbox-run-slots.test.ts`
+- `server/src/services/heartbeat/queue.ts` sandbox slot gate before claiming a queued run (TECH-9015 hunks)
+- `server/src/services/heartbeat.ts` waiters promoted when a run ends (TECH-9015 hunk)
+
 ## Slack file text extraction (TECH-8958)
 
 - `server/src/services/connectors/slack-file-content.ts`

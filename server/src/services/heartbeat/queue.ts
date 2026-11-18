@@ -159,6 +159,7 @@ import {
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
+import { sandboxRunSlots as defaultSandboxRunSlots, type SandboxRunSlotGate, type SandboxSlotDecision } from "./sandbox-run-slots.js";
 
 import type { HeartbeatServiceOptions } from "../heartbeat.js";
 import type { createHeartbeatRunState } from "./run-state.js";
@@ -214,6 +215,8 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   resumeQueuedCommentInterrupt: (companyId: string, queueId: string) => Promise<unknown>;
   resumeSavedLegacyComments: (companyId: string, queueId: string) => Promise<unknown>;
   formatIssueIdentifierLink: (identifier: string | null, fallback: string) => string;
+  /** Server-wide sandbox run limit; defaults to the process-wide gate. */
+  sandboxRunSlots?: SandboxRunSlotGate;
 }
 
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
@@ -396,6 +399,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     runTaskKey,
     filterZombieCoalesceTarget,
   } = dependencies;
+  const sandboxRunSlots = dependencies.sandboxRunSlots ?? defaultSandboxRunSlots;
 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
@@ -2010,6 +2014,73 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  async function recordSandboxSlotWait(
+    run: typeof heartbeatRuns.$inferSelect,
+    provider: string,
+    decision: Extract<SandboxSlotDecision, { admitted: false }>,
+  ) {
+    logger.info(
+      {
+        event: "sandbox_run_slot_wait",
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        provider,
+        inUse: decision.inUse,
+        limit: decision.limit,
+        position: decision.position,
+      },
+      "sandbox run is waiting for a slot",
+    );
+    await appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: `Waiting for a sandbox slot: ${decision.inUse} of ${decision.limit} sandbox runs are in use on this server. The run stays queued (position ${decision.position}) and starts when a slot frees.`,
+      payload: {
+        reason: "sandbox_slot_wait",
+        provider,
+        inUse: decision.inUse,
+        limit: decision.limit,
+        position: decision.position,
+      },
+    }).catch((err) => {
+      logger.warn({ err, runId: run.id }, "failed to record the sandbox slot wait event");
+    });
+  }
+
+  async function recordSandboxSlotAcquired(
+    run: typeof heartbeatRuns.$inferSelect,
+    provider: string,
+    waitedMs: number,
+  ) {
+    logger.info(
+      {
+        event: "sandbox_run_slot_acquired",
+        runId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        provider,
+        waitedMs,
+      },
+      "sandbox run got a slot after waiting",
+    );
+    await appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: `Sandbox slot acquired after waiting ${Math.round(waitedMs / 1000)} s.`,
+      payload: { reason: "sandbox_slot_acquired", provider, waitedMs },
+    }).catch((err) => {
+      logger.warn({ err, runId: run.id }, "failed to record the sandbox slot acquired event");
+    });
+  }
+
+  /** Offer slots freed by a finished run to runs waiting for one, in fair order. */
+  function promoteSandboxSlotWaiters() {
+    return sandboxRunSlots.promoteWaiters(db, (agentId) => startNextQueuedRunForAgent(agentId));
+  }
+
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
@@ -2069,6 +2140,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           id: issues.id,
           status: issues.status,
           priority: issues.priority,
+          conversationAgentId: issues.conversationAgentId,
+          conversationUserId: issues.conversationUserId,
         })
         .from(issues)
         .where(
@@ -2124,9 +2197,28 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
+      // Server-wide sandbox run limit: a run over it stays queued (TECH-9015).
+      const sandboxProvider = await sandboxRunSlots.providerForAgent(db, agent);
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
+        let sandboxSlot: SandboxSlotDecision | null = null;
+        if (sandboxProvider) {
+          const issueId = readNonEmptyString(parseObject(queuedRun.contextSnapshot).issueId);
+          const issue = issueId ? issueById.get(issueId) : null;
+          sandboxSlot = await sandboxRunSlots.admit(db, {
+            runId: queuedRun.id,
+            companyId: queuedRun.companyId,
+            agentId: queuedRun.agentId,
+            provider: sandboxProvider,
+            conversation: isConversation(issue) && issue?.conversationAgentId === queuedRun.agentId,
+            queuedAtMs: queuedRun.createdAt.getTime(),
+          });
+          if (!sandboxSlot.admitted) {
+            if (sandboxSlot.firstRefusal) await recordSandboxSlotWait(queuedRun, sandboxProvider, sandboxSlot);
+            continue;
+          }
+        }
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
           claimed = await claimQueuedRun(queuedRun, companyAgents, deferredPostCommitEffects);
@@ -2141,8 +2233,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             "queued heartbeat run claim was rejected; leaving it queued for the next recovery pass",
           );
           continue;
+        } finally {
+          if (sandboxSlot) sandboxRunSlots.settle(queuedRun.id);
         }
-        if (claimed) claimedRuns.push(claimed);
+        if (claimed) {
+          claimedRuns.push(claimed);
+          if (sandboxSlot?.admitted && sandboxSlot.waitedMs !== null) {
+            await recordSandboxSlotAcquired(claimed, sandboxProvider!, sandboxSlot.waitedMs);
+          }
+        }
       }
       if (claimedRuns.length === 0) return [];
 
@@ -4953,6 +5052,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     enqueueWakeup,
     dispatchPendingNativeStatusWakeups,
     startNextQueuedRunForAgent,
+    promoteSandboxSlotWaiters,
     countRunningRunsForAgent,
     releaseRunClaimedJustBeforeSuppression,
     claimQueuedRun,

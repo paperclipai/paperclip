@@ -3939,6 +3939,8 @@ export function heartbeatService(
             });
         }
         await startNextQueuedRunForAgent(run.agentId);
+        // This run's sandbox slot (if it held one) is free once it left running.
+        await heartbeatQueue.promoteSandboxSlotWaiters();
       }
     }
   }
