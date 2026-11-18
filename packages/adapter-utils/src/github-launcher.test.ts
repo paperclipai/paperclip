@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -457,9 +457,9 @@ describe.runIf(process.platform === "win32")("managed GitHub launchers on Window
       GH_CONFIG_DIR: path.join(root, "config"),
       PATH: [managed, first, second, path.join(process.env.SystemRoot ?? "C:\\Windows", "System32")].join(path.delimiter) };
     delete env.PAPERCLIP_GITHUB_OPERATION_ACTIVE;
-    const gh = (...args: string[]) => exec(process.execPath, [path.join(managed, "gh"), ...args], { env, timeout: 20_000 });
+    const gh = (...args: string[]) => exec(process.execPath, [path.join(managed, "gh"), ...args], { env, cwd: root, timeout: 20_000 });
     const forwarder = `@echo off\r\n"${process.execPath}" "${argv}" %*\r\n`;
-    return { root, first, second, gh, forwarder };
+    return { root, first, second, gh, forwarder, env };
   }
 
   it.each(["gh.cmd", "gh.CMD", "gh.bat", "gh.BAT"])("runs a %s tool and passes harmless arguments", async file => {
@@ -496,5 +496,25 @@ describe.runIf(process.platform === "win32")("managed GitHub launchers on Window
     await writeFile(path.join(first, "gh.cmd"), forwarder);
     await expect(gh("line\nbreak")).rejects.toMatchObject({ code: 1, stdout: "",
       stderr: expect.stringContaining("batch_argument_rejected") });
+  });
+
+  it("refuses arguments that would overflow the cmd.exe command line", async () => {
+    const { first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    await expect(gh("x".repeat(9000))).rejects.toMatchObject({ code: 1, stdout: "",
+      stderr: expect.stringContaining("batch_command_too_long") });
+  });
+
+  // Node itself cannot start with an empty or bogus SystemRoot, so "." is the reachable relative case.
+  it.each(["."])("never resolves cmd.exe from a %j SystemRoot", async systemRoot => {
+    const { root, first, gh, forwarder, env } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    // A fake cmd.exe where a relative SystemRoot would point, relative to the working directory.
+    await mkdir(path.join(root, systemRoot, "System32"), { recursive: true });
+    await copyFile(process.execPath, path.join(root, systemRoot, "System32", "cmd.exe"));
+    for (const key of Object.keys(env)) if (key.toLowerCase() === "systemroot") delete env[key];
+    env.SystemRoot = systemRoot;
+    // Only the real cmd.exe runs the batch, which forwards the arguments.
+    expect(JSON.parse((await gh("safe")).stdout).args).toEqual(["safe"]);
   });
 });

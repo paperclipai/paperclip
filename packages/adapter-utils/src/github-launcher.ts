@@ -58,7 +58,9 @@ function connectorRepositoryTool(args) {
 // CVE-2024-27980 fix), so batch tools run through cmd.exe with every argument
 // quoted and caret-escaped twice: once for cmd's /c parse, once for the batch
 // file's own %* re-parse. Line breaks and NUL cannot cross cmd.exe intact, so
-// such arguments are refused instead of being reinterpreted.
+// such arguments are refused instead of being reinterpreted. Note that a batch
+// file which enables cmd's delayed expansion can still expand !VAR! itself; that
+// is inherent to batch and outside the launcher's control.
 const cmdMeta = /([()\][%!^"\x60<>&|;, *?])/g;
 function cmdQuote(arg) {
   let quoted = String(arg).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
@@ -74,8 +76,16 @@ function spawnResolved(file, args, env) {
     process.exitCode = 1;
     return null;
   }
-  const shell = path.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe');
+  // A relative or empty SystemRoot would resolve cmd.exe against the working directory.
+  const root = [env.SystemRoot, env.SYSTEMROOT].find(value => value && path.win32.isAbsolute(value)) || 'C:\\Windows';
+  const shell = path.win32.join(root, 'System32', 'cmd.exe');
   const line = [file.replace(cmdMeta, '^$1'), ...args.map(cmdQuote)].join(' ');
+  // cmd.exe truncates command lines past 8191 characters; fail explicitly instead.
+  if (line.length + 2 > 8191) {
+    process.stderr.write('Paperclip: GitHub batch_command_too_long; the arguments exceed the cmd.exe line limit.\n');
+    process.exitCode = 1;
+    return null;
+  }
   return spawn(shell, ['/d', '/s', '/v:off', '/c', '"' + line + '"'], { env, stdio: 'inherit', windowsVerbatimArguments: true });
 }
 async function main() {
