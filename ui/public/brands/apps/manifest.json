@@ -40,6 +40,13 @@
       "localAsset": "/brands/apps/asana.svg"
     },
     {
+      "slug": "aws",
+      "provider": "Amazon Web Services",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/aws.svg",
+      "darkAsset": "/brands/apps/aws-dark.svg"
+    },
+    {
       "slug": "bedrock",
       "provider": "Amazon Bedrock",
       "catalogVisible": true,

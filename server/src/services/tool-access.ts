@@ -1,4 +1,6 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
+import { AWS_MCP_ISSUER_CONFIG_KEY, awsMcpMethodUsesIssuer, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -173,6 +175,8 @@ type ToolAccessServiceOptions = {
   paperclipCloudConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+  awsMcpClients?: AwsMcpClients;
 };
 
 const GOOGLE_SHEETS_SPREADSHEET_SCHEMA = {
@@ -837,7 +841,7 @@ export function toolAccessService(
   const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
-  const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials });
+  const credentialAccess = createConnectionCredentialAccess(db, { secrets, audit, vercel: vercelCredentials, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials, awsMcpClients: options.awsMcpClients });
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentialAccess;
   const setupPolicy = createConnectionSetupPolicy(db);
   const { assertConnectorConnectionSetupEnabled, assertExperimentalConnectorSetupEnabled } = setupPolicy;
@@ -2251,9 +2255,20 @@ export function toolAccessService(
               "",
           }
         : { templateId: method?.defaults?.templateKey };
+    // The issuer an AWS role is asked to trust, recorded so a later change of this instance's address
+    // gets a clear message instead of a role refusal. A draft being resumed keeps the issuer recorded at
+    // the draft step; any other setup or reconnect records the current address (the one now in AWS).
+    const recordedAwsIssuer = !input.reconnectConnectionId && retainedConnection?.status === "draft"
+      ? asRecord(retainedConnection.config)[AWS_MCP_ISSUER_CONFIG_KEY]
+      : undefined;
+    const awsIssuerOrigin = workloadIdentityIssuerOrigin();
+    const awsRoleIssuer = !awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key) ? null
+      : typeof recordedAwsIssuer === "string" ? recordedAwsIssuer
+        : awsIssuerOrigin.available ? workloadIdentityIssuer(awsIssuerOrigin.origin, companyId) : null;
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
           methodConfig: normalizedMethodConfig?.values ?? {},
@@ -2921,7 +2936,13 @@ export function toolAccessService(
       );
       await ensureRuntimeSlot(connectionRow);
 
-      if (input.saveDraft && remoteMcpConnector) {
+      // Minted-credential methods (AWS role) need the connection to exist before the
+      // provider can trust it, so they may also save a draft without contacting it.
+      // AWS validates the issuer's discovery document when the customer registers it, so publish the key now.
+      if (input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key)) {
+        await workloadIdentityService(db).ensureActiveKey(companyId);
+      }
+      if (input.saveDraft && (remoteMcpConnector || method?.credentialMinter)) {
         return { connectionId: connectionRow.id, application: toApplication(applicationRow), connection: toConnection(connectionRow),
           catalog: [], actions: { readOnly: [], canMakeChanges: [] }, suggestedDefaults: { access: "all_agents", askFirstRiskLevels: [] } };
       }

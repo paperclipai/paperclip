@@ -2097,6 +2097,7 @@ const validateApp = (app) => {
     if (
       connectionMethod.auth === "api_key" &&
       !connectionMethod.keyPlacement &&
+      !connectionMethod.credentialMinter &&
       (connectionMethod.purpose ?? "tool") !== "channel"
     )
       throw new Error(

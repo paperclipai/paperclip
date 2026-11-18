@@ -106,6 +106,10 @@ export function sanitizeHttpFailure(error: unknown): {
         code: "oauth_reauthorization_required",
       };
     }
+    if (typeof code === "string" && code.startsWith("aws_") && code !== "aws_unavailable") {
+      return { status: "error", message: error.message, code };
+    }
+    if (code === "aws_unavailable") return { status: "degraded", message: error.message, code };
     if (typeof code === "string" && code.startsWith("vercel_connect_")) {
       return {
         status:

@@ -12,6 +12,7 @@ import {
   dashboardChangeGroups,
   dashboardChangeWords,
   droppedWithArea,
+  isDashboardAreaChange,
   keptDashboardChanges,
   lettingGoWith,
   toggleDashboardChange,
@@ -58,6 +59,16 @@ export function useDashboardChangesActions(interaction: Pick<ProposeDashboardCha
   return { accept, decline, busy: accept.isPending || decline.isPending, error: accept.error ?? decline.error };
 }
 
+const CHANGE_LABELS: Record<ResponsibilityDashboardChange["op"], string> = {
+  add_area: "New area",
+  rename_area: "Rename area",
+  remove_area: "Remove area",
+  add_responsibility: "New responsibility",
+  reword_responsibility: "Reword responsibility",
+  move_responsibility: "Move responsibility",
+  remove_responsibility: "Let go of responsibility",
+};
+
 function ChangeRow({
   change,
   changes,
@@ -73,25 +84,40 @@ function ChangeRow({
 }) {
   const isDropped = dropped.has(change.index);
   const words = dashboardChangeWords(change);
+  const areaChange = isDashboardAreaChange(change);
+  const Row = areaChange ? "div" : "li";
   const withArea = isDropped ? droppedWithArea(changes, dropped, change) : null;
   const lettingGo = change.op === "remove_area" && !isDropped ? lettingGoWith(changes, dropped, change) : [];
   return (
-    <li
-      className="flex min-w-0 items-start gap-2 py-2"
+    <Row
+      className="flex min-w-0 items-start gap-2"
       data-dashboard-change={change.op}
       data-dropped={isDropped ? "" : undefined}
     >
-      <div className={cn("flex min-w-0 flex-1 flex-col gap-0.5", isDropped && "text-muted-foreground line-through")}>
-        {words.before ? <p className="break-words text-sm text-muted-foreground line-through">{words.before}</p> : null}
-        {words.after ? <p className={cn("break-words text-sm", !isDropped && "text-foreground")}>{words.after}</p> : null}
+      <div className={cn("flex min-w-0 flex-1 flex-col gap-1", isDropped && "text-muted-foreground")}>
+        {areaChange ? (
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+            <h3 className={cn("min-w-0 break-words text-base font-semibold", isDropped ? "line-through" : "text-foreground")}>
+              {words.before ? <span className="text-muted-foreground line-through">{words.before}{" "}</span> : null}
+              {words.after}
+            </h3>
+            <span data-change-label="" className="text-xs text-muted-foreground">{CHANGE_LABELS[change.op]}</span>
+          </div>
+        ) : (
+          <>
+            <span data-change-label="" className="text-xs text-muted-foreground">{CHANGE_LABELS[change.op]}</span>
+            {words.before ? <p className="break-words text-sm text-muted-foreground line-through">{words.before}</p> : null}
+            {words.after ? <p className={cn("break-words text-sm", isDropped ? "line-through" : "text-foreground")}>{words.after}</p> : null}
+          </>
+        )}
         {words.note ? <p className="text-xs text-muted-foreground">{words.note}</p> : null}
         {lettingGo.length > 0 ? (
           <p className="text-xs text-muted-foreground">Also lets go of: {lettingGo.join("; ")}</p>
         ) : null}
-        {change.reason ? <p className="text-xs text-muted-foreground">{change.reason}</p> : null}
+        {change.reason ? <p className="break-words text-xs text-muted-foreground">{change.reason}</p> : null}
       </div>
       {isDropped ? (
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex max-w-1/3 shrink-0 flex-col items-end gap-1">
           {withArea ? <span className="text-xs text-muted-foreground">Goes with {withArea}</span> : null}
           <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={onToggle}>Keep</Button>
         </div>
@@ -110,7 +136,7 @@ function ChangeRow({
           <X aria-hidden="true" />
         </Button>
       )}
-    </li>
+    </Row>
   );
 }
 
@@ -179,24 +205,35 @@ export function DashboardChangesCard({
         <p className="text-xs text-muted-foreground">{agentName} proposes</p>
         {payload.message ? <p className="text-sm text-foreground">{payload.message}</p> : null}
       </div>
-      <div className="flex flex-col gap-3">
-        {groups.map((group) => (
-          <section key={group.key} aria-label={group.name} data-dashboard-change-group={group.key}>
-            <h4 className="text-sm font-semibold text-foreground">{group.name}</h4>
-            <ul className="flex flex-col divide-y divide-border">
-              {group.changes.map((change) => (
-                <ChangeRow
-                  key={change.index}
-                  change={change}
-                  changes={changes}
-                  dropped={dropped}
-                  busy={busy}
-                  onToggle={() => setDropped((current) => toggleDashboardChange(changes, current, change.index))}
-                />
-              ))}
-            </ul>
-          </section>
-        ))}
+      <div className="flex flex-col gap-6">
+        {groups.map((group) => {
+          const { areaChanges, responsibilityChanges } = group;
+          const row = (change: ResponsibilityDashboardChange) => (
+            <ChangeRow
+              key={change.index}
+              change={change}
+              changes={changes}
+              dropped={dropped}
+              busy={busy}
+              onToggle={() => setDropped((current) => toggleDashboardChange(changes, current, change.index))}
+            />
+          );
+          return (
+            <section key={group.key} aria-label={group.name} data-dashboard-change-group={group.key} className="flex min-w-0 flex-col gap-3">
+              {areaChanges.length > 0 ? areaChanges.map(row) : (
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <h3 className="min-w-0 break-words text-base font-semibold text-foreground">{group.name}</h3>
+                  {group.hasExistingArea ? <span className="text-xs text-muted-foreground">Existing area</span> : null}
+                </div>
+              )}
+              {responsibilityChanges.length > 0 ? (
+                <ul aria-label={`Responsibilities in ${group.name}`} className="flex min-w-0 flex-col gap-3 pl-4 sm:pl-6">
+                  {responsibilityChanges.map(row)}
+                </ul>
+              ) : null}
+            </section>
+          );
+        })}
       </div>
       {error ? <p role="alert" className="text-sm text-destructive">{describeError(error).body}</p> : null}
       {notRight ? (
@@ -209,15 +246,17 @@ export function DashboardChangesCard({
           placeholder="e.g. Keep Hiring, and fewer responsibilities under Fundraising"
         />
       ) : (
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {showConversationLink ? (
-            <Button asChild type="button" variant="ghost" size="sm">
-              <Link to={`/issues/${interaction.issueId}`}>Open the conversation</Link>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {showConversationLink ? (
+              <Button asChild type="button" variant="ghost" size="sm">
+                <Link to={`/issues/${interaction.issueId}`}>Open the conversation</Link>
+              </Button>
+            ) : null}
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setNotRight(true)}>
+              Not right
             </Button>
-          ) : null}
-          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setNotRight(true)}>
-            Not right
-          </Button>
+          </div>
           <Button
             type="button"
             size="sm"

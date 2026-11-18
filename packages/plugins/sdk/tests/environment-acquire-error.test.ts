@@ -3,7 +3,12 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { definePlugin } from "../src/define-plugin.js";
 import { readEnvironmentAcquireErrorDiagnostic } from "../src/environment-acquire-error.js";
-import { PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError } from "../src/environment-creation-cleanup.js";
+import {
+  PluginEnvironmentAcquisitionError,
+  PluginEnvironmentCreationCleanupError,
+  readEnvironmentAcquisitionDiagnostic,
+  readEnvironmentCreationCleanupError,
+} from "../src/environment-creation-cleanup.js";
 import { createRequest, isJsonRpcResponse, JsonRpcCallError, parseMessage, serializeMessage, type JsonRpcResponse } from "../src/protocol.js";
 import { startWorkerRpcHost } from "../src/worker-rpc-host.js";
 
@@ -60,6 +65,25 @@ describe("environment acquisition refusal diagnostics", () => {
     const plain = await acquire(new Error("Daytona sandbox creation failed (HTTP 502)"));
     expect(plain.data).toBeUndefined();
     expect(readEnvironmentAcquireErrorDiagnostic(plain)).toBeNull();
+  });
+
+  it("carries the observed step of a removed failed allocation without provider text", async () => {
+    const callError = await acquire(new PluginEnvironmentAcquisitionError("Daytona could not start the sandbox.",
+      { phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" },
+      new Error("Sandbox private-sandbox-id failed to start with status: error")));
+    expect(readEnvironmentAcquisitionDiagnostic(callError)).toEqual({ phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" });
+    expect(readEnvironmentCreationCleanupError(callError)).toBeNull();
+    expect(readEnvironmentAcquireErrorDiagnostic(callError)).toBeNull();
+    expect(JSON.stringify(callError.data)).not.toContain("private-sandbox-id");
+  });
+
+  it("reads no acquisition step from an unstructured or forged refusal", async () => {
+    expect(readEnvironmentAcquisitionDiagnostic(await acquire(new Error("plain")))).toBeNull();
+    const forged = (data: unknown) => Object.assign(new Error("x"), { data });
+    expect(readEnvironmentAcquisitionDiagnostic(forged({ schema: "other",
+      acquisitionDiagnostic: { phase: "create", elapsedMs: 1, budgetMs: 2 } }))).toBeNull();
+    expect(readEnvironmentAcquisitionDiagnostic(forged({ schema: "paperclip/environment-acquire-error/v1",
+      acquisitionDiagnostic: { phase: "anything", elapsedMs: 1, budgetMs: 2 } }))).toBeNull();
   });
 
   it("rejects forged or out-of-range envelopes", () => {
