@@ -151,6 +151,7 @@ describe("instance settings service", () => {
       enableBuiltInAgents: true,
       enableBetaSkills: false,
       enableSummaries: false,
+      enableTaskListSidePanel: false,
       enableStatusCards: false,
       enableResponsibilities: false,
       enableDecisions: false,
