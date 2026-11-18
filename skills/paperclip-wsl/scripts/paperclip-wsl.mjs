@@ -58,7 +58,7 @@ try {
     const instance = path.join(config.paperclipHome, "instances", config.instanceId);
     const selectedConfig = path.join(instance, "config.json");
     const settings = JSON.parse(fs.readFileSync(selectedConfig, "utf8"));
-    if (settings.server?.port !== config.port) fail("instance port differs from the local profile");
+    if ((settings.server?.port ?? 3100) !== config.port) fail("instance port differs from the local profile");
     const dataPaths = [settings.database?.embeddedPostgresDataDir, settings.storage?.localDisk?.baseDir, settings.secrets?.localEncrypted?.keyFilePath].filter(Boolean);
     if (dataPaths.some(value => !nativePath(value))) fail("instance still contains Windows data paths");
     if (settings.database?.backup?.dir) {
@@ -69,15 +69,25 @@ try {
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
     const executable = path.basename(commands[1] ?? "");
+    const directEntry = commands.findIndex((value,index) => index > 1 && [path.join(repository,"cli/src/index.ts"),path.join(repository,"cli/dist/index.js")].includes(path.resolve(repository,value)));
     const cliIndex = ["paperclip", "paperclipai"].includes(executable) ? 1
-      : ["pnpm", "npm", "npx"].includes(executable) ? commands.findIndex((value, index) => index > 1 && ["paperclip", "paperclipai"].includes(value)) : -1;
+      : ["pnpm", "npm", "npx"].includes(executable) ? commands.findIndex((value, index) => index > 1 && ["paperclip", "paperclipai"].includes(value)) : ["node", "tsx"].includes(executable) ? directEntry : -1;
     const cliArguments = cliIndex < 0 ? [] : commands.slice(cliIndex + 1);
+    if (executable === "npm" && commands.slice(2,cliIndex).some(value => ["run","run-script"].includes(value)) && cliArguments[0] === "--") cliArguments.shift();
     const endOptions = cliArguments.indexOf("--");
     if (endOptions >= 0) cliArguments.splice(endOptions);
-    const optionValue = name => {
-      const index = cliArguments.findLastIndex(value => value === name || value.startsWith(name + "="));
-      return index < 0 ? undefined : cliArguments[index].startsWith(name + "=") ? cliArguments[index].slice(name.length + 1) : cliArguments[index + 1];
+    const optionValue = (name, short) => {
+      const index = cliArguments.findLastIndex(value => value === name || value.startsWith(name + "=") || short && value.startsWith(short));
+      if (index < 0) return undefined;
+      const value = cliArguments[index];
+      if (value.startsWith(name + "=")) return value.slice(name.length + 1);
+      if (short && value.startsWith(short) && value !== short) return value.slice(short.length).replace(/^=/, "");
+      return cliArguments[index + 1];
     };
+    for (const [name,short,expected] of [["--config","-c",selectedConfig],["--data-dir","-d",config.paperclipHome]]) {
+      const selected = optionValue(name,short);
+      if (selected !== undefined && path.resolve(repository,selected) !== expected) fail(name + " selects another instance");
+    }
     let contextPath = path.join(config.paperclipHome, "context.json");
     for (let directory = repository;; directory = path.dirname(directory)) {
       const candidate = path.join(directory, ".paperclip", "context.json");
@@ -106,8 +116,9 @@ try {
         if (source[key] !== undefined && path.resolve(repository, source[key]) !== expected) fail(key + " selects another CLI state root");
       }
       if (source.PAPERCLIP_API_URL) validateApiBase(source.PAPERCLIP_API_URL);
-      if (source.PAPERCLIP_IN_WORKTREE === "true") fail("PAPERCLIP_IN_WORKTREE selects another scheduling context");
+      if (["true","1","yes","on"].includes(source.PAPERCLIP_IN_WORKTREE?.trim().toLowerCase())) fail("PAPERCLIP_IN_WORKTREE selects another scheduling context");
       for (const [key, expected] of [
+        ["PAPERCLIP_SECRETS_PROVIDER", settings.secrets?.provider ?? "local_encrypted"],
         ["PAPERCLIP_STORAGE_PROVIDER", settings.storage?.provider ?? "local_disk"],
         ["PAPERCLIP_STORAGE_S3_BUCKET", settings.storage?.s3?.bucket ?? "paperclip"],
         ["PAPERCLIP_STORAGE_S3_REGION", settings.storage?.s3?.region ?? "us-east-1"],
@@ -125,6 +136,8 @@ try {
         ["PAPERCLIP_DB_BACKUP_DIR", settings.database?.backup?.dir],
       ]) if (source[key] !== undefined && (!expected || path.resolve(repository, source[key]) !== path.resolve(expected))) fail(key + " differs from the selected instance");
     };
+    const instanceEnvironment = fs.existsSync(path.join(instance,".env")) ? parseEnv(fs.readFileSync(path.join(instance,".env"),"utf8")) : {};
+    if (process.env.PAPERCLIP_SECRETS_MASTER_KEY !== undefined && process.env.PAPERCLIP_SECRETS_MASTER_KEY !== instanceEnvironment.PAPERCLIP_SECRETS_MASTER_KEY) fail("PAPERCLIP_SECRETS_MASTER_KEY differs from the selected instance");
     validateEnvironment(process.env);
     for (const filename of [path.join(instance, ".env"), path.join(repository, ".env"), path.join(repository, "server", ".env")]) {
       if (fs.existsSync(filename)) validateEnvironment(parseEnv(fs.readFileSync(filename, "utf8")));

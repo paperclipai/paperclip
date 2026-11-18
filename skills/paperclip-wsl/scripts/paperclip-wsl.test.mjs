@@ -198,3 +198,23 @@ test('passes literal option names to non-Paperclip commands', { skip: !enabled }
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /--api-base literal-text/);
 });
+
+for (const args of [ ['npm','run','paperclipai','--','company','list','--api-base','http://localhost:3101'], [process.execPath,'cli/node_modules/tsx/dist/cli.mjs','cli/src/index.ts','company','list','--api-base=http://localhost:3101'], ['pnpm','paperclipai','db:backup','--config','/tmp/other.json'], ['pnpm','paperclipai','db:backup','-c/tmp/other.json'], ['pnpm','paperclipai','db:backup','--data-dir','/tmp/other'] ]) {
+  test('rejects a forwarded or explicit CLI destination: ' + args.join(' '), { skip: !enabled }, () => {
+    const result=invoke(['exec',...args]);
+    assert.equal(result.status,1);
+    assert.match(result.stderr,/another instance|selected instance/);
+  });
+}
+for (const marker of ['1','yes','on','TRUE']) test('rejects truthy scheduling marker '+marker,{skip:!enabled},()=>{
+  const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")'],{PAPERCLIP_IN_WORKTREE:marker});
+  assert.equal(result.status,1);assert.match(result.stderr,/PAPERCLIP_IN_WORKTREE/);
+});
+test('accepts the default server port when omitted by the config', {skip:!enabled},async()=>{
+  const file=path.join(root,'data','instances','default','config.json');const saved=await readFile(file,'utf8');await writeFile(file,JSON.stringify({server:{}}));
+  try{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")']);assert.equal(result.status,0,result.stderr);}finally{await writeFile(file,saved);}
+});
+test('rejects a conflicting inherited secrets key without exposing either value',{skip:!enabled},async()=>{
+  const file=path.join(root,'data','instances','default','.env');await writeFile(file,'PAPERCLIP_SECRETS_MASTER_KEY=selected-test-key\n');
+  try{const result=invoke(['exec',process.execPath,'-e','console.log("STARTED")'],{PAPERCLIP_SECRETS_MASTER_KEY:'wrong-test-key'});assert.equal(result.status,1);assert.match(result.stderr,/PAPERCLIP_SECRETS_MASTER_KEY/);assert.doesNotMatch(result.stderr,/selected-test-key|wrong-test-key/);}finally{await rm(file);}
+});
