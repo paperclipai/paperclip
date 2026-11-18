@@ -126,10 +126,9 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 
 ## Next steps
 
-1. Cloud broker changes: limit the unified profile to the 14; cap extra
-   reported scopes instead of failing; stop offering Chat, People and Search
-   on the verified client; turn on revoke support; add a per-workspace Google
-   client override.
+1. Deploy the Cloud broker changes to production. They are merged and live
+   on staging (see "Cloud broker"); the production deploy is manual and
+   waits for Dotta.
 2. Point the staging tester at the separate Google app (see "Environments").
 3. Finish live acceptance on the staging tester.
 4. Switch services to REST one at a time, each after its live test.
@@ -172,8 +171,10 @@ Staging tester state (November 18):
 
 Found while testing:
 
-- Google's MCP offers 34 of our 36 allowlisted actions; `gmail__list_threads`
-  and `gmail__search_messages` are missing there.
+- Google's live MCP server offered 34 of our 36 allowlisted actions on the
+  tester; `gmail__list_threads` and `gmail__search_messages` were missing.
+  `gmail__get_draft` was offered live even though Google's published
+  reference does not list it, so the reference and the live server differ.
 - Write actions default to "Allowed" with no approval step. Dotta to decide.
 - The connection audit page shows internal tool names and raw ids.
 - The REST tools have not been run against real Google yet.
@@ -245,17 +246,22 @@ Known mismatches to clean up (after #22001 the app side matches the 14):
 
 ## Cloud broker (paperclip-cloud)
 
-As reported by a read-only audit on November 17. Not re-verified here.
+First reported by a read-only audit on November 17. The changes listed below
+were then built and merged on November 17 and 18. They are live on **staging
+only**; production still runs the old broker.
 
 - The profile registry is at `src/connections/providers.ts`.
 - One Google client per environment, shared by all profile groups. Staging's
   client differs from production's.
 - `workspace.all` is enabled on staging only.
 - There is no `gmail.archive` profile.
-- A revoke endpoint exists, but every Google profile has revocation turned off.
-- There is no per-workspace client override.
+- Revocation is on for Google profiles, with a ledger of provider grants.
+- A per-stack alternate Google client exists (for the tester). It is chosen
+  only from the enrolled stack id.
+- The scoped reviewer password login allows the production and the staging
+  tester hosts.
 
-Changes needed in the broker:
+Changes made in the broker (staging):
 
 | Change | Why |
 | --- | --- |
