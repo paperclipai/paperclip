@@ -23,6 +23,7 @@ export function verifiedIdleCapabilities(req: Request): VerifiedIdleCapabilities
 const ACTIONS_BY_ENDPOINT: Record<string, Record<string, CloudControlAction>> = {
   "/api/instance/ephemeral-enrollment/prepare": { POST: "ephemeral-enrollment:prepare" },
   "/api/instance/ephemeral-enrollment/eligibility": { GET: "ephemeral-enrollment:eligibility" },
+  "/api/instance/ephemeral-enrollment/migrate": { POST: "ephemeral-enrollment:migrate" },
   "/api/instance/connector-events/wake": { POST: "connector-events:wake" },
   "/api/instance/task-drain/status": { POST: "task-drain:read-body" },
   "/api/instance/task-drain": {
