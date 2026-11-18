@@ -2561,7 +2561,7 @@ export class PaperclipRunnerToolAuthority {
         } });
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
-      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true);
+      await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true, { monitor: input.monitor });
       if (target.assigneeAgentId !== this.binding.agentId || target.assigneeUserId ||
           !["in_progress", "in_review"].includes(target.status)) {
         throw forbidden("Monitors require an in-progress or in-review task assigned to this agent");

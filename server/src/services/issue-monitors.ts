@@ -34,26 +34,34 @@ export async function assertCanManageIssueMonitor(
   companyId: string,
   assigneeAgentId: string | null,
   monitorChanged: boolean,
+  ownTask?: { monitor: { recoveryPolicy?: string | null } | null },
 ) {
   if (!monitorChanged) return;
   if (req.actor.type === "board") return;
+  const isAssignee =
+    req.actor.type === "agent" &&
+    !!req.actor.agentId &&
+    req.actor.agentId === assigneeAgentId;
   const runtimeDecision = await accessSvc.decide({
     actor: req.actor,
     action: "runtime:manage",
     resource: { type: "company", companyId },
   });
-  if (!runtimeDecision.allowed) {
+  // A low-trust reviewer may schedule or clear a self-wake on its own task.
+  // The caller has already checked task access inside the trust boundary.
+  // Recovery that creates tasks or escalates still needs runtime:manage.
+  const ownTaskSelfWake =
+    ownTask &&
+    isAssignee &&
+    runtimeDecision.reason === "deny_low_trust_boundary" &&
+    (ownTask.monitor?.recoveryPolicy ?? "wake_owner") === "wake_owner";
+  if (!runtimeDecision.allowed && !ownTaskSelfWake) {
     throw forbidden(
       runtimeDecision.explanation,
       authorizationDeniedDetails(runtimeDecision),
     );
   }
-  if (
-    req.actor.type === "agent" &&
-    req.actor.agentId &&
-    req.actor.agentId === assigneeAgentId
-  )
-    return;
+  if (isAssignee) return;
   throw forbidden(
     "Only the assignee agent or a board user can manage issue monitors",
   );
