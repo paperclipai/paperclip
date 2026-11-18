@@ -29,6 +29,7 @@ import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService }
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { RemoteWorkspacePreparationTimeoutError } from "../services/remote-workspace-transport.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_DIRECTORY_TEST_DATABASE_URL");
 
@@ -1505,8 +1506,9 @@ describe("persistent agent directories", () => {
       try {
         const runId = randomUUID();
         await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
-        await expect(copies.prepare({ companyId, agentId, runId, cwd: home, target: sshTarget("/fixture/slow-task") }))
-          .rejects.toThrow("Could not exclude agent files from task Git staging (reason=timed_out)");
+        const failure = copies.prepare({ companyId, agentId, runId, cwd: home, target: sshTarget("/fixture/slow-task") });
+        await expect(failure).rejects.toThrow("Could not exclude agent files from task Git staging (reason=timed_out)");
+        await expect(failure).rejects.toBeInstanceOf(RemoteWorkspacePreparationTimeoutError);
         expect(exclusions(shell)).toHaveLength(3);
         expect((await copies.get(companyId, runId))!.state).toBe("unavailable");
       } finally { shell.mockRestore(); }
