@@ -1383,6 +1383,25 @@ function connectorEnrollmentPrincipal(req: Request): string {
       const details = callbackError instanceof HttpError && callbackError.details && typeof callbackError.details === "object"
         ? callbackError.details as Record<string, unknown>
         : null;
+      // Record why a managed-connector sign-in failed. The HTML response is
+      // 200, so without this row the reason is lost to support and the user.
+      await logActivity(db, {
+        companyId: pendingState.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "tool_app.oauth_failed",
+        entityType: "tool_connection",
+        entityId: pendingState.connectionId,
+        details: {
+          code: typeof details?.code === "string"
+            ? details.code
+            : callbackError instanceof HttpError ? `oauth_callback_http_${callbackError.status}` : "oauth_callback_failed",
+          status: callbackError instanceof HttpError ? callbackError.status : 500,
+          message: callbackError instanceof HttpError
+            ? callbackError.message
+            : "OAuth callback failed unexpectedly.",
+        },
+      });
       if (pendingConnectionIntent && pendingState.interactionId && req.actor.userId) {
         const outcome = details?.code === "oauth_authorization_denied" ? "declined" : "failed";
         await finishConnectionIntentOAuth({
