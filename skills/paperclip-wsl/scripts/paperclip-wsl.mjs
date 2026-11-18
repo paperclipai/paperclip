@@ -68,9 +68,15 @@ try {
     const configuredBins = config.binPaths ?? ["/usr/local/bin", "/usr/bin", "/bin"];
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
+    const executable = path.basename(commands[1] ?? "");
+    const cliIndex = ["paperclip", "paperclipai"].includes(executable) ? 1
+      : ["pnpm", "npm", "npx"].includes(executable) ? commands.findIndex((value, index) => index > 1 && ["paperclip", "paperclipai"].includes(value)) : -1;
+    const cliArguments = cliIndex < 0 ? [] : commands.slice(cliIndex + 1);
+    const endOptions = cliArguments.indexOf("--");
+    if (endOptions >= 0) cliArguments.splice(endOptions);
     const optionValue = name => {
-      const index = commands.findIndex(value => value === name || value.startsWith(name + "="));
-      return index < 0 ? undefined : commands[index].startsWith(name + "=") ? commands[index].slice(name.length + 1) : commands[index + 1];
+      const index = cliArguments.findLastIndex(value => value === name || value.startsWith(name + "="));
+      return index < 0 ? undefined : cliArguments[index].startsWith(name + "=") ? cliArguments[index].slice(name.length + 1) : cliArguments[index + 1];
     };
     let contextPath = path.join(config.paperclipHome, "context.json");
     for (let directory = repository;; directory = path.dirname(directory)) {

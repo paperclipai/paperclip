@@ -183,3 +183,18 @@ test('allows unused remote profiles while rejecting an explicitly selected remot
     assert.match(remote.stderr, /CLI context targets another instance/);
   } finally { await rm(file); }
 });
+
+test('uses the final repeated CLI profile selector', { skip: !enabled }, async () => {
+  const file = path.join(root, 'data', 'context.json');
+  await writeFile(file, JSON.stringify({version:2,currentProfile:'local',profiles:{local:{apiBase:'http://localhost:3100'},remote:{apiBase:'https://remote.invalid'}}}));
+  try {
+    const result = invoke(['exec', 'pnpm', 'paperclipai', '--profile', 'local', '--profile=remote', 'company', 'list']);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /CLI context targets another instance/);
+  } finally { await rm(file); }
+});
+test('passes literal option names to non-Paperclip commands', { skip: !enabled }, () => {
+  const result = invoke(['exec', process.execPath, '-e', 'console.log(process.argv.slice(1).join(" "))', '--', '--api-base', 'literal-text']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--api-base literal-text/);
+});
