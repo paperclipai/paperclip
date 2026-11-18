@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { retainedAiCredentialCleanupHomeInside } from "./retained-ai-credential-cleanup.js";
@@ -240,6 +241,12 @@ export type RunScratchAnchorMode = "procfd" | "paths";
 export interface RunScratchWalkerOps {
   /** Anchoring strategy this instance uses for entry operations. */
   readonly anchoring: RunScratchAnchorMode;
+  /**
+   * Resolve (and cache) the anchoring strategy, running the platform probe
+   * when needed: branch decisions must await this, since `anchoring` reads
+   * as the portable fallback until the probe completes.
+   */
+  resolveAnchoring(): Promise<RunScratchAnchorMode>;
   /** Open a directory; a symlinked final component is refused unless `follow`. */
   openDir(p: string, opts?: { follow?: boolean }): Promise<number>;
   /** Identity of the directory held by `fd`. */
@@ -286,6 +293,20 @@ export function createDefaultRunScratchWalkerOps(
   return {
     get anchoring() {
       return anchorMode ?? "paths";
+    },
+    async resolveAnchoring() {
+      if (anchorMode === undefined) {
+        // Probe once: a readable /proc/self/fd means fd-anchored entry
+        // operations are available; anything else uses the portable path
+        // fallback with its quarantine-then-destroy semantics.
+        try {
+          await fs.readdir(PROC_SELF_FD);
+          anchorMode = "procfd";
+        } catch {
+          anchorMode = "paths";
+        }
+      }
+      return anchorMode;
     },
     async openDir(p, opts) {
       const handle = await fs.open(
@@ -592,18 +613,70 @@ async function removeDirNameViaParent(
 }
 
 /**
- * Recursively remove a directory tree without following symlinks and without
- * crossing mount points. Every entry operation is anchored to a directory fd
- * held open for the descent, so swapping any path component for a symlink
- * cannot redirect a deletion outside the tree. Returns `complete: false`
- * when something had to be kept (mount point, concurrent writer, unstable
- * tree); the directory itself then remains.
+ * Portable (non `/proc/self/fd`) completion of a verified directory removal.
+ *
+ * Path-based entry operations cannot be anchored to the open directory on
+ * these platforms, so the removal never deletes through the original name.
+ * Instead the directory — proven by identity first — is atomically renamed
+ * to a fresh, unguessable sibling name and destroyed there:
+ *
+ * - `rename` never traverses the moved name: if an attacker swapped it for a
+ *   symlink between the identity proof and the rename, the symlink itself is
+ *   moved and then unlinked; the foreign tree is never reached.
+ * - The quarantine name is new and random: no other process holds a path to
+ *   it, so the guarded walk inside it — entry identity re-verification
+ *   before every operation, symlink-refusing opens, device checks — cannot
+ *   be redirected outside the quarantined tree.
+ * - An attacker holding open fds on subtrees can still refill entries there
+ *   by fd; that only makes the removal incomplete, never foreign: the
+ *   quarantined directory keeps its marker and the sweep retries.
+ *
+ * Returns the quarantine path the caller must operate on (the caller owns
+ * removing it), or null when the removal cannot proceed fail-closed.
  */
-export async function removeRunTempTree(
+async function quarantineRenameForPortableRemoval(
   dir: string,
-  opts?: { walkerOps?: RunScratchWalkerOpsOverride },
+  ops: RunScratchWalkerOps,
+): Promise<{ kind: "quarantined"; path: string } | { kind: "missing" } | { kind: "refused" }> {
+  const verified = await openVerifiedDirectory(dir, ops).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") throw error;
+    return null;
+  });
+  if (!verified) return { kind: "refused" };
+  try {
+    const parent = path.dirname(dir);
+    const suffix = randomBytes(8).toString("hex");
+    const quarantine = path.join(parent, `${path.basename(dir)}-rm-${suffix}`);
+    try {
+      await fs.rename(dir, quarantine);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { kind: "missing" };
+      return { kind: "refused" };
+    }
+    // The rename moved whatever held the name. Only the proven directory may
+    // be destroyed under the quarantine name; anything else (a swapped
+    // symlink or file) is unlinked there — a link, never a foreign tree.
+    const moved = await fs.lstat(quarantine).catch(() => null);
+    if (
+      !moved ||
+      !moved.isDirectory() ||
+      moved.isSymbolicLink() ||
+      moved.dev !== verified.identity.dev ||
+      moved.ino !== verified.identity.ino
+    ) {
+      await fs.unlink(quarantine).catch(() => undefined);
+      return { kind: "refused" };
+    }
+    return { kind: "quarantined", path: quarantine };
+  } finally {
+    await ops.closeDir(verified.fd).catch(() => undefined);
+  }
+}
+
+async function removeVerifiedDirectoryTree(
+  dir: string,
+  ops: RunScratchWalkerOps,
 ): Promise<{ complete: boolean }> {
-  const ops = resolveWalkerOps(opts?.walkerOps);
   let verified: VerifiedDir | null = null;
   try {
     verified = await openVerifiedDirectory(dir, ops);
@@ -626,11 +699,38 @@ export async function removeRunTempTree(
 }
 
 /**
+ * Recursively remove a directory tree without following symlinks and without
+ * crossing mount points. Every entry operation is anchored to a directory fd
+ * held open for the descent, so swapping any path component for a symlink
+ * cannot redirect a deletion outside the tree. Platforms without
+ * `/proc/self/fd` first rename the verified directory to a fresh quarantine
+ * sibling and destroy it there (see {@link quarantineRenameForPortableRemoval}).
+ * Returns `complete: false` when something had to be kept (mount point,
+ * concurrent writer, unstable tree); the directory itself then remains.
+ */
+export async function removeRunTempTree(
+  dir: string,
+  opts?: { walkerOps?: RunScratchWalkerOpsOverride },
+): Promise<{ complete: boolean }> {
+  const ops = resolveWalkerOps(opts?.walkerOps);
+  if ((await ops.resolveAnchoring()) !== "procfd") {
+    const quarantine = await quarantineRenameForPortableRemoval(dir, ops);
+    if (quarantine.kind === "refused") return { complete: false };
+    if (quarantine.kind === "missing") return { complete: true };
+    return removeVerifiedDirectoryTree(quarantine.path, ops);
+  }
+  return removeVerifiedDirectoryTree(dir, ops);
+}
+
+/**
  * Remove a marked run scratch directory while keeping the ownership marker —
  * and its retry evidence — until every other entry is gone. The whole removal
  * is anchored to directory fds: the marker is unlinked and restored through
  * the verified directory itself, never through a path a swap could redirect,
  * and the final rmdir targets the proven entry inside a parent fd held open.
+ * Platforms without `/proc/self/fd` first rename the verified directory to a
+ * fresh quarantine sibling (a name the sweep still recognizes: the segment
+ * prefix is preserved) and complete the marker-preserving removal there.
  * An interrupted removal (mount point, concurrent writer, unstable tree)
  * leaves a still-marked directory a later retry can act on, instead of an
  * unrecoverable unmarked orphan.
@@ -641,9 +741,22 @@ async function removeMarkedRunScratchDir(
   walkerOps?: RunScratchWalkerOpsOverride,
 ): Promise<{ complete: boolean; cause?: "blocked" | "unstable" }> {
   const ops = resolveWalkerOps(walkerOps);
+  let target = dir;
+  if ((await ops.resolveAnchoring()) !== "procfd") {
+    // Portable platforms never delete through the original name: quarantine
+    // first (fail-closed on any identity surprise), then complete the same
+    // marker-preserving removal inside the quarantine path.
+    const quarantine = await quarantineRenameForPortableRemoval(dir, ops).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return { kind: "missing" } as const;
+      throw error;
+    });
+    if (quarantine.kind === "missing") return { complete: true };
+    if (quarantine.kind === "refused") return { complete: false, cause: "unstable" };
+    target = quarantine.path;
+  }
   let verified: VerifiedDir | null = null;
   try {
-    verified = await openVerifiedDirectory(dir, ops);
+    verified = await openVerifiedDirectory(target, ops);
     if (!verified) return { complete: false, cause: "unstable" };
     const walk = await removeEntriesWithinDevice(
       verified.fd,
@@ -664,7 +777,7 @@ async function removeMarkedRunScratchDir(
     if (markerFailed) return { complete: false, cause: "blocked" };
     let removed: "removed" | "missing" | "kept" | "unstable";
     try {
-      removed = await removeDirNameViaParent(dir, verified.identity, ops);
+      removed = await removeDirNameViaParent(target, verified.identity, ops);
     } catch (error) {
       await restoreMarkerThroughFd(ops, verified.fd, marker);
       throw error;

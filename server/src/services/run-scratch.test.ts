@@ -653,23 +653,62 @@ describe("portable walker fallback (platforms without /proc/self/fd)", () => {
     await expect(fs.readFile(path.join(other, "foreign.txt"), "utf8")).resolves.toBe("y");
   });
 
-  it("keeps the tree through path-based ops when the directory is swapped after its listing", async () => {
+  it("refuses the portable removal when a foreign directory takes the verified name before the rename", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-devtree-"));
+    cleanupDirs.add(dir);
+    await fs.writeFile(path.join(dir, "file.txt"), "x");
+    const attacker = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-attacker-"));
+    cleanupDirs.add(attacker);
+    await fs.writeFile(path.join(attacker, "sentinel.txt"), "precious");
+    // Between the identity proof and the quarantine rename an attacker moves
+    // their own directory over the name: the rename relocates it, and only a
+    // matching dev/ino may be destroyed under the quarantine name.
+    const paths = createDefaultRunScratchWalkerOps("paths");
+    let fired = false;
+    const override: RunScratchWalkerOpsOverride = () => ({
+      ...paths,
+      statDir: async (fd) => {
+        const identity = await paths.statDir(fd);
+        if (!fired) {
+          fired = true;
+          await fs.rename(dir, `${dir}-moved`).catch(() => undefined);
+          await fs.rename(attacker, dir).catch(() => undefined);
+        }
+        return identity;
+      },
+    });
+
+    const result = await removeRunTempTree(dir, { walkerOps: override });
+
+    expect(result).toEqual({ complete: false });
+    // The attacker's tree survived (relocated under the quarantine name,
+    // never traversed): its sentinel content is intact somewhere.
+    const quarantine = (await fs.readdir(path.dirname(dir))).find((n) => n.startsWith(`${path.basename(dir)}-rm-`));
+    expect(quarantine).toBeDefined();
+    await expect(fs.readFile(path.join(path.dirname(dir), quarantine!, "sentinel.txt"), "utf8")).resolves.toBe("precious");
+  });
+
+  it("keeps the foreign tree when the name is swapped between the identity proof and the portable rename", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-devtree-"));
     cleanupDirs.add(dir);
     await fs.writeFile(path.join(dir, "file.txt"), "x");
     const victim = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-victim-"));
     cleanupDirs.add(victim);
     await fs.writeFile(path.join(victim, "file.txt"), "precious");
-    // The swap happens after the (legitimate) listing: every following entry
-    // operation must re-verify the directory identity before touching paths.
+    // The swap lands right after the pre-flight lstat inside the portable
+    // quarantine: whatever the rename then moves must be proven to be the
+    // verified directory or simply unlinked as a link — the victim is never
+    // reached, and the removal refuses instead of completing.
     const paths = createDefaultRunScratchWalkerOps("paths");
     const override: RunScratchWalkerOpsOverride = () => ({
       ...paths,
-      listDir: async (fd) => {
-        const entries = await paths.listDir(fd);
-        await fs.rename(dir, `${dir}-moved`).catch(() => undefined);
-        await fs.symlink(victim, dir).catch(() => undefined);
-        return entries;
+      lstatPath: async (p) => {
+        const stats = await paths.lstatPath(p);
+        if (p === dir) {
+          await fs.rename(dir, `${dir}-moved`).catch(() => undefined);
+          await fs.symlink(victim, dir).catch(() => undefined);
+        }
+        return stats;
       },
     });
 
@@ -677,6 +716,60 @@ describe("portable walker fallback (platforms without /proc/self/fd)", () => {
 
     expect(result).toEqual({ complete: false });
     await expect(fs.readFile(path.join(victim, "file.txt"), "utf8")).resolves.toBe("precious");
+  });
+
+  it("completes inside the quarantine name and never operates through the original path again", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-temp-root-"));
+    cleanupDirs.add(root);
+    const victim = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-victim-"));
+    cleanupDirs.add(victim);
+    await fs.writeFile(path.join(victim, "precious.txt"), "keep me");
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({ companyId: "company-1", agentId: "agent-1", runId: runId("quar5555"), root }));
+    await fs.mkdir(path.join(scratch.dir, "nested"), { recursive: true });
+    await fs.writeFile(path.join(scratch.dir, "nested", "cache.bin"), "x");
+    // After the quarantine rename the original name is free: an attacker can
+    // plant anything there while the removal runs inside the fresh quarantine
+    // name. Record every path the walker touches after the rename: none may
+    // resolve through the original name.
+    const paths = createDefaultRunScratchWalkerOps("paths");
+    const touched: string[] = [];
+    let quarantined = false;
+    const track = <A extends unknown[], R>(run: (...args: A) => Promise<R>) =>
+      async (...args: A): Promise<R> => {
+        if (quarantined) touched.push(String(args[0]));
+        return run(...args);
+      };
+    const override: RunScratchWalkerOpsOverride = () => {
+      const wrapped = {
+        ...paths,
+        openDir: async (p: string, opts?: { follow?: boolean }) => {
+          const fd = await paths.openDir(p, opts);
+          if (p === scratch.dir) quarantined = true; // rename completed
+          return fd;
+        },
+      };
+      return {
+        ...wrapped,
+        lstatPath: track(wrapped.lstatPath.bind(wrapped)),
+        unlink: track(wrapped.unlink.bind(wrapped)),
+        rmdir: track(wrapped.rmdir.bind(wrapped)),
+      };
+    };
+
+    const result = await cleanupHeartbeatRunScratch({
+      scratch,
+      walkerOps: override,
+      runTempRootOverride: root,
+    });
+
+    expect(result).toEqual({ removed: true, dir: scratch.dir });
+    await expect(fs.stat(scratch.dir)).rejects.toMatchObject({ code: "ENOENT" });
+    // Everything after the quarantine rename happened under the fresh
+    // `<segment>-rm-<random>` name, never through the original path.
+    expect(quarantined).toBe(true);
+    expect(touched).not.toContain(scratch.dir);
+    expect(touched.filter((p) => p.startsWith(`${scratch.dir}/`))).toEqual([]);
+    await expect(fs.readFile(path.join(victim, "precious.txt"), "utf8")).resolves.toBe("keep me");
   });
 
   it("reports the anchoring mode the default ops resolved to", async () => {
