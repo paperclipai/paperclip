@@ -10,6 +10,7 @@ import {
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
   parseLocalProcessSandboxExtraPaths,
+  resolveRunScratchSandboxMount,
 } from "./local-process-sandbox.js";
 import { runChildProcess } from "./server-utils.js";
 
@@ -36,6 +37,76 @@ describe("local process sandbox", () => {
       executable: process.execPath, args: ["-e", "process.exit(0)"], cwd: process.cwd(),
       options: { workspaceDir: process.cwd(), networkScope: "deny" },
     })).rejects.toThrow("supported only on Linux");
+  });
+
+  describe("run scratch sandbox mount", () => {
+    async function makeScratchRoot() {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-scratch-home-"));
+      cleanup.push(home);
+      const root = path.join(home, ".pctmp");
+      const scratch = path.join(root, "abcd1234");
+      await fs.mkdir(scratch, { recursive: true });
+      return { home, scratch };
+    }
+
+    async function writeMarker(scratch: string, runId: string) {
+      await fs.writeFile(
+        path.join(scratch, ".paperclip-run-scratch.json"),
+        JSON.stringify({ version: 1, companyId: "c", agentId: "a", runId, issueId: null, issueIdentifier: null, createdAt: new Date().toISOString() }),
+      );
+    }
+
+    it("mounts the run's own marked scratch directory read-write", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" },
+        { homeDir: home },
+      )).resolves.toEqual({ path: scratch, access: "rw" });
+    });
+
+    it("mounts nothing without a run identity, a scratch value, or a marker", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      const overrides = { homeDir: home };
+      await expect(resolveRunScratchSandboxMount({ PAPERCLIP_RUN_ID: "run-1" }, overrides)).resolves.toBeNull();
+      await expect(resolveRunScratchSandboxMount({ PAPERCLIP_RUN_SCRATCH_DIR: scratch }, overrides)).resolves.toBeNull();
+      // No marker at all.
+      const bare = path.join(home, ".pctmp", "bare00000");
+      await fs.mkdir(bare);
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: bare, PAPERCLIP_RUN_ID: "run-1" }, overrides,
+      )).resolves.toBeNull();
+    });
+
+    it("mounts nothing for a directory marked for a different run", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "someone-else");
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" },
+        { homeDir: home },
+      )).resolves.toBeNull();
+    });
+
+    it("mounts nothing outside the instance run temp root or with a malformed segment", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      const env = { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" };
+      // The scratch exists, but under a different instance's home.
+      const otherHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-scratch-other-"));
+      cleanup.push(otherHome);
+      await expect(resolveRunScratchSandboxMount(env, { homeDir: otherHome })).resolves.toBeNull();
+      // A segment the run temp root would never create.
+      const odd = path.join(home, ".pctmp", "Not A Segment");
+      await fs.mkdir(odd);
+      await writeMarker(odd, "run-1");
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: odd, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
+      )).resolves.toBeNull();
+      // Relative values never mount.
+      await expect(resolveRunScratchSandboxMount({ PAPERCLIP_RUN_SCRATCH_DIR: "relative", PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home }))
+        .resolves.toBeNull();
+    });
   });
 
   it("parses read-only and writable extra paths", () => {
@@ -295,6 +366,90 @@ describe("local process sandbox", () => {
       }),
     ).rejects.toThrow("requires Bubblewrap");
   });
+
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(
+    "binds the run's marked scratch directory so TMPDIR stays usable and host-backed",
+    async () => {
+      const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-scratch-bind-"));
+      cleanup.push(workspace);
+      // The validation reads the real home's run temp root.
+      const segment = `s1${Date.now().toString(36).slice(-6)}`;
+      const scratch = path.join(os.homedir(), ".pctmp", segment);
+      await fs.mkdir(scratch, { recursive: true });
+      cleanup.push(scratch);
+      await fs.writeFile(
+        path.join(scratch, ".paperclip-run-scratch.json"),
+        JSON.stringify({ version: 1, companyId: "c", agentId: "a", runId: "run-bind", issueId: null, issueIdentifier: null, createdAt: new Date().toISOString() }),
+      );
+      const target = JSON.stringify(path.join(scratch, "confined-write.txt"));
+
+      const script = [
+        "const fs = require('node:fs');",
+        `if (!fs.statSync(process.env.TMPDIR).isDirectory()) process.exit(9);`,
+        `fs.writeFileSync(${target}, 'host-backing');`,
+        `if (fs.readFileSync(${target}, 'utf8') !== 'host-backing') process.exit(8);`,
+      ].join("\n");
+      const result = await runChildProcess("filesystem-scratch-bind-test", process.execPath, ["-e", script], {
+        cwd: workspace,
+        env: {
+          TMPDIR: scratch,
+          PAPERCLIP_RUN_SCRATCH_DIR: scratch,
+          PAPERCLIP_RUN_ID: "run-bind",
+        },
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+        localProcessSandbox: {
+          workspaceDir: workspace,
+          filesystemScope: "workspace",
+          command: process.env.PAPERCLIP_TEST_BWRAP,
+        },
+      });
+      expect(result.exitCode, result.stderr).toBe(0);
+      // The write reached the host directory, not a volatile sandbox tmpfs.
+      await expect(fs.readFile(path.join(scratch, "confined-write.txt"), "utf8")).resolves.toBe("host-backing");
+    },
+  );
+
+  it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(
+    "mounts nothing when the scratch directory belongs to a different run",
+    async () => {
+      const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-scratch-foreign-"));
+      cleanup.push(workspace);
+      const segment = `s2${Date.now().toString(36).slice(-6)}`;
+      const scratch = path.join(os.homedir(), ".pctmp", segment);
+      await fs.mkdir(scratch, { recursive: true });
+      cleanup.push(scratch);
+      await fs.writeFile(
+        path.join(scratch, ".paperclip-run-scratch.json"),
+        JSON.stringify({ version: 1, companyId: "c", agentId: "a", runId: "someone-else", issueId: null, issueIdentifier: null, createdAt: new Date().toISOString() }),
+      );
+
+      const script = [
+        "const fs = require('node:fs');",
+        `try { fs.statSync(process.env.TMPDIR); process.exit(9); } catch (error) {`,
+        "  if (!['ENOENT', 'EACCES'].includes(error.code)) throw error;",
+        "}",
+      ].join("\n");
+      const result = await runChildProcess("filesystem-scratch-foreign-test", process.execPath, ["-e", script], {
+        cwd: workspace,
+        env: {
+          TMPDIR: scratch,
+          PAPERCLIP_RUN_SCRATCH_DIR: scratch,
+          PAPERCLIP_RUN_ID: "run-bind",
+        },
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+        localProcessSandbox: {
+          workspaceDir: workspace,
+          filesystemScope: "workspace",
+          command: process.env.PAPERCLIP_TEST_BWRAP,
+        },
+      });
+      expect(result.exitCode, result.stderr).toBe(0);
+    },
+  );
 
   it.runIf(Boolean(process.env.PAPERCLIP_TEST_BWRAP))(
     "prevents reads outside the workspace while allowing workspace writes",

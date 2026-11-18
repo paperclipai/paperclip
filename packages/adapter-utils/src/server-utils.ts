@@ -8,6 +8,7 @@ import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
+  resolveRunScratchSandboxMount,
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
@@ -3780,11 +3781,21 @@ async function resolveSpawnTarget(
         `Local process confinement requires Bubblewrap, but "${requestedSandboxCommand}" was not found in PATH. Install bwrap or configure filesystemSandboxCommand.`,
       );
     }
+    // The run scratch directory is exported as the process's TMPDIR but
+    // lives outside the sandbox's tmpfs root; bind the run's own directory
+    // in so confined tools keep a usable, host-backed temp path. Values not
+    // provably owned by this run mount nothing.
+    const runScratchMount = await resolveRunScratchSandboxMount(env);
     const sandboxTarget = await buildLocalProcessSandboxSpawnTarget({
       executable,
       args,
       cwd,
-      options: options.localProcessSandbox,
+      options: runScratchMount
+        ? {
+            ...options.localProcessSandbox,
+            managedPaths: [...(options.localProcessSandbox.managedPaths ?? []), runScratchMount],
+          }
+        : options.localProcessSandbox,
     });
     return { ...sandboxTarget, command: sandboxCommand };
   }

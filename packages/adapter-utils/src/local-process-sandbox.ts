@@ -70,6 +70,9 @@ const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", 
 const SANDBOX_PROXY_PORT = 31_337;
 const UNIX_SOCKET_PATH_MAX_BYTES = 107;
 const NETWORK_PROXY_TEMP_PREFIX = "paperclip-network-sandbox-";
+const RUN_SCRATCH_MARKER_FILENAME = ".paperclip-run-scratch.json";
+const RUN_SCRATCH_ROOT_DIRNAME = ".pctmp";
+const RUN_SCRATCH_SEGMENT_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 
 function normalizeAbsolutePath(candidate: string, label: string): string {
   const trimmed = candidate.trim();
@@ -336,6 +339,43 @@ server.listen(${SANDBOX_PROXY_PORT}, "127.0.0.1", () => {
 });
 `;
   return source.trimStart();
+}
+
+/**
+ * Resolves the per-run scratch directory to bind into a workspace-scoped
+ * sandbox. The server exports the scratch directory as TMPDIR via
+ * PAPERCLIP_RUN_SCRATCH_DIR, but the confined root is a fresh tmpfs, so
+ * without an explicit bind the process cannot reach its own temp directory.
+ * Only the run's own directory is ever mounted: the value must be a direct
+ * child of the instance's run temp root (~/.pctmp) whose ownership marker
+ * names the run identified by the runtime-assigned PAPERCLIP_RUN_ID. Any
+ * missing, malformed, or foreign value mounts nothing.
+ */
+export async function resolveRunScratchSandboxMount(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+  overrides?: { homeDir?: string },
+): Promise<LocalProcessSandboxPath | null> {
+  const rawScratchDir = env.PAPERCLIP_RUN_SCRATCH_DIR;
+  const runId = env.PAPERCLIP_RUN_ID;
+  if (typeof rawScratchDir !== "string" || rawScratchDir.length === 0) return null;
+  if (typeof runId !== "string" || runId.length === 0) return null;
+  const scratchDir = path.resolve(rawScratchDir.trim());
+  const root = path.join(path.resolve(overrides?.homeDir ?? os.homedir()), RUN_SCRATCH_ROOT_DIRNAME);
+  if (path.dirname(scratchDir) !== root) return null;
+  if (!RUN_SCRATCH_SEGMENT_RE.test(path.basename(scratchDir))) return null;
+  try {
+    const markerPath = path.join(scratchDir, RUN_SCRATCH_MARKER_FILENAME);
+    const stats = await fs.lstat(markerPath);
+    if (!stats.isFile()) return null;
+    const parsed = JSON.parse(await fs.readFile(markerPath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const marker = parsed as Record<string, unknown>;
+    if (marker.version !== 1 || typeof marker.runId !== "string") return null;
+    if (marker.runId !== runId) return null;
+  } catch {
+    return null;
+  }
+  return { path: scratchDir, access: "rw" };
 }
 
 export async function buildLocalProcessSandboxSpawnTarget(input: {

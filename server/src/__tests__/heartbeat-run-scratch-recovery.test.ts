@@ -24,6 +24,7 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 import { createManagedAiHomeRemovalGate, heartbeatService } from "../services/heartbeat.ts";
+import { sweepOrphanedRunScratchDirectories } from "../services/heartbeat/recovery.js";
 import { isProcessGroupAlive } from "../services/local-service-supervisor.js";
 import { HEARTBEAT_RUN_SCRATCH_MARKER } from "../services/run-scratch.js";
 
@@ -127,6 +128,20 @@ describeEmbeddedPostgres("heartbeat recovery sweeps orphaned run scratch", () =>
     expect(await exists(malformedDir)).toBe(true);
     expect(await exists(unknownRunDir)).toBe(true);
     expect(await exists(unmarkedDir)).toBe(true);
+  });
+
+  it("reclaims orphaned scratch when the periodic sweep worker calls the extracted sweep directly", async () => {
+    const terminal = await seedRun("failed");
+    const queued = await seedRun("queued");
+    const terminalDir = await leaveScratch(terminal);
+    const queuedDir = await leaveScratch(queued);
+
+    // The production worker invokes this standalone function on its schedule;
+    // it must resolve run states and liveness from the database on its own.
+    await sweepOrphanedRunScratchDirectories(db);
+
+    expect(await exists(terminalDir)).toBe(false);
+    expect(await exists(queuedDir)).toBe(true);
   });
 });
 
