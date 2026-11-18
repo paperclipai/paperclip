@@ -364,6 +364,10 @@ Task-row timestamps alone do not prove that a document is unchanged.
 
 Responses use `Cache-Control: private, no-store`. A response over 8 MiB returns
 `413`; split the IDs into smaller requests. The response is never truncated.
+Body sizes are checked in the database before loading them. Reads use one
+snapshot so a concurrent edit cannot grow an admitted body set. At most two
+reads per actor and eight per server instance can run at once; extra reads
+return `429` with `Retry-After: 1`.
 Native agents can discover this GET with `search_api`, save the whole batch with
 one `save_api_response`, and transfer it with one `download_artifact`. The saved
 artifact supplies its exact `artifactId`, `byteSize`, and `sha256` for the download.
