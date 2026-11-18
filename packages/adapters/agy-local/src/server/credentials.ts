@@ -177,40 +177,6 @@ export function resolveAgySettingsPath(
 }
 
 /**
- * Guarantees that settings.json exists at ~/.gemini/antigravity-cli/settings.json
- * (or $ANTIGRAVITY_CLI_HOME / $GEMINI_CLI_HOME) with { "modelProvider": "gemini" }
- * so agy uses the configured GEMINI_API_KEY.
- */
-export async function ensureAgyApiKeySettings(
-  homedir: string = os.homedir(),
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<string> {
-  const settingsPath = resolveAgySettingsPath(homedir, env);
-  const dir = path.dirname(settingsPath);
-  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
-
-  let settings: Record<string, unknown> = {};
-  try {
-    const raw = await fs.promises.readFile(settingsPath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      settings = parsed;
-    }
-  } catch {
-    // Missing or invalid JSON; start fresh
-  }
-
-  if (settings.modelProvider !== "gemini") {
-    settings.modelProvider = "gemini";
-    await fs.promises.writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n", {
-      mode: 0o600,
-    });
-  }
-
-  return settingsPath;
-}
-
-/**
  * The effective Gemini API key for an Antigravity run. The CLI only reads
  * GEMINI_API_KEY; AGY_API_KEY and ANTIGRAVITY_API_KEY are Paperclip-side
  * aliases for the same key. Precedence is GEMINI_API_KEY, then AGY_API_KEY,
@@ -394,9 +360,11 @@ export async function stageAgyHomeForSync(
   // settings (e.g. OAuth/subscription): apply the API-provider setting to
   // the staged copy, preserving the host's other settings. Otherwise the
   // CLI would use the copied subscription or fail for missing OAuth
-  // instead of the selected key. Remote runs never call
-  // ensureAgyApiKeySettings, so this staging step is the only place the
-  // provider setting gets applied for them.
+  // instead of the selected key. This staging step is the only place the
+  // provider setting gets applied: callers must never write it into the
+  // shared home's settings.json (a local API-key run would permanently
+  // flip the operator's home to the API-key provider for every later
+  // OAuth-only agent and terminal session).
   if (resolveAgyApiKey(env)) {
     const stagedSettingsPath = path.join(stagedDir, "settings.json");
     let stagedSettings: Record<string, unknown> = {};
@@ -443,6 +411,103 @@ export async function stageAgyHomeForSync(
   }
 
   return stagedDir;
+}
+
+/**
+ * Bounds shared by the local and remote conversation copy-backs: a runaway
+ * CLI must not fill the host disk through brain/.
+ */
+export const COPY_BACK_AGY_CONVERSATION_LIMITS = {
+  maxFiles: 1000,
+  maxFileBytes: 10 * 1024 * 1024,
+  maxTotalBytes: 50 * 1024 * 1024,
+};
+
+export interface CopyBackAgyLocalConversationStateInput {
+  /** Private staged CLI home dir (local temp dir). */
+  stagedDir: string;
+  /** Host CLI home dir the brain/ tree is copied back into. */
+  hostCliHomeDir: string;
+  log?: (line: string) => void | Promise<void>;
+  limits?: Partial<typeof COPY_BACK_AGY_CONVERSATION_LIMITS>;
+}
+
+async function collectAgyBrainFiles(dir: string, prefix = ""): Promise<string[]> {
+  let dirents;
+  try {
+    dirents = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return [];
+    throw error;
+  }
+  const files: string[] = [];
+  for (const dirent of dirents) {
+    const rel = prefix ? `${prefix}/${dirent.name}` : dirent.name;
+    if (dirent.isDirectory()) {
+      files.push(...(await collectAgyBrainFiles(path.join(dir, dirent.name), rel)));
+    } else if (dirent.isFile()) {
+      files.push(rel);
+    }
+    // Symlinks are skipped: never follow one out of the staged tree.
+  }
+  return files;
+}
+
+/**
+ * Copies a local private CLI home's brain/ back into the real CLI home at
+ * teardown, so a run that used a staged home (API-key runs) can still be
+ * resumed afterwards. Same validation and bounds as the remote copy-back
+ * (copyBackAgyConversationState), but over the local filesystem, so no
+ * manifest is needed: the staged tree is confined by construction.
+ * Best-effort: a missing brain/ dir or any read/write error only loses the
+ * resume (the status quo), never the run.
+ */
+export async function copyBackAgyLocalConversationState(
+  input: CopyBackAgyLocalConversationStateInput,
+): Promise<void> {
+  const limits = { ...COPY_BACK_AGY_CONVERSATION_LIMITS, ...(input.limits ?? {}) };
+  const log = input.log ?? (() => {});
+  try {
+    const stagedBrainDir = path.join(input.stagedDir, "brain");
+    const entries = await collectAgyBrainFiles(stagedBrainDir);
+    if (entries.length > limits.maxFiles) {
+      await log(
+        `[paperclip] Antigravity conversation copy-back: ${entries.length} brain files, keeping the first ${limits.maxFiles}.`,
+      );
+    }
+    const hostBrainDir = path.join(input.hostCliHomeDir, "brain");
+    let totalBytes = 0;
+    for (const entry of entries.slice(0, limits.maxFiles)) {
+      // Confine every entry to brain/: no absolute paths, no `..` segments,
+      // and the resolved host path must stay under the host brain dir.
+      if (path.posix.isAbsolute(entry) || entry.split("/").includes("..")) continue;
+      const stagedPath = path.join(stagedBrainDir, ...entry.split("/"));
+      const hostPath = path.join(hostBrainDir, ...entry.split("/"));
+      if (!hostPath.startsWith(hostBrainDir + path.sep)) continue;
+      let content: Buffer;
+      try {
+        content = await fs.promises.readFile(stagedPath);
+      } catch {
+        continue;
+      }
+      if (content.byteLength > limits.maxFileBytes) continue;
+      if (totalBytes + content.byteLength > limits.maxTotalBytes) {
+        await log("[paperclip] Antigravity conversation copy-back: hit the total size limit, stopping.");
+        break;
+      }
+      try {
+        await fs.promises.mkdir(path.dirname(hostPath), { recursive: true });
+        await fs.promises.writeFile(hostPath, content, { mode: 0o600 });
+        totalBytes += content.byteLength;
+      } catch {
+        continue;
+      }
+    }
+  } catch (error) {
+    await log(
+      `[paperclip] Antigravity conversation copy-back failed: ${error instanceof Error ? error.message : String(error)}; the next run will start a fresh conversation.`,
+    );
+  }
 }
 
 export type CopyBackAgyAuthOutcome = "copied" | "kept-host";

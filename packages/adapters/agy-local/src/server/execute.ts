@@ -60,7 +60,12 @@ import {
   syncSkillsForRun,
 } from "./skills.js";
 import { inferModelProvider } from "./models.js";
-import { applyAgyApiKeyAlias, ensureAgyApiKeySettings } from "./credentials.js";
+import {
+  applyAgyApiKeyAlias,
+  copyBackAgyLocalConversationState,
+  resolveAgyCliHomeDir,
+  stageAgyHomeForSync,
+} from "./credentials.js";
 import { prepareAgyLocalRunMcpHome } from "./mcp.js";
 import {
   DEFAULT_AGY_LOCAL_MODEL,
@@ -325,19 +330,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // actually hand the CLI the key.
   applyAgyApiKeyAlias(runtimeEnv);
 
-  if (runtimeEnv.GEMINI_API_KEY && !executionTargetIsRemote) {
-    try {
-      await ensureAgyApiKeySettings(runtimeEnv.HOME || os.homedir(), runtimeEnv);
-    } catch (err) {
-      await onLog(
-        "stdout",
-        `[paperclip] Warning: could not write agy settings.json: ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
-      );
-    }
-  }
-
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 0),
@@ -370,6 +362,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     asString(runtimeSessionParams.sessionId, "") ||
     asString(runtimeSessionParams.conversationId, "") ||
     asString(runtime.sessionId, "");
+
+  // A local API-key run must not write the provider override into the
+  // shared home's settings.json: that would permanently flip the
+  // operator's home to the API-key provider for every later OAuth-only
+  // agent and terminal session. Stage a private CLI home instead (the
+  // same staging the remote path uses), point the CLI at it, and copy
+  // the run's conversation state back at teardown so resume keeps
+  // working. The host CLI home is captured here, before the per-run MCP
+  // home below replaces runtimeEnv.HOME.
+  let stagedLocalCliHomeDir: string | null = null;
+  let stagedLocalCliHostHomeDir: string | null = null;
+  if (runtimeEnv.GEMINI_API_KEY && !executionTargetIsRemote) {
+    try {
+      stagedLocalCliHostHomeDir = resolveAgyCliHomeDir(runtimeEnv.HOME || os.homedir(), runtimeEnv);
+      stagedLocalCliHomeDir = await stageAgyHomeForSync({
+        homedir: runtimeEnv.HOME || os.homedir(),
+        env: runtimeEnv,
+        runId,
+        conversationIds: runtimeSessionId ? [runtimeSessionId] : [],
+      });
+      runtimeEnv.ANTIGRAVITY_CLI_HOME = stagedLocalCliHomeDir;
+      runtimeEnv.GEMINI_CLI_HOME = stagedLocalCliHomeDir;
+    } catch (err) {
+      stagedLocalCliHomeDir = null;
+      stagedLocalCliHostHomeDir = null;
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: could not stage a private Antigravity CLI home: ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+  }
 
   if (executionTargetIsRemote) {
     const preparedRemoteRun = await prepareAgyRemoteRun({
@@ -956,6 +981,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return finalResult;
       } finally {
         await mcpCleanup?.().catch(() => undefined);
+        if (stagedLocalCliHomeDir && stagedLocalCliHostHomeDir) {
+          await copyBackAgyLocalConversationState({
+            stagedDir: stagedLocalCliHomeDir,
+            hostCliHomeDir: stagedLocalCliHostHomeDir,
+            log: (line) => onLog("stdout", `${line}\n`),
+          }).catch(() => undefined);
+          await fs.rm(stagedLocalCliHomeDir, { recursive: true, force: true }).catch(() => {});
+        }
         try {
           await providerStop.collectBeforeRestore();
         } catch {}

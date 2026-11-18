@@ -128,6 +128,42 @@ describe("agy-local testEnvironment", () => {
     }
   });
 
+  it("probes an API-key run from a private CLI home, never the shared home", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-test-private-home-"));
+    try {
+      const cliHome = path.join(tempHome, ".gemini", "antigravity-cli");
+      await fs.mkdir(cliHome, { recursive: true });
+      const settingsPath = path.join(cliHome, "settings.json");
+      await fs.writeFile(settingsPath, JSON.stringify({ otherSetting: true, modelProvider: "oauth" }));
+      const ctx: AdapterEnvironmentTestContext = {
+        companyId: "company-1",
+        adapterType: "agy_local",
+        config: {
+          env: {
+            HOME: tempHome,
+            GEMINI_API_KEY: "test-key",
+          },
+        },
+      };
+
+      const result = await testEnvironment(ctx);
+      expect(result.status).toBe("pass");
+      expect(capturedRuns).toHaveLength(1);
+      // The shared home is untouched by the probe.
+      expect(JSON.parse(await fs.readFile(settingsPath, "utf8"))).toEqual({
+        otherSetting: true,
+        modelProvider: "oauth",
+      });
+      const probeEnv = capturedRuns[0].options.env as Record<string, string> | undefined;
+      const stagedCliHome = probeEnv?.ANTIGRAVITY_CLI_HOME;
+      expect(stagedCliHome).toBeTruthy();
+      expect(stagedCliHome).not.toBe(cliHome);
+      expect(probeEnv?.GEMINI_CLI_HOME).toBe(stagedCliHome);
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
   it("passes --print and text input format when inputFormat is explicitly set to text", async () => {
     const ctx: AdapterEnvironmentTestContext = {
       companyId: "company-1",

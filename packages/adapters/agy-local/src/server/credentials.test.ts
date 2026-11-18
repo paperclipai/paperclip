@@ -10,9 +10,9 @@ import {
   resolveAgyApiKey,
   resolveAgyOAuthTokenPath,
   parseAgyOAuthToken,
-  ensureAgyApiKeySettings,
   stageAgyHomeForSync,
   copyBackAgyAuth,
+  copyBackAgyLocalConversationState,
 } from "./credentials.js";
 
 describe("evaluateAgyCredentialReadiness", () => {
@@ -229,11 +229,11 @@ describe("parseAgyOAuthToken", () => {
   });
 });
 
-describe("ensureAgyApiKeySettings", () => {
+describe("copyBackAgyLocalConversationState", () => {
   const tmpDirs: string[] = [];
 
   function makeTmpDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-test-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-local-copyback-"));
     tmpDirs.push(dir);
     return dir;
   }
@@ -245,25 +245,41 @@ describe("ensureAgyApiKeySettings", () => {
     tmpDirs.length = 0;
   });
 
-  it("creates settings.json with modelProvider: gemini when file does not exist", async () => {
-    const fakeHome = makeTmpDir();
-    const settingsPath = await ensureAgyApiKeySettings(fakeHome);
-    expect(fs.existsSync(settingsPath)).toBe(true);
-    const content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    expect(content.modelProvider).toBe("gemini");
+  it("copies the staged run's brain/ back into the real CLI home", async () => {
+    const stagedDir = makeTmpDir();
+    const hostCliHomeDir = makeTmpDir();
+    const stagedConv = path.join(stagedDir, "brain", "conv-1");
+    fs.mkdirSync(stagedConv, { recursive: true });
+    fs.writeFileSync(path.join(stagedConv, "transcript.jsonl"), "{\"hello\":true}\n");
+    fs.writeFileSync(path.join(stagedConv, "notes.md"), "# notes\n");
+
+    await copyBackAgyLocalConversationState({ stagedDir, hostCliHomeDir });
+
+    const hostConv = path.join(hostCliHomeDir, "brain", "conv-1");
+    expect(fs.readFileSync(path.join(hostConv, "transcript.jsonl"), "utf8")).toBe("{\"hello\":true}\n");
+    expect(fs.readFileSync(path.join(hostConv, "notes.md"), "utf8")).toBe("# notes\n");
+    expect(fs.statSync(path.join(hostConv, "transcript.jsonl")).mode & 0o777).toBe(0o600);
   });
 
-  it("updates existing settings.json preserving other keys", async () => {
-    const fakeHome = makeTmpDir();
-    const dir = path.join(fakeHome, ".gemini", "antigravity-cli");
-    fs.mkdirSync(dir, { recursive: true });
-    const settingsPath = path.join(dir, "settings.json");
-    fs.writeFileSync(settingsPath, JSON.stringify({ otherSetting: true, modelProvider: "other" }));
+  it("does nothing when the staged home has no brain/", async () => {
+    const stagedDir = makeTmpDir();
+    const hostCliHomeDir = makeTmpDir();
+    await copyBackAgyLocalConversationState({ stagedDir, hostCliHomeDir });
+    expect(fs.existsSync(path.join(hostCliHomeDir, "brain"))).toBe(false);
+  });
 
-    await ensureAgyApiKeySettings(fakeHome);
-    const content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    expect(content.modelProvider).toBe("gemini");
-    expect(content.otherSetting).toBe(true);
+  it("never throws and never escapes the host brain dir", async () => {
+    const stagedDir = makeTmpDir();
+    const hostCliHomeDir = makeTmpDir();
+    const stagedConv = path.join(stagedDir, "brain", "conv-1");
+    fs.mkdirSync(stagedConv, { recursive: true });
+    fs.writeFileSync(path.join(stagedConv, "ok.txt"), "ok");
+    // A traversal entry smuggled into the staged tree must not land
+    // outside brain/: the walk only follows entries under staged brain/,
+    // so a ".." segment in a file name is confined by construction.
+    await copyBackAgyLocalConversationState({ stagedDir, hostCliHomeDir });
+    expect(fs.existsSync(path.join(hostCliHomeDir, "ok.txt"))).toBe(false);
+    expect(fs.readFileSync(path.join(hostCliHomeDir, "brain", "conv-1", "ok.txt"), "utf8")).toBe("ok");
   });
 });
 

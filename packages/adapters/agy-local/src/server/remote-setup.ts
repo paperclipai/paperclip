@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { refreshPaperclipWorkspaceEnvForExecution } from "@paperclipai/adapter-utils/server-utils";
 import {
+  COPY_BACK_AGY_CONVERSATION_LIMITS,
   copyBackAgyAuth,
   resolveAgyCliHomeDir,
   resolveAgyOAuthTokenPath,
@@ -110,12 +111,6 @@ export function buildRemoteMcpHomeSetupCommand(input: RemoteMcpHomeSetupCommandI
  * never the run.
  */
 const AGY_BRAIN_MANIFEST_NAME = ".paperclip-brain-manifest";
-
-const COPY_BACK_AGY_CONVERSATION_LIMITS = {
-  maxFiles: 1000,
-  maxFileBytes: 10 * 1024 * 1024,
-  maxTotalBytes: 50 * 1024 * 1024,
-};
 
 export interface CopyBackAgyConversationStateInput {
   /** Remote staged CLI home dir (posix path inside the sandbox). */

@@ -720,6 +720,70 @@ describe("agy-local execute run outcome", () => {
     }
   });
 
+  it("keeps an API-key run's settings override in a private CLI home, never the shared home", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-exec-private-home-"));
+    try {
+      const cliHome = path.join(tempHome, ".gemini", "antigravity-cli");
+      await fs.mkdir(cliHome, { recursive: true });
+      const settingsPath = path.join(cliHome, "settings.json");
+      await fs.writeFile(settingsPath, JSON.stringify({ otherSetting: true, modelProvider: "oauth" }));
+      // The staged home is deleted in execute's finally, so the staged
+      // settings must be read while the CLI spawn is running, not after.
+      // Captured through an object: a plain `let` would be narrowed to
+      // its initializer by control-flow analysis (the assignment lives
+      // inside the mock callback).
+      const captured: { spawnEnv?: Record<string, string>; stagedSettings: Record<string, unknown> | null } = {
+        stagedSettings: null,
+      };
+      vi.mocked(runChildProcess).mockImplementationOnce(async (...args: unknown[]) => {
+        captured.spawnEnv = (args[3] as { env?: Record<string, string> } | undefined)?.env;
+        const stagedCliHome = captured.spawnEnv?.ANTIGRAVITY_CLI_HOME;
+        if (stagedCliHome) {
+          captured.stagedSettings = JSON.parse(
+            await fs.readFile(path.join(stagedCliHome, "settings.json"), "utf8"),
+          );
+        }
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: SIMPLE_RUN,
+          stderr: "",
+        } as Awaited<ReturnType<typeof runChildProcess>>;
+      });
+      const result = await execute({
+        runId: "run-outcome",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Test Agent",
+          adapterType: "agy_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { env: { HOME: tempHome, GEMINI_API_KEY: "test-key" } },
+        context: { paperclipWorkspace: { cwd: "/tmp/workspace" } },
+        onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      // The shared home is untouched: a later OAuth-only agent or terminal
+      // session still sees the subscription provider, not "gemini".
+      expect(JSON.parse(await fs.readFile(settingsPath, "utf8"))).toEqual({
+        otherSetting: true,
+        modelProvider: "oauth",
+      });
+      const stagedCliHome = captured.spawnEnv?.ANTIGRAVITY_CLI_HOME;
+      expect(stagedCliHome).toBeTruthy();
+      expect(stagedCliHome).not.toBe(cliHome);
+      expect(captured.spawnEnv?.GEMINI_CLI_HOME).toBe(stagedCliHome);
+      expect(captured.stagedSettings).not.toBeNull();
+      expect(captured.stagedSettings?.modelProvider).toBe("gemini");
+      expect(captured.stagedSettings?.otherSetting).toBe(true);
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
   it("bills a subscription run as subscription with zero cost", async () => {
     const { result } = await runWithOutput(SIMPLE_RUN);
     expect(result.exitCode).toBe(0);

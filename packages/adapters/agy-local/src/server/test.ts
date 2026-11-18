@@ -34,7 +34,6 @@ import { detectAgyAuthRequired, parseAgyJsonl } from "./parse.js";
 import {
   applyAgyApiKeyAlias,
   copyBackAgyAuth,
-  ensureAgyApiKeySettings,
   resolveAgyOAuthTokenPath,
   stageAgyHomeForSync,
 } from "./credentials.js";
@@ -155,13 +154,25 @@ export async function testEnvironment(
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     let preparedRuntimeWorkspaceLocalDir: string | null = null;
     let stagedHomeLocalDir: string | null = null;
+    let stagedLocalCliHomeDir: string | null = null;
 
     try {
+      // A local API-key probe must not write the provider override into
+      // the shared home's settings.json either: stage a private CLI home
+      // (same staging the remote path uses) and point the probe at it.
+      // The probe's conversation is throwaway, so no copy-back: the
+      // staged dir is simply deleted in the finally below.
       if (runtimeEnv.GEMINI_API_KEY && !targetIsRemote) {
         try {
-          await ensureAgyApiKeySettings(runtimeEnv.HOME || os.homedir(), runtimeEnv);
+          stagedLocalCliHomeDir = await stageAgyHomeForSync({
+            homedir: runtimeEnv.HOME || os.homedir(),
+            env: runtimeEnv,
+            runId,
+          });
+          env.ANTIGRAVITY_CLI_HOME = stagedLocalCliHomeDir;
+          env.GEMINI_CLI_HOME = stagedLocalCliHomeDir;
         } catch {
-          // Continue probe even if settings write fails
+          // Continue probe even if staging fails
         }
       }
 
@@ -331,6 +342,9 @@ export async function testEnvironment(
       }
       if (stagedHomeLocalDir) {
         await fs.promises.rm(stagedHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
+      if (stagedLocalCliHomeDir) {
+        await fs.promises.rm(stagedLocalCliHomeDir, { recursive: true, force: true }).catch(() => {});
       }
     }
   }
