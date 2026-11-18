@@ -1,3 +1,6 @@
+import { useRoutineListView } from "../hooks/useRoutineListView";
+import { filterRoutines } from "../lib/routine-list-view";
+import { RoutineTable } from "../components/RoutineTable";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
@@ -13,7 +16,7 @@ import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
-import { buildMarkdownMentionOptions } from "../lib/company-members";
+import { buildCompanyUserProfileMap, buildMarkdownMentionOptions } from "../lib/company-members";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { retryTransientOnly } from "../lib/query-client";
@@ -89,13 +92,6 @@ function autoResizeTextarea(element: HTMLTextAreaElement | null) {
 
 type RoutinesTab = "routines" | "runs";
 
-type RoutineViewState = {
-  sortField: RoutineSortField;
-  sortDir: RoutineSortDir;
-  groupBy: RoutineGroupBy;
-  collapsedGroups: string[];
-};
-
 type RoutineGroup = {
   key: string;
   label: string | null;
@@ -103,27 +99,6 @@ type RoutineGroup = {
 };
 
 const builtInRoutineGroupKey = "__built_in_routines";
-
-const defaultRoutineViewState: RoutineViewState = {
-  sortField: "title",
-  sortDir: "asc",
-  groupBy: "folder",
-  collapsedGroups: [],
-};
-
-function getRoutineViewState(key: string): RoutineViewState {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw) return { ...defaultRoutineViewState, ...JSON.parse(raw) };
-  } catch {
-    // Ignore malformed local state and fall back to defaults.
-  }
-  return { ...defaultRoutineViewState };
-}
-
-function saveRoutineViewState(key: string, state: RoutineViewState) {
-  localStorage.setItem(key, JSON.stringify(state));
-}
 
 function timestampValue(value: Date | string | null | undefined) {
   if (!value) return Number.NEGATIVE_INFINITY;
@@ -354,20 +329,13 @@ export function Routines() {
     catchUpPolicy: "skip_missed",
     variables: [],
   });
-  const routineViewStateKey = selectedCompanyId
-    ? `paperclip:routines-view:${selectedCompanyId}`
-    : "paperclip:routines-view";
-  const [query, setQuery] = useState("");
-  const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
+  const [routineViewState, updateRoutineView] = useRoutineListView(selectedCompanyId);
+  const query = routineViewState.query;
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Routines" }]);
   }, [setBreadcrumbs]);
-
-  useEffect(() => {
-    setRoutineViewState(getRoutineViewState(routineViewStateKey));
-  }, [routineViewStateKey]);
 
   const routinesQuery = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),
@@ -646,9 +614,17 @@ export function Routines() {
     () => new Map((routineFolders?.folders ?? []).map((folder) => [folder.id, folder])),
     [routineFolders],
   );
+  const userById = useMemo(() => buildCompanyUserProfileMap(companyMembers?.users), [companyMembers]);
+  const filterOptions = useMemo(() => ({
+    projects: [{ id: "__none", name: "No project" }, ...(projects ?? []).map(project => ({ id: project.id, name: project.name }))],
+    agents: [{ id: "__none", name: "No default agent" }, ...(agents ?? []).map(agent => ({ id: agent.id, name: agent.name }))],
+    responsibleUsers: [{ id: "__none", name: "No responsible user" }, ...Array.from(userById, ([id, profile]) => ({ id, name: profile.label }))],
+    statuses: [{ id: "active", name: "Enabled" }, { id: "paused", name: "Paused" }, { id: "archived", name: "Archived" }],
+    origins: [...new Set(["manual", "built_in_agent_bundle", ...(routines ?? []).map(routine => routine.originKind ?? "manual")])].map(id => ({ id, name: id === "manual" ? "Custom" : id === "built_in_agent_bundle" ? "Built-in" : id.replaceAll("_", " ") })),
+  }), [projects, agents, userById, routines]);
   const visibleRoutines = useMemo(
-    () => (routines ?? []).filter((routine) => routine.status !== "archived"),
-    [routines],
+    () => (routines ?? []).filter((routine) => routineViewState.statuses.length ? routineViewState.statuses.includes(routine.status) : routine.status !== "archived"),
+    [routines, routineViewState.statuses],
   );
   const liveIssueIds = useMemo(
     () => collectLiveIssueIds(liveRuns, routineExecutionIssues),
@@ -695,16 +671,11 @@ export function Routines() {
       })),
     };
   }, [routineFolders, visibleRoutines]);
+  const filteredRoutines = useMemo(() => filterRoutines(folderFilteredRoutines, routineViewState),
+    [folderFilteredRoutines, routineViewState]);
   const sortedRoutines = useMemo(
-    () => {
-      const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-      const matches = folderFilteredRoutines.filter(routine => {
-        const text = `${routine.title} ${routine.description ?? ""}`.toLowerCase();
-        return terms.every(term => text.includes(term));
-      });
-      return sortRoutines(matches, routineViewState.sortField, routineViewState.sortDir);
-    },
-    [folderFilteredRoutines, query, routineViewState.sortDir, routineViewState.sortField],
+    () => sortRoutines(filteredRoutines, routineViewState.sortField, routineViewState.sortDir),
+    [filteredRoutines, routineViewState.sortDir, routineViewState.sortField],
   );
   // A failed initial folder read is not an empty folder collection. Keep
   // routine rows usable without inventing folder names or changing the saved view.
@@ -717,14 +688,6 @@ export function Routines() {
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
   const hasRoutineFolders = (routineFolders?.folders.length ?? 0) > 0;
   const showFolderRail = routineViewState.groupBy === "folder" && hasRoutineFolders;
-
-  function updateRoutineView(patch: Partial<RoutineViewState>) {
-    setRoutineViewState((current) => {
-      const next = { ...current, ...patch };
-      saveRoutineViewState(routineViewStateKey, next);
-      return next;
-    });
-  }
 
   function setFolderSelection(selection: FolderSelection) {
     setSearchParams((current) => {
@@ -838,12 +801,14 @@ export function Routines() {
   return (
     <div className="space-y-6">
       <RoutinesToolbar
-        query={query} onQueryChange={setQuery}
+        query={query} onQueryChange={query => updateRoutineView({ query })}
         sortField={routineViewState.sortField} sortDir={routineViewState.sortDir} groupBy={routineViewState.groupBy}
         onSortChange={(sortField, sortDir) => updateRoutineView({ sortField, sortDir })}
         onGroupChange={groupBy => updateRoutineView({ groupBy, collapsedGroups: [] })}
         onNewFolder={routineViewState.groupBy === "folder" && routineFolders && !hasRoutineFolders ? () => openCreateFolder() : undefined}
         onCreateRoutine={openCreateRoutine}
+        filters={routineViewState} filterOptions={filterOptions} onFiltersChange={updateRoutineView}
+        columns={routineViewState.columns} onColumnsChange={columns => updateRoutineView({ columns })}
         tasksHref="/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc"
       />
 
@@ -1233,10 +1198,13 @@ export function Routines() {
                       />
                     ) : null}
                     <CollapsibleContent>
+                      <RoutineTable columns={routineViewState.columns} label={group.label ?? "Routines"}>
                       {group.items.map((routine) => (
                         <RoutineListRow
                           key={routine.id}
                           routine={routine}
+                          columns={routineViewState.columns}
+                          userById={userById}
                           projectById={projectById}
                           agentById={agentById}
                           runningRoutineId={runningRoutineId}
@@ -1271,6 +1239,7 @@ export function Routines() {
                           }
                         />
                       ))}
+                      </RoutineTable>
                     </CollapsibleContent>
                   </Collapsible>
                 );

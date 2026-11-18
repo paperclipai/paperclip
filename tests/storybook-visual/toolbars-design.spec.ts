@@ -166,6 +166,6 @@ test("routines toolbar updates search, sort, group and creation intent", async (
   await page.getByRole("button", { name: "Agent", exact: true }).click();
   await expect(preview.locator("output")).toContainText("Group: assignee");
   await expect(preview.getByRole("button", { name: "New folder" })).toHaveCount(0);
-  await preview.getByRole("button", { name: "Create routine" }).click();
+  await preview.getByRole("button", { name: "New routine" }).click();
   await expect(preview.locator("output")).toContainText("Create routine requested");
 });

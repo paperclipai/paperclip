@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { AnchorHTMLAttributes, ComponentProps, ReactNode } from "react";
+import { useState, type AnchorHTMLAttributes, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -40,7 +40,13 @@ vi.mock("@/lib/router", () => ({
   ),
   useNavigate: () => navigateMock,
   useLocation: () => ({ pathname: "/routines", search: currentSearch ? `?${currentSearch}` : "", hash: "" }),
-  useSearchParams: () => [new URLSearchParams(currentSearch), vi.fn()],
+  useSearchParams: () => {
+    const [, rerender] = useState(0);
+    return [new URLSearchParams(currentSearch), (update: URLSearchParams | ((params: URLSearchParams) => URLSearchParams)) => {
+      currentSearch = (typeof update === "function" ? update(new URLSearchParams(currentSearch)) : update).toString();
+      rerender(count => count + 1);
+    }];
+  },
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -54,6 +60,8 @@ vi.mock("../context/BreadcrumbContext", () => ({
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
 }));
+
+vi.mock("../api/auth", () => ({ authApi: { getSession: vi.fn(async () => ({ user: { id: "user-1" } })) } }));
 
 vi.mock("../api/routines", () => ({
   routinesApi: {
@@ -1099,14 +1107,14 @@ describe("Routines page", () => {
     });
 
     let runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Run now"),
+      button.getAttribute("aria-label") === "Run now: Morning sync",
     );
     for (let attempts = 0; attempts < 5 && !runNowButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Run now"),
+        button.getAttribute("aria-label") === "Run now: Morning sync",
       );
     }
 
@@ -1127,8 +1135,8 @@ describe("Routines page", () => {
       .find(element => element.textContent?.trim() === text)!;
     try {
       await act(async () => { root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>); await flush(); });
-      await vi.waitFor(() => expect(button("Create routine")).toBeTruthy());
-      await act(async () => { button("Create routine").click(); await flush(); });
+      await vi.waitFor(() => expect(button("New routine")).toBeTruthy());
+      await act(async () => { button("New routine").click(); await flush(); });
       await act(async () => { button("Responsible").click(); await flush(); });
       await act(async () => { button("Agent One").click(); await new Promise(resolve => requestAnimationFrame(resolve)); await flush(); });
       // Responsible selection already opens Project through its real focus path.
@@ -1159,14 +1167,14 @@ describe("Routines page", () => {
     });
 
     let createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Create routine"),
+      button.textContent?.includes("New routine"),
     );
     for (let attempts = 0; attempts < 5 && !createButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Create routine"),
+        button.textContent?.includes("New routine"),
       );
     }
 
@@ -1209,14 +1217,14 @@ describe("Routines page", () => {
     });
 
     let createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Create routine"),
+      button.textContent?.includes("New routine"),
     );
     for (let attempts = 0; attempts < 5 && !createButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Create routine"),
+        button.textContent?.includes("New routine"),
       );
     }
 
@@ -1252,6 +1260,31 @@ describe("Routines page", () => {
     });
   });
 
+  it("opens linked filters and restores saved columns with responsible people beside agents", async () => {
+    currentSearch = "projects=project-1&responsibleUsers=user-1&statuses=active";
+    localStorage.setItem("paperclip:routines-view:company-1:user:user-1", JSON.stringify({
+      projects: ["project-2"], columns: ["assignee", "responsibleUser"], groupBy: "none",
+    }));
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "match", title: "Linked routine", responsibleUserId: "user-1" }),
+      createRoutine({ id: "other", title: "Other routine", projectId: "project-2", responsibleUserId: "user-1" }),
+      createRoutine({ id: "paused", title: "Paused routine", status: "paused", responsibleUserId: "user-1" }),
+    ]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => { root.render(<QueryClientProvider client={client}><Routines /></QueryClientProvider>); await flush(); });
+      await vi.waitFor(() => expect(container.textContent).toContain("Linked routine"));
+      const rows = container.querySelectorAll('[role="row"]');
+      expect(container.textContent).not.toContain("Other routine");
+      expect(container.textContent).not.toContain("Paused routine");
+      expect(Array.from(rows[0].querySelectorAll('[role="columnheader"]'), cell => cell.textContent)).toEqual(["Routine", "Agent", "Responsible user", "Actions"]);
+      expect(rows[1].textContent).toContain("Agent One");
+      expect(rows[1].textContent).toContain("Taylor");
+      expect(rows[1].querySelector('button[aria-label="Run now: Linked routine"]')?.textContent).toBe("");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
   it("links View all tasks to the routine-filtered task list", async () => {
     routinesListMock.mockResolvedValue([]);
     const root = createRoot(container);
@@ -1260,6 +1293,7 @@ describe("Routines page", () => {
       root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>);
       await flush();
     });
+    await vi.waitFor(() => expect(container.textContent).toContain("View all tasks"));
     const link = Array.from(container.querySelectorAll("a")).find(anchor => anchor.textContent === "View all tasks");
     expect(link?.getAttribute("href")).toBe("/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc");
     expect(container.textContent).not.toContain("View all runs");
