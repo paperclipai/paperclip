@@ -115,7 +115,7 @@
     "packages/shared/src/app-definitions/fireflies.json": "2c4605a6044ccdd4e6cd66d2763f80a2fc5c88c0",
     "packages/shared/src/app-definitions/gauge.json": "da9d1f2bd1592689f7363462c7c432d6f20a156f",
     "packages/shared/src/app-definitions/github-code-review-bot.json": "c5897ebcbbbf4f0c2d243574748d4e682f14e57e",
-    "packages/shared/src/app-definitions/github.json": "1e7b359b584309c5e6e7c56f46d782c8bdbcd885",
+    "packages/shared/src/app-definitions/github.json": "9eb13cfb65c54ffc6a9b1fb6d32085d4f0a32cbf",
     "packages/shared/src/app-definitions/gmail.json": "a0f2dcfaaeca5bf54318d8cad82a0cb188e72bea",
     "packages/shared/src/app-definitions/google-calendar.json": "ab9e93999dd69a5d432ae66195e517c66aad2b74",
     "packages/shared/src/app-definitions/google-chat.json": "f3cf1f37b4b9f0e937b2af2e8d86ebf5df83ac7c",
