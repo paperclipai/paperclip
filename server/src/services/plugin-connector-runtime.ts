@@ -9,6 +9,7 @@
 import { and, eq } from "drizzle-orm";
 import { plugins, type Db } from "@paperclipai/db";
 import {
+  PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS,
   PLUGIN_CONNECTOR_TOOL_NAME,
   getConnectableAppDefinition,
   parsePluginAppSlug,
@@ -105,6 +106,24 @@ export function pluginCatalogEntryCurrent(
 }
 
 /**
+ * How long the gateway waits for one tool of a plugin connection: the tool's
+ * declared `timeoutMs`, else its method's, else the plugin-transport default.
+ * Callers still clamp the value to the gateway ceiling.
+ */
+export function pluginConnectionToolTimeoutMs(
+  connection: { config: Record<string, unknown> },
+  toolName: string,
+): number {
+  const method = pluginConnectionMethod(connection)?.method;
+  const tools = method?.tools;
+  const tool = tools?.kind === "static" ? tools.list.find((candidate) => candidate.name === toolName) : undefined;
+  return tool?.timeoutMs ?? method?.timeoutMs ?? PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS;
+}
+
+/** Extra time the worker RPC allows past the gateway timeout, so the gateway's own timeout is what callers see. */
+const PLUGIN_CONNECTOR_RPC_GRACE_MS = 1_000;
+
+/**
  * A health check for a plugin connection: its tools run in the plugin's
  * worker, so the connection is healthy only while that worker runs (static
  * catalogs are readable without it).
@@ -183,6 +202,8 @@ export async function executePluginConnectionTool(
     toolName: string;
     parameters: unknown;
     runContext: ToolRunContext & { connection: NonNullable<ToolRunContext["connection"]> };
+    /** The gateway's timeout for this call; the worker RPC outlasts it slightly. */
+    timeoutMs: number;
   },
 ): Promise<ToolResult> {
   const pluginDbId = await runningWorker(db, input.pluginKey);
@@ -191,5 +212,5 @@ export async function executePluginConnectionTool(
     appSlug: input.appSlug,
     parameters: input.parameters,
     runContext: input.runContext,
-  });
+  }, input.timeoutMs + PLUGIN_CONNECTOR_RPC_GRACE_MS);
 }
