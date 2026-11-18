@@ -218,7 +218,8 @@ export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: t
  * connection's signed identity, so the values are safe to paste anywhere.
  */
 export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { available: true }>): string {
-  const stack = `paperclip-${setup.roleName}`.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 128);
+  // One stack per connection: role names that differ only in punctuation must not share (and replace) a stack.
+  const stack = `paperclip-${setup.subject.replace(/^connection:/, "")}`.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 128);
   const policyStep = setup.accessLevel === "read_only"
     ? "The connection is read only, so keep the template's default AccessPolicyArn (ReadOnlyAccess)."
     : "The connection has full access, so ask me which managed policy agents should have, then pass it as AccessPolicyArn. Do not pick one yourself.";

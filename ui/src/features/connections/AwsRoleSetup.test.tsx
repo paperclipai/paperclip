@@ -79,7 +79,7 @@ describe("AwsRoleSetup", () => {
     expect(container.querySelector('button[aria-label="Set it up with your agent"]')).not.toBeNull();
     const prompt = awsAgentSetupPrompt(READY as Extract<AwsConnectionSetup, { available: true }>);
     expect(prompt).toContain("confirm the account is 123456789012");
-    expect(prompt).toContain("--stack-name paperclip-paperclip-agents");
+    expect(prompt).toContain("--stack-name paperclip-conn-1 ");
     expect(prompt).toContain("CAPABILITY_NAMED_IAM");
     expect(prompt).toContain("connection:conn-1");
     expect(prompt).toContain(READY.available ? READY.cloudFormationTemplate.trimEnd() : "");
