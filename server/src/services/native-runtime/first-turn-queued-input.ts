@@ -109,8 +109,42 @@ export function deferredWakeJoinsFirstTurn(
     reason !== null && COMMENT_WAKE_REASONS.has(reason) &&
     !payload.interactionId && !context.interactionId && !context.interactionStatus &&
     !payload.queuedCommentInterrupt && context.resumeIntent !== true &&
-    !nonEmptyString(context.chatConversationId) && !nonEmptyString(payload.externalChatProvider) &&
+    !deferredWakeIsChatRequest(payload) &&
     queuedCommentIdsFromWakePayload(payload).length > 0;
+}
+
+/**
+ * Whether a deferred wake carries a chat request. A chat wake keeps its own
+ * delivery: the run it starts binds that request's source, so its tools act on
+ * what the request asked for. `deferredWakeChatRequestSql` is the same test in SQL.
+ */
+export function deferredWakeIsChatRequest(payloadValue: unknown): boolean {
+  const payload = record(payloadValue);
+  return Boolean(nonEmptyString(record(payload[DEFERRED_WAKE_CONTEXT_KEY]).chatConversationId) ||
+    nonEmptyString(payload.externalChatProvider));
+}
+
+function deferredWakeChatRequestSql(payload: typeof agentWakeupRequests.payload) {
+  return sql`(nullif(btrim(${payload}->${DEFERRED_WAKE_CONTEXT_KEY}->>'chatConversationId'), '') is not null
+    or nullif(btrim(${payload}->>'externalChatProvider'), '') is not null)`;
+}
+
+/**
+ * Whether a chat request waits as a deferred wake behind the agent's current
+ * run on this task. Work that would continue the current run in a fresh session
+ * yields to it, because that continuation would keep the older request's source.
+ */
+export async function hasQueuedChatRequest(
+  db: Pick<Db, "select">,
+  input: { companyId: string; issueId: string; agentId: string },
+): Promise<boolean> {
+  const [wake] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+    eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS), isNull(agentWakeupRequests.runId),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+    deferredWakeChatRequestSql(agentWakeupRequests.payload),
+  )).limit(1);
+  return Boolean(wake);
 }
 
 type QueuedMessage = { id: string; body: string; createdAt: Date };

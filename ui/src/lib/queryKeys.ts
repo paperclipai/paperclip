@@ -588,6 +588,9 @@ export const queryKeys = {
       ] as const,
     overviews: (companyId: string) => ["responsibilities", "overview", companyId] as const,
     detail: (id: string) => ["responsibilities", "detail", id] as const,
+    /** The responsibilities one routine is under, directly or through its project. */
+    routineLinks: (companyId: string, routineId: string) =>
+      ["responsibilities", "links", companyId, "routine", routineId] as const,
     /** The company's areas (active and proposed). */
     areas: (companyId: string) => ["responsibilities", "areas", companyId] as const,
     /** Recent activity on one responsibility, for who last reported its reading. */

@@ -3841,12 +3841,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const recentTaskVisit = useRef<string | null>(null);
   useEffect(() => {
-    if (!streamlinedUiEnabled || !issue || !sessionResolved) return;
-    // Passive reads refresh the snapshot without promoting it. The navigation
-    // summary still decides whether this candidate is personal work.
-    recordRecentTask(issue, currentUserId);
-  }, [issue, currentUserId, sessionResolved, streamlinedUiEnabled]);
+    if (!(streamlinedUiEnabled || coordinatorWorkspaceEnabled) || !loadedIssue || !sessionResolved
+      || conversation || loadedIssue.conversationAgentId || loadedIssue.hiddenAt) return;
+    const visit = `${loadedIssue.companyId}:${currentUserId}:${loadedIssue.id}`;
+    recordRecentTask(loadedIssue, currentUserId, recentTaskVisit.current === visit ? undefined : Date.now());
+    recentTaskVisit.current = visit;
+  }, [loadedIssue, currentUserId, sessionResolved, streamlinedUiEnabled, coordinatorWorkspaceEnabled, conversation]);
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),

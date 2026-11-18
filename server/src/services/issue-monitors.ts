@@ -28,32 +28,46 @@ export function applyActorMonitorScheduledBy(
   );
 }
 
+type SelfWakeMonitor = { recoveryPolicy?: string | null; serviceName?: string | null; scheduledBy?: string | null };
+
+function isSelfWakeMonitor(monitor: SelfWakeMonitor | null) {
+  return !monitor || ((monitor.recoveryPolicy ?? "wake_owner") === "wake_owner"
+    && monitor.serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+    && (monitor.scheduledBy ?? "assignee") === "assignee");
+}
+
 export async function assertCanManageIssueMonitor(
   accessSvc: Pick<ReturnType<typeof accessService>, "decide">,
   req: { actor: AuthorizationActor },
   companyId: string,
   assigneeAgentId: string | null,
   monitorChanged: boolean,
+  ownTask?: { monitor: SelfWakeMonitor | null; existing: SelfWakeMonitor | null },
 ) {
   if (!monitorChanged) return;
   if (req.actor.type === "board") return;
+  const isAssignee =
+    req.actor.type === "agent" &&
+    !!req.actor.agentId &&
+    req.actor.agentId === assigneeAgentId;
   const runtimeDecision = await accessSvc.decide({
     actor: req.actor,
     action: "runtime:manage",
     resource: { type: "company", companyId },
   });
-  if (!runtimeDecision.allowed) {
+  const ownTaskSelfWake =
+    ownTask &&
+    isAssignee &&
+    runtimeDecision.reason === "deny_low_trust_boundary" &&
+    isSelfWakeMonitor(ownTask.monitor) &&
+    isSelfWakeMonitor(ownTask.existing);
+  if (!runtimeDecision.allowed && !ownTaskSelfWake) {
     throw forbidden(
       runtimeDecision.explanation,
       authorizationDeniedDetails(runtimeDecision),
     );
   }
-  if (
-    req.actor.type === "agent" &&
-    req.actor.agentId &&
-    req.actor.agentId === assigneeAgentId
-  )
-    return;
+  if (isAssignee) return;
   throw forbidden(
     "Only the assignee agent or a board user can manage issue monitors",
   );

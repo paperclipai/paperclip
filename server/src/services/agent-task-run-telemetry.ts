@@ -4,10 +4,11 @@ import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type TelemetryRun = Pick<HeartbeatRun,
-  "id" | "agentId" | "status" | "startedAt" | "finishedAt" | "usageJson" | "contextSnapshot">;
+  "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "usageJson" | "contextSnapshot">;
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0
@@ -79,7 +80,7 @@ export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void>
       readNonEmptyString(parseObject(run.contextSnapshot).issueId) ??
       undefined;
 
-    trackAgentTaskRun(client, {
+    withTelemetryCompany(run.companyId, () => trackAgentTaskRun(client, {
       agentId: run.agentId,
       state: run.status,
       ...(agent
@@ -116,7 +117,7 @@ export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void>
           }
         : {}),
       ...(taskId ? { taskId } : {}),
-    });
+    }));
   } catch (err) {
     logger.warn(
       { err, runId: run.id },
@@ -134,6 +135,7 @@ export async function emitAgentTaskRunById(
     const run = await db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         startedAt: heartbeatRuns.startedAt,

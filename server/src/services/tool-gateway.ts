@@ -1,4 +1,12 @@
 import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
+import {
+  AwsMcpCredentialError,
+  isAwsMcpConnection,
+  resolveAwsMcpAuthorization,
+  sharedAwsMcpCredentialMinter,
+  type AwsMcpClients,
+} from "./connectors/aws/mcp-credentials.js";
+import { workloadIdentityService } from "./workload-identity.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
   approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
@@ -619,6 +627,7 @@ const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
   "provider_retry_requested",
   "oauth_insufficient_scope",
   "oauth_refreshed_retry_required",
+  "credentials_refreshed_retry_required",
   "provider_task_pending",
   "provider_task_cancelled",
   "provider_task_expired",
@@ -1400,6 +1409,8 @@ export function createToolGatewayService(
     }) => Promise<typeof connectionGrants.$inferSelect>;
     /** Test seam for resolving Vercel Connect credentials. */
     vercelConnectClient?: VercelConnectClient | null;
+    /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+    awsMcpClients?: AwsMcpClients;
     /** Test seam for reproducing the managed-argument drift expiry race. */
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
@@ -1655,6 +1666,9 @@ export function createToolGatewayService(
     options.vercelConnectClient === undefined
       ? createVercelConnectClient()
       : options.vercelConnectClient;
+  const signAwsConnectionToken = (input: { companyId: string; connectionId: string; audience: string }) =>
+    workloadIdentityService(db).signConnectionToken(input);
+  const awsMcpMinter = sharedAwsMcpCredentialMinter(db, signAwsConnectionToken, options.awsMcpClients);
   const protocolLimits = mcpGatewayProtocolLimits(
     options.mcpGatewayProtocolLimits,
   );
@@ -4703,6 +4717,9 @@ export function createToolGatewayService(
         });
       }
     }
+    if (isAwsMcpConnection(connection)) {
+      return resolveAwsMcpHeaders(session, connection, grant, resolveOptions);
+    }
     const oauth = asRecord(asRecord(connection.config)?.oauth);
     if (
       isPaperclipCloudConnectorStrategy(oauth?.strategy) &&
@@ -4815,6 +4832,35 @@ export function createToolGatewayService(
       }
     }
     return headers;
+  }
+
+  /** AWS's Authorization header is minted per connection at call time and never stored. */
+  async function resolveAwsMcpHeaders(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+    resolveOptions: { forceRefresh?: boolean },
+  ): Promise<Record<string, string>> {
+    try {
+      return await resolveAwsMcpAuthorization({
+        minter: awsMcpMinter, connection, grant, forceRefresh: resolveOptions.forceRefresh,
+        readRef: (ref) => resolveGrantSecretValue(session, connection, grant, ref),
+      });
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError) {
+        await markRemoteConnectionHealth(connection, "missing_secret", "A configured credential secret could not be resolved.");
+        throw error;
+      }
+      const known = error instanceof AwsMcpCredentialError
+        ? error
+        : new AwsMcpCredentialError("aws_unavailable", 503, "AWS credentials could not be prepared. Try again.", "degraded");
+      await markRemoteConnectionHealth(connection, known.health, known.message);
+      throw new ToolGatewayHttpError(known.status, known.message, known.code, {
+        connectionId: connection.id,
+        grantId: grant.id,
+        ...(known.awsErrorName ? { awsError: known.awsErrorName } : {}),
+      });
+    }
   }
 
   function credentialVersionRefHash(value: Record<string, unknown>): string {
@@ -8094,6 +8140,15 @@ export function createToolGatewayService(
               responseTimeoutMs: ms,
             });
       };
+      // AWS refused the minted token: drop it everywhere and rebuild this call's headers with a fresh one.
+      const remintAwsCredentials = async () => {
+        awsMcpMinter.evict(connection.companyId, connection.id);
+        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
+        credentialHeaders = { ...projectedConnectionHeaders(connection), ...resolvedCredentials };
+        builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
+        headers = builtHeaders.headers;
+        headerSummary = builtHeaders.summary;
+      };
       const requireExplicitRetryAfterOAuthRefresh = async (refreshedResponse: Response): Promise<never> => {
         // The provider rejected this dispatch, but automatic replay is unsafe:
         // a server can apply a request before returning 401. A caller retry
@@ -8108,10 +8163,14 @@ export function createToolGatewayService(
             refreshedResponse.headers.get("x-request-id") ??
             refreshedResponse.headers.get("traceparent"),
         };
+        // AWS credentials are minted, not OAuth tokens: say what actually happened.
+        const minted = isAwsMcpConnection(connection);
         throw new ToolGatewayHttpError(
           409,
-          "The provider rejected the saved OAuth token, which has now been refreshed. Retry the action explicitly; the original call was not replayed.",
-          "oauth_refreshed_retry_required",
+          minted
+            ? "AWS refused the saved credentials, and Paperclip has made new ones. Retry the action explicitly; the original call was not replayed."
+            : "The provider rejected the saved OAuth token, which has now been refreshed. Retry the action explicitly; the original call was not replayed.",
+          minted ? "credentials_refreshed_retry_required" : "oauth_refreshed_retry_required",
           { connectionId: connection.id, catalogEntryId: entry.id, execution },
         );
       };
@@ -8200,7 +8259,7 @@ export function createToolGatewayService(
         // declares form questions; it is kept apart from sessions that only
         // read (resources, prompts, listing), which declare none.
         const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:elicit-form:${endpoint}`;
-        requestHeaders = await getMcpHttpSession({
+        const openSession = () => getMcpHttpSession({
           scope,
           send: sendForNegotiation,
           headers,
@@ -8208,6 +8267,15 @@ export function createToolGatewayService(
           eraKey,
           elicitationForm: true,
         });
+        try {
+          requestHeaders = await openSession();
+        } catch (error) {
+          if (!(error instanceof McpHttpInitializationError && error.status === 401 && isAwsMcpConnection(connection))) throw error;
+          // AWS refused the cached token while opening the session. No tool ran,
+          // so mint a fresh token and open the session once more.
+          await remintAwsCredentials();
+          requestHeaders = await openSession();
+        }
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
         const negotiated = mcpProtocolVersionOf(requestHeaders);
@@ -8465,6 +8533,11 @@ export function createToolGatewayService(
         });
         headers = builtHeaders.headers;
         headerSummary = builtHeaders.summary;
+        await requireExplicitRetryAfterOAuthRefresh(response);
+      }
+      if (response.status === 401 && isAwsMcpConnection(connection)) {
+        // The cached AWS token was refused: mint a fresh one, never replay the call.
+        await remintAwsCredentials();
         await requireExplicitRetryAfterOAuthRefresh(response);
       }
       if (

@@ -1,0 +1,254 @@
+{
+  "experimentalFeatureKey": "enableAwsConnector",
+  "schemaVersion": 1,
+  "slug": "aws",
+  "name": "AWS",
+  "description": "Let agents work in an AWS account through AWS's hosted MCP server, with short-lived credentials made for each connection.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "urlPatterns": [
+    "https://aws-mcp.*.api.aws/*"
+  ],
+  "docsUrl": "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html",
+  "reviewedTools": {
+    "reviewedAt": "2026-11-18",
+    "sourceUrl": "https://docs.aws.amazon.com/aws-mcp/latest/userguide/understanding-mcp-server-tools.html",
+    "read": [
+      "aws___search_documentation",
+      "aws___read_documentation",
+      "aws___retrieve_skill",
+      "aws___list_regions",
+      "aws___get_regional_availability",
+      "aws___get_tasks"
+    ],
+    "write": [
+      "aws___run_script",
+      "aws___get_presigned_url"
+    ],
+    "unlisted": "write"
+  },
+  "methods": [
+    {
+      "key": "aws-role",
+      "label": "AWS role (no stored keys)",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "credentialMinter": "aws_mcp",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use when this Paperclip instance has a public HTTPS address. AWS trusts this connection directly, so Paperclip stores no AWS keys.",
+      "defaults": {
+        "serverUrlTemplate": "https://aws-mcp.{endpointRegion}.api.aws/mcp",
+        "mcpSessionRequired": true
+      },
+      "tenantFields": [
+        {
+          "key": "roleArn",
+          "label": "Role ARN",
+          "type": "text",
+          "required": true,
+          "placeholder": "arn:aws:iam::123456789012:role/paperclip-agents",
+          "helperMd": "The role must trust this company's Paperclip identity provider for this connection only. Its permissions decide what agents can do.",
+          "validation": {
+            "pattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",
+            "maxLength": 600
+          }
+        },
+        {
+          "key": "endpointRegion",
+          "label": "AWS MCP endpoint region",
+          "type": "select",
+          "required": true,
+          "defaultValue": "us-east-1",
+          "options": [
+            {
+              "value": "us-east-1",
+              "label": "US East (N. Virginia)"
+            },
+            {
+              "value": "us-west-2",
+              "label": "US West (Oregon)"
+            },
+            {
+              "value": "eu-west-1",
+              "label": "Europe (Ireland)"
+            },
+            {
+              "value": "eu-west-2",
+              "label": "Europe (London)"
+            },
+            {
+              "value": "eu-central-1",
+              "label": "Europe (Frankfurt)"
+            },
+            {
+              "value": "ap-southeast-1",
+              "label": "Asia Pacific (Singapore)"
+            },
+            {
+              "value": "ap-southeast-2",
+              "label": "Asia Pacific (Sydney)"
+            },
+            {
+              "value": "ap-northeast-1",
+              "label": "Asia Pacific (Tokyo)"
+            }
+          ],
+          "placeholder": "us-east-1"
+        },
+        {
+          "key": "accessLevel",
+          "label": "Access level",
+          "type": "select",
+          "required": true,
+          "defaultValue": "read_only",
+          "options": [
+            {
+              "value": "read_only",
+              "label": "Read only"
+            },
+            {
+              "value": "full",
+              "label": "Everything the role allows"
+            }
+          ],
+          "helperMd": "Read only adds AWS's ReadOnlyAccess limit to every session, so AWS refuses changes even when the role allows them.",
+          "placeholder": "Read only"
+        }
+      ],
+      "guidanceMd": "Create an IAM role that trusts this company's Paperclip identity provider, limited to this connection. Attach `AWSMCPSignInOAuthAccessPolicy` and the permissions agents should have.",
+      "riskTier": "S4",
+      "consoleLinks": {
+        "docs": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html"
+      }
+    },
+    {
+      "key": "aws-access-key",
+      "label": "Access key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "credentialMinter": "aws_mcp",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use when AWS cannot reach this Paperclip instance over public HTTPS, such as a local or private-network instance.",
+      "defaults": {
+        "serverUrlTemplate": "https://aws-mcp.{endpointRegion}.api.aws/mcp",
+        "mcpSessionRequired": true
+      },
+      "credentialFields": [
+        {
+          "key": "accessKeyId",
+          "label": "Access key ID",
+          "type": "text",
+          "required": true,
+          "secret": true,
+          "placeholder": "AKIA…",
+          "validation": {
+            "pattern": "^A[A-Z0-9]{15,127}$",
+            "maxLength": 128
+          },
+          "helperMd": "Use a dedicated IAM user for this connection. It needs AWSMCPSignInOAuthAccessPolicy, sts:GetFederationToken, and the permissions agents should have; Paperclip cannot raise them."
+        },
+        {
+          "key": "secretAccessKey",
+          "label": "Secret access key",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "helperMd": "Use a dedicated IAM user for this connection. It needs AWSMCPSignInOAuthAccessPolicy, sts:GetFederationToken, and the permissions agents should have; Paperclip cannot raise them.",
+          "placeholder": "Paste the secret access key"
+        }
+      ],
+      "tenantFields": [
+        {
+          "key": "roleArn",
+          "label": "Role ARN (optional)",
+          "type": "text",
+          "required": false,
+          "advanced": true,
+          "placeholder": "arn:aws:iam::123456789012:role/paperclip-agents",
+          "helperMd": "Paperclip switches into this role before each session when set.",
+          "validation": {
+            "pattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",
+            "maxLength": 600
+          }
+        },
+        {
+          "key": "endpointRegion",
+          "label": "AWS MCP endpoint region",
+          "type": "select",
+          "required": true,
+          "defaultValue": "us-east-1",
+          "options": [
+            {
+              "value": "us-east-1",
+              "label": "US East (N. Virginia)"
+            },
+            {
+              "value": "us-west-2",
+              "label": "US West (Oregon)"
+            },
+            {
+              "value": "eu-west-1",
+              "label": "Europe (Ireland)"
+            },
+            {
+              "value": "eu-west-2",
+              "label": "Europe (London)"
+            },
+            {
+              "value": "eu-central-1",
+              "label": "Europe (Frankfurt)"
+            },
+            {
+              "value": "ap-southeast-1",
+              "label": "Asia Pacific (Singapore)"
+            },
+            {
+              "value": "ap-southeast-2",
+              "label": "Asia Pacific (Sydney)"
+            },
+            {
+              "value": "ap-northeast-1",
+              "label": "Asia Pacific (Tokyo)"
+            }
+          ],
+          "placeholder": "us-east-1"
+        },
+        {
+          "key": "accessLevel",
+          "label": "Access level",
+          "type": "select",
+          "required": true,
+          "defaultValue": "read_only",
+          "options": [
+            {
+              "value": "read_only",
+              "label": "Read only"
+            },
+            {
+              "value": "full",
+              "label": "Everything the key allows"
+            }
+          ],
+          "helperMd": "Read only adds AWS's ReadOnlyAccess limit to every session, so AWS refuses changes even when the key allows them.",
+          "placeholder": "Read only"
+        }
+      ],
+      "guidanceMd": "Create a dedicated IAM user for this connection, attach `AWSMCPSignInOAuthAccessPolicy`, allow `sts:GetFederationToken`, and add the permissions agents should have.",
+      "riskTier": "S4",
+      "consoleLinks": {
+        "keys": "https://console.aws.amazon.com/iam/home#/users",
+        "docs": "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html"
+      }
+    }
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/aws.svg",
+    "darkLogoUrl": "/brands/apps/aws-dark.svg"
+  }
+}

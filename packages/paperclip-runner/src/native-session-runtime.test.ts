@@ -711,6 +711,64 @@ describe("executeNativeSession recovery", () => {
   });
 
   it.each([
+    { label: "continues its own turn once when runnerd is restored mid-execution", lostTurnId: "turn-recovery", continues: true },
+    { label: "does not continue a lost turn this execution never started", lostTurnId: "turn-elsewhere", continues: false },
+  ])("$label", async ({ lostTurnId, continues }) => {
+    const failure = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const interrupted: PersistedNativeSession = {
+      backendKind: "runner", driverKind: "acpx_runtime", sessionId: "thread-recovery", identity,
+      providerSessionId: "provider-recovery", cursor: "0", activeTurnId: null, semanticResult: null,
+      pendingRuntimeRequests: [], lineage: [],
+      terminalTurns: [{ turnId: lostTurnId, fingerprint: JSON.stringify({ terminalState: "failed", error: failure, result: null }) }],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({
+      turnId: startTurn.mock.calls.length === 1 ? "turn-recovery" : "turn-continuation",
+    }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+      async *events() {
+        yield { ...runnerEvent(1, "turn.failed", { status: "failed", error: failure }), turnId: lostTurnId };
+        if (startTurn.mock.calls.length < 2) return;
+        yield { ...runnerEvent(2, "turn.completed", { status: "completed" }), turnId: "turn-continuation" };
+      },
+      startTurn,
+      async result() { return startTurn.mock.calls.length > 1 ? { result, terminal, turnId: "turn-continuation" } : null; },
+      async snapshot() { return startTurn.mock.calls.length ? structuredClone(interrupted) : { ...structuredClone(interrupted), terminalTurns: [] }; },
+      async close() {},
+    };
+    const events: PrpEvent[] = [];
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "runner", name: "in-execution-restore", version: "1", capabilities: await session.capabilities() }; },
+      async openSession() { return session; },
+      async recoverSession() { throw new Error("a fresh execution opens its own session"); },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {},
+      async checkpointSession() {},
+      async appendEvent(event: PrpEvent) { events.push(event); return { cursor: events.length, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    const execution = executeNativeSession({
+      input, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    });
+    if (!continues) {
+      await expect(execution).rejects.toMatchObject({ code: "native_provider_terminal_failed" });
+      expect(startTurn).toHaveBeenCalledOnce();
+      return;
+    }
+    await expect(execution).resolves.toMatchObject({ result, turnId: "turn-continuation", terminal: { runTerminalState: "succeeded" } });
+    expect(startTurn).toHaveBeenCalledTimes(2);
+    const submitted = startTurn.mock.calls[1]![0] as Parameters<NativeSession["startTurn"]>[0];
+    expect(submitted.continuation).toBe(true);
+    expectRestartContinuationGuidance(submitted.message.text);
+    expect(submitted.message.text).not.toContain(input.task.prompt);
+    expect(events.filter(event => event.eventType === "run.terminal")).toHaveLength(1);
+  });
+
+  it.each([
     { label: "after the continuation starts", staleFirst: false, staleTurnId: "turn-unrecorded-continuation" },
     { label: "before the continuation starts", staleFirst: true, staleTurnId: "turn-unrecorded-continuation" },
     { label: "as the checkpointed interrupted turn before the continuation starts", staleFirst: true, staleTurnId: "turn-recovery" },
