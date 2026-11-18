@@ -79,11 +79,13 @@ const apiPrefixes: Record<string, string> = {
   "instance-server-metrics.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
+  "issue-document-batch.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
   "link-previews.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "onboarding-chat.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -94,12 +96,22 @@ const apiPrefixes: Record<string, string> = {
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
+  "routine-suggestions.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
   "tailscale-connections.ts": "/api",
+  "responsibilities.ts": "/api",
+  "responsibility-areas.ts": "/api",
+  "responsibility-bars.ts": "/api",
+  "responsibility-dashboard.ts": "/api",
+  "responsibility-summaries.ts": "/api",
+  "responsibility-automation.ts": "/api",
+  "responsibility-status-reports.ts": "/api",
+  "responsibility-metrics.ts": "/api",
+  "responsibility-runs.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "voice-sessions.ts": "/api",
@@ -128,6 +140,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
   "POST /api/instance/connector-events/wake",
   "POST /api/instance/ephemeral-enrollment/prepare",
+  "GET /api/instance/ephemeral-enrollment/eligibility",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -1305,6 +1318,34 @@ describe("openapi routes", () => {
     const callback = spec.paths["/api/tools/oauth/tailscale/callback"].get;
     expect(callback.responses["303"].headers).toMatchObject({ Location: { schema: { type: "string" } }, "Cache-Control": { schema: { enum: ["no-store"] } } });
     expect(callback.parameters).toContainEqual(expect.objectContaining({ in: "query", name: "state", required: true, schema: expect.objectContaining({ maxLength: 128 }) }));
+  });
+
+  it("documents board-owned onboarding chat and visible welcome operations", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/chats/{agentRef}/onboarding";
+    for (const path of [base, `${base}/greeting`]) {
+      const operation = spec.paths[path]?.post;
+      expect(operation).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["200"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation.responses["404"]).toBeDefined();
+    }
+    expect(spec.paths[`${base}/greeting`].post.responses["200"].content["application/json"].schema)
+      .toMatchObject({ type: "object", required: ["started"], properties: { started: { type: "boolean" } } });
+  });
+
+  it("documents bounded bulk keyed document reads for native discovery", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/issue-documents"].get;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "query", name: "key", required: true }),
+      expect.objectContaining({ in: "query", name: "issueIds", required: true, schema: expect.objectContaining({ type: "string", maxLength: 8000 }) }),
+      expect.objectContaining({ in: "query", name: "includeBody", required: false, schema: expect.objectContaining({ enum: ["true", "false"] }) }),
+    ]));
+    expect(operation.responses["413"]).toBeDefined();
+    expect(operation.description).toContain("save_api_response");
   });
 
   it("covers the mounted server routes exactly", () => {

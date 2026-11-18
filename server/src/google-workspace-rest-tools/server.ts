@@ -7,6 +7,7 @@ import { callGoogleWorkspaceRestTool, listGoogleWorkspaceRestTools, type GoogleW
 export interface GoogleWorkspaceRestServerOptions {
   fetch?: GoogleFetch;
   timeoutMs?: number;
+  maxResultBytes?: number;
 }
 
 export function createGoogleWorkspaceRestServer(service: GoogleWorkspaceRestService, options: GoogleWorkspaceRestServerOptions = {}): Server {
@@ -26,6 +27,7 @@ export function createGoogleWorkspaceRestServer(service: GoogleWorkspaceRestServ
       fetch: options.fetch,
       signal: extra.signal,
       timeoutMs: options.timeoutMs,
+      maxResultBytes: options.maxResultBytes,
     });
   });
   return server;

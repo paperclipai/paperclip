@@ -5,8 +5,7 @@ import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, sql } fro
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
   heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { extractIssueReferenceMatches } from "@paperclipai/shared";
-import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { instanceSettingsService } from "./instance-settings.js";
+import { appendHeartbeatRunEventBatch } from "./heartbeat-run-events.js";
 import { conflict, forbidden, notFound } from "../errors.js";
 
 export const CHAT_COMPLETION_WAKE_REASON = "chat_task_completed";
@@ -149,13 +148,24 @@ export async function recordCompletedHandoffRead(db: Db, input: {
   companyId: string; agentId: string; runId: string;
   task: { id: string; status: string; statusVersion?: number | null };
 }) {
-  if (input.task.status !== "done" || typeof input.task.statusVersion !== "number") return;
-  const [handoff] = await db.select({ agentId: handoffs.agentId }).from(handoffs)
-    .where(and(eq(handoffs.taskId, input.task.id), eq(handoffs.companyId, input.companyId)));
-  if (handoff?.agentId !== input.agentId) return;
-  await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
+  await recordCompletedHandoffReads(db, { ...input, tasks: [input.task] });
+}
+
+/** One lookup and one event append statement for a batch; payloads stay compatible with single reads. */
+export async function recordCompletedHandoffReads(db: Db, input: {
+  companyId: string; agentId: string; runId: string;
+  tasks: ReadonlyArray<{ id: string; status: string; statusVersion?: number | null }>;
+}) {
+  const completed = input.tasks.filter(task => task.status === "done" && typeof task.statusVersion === "number");
+  if (!completed.length) return;
+  const rows = await db.select({ taskId: handoffs.taskId }).from(handoffs)
+    .where(and(inArray(handoffs.taskId, completed.map(task => task.id)), eq(handoffs.companyId, input.companyId), eq(handoffs.agentId, input.agentId)));
+  const matching = new Set(rows.map(row => row.taskId));
+  await appendHeartbeatRunEventBatch(db, completed.filter(task => matching.has(task.id)).map(task => ({
+    companyId: input.companyId, runId: input.runId, agentId: input.agentId,
     eventType: COMPLETED_HANDOFF_READ_EVENT, stream: "system", level: "info",
-    payload: { taskId: input.task.id, statusVersion: input.task.statusVersion } });
+    payload: { taskId: task.id, statusVersion: task.statusVersion },
+  })));
 }
 
 /** A reply in this conversation already reported this completion when a turn of the same
@@ -318,7 +328,6 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (!row || !current(row)) {
         await db.update(deliveries).set({ status: "superseded" }).where(eq(deliveries.id, id)); return;
       }
-      if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) return;
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, row.handoff.agentId), eq(agents.companyId, claimed.companyId)));
       if (!agent || ["paused", "terminated"].includes(agent.status)) return;
       const key = `chat-completion:${id}:${claimed.attempts}`;

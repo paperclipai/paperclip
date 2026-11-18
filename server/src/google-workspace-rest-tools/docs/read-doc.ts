@@ -1,9 +1,9 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { fileIdArg, sizedResult } from "../documents-shared.js";
+import { fileIdArg } from "../documents-shared.js";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
-import { defineTool } from "../tool.js";
+import { defineTool, structuredResult } from "../tool.js";
 import { DOCS_HOST, documentPath, type RestDocument } from "./document.js";
 import { renderDocument, type SuggestionsView } from "./render.js";
 
@@ -38,7 +38,7 @@ export async function readDocument(http: GoogleHttp, input: ReadDocArgs): Promis
 
 export function readDocResult(document: RestDocument, input: ReadDocArgs, view: SuggestionsView = "SUGGESTIONS_INLINE"): CallToolResult {
   const content = renderDocument(document, { commentsRequested: input.commentsIncluded === true, suggestionsView: view });
-  return sizedResult({ content }, "document", "Google Docs cannot return part of a document through this tool.");
+  return structuredResult({ content });
 }
 
 export const readDoc = defineTool({
@@ -68,6 +68,7 @@ export const readDoc = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
   args,
+  whenTooLarge: "This tool cannot read part of a document. Read it without commentsIncluded if that was set, or read only its text with read_file_content.",
   async run(input, http) {
     const { document, view } = await readDocument(http, input);
     return readDocResult(document, input, view);

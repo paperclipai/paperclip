@@ -5,9 +5,12 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ISSUE_THREAD_INTERACTION_KINDS as INTERACTION_KINDS,
+  ISSUE_THREAD_INTERACTION_KINDS,
   type InteractionResolverGovernance,
 } from "@paperclipai/shared";
+
+// Routine offers are always answered by a person, so they have no audience row.
+const INTERACTION_KINDS = ISSUE_THREAD_INTERACTION_KINDS.filter((kind) => kind !== "suggest_routine" && kind !== "propose_responsibility_bar" && kind !== "propose_automation" && kind !== "propose_dashboard_changes");
 import {
   GOVERNANCE_UNSET,
   InteractionGovernancePanel,
@@ -159,8 +162,12 @@ describe("InteractionGovernancePanel", () => {
     expect(listbox?.className).toContain("max-w-(--sz-280px)");
   });
 
-  it("renders a select for every interaction kind", () => {
+  it("renders a select for every governable interaction kind", () => {
     const { host } = renderPanel();
+    expect(host.querySelector('[data-testid="governance-suggest_routine-default"]')).toBeNull();
+    expect(host.querySelector('[data-testid="governance-propose_responsibility_bar-default"]')).toBeNull();
+    expect(host.querySelector('[data-testid="governance-propose_automation-default"]')).toBeNull();
+    expect(host.querySelector('[data-testid="governance-propose_dashboard_changes-default"]')).toBeNull();
     expect(host.querySelectorAll('[data-testid$="-default"]')).toHaveLength(
       INTERACTION_KINDS.length,
     );

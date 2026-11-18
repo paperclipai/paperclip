@@ -14,6 +14,7 @@ import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { currentNativeWorkspaceRecoveryResult } from "./native-workspace-recovery-binding.js";
 import { withWorkspaceLockKeepalive } from "./native-workspace-lock-keepalive.js";
+import { liveNativeFinalizationReserved } from "./live-native-finalization.js";
 import {
   currentNativeControllerIdentity,
   type NativeControllerIdentity,
@@ -105,9 +106,13 @@ export function nativeWorkspaceFinalizationOwnerCanUpgrade(profile: Record<strin
  * There is deliberately no wall-clock timeout that can steal a slow export.
  */
 export async function withNativeWorkspaceFinalizationOwnership<T>(
-  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string; remoteWorkspaceId?: string },
+  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string; remoteWorkspaceId?: string;
+    /** The run's own live heartbeat; every other caller yields to it. */
+    liveHeartbeat?: boolean },
   action: (ownership: NativeWorkspaceFinalizationOwnership) => Promise<T>,
 ): Promise<{ acquired: false; reason: NativeWorkspaceFinalizationWaitReason } | { acquired: true; value: T }> {
+  // Its release wakes the workers again.
+  if (!input.liveHeartbeat && liveNativeFinalizationReserved(input.runId)) return { acquired: false, reason: "owner_active" };
   const identity = await currentNativeControllerIdentity();
   const processGroupId = await currentProcessGroupId();
   const deployment = currentDeploymentIdentity();

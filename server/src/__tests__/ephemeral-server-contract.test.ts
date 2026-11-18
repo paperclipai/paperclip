@@ -42,7 +42,7 @@ it("requires remote workspace authority and native execution independently of pr
   expect(() => assertEphemeralNativeRuntime(false)).not.toThrow();
 });
 
-it.each(["claude_local", "codex_local"])("admits %s over SSH only with durable remote workspace authority", adapterType => {
+it.each(["claude_local", "codex_local", "cursor", "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"])("admits %s over SSH only with durable remote workspace authority", adapterType => {
   vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
   vi.stubEnv("DATABASE_URL", config.databaseUrl);
   vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");

@@ -1,4 +1,5 @@
 import { GoogleToolError } from "../errors.js";
+import { byteCount } from "../tool.js";
 import type { GoogleHttp, GoogleRequest } from "../google-http.js";
 import {
   DRIVE_HOST,
@@ -10,7 +11,6 @@ import {
   GOOGLE_SHEET,
   GOOGLE_SLIDES,
   isGoogleType,
-  MAX_CONTENT_BYTES,
   type RestFile,
 } from "./file.js";
 
@@ -52,14 +52,14 @@ export function mediaRequest(id: string, revision?: string): GoogleRequest {
   return { method: "GET", host: DRIVE_HOST, path, query: { alt: "media", supportsAllDrives: revision ? undefined : true } };
 }
 
-export function tooLargeContent(advice: string, size?: number): GoogleToolError {
-  const what = size === undefined ? "This file's content is" : `This file is ${size} bytes,`;
-  return new GoogleToolError("too_large", `${what} more than the ${MAX_CONTENT_BYTES} bytes this tool returns, so nothing was returned. ${advice}`);
+export function tooLargeContent(advice: string, maxBytes: number, size?: number): GoogleToolError {
+  const what = size === undefined ? "This file's content is" : `This file is ${byteCount(size)} bytes,`;
+  return new GoogleToolError("too_large", `${what} more than the ${byteCount(maxBytes)} bytes this tool can return, so nothing was returned. ${advice}`);
 }
 
-export function assertWithinCap(file: RestFile, advice: string): void {
+export function assertWithinCap(file: RestFile, advice: string, maxBytes: number): void {
   const size = Number(file.size ?? "0");
-  if (size > MAX_CONTENT_BYTES) throw tooLargeContent(advice, size);
+  if (size > maxBytes) throw tooLargeContent(advice, maxBytes, size);
 }
 
 export function exportFormat(mimeType: string, requested: string | undefined): string {
@@ -72,14 +72,14 @@ export function exportFormat(mimeType: string, requested: string | undefined): s
   return requested;
 }
 
-export function downloadPlan(id: string, file: RestFile, exportMimeType: string | undefined, revision: string | undefined, advice: string): ContentPlan {
+export function downloadPlan(id: string, file: RestFile, exportMimeType: string | undefined, revision: string | undefined, advice: string, maxBytes: number): ContentPlan {
   const mimeType = file.mimeType ?? "application/octet-stream";
   if (isGoogleType(mimeType)) {
     const target = exportFormat(mimeType, exportMimeType);
     if (revision) throw new GoogleToolError("unsupported", "Earlier revisions of Google Docs, Sheets, Slides and other Google files cannot be downloaded with this tool. Omit revisionId to export the current version.");
     return { request: exportRequest(id, target), contentType: target };
   }
-  if (!revision) assertWithinCap(file, advice);
+  if (!revision) assertWithinCap(file, advice, maxBytes);
   return { request: mediaRequest(id, revision), contentType: mimeType };
 }
 
@@ -87,11 +87,11 @@ export async function readContentMeta(id: string, http: GoogleHttp): Promise<Res
   return http.send<RestFile>(contentMetaRequest(id));
 }
 
-export async function fetchContent(plan: ContentPlan, http: GoogleHttp, advice: string): Promise<Buffer> {
+export async function fetchContent(plan: ContentPlan, http: GoogleHttp, advice: string, maxBytes: number): Promise<Buffer> {
   try {
-    return (await http.download(plan.request, MAX_CONTENT_BYTES)).data;
+    return (await http.download(plan.request, maxBytes)).data;
   } catch (error) {
-    if (error instanceof GoogleToolError && error.kind === "too_large" && error.httpStatus !== 403) throw tooLargeContent(advice);
+    if (error instanceof GoogleToolError && error.kind === "too_large" && error.httpStatus !== 403) throw tooLargeContent(advice, maxBytes);
     throw error;
   }
 }

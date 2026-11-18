@@ -107,6 +107,8 @@ export interface InstanceExperimentalSettings {
   enableBetaSkills: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
+  /** Areas of responsibility: per-user areas with the projects, tasks and routines under them. */
+  enableResponsibilities: boolean;
   enableDecisions: boolean;
   /** Show company connection settings and allow contextual fast-response acknowledgements. */
   enableFastResponses: boolean;

@@ -19,19 +19,6 @@ export const NATIVE_RUNTIME_RESOLVER_VERSION = "paperclip-runner-v1" as const;
 /** Resolver version for the richer native runtime profile used by runnerd. */
 export const NATIVE_RUNTIME_PROFILE_RESOLVER_VERSION = "phase6-v1" as const;
 
-export type HeartbeatRuntimeResolution =
-  | {
-      kind: "legacy";
-      resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
-      reason: "direct_adapter" | "persisted_legacy_selection";
-    }
-  | {
-      kind: "native";
-      resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
-      reason: "explicit_paperclip_runner" | "persisted_native_selection";
-      provider: PaperclipRunnerProviderProfile["provider"];
-    };
-
 export type NativeRuntimeResolution =
   | {
       kind: "legacy";
@@ -188,94 +175,6 @@ export function resolveNativeRuntimeMode(input: {
       protocolVersion: 1,
     },
     authorityDecision: rollout,
-  };
-}
-
-/**
- * Backward-compatible heartbeat selection API. New runnerd code consumes the
- * richer profile from resolveHeartbeatNativeRuntimeMode; this public seam
- * keeps the original result shape, reason codes, and resolver version.
- */
-export function resolveHeartbeatRuntimeMode(input: {
-  persisted: {
-    runtimeMode: string | null;
-    runtimeModeResolvedAt: Date | null;
-  };
-  enabled: boolean;
-  museEnabled?: boolean;
-  dotEnabled?: boolean;
-  grokEnabled?: boolean;
-  adapterType: string | null;
-  adapterConfig: unknown;
-  agentStatus: string;
-  issue: { workMode: string } | null;
-  executionTarget: { kind?: string } | null | undefined;
-}): HeartbeatRuntimeResolution {
-  if (input.persisted.runtimeModeResolvedAt) {
-    if (input.persisted.runtimeMode === "native") {
-      return {
-        kind: "native",
-        resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-        reason: "persisted_native_selection",
-        provider: "codex",
-      };
-    }
-    return {
-      kind: "legacy",
-      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-      reason: "persisted_legacy_selection",
-    };
-  }
-
-  let resolution: NativeRuntimeResolution;
-  try {
-    resolution = resolveNativeRuntimeMode({
-      enabled: input.enabled,
-      museEnabled: input.museEnabled,
-      dotEnabled: input.dotEnabled,
-      grokEnabled: input.grokEnabled,
-      runtimeConfig: {},
-      adapterConfig: input.adapterConfig,
-      agent: {
-        status: input.agentStatus,
-        adapterType: input.adapterType,
-      },
-      issue: input.issue
-        ? { id: "heartbeat-runtime-selection", workMode: input.issue.workMode }
-        : null,
-      target: input.executionTarget,
-      workspaceId: null,
-    });
-  } catch (error) {
-    if (error instanceof NativeRuntimeEligibilityError) {
-      throw new NativeRunnerSelectionError(error.code, error.message);
-    }
-    throw error;
-  }
-  if (resolution.kind === "legacy") {
-    return {
-      kind: "legacy",
-      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-      reason: "direct_adapter",
-    };
-  }
-  return {
-    kind: "native",
-    resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-    reason: "explicit_paperclip_runner",
-    provider: resolution.profile.backend === "opencode_server"
-      ? "opencode"
-      : resolution.profile.backend === "claude_managed_agents_api"
-        ? "claude_managed"
-        : resolution.profile.backend === "aws_agentcore_harness_api"
-          ? "aws_agentcore"
-      : resolution.profile.backend === "muse_external" ? "muse"
-      : resolution.profile.backend === "grok_bot_mcp" ? "grok_bot"
-      : resolution.profile.backend === "openai_dot_mcp" ? "openai_dot"
-      : resolution.profile.backend === "cursor_cloud_api" ? "cursor_cloud"
-      : resolution.profile.backend === "acpx_runtime"
-          ? "acpx"
-          : "codex",
   };
 }
 

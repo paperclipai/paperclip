@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
 import { verifiedCloudControlClaims } from "../middleware/cloud-control.js";
-import { prepareOnlineEphemeralEnrollment } from "../services/ephemeral-enrollment.js";
+import { prepareOnlineEphemeralEnrollment, readOnlineEphemeralEnrollmentEligibility } from "../services/ephemeral-enrollment.js";
 
 export function ephemeralEnrollmentRoutes(db: Db) {
   const router = Router();
@@ -15,6 +15,12 @@ export function ephemeralEnrollmentRoutes(db: Db) {
     const claims = verifiedCloudControlClaims(req);
     if (claims?.action !== "ephemeral-enrollment:prepare") { res.status(403).json({ error: "cloud_control_required" }); return; }
     res.json(await prepareOnlineEphemeralEnrollment(db, req.body.attemptId, claims));
+  });
+  router.get("/instance/ephemeral-enrollment/eligibility", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const claims = req.actor.source === "cloud_control" ? verifiedCloudControlClaims(req) : undefined;
+    if (claims?.action !== "ephemeral-enrollment:eligibility") { res.status(403).json({ error: "cloud_control_required" }); return; }
+    res.json(await readOnlineEphemeralEnrollmentEligibility(db));
   });
   return router;
 }

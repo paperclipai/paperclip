@@ -89,6 +89,7 @@ export const listLabels = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer labels with a smaller pageSize.",
   async run(input, http) {
     return listLabelsResult(await http.send<GmailLabelList>(listLabelsRequest()), input);
   },

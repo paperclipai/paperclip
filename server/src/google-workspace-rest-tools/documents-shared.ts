@@ -1,8 +1,6 @@
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "./errors.js";
 import type { GoogleHttp, GoogleRequest } from "./google-http.js";
-import { boundedStructuredResult, MAX_RESULT_BYTES } from "./tool.js";
 
 export const MAX_BATCH_REQUESTS = 500;
 export const OBJECT_PLACEHOLDER = "￼";
@@ -14,11 +12,6 @@ export const batchRequestArg = z.record(z.string(), z.unknown()).refine(
   (value) => Object.keys(value).length === 1,
   "Each request must name exactly one kind of update, such as insertText",
 );
-
-export function sizedResult(value: Record<string, unknown>, what: string, hint: string): CallToolResult {
-  return boundedStructuredResult(value, MAX_RESULT_BYTES, (bytes) =>
-    `This ${what} is too large to return in one result (${Math.ceil(bytes / 1000)} KB; the limit is ${MAX_RESULT_BYTES / 1000} KB). Nothing was returned. ${hint}`);
-}
 
 const CONFLICT_STATUSES = new Set(["FAILED_PRECONDITION", "ABORTED"]);
 const CONFLICT_REASON = /REVISION|CONDITION_NOT_MET|conditionNotMet/i;

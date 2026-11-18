@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SidebarShell, SIDEBAR_RAIL_WIDTH } from "./SidebarShell";
+import { SidebarShell } from "./SidebarShell";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -174,31 +174,12 @@ describe("SidebarShell", () => {
     expect(panel().style.width).toBe("240px");
   });
 
-  it("reserves only the rail width when collapsed and hides the resize handle", () => {
+  it("hides all sidebar width when closed", () => {
     window.localStorage.setItem("test.sidebar.width", "320");
 
     act(() => {
       root.render(
-        <SidebarShell open collapsed resizable storageKey="test.sidebar.width">
-          <div>Sidebar</div>
-        </SidebarShell>,
-      );
-    });
-
-    // Reserved spacer and panel both collapse to the rail; content never reflows
-    // beyond the rail, and the rail is not user-resizable.
-    expect(spacer().style.width).toBe(`${SIDEBAR_RAIL_WIDTH}px`);
-    expect(panel().style.width).toBe(`${SIDEBAR_RAIL_WIDTH}px`);
-    expect(panel().getAttribute("data-sidebar-overlay")).toBeNull();
-    expect(handle()).toBeNull();
-  });
-
-  it("hides all sidebar width when closed, even if pinned collapsed", () => {
-    window.localStorage.setItem("test.sidebar.width", "320");
-
-    act(() => {
-      root.render(
-        <SidebarShell open={false} collapsed resizable storageKey="test.sidebar.width">
+        <SidebarShell open={false} resizable storageKey="test.sidebar.width">
           <div>Sidebar</div>
         </SidebarShell>,
       );
@@ -210,27 +191,7 @@ describe("SidebarShell", () => {
     expect(handle()).toBeNull();
   });
 
-  it("overlays content while peeking without expanding the reserved spacer", () => {
-    window.localStorage.setItem("test.sidebar.width", "300");
-
-    act(() => {
-      root.render(
-        <SidebarShell open collapsed peeking storageKey="test.sidebar.width">
-          <div>Sidebar</div>
-        </SidebarShell>,
-      );
-    });
-
-    // The reserved spacer stays at the rail (no page reflow) while the panel
-    // grows to the expanded width and gets overlay styling.
-    expect(spacer().style.width).toBe(`${SIDEBAR_RAIL_WIDTH}px`);
-    expect(panel().style.width).toBe("300px");
-    expect(panel().getAttribute("data-sidebar-overlay")).toBe("");
-    expect(panel().className).toContain("shadow-lg");
-    expect(panel().className).toContain("z-30");
-  });
-
-  it("opens and closes instantly with no width transition (PAP-10676)", () => {
+  it("opens and closes instantly with no width transition", () => {
     act(() => {
       root.render(
         <SidebarShell open>

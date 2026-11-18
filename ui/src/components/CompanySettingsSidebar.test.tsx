@@ -56,7 +56,6 @@ vi.mock("@/context/SidebarContext", () => ({
 }));
 
 vi.mock("./SidebarNavItem", () => ({
-  SidebarNavExpandedProvider: ({ children }: { children: React.ReactNode }) => children,
   SidebarNavItem: (props: {
     to: string;
     label: string;

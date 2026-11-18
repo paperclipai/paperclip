@@ -8,6 +8,8 @@ import { sendAgentChatMessage } from "../services/agent-chat-messages.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
+import * as issueServices from "../services/issues.js";
+import { agentService } from "../services/agents.js";
 import { activityService } from "../services/activity.js";
 import { recordAcceptedChatHandoff } from "../services/chat-completion-delivery.js";
 import { conversationReplay, deliverConversationComments, undeliveredConversationComments } from "../services/agent-conversations.js";
@@ -52,6 +54,72 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     action: "issue.cross_issue_influence_observed", entityType: "issue", entityId: f.issueId,
     details: { kind: ["comment", "update", "interaction_resolution"][index % 3] },
   })));
+  const waitForBlockedBy = (pid: number) => expect.poll(async () => {
+    const [state] = await server.db.execute<{ waiting: boolean }>(sql`select exists (
+      select 1 from pg_stat_activity where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))
+    ) as waiting`);
+    return state.waiting;
+  }).toBe(true);
+
+  it("commits a rename and a proactive message contending for an existing chat", async () => {
+    const f = await fixture(), chat = (await send(f))!;
+    const held = Promise.withResolvers<number>(), resume = Promise.withResolvers<void>();
+    const body = "A message sent while its agent is renamed";
+    const delivery = sendAgentChatMessage(server.db, f, { body, idempotencyKey: "concurrent-rename" }, {
+      authorizeNative: async tx => {
+        const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        held.resolve(backend.pid);
+        await resume.promise;
+      },
+    });
+    const pid = await Promise.race([held.promise, delivery.then(() => { throw new Error("Delivery ended before taking chat locks"); })]);
+    const rename = agentService(server.db).update(f.agentId, { name: "Renamed message sender" });
+    const outcomes = Promise.allSettled([delivery, rename]);
+    try {
+      await waitForBlockedBy(pid);
+    } finally {
+      resume.resolve();
+      await outcomes;
+    }
+    const settled = await outcomes;
+    const failures = settled.filter(result => result.status === "rejected").map(result =>
+      `${result.reason?.cause?.code ?? result.reason?.code}: ${result.reason?.cause?.message ?? result.reason?.message}`);
+    expect(settled, failures.join("\n")).toMatchObject([{ status: "fulfilled" }, { status: "fulfilled" }]);
+    expect((await issueService(server.db).getById(chat.conversationId))?.title).toBe("Chat with Renamed message sender");
+    expect(await server.db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, chat.conversationId)))
+      .toContainEqual({ body });
+  });
+
+  it("serializes a rename with proactive chat creation and retains the current title", async () => {
+    const f = await fixture();
+    const reached = Promise.withResolvers<number>(), resume = Promise.withResolvers<void>();
+    const realIssueService = issueServices.issueService;
+    const spy = vi.spyOn(issueServices, "issueService").mockImplementation(database => {
+      const service = realIssueService(database);
+      return { ...service, create: async (companyId, data, transaction) => {
+        if (data.conversationAgentId === f.agentId) {
+          const [backend] = await database.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+          reached.resolve(backend.pid);
+          await resume.promise;
+        }
+        return service.create(companyId, data, transaction);
+      } };
+    });
+    const delivery = send(f);
+    const pid = await Promise.race([reached.promise, delivery.then(() => { throw new Error("Delivery ended before chat creation"); })]);
+    const rename = agentService(server.db).update(f.agentId, { name: "Renamed chat sender" });
+    const outcomes = Promise.allSettled([delivery, rename]);
+    try {
+      await waitForBlockedBy(pid);
+    } finally {
+      resume.resolve();
+      spy.mockRestore();
+      await outcomes;
+    }
+    expect(await outcomes).toMatchObject([{ status: "fulfilled" }, { status: "fulfilled" }]);
+    const receipt = (await delivery)!;
+    expect((await issueService(server.db).getById(receipt.conversationId))?.title).toBe("Chat with Renamed chat sender");
+  });
 
   it.each(["native", "http"])("enforces the shared run cap for %s delivery without creating an empty chat", async transport => {
     const f = await fixture();
