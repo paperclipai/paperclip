@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { countryRequiresAnalyticsConsent, timeZoneRequiresAnalyticsConsent } from "./analytics-consent.js";
 
 describe("countryRequiresAnalyticsConsent", () => {
-  it.each(["DE", "fr", " GB ", "CH", "NO", "IS", "LI", "SJ", "RE", "JE", "UK", "uk", "EL", "GR"])("requires consent for %s", (country) => {
+  it.each(["DE", "fr", " GB ", "CH", "NO", "IS", "LI", "SJ", "RE", "JE", "UK", "uk", "EL", "GR", "EU", "EZ"])("requires consent for %s", (country) => {
     expect(countryRequiresAnalyticsConsent(country)).toBe(true);
   });
 
@@ -10,7 +10,7 @@ describe("countryRequiresAnalyticsConsent", () => {
     expect(countryRequiresAnalyticsConsent(country)).toBe(false);
   });
 
-  it.each([null, undefined, "", "XX", "ZZ", "QQ", "AA", "T1", "DEU", "U"])("cannot tell for %s", (country) => {
+  it.each([null, undefined, "", "XX", "ZZ", "QQ", "AA", "UN", "QO", "XA", "XB", "XK", "T1", "DEU", "U"])("cannot tell for %s", (country) => {
     expect(countryRequiresAnalyticsConsent(country)).toBeNull();
   });
 });
