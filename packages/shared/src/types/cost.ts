@@ -58,10 +58,14 @@ export interface CostDataQualityItem {
   provider: string | null;
   model: string | null;
   reason: CostDataQualityReason;
+  /** A run a company owner can settle with an estimate now. Run items only. */
+  settleable?: boolean;
 }
 
 export interface CostDataQualityReport {
   canRetry: boolean;
+  /** The viewer is a company owner and can settle a run whose final usage is unavailable. */
+  canSettle?: boolean;
   /** Each category is bounded independently so one cannot hide another. */
   events: CostDataQualityItem[];
   runs: CostDataQualityItem[];

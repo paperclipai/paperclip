@@ -69,3 +69,17 @@ PATCH /api/agents/{agentId}
 | 100% | Hard stop — agent is auto-paused |
 
 Budget windows reset on the first of each month (UTC).
+
+## Runs Without Final Usage
+
+A run can stop before its provider sends final usage, for example after a restart or a Stop. Until Paperclip records its cost, the run counts against each budget at the larger of its recorded cost and its reservation (the policy's reserve per run). Other agents keep working while that total stays below the limit. The reserve is an owner-chosen amount. It is not a maximum, and the provider can charge more.
+
+Paperclip records the cost by itself when it receives the final usage or can prove that the run stopped. If it cannot, a company owner can settle the run with an estimate 15 minutes after the run stopped. Paperclip refuses while the run may still be working, while its recovery or environment cleanup is still running, and for any run it will record by itself:
+
+```
+GET /api/companies/{companyId}/costs/runs/{runId}/settlement
+POST /api/companies/{companyId}/costs/runs/{runId}/settlement
+{ "idempotencyKey": "...", "expectedRevision": "<revision from GET>", "estimatedCents": "250", "reason": "Provider console", "confirmStopped": true }
+```
+
+The owner confirms that the run stopped. The estimate cannot be lower than the recorded cost. Paperclip records one estimated charge, keeps the recorded usage as an audited correction, and releases the reservation. The estimate is not a provider charge. A provider receipt that arrives later is kept for review and is never charged again.

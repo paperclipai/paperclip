@@ -50,6 +50,36 @@ export const adjustCostSchema = z.object({
 });
 export const repairAccountingSchema = z.object({ fingerprint: z.string().regex(/^[a-f0-9]{64}$/), reason: z.string().trim().min(1).max(1000) });
 export const retryAccountingSchema = z.object({ runId: z.string().uuid() });
+/** An owner settles a stopped run whose final usage receipt is missing. The
+ * owner, not Paperclip, confirms that the run stopped. */
+export const settleRunAccountingSchema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(200),
+  expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  estimatedCents: exactCentsSchema,
+  reason: z.string().trim().min(1).max(1000),
+  confirmStopped: z.literal(true),
+});
+export type SettleRunAccounting = z.input<typeof settleRunAccountingSchema>;
+export interface RunAccountingSettlementPreview {
+  runId: string;
+  agentId: string;
+  status: string;
+  finishedAt: string | null;
+  provider: string | null;
+  model: string | null;
+  billingType: string | null;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  /** Cost Paperclip saw before the final receipt was lost. */
+  recordedCents: string;
+  /** Held budget reservation. Settlement releases it. */
+  reservedCents: string;
+  /** Paperclip's best estimate: the recorded cost or a rate-card price of the
+   * recorded tokens, whichever is higher. The owner may raise it. */
+  proposedCents: string;
+  revision: string;
+}
 export const importProviderCostsSchema = z.object({
   provider: z.enum(["openai", "anthropic"]),
   secretId: z.string().uuid(),

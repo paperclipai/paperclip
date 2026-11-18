@@ -8,7 +8,7 @@ import { importProviderCostsSchema } from "@paperclipai/shared";
 import { accountingIntegrityService } from "../services/accounting-integrity.js";
 import { costDataQualityReport } from "../services/cost-data-quality.js";
 import { billingReconciliationService } from "../services/billing-reconciliation.js";
-import { adjustCostSchema, importBillingInvoiceSchema, repairAccountingSchema, retryAccountingSchema } from "@paperclipai/shared";
+import { adjustCostSchema, importBillingInvoiceSchema, repairAccountingSchema, retryAccountingSchema, settleRunAccountingSchema } from "@paperclipai/shared";
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
@@ -97,11 +97,40 @@ export function costRoutes(
     return { ...costReaderActor(req, companyId), canManage: await canManageAiConnections(db, req, companyId) };
   }
 
+  /** An estimate changes recorded spend without a provider receipt. Only a
+   * company owner may approve one. */
+  function isCompanyOwner(req: Parameters<typeof assertCompanyAccess>[0], companyId: string) {
+    const membership = req.actor.memberships?.find(item => item.companyId === companyId);
+    return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true
+      || (membership?.status === "active" && membership.membershipRole === "owner");
+  }
+  function settlementRunId(req: Parameters<typeof assertCompanyAccess>[0], companyId: string, readOnly: boolean) {
+    if (readOnly || !isCompanyOwner(req, companyId)) throw forbidden("Only a company owner can settle a run's cost with an estimate.");
+    const runId = z.string().uuid().safeParse(req.params.runId);
+    if (!runId.success) throw badRequest("Invalid run ID");
+    return runId.data;
+  }
+  const settlementService = () =>
+    accountingIntegrityService(db, budgetHooks, heartbeat.recoverLegacyAccountingReceipt, heartbeat.isRunExecutionLive);
+
   router.get("/companies/:companyId/costs/data-quality", async (req, res) => {
     const companyId = req.params.companyId as string;
     const actor = costReaderActor(req, companyId);
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
-    res.json(await costDataQualityReport(db, companyId, !actor.readOnly, parseCostDateRange(req.query)));
+    res.json({ ...await costDataQualityReport(db, companyId, !actor.readOnly, parseCostDateRange(req.query)),
+      canSettle: !actor.readOnly && isCompanyOwner(req, companyId) });
+  });
+  router.get("/companies/:companyId/costs/runs/:runId/settlement", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const actor = costReaderActor(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    res.json(await settlementService().settlementPreview(companyId, settlementRunId(req, companyId, actor.readOnly)));
+  });
+  router.post("/companies/:companyId/costs/runs/:runId/settlement", validate(settleRunAccountingSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const actor = costReaderActor(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    res.json(await settlementService().settle(companyId, settlementRunId(req, companyId, actor.readOnly), req.body, actor.userId));
   });
   router.post("/companies/:companyId/costs/retry-accounting", validate(retryAccountingSchema), async (req, res) => {
     const companyId = req.params.companyId as string;

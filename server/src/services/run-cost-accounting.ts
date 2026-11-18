@@ -1,11 +1,15 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
-import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
+import { centsToUnits, centsToUsd, compareCents, normalizeCents, usdToCents, usdToUnits, unitsToCents, type RunAccountingSettlementPreview } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, responsibilitySummaryInvocations, type Db } from "@paperclipai/db";
+import { budgetReservations, agents, costEvents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, responsibilitySummaryInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
-import { conflict } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
+import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
+import { knownRunCostCents } from "./budget-exposure.js";
+import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { logActivity } from "./activity-log.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
 import { createCostEventInTransaction } from "./costs.js";
@@ -251,9 +255,121 @@ function estimateLostReceipt(usage: Record<string, unknown>) {
     evidence: [evidence, "final receipt lost; observed usage is a lower bound"].filter(Boolean).join("; ") } };
 }
 
+/** A company owner's decision to settle a stopped run whose final usage
+ * receipt is missing. The owner's confirmation that the run stopped replaces
+ * the closure evidence Paperclip could not obtain: a restart in another
+ * container, a process lost before its identity was saved, or a Stop that cut
+ * a turn short. Nothing here is a provider receipt. */
+export interface OwnerRunSettlement {
+  actorId: string;
+  idempotencyKey: string;
+  expectedRevision: string;
+  estimatedCents: string;
+  reason: string;
+  /** The run is still executing in this server. */
+  isLive: (runId: string) => boolean;
+}
+
+export const ownerSettlementCorrectionKey = (idempotencyKey: string) => `run-settlement:${idempotencyKey}`;
+/** One key is one decision: the same run, estimate, reason and owner. */
+export const ownerSettlementHash = (runId: string, owner: Pick<OwnerRunSettlement, "actorId" | "estimatedCents" | "reason">) =>
+  receiptFingerprint({ schema: "paperclip.run-settlement.v1", runId, actorId: owner.actorId,
+    estimatedCents: normalizeCents(owner.estimatedCents), reason: owner.reason });
+
+/** An owner may settle a run only after the wait the Costs page shows before
+ * it calls final usage unavailable. The wait outlasts the accounting closure
+ * timeout, so a remote runner's reconnect grace and every automatic accounting
+ * bound end first. */
+export const OWNER_SETTLEMENT_WAIT_MS = ACCOUNTING_CLOSURE_TIMEOUT_MS + 5 * 60_000;
+
+const unsettledNativeCoordinator = sql`${heartbeatRuns.runtimeMode} = 'native'
+  and exists (select 1 from ${nativeRunFinalizations} recovering
+    where recovering.run_id = ${heartbeatRuns.id} and recovering.company_id = ${heartbeatRuns.companyId}
+      and recovering.result_id is null and recovering.phase <> 'terminal_failure')`;
+
+/** Why an owner cannot settle a run yet. The Costs page and the settlement
+ * endpoint read these same predicates, so the page offers only settlements the
+ * endpoint accepts. Execution in this server's memory and environment cleanup
+ * are checked by the endpoint alone. */
+function ownerSettlementBlockers(at: Date) {
+  const cutoff = sql`${at.toISOString()}::timestamptz`;
+  const captureFailed = sql`coalesce(${heartbeatRuns.usageJson}->>'accountingCaptureFailed' = 'true', false)`;
+  return {
+    // A durable owner may still execute, stop or retry the run.
+    working: sql<boolean>`(${heartbeatRuns.status} not in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
+      or ${heartbeatRuns.controllerLeaseExpiresAt} > ${cutoff}
+      or (${heartbeatRuns.scheduledRetryAt} is not null
+        and (${heartbeatRuns.finishedAt} is null or ${heartbeatRuns.scheduledRetryAt} > ${heartbeatRuns.finishedAt}))
+      or ${heartbeatRuns.executionControlDeadlineAt} is not null) is true`,
+    recorded: sql<boolean>`(${heartbeatRuns.costAccountingPending} is not true or ${heartbeatRuns.costAccountedAt} is not null)`,
+    recovering: sql<boolean>`(${unsettledNativeCoordinator}) is true`,
+    // Accounting settles these by itself, now or at its own bound: a receipt
+    // that is not missing, provider work that never started, a closed receipt
+    // source, a native run whose recovery ended (the closure timeout settles
+    // it) and a failed capture outside native recovery (its bound settles it).
+    automatic: sql<boolean>`(
+      (${heartbeatRuns.usageJson}->>'accountingReceiptReady' is distinct from 'false' and not ${captureFailed})
+      or (not ${captureFailed} and (${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
+        or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'))
+      or (${closedNativeReceiptSource}) or (${closedLegacyReceiptSource}) or (${nativeProviderWorkNeverStarted})
+      or (${heartbeatRuns.runtimeMode} = 'native' and ${settledNativeCoordinator})
+      or (${captureFailed} and ${heartbeatRuns.runtimeMode} is distinct from 'native')) is true`,
+    waiting: sql<boolean>`(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt})
+      > ${cutoff} - make_interval(secs => ${OWNER_SETTLEMENT_WAIT_MS / 1000})) is not false`,
+  };
+}
+
+/** The run has no durable reason to refuse an owner's settlement. */
+export function ownerSettlementEligible(at = new Date()) {
+  const blockers = ownerSettlementBlockers(at);
+  return sql`not (${blockers.working}) and not (${blockers.recorded}) and not (${blockers.recovering})
+    and not (${blockers.automatic}) and not (${blockers.waiting})`;
+}
+
+/** Reads what an owner reviews before settling, and refuses a run that may
+ * still produce usage or that accounting can still settle by itself. The
+ * revision covers the usage and receipts, so settlement refuses a stale review. */
+export async function readRunSettlement(db: Db, companyId: string, runId: string,
+  isLive: (runId: string) => boolean): Promise<RunAccountingSettlementPreview> {
+  const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+  if (!run) throw notFound("Accounting run not found");
+  const usage = object(run.usageJson);
+  const [blocked] = await db.select(ownerSettlementBlockers(new Date())).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+  if (blocked.working || isLive(run.id)) throw conflict("This run may still be working. Settle it after it stops.");
+  if (blocked.recorded) throw conflict("This run's cost is already recorded.");
+  if (blocked.recovering) throw conflict("Paperclip is still recovering this run and may run its provider again.");
+  if (blocked.automatic)
+    throw conflict("Paperclip records this run's cost without an estimate. Use Retry cost recording if it stays pending.");
+  if (blocked.waiting) throw conflict(`Paperclip is still waiting for this run's final usage. An owner can settle it `
+    + `${OWNER_SETTLEMENT_WAIT_MS / 60_000} minutes after it stopped.`);
+  if (await hasPendingRunCleanup(db, companyId, run.id)) throw conflict("This run's environment is still being cleaned up.");
+  const [reserved] = await db.select({ cents: sql<string>`coalesce(sum(${budgetReservations.amountCents}), 0)::text` })
+    .from(budgetReservations).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.runId, run.id),
+      eq(budgetReservations.state, "held")));
+  const receipts = await db.select({ id: runUsageReceipts.id }).from(runUsageReceipts)
+    .where(and(eq(runUsageReceipts.companyId, companyId), eq(runUsageReceipts.runId, run.id))).orderBy(asc(runUsageReceipts.id));
+  const known = normalizeCents(knownRunCostCents(usage) ?? "0");
+  let observed = "0";
+  try { observed = normalizeCents(text(object(usage.budgetExposure).costCents) ?? "0"); } catch { /* proves nothing */ }
+  const recordedCents = compareCents(observed, known) > 0 ? observed : known;
+  const rateCard = estimateLostReceipt(usage)?.costUsdExact;
+  const rateCardCents = rateCard ? usdToCents(rateCard) : "0";
+  const count = (key: string) => amount(usage[key]) ?? 0;
+  return { runId: run.id, agentId: run.agentId, status: run.status, finishedAt: run.finishedAt?.toISOString() ?? null,
+    provider: text(usage.provider), model: text(usage.model), billingType: text(usage.billingType),
+    inputTokens: count("inputTokens"), cachedInputTokens: count("cachedInputTokens"), outputTokens: count("outputTokens"),
+    recordedCents, reservedCents: normalizeCents(reserved?.cents ?? "0"),
+    proposedCents: compareCents(rateCardCents, recordedCents) > 0 ? rateCardCents : recordedCents,
+    revision: receiptFingerprint({ runId: run.id, status: run.status, finishedAt: run.finishedAt?.toISOString() ?? null,
+      usage, receipts: receipts.map(receipt => receipt.id) }) };
+}
+
 /** The run's persisted usage is a durable receipt. Ledger, reservation handoff
- * and acknowledgement commit together, including after a restart or failed run. */
-export async function accountRunCost(db: Db, runId: string, hooks: BudgetServiceHooks = {}, receiptIndex?: UsageReceiptIndex) {
+ * and acknowledgement commit together, including after a restart or failed run.
+ * With `owner`, an owner's confirmation closes a receipt Paperclip cannot close,
+ * and the owner's estimate becomes an audited correction of the final charge. */
+export async function accountRunCost(db: Db, runId: string, hooks: BudgetServiceHooks = {}, receiptIndex?: UsageReceiptIndex,
+  owner?: OwnerRunSettlement) {
   const [identity] = await db.select({ companyId: heartbeatRuns.companyId, status: heartbeatRuns.status,
     pending: heartbeatRuns.costAccountingPending, accountedAt: heartbeatRuns.costAccountedAt,
     issueId: sql<string | null>`${heartbeatRuns.usageJson}->'ledgerScope'->>'issueId'`,
@@ -308,12 +424,23 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     if (text(object(object(run.usageJson).ledgerScope).issueId) !== issueId) {
       throw conflict("Run cost attribution changed. Retry accounting.");
     }
+    // Recheck the owner's review under the run lock, after spooled receipts
+    // were imported: new usage or a closure Paperclip can use voids it.
+    const settlement = owner ? await readRunSettlement(tx, run.companyId, run.id, owner.isLive) : null;
+    if (owner && settlement) {
+      if (settlement.revision !== owner.expectedRevision) throw conflict("This run's usage changed since review. Review it again.");
+      if (compareCents(owner.estimatedCents, settlement.recordedCents) < 0)
+        throw unprocessable("The estimate cannot be lower than the usage Paperclip already recorded.");
+    }
     // A failed capture may follow an older complete attempt. Neither replay
     // nor terminal status can certify that the missing work was free, so it
     // never settles as pre-provider work. It waits for the closure bound and
     // then settles its known usage as possibly incomplete spend.
     const captureFailed = object(run.usageJson).accountingCaptureFailed === true;
-    if (captureFailed && !await captureFailureSettles(tx, run.id)) return false;
+    // readRunSettlement admits a failed capture only when no automatic bound
+    // can ever settle it (a native run without a recovery coordinator), so an
+    // owner's settlement never runs ahead of that bound.
+    if (captureFailed && !settlement && !await captureFailureSettles(tx, run.id)) return false;
     const providerWorkNeverStarted = !captureFailed && run.runtimeMode === "native" && object(run.usageJson).accountingReceiptReady === false
       && await readProviderReceiptClosure(tx, run.id) === "no_provider_work";
     const preProviderFailure = !captureFailed && (object(object(run.resultJson).executionRecovery).providerWorkStarted === false
@@ -326,7 +453,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       if (coordinator && !coordinator.resultId && coordinator.phase !== "terminal_failure") return false;
     }
     const receiptUnavailable = !preProviderFailure && (captureFailed || object(run.usageJson).accountingReceiptReady === false);
-    const receiptClosure = captureFailed ? "timed_out" as const
+    const receiptClosure = settlement ? "owner_confirmed" as const : captureFailed ? "timed_out" as const
       : receiptUnavailable ? await readProviderReceiptClosure(tx, run.id) : null;
     if (receiptUnavailable && !receiptClosure) return false;
     const closureTimedOut = receiptClosure === "timed_out";
@@ -403,7 +530,8 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     const tokensMatch = ["inputTokens", "cachedInputTokens", "outputTokens"].every((key) =>
       parts.reduce((sum, part) => sum + (amount(object(part.usage)[key]) ?? 0), 0) === (amount(usage[key]) ?? 0));
     const costMatches = costUsd !== null && parts.reduce((sum, part) => sum + usdToUnits(amount(part.costUsd) ?? 0), 0n) === usdToUnits(costUsd);
-    const validParts = parts.length > 0 && tokensMatch && costMatches
+    // An owner values the whole run, so it settles as one final charge.
+    const validParts = !settlement && parts.length > 0 && tokensMatch && costMatches
       && parts.every((part) => text(part.model) && amount(part.costUsd) !== null)
       && new Set(parts.map((part) => part.model)).size === parts.length;
     if (validParts) {
@@ -423,6 +551,25 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       }
     } else {
       await createCostEventInTransaction(tx, run.companyId, receipt, publications, undefined, { deferBudgetEvaluation: true });
+    }
+    let ownerSettlement: Record<string, unknown> | null = null;
+    if (owner && settlement) {
+      // The charge above keeps the recorded usage as its reported amount. The
+      // owner's estimate is an audited correction of it, so the original
+      // valuation stays in cost_adjustments, and a late receipt is reviewed
+      // against the owner's valuation instead of being charged again.
+      const [charge] = await tx.select({ id: costEvents.id, exact: sql<string>`${costEvents.costCents}::text` }).from(costEvents)
+        .where(and(eq(costEvents.companyId, run.companyId), eq(costEvents.idempotencyKey, receipt.idempotencyKey)));
+      const estimatedCents = normalizeCents(owner.estimatedCents);
+      await applyCostCorrectionInTransaction(tx, publications, { companyId: run.companyId, eventId: charge.id,
+        idempotencyKey: ownerSettlementCorrectionKey(owner.idempotencyKey), expectedCents: charge.exact, correctedCents: estimatedCents,
+        reason: owner.reason, actorId: owner.actorId, costStatus: "estimated",
+        receiptHash: ownerSettlementHash(run.id, owner),
+        pricing: { source: "operator", version: "run-settlement/v1",
+          evidence: "Owner-approved estimate for a stopped run whose final usage receipt is missing; the run may have spent more" } });
+      ownerSettlement = { actorId: owner.actorId, idempotencyKey: owner.idempotencyKey, reason: owner.reason,
+        estimatedCents, recordedCents: settlement.recordedCents, reservedCents: settlement.reservedCents,
+        costEventId: charge.id, settledAt: new Date().toISOString() };
     }
     await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: text(scope.projectId) });
     // Late usage reported by a later run can arrive before this charge posts.
@@ -447,8 +594,14 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
         // cacheAdjustedCostUsd outranks costUsdExact in every reader, so a
         // lower one would otherwise survive and win.
         ...(observedCostUsd ? { costUsdExact: observedCostUsd, cacheAdjustedCostUsd: null } : {}),
+        ...(ownerSettlement ? { accountingOwnerSettlement: ownerSettlement } : {}),
       })}::jsonb` } : {}),
     }).where(eq(heartbeatRuns.id, run.id));
+    if (ownerSettlement && settlement) await logActivity(tx, { companyId: run.companyId, actorType: "user", actorId: owner!.actorId,
+      action: "cost.accounting_owner_settled", entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
+      details: { ...ownerSettlement, provider: settlement.provider, model: settlement.model, inputTokens: settlement.inputTokens,
+        cachedInputTokens: settlement.cachedInputTokens, outputTokens: settlement.outputTokens,
+        providerReceipt: false, additionalUsageMayExist: true } }, publications);
     if (closureTimedOut) await logActivity(tx, { companyId: run.companyId, actorType: "system", actorId: "cost_accounting",
       action: "cost.accounting_closure_timed_out", entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId,
       details: { reason: captureFailed

@@ -1,11 +1,11 @@
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { normalizeCents, usdToCents, type AccountingFinding, type AccountingHealth, type AccountingInspection } from "@paperclipai/shared";
+import { costAdjustments, heartbeatRuns, type Db } from "@paperclipai/db";
+import { normalizeCents, settleRunAccountingSchema, usdToCents, type AccountingFinding, type AccountingHealth, type AccountingInspection, type SettleRunAccounting } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { withAccountingReadSnapshot, withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { logActivity } from "./activity-log.js";
-import { accountRunCost } from "./run-cost-accounting.js";
+import { accountRunCost, ownerSettlementCorrectionKey, ownerSettlementHash, readRunSettlement } from "./run-cost-accounting.js";
 import { recoverLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import type { BudgetServiceHooks } from "./budgets.js";
 
@@ -59,7 +59,18 @@ async function inspect(tx: Db, companyId: string): Promise<AccountingInspection>
 }
 
 export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {},
-  recoverLegacyReceipt = (companyId: string, runId: string) => recoverLegacyProcessSettlement(db, companyId, runId)) {
+  recoverLegacyReceipt = (companyId: string, runId: string) => recoverLegacyProcessSettlement(db, companyId, runId),
+  isRunLive: (runId: string) => boolean = () => false) {
+  /** A replay returns the original decision. The same key for another
+   * decision is refused. */
+  async function settlementReplay(companyId: string, runId: string, input: SettleRunAccounting & { estimatedCents: string }, actorId: string) {
+    const [prior] = await db.select().from(costAdjustments).where(and(eq(costAdjustments.companyId, companyId),
+      eq(costAdjustments.idempotencyKey, ownerSettlementCorrectionKey(input.idempotencyKey))));
+    if (!prior) return null;
+    if (prior.receiptHash !== ownerSettlementHash(runId, { ...input, actorId }))
+      throw conflict("This settlement key already records a different decision.");
+    return { accounted: true, settledBy: "owner_estimate" as const, costEventId: prior.costEventId };
+  }
   return {
     inspect: (companyId: string) => withAccountingReadSnapshot(db, companyId, tx => inspect(tx, companyId)),
     repair: (companyId: string, fingerprint: string, reason: string, actorId: string) => withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
@@ -86,6 +97,27 @@ export function accountingIntegrityService(db: Db, hooks: BudgetServiceHooks = {
         }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
         throw error;
       }
+    },
+    settlementPreview: (companyId: string, runId: string) => withAccountingReadSnapshot(db, companyId,
+      tx => readRunSettlement(tx, companyId, runId, isRunLive)),
+    /** Owner authority is checked by the route. Paperclip first tries the
+     * evidence it can use by itself, so an estimate never replaces a
+     * recoverable receipt. */
+    settle: async (companyId: string, runId: string, raw: SettleRunAccounting, actorId: string) => {
+      const input = settleRunAccountingSchema.parse(raw);
+      const [run] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+      if (!run) throw notFound("Accounting run not found");
+      const replay = await settlementReplay(companyId, runId, input, actorId);
+      if (replay) return replay;
+      await recoverLegacyReceipt(companyId, runId);
+      if (await accountRunCost(db, runId, hooks)) return { accounted: true, settledBy: "recovered_receipt" as const, costEventId: null };
+      const accounted = await accountRunCost(db, runId, hooks, undefined, { ...input, actorId, isLive: isRunLive });
+      // A concurrent request with the same key may have settled first.
+      const settled = await settlementReplay(companyId, runId, input, actorId);
+      if (settled) return settled;
+      // Name the reason accounting declined, such as a recovery that resumed.
+      if (!accounted) await readRunSettlement(db, companyId, runId, isRunLive);
+      throw conflict("This run's cost could not be settled. Review it again.");
     },
     health: (companyId: string): Promise<AccountingHealth> => withAccountingReadSnapshot(db, companyId, async tx => {
       const [counts] = await tx.execute<{ pending: number; unpriced: number; oldest: string | null; cancellations: number; reserved: string }>(sql`

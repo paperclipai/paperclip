@@ -6,9 +6,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appearanceForPalette, agentAvatarUrl, type CostDataQualityItem, type CostDataQualityReason, type CostDataQualityReport } from "@paperclipai/shared";
 import { ToastProvider, useToastState } from "../context/ToastContext";
+import { ApiError } from "../api/client";
 import { CostDataQualityNotice } from "./CostDataQualityNotice";
 
-const mocks = vi.hoisted(() => ({ dataQuality: vi.fn(), retryAccounting: vi.fn() }));
+const mocks = vi.hoisted(() => ({ dataQuality: vi.fn(), retryAccounting: vi.fn(), runSettlement: vi.fn(), settleRun: vi.fn() }));
 vi.mock("../api/costs", () => ({ costsApi: mocks }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: { issuePrefix: "PAP" } }) }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -19,6 +20,12 @@ function item(reason: CostDataQualityReason): CostDataQualityItem {
 function report(canRetry = true): CostDataQualityReport {
   return { canRetry, events: [item("unknown_billing"), item("missing_model"), item("missing_price")],
     runs: [item("waiting_for_receipt"), item("receipt_unavailable"), item("retryable")], hasMoreEvents: false, hasMoreRuns: false };
+}
+/** An owner's report in which the endpoint accepts the unavailable run. */
+function settleableReport(): CostDataQualityReport {
+  const base = report();
+  return { ...base, canSettle: true,
+    runs: base.runs.map(run => run.reason === "receipt_unavailable" ? { ...run, settleable: true } : run) };
 }
 function ToastStatus() {
   const toasts = useToastState();
@@ -188,5 +195,113 @@ describe("actionable cost notices", () => {
     mocks.dataQuality.mockResolvedValue({ ...report(), hasMoreRuns: true });
     await click("Retry loading"); await loaded();
     expect(container.textContent).toContain("Select a shorter date range to inspect more.");
+  });
+
+  it("offers owners an explicit estimate settlement for a run whose final usage is unavailable", async () => {
+    const revision = "b".repeat(64);
+    mocks.dataQuality.mockResolvedValue(settleableReport());
+    mocks.runSettlement.mockResolvedValue({ runId: "receipt_unavailable-run", agentId: "codie", status: "interrupted",
+      finishedAt: "2026-10-09T12:00:00Z", provider: "deepseek", model: "deepseek-chat", billingType: "metered_api",
+      inputTokens: 1200, cachedInputTokens: 300, outputTokens: 200, recordedCents: "150.0000000",
+      reservedCents: "400.0000000", proposedCents: "180.0000000", revision });
+    mocks.settleRun.mockResolvedValue({ accounted: true, settledBy: "owner_estimate" });
+    await render(); await click("16 run costs unavailable"); await loaded();
+    expect([...container.querySelectorAll("button")].filter(row => row.textContent === "Settle with an estimate")).toHaveLength(1);
+    const unavailable = [...container.querySelectorAll('[data-slot="badge"]')].find(badge => badge.textContent === "Final usage unavailable")!.closest("li")!;
+    expect(unavailable.textContent).toContain("Settle with an estimate");
+    await click("Settle with an estimate");
+    const dialog = () => document.body.querySelector('[role="dialog"]')!;
+    await act(async () => vi.waitFor(() => expect(dialog().textContent).toContain("1,200 input · 300 cached · 200 output")));
+    expect(mocks.runSettlement).toHaveBeenCalledExactlyOnceWith("company", "receipt_unavailable-run");
+    for (const text of ["deepseek · deepseek-chat", "$1.50", "$4.00", "$1.80", "may have used more than Paperclip recorded",
+      "The estimate is not a provider charge", "kept for review instead of being charged again"]) expect(dialog().textContent).toContain(text);
+    const settleButton = () => [...dialog().querySelectorAll("button")].find(button => button.textContent?.startsWith("Settle at"))!;
+    expect(settleButton().textContent).toBe("Settle at $1.80");
+    expect(settleButton().disabled).toBe(true);
+    const field = (label: string) => dialog().querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${CSS.escape(
+      [...dialog().querySelectorAll("label")].find(item => item.textContent === label)!.htmlFor)}`)!;
+    const type = async (element: HTMLInputElement | HTMLTextAreaElement, value: string) => act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value")!.set!;
+      setter.call(element, value); element.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await type(field("Estimated cost (USD)") as HTMLInputElement, "1.49");
+    expect(dialog().textContent).toContain("Enter at least $1.50, the cost Paperclip already recorded.");
+    await type(field("Estimated cost (USD)") as HTMLInputElement, "2.25");
+    await type(field("Reason"), "Provider console shows $2.25");
+    expect(settleButton().disabled).toBe(true);
+    await act(async () => dialog().querySelector<HTMLButtonElement>('[role="checkbox"]')!.click());
+    expect(settleButton().disabled).toBe(false);
+    await act(async () => settleButton().click());
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain("Run cost settled.")));
+    expect(mocks.settleRun).toHaveBeenCalledExactlyOnceWith("company", "receipt_unavailable-run", { idempotencyKey: expect.any(String),
+      expectedRevision: revision, estimatedCents: "225.0000000", reason: "Provider console shows $2.25", confirmStopped: true });
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("hides estimate settlement from anyone who is not a company owner", async () => {
+    mocks.dataQuality.mockResolvedValue({ ...settleableReport(), canSettle: false });
+    await render(); await click("16 run costs unavailable"); await loaded();
+    expect(container.textContent).not.toContain("Settle with an estimate");
+    // Other members still learn that an owner can resolve it.
+    expect(container.textContent).toContain("A company owner can settle it with an estimate.");
+    expect(mocks.runSettlement).not.toHaveBeenCalled();
+  });
+
+  it("offers owners no settlement the server would refuse", async () => {
+    // Final usage is unavailable, but the run is not settleable: for example,
+    // native recovery may still run its provider again.
+    mocks.dataQuality.mockResolvedValue({ ...report(), canSettle: true });
+    await render(); await click("16 run costs unavailable"); await loaded();
+    expect(container.textContent).toContain("Final usage unavailable");
+    expect(container.textContent).not.toContain("Settle with an estimate");
+    expect(container.textContent).not.toContain("A company owner can settle it with an estimate.");
+  });
+
+  it("reloads the review after a stale-revision conflict and waits for a fresh decision", async () => {
+    const reviewed = { runId: "receipt_unavailable-run", agentId: "codie", status: "interrupted",
+      finishedAt: "2026-10-09T12:00:00Z", provider: "deepseek", model: "deepseek-chat", billingType: "metered_api",
+      inputTokens: 1200, cachedInputTokens: 300, outputTokens: 200, recordedCents: "150.0000000",
+      reservedCents: "400.0000000", proposedCents: "180.0000000", revision: "b".repeat(64) };
+    const current = { ...reviewed, outputTokens: 900, recordedCents: "260.0000000", proposedCents: "300.0000000",
+      revision: "c".repeat(64) };
+    mocks.dataQuality.mockResolvedValue(settleableReport());
+    mocks.runSettlement.mockResolvedValueOnce(reviewed).mockResolvedValueOnce(current);
+    mocks.settleRun.mockRejectedValueOnce(new ApiError("This run's usage changed since review. Review it again.", 409, {}))
+      .mockResolvedValueOnce({ accounted: true, settledBy: "owner_estimate" });
+    await render(); await click("16 run costs unavailable"); await loaded();
+    await click("Settle with an estimate");
+    const dialog = () => document.body.querySelector('[role="dialog"]')!;
+    const settleButton = () => [...dialog().querySelectorAll("button")].find(button => button.textContent?.startsWith("Settle"))!;
+    const checkbox = () => dialog().querySelector<HTMLButtonElement>('[role="checkbox"]')!;
+    const reason = () => dialog().querySelector("textarea")!;
+    await act(async () => vi.waitFor(() => expect(dialog().textContent).toContain("200 output")));
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(reason(), "Provider console");
+      reason().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => checkbox().click());
+    await act(async () => settleButton().click());
+
+    // The dialog loads the run's current usage instead of resubmitting.
+    await act(async () => vi.waitFor(() => expect(dialog().textContent).toContain("900 output")));
+    expect(mocks.runSettlement).toHaveBeenCalledTimes(2);
+    expect(mocks.settleRun).toHaveBeenCalledOnce();
+    for (const text of ["$2.60", "usage changed since review", "The figures above are current. Review them and settle again."])
+      expect(dialog().textContent).toContain(text);
+    expect(settleButton().textContent).toBe("Settle at $3.00");
+    expect(checkbox().getAttribute("aria-checked")).toBe("false");
+    expect(settleButton().disabled).toBe(true);
+    expect(reason().value).toBe("Provider console");
+    await act(async () => new Promise(resolve => setTimeout(resolve, 50)));
+    expect(mocks.settleRun).toHaveBeenCalledOnce();
+
+    await act(async () => checkbox().click());
+    await act(async () => settleButton().click());
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain("Run cost settled.")));
+    const [[, , first], [, , second]] = mocks.settleRun.mock.calls;
+    expect(first).toMatchObject({ expectedRevision: "b".repeat(64), estimatedCents: "180.0000000" });
+    expect(second).toMatchObject({ expectedRevision: "c".repeat(64), estimatedCents: "300.0000000",
+      reason: "Provider console", confirmStopped: true });
+    expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
   });
 });
