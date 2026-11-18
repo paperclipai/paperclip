@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
-import { FileQuestion, Loader2 } from "lucide-react";
+import { ArrowUpRight, FileQuestion, Loader2 } from "lucide-react";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
@@ -10,7 +10,8 @@ import { DocumentMarkdownBody } from "@/components/DocumentMarkdownBody";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
-import { useLocation } from "@/lib/router";
+import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
+import { Link, useLocation } from "@/lib/router";
 
 type HeadingNode = { type: string; value?: string; children?: HeadingNode[] };
 
@@ -27,6 +28,15 @@ function startsWithMatchingHeading(body: string, title: string): boolean {
   );
   const normalize = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
   return first?.type === "heading" && normalize(headingText(first)) === normalize(title);
+}
+
+export function TaskDocumentSourceLink({ taskRef }: { taskRef: string }) {
+  return (
+    <Link to={createIssueDetailPath(encodeURIComponent(taskRef))} disableIssueQuicklook
+      className="inline-flex w-fit items-center gap-1.5 rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      Open source task <ArrowUpRight className="size-4" aria-hidden />
+    </Link>
+  );
 }
 
 export function TaskDocumentPanel({

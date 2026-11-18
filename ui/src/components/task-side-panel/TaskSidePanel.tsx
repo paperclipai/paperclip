@@ -24,7 +24,6 @@ import {
   type IssueDocument,
 } from "@paperclipai/shared";
 import {
-  ArrowUpRight,
   Globe,
   AppWindow,
   Box,
@@ -78,9 +77,8 @@ import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import type { IssueExternalObjectGroup } from "@/hooks/useIssueExternalObjects";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
-import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
 import { queryKeys } from "@/lib/queryKeys";
-import { Link, useLocation, useNavigate } from "@/lib/router";
+import { useLocation, useNavigate } from "@/lib/router";
 import {
   readTaskSidePanelState,
   taskPanelBrowserTab,
@@ -98,7 +96,7 @@ import {
   type TaskSidePanelTabPayload,
 } from "@/lib/task-side-panel-state";
 import { cn } from "@/lib/utils";
-import { TaskDocumentPanel } from "./TaskDocumentPanel";
+import { TaskDocumentPanel, TaskDocumentSourceLink } from "./TaskDocumentPanel";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import { TaskWorkspaceFilePanel } from "./TaskWorkspaceFilePanel";
 import { TaskSkillPanel } from "./TaskSkillPanel";
@@ -893,10 +891,7 @@ function TaskSidePanelForScope({
     );
     content = showDocumentSourceTask ? (
       <div className="flex flex-col gap-4">
-        <Link to={createIssueDetailPath(encodeURIComponent(sourceTask))} disableIssueQuicklook
-          className="inline-flex w-fit items-center gap-1.5 rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          Open source task <ArrowUpRight className="size-4" aria-hidden />
-        </Link>
+        <TaskDocumentSourceLink taskRef={sourceTask} />
         {documentBody}
       </div>
     ) : documentBody;
