@@ -16,7 +16,7 @@ import { RoutineDetail, ROUTINE_HISTORY_PAGE_SIZE } from "./RoutineDetail";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const route = vi.hoisted(() => ({ params: { routineId: "routine-1" } as { routineId: string; section?: string }, search: "" }));
+const route = vi.hoisted(() => ({ params: { routineId: "routine-1" } as { routineId: string; section?: string }, search: "", hash: "" }));
 const navigateMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
@@ -26,7 +26,7 @@ vi.mock("@/lib/router", () => ({
   ),
   useNavigate: () => navigateMock,
   useParams: () => route.params,
-  useLocation: () => ({ pathname: "/routines/routine-1", search: route.search, hash: "" }),
+  useLocation: () => ({ pathname: "/routines/routine-1", search: route.search, hash: route.hash }),
   useSearchParams: () => [new URLSearchParams(route.search), vi.fn()],
 }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-1" }) }));
@@ -77,6 +77,11 @@ vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { chi
 vi.mock("@/components/TaskSummaryList", () => ({
   TaskSummaryList: ({ issues }: { issues: Issue[] }) => (
     <ul aria-label="Tasks created by this routine">{issues.map((issue) => <li key={issue.id}>{issue.title}</li>)}</ul>
+  ),
+}));
+vi.mock("@/components/IssueDocumentAnnotations", () => ({
+  IssueDocumentAnnotations: ({ children, panelOpen }: { children: ReactNode; panelOpen: boolean }) => (
+    <div data-testid="instruction-comments" data-open={panelOpen}>{children}</div>
   ),
 }));
 vi.mock("@/components/RoutineRunVariablesDialog", () => ({ RoutineRunVariablesDialog: () => null }));
@@ -192,6 +197,7 @@ describe("RoutineDetail (routed routine page)", () => {
   beforeEach(() => {
     route.params = { routineId: "routine-1" };
     route.search = "";
+    route.hash = "";
     navigateMock.mockReset();
     vi.mocked(routinesApi.get).mockReset().mockResolvedValue(routine());
     vi.mocked(routinesApi.update).mockReset();
@@ -484,6 +490,20 @@ describe("RoutineDetail (routed routine page)", () => {
     expect(container.textContent).not.toContain("No one yet");
     expect(container.textContent).toContain("Couldn’t load this person");
     expect(button("Retry")).toBeDefined();
+  });
+
+  it("opens the instruction comments when a comment link changes only the fragment", async () => {
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({
+      description: "First paragraph.\n\nSecond paragraph.",
+      descriptionDocument: { id: "doc-1", key: "description", latestRevisionId: "doc-rev-1" } as RoutineDetailData["descriptionDocument"],
+    }));
+    await render();
+    expect(container.querySelector('[data-testid="instruction-comments"]')).toBeNull();
+    route.hash = "#document-description&thread=thread-1";
+    await render();
+    const layer = container.querySelector('[data-testid="instruction-comments"]');
+    expect(layer?.getAttribute("data-open")).toBe("true");
+    expect(layer?.textContent).toContain("Second paragraph.");
   });
 
   it("neither fetches nor shows responsibilities while the experimental flag is off", async () => {

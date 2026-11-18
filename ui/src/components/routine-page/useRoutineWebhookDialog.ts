@@ -5,7 +5,13 @@ import { routinesApi } from "@/api/routines";
 import type { RoutineWebhookDialogProps, WebhookSender } from "./RoutineWebhookDialog";
 
 /** A webhook key to show once, e.g. after a version restore recreated the webhook. */
-export type PendingWebhookKey = { triggerId: string; webhookUrl: string; webhookSecret: string };
+export type PendingWebhookKey = {
+  triggerId: string;
+  webhookUrl: string;
+  webhookSecret: string;
+  /** From the restored revision; null when unknown, and then no signing instructions are shown until the routine refresh lists the webhook. */
+  signingMode?: string | null;
+};
 
 /** Enough of a restored webhook to show its URL and new key before the routine refresh lists it. */
 function restoredPlaceholder(key: PendingWebhookKey): RoutineTrigger {
@@ -26,7 +32,7 @@ function restoredPlaceholder(key: PendingWebhookKey): RoutineTrigger {
     setupPending: false,
     lastWebhookDelivery: null,
     secretId: null,
-    signingMode: "app_webhook",
+    signingMode: key.signingMode ?? null,
     replayWindowSec: null,
     lastRotatedAt: null,
     lastResult: null,

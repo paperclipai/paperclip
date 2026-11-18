@@ -157,7 +157,8 @@ export function RoutineWebhookDialog({
                   <Button variant="outline" size="sm" onClick={onReplaceKey}>Replace key</Button>
                 </div>
               )}
-              {secret || trigger.signingMode === "none" ? (
+              {/* Instructions follow the signing mode; with no known mode (a restored webhook before its refresh) none are shown. */}
+              {trigger.signingMode && (secret || trigger.signingMode === "none") ? (
                 <AgentInstructions
                   value={webhookAgentInstructions(
                     github ? "github" : "custom",

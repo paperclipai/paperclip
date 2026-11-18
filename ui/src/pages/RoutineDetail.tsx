@@ -47,7 +47,7 @@ import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { configurationWarningMessages } from "@/lib/configuration-warnings";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { queryKeys } from "@/lib/queryKeys";
-import { Navigate, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from "@/lib/router";
 
 /** Tasks shown per History page; "Load more" fetches the next page. */
 export const ROUTINE_HISTORY_PAGE_SIZE = 20;
@@ -89,10 +89,13 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   const [saveError, setSaveError] = useState<string | null>(null);
   const [removedWebhooks, setRemovedWebhooks] = useState<RoutineTrigger[]>([]);
   const [runOpen, setRunOpen] = useState(false);
-  // A link to one instruction comment opens the whole text with its comments.
-  const [commentsOpen, setCommentsOpen] = useState(
-    () => typeof window !== "undefined" && window.location.hash.startsWith("#document-description"),
-  );
+  // A link to one instruction comment opens the whole text with its comments,
+  // also when only the fragment changes on a routine already on screen.
+  const { hash: locationHash } = useLocation();
+  const [commentsOpen, setCommentsOpen] = useState(() => locationHash.startsWith("#document-description"));
+  useEffect(() => {
+    if (locationHash.startsWith("#document-description")) setCommentsOpen(true);
+  }, [locationHash]);
   /** The revision the open form started from; refreshed after this person's own changes. */
   const baseRevisionRef = useRef<{ id: string | null; number: number } | null>(null);
   /** The direct responsibility when the form opened; Save only moves the link when the person changed it. */
@@ -367,10 +370,12 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     (response: RestoreRoutineRevisionResponse) => {
       if (response.secretMaterials.length === 0) return;
       navigate(routinePath(routineId));
+      const restoredTriggers = new Map(response.revision.snapshot.triggers.map((trigger) => [trigger.id, trigger]));
       webhook.showKeys(response.secretMaterials.map((material) => ({
         triggerId: material.triggerId,
         webhookUrl: material.webhookUrl,
         webhookSecret: material.webhookSecret,
+        signingMode: restoredTriggers.get(material.triggerId)?.signingMode ?? null,
       })));
     },
     [navigate, routineId, webhook],
@@ -550,7 +555,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
                   draftDirty={false}
                   draftConflicted={false}
                   historicalPreview={false}
-                  locationHash={typeof window === "undefined" ? "" : window.location.hash}
+                  locationHash={locationHash}
                   panelOpen={commentsOpen}
                   onPanelOpenChange={setCommentsOpen}
                 >

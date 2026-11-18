@@ -65,19 +65,31 @@ describe("routine webhook dialog", () => {
     expect(document.body.textContent).not.toContain("Replace key");
   });
 
-  it("shows a restored webhook's new key before the refreshed routine lists it", async () => {
+  async function renderRestored(signingMode: string | null) {
     function Harness() {
       const webhook = useRoutineWebhookDialog({ routineId: "routine-1", triggers: [], onChanged: () => {} });
       const { showKeys } = webhook;
       useEffect(() => {
-        showKeys([{ triggerId: "webhook-9", webhookUrl: "https://paperclip.example/hook/9", webhookSecret: "restored-secret" }]);
+        showKeys([{ triggerId: "webhook-9", webhookUrl: "https://paperclip.example/hook/9", webhookSecret: "restored-secret", signingMode }]);
       }, [showKeys]);
       return <RoutineWebhookDialog {...webhook.dialogProps} routineTitle="Digest" />;
     }
     await act(async () => { root.render(<Harness />); await flush(); });
+  }
+
+  it("shows a restored webhook's new key, with instructions for its real signing mode, before the refresh lists it", async () => {
+    await renderRestored("hmac_sha256");
     expect(document.body.textContent).not.toContain("Add webhook");
     expect(document.body.textContent).toContain("https://paperclip.example/hook/9");
     expect(document.body.textContent).toContain("Copy it now");
+    expect(document.body.textContent).toContain("X-Paperclip-Timestamp");
+    expect(document.querySelector('section[aria-label="Agent instructions"]')).not.toBeNull();
+  });
+
+  it("withholds signing instructions for a restored webhook whose signing mode is unknown", async () => {
+    await renderRestored(null);
+    expect(document.body.textContent).toContain("Copy it now");
+    expect(document.querySelector('section[aria-label="Agent instructions"]')).toBeNull();
   });
 });
 
