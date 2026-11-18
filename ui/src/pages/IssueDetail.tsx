@@ -3489,12 +3489,12 @@ export function TaskDetailSurface({ conversation, tasksTab, embeddedIssueRef }: 
   const loadedIssueCompany = loadedIssue
     ? companies.find((company) => company.id === loadedIssue.companyId)
     : undefined;
-  const taskRouteReady = Boolean(conversation || (
+  const taskRouteReady = Boolean(conversation || (embedded ? loadedIssue : (
     loadedIssue &&
     issueId === (loadedIssue.identifier ?? loadedIssue.id) &&
     (!loadedIssueCompany || companyPrefix === loadedIssueCompany.issuePrefix) &&
     !hasLegacyIssueDetailQuery(location.search)
-  ));
+  )));
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId: issue?.id ?? issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
   const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);

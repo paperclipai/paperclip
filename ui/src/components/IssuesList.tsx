@@ -126,6 +126,13 @@ function escapeAttrValue(value: string): string {
     : value.replace(/["\\]/g, "\\$&");
 }
 
+/** Enter on a focused button or link outside the list (the side panel's controls) belongs to that control. */
+function isFocusedControlOutsideList(target: EventTarget | null, listRoot: HTMLElement | null): boolean {
+  if (!(target instanceof HTMLElement) || target === document.body) return false;
+  if (listRoot?.contains(target)) return false;
+  return !!target.closest("a[href], button, [role='button'], [tabindex]");
+}
+
 const INITIAL_ISSUE_ROW_RENDER_LIMIT = 100;
 const ISSUE_ROW_RENDER_BATCH_SIZE = 150;
 const ISSUE_SCROLL_LOAD_THRESHOLD_PX = 320;
@@ -1621,6 +1628,7 @@ function StreamlinedIssuesList({
         case "Enter": {
           const entry = st.flatNavEntries[currentIndex];
           if (!entry || entry.type !== "issue") return;
+          if (isFocusedControlOutsideList(target, rootRef.current)) return;
           e.preventDefault();
           if (st.onOpenIssue) {
             st.onOpenIssue(entry.issue);

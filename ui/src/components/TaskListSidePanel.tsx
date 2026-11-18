@@ -1,12 +1,13 @@
-import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, type ReactNode, type RefObject } from "react";
 import { ExternalLink, X } from "lucide-react";
-import { Link } from "@/lib/router";
+import { Link, useLocation, useNavigationType } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { SidePanelFrame, SidePanelToggleButton } from "@/components/side-panel";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
+import { applyMainContentScrollTop, NavigationScrollMemory } from "../lib/navigation-scroll";
 
 const TaskDetailSurface = lazy(() =>
   import("../pages/IssueDetail").then((module) => ({ default: module.TaskDetailSurface })),
@@ -23,9 +24,11 @@ interface TaskListSidePanelProps {
  * the list.
  */
 export function TaskListSplit({ taskRef, onClose, children }: { taskRef: string | null; onClose: () => void; children: ReactNode }) {
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  useListScrollMemory(listScrollRef);
   return (
     <div data-testid="task-list-split" className="flex h-full min-h-0 md:-my-6 md:-mr-6">
-      <div className="min-w-0 flex-1 overflow-auto md:py-6 md:pr-6">{children}</div>
+      <div ref={listScrollRef} className="min-w-0 flex-1 overflow-auto md:py-6 md:pr-6">{children}</div>
       {taskRef ? <TaskListSidePanel taskRef={taskRef} onClose={onClose} /> : null}
     </div>
   );
@@ -68,12 +71,12 @@ function TaskListSidePanelTitle({ taskRef }: { taskRef: string }) {
 }
 
 function TaskListSidePanelControls({ taskRef, onClose }: TaskListSidePanelProps) {
-  const { breadcrumbPanelControl } = useBreadcrumbs();
+  const { breadcrumbPanelControl, breadcrumbToolbar } = useBreadcrumbs();
   return (
     <>
       {breadcrumbPanelControl ? (
         <SidePanelToggleButton open={breadcrumbPanelControl.open} onToggle={breadcrumbPanelControl.onToggle} />
-      ) : null}
+      ) : breadcrumbToolbar}
       <Button asChild variant="ghost" size="icon-sm" title="Open full page">
         <Link to={createIssueDetailPath(taskRef)} disableIssueQuicklook aria-label="Open full page">
           <ExternalLink aria-hidden />
@@ -84,6 +87,28 @@ function TaskListSidePanelControls({ taskRef, onClose }: TaskListSidePanelProps)
       </Button>
     </>
   );
+}
+
+const listScrollMemory = new NavigationScrollMemory();
+
+/** Layout restores only the page scroll on Back, so the list's own scroll box keeps its offset here. */
+function useListScrollMemory(scrollRef: RefObject<HTMLElement | null>) {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const recordScroll = () => listScrollMemory.remember(location.key, element.scrollTop);
+    element.addEventListener("scroll", recordScroll, { passive: true });
+    return () => element.removeEventListener("scroll", recordScroll);
+  }, [location.key, scrollRef]);
+  useLayoutEffect(() => {
+    if (navigationType !== "POP") return;
+    const scrollTop = listScrollMemory.recall(location.key);
+    applyMainContentScrollTop(scrollRef.current, scrollTop);
+    const raf = requestAnimationFrame(() => applyMainContentScrollTop(scrollRef.current, scrollTop));
+    return () => cancelAnimationFrame(raf);
+  }, [location.key, navigationType, scrollRef]);
 }
 
 function useCloseOnEscape(onClose: () => void) {
