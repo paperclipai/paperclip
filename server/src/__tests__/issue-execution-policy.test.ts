@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, isPendingExecutionStageParticipant, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 import { buildExecutionPolicy } from "../../../ui/src/lib/issue-execution-policy.ts";
 
@@ -2320,5 +2320,25 @@ describe("review round circuit breaker", () => {
       currentParticipant: { type: "user", userId: boardUserId },
       changesRequestedCount: 1,
     });
+  });
+
+  it("identifies the active pending stage agent participant only while in_review", () => {
+    const state: IssueExecutionState = {
+      status: "pending",
+      currentStageId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: qaAgentId, userId: null },
+      returnAssignee: { type: "agent", agentId: coderAgentId, userId: null },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      reviewRequest: null,
+    };
+
+    expect(isPendingExecutionStageParticipant({ status: "in_review", executionState: state }, qaAgentId)).toBe(true);
+    expect(isPendingExecutionStageParticipant({ status: "in_review", executionState: state }, coderAgentId)).toBe(false);
+    expect(isPendingExecutionStageParticipant({ status: "in_progress", executionState: state }, qaAgentId)).toBe(false);
+    expect(isPendingExecutionStageParticipant({ status: "in_review", executionState: { ...state, status: "completed" } }, qaAgentId)).toBe(false);
   });
 });
