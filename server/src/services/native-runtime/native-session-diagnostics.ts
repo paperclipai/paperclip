@@ -42,6 +42,10 @@ export class NativeSessionDiagnostics {
     };
   }
 
+  ownerRunId(): string {
+    return (this.active?.owner ?? this.lastOwner).runId;
+  }
+
   bind(session: object): void {
     const existing = sessions.get(session);
     if (existing && existing !== this) throw new Error("native_diagnostic_session_already_bound");

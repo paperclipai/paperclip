@@ -6,6 +6,8 @@ import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
+import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION, nativeSandboxDiskFullSourceCode, observeNativeRunnerDiagnostic,
+  takeNativeRunnerSandboxDiskFull } from "./native-sandbox-disk-full.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
 import { logger } from "../../middleware/logger.js";
@@ -9064,7 +9066,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "native_provider_usage_limit" ||
     sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED ||
     sourceFailureCode === NATIVE_PROVIDER_STARTUP_REJECTED ||
-    sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
+    sourceFailureCode === NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER ||
+    sourceFailureCode === NATIVE_SANDBOX_DISK_FULL;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -9242,7 +9245,11 @@ function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
   return runnerClosedTurnStartSession(value.cause, depth + 1);
 }
 
-export function nativeSessionFailureSourceCode(
+export function nativeSessionFailureSourceCode(error: unknown, runnerSandboxDiskFull = false) {
+  return nativeSandboxDiskFullSourceCode(classifyNativeSessionFailure(error), error, runnerSandboxDiskFull);
+}
+
+function classifyNativeSessionFailure(
   error: unknown,
 ):
   | "native_permission_declined"
@@ -13277,7 +13284,8 @@ async function executePaperclipNativeSessionAttempt(
         throw error;
       }
       const now = new Date();
-      const startupClassifiedFailureCode = nativeSessionFailureSourceCode(error);
+      const startupClassifiedFailureCode = nativeSessionFailureSourceCode(error,
+        takeNativeRunnerSandboxDiskFull(input.execution.binding.runId));
       // A timed-out session.open may still have opened a provider session
       // before its runner stopped. The same-run retry must not reuse it.
       const classifiedFailureCode = startupClassifiedFailureCode === "provider_session_open_timeout" &&
@@ -13497,6 +13505,8 @@ async function executePaperclipNativeSessionAttempt(
                     ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
                   : sourceFailureCode === "runner_ingress_access_rejected"
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
+                  : sourceFailureCode === NATIVE_SANDBOX_DISK_FULL
+                    ? NATIVE_SANDBOX_DISK_FULL_ACTION
                   : sourceFailureCode === "native_provider_terminal_failed"
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
                   : sourceFailureCode === "native_governed_wait_settlement_pending"
@@ -13776,6 +13786,8 @@ async function executePaperclipNativeSessionAttempt(
                 ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
               : sourceFailureCode === "runner_ingress_access_rejected"
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
+              : sourceFailureCode === NATIVE_SANDBOX_DISK_FULL
+                ? NATIVE_SANDBOX_DISK_FULL_ACTION
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
               : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
@@ -18855,9 +18867,10 @@ async function createRunnerdBackendWithinSessionClaim(
         runnerProcessReconnectGraceMs: remoteTarget ? null : localRunnerProcessReconnectGraceMs(input.execution.session.lifecyclePolicy),
         environment: effectiveRunnerEnvironment,
         observability: input.observability,
-        onDiagnostic: message => diagnostics.record(
-          `[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`,
-        ),
+        onDiagnostic: message => {
+          observeNativeRunnerDiagnostic(diagnostics.ownerRunId(), message);
+          diagnostics.record(`[paperclip-runner] runnerd diagnostic: ${redactSensitiveText(message).slice(-4_096)}\n`);
+        },
         lifecyclePolicy: input.execution.session.lifecyclePolicy,
         runtimeContext:
           "runtimeContext" in input.execution
