@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import { sql } from "drizzle-orm";
+import { companySkillRepositorySnapshots, type Db } from "@paperclipai/db";
 import { readBuildCommit } from "../build-commit.js";
 import { loadConfig } from "../config.js";
 import { conflict, unauthorized } from "../errors.js";
@@ -33,8 +34,16 @@ function volumeFreeConfigurationBlocker(): { blocker: string | null; decisionSig
   return { blocker: null, decisionSigningSecret };
 }
 
+async function onlineDataBlockers(db: Db) {
+  const { blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
+  const [localPackage] = await db.select({ id: companySkillRepositorySnapshots.id }).from(companySkillRepositorySnapshots)
+    .where(sql`${companySkillRepositorySnapshots.storage}->>'provider' = 'local_disk'`).limit(1);
+  return localPackage && !blockers.includes("skills_require_migration") ? [...blockers, "skills_require_migration"] : blockers;
+}
+
 export async function readOnlineEphemeralEnrollmentEligibility(db: Db) {
-  const { eligible, blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
+  const blockers = await onlineDataBlockers(db);
+  const eligible = blockers.length === 0;
   const { blocker } = volumeFreeConfigurationBlocker();
   return { eligible: eligible && !blocker, blockers: blocker ? [...blockers, blocker] : blockers, ephemeralServer: ephemeralServerEnabled() };
 }
@@ -46,8 +55,8 @@ export async function prepareOnlineEphemeralEnrollment(db: Db, attemptId: string
   if (!stackId || !commit || !deploymentId || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(deploymentId)) {
     throw conflict("Online enrollment requires a stamped managed Railway deployment");
   }
-  const eligibility = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
-  if (!eligibility.eligible) throw conflict("Durable data migration is incomplete", { blockers: eligibility.blockers });
+  const dataBlockers = await onlineDataBlockers(db);
+  if (dataBlockers.length) throw conflict("Durable data migration is incomplete", { blockers: dataBlockers });
   const configuration = volumeFreeConfigurationBlocker();
   if (configuration.blocker || !configuration.decisionSigningSecret) {
     throw conflict("Volume-free configuration is incomplete", { blockers: [configuration.blocker ?? "volume_free_configuration_required"] });

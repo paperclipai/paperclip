@@ -10,12 +10,14 @@ vi.mock("./decision-signing.js", () => ({ resolveDecisionSigningSecret: owners.k
 vi.mock("./activity-log.js", () => ({ persistActivity: owners.audit, publishActivity: vi.fn() }));
 vi.mock("../config.js", () => ({ loadConfig: () => ({ databaseUrl: "postgres://fixture:fixture@db.test/database", storageProvider: "s3" }) }));
 
-const db = {} as Db;
+let localPackages: Array<{ id: string }> = [];
+const db = { select: () => ({ from: () => ({ where: () => ({ limit: async () => localPackages }) }) }) } as unknown as Db;
 const attempt = "12345678-1234-4234-8234-123456789abc";
 const key = "fixture-decision-signing-key-0123456789";
 const control = { requestId: "fixture-signed-request", exp: 0 };
 beforeEach(() => {
   vi.resetAllMocks();
+  localPackages = [];
   control.exp = Math.floor(Date.now() / 1000) + 60;
   vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "fixture-managed-instance");
   vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "stack-fixture");
@@ -109,4 +111,19 @@ it("refuses an expired assertion after inspection without exporting", async () =
   control.exp = Math.floor(Date.now() / 1000) - 1;
   await expect(prepareOnlineEphemeralEnrollment(db, attempt, control)).rejects.toMatchObject({ status: 401 });
   expect(owners.audit).not.toHaveBeenCalled();
+});
+
+it("keeps a skill package that is still on the volume as a blocker for the online move", async () => {
+  localPackages = [{ id: "snapshot-local" }];
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toEqual({ eligible: false, blockers: ["skills_require_migration"], ephemeralServer: false });
+  owners.key.mockClear();
+  await expect(prepareOnlineEphemeralEnrollment(db, attempt, control)).rejects.toMatchObject({ status: 409,
+    details: { blockers: ["skills_require_migration"] } });
+  expect(owners.key).not.toHaveBeenCalled();
+});
+
+it("names the skill blocker once when installations and packages both still need migration", async () => {
+  localPackages = [{ id: "snapshot-local" }];
+  owners.eligibility.mockResolvedValue({ eligible: false, blockers: ["skills_require_migration"] });
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ blockers: ["skills_require_migration"] });
 });
