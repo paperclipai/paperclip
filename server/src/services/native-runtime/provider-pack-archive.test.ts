@@ -10,6 +10,8 @@ import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pa
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
+// @ts-expect-error Build-time script has no TypeScript declaration.
+import { sha256Tree } from "../../../../packages/paperclip-runner/scripts/provider-pack-runtime-tree.mjs";
 
 const exec = promisify(execFile);
 const hasZstd = spawnSync("zstd", ["--version"]).status === 0;
@@ -113,6 +115,106 @@ async function layeredFixture() {
   if (!("kind" in archive)) throw Error("Expected layered archive");
   return { root, pack, receipt, archive };
 }
+
+const treePath = "provider-assets/cursor/linux-x64";
+const toolPath = "node_modules/.pnpm/tool@1.0.0/node_modules/tool/bin/tool";
+const twinPath = "node_modules/.pnpm/tool-baseline@1.0.0/node_modules/tool-baseline/bin/tool";
+const modulePath = "node_modules/.pnpm/tool@1.0.0/node_modules/tool/index.js";
+
+/** A pack shaped like a release: a sealed provider tree, a native binary repeated
+ * by two packages, and a large JavaScript module. */
+async function imagePackFixture() {
+  const { root, pack } = await fixture();
+  const write = async (relative: string, bytes: Buffer | string, mode = 0o755) => {
+    await fs.mkdir(path.dirname(path.join(pack, relative)), { recursive: true });
+    await fs.writeFile(path.join(pack, relative), bytes, { mode });
+  };
+  await write(`${treePath}/agent`, Buffer.alloc(1024 * 1024, 7));
+  await write(`${treePath}/index.js`, "module.exports = 1;\n", 0o644);
+  await fs.symlink("agent", path.join(pack, treePath, "agent-link"));
+  await write(toolPath, Buffer.alloc(2 * 1024 * 1024, 9));
+  await write(twinPath, Buffer.alloc(2 * 1024 * 1024, 9));
+  await write(modulePath, Buffer.alloc(1024 * 1024, 32), 0o644);
+  const trees = [{ path: treePath, sha256: sha256Tree(path.join(pack, treePath)) }];
+  await fs.writeFile(path.join(pack, "provider-pack.json"), JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest,
+    payload: { providers: { cursor: { path: treePath, sha256: trees[0]!.sha256 } } } }));
+  await createProviderPackLayers(pack);
+  const archive = (await readProviderPackArchive(pack, digest))!;
+  if (!("kind" in archive)) throw Error("Expected layered archive");
+  // The sandbox image holds the same pack, installed earlier by another user.
+  const image = path.join(root, "image");
+  await fs.cp(pack, image, { recursive: true, verbatimSymlinks: true });
+  return { root, pack, image, archive, trees, otherUser: (process.getuid?.() ?? 0) + 1 };
+}
+
+const transferred = async (remote: Awaited<ReturnType<typeof runner>>) =>
+  (await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred;
+
+it.skipIf(!tar || !hasZstd)("links unchanged image files and provider trees instead of copying them when the run cannot write the image", async () => {
+  const { root, pack, image, archive, trees, otherUser } = await imagePackFixture();
+  const remote = await runner(root);
+  const targetPath = path.join(root, "workspace", "provider-pack");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image], trees, runUid: otherUser })).toBe(true);
+  const realImage = await fs.realpath(image);
+  // The whole provider tree is one link; the pack verifier's tree digest still matches.
+  expect(await fs.readlink(path.join(targetPath, treePath))).toBe(path.join(realImage, treePath));
+  expect(sha256Tree(path.join(targetPath, treePath))).toBe(trees[0]!.sha256);
+  // A native file links to the image; a JavaScript module stays a private copy.
+  expect(await fs.readlink(path.join(targetPath, toolPath))).toBe(path.join(realImage, toolPath));
+  expect(await fs.readlink(path.join(targetPath, twinPath))).toBe(path.join(realImage, twinPath));
+  expect((await fs.lstat(path.join(targetPath, modulePath))).isFile()).toBe(true);
+  expect(await fs.readFile(path.join(targetPath, modulePath))).toEqual(await fs.readFile(path.join(pack, modulePath)));
+  // Only the small-file overlay crosses the network, and it is not extracted into the image.
+  expect(await transferred(remote)).toBe(archive.overlay.bytes);
+  expect((await fs.readdir(path.join(image, treePath))).sort()).toEqual(["agent", "agent-link", "index.js"]);
+  expect(await fs.readFile(path.join(targetPath, "provider-pack.json"))).toEqual(await fs.readFile(path.join(pack, "provider-pack.json")));
+});
+
+it.skipIf(!tar || !hasZstd)("copies an image the run can write, and hardlinks repeated bytes to one private copy", async () => {
+  const { root, pack, image, archive, trees } = await imagePackFixture();
+  await fs.rm(path.dirname(path.dirname(path.join(image, twinPath))), { recursive: true });
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image], trees })).toBe(true);
+  expect((await fs.lstat(path.join(targetPath, treePath))).isDirectory()).toBe(true);
+  expect(sha256Tree(path.join(targetPath, treePath))).toBe(trees[0]!.sha256);
+  const tool = await fs.lstat(path.join(targetPath, toolPath)), twin = await fs.lstat(path.join(targetPath, twinPath));
+  expect(tool.isFile() && twin.isFile()).toBe(true);
+  expect(twin.ino).toBe(tool.ino);
+  expect(tool.ino).not.toBe((await fs.stat(path.join(image, toolPath))).ino);
+  expect(await fs.readFile(path.join(targetPath, twinPath))).toEqual(await fs.readFile(path.join(pack, twinPath)));
+  // The twin's bytes came from the image under another path, not over the network.
+  expect(await transferred(remote)).toBe(archive.overlay.bytes);
+});
+
+it.skipIf(!tar || !hasZstd).each(["tampered-tree", "writable-tree", "unsealed-tree"])("does not link a provider tree that is %s", async reason => {
+  const { root, pack, image, archive, trees, otherUser } = await imagePackFixture();
+  if (reason === "tampered-tree") await fs.writeFile(path.join(image, treePath, "index.js"), "module.exports = 2;\n");
+  if (reason === "writable-tree") await fs.chmod(path.join(image, treePath, "index.js"), 0o666);
+  if (reason === "unsealed-tree") await fs.writeFile(path.join(image, "provider-pack.json"), JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest, payload: {} }));
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image], trees, runUid: otherUser })).toBe(true);
+  expect((await fs.lstat(path.join(targetPath, treePath))).isDirectory()).toBe(true);
+  expect(sha256Tree(path.join(targetPath, treePath))).toBe(trees[0]!.sha256);
+  expect(await fs.readFile(path.join(targetPath, treePath, "agent"))).toEqual(await fs.readFile(path.join(pack, treePath, "agent")));
+  // Files elsewhere still link; the tree's large file is copied from the image, not transferred.
+  expect(await fs.readlink(path.join(targetPath, toolPath))).toBe(path.join(await fs.realpath(image), toolPath));
+  expect(await transferred(remote)).toBe(archive.overlay.bytes);
+});
+
+it.skipIf(!tar || !hasZstd).each(["writable-file", "writable-directory", "changed-bytes"])("copies a native file instead of linking it when the image file is %s", async reason => {
+  const { root, pack, image, archive, trees, otherUser } = await imagePackFixture();
+  const imageTool = path.join(image, toolPath);
+  if (reason === "writable-file") await fs.chmod(imageTool, 0o777);
+  if (reason === "writable-directory") await fs.chmod(path.dirname(imageTool), 0o777);
+  if (reason === "changed-bytes") await fs.writeFile(imageTool, Buffer.alloc(2 * 1024 * 1024, 10));
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image], trees, runUid: otherUser })).toBe(true);
+  expect((await fs.lstat(path.join(targetPath, toolPath))).isFile()).toBe(true);
+  expect(await fs.readFile(path.join(targetPath, toolPath))).toEqual(await fs.readFile(path.join(pack, toolPath)));
+});
 
 it("writes the same archive for the same file every time, with nothing after the frame", async () => {
   // Ending the compressor while its last chunk was still queued made Node

@@ -4,7 +4,7 @@ import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pa
 import type { ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { resolveProviderPackUploadSource } from "./retained-provider-pack-source.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
-import { providerPackLayersArgument } from "./provider-pack-layers.js";
+import { providerPackLayersArgument, providerPackTrees } from "./provider-pack-layers.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -44,7 +44,7 @@ export async function uploadVerifiedProviderPack(input: {
     readProviderPackArchive(source.root, input.expectedDigest, input.signal));
   if (source.archiveOnly) {
     if (!archive) throw Error("runner_remote_provider_source_invalid");
-    if ("kind" in archive && providerPackLayersArgument(archive, input.targetPath, input.reuseRoots) === null) {
+    if ("kind" in archive && providerPackLayersArgument(archive, input.targetPath, input.reuseRoots, providerPackTrees(input.manifest)) === null) {
       throw Error("runner_remote_provider_archive_transport_unavailable");
     }
     const capability = await measure("provider_pack.archive.probe", () => input.runner.execute({
@@ -55,6 +55,7 @@ export async function uploadVerifiedProviderPack(input: {
   }
   if (!archive) await verifyDirectory();
   input.signal?.throwIfAborted();
+  const trees = providerPackTrees(input.manifest);
   const cleared = await measure("provider_pack.clear_stale", () => input.runner.execute({
     command: "sh", args: ["-c", `rm -rf ${quote(input.targetPath)}`],
     cwd: input.cwd, bypassSession: true, timeoutMs: 10_000,
@@ -65,7 +66,7 @@ export async function uploadVerifiedProviderPack(input: {
   await measure("provider_pack.upload", async () => {
     if (archive && await stageProviderPackArchive({
       archive, runner: input.runner, targetPath: input.targetPath,
-      reuseRoots: input.reuseRoots, trace: input.trace,
+      reuseRoots: input.reuseRoots, trees, trace: input.trace,
     })) return;
     if (source.archiveOnly) throw Error("runner_remote_provider_archive_transport_unavailable");
     if (archive) await verifyDirectory();
