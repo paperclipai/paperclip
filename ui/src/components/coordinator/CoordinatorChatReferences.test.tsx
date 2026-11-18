@@ -31,16 +31,22 @@ describe("CoordinatorChatReferencesProvider", () => {
   });
 
   it("resolves hundreds of chats against hundreds of agents with one pass over the agents", () => {
-    // Each chat used to search the whole agent list; count every read of an agent id.
+    // Each chat used to search the whole agent list; count every read of an agent id and stop a runaway
+    // render at the budget instead of letting it run to the end.
+    const agentCount = 500;
+    const readBudget = 2 * agentCount;
     let idReads = 0;
-    fixture.agents = Array.from({ length: 500 }, (_, index) => {
+    fixture.agents = Array.from({ length: agentCount }, (_, index) => {
       const id = `agent-${index}`;
-      return Object.defineProperty({ name: `Agent ${index}`, urlKey: `agent-${index}` }, "id", { enumerable: true, get: () => { idReads++; return id; } }) as { id: string; name: string; urlKey: string };
+      return Object.defineProperty({ name: `Agent ${index}`, urlKey: `agent-${index}` }, "id", { enumerable: true, get: () => {
+        if (++idReads > readBudget) throw new Error(`Chat references read agent ids ${idReads} times`);
+        return id;
+      } }) as { id: string; name: string; urlKey: string };
     });
     fixture.chats = Array.from({ length: 500 }, (_, index) => ({ id: `chat-${index}`, identifier: null, conversationAgentId: `agent-${499 - index}`, conversationDefault: false }));
     const html = renderToStaticMarkup(<CoordinatorChatReferencesProvider enabled><References /></CoordinatorChatReferencesProvider>);
     expect(html).toContain("chat-0=/chats/agent-499/chat-0;");
     expect(html).toContain("chat-499=/chats/agent-0/chat-499;");
-    expect(idReads).toBeLessThanOrEqual(2 * fixture.agents.length);
+    expect(idReads).toBeLessThanOrEqual(readBudget);
   });
 });
