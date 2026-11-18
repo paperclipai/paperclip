@@ -236,6 +236,7 @@ describe("document annotation routes", () => {
           : [],
       },
       changed: true,
+      firstAdd: input.present,
     }));
     // Cold route transforms belong to fixture setup, not the request timeout.
     await Promise.all([
@@ -502,6 +503,22 @@ describe("document annotation routes", () => {
           source: "issue.document_annotation_reaction",
         }),
       }));
+    });
+
+    it("does not wake the assignee again when a person re-adds a removed question", async () => {
+      mockAnnotationService.setCommentReaction.mockResolvedValueOnce({
+        thread: annotationThread,
+        comment: { ...annotationComment, reactions: [] },
+        changed: true,
+        firstAdd: false,
+      });
+
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "issue.document_annotation_comment_reaction_added",
+      }));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
 
     it.each(["done", "check", "thumbs_up"])("does not wake the assignee for %s", async (reaction) => {

@@ -11887,7 +11887,7 @@ export function issueRoutes(
 
     if (
       present &&
-      result.changed &&
+      result.firstAdd &&
       reactionParsed.data === "question" &&
       actor.actorType === "user" &&
       issue.assigneeAgentId &&

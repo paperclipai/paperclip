@@ -14,6 +14,7 @@ export const documentAnnotationCommentReactions = pgTable(
     actorType: text("actor_type").$type<"agent" | "user">().notNull(),
     actorId: text("actor_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    removedAt: timestamp("removed_at", { withTimezone: true }),
   },
   (table) => ({
     companyCommentIdx: index("document_annotation_comment_reactions_company_comment_idx").on(

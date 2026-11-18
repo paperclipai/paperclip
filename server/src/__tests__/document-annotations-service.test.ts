@@ -665,6 +665,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
 
     const added = await react(user, "question", true);
     expect(added.changed).toBe(true);
+    expect(added.firstAdd).toBe(true);
     expect(added.comment.reactions).toEqual([
       { reaction: "question", count: 1, reactedByMe: true, actors: [{ actorType: "user", agentId: null, userId: "board-user" }] },
     ]);
@@ -693,6 +694,14 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
       expect.objectContaining({ reaction: "question", count: 1, reactedByMe: false }),
     ]);
     expect((await react(user, "question", false)).changed).toBe(false);
+
+    const readded = await react(user, "question", true);
+    expect(readded.changed).toBe(true);
+    expect(readded.firstAdd).toBe(false);
+    expect(readded.comment.reactions).toEqual([
+      expect.objectContaining({ reaction: "done", count: 1 }),
+      expect.objectContaining({ reaction: "question", count: 2, reactedByMe: true }),
+    ]);
   });
 
   it("rejects a reaction on a comment that belongs to another issue's thread", async () => {

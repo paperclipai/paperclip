@@ -6,6 +6,7 @@ CREATE TABLE "document_annotation_comment_reactions" (
 	"actor_type" text NOT NULL,
 	"actor_id" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"removed_at" timestamp with time zone,
 	CONSTRAINT "document_annotation_comment_reactions_reaction_chk" CHECK ("document_annotation_comment_reactions"."reaction" in ('done', 'check', 'thumbs_up', 'question')),
 	CONSTRAINT "document_annotation_comment_reactions_actor_type_chk" CHECK ("document_annotation_comment_reactions"."actor_type" in ('agent', 'user'))
 );

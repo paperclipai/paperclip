@@ -289,7 +289,10 @@ export function documentAnnotationService(db: Db) {
         actorId: documentAnnotationCommentReactions.actorId,
       })
       .from(documentAnnotationCommentReactions)
-      .where(inArray(documentAnnotationCommentReactions.commentId, commentIds))
+      .where(and(
+        inArray(documentAnnotationCommentReactions.commentId, commentIds),
+        isNull(documentAnnotationCommentReactions.removedAt),
+      ))
       .orderBy(asc(documentAnnotationCommentReactions.createdAt), asc(documentAnnotationCommentReactions.id));
     const grouped = new Map<string, Map<DocumentAnnotationCommentReactionName, DocumentAnnotationCommentReactionSummary>>();
     for (const row of rows) {
@@ -904,7 +907,7 @@ export function documentAnnotationService(db: Db) {
         ));
       if (!comment) throw notFound("Annotation comment not found");
 
-      const changedRows: Array<{ id: string }> = input.present
+      const changedRows: Array<{ id: string; firstAdd: boolean }> = input.present
         ? await tx
           .insert(documentAnnotationCommentReactions)
           .values({
@@ -914,19 +917,35 @@ export function documentAnnotationService(db: Db) {
             actorType: input.actor.actorType,
             actorId: input.actor.actorId,
           })
-          .onConflictDoNothing()
-          .returning({ id: documentAnnotationCommentReactions.id })
+          .onConflictDoUpdate({
+            target: [
+              documentAnnotationCommentReactions.commentId,
+              documentAnnotationCommentReactions.reaction,
+              documentAnnotationCommentReactions.actorType,
+              documentAnnotationCommentReactions.actorId,
+            ],
+            set: { removedAt: null },
+            setWhere: sql`${documentAnnotationCommentReactions.removedAt} is not null`,
+          })
+          .returning({ id: documentAnnotationCommentReactions.id, firstAdd: sql<boolean>`(xmax = 0)` })
         : await tx
-          .delete(documentAnnotationCommentReactions)
+          .update(documentAnnotationCommentReactions)
+          .set({ removedAt: new Date() })
           .where(and(
             eq(documentAnnotationCommentReactions.commentId, comment.id),
             eq(documentAnnotationCommentReactions.reaction, input.reaction),
             eq(documentAnnotationCommentReactions.actorType, input.actor.actorType),
             eq(documentAnnotationCommentReactions.actorId, input.actor.actorId),
+            isNull(documentAnnotationCommentReactions.removedAt),
           ))
-          .returning({ id: documentAnnotationCommentReactions.id });
+          .returning({ id: documentAnnotationCommentReactions.id, firstAdd: sql<boolean>`false` });
       const [withSummary] = await withReactions([comment], input.actor, tx);
-      return { thread, comment: withSummary!, changed: changedRows.length > 0 };
+      return {
+        thread,
+        comment: withSummary!,
+        changed: changedRows.length > 0,
+        firstAdd: changedRows[0]?.firstAdd === true,
+      };
     }),
 
     cleanupForIssueCommentDeletion: async (
