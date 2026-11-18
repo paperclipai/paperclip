@@ -48,9 +48,8 @@ import {
   type EnvironmentRuntimeLeaseRecord,
   type EnvironmentRuntimeService,
   type ProviderResourceDisposition,
-  retryTransientExactResume,
 } from "./environment-runtime.js";
-import { REUSABLE_SANDBOX_RESUME_BUDGET_MS } from "./reusable-sandbox-resume-replacement.js";
+import { REUSABLE_SANDBOX_RESUME_BUDGET_MS, retryTransientResumeCall } from "./reusable-sandbox-resume-replacement.js";
 import { ENVIRONMENT_DRIVER_TRAITS } from "./environment-driver-traits.js";
 import type { PluginTaskDescription } from "./environment-task-runtime.js";
 import { unlaunchedPortableTaskLease } from "./plugin-task-ownership.js";
@@ -422,9 +421,9 @@ export function environmentRunOrchestrator(
         // controller was offline. Ready the exact lease under its lifecycle
         // budget before short preparation commands (such as project-auth
         // checks) can run. This API cannot acquire a replacement.
-        const resumed = await retryTransientExactResume({ budgetMs: reattachResumeRetryBudgetMs,
+        const resumed = await retryTransientResumeCall({ budgetMs: reattachResumeRetryBudgetMs,
           call: timeoutMs => environmentRuntime.resumeRunLease({
-            environment, lease, requestedCwd: expected.remoteCwd, timeoutMs,
+            environment, lease, requestedCwd: expected.remoteCwd, ...(timeoutMs !== undefined ? { timeoutMs } : {}),
             ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
             ...(runnerReconnectGraceMs !== undefined ? { runnerReconnectGraceMs } : {}),
           }) }).catch((error: unknown) => {

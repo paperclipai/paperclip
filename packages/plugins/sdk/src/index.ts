@@ -488,7 +488,7 @@ export { WORKSPACE_OPERATION_FAILURE_REASONS, PluginWorkspaceOperationError, wor
 export type { PluginWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
 export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
 export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
-export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export { environmentResumeErrorData, isTransientEnvironmentResumeErrorCode, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
 export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
 export { environmentAcquireErrorData, readEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
 export type { PluginEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";

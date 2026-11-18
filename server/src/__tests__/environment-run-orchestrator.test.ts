@@ -988,7 +988,6 @@ describe("live remote runner lease reattachment", () => {
     expect(runtime.resumeRunLease).toHaveBeenCalledWith({
       environment: result.environment, lease: savedLease, requestedCwd: "/remote/workspace",
       runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
-      timeoutMs: expect.any(Number),
     });
     expect(result.lease).toEqual(savedLease);
     expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
@@ -1068,7 +1067,6 @@ describe("live remote runner lease reattachment", () => {
     expect(runtime.resumeRunLease).toHaveBeenCalledWith({
       environment: result.environment, lease: savedLease, requestedCwd: "/remote/workspace",
       warmRunnerIdleTimeoutMs: 1_800_000, runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
-      timeoutMs: expect.any(Number),
     });
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
@@ -1139,8 +1137,9 @@ describe("live remote runner lease reattachment", () => {
   it("preserves a retained sandbox startup failure without acquiring a replacement", async () => {
     const error = new Error("retained sandbox startup timed out");
     const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw error; }) });
-    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime, reattachResumeRetryBudgetMs: 0 }).acquireForRun(input))
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
       .rejects.toBe(error);
+    expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
     expect(runtime.execute).not.toHaveBeenCalled();
   });
@@ -1160,24 +1159,33 @@ describe("live remote runner lease reattachment", () => {
     expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
-  it("bounds every reattach resume call and the total wait by the retry budget", async () => {
+  it("gives the first reattach resume the provider deadline and bounds every retry by the budget", async () => {
     const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "web server returned an unknown error",
       data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 520 })) });
     const budgetMs = 1_500;
-    const timeouts: number[] = [];
+    const timeouts: Array<number | undefined> = [];
     const resumeRunLease = vi.fn(async ({ timeoutMs }: { timeoutMs?: number }) => {
-      timeouts.push(timeoutMs!);
-      await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs!, 400)));
+      timeouts.push(timeoutMs);
+      await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs ?? 300, 300)));
       throw gateway;
     });
     const runtime = makeMockRuntime({ resumeRunLease });
     const startedAt = Date.now();
     await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime, reattachResumeRetryBudgetMs: budgetMs })
       .acquireForRun(input)).rejects.toBe(gateway);
-    expect(Date.now() - startedAt).toBeLessThan(budgetMs + 200);
-    expect(resumeRunLease.mock.calls.length).toBeGreaterThan(1);
-    expect(timeouts[0]).toBeLessThanOrEqual(budgetMs);
-    expect(timeouts.every((timeout, index) => index === 0 || timeout < timeouts[index - 1]!)).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(300 + budgetMs + 250);
+    expect(timeouts[0]).toBeUndefined();
+    expect(timeouts.length).toBeGreaterThan(2);
+    const retries = timeouts.slice(1) as number[];
+    expect(retries.every(timeout => timeout <= budgetMs)).toBe(true);
+    expect(retries.every((timeout, index) => index === 0 || timeout < retries[index - 1]!)).toBe(true);
+  });
+  it("does not repeat a reattach resume that used up the provider's start deadline", async () => {
+    const deadline = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT, message: "environmentResumeLease timed out" });
+    const resumeRunLease = vi.fn(async () => { throw deadline; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input)).rejects.toBe(deadline);
+    expect(resumeRunLease).toHaveBeenCalledOnce();
   });
   it.each([500, 502, 520, 599])("treats a provider HTTP %i refusal during reattachment as transient", async statusCode => {
     const savedLease = originalLease();

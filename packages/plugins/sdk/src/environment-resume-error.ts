@@ -16,6 +16,11 @@ const ERROR_CODES = new Set([
   "ABORT_ERR", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "CONNECTION_FAILED",
 ]);
 
+/** Whether an envelope errno names a transport failure that a repeated call can pass. */
+export function isTransientEnvironmentResumeErrorCode(code: unknown): boolean {
+  return typeof code === "string" && ERROR_CODES.has(code);
+}
+
 function field(value: unknown, key: string): unknown {
   try { return value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined; }
   catch { return undefined; }
