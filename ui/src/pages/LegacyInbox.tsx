@@ -465,6 +465,7 @@ function ApprovalInboxRow({
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showResolutionButtons =
     approval.type !== "budget_override_required" &&
+    approval.type !== "instruction_generation" &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
