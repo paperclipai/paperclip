@@ -15,10 +15,9 @@ function expandId(value: string): string | null {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export function isolatedTaskPathSegments(input: Identity, platform = process.platform): string[] {
+export function isolatedTaskPathSegments(input: Identity): string[] {
   const ids = [input.companyId, input.issueId, ...(input.attemptId ? [input.attemptId] : [])];
   if (ids.some(id => !SEGMENT.test(id))) throw new Error("Invalid isolated task workspace identity");
-  if (platform === "win32" && input.attemptId && ids.every(id => UUID.test(id))) return ["w", ...ids.map(compactId)];
   return [input.attemptId ? "isolated-workspace-attempts" : "isolated-workspaces", ...ids];
 }
 
@@ -49,7 +48,9 @@ export function isolatedSeedDirectory(instance: string, root: string) {
 
 export async function resolveIsolatedTaskDirectory(instance: string, input: Identity): Promise<string> {
   const preferred = path.join(instance, ...isolatedTaskPathSegments(input));
-  const legacy = path.join(instance, ...isolatedTaskPathSegments(input, "linux"));
+  const ids = [input.companyId, input.issueId, input.attemptId];
+  const legacy = input.attemptId && ids.every(id => UUID.test(id!))
+    ? path.join(instance, "w", ...ids.map(id => compactId(id!))) : preferred;
   if (preferred === legacy) return preferred;
   const present = (target: string) => lstat(target).then(() => true, (error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return false; throw error;

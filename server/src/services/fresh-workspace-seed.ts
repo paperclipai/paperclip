@@ -127,7 +127,7 @@ export async function materializeFreshWorkspaceSeed(input: {
       const resolved = await execFile("git", ["-C", input.sourceCwd, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], gitOptions);
       commit = resolved.stdout.trim();
       if (!/^[a-f0-9]{40,64}$/.test(commit)) throw new Error("Invalid fresh workspace seed commit");
-      await execFile("git", [...(process.platform === "win32" ? ["-c", "core.longpaths=true"] : []), "clone", "--no-local", "--no-checkout", ...(process.platform === "win32" ? ["--config", "core.longpaths=true"] : []), "--", input.sourceCwd, staging], gitOptions);
+      await execFile("git", ["clone", "--no-local", "--no-checkout", "--", input.sourceCwd, staging], gitOptions);
       await execFile("git", ["-C", staging, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", commit], gitOptions);
       // The old local directory is not a publication target for this attempt.
       await execFile("git", ["-C", staging, "remote", "remove", "origin"], gitOptions);
