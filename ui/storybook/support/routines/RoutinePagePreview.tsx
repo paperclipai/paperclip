@@ -1,25 +1,21 @@
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { RoutineTrigger } from "@paperclipai/shared";
-import { ArrowLeft } from "lucide-react";
 import { DesignPageShell } from "@/components/DesignPageShell";
 import { DesignSidebar } from "@/components/DesignSidebar";
 import { RoutineHistoryTab } from "@/components/RoutineHistoryTab";
 import { RoutineRunVariablesDialog } from "@/components/RoutineRunVariablesDialog";
-import {
-  RoutineEditDialog,
-  type RoutineEditDialogProps,
-  type RoutineFormDraft,
-} from "@/components/routine-page/RoutineEditDialog";
-import { RoutinePage, RoutinePageActions } from "@/components/routine-page/RoutinePage";
+import { RoutineEditDialog, type RoutineEditDialogProps } from "@/components/routine-page/RoutineEditDialog";
+import { RoutinePage, RoutinePageActions, RoutineSubpage } from "@/components/routine-page/RoutinePage";
 import { RoutineWebhookDialog } from "@/components/routine-page/RoutineWebhookDialog";
+import { routineToDraft } from "@/components/routine-page/routine-form";
 import { routineAutomationState } from "@/components/routine-page/routine-summary";
-import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { RoutineAuditActivity } from "@/pages/audit/RoutineAuditActivity";
 import { createIssue, storybookAgents, storybookProjects, storybookSecrets } from "../../fixtures/paperclipData";
+import { installFixtureApi } from "../capability-gaps/api";
 import { composerSkills } from "../composerSkills";
-import { DesignProposalAccess } from "./DesignProposalAccess";
+import { DesignProposalAccess } from "../design-proposals/DesignProposalAccess";
 import {
   DEMO_WEBHOOK_KEY,
   HISTORY_PAGE_SIZE,
@@ -34,7 +30,7 @@ import {
   type RoutineScenario,
   type RoutineScenarioKey,
 } from "./routine-page-data";
-import { recentTasks } from "./task-page-data";
+import { recentTasks } from "../design-proposals/task-page-data";
 
 /** Fixture stand-in for a webhook's test mode: the test event "arrives" a moment after testing starts. */
 function useWebhookTest(update: (id: string, change: Partial<RoutineTrigger>) => void) {
@@ -71,23 +67,6 @@ export type RoutinePagePreviewProps = {
   shell?: boolean;
 };
 
-export function routineToDraft(routine: RoutineScenario["routine"], responsibilityId = ""): RoutineFormDraft {
-  const schedule = routine.triggers.find((trigger) => trigger.kind === "schedule");
-  return {
-    title: routine.title,
-    description: routine.description ?? "",
-    projectId: routine.projectId ?? "",
-    assigneeAgentId: routine.assigneeAgentId ?? "",
-    responsibleUserId: routine.responsibleUserId ?? "",
-    responsibilityId,
-    variables: routine.variables,
-    env: routine.env ?? null,
-    schedule: schedule?.cronExpression
-      ? { cronExpression: schedule.cronExpression, timezone: schedule.timezone ?? "UTC" }
-      : null,
-  };
-}
-
 /** Seeds what the shipped editor, version history and audit feed read: skills and routines for
  * the "/" menu, revisions, and routine activity. */
 export function RoutineProposalFixtures({ children }: { children: ReactNode }) {
@@ -101,7 +80,10 @@ export function RoutineProposalFixtures({ children }: { children: ReactNode }) {
     );
     client.setQueryData(queryKeys.routines.revisions(ROUTINE_ID), routineRevisions);
     client.setQueryData([...queryKeys.routines.activity(COMPANY_ID, ROUTINE_ID), "audit"], routineAuditEvents);
+    // Run now's workspace picker lists reusable workspaces; none in these fixtures.
+    const fixtures = installFixtureApi([{ path: `/api/companies/${COMPANY_ID}/execution-workspaces`, read: () => [] }]);
     setReady(true);
+    return () => fixtures.cleanup();
   }, [client]);
   return ready ? children : null;
 }
@@ -127,7 +109,7 @@ function RoutinePageContent({
   const paged = scenario === "longHistory";
   const [routine, setRoutine] = useState(source.routine);
   const [history, setHistory] = useState(source.history);
-  const [olderLoaded, setOlderLoaded] = useState(0);
+  const [pagesLoaded, setPagesLoaded] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
   const [view, setView] = useState(initialView);
   const [editOpen, setEditOpen] = useState(initialDialog === "edit" || initialDialog === "edit-webhook");
@@ -237,13 +219,13 @@ function RoutinePageContent({
       project={project}
       responsibleUser={responsibleUser}
       responsibilities={pageResponsibilities}
-      history={paged ? [...history, ...olderHistory.slice(0, olderLoaded)] : history}
-      hasMoreHistory={paged && olderLoaded < olderHistory.length}
+      history={paged ? [...history, ...olderHistory].slice(0, pagesLoaded * HISTORY_PAGE_SIZE) : history}
+      hasMoreHistory={paged && pagesLoaded * HISTORY_PAGE_SIZE < history.length + olderHistory.length}
       loadingMoreHistory={loadingMore}
       onLoadMoreHistory={() => {
         setLoadingMore(true);
         window.setTimeout(() => {
-          setOlderLoaded((count) => count + HISTORY_PAGE_SIZE);
+          setPagesLoaded((count) => count + 1);
           setLoadingMore(false);
         }, 500);
       }}
@@ -256,14 +238,11 @@ function RoutinePageContent({
       onOpenWebhook={showWebhook}
     />
   ) : (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8 md:px-8">
-      <div className="flex flex-col items-start gap-2">
-        <Button variant="ghost" size="sm" className="-mx-2 text-muted-foreground" onClick={() => setView("routine")}>
-          <ArrowLeft className="h-3.5 w-3.5" />
-          {routine.title}
-        </Button>
-        <h1 className="text-xl font-semibold">{view === "versions" ? "Version history" : "Audit log"}</h1>
-      </div>
+    <RoutineSubpage
+      routineTitle={routine.title}
+      title={view === "versions" ? "Version history" : "Audit log"}
+      onBack={() => setView("routine")}
+    >
       {view === "versions" ? (
         <RoutineHistoryTab
           routine={routine}
@@ -279,7 +258,7 @@ function RoutinePageContent({
       ) : (
         <RoutineAuditActivity companyId={routine.companyId} routineId={routine.id} />
       )}
-    </div>
+    </RoutineSubpage>
   );
 
   return (

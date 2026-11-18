@@ -2,15 +2,16 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { EMPTY_ROUTINE_FORM_DRAFT, RoutineEditDialog } from "@/components/routine-page/RoutineEditDialog";
 import { storybookAgents, storybookProjects, storybookSecrets } from "../../fixtures/paperclipData";
 import { expect, userEvent, within } from "storybook/test";
-import { RoutineEditDialogPreview, RoutineProposalFixtures, routineToDraft } from "../../support/design-proposals/RoutinePagePreview";
-import { routinePeople, routineResponsibilities, routineScenarios } from "../../support/design-proposals/routine-page-data";
+import { routineToDraft } from "@/components/routine-page/routine-form";
+import { RoutineEditDialogPreview, RoutineProposalFixtures } from "../../support/routines/RoutinePagePreview";
+import { routinePeople, routineResponsibilities, routineScenarios } from "../../support/routines/routine-page-data";
 
 const scheduled = routineToDraft(routineScenarios.scheduled.routine);
 const withVariables = routineToDraft(routineScenarios.variablesAndSecrets.routine);
 
 const meta = {
   id: "routine-edit-dialog-design",
-  title: "Design proposals/Components/Routine/Edit dialog",
+  title: "Automation and structured work/Routines, schedules, and triggers/Routine page/Edit dialog",
   component: RoutineEditDialog,
   args: {
     open: true,
@@ -27,15 +28,13 @@ const meta = {
   decorators: [(Story) => <RoutineProposalFixtures><Story /></RoutineProposalFixtures>],
   parameters: {
     layout: "fullscreen",
-    docs: { description: { component: "One vertical form for a routine: title, instructions, schedule, default agent, project, default responsible user and secrets. The Variables block appears only while the title or instructions contain a {{placeholder}}. Variables are one row each under shared column labels. Secrets start as a single Add secret button that opens a blank row ready to type in. Webhooks are listed and added here, each in its own modal. The same form creates a routine. Closing with unsaved changes asks once in the footer." } },
+    docs: { description: { component: "One vertical form for a routine, opened from Edit on the routine page: title, instructions, schedule, default agent, project, default responsible user and secrets. The Variables block appears only while the title or instructions contain a {{placeholder}}. Variables are one row each under shared column labels. Secrets start as a single Add secret button that opens a blank row ready to type in. Webhooks are listed and added here, each in its own dialog. The same form creates a routine from the routines list (New routine). Closing with unsaved changes asks once in the footer. Responsibility is experimental and appears only while areas of responsibility are switched on." } },
     paperclip: {
-      capabilities: ["routines/definition", "routines/management"],
-      status: "proposed",
-      home: "design-proposals",
-      exception: "Routine edit modal staged for visual approval with the routine page proposal.",
-      implementation: "prototype",
+      capabilities: ["routines/definition", "routines/management", "routines/triggers"],
+      status: "current",
+      implementation: "production",
       boundary: "fixtures",
-      notes: "New RoutineEditDialog composed from the shipped MarkdownEditor, RoutineVariablesEditor, ScheduleEditor, InlineEntitySelector and EnvironmentVariablesEditor. Typing / in Instructions lists skills and routines from the editor's shared autocomplete context, seeded here with three skills and four routines. Save, reload and secret creation are no-ops. Delivery settings and priority are not editable here.",
+      notes: "The shipped RoutineEditDialog, built from MarkdownEditor, RoutineVariablesEditor, ScheduleEditor, InlineEntitySelector and EnvironmentVariablesEditor. Typing / in Instructions lists skills and routines from the editor's shared autocomplete context, seeded here with three skills and four routines. Save, reload and secret creation are no-ops; webhook stories keep webhooks in local state. Priority and delivery settings have no editor: the routed page never sends them, so saved values are kept. Responsibility is flag-gated (enableResponsibilities); stories pass fixture options directly.",
     },
   },
 } satisfies Meta<typeof RoutineEditDialog>;

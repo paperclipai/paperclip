@@ -1,22 +1,20 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { RoutinePagePreview } from "../../support/design-proposals/RoutinePagePreview";
+import { RoutinePagePreview } from "../../support/routines/RoutinePagePreview";
 
 const meta = {
   id: "routine-page-design",
-  title: "Design proposals/Pages/Routine",
+  title: "Automation and structured work/Routines, schedules, and triggers/Routine page/Page",
   component: RoutinePagePreview,
   parameters: {
     layout: "fullscreen",
     initialEntries: ["/PAP/routines/routine-weekly-digest"],
-    docs: { description: { component: "Proposed single-page routine view that replaces the section sidebar. Left column: title, on/off status with the next run, what it repeats on, default agent, default responsible user and project. Right column: instructions cut to the first paragraph with Show all, then the tasks the routine created, loaded a page at a time. The on/off toggle is the only control that changes the routine directly; an existing schedule or webhook opens for editing when clicked, and everything else, including adding a webhook, happens in the Edit modal. While paused, a notice says schedules are skipped and webhook events are ignored. Variables, secrets and non-default run rules appear only when the routine has them. The menu leads to Version history, Audit log and Archive. With areas of responsibility switched on, a Responsibility field appears under Project on the page and in the Edit modal; with it off (every other story) the field is absent. Every control changes local fixture state so the page can be clicked through." } },
+    docs: { description: { component: "The routine page at /routines/:routineId. Left column: title, on/off status with the next run, what it repeats on, default agent, default responsible user and project. Right column: instructions cut to the first paragraph with Show all, then the tasks the routine created, a page at a time with Load more. The on/off toggle is the only control that changes the routine directly; an existing schedule or webhook opens when clicked, and everything else, including adding a webhook, happens in the Edit dialog. While paused, a notice says schedules are skipped and webhook events are ignored. Variables, secrets and non-default run rules appear only when the routine has them. The menu leads to Version history, Audit log and Archive. Responsibility is experimental: with areas of responsibility switched on, a Responsibility field appears under Project on the page and in the Edit dialog; with it off (every other story) the field is absent. These stories drive the shipped components from local fixture state so every control can be clicked through; the Routed page stories mount the real page on a fixture API." } },
     paperclip: {
-      capabilities: ["routines/definition", "routines/management"],
-      status: "proposed",
-      home: "design-proposals",
-      exception: "Routine page redesign staged for visual approval before it replaces the routed RoutineDetail sections.",
-      implementation: "prototype",
+      capabilities: ["routines/definition", "routines/management", "routines/history", "routines/triggers"],
+      status: "current",
+      implementation: "production",
       boundary: "fixtures",
-      notes: "Composes the new prop-driven RoutinePage, RoutinePageActions, RoutineEditDialog and RoutineWebhookDialog with the shipped DesignPageShell, DesignSidebar, TaskSummaryList, ScheduleEditor, MarkdownBody, MarkdownEditor, RoutineVariablesEditor, EnvironmentVariablesEditor, webhook CopyField/AgentInstructions and RoutineRunVariablesDialog. Nothing is wired to the routines API or the /routines route yet. Version history mounts the shipped RoutineHistoryTab and Audit log the shipped RoutineAuditActivity, both on seeded query data; their routes and restore are not wired. Responsibility is prop-driven: the stories pass fixture responsibilities instead of reading the enableResponsibilities flag, and saving does not call the responsibility link API. Delivery settings have no editor in this proposal; saved non-default values are shown read-only as Run rules.",
+      notes: "Fixture controller around the shipped RoutinePage, RoutinePageActions, RoutineSubpage, RoutineEditDialog, RoutineWebhookDialog and RoutineRunVariablesDialog, the same components RoutineDetail renders at /routines/:routineId (see Routine page/Routed page for the routed page on a fixture API). Every change stays in local state; nothing calls the routines API. The frame is DesignPageShell and DesignSidebar, not the app Layout. Version history mounts RoutineHistoryTab and Audit log RoutineAuditActivity on seeded query data; restore is a no-op. Responsibility is experimental and flag-gated (enableResponsibilities): these stories pass fixture responsibilities directly and never call the responsibility link API. Delivery settings have no editor; saved non-default values show read-only as Run rules and are kept on save. Test webhook is backed by PATCH /routine-triggers/:id setupPending on the server; here the test event is simulated a moment after testing starts.",
     },
   },
 } satisfies Meta<typeof RoutinePagePreview>;

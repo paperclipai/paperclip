@@ -1,5 +1,6 @@
 import type { Issue, RoutineDetail, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import type { RoutinePerson } from "@/components/routine-page/RoutinePage";
+import { ROUTINE_HISTORY_PAGE_SIZE } from "@/pages/RoutineDetail";
 import { createIssue, storybookAgents, storybookProjects } from "../../fixtures/paperclipData";
 
 const COMPANY_ID = "company-storybook";
@@ -294,7 +295,8 @@ export const olderHistory: Issue[] = Array.from({ length: 33 }, (_, index) =>
   historyIssue(7 + index, `Weekly product digest · week ${40 - index}`, index % 9 === 4 ? "blocked" : "done", DAY * (49 + index * 7)),
 );
 
-export const HISTORY_PAGE_SIZE = 10;
+/** The routed page's page size, so the preview pages History the same way. */
+export const HISTORY_PAGE_SIZE = ROUTINE_HISTORY_PAGE_SIZE;
 
 function revision(number: number, changeSummary: string, description: string, ageMinutes: number, cron = "0 9 * * 1-5") {
   const routine = makeRoutine({ description });

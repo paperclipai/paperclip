@@ -1,12 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { RoutineWebhookDialog } from "@/components/routine-page/RoutineWebhookDialog";
-import { DEMO_WEBHOOK_KEY, webhookTrigger } from "../../support/design-proposals/routine-page-data";
+import { DEMO_WEBHOOK_KEY, webhookTrigger } from "../../support/routines/routine-page-data";
 
 const receivedAt = new Date().toISOString();
 
 const meta = {
   id: "routine-webhook-dialog-design",
-  title: "Design proposals/Components/Routine/Webhook dialog",
+  title: "Automation and structured work/Routines, schedules, and triggers/Routine page/Webhook dialog",
   component: RoutineWebhookDialog,
   args: {
     open: true,
@@ -22,15 +22,13 @@ const meta = {
   },
   parameters: {
     layout: "fullscreen",
-    docs: { description: { component: "One modal for a routine webhook. Adding asks only what is sending it. Once created, the same modal shows the URL and key to copy and reports the test event as it arrives. Opening an existing webhook shows its health, the URL, and Replace key, with Remove and Pause in the footer. Test webhook puts a finished webhook back into test mode: the next event is checked and reported here without starting the routine, and Finish testing returns it to live." } },
+    docs: { description: { component: "One dialog for a routine webhook, opened from the Repeats list on the routine page or from the Edit dialog. Adding asks only what is sending it. Once created, the same dialog shows the URL and key to copy and reports the test event as it arrives. Opening an existing webhook shows its health, the URL, and Replace key, with Remove and Pause in the footer. Test webhook puts a live webhook back into test mode: events are checked and reported here without starting the routine, and Finish testing returns it to live with its last real delivery restored." } },
     paperclip: {
-      capabilities: ["routines/definition", "routines/management"],
-      status: "proposed",
-      home: "design-proposals",
-      exception: "Routine webhook modal staged for visual approval with the routine page proposal; it replaces the full-page trigger wizard.",
-      implementation: "prototype",
+      capabilities: ["routines/triggers", "routines/definition"],
+      status: "current",
+      implementation: "production",
       boundary: "fixtures",
-      notes: "New RoutineWebhookDialog reusing the shipped CopyField, AgentInstructions, WebhookUrlWarning and webhookAgentInstructions. Trigger states are fixtures; no webhook is created, tested, rotated or removed. Test mode after setup is not available on the server yet: the trigger update API only accepts clearing setupPending, so re-entering it needs a server change. The key shown is a placeholder.",
+      notes: "The shipped RoutineWebhookDialog with CopyField, AgentInstructions, WebhookUrlWarning and webhookAgentInstructions. Trigger states are fixtures; no webhook is created, tested, rotated or removed. On the routed page useRoutineWebhookDialog wires it to the trigger API, and test mode uses PATCH /routine-triggers/:id with setupPending true/false. The key shown is a placeholder.",
     },
   },
 } satisfies Meta<typeof RoutineWebhookDialog>;
