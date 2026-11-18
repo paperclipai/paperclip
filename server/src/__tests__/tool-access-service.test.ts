@@ -17501,6 +17501,86 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(JSON.stringify(replaced)).not.toContain(pat);
   });
 
+  it("keeps a refused GitHub PAT on the token path and restores the draft instead of switching it to OAuth", async () => {
+    const company = await createCompany(db);
+    const userId = `github-pat-refused-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const actor = { actorType: "user" as const, actorId: userId };
+    const connector = fakeGitHubConnector(company.id, userId);
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const oauthDraft = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "managed",
+      grantKind: "user",
+      name: "GitHub for refused token",
+    }, actor);
+    const secretsBefore = await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id));
+    const definitionsBefore = await db.select().from(userSecretDefinitions).where(eq(userSecretDefinitions.companyId, company.id));
+
+    // GitHub's MCP server answers a refused token with a Bearer challenge that
+    // advertises its OAuth metadata. That must not turn the chosen token method
+    // back into the OAuth draft the person is trying to leave.
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response("", {
+        status: 401,
+        headers: {
+          "www-authenticate":
+            'Bearer error="invalid_token", error_description="Invalid token", resource_metadata="https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/"',
+        },
+      }));
+    const refusedPat = "github-pat-refused-fixture";
+    const refusal = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      resumeConnectionId: oauthDraft.connectionId,
+      grantKind: "user",
+      name: "GitHub for refused token",
+      credentialValues: { "credentials.authorization": refusedPat },
+    }, actor).then(() => null, (error: unknown) => error);
+    expect(refusal).toMatchObject({
+      status: 422,
+      message: expect.stringContaining("GitHub did not accept this personal access token"),
+      details: { code: "api_key_rejected" },
+    });
+    expect(JSON.stringify(refusal)).not.toContain(refusedPat);
+    expect(fetchMock.mock.calls.every(([url]) => !String(url).includes(".well-known"))).toBe(true);
+
+    await expect(service.getConnection(oauthDraft.connectionId, company.id)).resolves.toMatchObject({
+      id: oauthDraft.connectionId,
+      status: "draft",
+      enabled: false,
+      authKind: oauthDraft.connection.authKind,
+      ownership: oauthDraft.connection.ownership,
+      config: oauthDraft.connection.config,
+      credentialRefs: oauthDraft.connection.credentialRefs,
+      credentialPolicy: oauthDraft.connection.credentialPolicy,
+      healthStatus: "error",
+      healthMessage: expect.stringContaining("GitHub did not accept this personal access token"),
+    });
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).resolves.toHaveLength(secretsBefore.length);
+    await expect(db.select().from(userSecretDefinitions).where(eq(userSecretDefinitions.companyId, company.id))).resolves.toHaveLength(definitionsBefore.length);
+
+    // The same draft retries with a token GitHub accepts.
+    mockToolsList([readTool("get_me", "Read the authenticated GitHub identity")]);
+    const acceptedPat = "github-pat-accepted-fixture";
+    const replaced = await service.connectGalleryApp(company.id, {
+      galleryKey: "github",
+      connectionMethodKey: "mcp-key",
+      resumeConnectionId: oauthDraft.connectionId,
+      grantKind: "user",
+      name: "GitHub for refused token",
+      credentialValues: { "credentials.authorization": acceptedPat },
+    }, actor);
+    expect(replaced.connectionId).toBe(oauthDraft.connectionId);
+    expect(replaced.connection).toMatchObject({
+      authKind: "api_key",
+      ownership: "customer",
+      config: expect.objectContaining({ sourceTemplateKey: "github", connectionMethodKey: "mcp-key" }),
+    });
+    expect(replaced.connection.config).not.toHaveProperty("oauth");
+    expect(JSON.stringify(replaced)).not.toContain(acceptedPat);
+  });
+
   it("connects gallery apps and finishes access profiles, bindings, and ask-first policies", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

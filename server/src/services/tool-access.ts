@@ -2527,6 +2527,10 @@ export function toolAccessService(
           .set({
             name,
             authKind: genericAuthKind,
+            // The chosen method decides who owns the connection: a draft that
+            // moves from the Paperclip-managed sign-in to a customer key must
+            // not keep reading as platform-shared.
+            ownership: connectionOwnership,
             transport,
             status: "draft",
             enabled: false,
@@ -2973,6 +2977,8 @@ export function toolAccessService(
                 .set({
                   agentInstructions: revivedConnectionPrevious.agentInstructions,
                   name: revivedConnectionPrevious.name,
+                  authKind: revivedConnectionPrevious.authKind,
+                  ownership: revivedConnectionPrevious.ownership,
                   transport: revivedConnectionPrevious.transport,
                   status: revivedConnectionPrevious.status,
                   enabled: revivedConnectionPrevious.enabled,

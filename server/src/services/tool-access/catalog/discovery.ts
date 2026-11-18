@@ -77,6 +77,21 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
+/** The `error` code of a Bearer challenge (RFC 6750), such as `invalid_token`; never its free text. */
+export function bearerChallengeError(authenticate: string): string | null {
+  const match = /\berror\s*=\s*"?([a-z0-9_-]{1,40})"?/i.exec(authenticate);
+  return match ? match[1]!.toLowerCase() : null;
+}
+
+/** What to tell the person when the server refused the key or token Paperclip sent. */
+export function apiKeyRejectedMessage(connection: typeof toolConnections.$inferSelect): string {
+  const config = asRecord(connection.config);
+  if (config.sourceTemplateKey === "github") {
+    return "GitHub did not accept this personal access token. Check that the token is valid and not expired, that its resource owner and repository selection include the repositories agents should use, and that it has the needed repository permissions. Then enter the token again.";
+  }
+  return "The server did not accept the saved key. Check the key and its account access, then enter it again.";
+}
+
 export function isAgentMailConnection(connection: typeof toolConnections.$inferSelect) {
   return connection.transport === "rest_api" && connection.config.provider === "agentmail";
 }
@@ -124,10 +139,16 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
+    const storedCredentialHeaders = credentialHeaders ?? await resolveCredentialHeaders(connection, actor);
     let headers = credentialHeaders ?? {
       ...projectedConnectionHeaders(connection),
-      ...(await resolveCredentialHeaders(connection, actor)),
+      ...storedCredentialHeaders,
     };
+    // A saved key or token that this request actually carried. A refusal of it
+    // is a credential problem for the person to fix on the key-entry path; it is
+    // never a reason to adopt whatever sign-in the server's challenge advertises.
+    const sentStoredApiKey =
+      connection.authKind === "api_key" && Object.keys(storedCredentialHeaders).length > 0;
     if (connection.config.sourceTemplateKey === "google-workspace" && !workspaceEndpoint) {
       const grant = await vaultGrantForConnection(connection, actor);
       const scopes = googleWorkspaceGrantedScopes(grant);
@@ -379,6 +400,19 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
+      if (response.status === 401 && sentStoredApiKey) {
+        // The saved key was sent and refused. Keep the connection on its key
+        // method: rewriting it to OAuth here would hijack the person's chosen
+        // method, hide the real cause behind "sign in", and change the draft so
+        // setup rollback no longer recognizes its own attempt.
+        await response.body?.cancel().catch(() => undefined);
+        throw unprocessable(apiKeyRejectedMessage(connection), {
+          code: "api_key_rejected",
+          status: response.status,
+          challenge: bearerChallengeError(authenticate),
+          setupUrl: connectionSetupUrl(connection),
+        });
+      }
       // A bare 401 to a request that carried no credential is the server's
       // answer to "does it need a key?". Treat it like a challenge whose sign-in
       // Paperclip cannot discover, so the person is asked for a key instead of
