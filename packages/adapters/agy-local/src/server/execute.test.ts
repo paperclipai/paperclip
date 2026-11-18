@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { ensureAdapterExecutionTargetRuntimeCommandInstalled } from "@paperclipai/adapter-utils/execution-target";
 import { discoverAgySessionArtifacts, execute } from "./execute.js";
 import { DENIED_ACTION_RUN, SIMPLE_RUN, TOOL_ERROR_RECOVERED_RUN } from "./fixtures.test-util.js";
 import * as mcpModule from "./mcp.js";
@@ -779,6 +780,86 @@ describe("agy-local execute run outcome", () => {
       expect(captured.stagedSettings).not.toBeNull();
       expect(captured.stagedSettings?.modelProvider).toBe("gemini");
       expect(captured.stagedSettings?.otherSetting).toBe(true);
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("removes the private CLI home when setup fails before the run starts", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-exec-cleanup-"));
+    try {
+      const cliHome = path.join(tempHome, ".gemini", "antigravity-cli");
+      await fs.mkdir(cliHome, { recursive: true });
+      await fs.writeFile(
+        path.join(cliHome, "antigravity-oauth-token"),
+        JSON.stringify({ access_token: "secret", refresh_token: "secret" }),
+      );
+      vi.mocked(ensureAdapterExecutionTargetRuntimeCommandInstalled).mockRejectedValueOnce(
+        new Error("agy executable not found"),
+      );
+      // Snapshot the temp dir first: earlier (pre-fix) runs may have left
+      // staged homes behind, so only a NEW leftover proves a leak.
+      const before = new Set(await fs.readdir(os.tmpdir()));
+      await expect(
+        execute({
+          runId: "run-outcome",
+          agent: {
+            id: "agent-1",
+            companyId: "company-1",
+            name: "Test Agent",
+            adapterType: "agy_local",
+            adapterConfig: {},
+          },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: { env: { HOME: tempHome, GEMINI_API_KEY: "test-key" } },
+          context: { paperclipWorkspace: { cwd: "/tmp/workspace" } },
+          onLog: async () => {},
+        }),
+      ).rejects.toThrow("agy executable not found");
+      // The staged home (with the copied OAuth token) must not leak.
+      const after = await fs.readdir(os.tmpdir());
+      const leftovers = after.filter(
+        (name) => !before.has(name) && name.startsWith("paperclip-agy-home-sync-run-outcome-"),
+      );
+      expect(leftovers).toEqual([]);
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  it("reports artifact paths at the preserved location, not the deleted staged home", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-exec-artifacts-"));
+    try {
+      const cliHome = path.join(tempHome, ".gemini", "antigravity-cli");
+      const brainDir = path.join(cliHome, "brain", "conv-fresh-1");
+      await fs.mkdir(brainDir, { recursive: true });
+      await fs.writeFile(path.join(brainDir, "artifact.json"), "{\"artifact\":true}\n");
+      // Resume conv-fresh-1 so the staging copies its brain/ into the
+      // private home, where discovery finds it; the default CLI mock
+      // returns the same conversation id.
+      const result = await execute({
+        runId: "run-outcome",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Test Agent",
+          adapterType: "agy_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: "conv-fresh-1", sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { env: { HOME: tempHome, GEMINI_API_KEY: "test-key" } },
+        context: { paperclipWorkspace: { cwd: "/tmp/workspace" } },
+        onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      const artifacts = (result.resultJson as { artifacts?: string[] } | undefined)?.artifacts ?? [];
+      expect(artifacts.length).toBeGreaterThan(0);
+      for (const artifact of artifacts) {
+        expect(artifact).not.toContain("paperclip-agy-home-sync-");
+        expect(artifact.startsWith(cliHome)).toBe(true);
+        await expect(fs.stat(artifact)).resolves.toBeDefined();
+      }
+      expect(new Set(artifacts).size).toBe(artifacts.length);
     } finally {
       await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
     }

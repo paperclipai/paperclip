@@ -295,6 +295,15 @@ export interface StageAgyHomeForSyncOptions {
    * no brain/ at all.
    */
   conversationIds?: string[];
+  /**
+   * Whether to copy the host OAuth token into the staged home. Defaults
+   * to true. Remote callers must pass false when the run authenticates
+   * another way (an API key): the token would otherwise be placed in a
+   * tenant sandbox where agent code can read it, even though the CLI
+   * never uses it. Local callers keep the default: the staged home stays
+   * on the host, so the token is not exposed to another party.
+   */
+  includeOAuthToken?: boolean;
 }
 
 /**
@@ -329,7 +338,7 @@ export async function stageAgyHomeForSync(
   await fs.promises.chmod(stagedDir, 0o700).catch(() => {});
 
   const tokenPath = resolveAgyOAuthTokenPath(homedir, env);
-  if (tokenPath && hasUsableAgyOAuthToken(tokenPath)) {
+  if (options.includeOAuthToken !== false && tokenPath && hasUsableAgyOAuthToken(tokenPath)) {
     try {
       const content = await fs.promises.readFile(tokenPath, "utf8");
       await fs.promises.writeFile(
@@ -432,7 +441,7 @@ export interface CopyBackAgyLocalConversationStateInput {
   limits?: Partial<typeof COPY_BACK_AGY_CONVERSATION_LIMITS>;
 }
 
-async function collectAgyBrainFiles(dir: string, prefix = ""): Promise<string[]> {
+async function collectAgyBrainFiles(dir: string, prefix = "", maxFiles = Number.POSITIVE_INFINITY): Promise<string[]> {
   let dirents;
   try {
     dirents = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -442,9 +451,13 @@ async function collectAgyBrainFiles(dir: string, prefix = ""): Promise<string[]>
   }
   const files: string[] = [];
   for (const dirent of dirents) {
+    // Stop collecting once the cap is reached: the count limit must bound
+    // the walk itself, not just the copy loop after the whole tree was
+    // already read into memory.
+    if (files.length >= maxFiles) break;
     const rel = prefix ? `${prefix}/${dirent.name}` : dirent.name;
     if (dirent.isDirectory()) {
-      files.push(...(await collectAgyBrainFiles(path.join(dir, dirent.name), rel)));
+      files.push(...(await collectAgyBrainFiles(path.join(dir, dirent.name), rel, maxFiles - files.length)));
     } else if (dirent.isFile()) {
       files.push(rel);
     }
@@ -459,46 +472,59 @@ async function collectAgyBrainFiles(dir: string, prefix = ""): Promise<string[]>
  * resumed afterwards. Same validation and bounds as the remote copy-back
  * (copyBackAgyConversationState), but over the local filesystem, so no
  * manifest is needed: the staged tree is confined by construction.
+ * Returns the brain/-relative paths that were copied (for callers that
+ * need to rewrite recorded paths from the staged dir to the real home).
  * Best-effort: a missing brain/ dir or any read/write error only loses the
  * resume (the status quo), never the run.
  */
 export async function copyBackAgyLocalConversationState(
   input: CopyBackAgyLocalConversationStateInput,
-): Promise<void> {
+): Promise<string[]> {
   const limits = { ...COPY_BACK_AGY_CONVERSATION_LIMITS, ...(input.limits ?? {}) };
   const log = input.log ?? (() => {});
+  const copied: string[] = [];
   try {
     const stagedBrainDir = path.join(input.stagedDir, "brain");
-    const entries = await collectAgyBrainFiles(stagedBrainDir);
-    if (entries.length > limits.maxFiles) {
+    const entries = await collectAgyBrainFiles(stagedBrainDir, "", limits.maxFiles);
+    if (entries.length >= limits.maxFiles) {
       await log(
-        `[paperclip] Antigravity conversation copy-back: ${entries.length} brain files, keeping the first ${limits.maxFiles}.`,
+        `[paperclip] Antigravity conversation copy-back: brain/ holds at least ${limits.maxFiles} files, copying the first ${limits.maxFiles}.`,
       );
     }
     const hostBrainDir = path.join(input.hostCliHomeDir, "brain");
     let totalBytes = 0;
-    for (const entry of entries.slice(0, limits.maxFiles)) {
+    for (const entry of entries) {
       // Confine every entry to brain/: no absolute paths, no `..` segments,
       // and the resolved host path must stay under the host brain dir.
       if (path.posix.isAbsolute(entry) || entry.split("/").includes("..")) continue;
       const stagedPath = path.join(stagedBrainDir, ...entry.split("/"));
       const hostPath = path.join(hostBrainDir, ...entry.split("/"));
       if (!hostPath.startsWith(hostBrainDir + path.sep)) continue;
+      // Bound the read before allocating: stat the file and skip it when
+      // it is over the per-file limit, instead of reading it whole and
+      // only then discovering it is too large.
+      let size: number;
+      try {
+        size = (await fs.promises.stat(stagedPath)).size;
+      } catch {
+        continue;
+      }
+      if (size > limits.maxFileBytes) continue;
+      if (totalBytes + size > limits.maxTotalBytes) {
+        await log("[paperclip] Antigravity conversation copy-back: hit the total size limit, stopping.");
+        break;
+      }
       let content: Buffer;
       try {
         content = await fs.promises.readFile(stagedPath);
       } catch {
         continue;
       }
-      if (content.byteLength > limits.maxFileBytes) continue;
-      if (totalBytes + content.byteLength > limits.maxTotalBytes) {
-        await log("[paperclip] Antigravity conversation copy-back: hit the total size limit, stopping.");
-        break;
-      }
       try {
         await fs.promises.mkdir(path.dirname(hostPath), { recursive: true });
         await fs.promises.writeFile(hostPath, content, { mode: 0o600 });
         totalBytes += content.byteLength;
+        copied.push(entry);
       } catch {
         continue;
       }
@@ -508,6 +534,7 @@ export async function copyBackAgyLocalConversationState(
       `[paperclip] Antigravity conversation copy-back failed: ${error instanceof Error ? error.message : String(error)}; the next run will start a fresh conversation.`,
     );
   }
+  return copied;
 }
 
 export type CopyBackAgyAuthOutcome = "copied" | "kept-host";

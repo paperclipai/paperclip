@@ -17,6 +17,7 @@ import { refreshPaperclipWorkspaceEnvForExecution } from "@paperclipai/adapter-u
 import {
   COPY_BACK_AGY_CONVERSATION_LIMITS,
   copyBackAgyAuth,
+  resolveAgyApiKey,
   resolveAgyCliHomeDir,
   resolveAgyOAuthTokenPath,
   stageAgyHomeForSync,
@@ -255,6 +256,10 @@ export async function prepareAgyRemoteRun(
       env: runtimeEnv,
       runId,
       conversationIds: input.resumeConversationIds,
+      // An API-key run authenticates with the key, so the operator's
+      // personal OAuth token must not be copied into the tenant sandbox,
+      // where agent code could read it even though the CLI never uses it.
+      includeOAuthToken: !resolveAgyApiKey(runtimeEnv),
     });
 
     if (runtimeMcpServers.length > 0) {

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -279,6 +280,89 @@ describe("agy-local execute (remote execution)", () => {
 
     // Workspace restoration ran on completion
     expect(restoreWorkspaceSpy).toHaveBeenCalled();
+  });
+
+  it("does not stage the operator OAuth token for a remote API-key run", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+
+    const hostHome = path.join(rootDir, "home");
+    const hostAgyDir = path.join(hostHome, ".gemini", "antigravity-cli");
+    await fs.mkdir(hostAgyDir, { recursive: true });
+    await fs.writeFile(
+      path.join(hostAgyDir, "antigravity-oauth-token"),
+      JSON.stringify({
+        access_token: "host-access",
+        refresh_token: "host-refresh",
+        expiry: new Date(Date.now() + 1000).toISOString(),
+      }),
+    );
+
+    // Capture the staged home's contents at prepare time: it is deleted
+    // in the run's finally, so it cannot be inspected afterwards.
+    // Captured through an object: plain `let`s would be narrowed to their
+    // initializers by control-flow analysis (the assignments live inside
+    // the mock callback).
+    const captured: { stagedTokenPresent: boolean | null; stagedSettings: Record<string, unknown> | null } = {
+      stagedTokenPresent: null,
+      stagedSettings: null,
+    };
+    const baseImpl = vi
+      .mocked(prepareAdapterExecutionTargetRuntime)
+      .getMockImplementation() as ((input: any) => Promise<any>) | undefined;
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockImplementation(async (input: any) => {
+      const agyHome = input.assets?.find((a: any) => a.key === "agy-home");
+      if (agyHome?.localDir) {
+        captured.stagedTokenPresent = existsSync(path.join(agyHome.localDir, "antigravity-oauth-token"));
+        try {
+          captured.stagedSettings = JSON.parse(
+            readFileSync(path.join(agyHome.localDir, "settings.json"), "utf8"),
+          );
+        } catch {
+          captured.stagedSettings = null;
+        }
+      }
+      return baseImpl!(input);
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-remote-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Remote Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        env: {
+          HOME: hostHome,
+          GEMINI_API_KEY: "test-key",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+        },
+      },
+      executionTarget: makeSandboxTarget(),
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    // The API key is the run's auth (modelProvider gemini in the staged
+    // settings), so the operator's personal token is never copied into
+    // the tenant sandbox, where agent code could read it.
+    expect(captured.stagedTokenPresent).toBe(false);
+    expect(captured.stagedSettings?.modelProvider).toBe("gemini");
   });
 
   it("starts Paperclip bridge and injects bridge environment into the process", async () => {

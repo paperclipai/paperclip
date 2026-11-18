@@ -373,6 +373,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // home below replaces runtimeEnv.HOME.
   let stagedLocalCliHomeDir: string | null = null;
   let stagedLocalCliHostHomeDir: string | null = null;
+  // Idempotent teardown for the private CLI home: copies the run's
+  // conversation state back to the real home, then deletes the staged
+  // dir. Returns the brain/-relative paths that were copied, for callers
+  // that rewrite recorded artifact paths to the preserved location.
+  // Shared by the normal finally below and by cleanupRemoteSetupFailure,
+  // so a setup failure (missing executable, malformed MCP config) before
+  // the run starts cannot leak the copied credentials either.
+  const cleanupStagedLocalCliHome = async (): Promise<string[]> => {
+    if (!stagedLocalCliHomeDir || !stagedLocalCliHostHomeDir) return [];
+    const stagedDir = stagedLocalCliHomeDir;
+    const hostDir = stagedLocalCliHostHomeDir;
+    stagedLocalCliHomeDir = null;
+    stagedLocalCliHostHomeDir = null;
+    const copied = await copyBackAgyLocalConversationState({
+      stagedDir,
+      hostCliHomeDir: hostDir,
+      log: (line) => onLog("stdout", `${line}\n`),
+    }).catch(() => [] as string[]);
+    await fs.rm(stagedDir, { recursive: true, force: true }).catch(() => {});
+    return copied;
+  };
   if (runtimeEnv.GEMINI_API_KEY && !executionTargetIsRemote) {
     try {
       stagedLocalCliHostHomeDir = resolveAgyCliHomeDir(runtimeEnv.HOME || os.homedir(), runtimeEnv);
@@ -384,6 +405,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       runtimeEnv.ANTIGRAVITY_CLI_HOME = stagedLocalCliHomeDir;
       runtimeEnv.GEMINI_CLI_HOME = stagedLocalCliHomeDir;
+      // The staged home exists from here on: every later setup failure
+      // (command checks, MCP setup) must tear it down too. Remote runs
+      // never reach this branch, so the remote handle assigned below is
+      // unaffected.
+      cleanupRemoteSetupFailure = async () => {
+        await cleanupStagedLocalCliHome();
+      };
     } catch (err) {
       stagedLocalCliHomeDir = null;
       stagedLocalCliHostHomeDir = null;
@@ -927,13 +955,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   return await withWorkspaceRestore(
     async () => {
+      // Set once finalResult is assigned: the finally below must not read
+      // it before then (temporal dead zone if the run threw). Declared
+      // here, outside the try, so the finally can see them.
+      let runCompleted = false;
+      let finalResult: AdapterExecutionResult | undefined;
       try {
         const initial = await runAttempt(sessionId);
         const initialFailed =
           !initial.proc.timedOut && resolveAgyRunOutcome(initial.parsed, initial.proc.exitCode).failed;
 
         let finalAttempt: Attempt = initial;
-        let finalResult: AdapterExecutionResult;
         if (
           sessionId &&
           initialFailed &&
@@ -978,16 +1010,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           }
         }
 
+        runCompleted = true;
         return finalResult;
       } finally {
         await mcpCleanup?.().catch(() => undefined);
-        if (stagedLocalCliHomeDir && stagedLocalCliHostHomeDir) {
-          await copyBackAgyLocalConversationState({
-            stagedDir: stagedLocalCliHomeDir,
-            hostCliHomeDir: stagedLocalCliHostHomeDir,
-            log: (line) => onLog("stdout", `${line}\n`),
-          }).catch(() => undefined);
-          await fs.rm(stagedLocalCliHomeDir, { recursive: true, force: true }).catch(() => {});
+        // The staged dirs are captured before cleanup nulls them: the
+        // recorded artifact paths are rewritten to the preserved location.
+        const stagedDirForRemap = stagedLocalCliHomeDir;
+        const hostDirForRemap = stagedLocalCliHostHomeDir;
+        const copiedBrainEntries = await cleanupStagedLocalCliHome().catch(() => [] as string[]);
+        if (
+          runCompleted &&
+          finalResult &&
+          stagedDirForRemap &&
+          hostDirForRemap &&
+          copiedBrainEntries.length > 0
+        ) {
+          const resultJson = finalResult.resultJson as { artifacts?: unknown } | undefined;
+          if (resultJson && Array.isArray(resultJson.artifacts)) {
+            const copied = new Set(copiedBrainEntries);
+            const remapped: string[] = [];
+            for (const artifact of resultJson.artifacts) {
+              if (typeof artifact !== "string") continue;
+              const rel = path.relative(stagedDirForRemap, artifact);
+              if (rel.startsWith("..") || path.isAbsolute(rel)) {
+                // Not under the staged dir (discovered via the real home):
+                // already at the preserved location.
+                remapped.push(artifact);
+                continue;
+              }
+              // Only brain/ entries are copied back; anything else under
+              // the staged dir no longer exists, so drop it.
+              if (!rel.startsWith(`brain${path.sep}`)) continue;
+              if (!copied.has(rel.slice(`brain${path.sep}`.length))) continue;
+              remapped.push(path.join(hostDirForRemap, rel));
+            }
+            finalResult.resultJson = { ...resultJson, artifacts: [...new Set(remapped)] };
+          }
         }
         try {
           await providerStop.collectBeforeRestore();

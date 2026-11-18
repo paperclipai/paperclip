@@ -34,6 +34,7 @@ import { detectAgyAuthRequired, parseAgyJsonl } from "./parse.js";
 import {
   applyAgyApiKeyAlias,
   copyBackAgyAuth,
+  resolveAgyApiKey,
   resolveAgyOAuthTokenPath,
   stageAgyHomeForSync,
 } from "./credentials.js";
@@ -184,6 +185,9 @@ export async function testEnvironment(
           homedir: runtimeEnv.HOME || os.homedir(),
           env: runtimeEnv,
           runId,
+          // Same rule as remote runs: an API-key probe authenticates with
+          // the key, so the operator token stays off the remote target.
+          includeOAuthToken: !resolveAgyApiKey(runtimeEnv),
         });
         const hostTokenPath =
           resolveAgyOAuthTokenPath(runtimeEnv.HOME || os.homedir(), runtimeEnv) ??

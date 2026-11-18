@@ -281,6 +281,31 @@ describe("copyBackAgyLocalConversationState", () => {
     expect(fs.existsSync(path.join(hostCliHomeDir, "ok.txt"))).toBe(false);
     expect(fs.readFileSync(path.join(hostCliHomeDir, "brain", "conv-1", "ok.txt"), "utf8")).toBe("ok");
   });
+
+  it("copies at most maxFiles, stopping the walk at the cap", async () => {
+    const stagedDir = makeTmpDir();
+    const hostCliHomeDir = makeTmpDir();
+    for (const name of ["a.txt", "b.txt", "c.txt", "d.txt"]) {
+      const dir = path.join(stagedDir, "brain", "conv-1");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, name), name);
+    }
+    await copyBackAgyLocalConversationState({ stagedDir, hostCliHomeDir, limits: { maxFiles: 2 } });
+    const copied = fs.readdirSync(path.join(hostCliHomeDir, "brain", "conv-1"));
+    expect(copied).toHaveLength(2);
+  });
+
+  it("skips a file larger than maxFileBytes without reading it whole", async () => {
+    const stagedDir = makeTmpDir();
+    const hostCliHomeDir = makeTmpDir();
+    const dir = path.join(stagedDir, "brain", "conv-1");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "small.txt"), "small");
+    fs.writeFileSync(path.join(dir, "big.bin"), "x".repeat(100));
+    await copyBackAgyLocalConversationState({ stagedDir, hostCliHomeDir, limits: { maxFileBytes: 10 } });
+    expect(fs.existsSync(path.join(hostCliHomeDir, "brain", "conv-1", "small.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(hostCliHomeDir, "brain", "conv-1", "big.bin"))).toBe(false);
+  });
 });
 
 describe("decideAgyAuthMerge", () => {
