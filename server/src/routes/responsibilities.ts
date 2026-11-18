@@ -13,6 +13,7 @@ import {
   type ResponsibilityLinkLookupQuery,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import { validate } from "../middleware/validate.js";
 import {
   authorizationDeniedDetails,
@@ -64,6 +65,17 @@ export function boardCanManageResponsibilityOwner(req: Request, companyId: strin
   return membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
 }
 
+/**
+ * Whose responsibilities a request means when it names no owner: a board user
+ * means their own, and an agent means the person its run works for (the
+ * person chatting, or the task's responsible person).
+ */
+export function defaultResponsibilityOwnerUserId(req: Request): string | undefined {
+  if (req.actor.type === "board") return req.actor.userId ?? undefined;
+  if (req.actor.type === "agent") return req.actor.onBehalfOfUserId ?? undefined;
+  return undefined;
+}
+
 export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWakeupDeps } = {}) {
   const router = Router();
   const access = accessService(db);
@@ -75,7 +87,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
   // Same gate and message shape the status-card routes use when their flag is off.
   async function assertResponsibilitiesEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   /** Agents also pass the company-scope read boundary (low-trust agents do not). */
@@ -181,10 +193,10 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = listResponsibilitiesQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? (req.actor.type === "board" ? req.actor.userId : undefined);
+    const ownerUserId = query.ownerUserId ?? defaultResponsibilityOwnerUserId(req);
     if (!ownerUserId) {
       throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: name the person whose responsibilities to read"
+        ? "ownerUserId is required: this run works for no person, so name the person whose responsibilities to read"
         : "ownerUserId is required");
     }
     res.json(await svc.overview(companyId, ownerUserId, {
@@ -200,10 +212,11 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
     const actor = getActorInfo(req);
     let ownerUserId: string;
     if (req.actor.type === "agent") {
-      if (!req.body.ownerUserId) {
-        throw unprocessable("ownerUserId is required: an agent proposes a responsibility for a person in this company");
+      const owner = req.body.ownerUserId ?? defaultResponsibilityOwnerUserId(req);
+      if (!owner) {
+        throw unprocessable("ownerUserId is required: this run works for no person, so name the person in this company the responsibility is for");
       }
-      ownerUserId = req.body.ownerUserId;
+      ownerUserId = owner;
       if (!(await svc.isCompanyMember(companyId, ownerUserId))) throw notFound("Owner is not a member of this company");
     } else {
       const self = req.actor.userId;

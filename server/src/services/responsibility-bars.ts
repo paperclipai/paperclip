@@ -28,6 +28,7 @@ import {
   type ResponsibilityBarConversation,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "./responsibilities-disabled.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -98,7 +99,7 @@ export function responsibilityBarService(db: Db) {
 
   async function assertEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   /** The agent a new conversation is held with: the agent that runs it, else the top of the org chart, else the oldest. */

@@ -10,7 +10,8 @@ import {
   type AcceptedAutomationProposal,
   type ProposeAutomationInteraction,
 } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import { validate } from "../middleware/validate.js";
 import {
   authorizationDeniedDetails,
@@ -34,6 +35,7 @@ import { automationConversationService } from "../services/responsibility-automa
 import { standingCheckService } from "../services/routine-standing-checks.js";
 import { routineSuggestionService, type RoutineSuggestionResponsibilityFiling } from "../services/routine-suggestions.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { defaultResponsibilityOwnerUserId } from "./responsibilities.js";
 import { getReadableIssue } from "./readable-issue.js";
 
 const automationQuerySchema = listResponsibilitiesQuerySchema.pick({ ownerUserId: true });
@@ -66,7 +68,7 @@ export function responsibilityAutomationRoutes(
 
   async function assertResponsibilitiesEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   async function assertCompanyRead(req: Request, companyId: string) {
@@ -145,10 +147,10 @@ export function responsibilityAutomationRoutes(
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = automationQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? (req.actor.type === "board" ? req.actor.userId : undefined);
+    const ownerUserId = query.ownerUserId ?? defaultResponsibilityOwnerUserId(req);
     if (!ownerUserId) {
       throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: name the person whose responsibilities to read"
+        ? "ownerUserId is required: this run works for no person, so name the person whose responsibilities to read"
         : "ownerUserId is required");
     }
     res.json(await automation.overview(companyId, ownerUserId, { scope: await readScope(req) }));

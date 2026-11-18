@@ -14,7 +14,8 @@ import {
   type ResponsibilityStatusReportsOverview,
   type WriteResponsibilityStatusReport,
 } from "@paperclipai/shared";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "./responsibilities-disabled.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
@@ -63,7 +64,7 @@ export function responsibilityStatusReportService(db: Db) {
 
   async function assertEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   async function reporterOf(row: ResponsibilityRow) {

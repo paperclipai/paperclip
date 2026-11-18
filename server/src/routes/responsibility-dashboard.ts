@@ -25,7 +25,7 @@ import {
 import { responsibilityService } from "../services/responsibilities.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
-import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
+import { boardCanManageResponsibilityOwner, defaultResponsibilityOwnerUserId } from "./responsibilities.js";
 
 const ISSUE_NOT_FOUND = "Issue not found";
 const VERSION_NOT_FOUND = "Version not found";
@@ -83,12 +83,12 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     }
   }
 
-  /** The overview route's ownerUserId rule: board users default to themselves; agents must name the person. */
+  /** The overview route's ownerUserId rule: board users default to themselves, agents to the person their run works for. */
   function ownerFrom(req: Request, ownerUserId: string | undefined) {
-    const owner = ownerUserId ?? (req.actor.type === "board" ? req.actor.userId : undefined);
+    const owner = ownerUserId ?? defaultResponsibilityOwnerUserId(req);
     if (!owner) {
       throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: name the person whose dashboard to read"
+        ? "ownerUserId is required: this run works for no person, so name the person whose dashboard to read"
         : "ownerUserId is required");
     }
     return owner;

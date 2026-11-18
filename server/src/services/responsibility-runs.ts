@@ -6,7 +6,7 @@ import {
   RESPONSIBILITY_RECENT_RUNS_MAX_LIMIT,
   type ResponsibilityRecentRuns,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { responsibilitiesDisabledError } from "./responsibilities-disabled.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { responsibilityService, type ResponsibilityReadScope } from "./responsibilities.js";
 
@@ -38,7 +38,7 @@ export function responsibilityRunsService(db: Db) {
 
   async function assertEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   return {
