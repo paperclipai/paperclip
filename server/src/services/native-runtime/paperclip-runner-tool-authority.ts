@@ -145,6 +145,9 @@ import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGui
 import { recordChildTaskRead } from "./native-child-completion-delivery.js";
 import { logger } from "../../middleware/logger.js";
 
+// Artifacts are at most RUNNER_API_MAX_BYTES; a healthy read takes seconds.
+// Stay well inside the provider MCP client's five-minute request cutoff.
+const ARTIFACT_STORAGE_READ_TIMEOUT_MS = 60_000;
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
 const IMPLEMENTED_OPERATIONS = new Set([
   "send_chat_message",
@@ -227,6 +230,8 @@ type Binding = {
   /** Server-owned API origin and storage; never obtained from tool input. */
   apiUrl?: string;
   storage?: StorageService;
+  /** Deadline for one artifact read from storage; defaults to ARTIFACT_STORAGE_READ_TIMEOUT_MS. */
+  storageReadTimeoutMs?: number;
   /** Server-owned suppression for baseline evals; true never overrides operator opt-in. */
   connectorAssignments?: Pick<ConnectorAssignment, "tools">[];
   assignedMcpTools?: Awaited<ReturnType<typeof createAssignedMcpTools>>;
@@ -1726,17 +1731,41 @@ export class PaperclipRunnerToolAuthority {
       };
       await assertArtifactAccess();
       if (asset.byteSize > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
-      const object = await (this.binding.storage ?? getStorageService()).getObject(this.binding.companyId, asset.objectKey);
+      // A stalled storage read must fail well before the provider's MCP
+      // client gives up, so the call settles with a retryable error instead
+      // of an anonymous client timeout. Nothing is written before this read.
+      const timeoutMs = this.binding.storageReadTimeoutMs ?? ARTIFACT_STORAGE_READ_TIMEOUT_MS;
+      const signal = AbortSignal.timeout(timeoutMs);
+      let object: Awaited<ReturnType<StorageService["getObject"]>> | undefined;
+      let onAbort = () => {};
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => {
+          object?.stream.destroy();
+          reject(new HttpError(504, `Artifact storage read did not finish within ${Math.ceil(timeoutMs / 1000)} seconds. No file was written; retry the same download.`, { code: "artifact_storage_timeout" }));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
       const chunks: Buffer[] = [];
-      let length = 0;
       try {
-        for await (const chunk of object.stream) {
-          const bytes = Buffer.from(chunk);
-          length += bytes.length;
-          if (length > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
-          chunks.push(bytes);
-        }
-      } finally { object.stream.destroy(); }
+        await Promise.race([aborted, (async () => {
+          const opened = await (this.binding.storage ?? getStorageService()).getObject(this.binding.companyId, asset.objectKey, { signal });
+          // A reply after the deadline can carry a stream opened with the
+          // aborted signal. Its AbortError must never become uncaught.
+          opened.stream.on("error", () => undefined);
+          if (signal.aborted) { opened.stream.destroy(); return; }
+          object = opened;
+          let length = 0;
+          for await (const chunk of opened.stream) {
+            const bytes = Buffer.from(chunk);
+            length += bytes.length;
+            if (length > RUNNER_API_MAX_BYTES) throw badRequest("Artifact exceeds API transfer limit");
+            chunks.push(bytes);
+          }
+        })()]);
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+        object?.stream.destroy();
+      }
       await assertArtifactAccess();
       return { bytes: Buffer.concat(chunks), filename: asset.originalFilename ?? "file", contentType: asset.contentType };
     }
