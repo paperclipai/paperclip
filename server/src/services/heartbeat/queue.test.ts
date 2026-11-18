@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { activityLog, authUsers, agents, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -493,6 +494,108 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
   }
+
+  async function quotaMonitorFixture(runtimeMode = "legacy") {
+    const f = await fixture("queued");
+    const [source] = await db.insert(heartbeatRuns).values({
+      companyId: f.company.id, agentId: f.agent.id, status: "failed", errorCode: "provider_quota",
+      contextSnapshot: { issueId: f.issue.id }, createdAt: new Date(f.run.createdAt.getTime() - 60_000),
+      finishedAt: new Date(f.run.createdAt.getTime() - 30_000),
+    }).returning();
+    const nextCheckAt = new Date(Date.now() + 3_600_000);
+    const policy = { mode: "normal", commentRequired: true, stages: [], futureSetting: { retained: true }, monitor: {
+      nextCheckAt: nextCheckAt.toISOString(), serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+      externalRef: source.id, scheduledBy: "assignee", notes: "Wait for provider quota",
+    } };
+    await db.update(issues).set({ status: "in_progress", executionPolicy: policy,
+      monitorNextCheckAt: nextCheckAt, monitorAttemptCount: 41,
+    }).where(eq(issues.id, f.issue.id));
+    const [run] = await db.update(heartbeatRuns).set({ runtimeMode, responsibleUserId: "queue-test-user" })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    return { ...f, run, source, nextCheckAt, policy, deps, queue: createHeartbeatQueue(db, deps) };
+  }
+
+  it.each(["legacy", "native"])("clears an older quota monitor when a new %s run actually starts", async runtimeMode => {
+    const f = await quotaMonitorFixture(runtimeMode);
+    expect(await f.queue.claimQueuedRun(f.run)).toMatchObject({ id: f.run.id, status: "running" });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    expect(issue).toMatchObject({ executionRunId: f.run.id, monitorNextCheckAt: null,
+      monitorWakeRequestedAt: null, monitorAttemptCount: 41,
+      executionState: { monitor: { status: "cleared" } },
+    });
+    const { monitor: _monitor, ...retainedPolicy } = f.policy;
+    expect(issue.executionPolicy).toEqual(retainedPolicy);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.source.id)))[0])
+      .toMatchObject({ status: "failed", errorCode: "provider_quota" });
+    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
+    expect(events.filter(event => event.action === "issue.monitor_cleared")).toHaveLength(1);
+    expect(events.find(event => event.action === "issue.monitor_cleared")).toMatchObject({
+      runId: f.run.id, details: { reason: "superseded_by_run", sourceRunId: f.source.id },
+    });
+  });
+
+  it.each(["ordinary", "another-agent", "another-company", "another-task", "newer-quota", "invalid-source", "same-run"])(
+    "preserves a monitor that the started run does not supersede (%s)", async scenario => {
+      const f = await quotaMonitorFixture();
+      if (scenario === "ordinary") f.policy.monitor.serviceName = "Deployment status";
+      if (scenario === "same-run") f.policy.monitor.externalRef = f.run.id;
+      if (scenario === "invalid-source") f.policy.monitor.externalRef = "opaque-reference";
+      if (scenario === "another-agent" || scenario === "another-company") {
+        const company = scenario === "another-company"
+          ? (await db.insert(companies).values({ name: "Other company", issuePrefix: "OTHER" }).returning())[0]
+          : f.company;
+        const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Other agent", adapterType: "process" }).returning();
+        await db.update(heartbeatRuns).set({ companyId: company.id, agentId: agent.id }).where(eq(heartbeatRuns.id, f.source.id));
+      }
+      if (scenario === "another-task") {
+        const [other] = await db.insert(issues).values({ companyId: f.company.id, title: "Other task" }).returning();
+        const [otherSource] = await db.insert(heartbeatRuns).values({
+          companyId: f.company.id, agentId: f.agent.id, status: "failed", errorCode: "provider_quota",
+          scopeKind: "issue", issueId: other.id, contextSnapshot: { issueId: other.id },
+          createdAt: f.source.createdAt, finishedAt: f.source.finishedAt,
+        }).returning();
+        f.policy.monitor.externalRef = otherSource.id;
+      }
+      if (scenario === "newer-quota") await db.update(heartbeatRuns).set({ createdAt: new Date(f.run.createdAt.getTime() + 1_000) })
+        .where(eq(heartbeatRuns.id, f.source.id));
+      await db.update(issues).set({ executionPolicy: f.policy }).where(eq(issues.id, f.issue.id));
+      expect(await f.queue.claimQueuedRun(f.run)).toMatchObject({ status: "running" });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]).toMatchObject({
+        monitorNextCheckAt: f.nextCheckAt, monitorAttemptCount: 41, executionPolicy: f.policy,
+      });
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toEqual([]);
+    },
+  );
+
+  it("keeps the quota wait while a retry is queued but cannot start", async () => {
+    const f = await quotaMonitorFixture();
+    f.deps.canStartNewExternalBotWork.mockResolvedValue(false);
+    expect(await f.queue.claimQueuedRun(f.run)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
+      .toMatchObject({ monitorNextCheckAt: f.nextCheckAt, executionPolicy: f.policy });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+      .toMatchObject({ status: "queued", startedAt: null });
+  });
+
+  it("rolls back the run claim and monitor cleanup together when audit persistence fails", async () => {
+    const f = await quotaMonitorFixture();
+    await db.execute(sql`create function fail_quota_monitor_audit_test() returns trigger language plpgsql as $$
+      begin if new.action = 'issue.monitor_cleared' then raise exception 'Synthetic quota audit failure'; end if; return new; end; $$`);
+    await db.execute(sql`create trigger fail_quota_monitor_audit_test before insert on activity_log
+      for each row execute function fail_quota_monitor_audit_test()`);
+    try {
+      await expect(f.queue.claimQueuedRun(f.run)).rejects.toThrow();
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0])
+        .toMatchObject({ monitorNextCheckAt: f.nextCheckAt, executionPolicy: f.policy });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+        .toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await db.execute(sql`drop trigger fail_quota_monitor_audit_test on activity_log`);
+      await db.execute(sql`drop function fail_quota_monitor_audit_test()`);
+    }
+  });
 
   async function pendingPredecessorFixture() {
     const f = await fixture("queued");

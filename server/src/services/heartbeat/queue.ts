@@ -171,6 +171,7 @@ import {
   NATIVE_STATUS_COMMITTER_ACTOR_ID,
 } from "../issue-rewake-throttle.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
+import { clearSupersededProviderQuotaMonitor } from "../issue-monitors.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   isDependencyResolvedWakePayload,
@@ -1024,6 +1025,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     slots?: { full: boolean },
   ) {
     if (run.status !== "queued") return run;
+    const quotaMonitorPublications: ActivityPublication[] = [];
     // Every start path ends here (dispatch passes, executeRun of a queued run,
     // a delivered continuation). A server whose run admission is closed (it
     // received SIGTERM and is draining) or that yields new starts to a
@@ -1503,6 +1505,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         }
         throw error;
       });
+      const publication = await clearSupersededProviderQuotaMonitor(tx, claimedRun);
+      if (publication) quotaMonitorPublications.push(publication);
     }
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
@@ -1873,6 +1877,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 run, claimedAt, claimValues,
                 agentNameKey: normalizeAgentNameKey(agent.name),
               });
+              if (reviewClaim) {
+                const publication = await clearSupersededProviderQuotaMonitor(reviewTx as unknown as Db, reviewClaim);
+                if (publication) quotaMonitorPublications.push(publication);
+              }
               confirmRunAdmissionStillOpen(reviewClaim);
               return reviewClaim;
             });
@@ -1908,6 +1916,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           throw error;
         });
     if (!claimed) return null;
+    for (const publication of quotaMonitorPublications) publishActivity(publication);
 
     publishLiveEvent({
       companyId: claimed.companyId,
