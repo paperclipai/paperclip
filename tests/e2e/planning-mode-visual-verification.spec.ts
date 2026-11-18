@@ -125,7 +125,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const issueIdentifier = issue.identifier ?? issue.id;
   const issuePath = `/${company.issuePrefix ?? company.id}/issues/${issueIdentifier}`;
   const companyPrefix = company.issuePrefix ?? company.id;
-  const issueLinkSelector = `a[href$="/issues/${issueIdentifier}"]`;
+  const issueLinkSelector = `main a[data-inbox-issue-link="true"][href$="/issues/${issueIdentifier}"]`;
 
   const setMode = async (mode: "standard" | "planning") => {
     const patchRes = await page.request.patch(`${baseOrigin}/api/issues/${issue.id}`, {

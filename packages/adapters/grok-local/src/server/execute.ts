@@ -468,7 +468,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         try { await remoteProjectAssets?.cleanup(); }
         finally { await preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line)); }
       };
-      if (projectAssetsDir) remoteProjectAssets = await prepareGrokRemoteProjectAssets({ runId, target: executionTarget!,
+      if (projectAssetsDir) remoteProjectAssets = await prepareGrokRemoteProjectAssets({ runId, target: executionTarget!, env,
         cwd: preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd, assets: preparedExecutionTargetRuntime.assetDirs.project! });
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
       refreshPaperclipWorkspaceEnvForExecution({
