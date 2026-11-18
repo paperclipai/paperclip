@@ -62,9 +62,9 @@ What option A gives up compared with the proxy, and how we cover it:
   one AWS account and role. Companies with several accounts add several
   connections.
 - **Default region metadata**: the proxy injects `AWS_REGION` into requests.
-  The spike checks whether we can send the same metadata directly. Otherwise
-  the region goes in the connection's agent instructions, and agents pass it
-  per call.
+  Not needed. The spike showed that `run_script` takes the region on each
+  `call_boto3` call. The connection's agent instructions name the default
+  region.
 
 ## Design
 
@@ -168,8 +168,11 @@ Minting then works as follows:
      The session can then do at most what the role allows and what those
      allow. The spike showed that the second one is required: with
      `ReadOnlyAccess` alone, the token exchange in step 2 is refused.
-   - With no role ARN, the dedicated IAM user's key is used directly. A
-     read-only scope still applies, via a `GetFederationToken` session policy.
+   - With no role ARN, the dedicated IAM user's key is used directly.
+     Read-scope tokens call `GetFederationToken` with the same two session
+     policies: `ReadOnlyAccess` and `AWSMCPSignInOAuthAccessPolicy`. The IAM
+     user's own policy must allow `sts:GetFederationToken` and the sign-in
+     action. The setup template attaches `AWSMCPSignInOAuthAccessPolicy`.
 2. Sign-in `CreateOAuth2TokenWithIAM`:
    - Grant type is `client_credentials`.
    - Resource is `aws-mcp.amazonaws.com`.
@@ -248,7 +251,7 @@ client registration. Verify it in the spike.
 
 | # | Deliverable | Proof |
 |---|---|---|
-| 0 | **Done 2026-11-18, see "Spike findings".** Spike with a test AWS account (`~/.secrets`): assume a role, exchange for a token, list and call tools from Node. Check that a `ReadOnlyAccess` session policy carries into the token (through `AssumeRoleWithWebIdentity`, `AssumeRole` and `GetFederationToken`); that AWS accepts a JWT issued by a tunnelled local issuer URL, what the call inputs of `aws___call_aws` look like, whether region metadata can be sent, latency of the mint and the first call, and that the DCR OAuth method works. | Findings recorded in this doc |
+| 0 | **Done 2026-11-18. Results are in "Spike findings".** Verified: AWS accepts a JWT from a tunnelled Paperclip issuer; connection isolation; the token exchange; tool listing; reads and writes through `aws___run_script`; read-only session policies through `AssumeRoleWithWebIdentity` and `GetFederationToken`; the region is passed per call; timings. Resolved: the server offers no `aws___call_aws`. **Not tested, deferred:** DCR OAuth sign-in as a person, and `AssumeRole` from an access key. | Findings recorded in this doc |
 | 1 | Minted-credential source in the gateway: minter interface, cache, single retry on 401, health reasons. | Red/green tests: cache hit and expiry, a 401 leads to one re-mint, mint failure sets health, nothing persisted or logged |
 | 1b | Per-company workload-identity issuer (`/oidc/companies/<companyId>`): signing key stored in the database, encrypted with the vault master key; discovery and JWKS routes, key rotation, JWT signing for a connection. Built in [the issuer PR](./2026-11-17-workload-identity-issuer.md). Built generically, because GCP and Azure accept the same kind of federation. | Red/green tests; AWS accepts a token from a staging instance |
 | 2 | AWS minter (role via OIDC, and access key), app definition, setup screen, CloudFormation template, reviewed tools, and `doc/connections/AWS.md` following the connector playbook. | Real-provider proof: a read-only agent's write is refused by AWS; a write agent's write succeeds after approval |
@@ -289,7 +292,10 @@ Timings (ms, from a laptop to us-east-1):
 
 Implications for the build:
 - Cache the minted bearer per connection and scope for about 55 minutes.
-  Minting costs about 0.8 s and happens once an hour.
+  Minting costs about 0.8 s and happens once an hour. Drop the cached entry
+  when the connection is disabled, deleted or edited, and when its grant or
+  scope changes. Look up the cache only after the gateway's per-call policy
+  check passes, so a downgraded agent never reuses a write-scope token.
 - `run_script` is the main tool, so a write tool does all real work. A
   read-only scope must be enforced by AWS, with the session policy above, not
   by hiding the tool.
