@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { RoutineTrigger } from "@paperclipai/shared";
 import { DesignPageShell } from "@/components/DesignPageShell";
 import { DesignSidebar } from "@/components/DesignSidebar";
+import { FlyoutAppearanceProvider } from "@/components/ui/flyout-appearance";
 import { RoutineHistoryTab } from "@/components/RoutineHistoryTab";
 import { RoutineRunVariablesDialog } from "@/components/RoutineRunVariablesDialog";
 import { RoutineEditDialog, type RoutineEditDialogProps } from "@/components/routine-page/RoutineEditDialog";
@@ -285,10 +286,11 @@ function RoutinePageContent({
       {shell ? (
         <DesignPageShell
           title="Routines"
-          headerActions={actions}
+          headerActions={actions ? <FlyoutAppearanceProvider appearance="default">{actions}</FlyoutAppearanceProvider> : null}
           sidebar={<DesignSidebar recentTasks={recentTasks.map((item) => item.issue)} onNewTask={() => {}} />}
         >
-          {page}
+          {/* The frame opts its own menus into the proposed flyout style; the routine page ships with the app's standard one. */}
+          <FlyoutAppearanceProvider appearance="default">{page}</FlyoutAppearanceProvider>
         </DesignPageShell>
       ) : (
         <div className="min-h-dvh bg-background text-foreground">
