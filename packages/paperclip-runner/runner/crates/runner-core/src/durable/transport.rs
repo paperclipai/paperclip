@@ -289,7 +289,7 @@ impl RunnerTransportEndpoint {
                 let deadline = bounded_operation_deadline(connect_deadline, AUTH_TIMEOUT)?;
                 let connector = ca_bundle_path.map(custom_tls_connector).transpose()?;
                 ensure_connection_deadline(deadline)?;
-                stream.set_nonblocking(true).map_err(|error| {
+                configure_prp_tcp_stream(&stream).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "WebSocket stream configuration failed: {error}"
                     ))
@@ -336,7 +336,7 @@ impl RunnerTransportEndpoint {
                         )))
                     }
                 };
-                stream.set_nonblocking(true).map_err(|error| {
+                configure_prp_tcp_stream(&stream).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "runner ingress stream configuration failed: {error}"
                     ))
@@ -391,6 +391,13 @@ impl RunnerTransportEndpoint {
             }
         }
     }
+}
+
+fn configure_prp_tcp_stream(stream: &TcpStream) -> io::Result<()> {
+    if stream.peer_addr()?.ip().is_loopback() {
+        stream.set_nodelay(true)?;
+    }
+    stream.set_nonblocking(true)
 }
 
 fn validate_listener_authority(authority: &str) -> Result<SocketAddr, DurableRunnerError> {
@@ -1775,6 +1782,7 @@ mod tests {
     include!("tests/acpx_park_relaunch.rs");
     include!("tests/ack_release_poll.rs");
     include!("tests/indeterminate_terminal_ack.rs");
+    include!("tests/loopback_nodelay.rs");
 
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;

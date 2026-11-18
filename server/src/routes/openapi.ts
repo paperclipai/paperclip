@@ -1467,6 +1467,8 @@ const mcpSkillsBoardOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
@@ -4427,6 +4429,26 @@ registry.registerPath({
 });
 
 // ─── Issues ──────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding",
+  tags: ["issues"],
+  summary: "Open the current board user's onboarding chat",
+  description: "Requires Agent Chat and company access. Reuses the caller's existing conversation or creates an unnumbered standing chat with onboarding context. Creates no execution task or project and starts no agent turn.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
+  tags: ["issues"],
+  summary: "Start the visible onboarding chat's live welcome",
+  description: "Call after the chat is visible. Requires an existing conversation owned by the caller. Returns started=true when a welcome is queued or already pending, or false when the conversation no longer needs a welcome. Retries failed or timed-out attempts and preserves normal agent admission gates.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(z.object({ started: z.boolean() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
 
 registry.registerPath({
   method: "get",

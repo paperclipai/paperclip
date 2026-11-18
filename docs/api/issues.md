@@ -5,6 +5,20 @@ summary: Issue CRUD, checkout/release, comments, documents, interactions, and at
 
 Issues are the unit of work in Paperclip. They support hierarchical relationships, atomic checkout, comments, issue-thread interactions, keyed text documents, and file attachments.
 
+## Onboarding chat
+
+Board users open their own onboarding conversation with
+`POST /api/companies/{companyId}/chats/{agentRef}/onboarding` (empty body).
+It returns a conversation record, creates no execution task or project, and does
+not start an agent turn. Existing conversations are reused.
+
+After the thread is visible, call
+`POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting` (empty body).
+It returns `{ "started": true }` when the welcome is queued or already owed, or
+`{ "started": false }` when unnecessary. Requests are company-scoped and
+owner-bound. Refreshes do not repeat a successful welcome. Normal pause, budget
+and agent admission gates apply.
+
 ## List Issues
 
 ```

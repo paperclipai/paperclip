@@ -96,6 +96,31 @@ async function flush(): Promise<void> {
 }
 
 describe("runSetupTokenLogin", () => {
+  it("reports a rejected OAuth code immediately even while the CLI waits for Enter to retry", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
+    let stream!: (chunk: string) => void;
+    const start = fake.driver.start.bind(fake.driver);
+    fake.driver.start = (command, onData) => { stream = onData; return start(command, onData); };
+    const write = fake.driver.write.bind(fake.driver);
+    fake.driver.write = input => {
+      write(input);
+      if (input === CODE_SUBMISSION_TERMINATOR) {
+        stream("\r\n\u001b[31mOAuth\u001b[1Cerr");
+        stream(`or: Invalid code ${BROWSER_CODE}\u001b[0m\r\nPress Enter to retry\r\n`);
+      }
+    };
+    const log = vi.fn();
+    const onCredential = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {}, provideCode: async () => BROWSER_CODE, onCredential,
+      codeSubmitSettleMs: 0, timeoutMs: 1000, log,
+    });
+    expect(result).toMatchObject({ outcome: "failure", failureReason: "oauth_error", credentialDelivered: false });
+    expect(onCredential).not.toHaveBeenCalled();
+    expect(fake.stops.count).toBe(1);
+    expect(JSON.stringify({ result, logs: log.mock.calls })).not.toContain(BROWSER_CODE);
+  });
+
   it("sends one login URL through onPrompt", async () => {
     // A success stream and a resolving sink, so the run reports success after the
     // runner delivers the credential.

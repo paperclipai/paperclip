@@ -46,6 +46,7 @@ export async function sendAgentChatMessage(
   const publications: ActivityPublication[] = [];
   const result = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, actor.companyId)).for("no key update");
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${actor.companyId}`}, 0))`);
     const runWhere = and(eq(heartbeatRuns.id, actor.runId), eq(heartbeatRuns.companyId, actor.companyId), eq(heartbeatRuns.agentId, actor.agentId));
     const [initial] = await tx.select().from(heartbeatRuns).where(runWhere);
@@ -112,7 +113,7 @@ export async function sendAgentChatMessage(
     let conversation = await svc.getConversation(actor.companyId, actor.agentId, userId);
     if (!conversation && !options.receiptOnly) {
       conversation = await svc.create(actor.companyId, {
-        title: `Chat with ${context.agent.name}`, assigneeAgentId: actor.agentId,
+        title: `Chat with ${context.agent.name}`, generateConversationTitle: true, assigneeAgentId: actor.agentId,
         conversationAgentId: actor.agentId, conversationUserId: userId,
         conversationState: "waiting", status: "in_review", createdByAgentId: actor.agentId,
         responsibleUserId: userId, trustExplicitResponsibleUserId: true,
