@@ -83,14 +83,15 @@ interface RunOptions {
 
 /** Materialize a per-run connection home (as the server does), run, then remove it. */
 async function run(options: RunOptions = {}) {
-  counter += 1;
+  // Number the run before any await: overlapping runs must not share a capture file.
+  const runNumber = ++counter;
   const tempHome = await fs.mkdtemp(path.join(root, "paperclip-ai-company-1-grant-1-"));
   const providerHome = path.join(tempHome, "provider");
   await fs.mkdir(providerHome, { mode: 0o700 });
   await fs.writeFile(path.join(providerHome, "auth.json"), auth(options.accountId ?? "account-1", options.token), { mode: 0o600 });
   await fs.writeFile(path.join(providerHome, "config.toml"),
     `cli_auth_credentials_store = "file"\n${options.extraConfigToml ?? ""}`, { mode: 0o600 });
-  const capture = path.join(root, `capture-${counter}.json`);
+  const capture = path.join(root, `capture-${runNumber}.json`);
   const skillSource = options.skillSource === undefined ? path.join(root, "skill-v1") : options.skillSource;
   const config = {
     engine: "cli",
@@ -122,7 +123,7 @@ async function run(options: RunOptions = {}) {
   const agentId = options.agentId ?? "agent-1";
   try {
     const result = await execute({
-      runId: `run-${counter}`,
+      runId: `run-${runNumber}`,
       agent: { id: agentId, companyId: "company-1", name: "Agent", adapterType: "codex_local", adapterConfig: config },
       runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
       config,
