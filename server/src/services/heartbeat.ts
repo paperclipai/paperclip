@@ -89,6 +89,11 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
+  describeRunFailureCause,
+  readTransientDbSqlstate,
+  writeWithTransientDbRetry,
+} from "./heartbeat-run-failure.js";
+import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
@@ -1743,33 +1748,133 @@ function readNonEmptyString(value: unknown): string | null {
 }
 
 /**
- * Produce a diagnosable message for a thrown run failure.
+ * Postgres SQLSTATEs that denote a transient / retryable failure rather than a
+ * deterministic programming or data error. Class `08` (connection exception)
+ * covers every connection-level drop (`08000`, `08001`, `08003`, `08004`,
+ * `08006`, `08007`, ...), so match the whole class by prefix; the remaining
+ * codes are the serialization / deadlock / lock / cancellation family.
+ */
+const TRANSIENT_DB_SQLSTATES = new Set<string>([
+  "40001", // serialization_failure
+  "40P01", // deadlock_detected
+  "55P03", // lock_not_available
+  "57014", // query_canceled
+]);
+
+export function isTransientDbSqlState(code: string | null | undefined): boolean {
+  if (!code) return false;
+  if (code.startsWith("08")) return true; // connection_exception class
+  return TRANSIENT_DB_SQLSTATES.has(code);
+}
+
+/**
+ * Detect drizzle's `DrizzleQueryError` without importing drizzle internals:
+ * it carries `name === "DrizzleQueryError"` and a `Failed query:` message prefix.
+ */
+function isDrizzleQueryError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  if ((err as { name?: unknown }).name === "DrizzleQueryError") return true;
+  const message = (err as { message?: unknown }).message;
+  return typeof message === "string" && message.startsWith("Failed query:");
+}
+
+/**
+ * Unwrap drizzle's `DrizzleQueryError` to the underlying driver error.
  *
  * Drizzle wraps every failed query in a `DrizzleQueryError` whose `.message` is
  * only `Failed query: <sql>\nparams: <params>` and whose underlying driver error
- * (Postgres SQLSTATE code / detail, connection reset, admin shutdown, etc.) is
- * carried on `.cause`. Recording just `.message` discards the real root cause,
- * which is exactly why the AGE-810 run-event insert failure was undiagnosable.
- * Append the cause chain (with the Postgres error code/detail when present) so
- * intermittent DB failures can be attributed instead of guessed at.
+ * (Postgres SQLSTATE `code` / `detail`, connection reset, admin shutdown, etc.)
+ * is carried on `.cause`. Return the cause's message + SQLSTATE code + detail so
+ * callers can both compose a diagnosable message and derive a dedicated error
+ * code instead of discarding the real root cause.
  */
-function describeRunFailureError(err: unknown, fallback: string): string {
-  const base = err instanceof Error ? err.message : readNonEmptyString(err);
+export function unwrapDbErrorCause(
+  err: unknown,
+): { message: string | null; code: string | null; detail: string | null } | null {
   const cause = (err as { cause?: unknown } | null | undefined)?.cause;
-  if (!base) return fallback;
-  if (!cause || cause === err) return base;
+  if (!cause || cause === err) return null;
+  const message = cause instanceof Error ? cause.message : readNonEmptyString(cause);
+  const rawCode = (cause as { code?: unknown } | null | undefined)?.code;
+  const rawDetail = (cause as { detail?: unknown } | null | undefined)?.detail;
+  const code = typeof rawCode === "string" && rawCode ? rawCode : null;
+  const detail = typeof rawDetail === "string" && rawDetail ? rawDetail : null;
+  if (!message && !code && !detail) return null;
+  return { message, code, detail };
+}
 
-  const causeMessage = cause instanceof Error ? cause.message : readNonEmptyString(cause);
-  const pgCode = (cause as { code?: unknown } | null | undefined)?.code;
-  const pgDetail = (cause as { detail?: unknown } | null | undefined)?.detail;
+/**
+ * Dedicated `errorCode` for a DB-driver failure so it is not swallowed by the
+ * generic `adapter_failed` / `setup_failed` bucket. `pg_<sqlstate>` when the
+ * Postgres error code is known, else `db_query_failed` for a drizzle query
+ * wrapper with no surfaced code. Returns `null` for non-DB errors so callers
+ * fall back to their existing default.
+ */
+export function readDbFailureErrorCode(err: unknown): string | null {
+  const cause = unwrapDbErrorCause(err);
+  if (cause?.code) return `pg_${cause.code}`;
+  if (isDrizzleQueryError(err)) return "db_query_failed";
+  return null;
+}
+
+/** True when a thrown error is a DB failure with a transient SQLSTATE. */
+export function isTransientDbFailure(err: unknown): boolean {
+  return isTransientDbSqlState(unwrapDbErrorCause(err)?.code);
+}
+
+/**
+ * Produce a diagnosable message for a thrown run failure, appending the drizzle
+ * cause chain (Postgres error code/detail when present) so intermittent DB
+ * failures can be attributed instead of guessed at. See {@link unwrapDbErrorCause}.
+ */
+export function describeRunFailureError(err: unknown, fallback: string): string {
+  const base = err instanceof Error ? err.message : readNonEmptyString(err);
+  if (!base) return fallback;
+  const cause = unwrapDbErrorCause(err);
+  if (!cause) return base;
+
   const parts = [
-    causeMessage ?? undefined,
-    typeof pgCode === "string" && pgCode ? `code=${pgCode}` : undefined,
-    typeof pgDetail === "string" && pgDetail ? `detail=${pgDetail}` : undefined,
+    cause.message ?? undefined,
+    cause.code ? `code=${cause.code}` : undefined,
+    cause.detail ? `detail=${cause.detail}` : undefined,
   ].filter((part): part is string => Boolean(part));
   const causeText = parts.join(" ");
   if (!causeText || base.includes(causeText)) return base;
   return `${base} [cause: ${causeText}]`;
+}
+
+/** Backoff schedule for retrying a transient failure on the first lifecycle write. */
+export const FIRST_LIFECYCLE_WRITE_RETRY_DELAYS_MS = [50, 250, 1000] as const;
+
+/**
+ * Run an idempotent DB write, retrying on transient failures with a bounded
+ * backoff. Used to make the first `run started` lifecycle write resilient to a
+ * transient DB blip that would otherwise hard-fail the whole run before the
+ * adapter even dispatches (see AGE-810 RCA). Non-transient errors and exhausted
+ * retries re-throw unchanged so the existing failure recording still runs.
+ */
+export async function runWithTransientDbRetry<T>(
+  operation: () => Promise<T>,
+  opts: {
+    isTransient: (err: unknown) => boolean;
+    delaysMs?: readonly number[];
+    sleep?: (ms: number) => Promise<void>;
+    onRetry?: (info: { err: unknown; attempt: number; delayMs: number }) => void;
+  },
+): Promise<T> {
+  const delays = opts.delaysMs ?? FIRST_LIFECYCLE_WRITE_RETRY_DELAYS_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await operation();
+    } catch (err) {
+      if (attempt >= delays.length || !opts.isTransient(err)) throw err;
+      const delayMs = delays[attempt]!;
+      attempt += 1;
+      opts.onRetry?.({ err, attempt, delayMs });
+      await sleep(delayMs);
+    }
+  }
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -10506,12 +10611,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const currentRun = run;
-      await appendRunEvent(currentRun, seq++, {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "info",
-        message: "run started",
-      });
+      // The first lifecycle write happens before the adapter dispatches and
+      // outside the inner adapter try, so a transient DB blip here would
+      // otherwise hard-fail the whole run as `setup_failed` before any work
+      // runs (AGE-810 RCA). Retry transient DB failures with a bounded backoff;
+      // the seq is captured so retries re-insert the same event idempotently.
+      const runStartedEventSeq = seq++;
+      await runWithTransientDbRetry(
+        () =>
+          appendRunEvent(currentRun, runStartedEventSeq, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: "run started",
+          }),
+        {
+          isTransient: isTransientDbFailure,
+          onRetry: ({ err, attempt, delayMs }) =>
+            logger.warn(
+              { err, runId, attempt, delayMs },
+              "transient DB failure on first lifecycle write; retrying",
+            ),
+        },
+      );
 
       handle = await runLogStore.begin({
         companyId: run.companyId,
@@ -11126,7 +11248,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
       const failureErrorCode =
-        workspaceValidationFailure?.code ?? configurationIncompleteFailure?.code ?? "adapter_failed";
+        workspaceValidationFailure?.code ??
+        configurationIncompleteFailure?.code ??
+        readDbFailureErrorCode(err) ??
+        "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -11232,7 +11357,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // not an opaque setup crash. Surface it with its own errorCode so the
           // recovery path routes it to a human owner instead of looping retries.
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
-          const setupFailureErrorCode = configurationIncompleteSetupFailure?.code ?? "setup_failed";
+          const setupFailureErrorCode =
+            configurationIncompleteSetupFailure?.code ?? readDbFailureErrorCode(outerErr) ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
