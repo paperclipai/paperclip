@@ -98,13 +98,12 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
   to REST.
 - **What we send to the reviewers.** Not decided: the new staging tester or
   something else. Whatever it is must use the separate Google app (below).
-- **How the staging tester reaches the separate Google app.** The broker
-  cannot point one workspace at a different Google client (see
-  "Environments"). Recommendation: add a per-workspace client override to the
-  broker so reviewers see the real flow.
-- **Reviewer login on staging.** The scoped reviewer password login is
-  hard-coded to the production tester. The client override above does not fix
-  this; how to enable the login on staging is still undecided.
+- **Staging tester on the separate Google app.** The broker now has a
+  per-workspace client override; it is not switched on for the tester yet.
+  The remaining steps and their order are in "Environments".
+- **Reviewer login on staging.** The broker now allows the scoped reviewer
+  password login on the staging tester host. Its secret is not set yet; no
+  broker change is needed.
 - **AI-agent client and REST.** Whether an OAuth client marked for AI agents
   may call the REST APIs rather than MCP. To check before the staging tester is
   wired.
