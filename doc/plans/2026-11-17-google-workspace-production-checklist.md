@@ -93,8 +93,8 @@ Decisions and the details behind them are kept in the
 - [ ] Each service switched to REST after a live test on the staging tester.
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
-- [ ] `googletester.staging.paperclip.app` created and wired to the new Google
-      app.
+- [x] `googletester.staging.paperclip.app` created (Nov 18).
+- [ ] Staging tester wired to the new Google app.
 
 ## 3. Policy and privacy
 
