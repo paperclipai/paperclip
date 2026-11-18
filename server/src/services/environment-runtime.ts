@@ -33,7 +33,8 @@ import { historicalProviderCredentials } from "./historical-provider-credentials
 import { ownedWorkspaceRecoveryLease, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { acceptedStopOnlyReceipt, hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, SANDBOX_ALLOCATION_HOLDER_STATUSES, SANDBOX_STOP_AND_RETAIN_KEY, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
-import { JsonRpcCallError, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquisitionDiagnostic, readEnvironmentCreationCleanupError,
+  readEnvironmentResumeErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { preserveEnvironmentSyncOutErrorDiagnostic } from "./environment-sync-out-error.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { inspectCloudSandboxCleanupAbsence } from "./sandbox-absence-proof.js";
@@ -802,7 +803,36 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function transientSandboxResumeFailure(error: unknown): boolean {
+const TRANSIENT_RESUME_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const TRANSIENT_RESUME_ERROR_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
+  "CONNECTION_FAILED",
+]);
+const EXACT_RESUME_FIRST_RETRY_DELAY_MS = 250;
+const EXACT_RESUME_MAX_RETRY_DELAY_MS = 5_000;
+
+export async function retryTransientExactResume<T>(input: {
+  budgetMs: number;
+  call: () => Promise<T>;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<T> {
+  const sleep = input.sleep ?? delay;
+  const deadline = Date.now() + input.budgetMs;
+  let retryDelayMs = EXACT_RESUME_FIRST_RETRY_DELAY_MS;
+  while (true) {
+    try {
+      return await input.call();
+    } catch (error) {
+      if (!transientSandboxResumeFailure(error)) throw error;
+      const jitteredDelayMs = Math.max(1, Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)));
+      if (Date.now() + jitteredDelayMs >= deadline) throw error;
+      await sleep(jitteredDelayMs);
+      retryDelayMs = Math.min(retryDelayMs * 2, EXACT_RESUME_MAX_RETRY_DELAY_MS);
+    }
+  }
+}
+
+export function transientSandboxResumeFailure(error: unknown): boolean {
   const candidate = error && typeof error === "object"
     ? error as Record<string, unknown>
     : {};
@@ -812,6 +842,10 @@ function transientSandboxResumeFailure(error: unknown): boolean {
       ? candidate.statusCode
       : null;
   if (status === 429 || (status !== null && status >= 500)) return true;
+  const envelope = readEnvironmentResumeErrorDiagnostic(error);
+  if (envelope?.httpStatus !== undefined && TRANSIENT_RESUME_HTTP_STATUSES.has(envelope.httpStatus)) return true;
+  if (envelope?.errorCode !== undefined && TRANSIENT_RESUME_ERROR_CODES.has(envelope.errorCode)) return true;
+  if (error instanceof JsonRpcCallError && error.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return true;
   // A sandbox still stopping, archiving, or starting can be started shortly.
   if (sandboxStateTransitionFailure(error)) return true;
   const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";

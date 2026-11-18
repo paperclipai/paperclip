@@ -1,4 +1,5 @@
 import { RetainedSandboxAbsentError } from "../services/retained-sandbox-absent-error.js";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import * as remoteWorkspaces from "../services/remote-workspaces.js";
@@ -1136,10 +1137,45 @@ describe("live remote runner lease reattachment", () => {
   it("preserves a retained sandbox startup failure without acquiring a replacement", async () => {
     const error = new Error("retained sandbox startup timed out");
     const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw error; }) });
-    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime, reattachResumeRetryBudgetMs: 0 }).acquireForRun(input))
       .rejects.toBe(error);
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
     expect(runtime.execute).not.toHaveBeenCalled();
+  });
+  it("retries a provider gateway refusal during reattachment and keeps the original allocation", async () => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "<html><head><title>502 Bad Gateway</title></head></html>",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 502 })) });
+    const resumeRunLease = vi.fn()
+      .mockRejectedValueOnce(gateway)
+      .mockResolvedValueOnce({ providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/remote/workspace" } });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
+    expect(resumeRunLease).toHaveBeenCalledTimes(2);
+    expect(result.lease).toMatchObject({ id: savedLease.id, providerLeaseId: "original-sandbox" });
+    expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
+  it("does not retry a definite provider refusal during reattachment", async () => {
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "conflict",
+      data: environmentResumeErrorData(Object.assign(new Error("conflict"), { statusCode: 409 })) });
+    const resumeRunLease = vi.fn(async () => { throw refusal; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input)).rejects.toBe(refusal);
+    expect(resumeRunLease).toHaveBeenCalledOnce();
+  });
+  it("stops retrying a gateway refusal once the reattachment budget is spent", async () => {
+    const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "bad gateway",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 503 })) });
+    const resumeRunLease = vi.fn(async () => { throw gateway; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime, reattachResumeRetryBudgetMs: 1_200 })
+      .acquireForRun(input)).rejects.toBe(gateway);
+    expect(resumeRunLease.mock.calls.length).toBeGreaterThan(1);
+    expect(resumeRunLease.mock.calls.length).toBeLessThan(6);
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
   it.each(["active", "foreign-company", "revoked", "undispatched", "stopped"])("inspects the original plugin task lease (%s)", async state => {
     mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));
