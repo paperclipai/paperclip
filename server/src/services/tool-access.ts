@@ -2257,9 +2257,9 @@ export function toolAccessService(
           }
         : { templateId: method?.defaults?.templateKey };
     // The issuer an AWS role is asked to trust, recorded so a later change of this instance's address
-    // gets a clear message instead of a role refusal. A draft being resumed keeps the issuer recorded at
-    // the draft step; any other setup or reconnect records the current address (the one now in AWS).
-    const recordedAwsIssuer = !input.reconnectConnectionId && retainedConnection?.status === "draft"
+    // gets a clear message instead of a role refusal. Testing a draft keeps the issuer recorded at the
+    // draft step; saving the draft again, any other setup, or a reconnect records the current address.
+    const recordedAwsIssuer = !input.reconnectConnectionId && !input.saveDraft && retainedConnection?.status === "draft"
       ? asRecord(retainedConnection.config)[AWS_MCP_ISSUER_CONFIG_KEY]
       : undefined;
     const awsIssuerOrigin = workloadIdentityIssuerOrigin();
@@ -4013,9 +4013,10 @@ export function toolAccessService(
     // Without a usable public address Paperclip cannot sign, so a recorded issuer would only look usable.
     const origin = workloadIdentityIssuerOrigin();
     if (!origin.available) return { available: false, reason: origin.reason };
-    const current = workloadIdentityIssuer(origin.origin, companyId);
+    const issuer = workloadIdentityIssuer(origin.origin, companyId);
+    // Paperclip signs only as its current address, so AWS setup for an older one could never pass the test.
     const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
-    const issuer = typeof recorded === "string" ? recorded : current;
+    if (typeof recorded === "string" && recorded !== issuer) return { available: false, reason: "address_changed" };
     let setup: ReturnType<typeof awsRoleSetup>;
     try {
       setup = awsRoleSetup({
@@ -4030,7 +4031,6 @@ export function toolAccessService(
       available: true,
       ...setup,
       issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
-      addressChanged: current !== issuer,
     };
   }
 

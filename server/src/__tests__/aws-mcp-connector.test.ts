@@ -95,11 +95,14 @@ describe("AWS connector with minted credentials", () => {
     });
     expect(draft.status, JSON.stringify(draft.body)).toBeLessThan(300);
     const connectionId = draft.body.connectionId as string;
+    // The setup screen reopens a resumed draft by these stored keys.
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    expect(stored).toMatchObject({ status: "draft", config: { sourceTemplateKey: "aws", connectionMethodKey: "aws-role" } });
     const setup = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200);
     const issuer = `https://acme.paperclip.app/oidc/companies/${org.id}`;
     expect(setup.body).toMatchObject({
       available: true, issuer, audience: "sts.amazonaws.com", subject: `connection:${connectionId}`,
-      accountId: "123456789012", roleName: "paperclip-ops", rolePath: "/agents/", issuerPublished: true, addressChanged: false,
+      accountId: "123456789012", roleName: "paperclip-ops", rolePath: "/agents/", issuerPublished: true,
     });
     const host = issuer.replace("https://", "");
     const template = JSON.parse(setup.body.cloudFormationTemplate);
@@ -111,6 +114,21 @@ describe("AWS connector with minted credentials", () => {
     expect(template.Resources.PaperclipIdentityProvider.Properties.Url).toBe(issuer);
     expect(setup.body.trustPolicy.Statement[0].Principal.Federated).toBe(`arn:aws:iam::123456789012:oidc-provider/${host}`);
     expect(JSON.stringify(setup.body)).not.toMatch(/secret|private/i);
+
+    // After the address changes, setup for the old address could never pass, so it asks for a new save,
+    // and saving the draft again records the current address.
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://renamed.paperclip.app");
+    try {
+      await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200, { available: false, reason: "address_changed" });
+      await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+        galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true, resumeConnectionId: connectionId,
+        configValues: { roleArn, endpointRegion: "us-east-1", accessLevel: "read_only" },
+      }).expect((res) => expect(res.status, JSON.stringify(res.body)).toBeLessThan(300));
+      const resaved = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200);
+      expect(resaved.body).toMatchObject({ available: true, issuer: `https://renamed.paperclip.app/oidc/companies/${org.id}` });
+    } finally {
+      vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://acme.paperclip.app");
+    }
 
     const keyDraft = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
       galleryKey: "aws", connectionMethodKey: "aws-access-key", saveDraft: true,

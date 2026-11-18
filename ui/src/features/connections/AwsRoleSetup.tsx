@@ -25,6 +25,7 @@ const UNAVAILABLE_REASON: Record<Extract<AwsConnectionSetup, { available: false 
   not_https: "This Paperclip instance is not served over HTTPS, which AWS requires.",
   has_port: "This Paperclip instance's address includes a port, which AWS does not allow.",
   loopback: "This Paperclip instance runs on this computer only, so AWS cannot reach it.",
+  address_changed: "This Paperclip instance’s address changed after this connection was saved, so AWS would be set up for the old address.",
 };
 
 /**
@@ -93,14 +94,15 @@ export function AwsRoleSetup({
       {error ? <InlineBanner tone="warning" title="AWS didn’t accept the connection yet">{error}</InlineBanner> : null}
       {loadError ? <InlineBanner tone="danger" title="Couldn’t load the AWS setup">{loadError}</InlineBanner> : null}
       {setup?.available === false ? (
-        <InlineBanner tone="warning" title="Use an access key instead">
-          {UNAVAILABLE_REASON[setup.reason]} Go back and choose Access key.
-        </InlineBanner>
-      ) : null}
-      {ready?.addressChanged ? (
-        <InlineBanner tone="warning" title="This instance’s address changed">
-          The values below use the address this connection was set up with. Reconnect AWS to switch to the current address.
-        </InlineBanner>
+        setup.reason === "address_changed" ? (
+          <InlineBanner tone="warning" title="Save the connection again">
+            {UNAVAILABLE_REASON[setup.reason]} Go back and click Connect to use the current address.
+          </InlineBanner>
+        ) : (
+          <InlineBanner tone="warning" title="Use an access key instead">
+            {UNAVAILABLE_REASON[setup.reason]} Go back and choose Access key.
+          </InlineBanner>
+        )
       ) : null}
 
       {!setup && !loadError ? (

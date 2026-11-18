@@ -1294,7 +1294,8 @@ export interface MachineSignInPublicKey {
 /** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
 /** What to configure in AWS for an AWS role connection (`GET /tool-connections/:id/aws-setup`). */
 export type AwsConnectionSetup =
-  | { available: false; reason: "no_public_url" | "not_https" | "has_port" | "loopback" }
+  /** address_changed: the instance's address differs from the one this connection was saved with. */
+  | { available: false; reason: "no_public_url" | "not_https" | "has_port" | "loopback" | "address_changed" }
   | {
       available: true;
       issuer: string;
@@ -1312,8 +1313,6 @@ export type AwsConnectionSetup =
       cloudFormationConsoleUrl: string;
       /** True when the company's issuer has a published key, so AWS can validate it. */
       issuerPublished: boolean;
-      /** True when the instance's current address differs from the issuer recorded at setup. */
-      addressChanged: boolean;
     };
 
 export interface MachineSignInStatus {

@@ -112,6 +112,9 @@ already exists. The setup screen walks through them:
      and audience. Create the role with the shown trust policy, which trusts only
      `connection:<id>`. Attach `AWSMCPSignInOAuthAccessPolicy` and the agents'
      permissions.
+   If the instance's address changed after the draft was saved, the screen
+   shows no steps and asks you to go back and click **Connect** again, which
+   saves the draft with the current address.
 4. Click **Test connection**. Paperclip mints a token, lists the tools and
    finishes setup. If AWS refuses, the screen shows why, in place.
 

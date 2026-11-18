@@ -2555,7 +2555,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1", roleArn,
       accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
       cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
-      issuerPublished: true, addressChanged: false,
+      issuerPublished: true,
     });
     await render();
     const roleInput = container.querySelector<HTMLInputElement>('input[placeholder="arn:aws:iam::123456789012:role/paperclip-agents"]');
@@ -2605,7 +2605,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1", roleArn: draft.config.methodConfig.roleArn,
       accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
       cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
-      issuerPublished: true, addressChanged: false,
+      issuerPublished: true,
     });
     await render();
     await vi.waitFor(() => expect(container.textContent).toContain("Create it with CloudFormation"));

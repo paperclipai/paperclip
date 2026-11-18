@@ -23,7 +23,6 @@ const READY: AwsConnectionSetup = {
   cloudFormationTemplate: "{\"Resources\":{}}\n",
   cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
   issuerPublished: true,
-  addressChanged: false,
 };
 
 describe("AwsRoleSetup", () => {
@@ -124,10 +123,16 @@ describe("AwsRoleSetup", () => {
     expect(awsSetupErrorMessage(other)).not.toContain("upstream");
   });
 
-  it("explains a failed test in place and flags a changed address", async () => {
-    await render({ ...READY, addressChanged: true } as AwsConnectionSetup, { error: "AWS refused this connection's role. Check that the role exists and trusts this connection." });
+  it("explains a failed test in place", async () => {
+    await render(READY, { error: "AWS refused this connection's role. Check that the role exists and trusts this connection." });
     expect(container.textContent).toContain("AWS didn’t accept the connection yet");
     expect(container.textContent).toContain("AWS refused this connection's role");
-    expect(container.textContent).toContain("This instance’s address changed");
+  });
+
+  it("asks to save the connection again instead of showing steps for an old address", async () => {
+    await render({ available: false, reason: "address_changed" });
+    expect(container.textContent).toContain("Save the connection again");
+    expect(container.textContent).not.toContain("Create it with CloudFormation");
+    expect(button("Test connection")?.disabled).toBe(true);
   });
 });
