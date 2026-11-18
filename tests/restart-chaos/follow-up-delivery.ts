@@ -91,10 +91,21 @@ export function followUpAnsweringRuns(evidence: { runs?: ReadonlyArray<DeliveryR
   const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
   const runs = (evidence.runs ?? []).filter((run): run is typeof run & { runId: string } => Boolean(run.runId));
   const byId = new Map(runs.map(run => [run.runId, run]));
+  const lineage = new Map(runs.map(run => [run.runId, continuedRunIds(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined)]));
+  const committedAncestor = (runId: string): boolean => {
+    const visited = new Set<string>([runId]);
+    const pending = [...(lineage.get(runId) ?? [])];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      if (committedCompletion(byId.get(id), rejected)) return true;
+      pending.push(...(lineage.get(id) ?? []));
+    }
+    return false;
+  };
   for (const run of [...runs].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
-    const predecessors = continuedRunIds(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined);
-    if (predecessors.some(id => committedCompletion(byId.get(id), rejected))) continue;
-    if (predecessors.some(id => answering.has(id))) answering.add(run.runId);
+    if ((lineage.get(run.runId) ?? []).some(id => answering.has(id)) && !committedAncestor(run.runId)) answering.add(run.runId);
   }
   return answering;
 }
