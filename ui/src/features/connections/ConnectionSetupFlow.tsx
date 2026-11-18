@@ -1536,9 +1536,11 @@ function StandardConnectionSetupFlow({
             : {}),
           configValues: isGoogleSheetsRobotMethod(connectEntry, selectedMethod)
             ? { allowedSpreadsheetIds: sheetIds }
-            : Object.keys(configValues).length > 0
-              ? configValues
-              : undefined,
+            : awsRole.configValues
+              ? { ...configValues, ...awsRole.configValues }
+              : Object.keys(configValues).length > 0
+                ? configValues
+                : undefined,
           applicationId: prefill.applicationId,
           ...((resumeConnectionId ?? customerClientResumeRef.current ?? awsRole.resumeConnectionId)
             ? { resumeConnectionId: resumeConnectionId ?? customerClientResumeRef.current ?? awsRole.resumeConnectionId! }

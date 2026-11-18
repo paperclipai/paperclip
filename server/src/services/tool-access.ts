@@ -1,6 +1,6 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { AWS_MCP_ISSUER_CONFIG_KEY, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
-import { AwsRoleArnError, awsRoleSetup } from "./connectors/aws/setup.js";
+import { awsRoleSetup } from "./connectors/aws/setup.js";
 import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
@@ -4006,8 +4006,7 @@ export function toolAccessService(
     const [row] = await db.select().from(toolConnections)
       .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
     if (!row) throw notFound("Tool connection not found");
-    const roleArn = asRecord(row.config.methodConfig).roleArn;
-    if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role" || typeof roleArn !== "string") {
+    if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role") {
       throw unprocessable("This connection does not use an AWS role.", { code: "aws_role_setup_unavailable" });
     }
     // Without a usable public address Paperclip cannot sign, so a recorded issuer would only look usable.
@@ -4017,19 +4016,14 @@ export function toolAccessService(
     // Paperclip signs only as its current address, so AWS setup for an older one could never pass the test.
     const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
     if (typeof recorded === "string" && recorded !== issuer) return { available: false, reason: "address_changed" };
-    let setup: ReturnType<typeof awsRoleSetup>;
-    try {
-      setup = awsRoleSetup({
-        issuer, connectionId: row.id, roleArn,
-        accessLevel: asRecord(row.config.methodConfig).accessLevel === "full" ? "full" : "read_only",
-      });
-    } catch (error) {
-      if (error instanceof AwsRoleArnError) throw unprocessable(error.message, { code: "aws_role_arn_invalid" });
-      throw error;
-    }
+    const methodConfig = asRecord(row.config.methodConfig);
+    const setup = awsRoleSetup({
+      issuer, connectionId: row.id, accessLevel: methodConfig.accessLevel === "full" ? "full" : "read_only",
+    });
     return {
       available: true,
       ...setup,
+      savedRoleArn: typeof methodConfig.roleArn === "string" && methodConfig.roleArn ? methodConfig.roleArn : null,
       issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
     };
   }

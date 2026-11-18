@@ -1302,10 +1302,10 @@ export type AwsConnectionSetup =
       audience: string;
       subject: string;
       providerHost: string;
-      roleArn: string;
-      accountId: string;
+      /** The role the template and agent prompt create; named after the connection. */
       roleName: string;
-      rolePath: string;
+      /** The role ARN saved on the connection, once the customer pasted it back. */
+      savedRoleArn: string | null;
       /** The connection's access level; the template defaults to ReadOnlyAccess only when it is read_only. */
       accessLevel: "read_only" | "full";
       trustPolicy: Record<string, unknown>;

@@ -1,27 +1,24 @@
-import { AWS_MCP_STS_AUDIENCE, AWS_ROLE_ARN_PATTERN } from "./mcp-credentials.js";
+import { AWS_MCP_STS_AUDIENCE } from "./mcp-credentials.js";
 import { workloadIdentitySubject } from "../../workload-identity.js";
 
 /**
  * What a customer configures in AWS for an AWS role connection: an IAM OIDC
  * identity provider for the company's issuer, and a role that trusts exactly
- * this connection. Everything is generated for one connection, so the template
- * needs no hand-entered values.
+ * this connection. Everything is generated for one connection (the role is named
+ * after it, and CloudFormation fills in the account), so nothing is entered by hand
+ * until the customer pastes back the role ARN AWS created.
  */
 
 const SIGN_IN_POLICY = "AWSMCPSignInOAuthAccessPolicy";
 
-/** The saved role ARN is not one IAM accepts (for example a trailing slash or a name over 64 characters). */
-export class AwsRoleArnError extends Error {
-  constructor() {
-    super("This role ARN is not valid. Use arn:aws:iam::<account>:role/<name>, optionally with a path like role/team/<name>; role names have at most 64 characters.");
-    this.name = "AwsRoleArnError";
-  }
+/** The IAM role name for a connection: unique per connection, within IAM's 64 characters. */
+export function awsConnectionRoleName(connectionId: string): string {
+  return `paperclip-${connectionId}`.replace(/[^A-Za-z0-9+=,.@_-]/g, "-").slice(0, 64);
 }
 
 export interface AwsRoleSetupInput {
   issuer: string;
   connectionId: string;
-  roleArn: string;
   /** Read-only connections default the template to ReadOnlyAccess; full access asks for the policy. */
   accessLevel: "read_only" | "full";
 }
@@ -32,11 +29,10 @@ export interface AwsRoleSetup {
   subject: string;
   /** The issuer without its scheme: IAM's provider URL and the prefix of the trust condition keys. */
   providerHost: string;
-  roleArn: string;
-  accountId: string;
+  /** The role the template and the agent prompt create. */
   roleName: string;
-  rolePath: string;
   accessLevel: "read_only" | "full";
+  /** For setting up by hand; `ACCOUNT_ID` stands for the customer's AWS account ID. */
   trustPolicy: Record<string, unknown>;
   /** A CloudFormation template (JSON) that creates the identity provider (optional) and the role. */
   cloudFormationTemplate: string;
@@ -44,9 +40,7 @@ export interface AwsRoleSetup {
 }
 
 export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
-  const parts = AWS_ROLE_ARN_PATTERN.exec(input.roleArn);
-  if (!parts) throw new AwsRoleArnError();
-  const [, partition, accountId, pathPrefix, roleName] = parts as unknown as [string, string, string, string, string];
+  const roleName = awsConnectionRoleName(input.connectionId);
   const providerHost = input.issuer.replace(/^https:\/\//, "");
   // The same subject the signer puts in the token, so the trust policy always matches it.
   const subject = workloadIdentitySubject(input.connectionId);
@@ -56,7 +50,7 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
       [`${providerHost}:sub`]: subject,
     },
   };
-  const providerArn = `arn:${partition}:iam::${accountId}:oidc-provider/${providerHost}`;
+  const providerArn = `arn:aws:iam::ACCOUNT_ID:oidc-provider/${providerHost}`;
   const trustPolicy = {
     Version: "2012-10-17",
     Statement: [{
@@ -66,7 +60,6 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
       Condition: condition,
     }],
   };
-  const rolePath = `/${pathPrefix}`;
   const template = {
     AWSTemplateFormatVersion: "2010-09-09",
     Description: `Paperclip AWS connection: an IAM role that trusts only ${subject} from ${input.issuer}.`,
@@ -80,7 +73,7 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
       AccessPolicyArn: input.accessLevel === "read_only"
         ? {
             Type: "String",
-            Default: `arn:${partition}:iam::aws:policy/ReadOnlyAccess`,
+            Default: "arn:aws:iam::aws:policy/ReadOnlyAccess",
             Description: "The managed policy that decides what agents can do. This connection is read only, so ReadOnlyAccess fits.",
           }
         : {
@@ -106,7 +99,6 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
         Type: "AWS::IAM::Role",
         Properties: {
           RoleName: roleName,
-          Path: rolePath,
           MaxSessionDuration: 3600,
           AssumeRolePolicyDocument: {
             Version: "2012-10-17",
@@ -133,7 +125,7 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
       },
     },
     Outputs: {
-      RoleArn: { Description: "Paste this into Paperclip if it differs from the role ARN you entered.", Value: { "Fn::GetAtt": ["PaperclipRole", "Arn"] } },
+      RoleArn: { Description: "Paste this into Paperclip to finish the connection.", Value: { "Fn::GetAtt": ["PaperclipRole", "Arn"] } },
     },
   };
   return {
@@ -141,10 +133,7 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
     audience: AWS_MCP_STS_AUDIENCE,
     subject,
     providerHost,
-    roleArn: input.roleArn,
-    accountId,
     roleName,
-    rolePath,
     accessLevel: input.accessLevel,
     trustPolicy,
     cloudFormationTemplate: `${JSON.stringify(template, null, 2)}\n`,

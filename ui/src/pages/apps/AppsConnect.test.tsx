@@ -2541,38 +2541,39 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     })));
   });
 
-  it("sets up an AWS role in two steps: save a draft, show what to create in AWS, then test the same draft", async () => {
+  it("sets up an AWS role in two steps: save a draft, hand setup to the user's agent, then test with the pasted role ARN", async () => {
     mockParams.appKey = "aws";
     experimentalMock.mockResolvedValue({ enableAwsConnector: true });
     listGalleryMock.mockResolvedValueOnce({ apps: [AWS] });
-    const roleArn = "arn:aws:iam::123456789012:role/paperclip-agents";
+    const roleArn = "arn:aws:iam::123456789012:role/paperclip-aws-draft";
     connectAppMock.mockResolvedValueOnce({
       connectionId: "aws-draft", connection: { id: "aws-draft", status: "draft" }, application: { id: "app-aws", name: "AWS" },
       catalog: [], actions: { readOnly: [], canMakeChanges: [] }, suggestedDefaults: {},
     });
     getAwsSetupMock.mockResolvedValue({
       available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
-      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1", roleArn,
-      accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1",
+      roleName: "paperclip-aws-draft", savedRoleArn: null, accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
       cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
       issuerPublished: true,
     });
     await render();
-    const roleInput = container.querySelector<HTMLInputElement>('input[placeholder="arn:aws:iam::123456789012:role/paperclip-agents"]');
-    expect(roleInput).toBeTruthy();
-    await act(async () => { setInputValue(roleInput!, roleArn); });
-    await flushReact();
+    // The role does not exist yet, so the first step does not ask for it.
+    expect(container.textContent).not.toContain("Role ARN");
     await act(async () => { buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flushReact();
 
     expect(connectAppMock).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
       galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
-      configValues: expect.objectContaining({ roleArn }),
     }));
+    expect((connectAppMock.mock.calls.at(-1)![1] as { configValues?: { roleArn?: string } }).configValues?.roleArn ?? "").toBe("");
     expect(finishAppMock).not.toHaveBeenCalled();
     expect(getAwsSetupMock).toHaveBeenCalledWith("aws-draft");
-    expect(container.textContent).toContain("Create it with CloudFormation");
-    expect(container.textContent).toContain("123456789012");
+    expect(container.querySelector('button[aria-label="Set it up with your agent"]')).toBeTruthy();
+    expect(container.textContent).toContain("Or do it by hand");
+    expect(buttonByText("Test connection")?.disabled).toBe(true);
+    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>("#aws-role-arn")!, roleArn); });
+    await flushReact();
 
     connectAppMock.mockResolvedValueOnce({
       connectionId: "aws-draft", connection: { id: "aws-draft", status: "active" }, application: { id: "app-aws", name: "AWS" },
@@ -2582,7 +2583,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => { buttonByText("Test connection")?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
     await flushReact();
     const testCall = connectAppMock.mock.calls.at(-1)![1] as Record<string, unknown>;
-    expect(testCall).toMatchObject({ galleryKey: "aws", connectionMethodKey: "aws-role", resumeConnectionId: "aws-draft" });
+    expect(testCall).toMatchObject({
+      galleryKey: "aws", connectionMethodKey: "aws-role", resumeConnectionId: "aws-draft",
+      configValues: expect.objectContaining({ roleArn, endpointRegion: "us-east-1" }),
+    });
     expect(testCall.saveDraft).toBeUndefined();
     expect(finishAppMock).toHaveBeenCalledWith("company-1", "aws-draft", expect.anything());
   });
@@ -2594,7 +2598,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       id: "aws-draft", companyId: "company-1", name: "AWS", status: "draft", authKind: "api_key", credentialPolicy: "shared",
       transport: "mcp_remote", applicationId: "app-aws",
       config: { sourceTemplateKey: "aws", connectionMethodKey: "aws-role", url: "https://aws-mcp.us-east-1.api.aws/mcp",
-        methodConfig: { roleArn: "arn:aws:iam::123456789012:role/paperclip-agents", endpointRegion: "us-east-1", accessLevel: "read_only" } },
+        methodConfig: { endpointRegion: "us-east-1", accessLevel: "read_only" } },
     };
     listConnectionsMock.mockResolvedValue({ connections: [draft] });
     listApplicationsMock.mockResolvedValue({ applications: [{ id: "app-aws", companyId: "company-1", name: "AWS", applicationKey: "app-gallery:aws:x", metadata: { sourceTemplateKey: "aws" } }] });
@@ -2602,13 +2606,13 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=aws&resume=aws-draft";
     getAwsSetupMock.mockResolvedValue({
       available: true, issuer: "https://acme.paperclip.app/oidc/companies/company-1", audience: "sts.amazonaws.com",
-      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1", roleArn: draft.config.methodConfig.roleArn,
-      accountId: "123456789012", roleName: "paperclip-agents", rolePath: "/", accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
+      subject: "connection:aws-draft", providerHost: "acme.paperclip.app/oidc/companies/company-1",
+      roleName: "paperclip-aws-draft", savedRoleArn: null, accessLevel: "read_only", trustPolicy: { Version: "2012-10-17", Statement: [] },
       cloudFormationTemplate: "{}", cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
       issuerPublished: true,
     });
     await render();
-    await vi.waitFor(() => expect(container.textContent).toContain("Create it with CloudFormation"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Or do it by hand"));
     expect(getAwsSetupMock).toHaveBeenCalledWith("aws-draft");
     // Nothing was tested against AWS before the customer saw what to create.
     expect(connectAppMock).not.toHaveBeenCalled();

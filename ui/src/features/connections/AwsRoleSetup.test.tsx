@@ -14,16 +14,21 @@ const READY: AwsConnectionSetup = {
   audience: "sts.amazonaws.com",
   subject: "connection:conn-1",
   providerHost: "acme.paperclip.app/oidc/companies/company-1",
-  roleArn: "arn:aws:iam::123456789012:role/paperclip-agents",
-  accountId: "123456789012",
-  roleName: "paperclip-agents",
-  rolePath: "/",
+  roleName: "paperclip-conn-1",
+  savedRoleArn: null,
   accessLevel: "read_only",
-  trustPolicy: { Version: "2012-10-17", Statement: [{ Effect: "Allow" }] },
+  trustPolicy: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Federated: "arn:aws:iam::ACCOUNT_ID:oidc-provider/acme.paperclip.app/oidc/companies/company-1" } }] },
   cloudFormationTemplate: "{\"Resources\":{}}\n",
   cloudFormationConsoleUrl: "https://console.aws.amazon.com/cloudformation/home#/stacks/create",
   issuerPublished: true,
 };
+const ROLE_ARN = "arn:aws:iam::123456789012:role/paperclip-conn-1";
+type Ready = Extract<AwsConnectionSetup, { available: true }>;
+
+function setInput(input: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
 
 describe("AwsRoleSetup", () => {
   let container: HTMLDivElement;
@@ -51,59 +56,75 @@ describe("AwsRoleSetup", () => {
   }
   const button = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === text);
 
-  it("shows the account, the steps and the values for this connection, then tests", async () => {
+  it("shows only the agent setup by default, then tests with the pasted role ARN", async () => {
     const { client, onTest } = await render(READY);
     expect(client.setup).toHaveBeenCalledWith("conn-1");
-    expect(container.textContent).toContain("Create it with CloudFormation");
-    expect(container.textContent).toContain("123456789012");
-    expect(container.querySelector('a[href="https://console.aws.amazon.com/cloudformation/home#/stacks/create"]')?.getAttribute("rel")).toBe("noreferrer");
-    expect(button("Test connection")?.disabled).toBe(false);
-    await act(async () => { button("Test connection")?.click(); });
-    expect(onTest).toHaveBeenCalledOnce();
-  });
-
-  it("keeps a role path in the by-hand steps and the CLI commands", async () => {
-    const pathed = { ...READY, roleArn: "arn:aws:iam::123456789012:role/agents/paperclip-ops", roleName: "paperclip-ops", rolePath: "/agents/" } as AwsConnectionSetup;
-    await render(pathed);
-    await act(async () => { button("Set it up by hand instead")?.click(); });
-    expect(container.textContent).toContain("arn:aws:iam::123456789012:role/agents/paperclip-ops");
-    expect(container.textContent).toContain("which the IAM console cannot set");
-    const cli = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="AWS CLI commands"]')!.value;
-    expect(cli).toContain("--path /agents/ --role-name paperclip-ops");
-    expect(cli).toContain("AWSMCPSignInOAuthAccessPolicy");
-    expect(cli).toContain("arn:aws:iam::aws:policy/ReadOnlyAccess");
-  });
-
-  it("offers a prompt for the user's own agent that deploys this connection's template", async () => {
-    await render(READY);
     expect(container.querySelector('button[aria-label="Set it up with your agent"]')).not.toBeNull();
-    const prompt = awsAgentSetupPrompt(READY as Extract<AwsConnectionSetup, { available: true }>);
-    expect(prompt).toContain("confirm the account is 123456789012");
+    expect(container.textContent).toContain("Or do it by hand");
+    expect(container.textContent).not.toContain("Download template");
+    const test = () => button("Test connection")!;
+    expect(test().disabled).toBe(true);
+    const input = container.querySelector<HTMLInputElement>("#aws-role-arn")!;
+    await act(async () => { setInput(input, "not-an-arn"); });
+    expect(container.textContent).toContain("Use the full role ARN");
+    expect(test().disabled).toBe(true);
+    await act(async () => { setInput(input, ` ${ROLE_ARN} `); });
+    expect(test().disabled).toBe(false);
+    await act(async () => { test().click(); });
+    expect(onTest).toHaveBeenCalledWith(ROLE_ARN);
+  });
+
+  it("fills in a role ARN saved earlier", async () => {
+    await render({ ...READY, savedRoleArn: ROLE_ARN } as AwsConnectionSetup);
+    expect(container.querySelector<HTMLInputElement>("#aws-role-arn")!.value).toBe(ROLE_ARN);
+    expect(button("Test connection")?.disabled).toBe(false);
+  });
+
+  it("shows CloudFormation and IAM steps by hand, with CLI commands that read the account", async () => {
+    await render(READY);
+    await act(async () => { button("Or do it by hand")?.click(); });
+    expect(container.textContent).toContain("With CloudFormation");
+    expect(container.textContent).toContain("copy RoleArn from its Outputs tab");
+    expect(container.textContent).toContain("replacing ACCOUNT_ID with your AWS account ID");
+    const cli = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="AWS CLI commands"]')!.value;
+    expect(cli).toContain("ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)");
+    expect(cli).toContain("arn:aws:iam::${ACCOUNT_ID}:oidc-provider/");
+    expect(cli).toContain("--role-name paperclip-conn-1");
+    expect(cli).toContain("arn:aws:iam::aws:policy/ReadOnlyAccess");
+    expect(cli).toContain('echo "Role ARN: arn:aws:iam::${ACCOUNT_ID}:role/paperclip-conn-1"');
+  });
+
+  it("gives the user's agent a prompt that deploys this connection's template and reports the role ARN", () => {
+    const prompt = awsAgentSetupPrompt(READY as Ready);
+    expect(prompt).toContain("aws sts get-caller-identity");
     expect(prompt).toContain("--stack-name paperclip-conn-1 ");
     expect(prompt).toContain("CAPABILITY_NAMED_IAM");
+    expect(prompt).toContain("RoleArn output");
     expect(prompt).toContain("connection:conn-1");
-    expect(prompt).toContain(READY.available ? READY.cloudFormationTemplate.trimEnd() : "");
+    expect(prompt).toContain((READY as Ready).cloudFormationTemplate.trimEnd());
     expect(prompt).not.toContain("AccessPolicyArn=<policy ARN>");
-    const full = awsAgentSetupPrompt({ ...READY, accessLevel: "full" } as Extract<AwsConnectionSetup, { available: true }>);
+    const full = awsAgentSetupPrompt({ ...READY, accessLevel: "full" } as Ready);
     expect(full).toContain("ask me which managed policy");
     expect(full).toContain("AccessPolicyArn=<policy ARN>");
   });
 
   it("asks for the access policy when the connection has full access", async () => {
     await render({ ...READY, accessLevel: "full" } as AwsConnectionSetup);
+    await act(async () => { button("Or do it by hand")?.click(); });
     expect(container.textContent).toContain("Set AccessPolicyArn to the managed policy agents should have");
     expect(container.textContent).not.toContain("so it needs no edits");
   });
 
   it("downloads the template generated for this connection", async () => {
     await render(READY);
+    await act(async () => { button("Or do it by hand")?.click(); });
     const createObjectURL = vi.fn(() => "blob:template");
     const revokeObjectURL = vi.fn();
     Object.assign(URL, { createObjectURL, revokeObjectURL });
     let downloaded = "";
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) { downloaded = this.download; });
     await act(async () => { [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Download template"))?.click(); });
-    expect(downloaded).toBe("paperclip-aws-paperclip-agents.json");
+    expect(downloaded).toBe("paperclip-aws-paperclip-conn-1.json");
     expect(createObjectURL).toHaveBeenCalledOnce();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:template");
   });

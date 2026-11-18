@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, ChevronRight, Download, Loader2 } from "lucide-react";
-import type { AwsConnectionSetup } from "@paperclipai/shared";
+import { getAppStoreDefinition, type AwsConnectionSetup } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { describeError } from "@/api/errors";
@@ -8,6 +8,7 @@ import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { copyTextToClipboard } from "@/lib/clipboard";
 
@@ -49,15 +50,23 @@ export interface AwsRoleSetupProps {
   error?: string | null;
   testing?: boolean;
   onBack: () => void;
-  onTest: () => void;
+  /** Tests the connection with the role ARN the customer pasted back. */
+  onTest: (roleArn: string) => void;
   /** Shown above the footer, such as who gets access to the connection. */
   beforeFooter?: React.ReactNode;
 }
 
+/** The app definition's role ARN rule, so this check matches what the server accepts. */
+const ROLE_ARN_PATTERN = new RegExp(
+  getAppStoreDefinition("aws")?.methods.find((method) => method.key === "aws-role")
+    ?.tenantFields?.find((field) => field.key === "roleArn")?.validation?.pattern ?? "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
+);
+
 /**
  * The middle of AWS role setup: the connection is saved as a draft, so AWS can
- * now trust exactly this connection. Shows what to create in AWS (a generated
- * CloudFormation template, or the values to enter by hand), then tests.
+ * now trust exactly this connection. By default the customer hands a prompt to
+ * their own agent, which creates the role, then pastes back the role ARN; the
+ * CloudFormation and by-hand steps are there for anyone who prefers them.
  */
 export function AwsRoleSetup({
   connectionId,
@@ -70,19 +79,26 @@ export function AwsRoleSetup({
 }: AwsRoleSetupProps) {
   const [setup, setSetup] = useState<AwsConnectionSetup | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [roleArn, setRoleArn] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     setSetup(null);
     setLoadError(null);
     client.setup(connectionId).then(
-      (value) => { if (!cancelled) setSetup(value); },
+      (value) => {
+        if (cancelled) return;
+        setSetup(value);
+        if (value.available && value.savedRoleArn) setRoleArn((current) => current || value.savedRoleArn!);
+      },
       (caught) => { if (!cancelled) setLoadError(describeError(caught).body); },
     );
     return () => { cancelled = true; };
   }, [client, connectionId]);
 
   const ready = setup?.available === true ? setup : null;
+  const trimmedArn = roleArn.trim();
+  const arnInvalid = trimmedArn.length > 0 && !ROLE_ARN_PATTERN.test(trimmedArn);
 
   return (
     <div className="space-y-5" data-testid="aws-role-setup">
@@ -113,76 +129,98 @@ export function AwsRoleSetup({
 
       {ready ? (
         <>
-          <AgentSetupPrompt
-            prompt={awsAgentSetupPrompt(ready)}
-            label="Set it up with your agent"
-            title="Set up AWS with your agent"
-            description="Paste this into an agent on a computer signed in to this AWS account, such as Claude Code or Codex. It creates the role with the AWS CLI."
-            side="bottom"
-          />
-          <section className="space-y-3" aria-labelledby="aws-role-cloudformation">
-            <h3 id="aws-role-cloudformation" className="text-sm font-medium text-foreground">Create it with CloudFormation</h3>
-            <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
-              <li>
-                <span className="text-foreground">Download the template.</span>{" "}
-                {ready.accessLevel === "read_only"
-                  ? "It is made for this connection, so it needs no edits."
-                  : "It is made for this connection; it only needs the access policy you choose in step 3."}
-                <div className="mt-2">
-                  <Button type="button" variant="outline" size="sm" onClick={() => downloadTemplate(ready)}>
-                    <Download className="mr-2 h-4 w-4" /> Download template
-                  </Button>
-                </div>
-              </li>
-              <li>
-                <span className="text-foreground">Create a stack in account </span>
-                <span className="font-mono text-foreground">{ready.accountId}</span>.{" "}
-                <a
-                  href={ready.cloudFormationConsoleUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-foreground underline underline-offset-4"
-                >
-                  Open CloudFormation <ArrowUpRight className="h-3.5 w-3.5" />
-                </a>
-                , choose Upload a template file, and select the downloaded file.
-              </li>
-              <li>
-                {ready.accessLevel === "read_only"
-                  ? "Keep the defaults: AccessPolicyArn is ReadOnlyAccess, matching this read-only connection."
-                  : "Set AccessPolicyArn to the managed policy agents should have. This connection has full access, so there is no default."}{" "}
-                If this AWS account already has an identity provider for this Paperclip address, set
-                CreateIdentityProvider to false. On the last page, tick the box that acknowledges the stack creates IAM
-                resources.
-              </li>
-              <li>When the stack finishes, come back and test the connection.</li>
-            </ol>
-          </section>
+          <ol className="list-decimal space-y-4 pl-5 text-sm text-muted-foreground">
+            <li className="space-y-2">
+              <span className="text-foreground">Give this prompt to an agent on a computer signed in to your AWS account.</span>{" "}
+              It creates the role with the AWS CLI and tells you the role ARN.
+              <div>
+                <AgentSetupPrompt
+                  prompt={awsAgentSetupPrompt(ready)}
+                  label="Set it up with your agent"
+                  title="Set up AWS with your agent"
+                  description="Paste this into an agent such as Claude Code or Codex, on a computer signed in to the AWS account agents should use."
+                  side="bottom"
+                />
+              </div>
+            </li>
+            <li className="space-y-2">
+              <label htmlFor="aws-role-arn" className="text-foreground">Paste the role ARN your agent reports.</label>
+              <Input
+                id="aws-role-arn"
+                value={roleArn}
+                onChange={(event) => setRoleArn(event.target.value)}
+                placeholder={`arn:aws:iam::<account ID>:role/${ready.roleName}`}
+                aria-invalid={arnInvalid || undefined}
+                className="font-mono text-xs"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {arnInvalid ? (
+                <p className="text-xs text-destructive">Use the full role ARN, like arn:aws:iam::123456789012:role/{ready.roleName}.</p>
+              ) : null}
+            </li>
+          </ol>
 
           <Collapsible>
             <CollapsibleTrigger className="group flex items-center gap-1 text-sm font-medium text-foreground">
               <ChevronRight className="h-4 w-4 transition-transform group-data-[state=open]:rotate-90" />
-              Set it up by hand instead
+              Or do it by hand
             </CollapsibleTrigger>
-            <CollapsibleContent className="mt-3 space-y-4">
-              <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
-                <li>In IAM, add an OpenID Connect identity provider with the provider URL and audience below.</li>
-                <li>
-                  Create the role <span className="font-mono text-foreground">{ready.roleArn}</span> with the trust policy below.
-                  {ready.rolePath !== "/"
-                    ? " Its path is " : null}
-                  {ready.rolePath !== "/" ? <span className="font-mono text-foreground">{ready.rolePath}</span> : null}
-                  {ready.rolePath !== "/"
-                    ? ", which the IAM console cannot set, so use the AWS CLI commands below." : null}
-                </li>
-                <li>Attach AWSMCPSignInOAuthAccessPolicy and the permissions agents should have.</li>
-              </ol>
-              <CopyRow label="Provider URL" value={ready.issuer} />
-              <CopyRow label="Audience" value={ready.audience} />
-              <CopyRow label="Role ARN" value={ready.roleArn} />
-              <CopyRow label="Connection subject" value={ready.subject} />
-              <CopyBlock label="Trust policy" value={JSON.stringify(ready.trustPolicy, null, 2)} />
-              <CopyBlock label="AWS CLI commands" value={awsCliCommands(ready)} />
+            <CollapsibleContent className="mt-3 space-y-6">
+              <section className="space-y-3" aria-labelledby="aws-role-cloudformation">
+                <h3 id="aws-role-cloudformation" className="text-sm font-medium text-foreground">With CloudFormation</h3>
+                <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
+                  <li>
+                    <span className="text-foreground">Download the template.</span>{" "}
+                    {ready.accessLevel === "read_only"
+                      ? "It is made for this connection, so it needs no edits."
+                      : "It is made for this connection; it only needs the access policy you choose in step 3."}
+                    <div className="mt-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => downloadTemplate(ready)}>
+                        <Download className="mr-2 h-4 w-4" /> Download template
+                      </Button>
+                    </div>
+                  </li>
+                  <li>
+                    <a
+                      href={ready.cloudFormationConsoleUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-foreground underline underline-offset-4"
+                    >
+                      Open CloudFormation <ArrowUpRight className="h-3.5 w-3.5" />
+                    </a>{" "}
+                    in the AWS account agents should use, create a stack, choose Upload a template file, and select the downloaded file.
+                  </li>
+                  <li>
+                    {ready.accessLevel === "read_only"
+                      ? "Keep the defaults: AccessPolicyArn is ReadOnlyAccess, matching this read-only connection."
+                      : "Set AccessPolicyArn to the managed policy agents should have. This connection has full access, so there is no default."}{" "}
+                    If this AWS account already has an identity provider for this Paperclip address, set
+                    CreateIdentityProvider to false. On the last page, tick the box that acknowledges the stack creates IAM
+                    resources.
+                  </li>
+                  <li>When the stack finishes, copy RoleArn from its Outputs tab into the field above.</li>
+                </ol>
+              </section>
+
+              <section className="space-y-3" aria-labelledby="aws-role-manual">
+                <h3 id="aws-role-manual" className="text-sm font-medium text-foreground">In the IAM console or AWS CLI</h3>
+                <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
+                  <li>Add an OpenID Connect identity provider with the provider URL and audience below.</li>
+                  <li>
+                    Create the role <span className="font-mono text-foreground">{ready.roleName}</span> with the trust
+                    policy below, replacing ACCOUNT_ID with your AWS account ID.
+                  </li>
+                  <li>Attach AWSMCPSignInOAuthAccessPolicy and the permissions agents should have, then paste the role ARN above.</li>
+                </ol>
+                <CopyRow label="Provider URL" value={ready.issuer} />
+                <CopyRow label="Audience" value={ready.audience} />
+                <CopyRow label="Role name" value={ready.roleName} />
+                <CopyRow label="Connection subject" value={ready.subject} />
+                <CopyBlock label="Trust policy" value={JSON.stringify(ready.trustPolicy, null, 2)} />
+                <CopyBlock label="AWS CLI commands" value={awsCliCommands(ready)} />
+              </section>
             </CollapsibleContent>
           </Collapsible>
         </>
@@ -192,7 +230,7 @@ export function AwsRoleSetup({
 
       <div className="flex items-center justify-between pt-3">
         <Button variant="ghost" onClick={onBack} disabled={testing}>Back</Button>
-        <Button onClick={onTest} disabled={testing || !ready}>
+        <Button onClick={() => onTest(trimmedArn)} disabled={testing || !ready || !trimmedArn || arnInvalid}>
           {testing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           {testing ? "Testing…" : "Test connection"}
         </Button>
@@ -201,43 +239,48 @@ export function AwsRoleSetup({
   );
 }
 
-/** The same setup as the trust policy above, for people who prefer the AWS CLI (it also sets role paths). */
+/** The by-hand setup for the AWS CLI; it reads the account ID, so nothing needs editing. */
 export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: true }>): string {
-  const policy = JSON.stringify(setup.trustPolicy);
+  const policy = JSON.stringify(setup.trustPolicy, null, 2).replaceAll("ACCOUNT_ID", "${ACCOUNT_ID}");
   return [
+    "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)",
     `aws iam create-open-id-connect-provider --url ${setup.issuer} --client-id-list ${setup.audience}`,
-    `aws iam create-role --path ${setup.rolePath} --role-name ${setup.roleName} --assume-role-policy-document '${policy}'`,
+    "cat > paperclip-trust-policy.json <<EOF",
+    policy,
+    "EOF",
+    `aws iam create-role --role-name ${setup.roleName} --max-session-duration 3600 --assume-role-policy-document file://paperclip-trust-policy.json`,
     `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn arn:aws:iam::aws:policy/AWSMCPSignInOAuthAccessPolicy`,
     `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn ${setup.accessLevel === "read_only" ? "arn:aws:iam::aws:policy/ReadOnlyAccess" : "<the managed policy agents should have>"}`,
+    `echo "Role ARN: arn:aws:iam::\${ACCOUNT_ID}:role/${setup.roleName}"`,
   ].join("\n");
 }
 
 /**
  * A prompt for the user's own agent (on a machine already signed in to AWS) to
- * deploy this connection's template. It holds no secrets: AWS trusts the
- * connection's signed identity, so the values are safe to paste anywhere.
+ * deploy this connection's template and report the role ARN. It holds no
+ * secrets: AWS trusts the connection's signed identity, so it is safe to paste anywhere.
  */
 export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { available: true }>): string {
-  // One stack per connection: role names that differ only in punctuation must not share (and replace) a stack.
-  const stack = `paperclip-${setup.subject.replace(/^connection:/, "")}`.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 128);
+  // One stack per connection, like the role, so two connections never share (and replace) a stack.
+  const stack = setup.roleName;
   const policyStep = setup.accessLevel === "read_only"
     ? "The connection is read only, so keep the template's default AccessPolicyArn (ReadOnlyAccess)."
     : "The connection has full access, so ask me which managed policy agents should have, then pass it as AccessPolicyArn. Do not pick one yourself.";
   return [
-    `Set up an AWS IAM role so Paperclip can connect to AWS account ${setup.accountId}. Use the AWS CLI on this computer.`,
+    "Set up an AWS IAM role so Paperclip can connect to my AWS account. Use the AWS CLI on this computer.",
     "",
     "Steps:",
-    `1. Run \`aws sts get-caller-identity\` and confirm the account is ${setup.accountId}. If it is not, or the CLI is not signed in, stop and tell me which profile or sign-in to use.`,
+    "1. Run `aws sts get-caller-identity` and tell me which account and identity it shows. If the CLI is not signed in, or I may want a different account, stop and ask me which profile to use.",
     `2. Run \`aws iam list-open-id-connect-providers\`. If one already ends with ${setup.providerHost}, pass CreateIdentityProvider=false; otherwise pass true.`,
     `3. ${policyStep}`,
     "4. Save the CloudFormation template below to a file and deploy it:",
     `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
-    `5. Confirm the stack output RoleArn is ${setup.roleArn}. If it differs, tell me the new ARN.`,
-    "6. Tell me when it is done, so I can press Test connection in Paperclip.",
+    `5. Read the stack's RoleArn output (aws cloudformation describe-stacks --stack-name ${stack}) and give it to me, so I can paste it into Paperclip and press Test connection.`,
     "",
     "The role trusts only this one Paperclip connection, and no AWS keys are created or shared:",
     `- Identity provider: ${setup.issuer} (audience ${setup.audience})`,
     `- Connection subject: ${setup.subject}`,
+    `- Role name: ${setup.roleName}`,
     "",
     "CloudFormation template:",
     setup.cloudFormationTemplate.trimEnd(),

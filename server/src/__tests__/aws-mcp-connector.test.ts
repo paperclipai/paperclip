@@ -88,10 +88,10 @@ describe("AWS connector with minted credentials", () => {
     app.use((req, _res, next) => { req.actor = { type: "board", userId: actor.actorId, source: "local_implicit", isInstanceAdmin: true } as Express.Request["actor"]; next(); });
     app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: null }));
     app.use(errorHandler);
-    const roleArn = "arn:aws:iam::123456789012:role/agents/paperclip-ops";
+    // The role does not exist yet, so the draft is saved without a role ARN.
     const draft = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
       galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
-      configValues: { roleArn, endpointRegion: "us-east-1", accessLevel: "read_only" },
+      configValues: { roleArn: "", endpointRegion: "us-east-1", accessLevel: "read_only" },
     });
     expect(draft.status, JSON.stringify(draft.body)).toBeLessThan(300);
     const connectionId = draft.body.connectionId as string;
@@ -102,17 +102,17 @@ describe("AWS connector with minted credentials", () => {
     const issuer = `https://acme.paperclip.app/oidc/companies/${org.id}`;
     expect(setup.body).toMatchObject({
       available: true, issuer, audience: "sts.amazonaws.com", subject: `connection:${connectionId}`,
-      accountId: "123456789012", roleName: "paperclip-ops", rolePath: "/agents/", issuerPublished: true,
+      roleName: `paperclip-${connectionId}`, savedRoleArn: null, issuerPublished: true,
     });
     const host = issuer.replace("https://", "");
     const template = JSON.parse(setup.body.cloudFormationTemplate);
     const role = template.Resources.PaperclipRole.Properties;
-    expect(role).toMatchObject({ RoleName: "paperclip-ops", Path: "/agents/" });
+    expect(role).toMatchObject({ RoleName: `paperclip-${connectionId}` });
     expect(role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals).toEqual({
       [`${host}:aud`]: "sts.amazonaws.com", [`${host}:sub`]: `connection:${connectionId}`,
     });
     expect(template.Resources.PaperclipIdentityProvider.Properties.Url).toBe(issuer);
-    expect(setup.body.trustPolicy.Statement[0].Principal.Federated).toBe(`arn:aws:iam::123456789012:oidc-provider/${host}`);
+    expect(setup.body.trustPolicy.Statement[0].Principal.Federated).toBe(`arn:aws:iam::ACCOUNT_ID:oidc-provider/${host}`);
     expect(JSON.stringify(setup.body)).not.toMatch(/secret|private/i);
 
     // After the address changes, setup for the old address could never pass, so it asks for a new save,
@@ -122,7 +122,7 @@ describe("AWS connector with minted credentials", () => {
       await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200, { available: false, reason: "address_changed" });
       await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
         galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true, resumeConnectionId: connectionId,
-        configValues: { roleArn, endpointRegion: "us-east-1", accessLevel: "read_only" },
+        configValues: { endpointRegion: "us-east-1", accessLevel: "read_only" },
       }).expect((res) => expect(res.status, JSON.stringify(res.body)).toBeLessThan(300));
       const resaved = await request(app).get(`/api/tool-connections/${connectionId}/aws-setup`).expect(200);
       expect(resaved.body).toMatchObject({ available: true, issuer: `https://renamed.paperclip.app/oidc/companies/${org.id}` });
@@ -268,7 +268,10 @@ describe("AWS connector with minted credentials", () => {
     };
     // The role must trust a connection that already exists, so setup saves a draft first without contacting AWS,
     // and publishes the company's issuer so AWS can validate it when the customer registers it.
-    const draft = await service.connectGalleryApp(org.id, { ...roleInput, saveDraft: true }, actor);
+    // The role is created after the draft (it is named after it), so the draft has no role ARN yet.
+    const draft = await service.connectGalleryApp(org.id, {
+      ...roleInput, configValues: { endpointRegion: "us-east-1", accessLevel: "full" }, saveDraft: true,
+    }, actor);
     expect(draft.catalog).toEqual([]);
     expect(aws.assumeRoleWithWebIdentity).not.toHaveBeenCalled();
     expect(await workloadIdentityService(db).publicKeySet(org.id)).not.toBeNull();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AwsRoleArnError, awsRoleSetup } from "./setup.js";
+import { awsConnectionRoleName, awsRoleSetup } from "./setup.js";
 
 const ISSUER = "https://acme.paperclip.app/oidc/companies/company-1";
 const HOST = "acme.paperclip.app/oidc/companies/company-1";
@@ -10,11 +10,12 @@ function template(setup: ReturnType<typeof awsRoleSetup>) {
 
 describe("awsRoleSetup", () => {
   it("builds a role that trusts only this connection, with the sign-in policy and a one-hour session", () => {
-    const setup = awsRoleSetup({ issuer: ISSUER, connectionId: "conn-1", roleArn: "arn:aws:iam::123456789012:role/team/ops", accessLevel: "read_only" });
-    expect(setup).toMatchObject({ accountId: "123456789012", roleName: "ops", rolePath: "/team/", subject: "connection:conn-1", providerHost: HOST });
+    const setup = awsRoleSetup({ issuer: ISSUER, connectionId: "conn-1", accessLevel: "read_only" });
+    expect(setup).toMatchObject({ roleName: "paperclip-conn-1", subject: "connection:conn-1", providerHost: HOST });
     const t = template(setup);
     const role = t.Resources.PaperclipRole.Properties;
-    expect(role).toMatchObject({ RoleName: "ops", Path: "/team/", MaxSessionDuration: 3600 });
+    expect(role).toMatchObject({ RoleName: "paperclip-conn-1", MaxSessionDuration: 3600 });
+    expect(role.Path).toBeUndefined();
     expect(role.ManagedPolicyArns).toEqual([
       { Ref: "AccessPolicyArn" },
       { "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AWSMCPSignInOAuthAccessPolicy" },
@@ -31,20 +32,19 @@ describe("awsRoleSetup", () => {
     expect(t.Resources.PaperclipIdentityProvider).toMatchObject({ Condition: "CreateProvider", Properties: { Url: ISSUER, ClientIdList: ["sts.amazonaws.com"] } });
     expect(t.Conditions.CreateProvider).toEqual({ "Fn::Equals": [{ Ref: "CreateIdentityProvider" }, "true"] });
     expect(t.Parameters.AccessPolicyArn.Default).toBe("arn:aws:iam::aws:policy/ReadOnlyAccess");
-    expect(setup.trustPolicy).toMatchObject({ Statement: [{ Principal: { Federated: `arn:aws:iam::123456789012:oidc-provider/${HOST}` } }] });
+    expect(setup.trustPolicy).toMatchObject({ Statement: [{ Principal: { Federated: `arn:aws:iam::ACCOUNT_ID:oidc-provider/${HOST}` } }] });
   });
 
   it("asks for the access policy instead of defaulting to read only when the connection has full access", () => {
-    const t = template(awsRoleSetup({ issuer: ISSUER, connectionId: "c", roleArn: "arn:aws:iam::123456789012:role/ops", accessLevel: "full" }));
+    const t = template(awsRoleSetup({ issuer: ISSUER, connectionId: "c", accessLevel: "full" }));
     expect(t.Parameters.AccessPolicyArn.Default).toBeUndefined();
     expect(t.Parameters.AccessPolicyArn.AllowedPattern).toBeTruthy();
   });
 
-  it("refuses role ARNs IAM would not accept", () => {
-    const base = { issuer: ISSUER, connectionId: "c", accessLevel: "read_only" as const };
-    for (const roleArn of ["arn:aws:iam::123456789012:role/team/", `arn:aws:iam::123456789012:role/${"x".repeat(65)}`, "arn:aws:iam::12345:role/ops"]) {
-      expect(() => awsRoleSetup({ ...base, roleArn })).toThrow(AwsRoleArnError);
-    }
-    expect(awsRoleSetup({ ...base, roleArn: `arn:aws:iam::123456789012:role/${"x".repeat(64)}` }).rolePath).toBe("/");
+  it("names the role after the connection, within IAM's 64 characters", () => {
+    const id = "26e99114-bde0-428a-944b-eee3c44366de";
+    expect(awsConnectionRoleName(id)).toBe(`paperclip-${id}`);
+    expect(awsConnectionRoleName("x".repeat(80))).toHaveLength(64);
+    expect(awsConnectionRoleName("a/b c")).toBe("paperclip-a-b-c");
   });
 });

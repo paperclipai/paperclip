@@ -5,8 +5,9 @@ import { AwsRoleSetup, awsSetupErrorMessage } from "./AwsRoleSetup";
 /**
  * The AWS role setup sequence, owned here so the shared connect flow only asks
  * for request options, hands back results, and renders the step:
- * the first Connect saves a draft (reusing one saved earlier), the AWS step
- * shows what to create in AWS, and Test connection resumes the draft.
+ * the first Connect saves a draft (reusing one saved earlier) without a role ARN,
+ * the AWS step shows how to create the role, and Test connection resumes the
+ * draft with the role ARN the customer pasted back.
  */
 export function useAwsRoleSetupStep({ appSlug, methodKey, reconnecting, resumeConnection }: {
   appSlug: string | undefined;
@@ -17,7 +18,7 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnecting, resumeCo
 }) {
   const [stage, setStage] = useState<{ connectionId: string; error: string | null } | null>(null);
   // The draft this setup saved (kept across Back, so Connect updates it) and whether the next connect is the test.
-  const draft = useRef<{ id: string | null; testing: boolean }>({ id: null, testing: false });
+  const draft = useRef<{ id: string | null; testing: boolean; roleArn: string | null }>({ id: null, testing: false, roleArn: null });
   const active = appSlug === "aws" && methodKey === "aws-role" && !reconnecting;
   const resumingDraft = resumeConnection?.status === "draft"
     && resumeConnection.config?.sourceTemplateKey === "aws"
@@ -26,7 +27,7 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnecting, resumeCo
   // Coming back to an unfinished draft reopens the step (once), before anything is tested against AWS.
   useEffect(() => {
     if (!resumingDraft || !resumeConnection || draft.current.id === resumeConnection.id) return;
-    draft.current = { id: resumeConnection.id, testing: false };
+    draft.current = { id: resumeConnection.id, testing: false, roleArn: null };
     setStage({ connectionId: resumeConnection.id, error: null });
   }, [resumingDraft, resumeConnection]);
 
@@ -34,19 +35,25 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnecting, resumeCo
   useEffect(() => {
     if ((appSlug && appSlug !== "aws") || (methodKey && methodKey !== "aws-role")) {
       setStage(null);
-      draft.current = { id: null, testing: false };
+      draft.current = { id: null, testing: false, roleArn: null };
     }
   }, [appSlug, methodKey]);
 
   return {
     /** Extra connect request fields; call once per connect. */
-    requestOptions(resumeConnectionId: string | null | undefined): { saveDraft?: true; resumeConnectionId?: string } {
-      const testing = draft.current.testing;
+    requestOptions(resumeConnectionId: string | null | undefined): {
+      saveDraft?: true; resumeConnectionId?: string; configValues?: { roleArn: string };
+    } {
+      const { testing, roleArn } = draft.current;
       draft.current.testing = false;
       if (!active) return {};
       const saveDraft = (!resumeConnectionId || resumingDraft) && !testing;
       const resumeId = !resumeConnectionId ? draft.current.id : null;
-      return { ...(saveDraft ? { saveDraft: true as const } : {}), ...(resumeId ? { resumeConnectionId: resumeId } : {}) };
+      return {
+        ...(saveDraft ? { saveDraft: true as const } : {}),
+        ...(resumeId ? { resumeConnectionId: resumeId } : {}),
+        ...(testing && roleArn ? { configValues: { roleArn } } : {}),
+      };
     },
     /** True when a connect result is this setup's saved draft, which opens the AWS step. */
     acceptResult(result: { connectionId: string; connection?: { status?: string } | null; catalog: unknown[] }): boolean {
@@ -69,9 +76,9 @@ export function useAwsRoleSetupStep({ appSlug, methodKey, reconnecting, resumeCo
           error={stage.error}
           testing={testing}
           onBack={() => setStage(null)}
-          onTest={() => {
+          onTest={(roleArn) => {
             setStage({ ...stage, error: null });
-            draft.current = { id: stage.connectionId, testing: true };
+            draft.current = { id: stage.connectionId, testing: true, roleArn };
             connect();
           }}
         />
