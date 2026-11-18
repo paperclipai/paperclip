@@ -3145,7 +3145,7 @@ describe("IssueDetail", () => {
     expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
   });
 
-  it("refreshes task snapshots without promoting background activity or passive revisits", async () => {
+  it.each(["first open", "reopen"])("moves the task to the top on %s and keeps snapshot refreshes from changing the order", async (visit) => {
     const authRequest = createDeferred<{
       session: { userId: string };
       user: { id: string };
@@ -3155,6 +3155,10 @@ describe("IssueDetail", () => {
       status: "todo",
       updatedAt: new Date(100),
     });
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    const other = createIssue({ id: "other-task" });
+    if (visit === "reopen") recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(other, "user-1", 20);
     mockAuthApi.getSession.mockReturnValue(authRequest.promise);
     mockIssuesApi.get.mockResolvedValue(issue);
 
@@ -3176,19 +3180,12 @@ describe("IssueDetail", () => {
     });
     await waitForAssertion(() => {
       expect(
-        readRecentTasks(
-          getRecentTasksStorageKey("company-1", "user-1"),
-          "company-1",
-        ),
-      ).toEqual([
-        expect.objectContaining({
-          id: "issue-1",
-          title: "Initial recent title",
-          status: "todo",
-          recordedAt: 0,
-        }),
-      ]);
+        readRecentTasks(storageKey, "company-1").map((task) => task.id),
+      ).toEqual([issue.id, other.id]);
     });
+    const openedAt = readRecentTasks(storageKey, "company-1")[0]!.recordedAt;
+    expect(openedAt).toBeGreaterThan(20);
+    await act(async () => recordRecentTask(other, "user-1", openedAt + 1));
 
     act(() => {
       queryClient.setQueryData(queryKeys.issues.detail("PAP-1"), {
@@ -3200,21 +3197,14 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(
-      readRecentTasks(
-        getRecentTasksStorageKey("company-1", "user-1"),
-        "company-1",
-      )[0],
-    ).toMatchObject({
-      title: "Snapshot refresh title",
-      status: "in_progress",
-      recordedAt: 0,
-    });
+    expect(readRecentTasks(storageKey, "company-1")).toMatchObject([
+      { id: other.id },
+      { id: issue.id, title: "Snapshot refresh title", status: "in_progress", recordedAt: openedAt },
+    ]);
   });
 
   it.each(["reassignment", "run settings"])("advances recency only after a comment with %s saves", async (mode) => {
     const issue = createIssue({ updatedAt: new Date(10) });
-    const comment = createIssueComment({ createdAt: new Date(30) });
     const save = createDeferred<Issue & { comment: IssueComment }>();
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAgentsApi.list.mockResolvedValue([createAgent()]);
@@ -3225,6 +3215,11 @@ describe("IssueDetail", () => {
     recordRecentTask(createIssue({ id: "newer-work" }), "user-1", 20);
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+    const entries = () => readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
+    await waitForAssertion(() => expect(entries()[0]?.id).toBe(issue.id));
+    const openedAt = entries()[0]!.recordedAt;
+    recordRecentTask(createIssue({ id: "newer-work" }), "user-1", openedAt + 1);
+    const comment = createIssueComment({ createdAt: new Date(openedAt + 2) });
     const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
     let pending!: Promise<void>;
     await act(async () => {
@@ -3234,14 +3229,13 @@ describe("IssueDetail", () => {
         mode === "run settings" ? { model: "gpt-6-astra", effort: "high", fast: false } : undefined);
     });
     await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalled());
-    const entries = () => readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
     expect(entries().map(entry => entry.id)).toEqual(["newer-work", issue.id]);
     await act(async () => {
       save.resolve({ ...issue, updatedAt: new Date(15), comment });
       await pending;
     });
     expect(entries().map(entry => entry.id)).toEqual([issue.id, "newer-work"]);
-    expect(entries()[0]?.recordedAt).toBe(30);
+    expect(entries()[0]?.recordedAt).toBe(openedAt + 2);
   });
 
   it.each([false, true])("renders a linked Decisions-v1 record in task context (Coordinator %s)", async (enabled) => {
@@ -5906,7 +5900,9 @@ describe("IssueDetail", () => {
     expect(optimisticComment).toMatchObject({ clientStatus: "pending" });
     expect(optimisticComment?.queueState).toBeUndefined();
 
-    const postedAt = new Date("2026-04-21T00:00:10.000Z");
+    const storageKey = getRecentTasksStorageKey("company-1", null);
+    const openedAt = readRecentTasks(storageKey, "company-1")[0]!.recordedAt;
+    const postedAt = new Date(openedAt + 10_000);
     await act(async () => {
       postedComment.resolve(
         createIssueComment({
@@ -5918,12 +5914,7 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(
-      readRecentTasks(
-        getRecentTasksStorageKey("company-1", null),
-        "company-1",
-      )[0],
-    ).toMatchObject({
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({
       id: "issue-1",
       recordedAt: postedAt.getTime(),
     });
