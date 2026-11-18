@@ -36,7 +36,10 @@ describeEmbeddedPostgres("GET /api/companies/:companyId/skills statements per re
       expect(second.body).toEqual(first.body);
       expect(after.transactions - before.transactions).toBe(0);
       expect(log.filter((entry) => /pg_advisory/.test(entry.sql))).toEqual([]);
-      expect(after.statements - before.statements).toBeLessThanOrEqual(45);
+      expect(log.filter((entry) => /^\s*(insert|update|delete)\b/i.test(entry.sql))).toEqual([]);
+      const fixedReadAllowance = 15;
+      const readAllowancePerSkill = 3;
+      expect(after.statements - before.statements).toBeLessThanOrEqual(fixedReadAllowance + readAllowancePerSkill * first.body.length);
       expect(await bundledFolders(company.companyId)).toEqual(foldersAfterFirst);
     } finally {
       statements.uninstall();
