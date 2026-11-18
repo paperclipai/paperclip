@@ -136,7 +136,6 @@ export const RAILWAY_QUERIES = {
   projects: `query PaperclipRailwayProjects($workspaceId:String!,$first:Int!,$after:String) { projects(workspaceId:$workspaceId,first:$first,after:$after) { edges { node { id name workspaceId } } ${pageInfo} } }`,
   services: `query PaperclipRailwayServices($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id services(first:$first,after:$after) { edges { node { id name projectId } } ${pageInfo} } } }`,
   environments: `query PaperclipRailwayEnvironments($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id environments(first:$first,after:$after) { edges { node { id name projectId canAccess } } ${pageInfo} } } }`,
-  // Restricted environments stay listed for non-admins, but reads inside them are denied.
   environmentAccess: `query PaperclipRailwayEnvironmentAccess($projectId:String!) { project(id:$projectId) { id environments(first:100) { edges { node { id canAccess } } } } }`,
   target: `query PaperclipRailwayTarget($projectId:String!,$environmentId:String!,$serviceId:String!) { project(id:$projectId) { id } environment(id:$environmentId) { id projectId } service(id:$serviceId) { id projectId } serviceInstance(environmentId:$environmentId,serviceId:$serviceId) { ${instanceFields} } }`,
   deployment: `query PaperclipRailwayDeployment($deploymentId:String!) { deployment(id:$deploymentId) { ${deploymentFields} instances { id } } }`,
