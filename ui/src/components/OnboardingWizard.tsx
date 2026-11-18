@@ -734,6 +734,9 @@ function OnboardingWizardInner({
     createdCompanyId,
     apiKeyEnvKeyFor(adapterType),
     effectiveOnboardingOpen && step === 4,
+    // agy_local reads its key from GEMINI_API_KEY, but its saved accounts
+    // are provider "antigravity", not "google".
+    adapterType === "agy_local" ? "antigravity" : undefined,
   );
   // The chooser is absent in onboarding. Prefer the user's explicit default;
   // otherwise only reuse an unambiguous account, regardless of list ordering.

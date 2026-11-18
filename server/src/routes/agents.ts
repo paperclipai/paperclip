@@ -2685,6 +2685,11 @@ export function agentRoutes(
     "cwd",
     "env",
     "filesystemSandboxCommand",
+    // A host filesystem path the server-side skill sync writes under
+    // (mkdir/symlink): an agent key must never be able to point it at an
+    // arbitrary host location. Operators may still set it (see the
+    // agy_local skillsRootPath override, e.g. /srv/agy-skills).
+    "skillsRootPath",
   ] as const;
 
   const LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {

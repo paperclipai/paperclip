@@ -114,7 +114,7 @@ export function AgentProviderConnection({
   const envKey =
     adapterType === "antigravity_runtime" ? "GEMINI_API_KEY" : adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : adapterType === "agy_local" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
   const aiProvider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : adapterType === "agy_local" ? "antigravity" : "openai";
-  const availableKeys = useSavedProviderKeys(companyId, envKey);
+  const availableKeys = useSavedProviderKeys(companyId, envKey, true, aiProvider);
   // Add/reconnect creates the requested account, never copies a saved account's
   // credential or silently changes its ownership. Agent setup retains reuse.
   const savedKeys = managedAccount
