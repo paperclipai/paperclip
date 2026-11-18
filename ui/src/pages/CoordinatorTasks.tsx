@@ -305,6 +305,6 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     </>}
   </section>;
   return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider>
-    {sidePanel.enabled ? <TaskListSplit taskRef={sidePanel.taskRef} onClose={sidePanel.close}>{list}</TaskListSplit> : list}
+    {sidePanel.enabled ? <TaskListSplit taskRef={sidePanel.taskRef} onClose={sidePanel.close} presentation={sidePanel.presentation}>{list}</TaskListSplit> : list}
   </TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }

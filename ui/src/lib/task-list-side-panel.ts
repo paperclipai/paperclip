@@ -3,6 +3,20 @@ import type { Issue } from "@paperclipai/shared";
 /** Search param that keeps the task open in the Tasks list side panel, e.g. `?task=PAP-123`. */
 export const TASK_LIST_SIDE_PANEL_PARAM = "task";
 
+/** Below this width the Tasks list is the mobile shell, and a task opens its full page. */
+export const TASK_LIST_SIDE_PANEL_FULL_PAGE_BELOW = 768;
+/** Below this width the docked panel would squash the list, so it covers the list instead. */
+export const TASK_LIST_SIDE_PANEL_DOCKED_FROM = 1024;
+
+export type TaskListSidePanelPresentation = "full-page" | "overlay" | "docked";
+
+/** Phones keep the full task page; tablets get a full-width overlay; wider viewports dock the panel beside the list. */
+export function resolveTaskListSidePanelPresentation(viewportWidth: number): TaskListSidePanelPresentation {
+  if (viewportWidth < TASK_LIST_SIDE_PANEL_FULL_PAGE_BELOW) return "full-page";
+  if (viewportWidth < TASK_LIST_SIDE_PANEL_DOCKED_FROM) return "overlay";
+  return "docked";
+}
+
 interface ClickLike {
   button: number;
   metaKey: boolean;

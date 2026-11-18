@@ -13,39 +13,58 @@ const TaskDetailSurface = lazy(() =>
   import("../pages/IssueDetail").then((module) => ({ default: module.TaskDetailSurface })),
 );
 
+export type TaskListSidePanelPresentation = "docked" | "overlay";
+
 interface TaskListSidePanelProps {
   taskRef: string;
   onClose: () => void;
+  presentation?: TaskListSidePanelPresentation;
+}
+
+interface TaskListSplitProps {
+  taskRef: string | null;
+  onClose: () => void;
+  presentation?: TaskListSidePanelPresentation;
+  children: ReactNode;
 }
 
 /**
  * A Tasks list beside its optional side panel. The list owns its scroll box
  * whenever the panel can open, so opening and closing the panel never moves
- * the list.
+ * the list. An overlay panel covers the list instead of squashing it, and the
+ * list keeps its scroll offset underneath.
  */
-export function TaskListSplit({ taskRef, onClose, children }: { taskRef: string | null; onClose: () => void; children: ReactNode }) {
+export function TaskListSplit({ taskRef, onClose, presentation = "docked", children }: TaskListSplitProps) {
   const listScrollRef = useRef<HTMLDivElement>(null);
   useListScrollMemory(listScrollRef);
   return (
-    <div data-testid="task-list-split" className="flex h-full min-h-0 md:-my-6 md:-mr-6">
+    <div data-testid="task-list-split" data-presentation={presentation} className="relative flex h-full min-h-0 md:-my-6 md:-mr-6">
       <div ref={listScrollRef} className="min-w-0 flex-1 overflow-auto md:py-6 md:pr-6">{children}</div>
-      {taskRef ? <TaskListSidePanel taskRef={taskRef} onClose={onClose} /> : null}
+      {taskRef ? <TaskListSidePanel taskRef={taskRef} onClose={onClose} presentation={presentation} /> : null}
     </div>
   );
+}
+
+/** The frame classes for each presentation; `sheet` fills the split, `docked` takes a fixed share beside the list. */
+export function taskListSidePanelFrame(presentation: TaskListSidePanelPresentation): { presentation: "sheet" | "docked"; className: string } {
+  if (presentation === "overlay") return { presentation: "sheet", className: "absolute inset-0 z-10" };
+  return { presentation: "docked", className: "w-(--task-list-side-panel-width) shrink-0" };
 }
 
 /**
  * The task detail surface beside the Tasks list. Its own breadcrumb scope keeps
  * the task's title, toolbar and properties toggle out of the list page header.
  */
-export function TaskListSidePanel({ taskRef, onClose }: TaskListSidePanelProps) {
+export function TaskListSidePanel({ taskRef, onClose, presentation = "docked" }: TaskListSidePanelProps) {
   useCloseOnEscape(onClose);
+  const frame = taskListSidePanelFrame(presentation);
   return (
     <BreadcrumbProvider syncDocumentTitle={false}>
       <SidePanelFrame
         label={`Task ${taskRef}`}
         contentMode="full-bleed"
-        className="w-(--task-list-side-panel-width) shrink-0"
+        presentation={frame.presentation}
+        className={frame.className}
         bodyClassName="flex flex-col overflow-auto"
         header={<TaskListSidePanelTitle taskRef={taskRef} />}
         trailingControls={<TaskListSidePanelControls taskRef={taskRef} onClose={onClose} />}
@@ -70,19 +89,22 @@ function TaskListSidePanelTitle({ taskRef }: { taskRef: string }) {
   );
 }
 
+/** Below the docked breakpoint, and on any touch pointer, the controls grow to the 44px size token. */
+const TOUCH_CONTROL_CLASS = "max-lg:size-(--sz-44px) pointer-coarse:size-(--sz-44px)";
+
 function TaskListSidePanelControls({ taskRef, onClose }: TaskListSidePanelProps) {
   const { breadcrumbPanelControl, breadcrumbToolbar } = useBreadcrumbs();
   return (
     <>
       {breadcrumbPanelControl ? (
-        <SidePanelToggleButton open={breadcrumbPanelControl.open} onToggle={breadcrumbPanelControl.onToggle} />
+        <SidePanelToggleButton open={breadcrumbPanelControl.open} onToggle={breadcrumbPanelControl.onToggle} className={TOUCH_CONTROL_CLASS} />
       ) : breadcrumbToolbar}
-      <Button asChild variant="ghost" size="icon-sm" title="Open full page">
+      <Button asChild variant="ghost" size="icon-sm" className={TOUCH_CONTROL_CLASS} title="Open full page">
         <Link to={createIssueDetailPath(taskRef)} disableIssueQuicklook aria-label="Open full page">
           <ExternalLink aria-hidden />
         </Link>
       </Button>
-      <Button type="button" variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close task panel" title="Close (Esc)">
+      <Button type="button" variant="ghost" size="icon-sm" className={TOUCH_CONTROL_CLASS} onClick={onClose} aria-label="Close task panel" title="Close (Esc)">
         <X aria-hidden />
       </Button>
     </>

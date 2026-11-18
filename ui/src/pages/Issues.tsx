@@ -386,5 +386,5 @@ function OrganizationIssues({
     />
   );
   if (!sidePanel.enabled) return issuesList;
-  return <TaskListSplit taskRef={sidePanel.taskRef} onClose={sidePanel.close}>{issuesList}</TaskListSplit>;
+  return <TaskListSplit taskRef={sidePanel.taskRef} onClose={sidePanel.close} presentation={sidePanel.presentation}>{issuesList}</TaskListSplit>;
 }

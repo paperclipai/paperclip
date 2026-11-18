@@ -1,7 +1,20 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it } from "vitest";
-import { isTaskListSidePanelCloseKey } from "./TaskListSidePanel";
+import { isTaskListSidePanelCloseKey, taskListSidePanelFrame } from "./TaskListSidePanel";
+
+describe("taskListSidePanelFrame", () => {
+  it("docks the panel at a fixed share beside the list", () => {
+    expect(taskListSidePanelFrame("docked")).toEqual({
+      presentation: "docked",
+      className: "w-(--task-list-side-panel-width) shrink-0",
+    });
+  });
+
+  it("lays the overlay over the whole list so the list keeps its scroll underneath", () => {
+    expect(taskListSidePanelFrame("overlay")).toEqual({ presentation: "sheet", className: "absolute inset-0 z-10" });
+  });
+});
 
 function keyEvent(key: string, target: EventTarget | null = document.body, defaultPrevented = false) {
   return { key, target, defaultPrevented };

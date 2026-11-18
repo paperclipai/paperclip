@@ -5,9 +5,34 @@ import type { Issue } from "@paperclipai/shared";
 import {
   findIssueByRef,
   readSidePanelTaskRef,
+  resolveTaskListSidePanelPresentation,
   shouldOpenTaskInSidePanel,
   withSidePanelTaskRef,
 } from "./task-list-side-panel";
+
+describe("resolveTaskListSidePanelPresentation", () => {
+  it.each([
+    [375, "full-page"],
+    [414, "full-page"],
+    [767, "full-page"],
+  ])("keeps the full task page on a %ipx phone", (width, expected) => {
+    expect(resolveTaskListSidePanelPresentation(width)).toBe(expected);
+  });
+
+  it.each([
+    [768, "overlay"],
+    [1023, "overlay"],
+  ])("covers the list with an overlay on a %ipx tablet", (width, expected) => {
+    expect(resolveTaskListSidePanelPresentation(width)).toBe(expected);
+  });
+
+  it.each([
+    [1024, "docked"],
+    [1440, "docked"],
+  ])("docks the panel beside the list at %ipx", (width, expected) => {
+    expect(resolveTaskListSidePanelPresentation(width)).toBe(expected);
+  });
+});
 
 describe("findIssueByRef", () => {
   const issues = [{ id: "id-1", identifier: "PAP-1" }, { id: "id-2", identifier: "PAP-2" }] as Issue[];
