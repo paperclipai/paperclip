@@ -33,33 +33,80 @@ const person = z.object({
   type: z.string().optional(),
 });
 
-// GitHub does not notify an account for an @name inside an inline code span or
-// a fenced code block, so neither should start a request. Remove backtick and
-// tilde fences (including list-indented ones; an unclosed fence runs to the end)
-// plus inline code spans before the mention test.
+function stripInlineCodeSpans(text: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "`") {
+      out += text[i];
+      i += 1;
+      continue;
+    }
+    let open = 0;
+    while (text[i + open] === "`") open += 1;
+    let close = -1;
+    for (let j = i + open; j < text.length; j += 1) {
+      if (text[j] !== "`") continue;
+      let run = 0;
+      while (text[j + run] === "`") run += 1;
+      if (run === open) {
+        close = j;
+        break;
+      }
+      j += run - 1;
+    }
+    if (close === -1) {
+      out += text.slice(i, i + open);
+      i += open;
+    } else {
+      out += " ";
+      i = close + open;
+    }
+  }
+  return out;
+}
+
 function stripGitHubCommentCodeSpans(body: string): string {
   const kept: string[] = [];
   let fenceChar: string | null = null;
   let fenceLen = 0;
-  for (const line of body.split("\n")) {
-    const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
-    if (fenceChar === null) {
-      if (!run) kept.push(line);
-      else {
-        fenceChar = run[1][0];
-        fenceLen = run[1].length;
-      }
+  let indentedCode = false;
+  let blankContext = true;
+  let listContext = false;
+  for (const line of body.split(/\r\n|\r|\n/)) {
+    if (fenceChar !== null) {
+      const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
+      if (run && run[1][0] === fenceChar && run[1].length >= fenceLen && /^[ \t]*(`+|~+)[ \t]*$/.test(line))
+        fenceChar = null;
       continue;
     }
-    // A closing fence is the marker alone; anything else stays inside the block.
-    if (run && run[1][0] === fenceChar && run[1].length >= fenceLen && /^[ \t]*(`+|~+)[ \t]*$/.test(line))
-      fenceChar = null;
+    const indented = /^(?: {4}|\t)/.test(line);
+    if (indentedCode) {
+      if (line.trim() === "" || indented) continue;
+      indentedCode = false;
+    }
+    if (line.trim() === "") {
+      blankContext = true;
+      listContext = false;
+      continue;
+    }
+    const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
+    if (indented && blankContext) {
+      indentedCode = true;
+      continue;
+    }
+    if (run && (!indented || listContext)) {
+      fenceChar = run[1][0];
+      fenceLen = run[1].length;
+      continue;
+    }
+    kept.push(line);
+    blankContext = false;
+    if (!indented) listContext = /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]/.test(line);
   }
-  return kept.join("\n").replace(/(`+)[\s\S]*?\1/g, " ");
+  return stripInlineCodeSpans(kept.join("\n"));
 }
 
-// The SDK converts the comment to plain text (keeping code content), so the
-// markdown body must come back out of the raw payload for the mention re-test.
 export function githubCommentMarkdownBody(message: { raw?: unknown; text?: string }): string {
   const raw = message?.raw;
   if (raw && typeof raw === "object") {

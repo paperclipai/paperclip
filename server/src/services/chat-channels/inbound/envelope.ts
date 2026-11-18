@@ -91,11 +91,12 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
     const { endpoint, thread, message, trigger, receiptReactionSupported, recoveredProviderUrl, runtimeContext, providerUpdateId, admittedDeliveryId, suppressSetupDestinationActivation, slackSlashControl } = input;
     const githubAutomatic = endpoint.provider === "github" ? githubAutomaticMessages.get(message) : undefined;
     const githubIssue = endpoint.provider === "github" ? githubIssueMessages.get(message) : undefined;
-    // The SDK mention detector reads the plain text and keeps code content;
-    // GitHub itself does not notify for code. Re-test the raw markdown body.
+    let effectiveTrigger = trigger;
     if (endpoint.provider === "github" && message.isMention === true
-        && !githubBodyMentionsBot(githubCommentMarkdownBody(message), endpoint.botUsername))
+        && !githubBodyMentionsBot(githubCommentMarkdownBody(message), endpoint.botUsername)) {
       message.isMention = false;
+      if (effectiveTrigger === "mention") effectiveTrigger = "unaddressed_message";
+    }
     let githubManual = githubManualMessages.get(message);
     if (endpoint.provider === "github" && !githubAutomatic && !githubIssue && !githubManual) {
       const [config] = await db.select().from(chatGitHubConfigurations).where(eq(chatGitHubConfigurations.endpointId, endpoint.id));
@@ -103,20 +104,20 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
         const repository = thread.channelId.replace(/^github:/, "").toLowerCase();
         const [repo] = await db.select().from(chatEndpointResources).where(and(eq(chatEndpointResources.endpointId, endpoint.id), eq(chatEndpointResources.providerResourceId, repository)));
         const repositoryId = String(repo?.metadata?.providerRepositoryId ?? "");
-        githubManual = { policy: { ...config.configuration.defaults, ...config.configuration.repositories[repositoryId] }, revision: config.revision, event: trigger === "mention" || message.isMention ? "mention" : "comment" };
+        githubManual = { policy: { ...config.configuration.defaults, ...config.configuration.repositories[repositoryId] }, revision: config.revision, event: effectiveTrigger === "mention" || message.isMention ? "mention" : "comment" };
       }
     }
     const providerEventId = `${durableExternalThreadIdentity(thread.id)}:${message.id}`;
     const surfaceKind = chatSurfaceKind(endpoint.provider, thread);
     const addressed =
       endpoint.provider === "imessage-photon" ||
-      trigger === "mention" ||
-      trigger === "direct_message" ||
+      effectiveTrigger === "mention" ||
+      effectiveTrigger === "direct_message" ||
       message.isMention === true;
     const eventKind: ChatEventKind =
-      trigger === "direct_message"
+      effectiveTrigger === "direct_message"
         ? "direct_message"
-        : trigger === "mention"
+        : effectiveTrigger === "mention"
           ? "mention"
           : "message";
     // A callback remains tied to the runtime that authenticated and parsed it.
@@ -231,7 +232,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
     const normalized = {
       providerEventId,
       kind: eventKind,
-      trigger,
+      trigger: effectiveTrigger,
       ...(teamsPersonalRecipient ? { teamsPersonalRecipient } : {}),
       ...(slackSlashControl
         ? { admission: { origin: "slack_slash_control" } }
@@ -339,7 +340,7 @@ export function createInboundEnvelope(db: Db, options: InboundEnvelopeOptions) {
     const redactedDestinationNormalized = {
       providerEventId,
       kind: eventKind,
-      trigger,
+      trigger: effectiveTrigger,
       ...(runtimeContext
         ? {
             runtimeContext: {

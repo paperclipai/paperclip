@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { githubAutomaticIssueEvent, githubBodyMentionsBot, githubExplicitMentionEvent } from "./chat-github-events.js";
+import { createInboundEnvelope } from "./chat-channels/inbound/envelope.js";
 
 function payload() {
   return {
@@ -40,8 +41,17 @@ describe("explicit GitHub mentions", () => {
     "~~~\n@maya ping\n~~~",
     "- quoted\n    ```\n    @maya inside list fence\n    ```",
     "Unclosed fence:\n```\n@maya",
+    "`code``` @maya `",
+    "text\n\n    @maya indented code",
   ])("ignores a bot mention inside code: %s", (body) => {
     expect(githubBodyMentionsBot(body, "maya[bot]")).toBe(false);
+  });
+  it.each([
+    "~~~\r\nlog\r\n~~~\r\n@maya please help",
+    "    ~~~\n\n@maya please help",
+    "para\n    ~~~\n\n@maya please help",
+  ])("still recognizes a mention rendered outside code: %s", (body) => {
+    expect(githubBodyMentionsBot(body, "maya[bot]")).toBe(true);
   });
   it("still recognizes a prose mention next to code that names the bot", () => {
     expect(githubBodyMentionsBot("Log:\n```\n@maya x\n```\n@maya please look", "maya[bot]")).toBe(true);
@@ -57,6 +67,40 @@ describe("explicit GitHub mentions", () => {
     const mention = githubExplicitMentionEvent(event, input, "delivery", "maya[bot]");
     expect(mention).toMatchObject({ sender: { id: "77", login: "sender" }, edited: false });
     expect(mention!.threadId).toBe(`github:Test/Repo:${event === "issues" || event === "issue_comment" ? "issue:" : ""}2${event === "pull_request_review_comment" ? ":rc:99" : ""}`);
+  });
+
+  it("downgrades a code-only mention trigger before the envelope is addressed", async () => {
+    const message = {
+      id: "m1", text: "@maya", isMention: true,
+      author: { userId: "u1", fullName: "A", userName: "a" },
+      attachments: [], metadata: {},
+      raw: { comment: { body: "Use `@maya` for this" } },
+    };
+    const thread = { id: "github:Acme/Repo:issue:2", channelId: "github:acme/repo", channel: { name: "acme/repo" }, isDM: false };
+    const endpoint = { id: "e1", companyId: "c1", provider: "github", botUsername: "maya[bot]", providerAccountId: "1", botExternalId: "b1" };
+    const githubManualMessages = new WeakMap<object, { policy: object; revision: number; event: "mention" | "comment" }>();
+    githubManualMessages.set(message, { policy: {}, revision: 1, event: "mention" });
+    const { prepareInboundEnvelope } = createInboundEnvelope({} as never, {
+      runtimeFor: async () => ({}) as never,
+      sanitizeFilename: (v) => v ?? null,
+      githubManualMessages,
+      githubAutomaticMessages: new WeakMap(),
+      githubIssueMessages: new WeakMap(),
+    });
+    const envelope = await prepareInboundEnvelope({
+      endpoint, thread, message,
+      trigger: "mention",
+      receiptReactionSupported: false,
+      recoveredProviderUrl: null,
+      admittedDeliveryId: null,
+      suppressSetupDestinationActivation: false,
+      slackSlashControl: false,
+    } as never);
+    expect(envelope.addressed).toBe(false);
+    expect(envelope.eventKind).toBe("message");
+    expect(envelope.normalized.trigger).toBe("unaddressed_message");
+    expect(envelope.normalized.message.mentionedBot).toBe(false);
+    expect(envelope.redactedDestinationNormalized.trigger).toBe("unaddressed_message");
   });
   it("puts PR conversation comments in the PR thread, and preserves the SDK comment identity", () => {
     const input = { ...payload(), action: "created", issue: { ...payload().issue, pull_request: {} }, comment: { id: 123, body: "@maya help" } };
