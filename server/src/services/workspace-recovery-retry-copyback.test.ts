@@ -36,6 +36,7 @@ import { createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspace
 import { canonicalProviderPackJson } from "./native-runtime/remote-provider-pack-verification.js";
 import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "./remote-workspace-transport.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, connectionString, db, failedWarmSource, makeRetryDue, receiptOnlyRecoveryApp, root, run, seed } from "./__tests__/workspace-recovery-fixture.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
@@ -178,21 +179,7 @@ describe("automatic retained workspace recovery", () => {
       .toEqual({ requested: false, reason: "automatic_retry_used" });
   }, 30_000);
 
-  it.each([
-    { title: "its provider turn was still in flight", change: "turn" },
-    { title: "its provider turn ended without an observed provider terminal", change: "unproven" },
-    { title: "the source was a system wake whose provider turn settled", change: "system" },
-    // No run events is not proof: a turn can reach the provider before its
-    // events are stored. Only the controller journal can prove it.
-    { title: "the source was a system wake with no run events but no journal proof", change: "system_unproven" },
-    { title: "the source was a system wake whose run used a tool before its turn event", change: "system_tool" },
-    { title: "the source was a system wake whose run had no responsible user", change: "system_unowned" },
-    { title: "the failure was not a lost runner or allocation", change: "error" },
-    // Staging class P: the new sandbox had no Runner state to resume the saved
-    // provider session. The Runner now names it, so the run ends with the
-    // permanent code and Retry continues in a fresh provider session.
-    { title: "the Runner had no saved state to resume the provider session", change: "unrestorable" },
-  ])("does not continue automatically when $title, and offers a Retry that works on first use", async ({ change }) => {
+  async function recoverAfterAutomaticRetryRefused(change: string) {
     const f = await restartAllocationLostSource(change === "turn" ? "in_flight" : change === "unproven" ? "unproven"
       : change === "system" ? "settled" : "none");
     if (change.startsWith("system")) await systemWake(f, change === "system_unproven" ? undefined : { providerTurnIssued: false });
@@ -203,6 +190,7 @@ describe("automatic retained workspace recovery", () => {
     if (change === "unrestorable") await db.update(heartbeatRuns).set({ errorCode: "native_provider_state_incompatible",
       error: "native_session_recovery_failed: NativeRunnerResumeStateUnavailableError: PRP provider resume state is unavailable" })
       .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ blockedTransitionAt: (await run(f.runId)).finishedAt }).where(eq(issues.id, f.issueId));
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toMatchObject({ requested: false,
@@ -212,17 +200,39 @@ describe("automatic retained workspace recovery", () => {
       expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
     }, { timeout: 10_000, interval: 10 });
     expect(await queuedSuccessors(f.companyId)).toHaveLength(0);
-    // The recovered hold offers the same Retry that POST /issues/:id/retry performs.
     const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    return { ...f, service, issue };
+  }
+
+  it.each([
+    { title: "its provider turn was still in flight", change: "turn" },
+    { title: "its provider turn ended without an observed provider terminal", change: "unproven" },
+    { title: "the source was a system wake whose provider turn settled", change: "system" },
+    { title: "the source was a system wake with no run events but no journal proof", change: "system_unproven" },
+    { title: "the source was a system wake whose run used a tool before its turn event", change: "system_tool" },
+    { title: "the source was a system wake whose run had no responsible user", change: "system_unowned" },
+    { title: "the failure was not a lost runner or allocation", change: "error" },
+  ])("continues a setup failure from saved work without a Retry when $title", async ({ change }) => {
+    const f = await recoverAfterAutomaticRetryRefused(change);
+    expect(await taskInterruptionPresentation(db, f.issue)).toMatchObject({ responsibility: "system", state: "working", canRetry: false });
+    await settleUnrecoverableExecutions(db);
+    await deliverReconciledExecutions(db, f.service.wakeup);
+    const successors = await queuedSuccessors(f.companyId);
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, forceFreshSession: true,
+      wakeReason: "issue_recovery_action_restored" });
+  }, 30_000);
+
+  it("does not continue automatically when the Runner had no saved state to resume the provider session, and offers a Retry that works on first use", async () => {
+    const f = await recoverAfterAutomaticRetryRefused("unrestorable");
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
     expect(blocker).toMatchObject({ runId: f.runId, canRetry: true, workspaceRecovery: { status: "recovered" } });
     expect(blocker?.nextAction).toMatch(/Retry/);
-    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true, observedRunId: f.runId });
-    // First use: one deliberate click queues exactly one successor.
+    expect(await taskInterruptionPresentation(db, f.issue)).toMatchObject({ state: "failed", canRetry: true, observedRunId: f.runId });
     const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "local-board",
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
     expect(receipt).toMatchObject({ accepted: true });
-    await service.resumeTaskRetry(f.companyId, receipt.requestId!);
+    await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
     const successors = await queuedSuccessors(f.companyId);
     expect(successors).toHaveLength(1);
     expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId,
@@ -286,7 +296,6 @@ describe("automatic retained workspace recovery", () => {
     await vi.waitFor(async () => expect(await queuedSuccessors(f.companyId)).toHaveLength(1), { timeout: 10_000, interval: 50 });
     const second = await failRetrySuccessorWithLostRunner(f);
     const secondService = heartbeatService(db, { environmentRuntime: second.environmentRuntime });
-    // That automatic Retry's own loss is left to the user's visible Retry.
     expect(await requestRestartInterruptedTurnRetry(db, second.claim)).toEqual({ requested: false, reason: "automatic_retry_used" });
     await vi.waitFor(async () => {
       await Promise.all(await reconcileRetainedWorkspaces(db, second.environmentRuntime, current => secondService.resumeRemoteStopComments(current)) ?? []);
@@ -297,7 +306,7 @@ describe("automatic retained workspace recovery", () => {
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
     expect(blocker).toMatchObject({ runId: second.runId, cause: "native_continuation_requires_reconciliation", canRetry: true,
       nextAction: "Saved work recovered. Retry continues from it." });
-    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true, observedRunId: second.runId });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false, observedRunId: second.runId });
     return { ...f, ...second, service: secondService, issue };
   }
 

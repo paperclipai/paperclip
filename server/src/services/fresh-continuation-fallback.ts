@@ -26,8 +26,8 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { PERMANENT_SOURCE_RETRY_CLASSES, UNVERIFIABLE_SOURCE_CODES, readSystemRecovery } from "./system-recovery-state.js";
-import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuationCauseIsSystemOwnedSql, continuesAutomaticallySql,
-  isPersonOwnedFailureCode, recoveryRunSql } from "./continuation-cause.js";
+import { RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES, continuationCauseIsSystemOwned, continuationCauseIsSystemOwnedSql,
+  continuesAutomaticallySql, isPersonOwnedFailureCode, recoveryRunSql } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 
@@ -757,6 +757,17 @@ export async function recordFreshContinuationCheck(db: Db, input: { companyId: s
     eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, input.actionId)));
 }
 
+export async function expediteFreshContinuationChecks(tx: Db, input: { companyId: string; issueId: string; runId: string },
+  now = new Date()) {
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+  await tx.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+    '{freshContinuationCheck,nextCheckAt}', to_jsonb(${now.getTime()}::bigint))` }).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    or(sql`${issueRecoveryActions.evidence}->>'runId' = ${input.runId}`, sql`${issueRecoveryActions.evidence}->>'sourceRunId' = ${input.runId}`),
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}' = 'exact_recovery_pending'`,
+    sql`(${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}')::bigint > ${now.getTime()}`));
+}
+
 /** Not yet checked, or due for another check. */
 export function freshContinuationCheckDue(now: Date) {
   return sql`(${issueRecoveryActions.evidence}->${FRESH_CONTINUATION_CHECK_KEY} is null
@@ -836,8 +847,14 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
     and lost.evidence#>>'{systemRecovery,state}' = 'exhausted'
     and lost.evidence#>>'{systemRecovery,failure,code}' in (${sqlList(UNVERIFIABLE_SOURCE_CODES)})
     and lost.evidence#>>'{systemRecovery,failure,retryClass}' in (${sqlList(PERMANENT_SOURCE_RETRY_CLASSES)}))`;
+  const setupFailedAfterWork = sql`(source.error_code in (${sqlList(SETUP_FAILURE_CODES)})
+    and exists (select 1 from ${issueRecoveryActions} saved where saved.company_id = source.company_id
+      and saved.source_issue_id = ${input.issueId}
+      and (saved.evidence->>'runId' = source.id::text or (saved.evidence->>'runId' is null and saved.evidence->>'sourceRunId' = source.id::text))
+      and saved.evidence ?| array['workspaceRestoreRecovery', 'workspaceRestoreFailure', 'systemRecovery']
+      and coalesce(saved.evidence#>>'{systemRecovery,state}', '') <> 'exhausted'))`;
   const recent = source(sql`(${continuesAutomaticallySql("source")} or ${systemRetriedSource}
-      or (${continuationCauseIsSystemOwnedSql("source")} and ${savedFilesLost}))
+      or (${continuationCauseIsSystemOwnedSql("source")} and (${savedFilesLost} or ${setupFailedAfterWork})))
     and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
   return { recent, personAsked };
 }
@@ -848,6 +865,21 @@ export function recentInterruptionSourceSql(now: Date) {
     issueId: sql`${issueRecoveryActions.sourceIssueId}`,
     sourceRunId: heldRunIdSql() });
   return sql`(${recent} or ${personAsked})`;
+}
+
+export async function runsAwaitingSystemContinuation(db: Db, companyId: string, issueIds: string[], runIds: string[],
+  now = new Date()): Promise<Set<string>> {
+  if (!issueIds.length || !runIds.length) return new Set();
+  const rows = await db.select({ issueId: issueRecoveryActions.sourceIssueId, runId: heldRunIdSql() })
+    .from(issueRecoveryActions).innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId),
+      eq(issues.companyId, issueRecoveryActions.companyId)))
+    .where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, issueIds),
+      inArray(heldRunIdSql(), runIds), heldExecutionWhere(), interruptionEligibility({ now,
+        companyId: sql`${issueRecoveryActions.companyId}`, issueId: sql`${issueRecoveryActions.sourceIssueId}`,
+        sourceRunId: heldRunIdSql() }).recent,
+      sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}', 'exact_recovery_pending')
+        in ('exact_recovery_pending', 'backoff')`));
+  return new Set(rows.map(row => `${row.issueId}:${row.runId}`));
 }
 
 /** Held records the backlog pass leaves for a person (older, or not an interruption). */
