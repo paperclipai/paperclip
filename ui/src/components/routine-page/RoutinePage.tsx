@@ -1,0 +1,628 @@
+import { useState, type ReactNode } from "react";
+import type { Issue, RoutineDetail, RoutineTrigger } from "@paperclipai/shared";
+import {
+  CalendarClock,
+  Check,
+  ChevronDown,
+  Copy,
+  GitBranch,
+  History,
+  KeyRound,
+  MessageSquare,
+  MoreHorizontal,
+  Pencil,
+  Radar,
+  ScrollText,
+  Sparkles,
+  Terminal,
+  Trash2,
+  Webhook,
+} from "lucide-react";
+import { AgentAvatar, type AvatarAgent } from "@/components/AgentAvatar";
+import { RunButton } from "@/components/AgentActionButtons";
+import { MarkdownBody } from "@/components/MarkdownBody";
+import { ScheduleEditor } from "@/components/ScheduleEditor";
+import { TaskSummaryList } from "@/components/TaskSummaryList";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { deriveInitials } from "@/components/Identity";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { Link } from "@/lib/router";
+import { cn } from "@/lib/utils";
+import {
+  ROUTINE_STATE_LABELS,
+  WEBHOOK_HEALTH_LABELS,
+  customRunRules,
+  describeScheduleTrigger,
+  formatNextRun,
+  instructionsPreview,
+  nextScheduledRun,
+  routineAutomationState,
+  webhookHealth,
+  webhookTitle,
+} from "./routine-summary";
+
+export type RoutinePerson = { id: string; name: string; avatarUrl?: string | null };
+export type RoutinePageAgent = AvatarAgent & { id: string; name: string; urlKey?: string | null };
+export type RoutinePageProject = { id: string; name: string; color?: string | null; urlKey?: string | null };
+
+/** A responsibility this routine is under: linked itself, or through its project. */
+export type RoutineResponsibility = {
+  id: string;
+  title: string;
+  areaTitle?: string | null;
+  via: "direct" | "project";
+};
+
+export type RoutineScheduleChange = { cronExpression: string; timezone: string };
+
+export type RoutinePageProps = {
+  routine: RoutineDetail;
+  agent: RoutinePageAgent | null;
+  project: RoutinePageProject | null;
+  responsibleUser: RoutinePerson | null;
+  /** Leave undefined while areas of responsibility are switched off; the field is then hidden. */
+  responsibilities?: readonly RoutineResponsibility[];
+  /** Tasks this routine created, newest first. Pass the pages loaded so far. */
+  history: readonly Issue[];
+  historyLoading?: boolean;
+  /** More tasks exist beyond the loaded pages. */
+  hasMoreHistory?: boolean;
+  loadingMoreHistory?: boolean;
+  onLoadMoreHistory?: () => void;
+  /** Recent runs that made no task because an earlier run was still working. */
+  skippedRunCount?: number;
+  /** Open comments on the instructions. */
+  instructionCommentCount?: number;
+  statusPending?: boolean;
+  onToggleActive: (active: boolean) => void;
+  onEdit: () => void;
+  onSaveSchedule: (triggerId: string, change: RoutineScheduleChange) => void;
+  onRemoveSchedule: (triggerId: string) => void;
+  onOpenWebhook: (trigger: RoutineTrigger) => void;
+  onOpenInstructionComments?: () => void;
+};
+
+function Field({ label, children, action }: { label: string; children: ReactNode; action?: ReactNode }) {
+  return (
+    <section className="flex min-w-0 flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm text-muted-foreground">{label}</h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function PersonAvatar({ person }: { person: RoutinePerson }) {
+  return (
+    <Avatar size="xs" aria-hidden="true">
+      {person.avatarUrl ? <AvatarImage src={person.avatarUrl} alt="" /> : null}
+      <AvatarFallback>{deriveInitials(person.name)}</AvatarFallback>
+    </Avatar>
+  );
+}
+
+function localTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+const rowButtonClass =
+  "group -mx-2 flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+function ScheduleRow({
+  trigger,
+  routineActive,
+  onSave,
+  onRemove,
+}: {
+  trigger: RoutineTrigger;
+  routineActive: boolean;
+  onSave: (change: RoutineScheduleChange) => void;
+  onRemove: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [cron, setCron] = useState(trigger.cronExpression ?? "0 9 * * 1-5");
+  const [valid, setValid] = useState(true);
+  const timezone = trigger.timezone ?? localTimezone();
+  const dimmed = !trigger.enabled || !routineActive;
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setCron(trigger.cronExpression ?? "0 9 * * 1-5");
+      }}
+    >
+      <PopoverTrigger asChild>
+        <button type="button" className={rowButtonClass} aria-label={`Change schedule: ${describeScheduleTrigger(trigger)}`}>
+          <CalendarClock className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <span className={cn("min-w-0 flex-1 truncate font-medium", dimmed && "text-muted-foreground")}>
+            {describeScheduleTrigger(trigger)}
+          </span>
+          <span className="shrink-0 text-xs text-muted-foreground">{trigger.enabled ? timezone : "Paused"}</span>
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="flex w-80 flex-col gap-4">
+        <ScheduleEditor value={cron} onChange={setCron} onValidityChange={setValid} />
+        <p className="text-xs text-muted-foreground">Times are in {timezone}.</p>
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={() => {
+              setOpen(false);
+              onRemove();
+            }}
+          >
+            Remove schedule
+          </Button>
+          <Button
+            size="sm"
+            disabled={!valid}
+            onClick={() => {
+              setOpen(false);
+              onSave({ cronExpression: cron, timezone });
+            }}
+          >
+            Save schedule
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function WebhookRow({
+  trigger,
+  routineActive,
+  onOpen,
+}: {
+  trigger: RoutineTrigger;
+  routineActive: boolean;
+  onOpen: () => void;
+}) {
+  const health = webhookHealth(trigger);
+  const ignored = !routineActive && health !== "setup";
+  const Icon = trigger.signingMode === "github_hmac" ? GitBranch : Webhook;
+  return (
+    <button type="button" className={rowButtonClass} onClick={onOpen} aria-label={`Open ${webhookTitle(trigger)}`}>
+      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className={cn("min-w-0 flex-1 truncate font-medium", (ignored || health === "paused") && "text-muted-foreground")}>
+        {webhookTitle(trigger)}
+      </span>
+      <span className={cn("shrink-0 text-xs", health === "rejected" && !ignored ? "text-destructive" : "text-muted-foreground")}>
+        {ignored ? "Ignoring events" : WEBHOOK_HEALTH_LABELS[health]}
+      </span>
+    </button>
+  );
+}
+
+function StaticTriggerRow({ icon: Icon, title, detail }: { icon: typeof Radar; title: string; detail: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 py-1.5 text-sm">
+      <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
+      <span className="shrink-0 text-xs text-muted-foreground">{detail}</span>
+    </div>
+  );
+}
+
+function Instructions({
+  markdown,
+  commentCount = 0,
+  onOpenComments,
+  onEdit,
+}: {
+  markdown: string;
+  commentCount?: number;
+  onOpenComments?: () => void;
+  onEdit: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const { preview, truncated } = instructionsPreview(markdown);
+  const empty = markdown.trim().length === 0;
+
+  return (
+    <Field
+      label="Instructions"
+      action={empty ? null : (
+        <div className="flex items-center gap-1">
+          {commentCount > 0 ? (
+            <Button variant="ghost" size="xs" className="text-muted-foreground" onClick={onOpenComments}>
+              <MessageSquare />
+              {commentCount} {commentCount === 1 ? "comment" : "comments"}
+            </Button>
+          ) : null}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            className="text-muted-foreground"
+            aria-label={copied ? "Instructions copied" : "Copy instructions"}
+            onClick={async () => {
+              await copyTextToClipboard(markdown);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            }}
+          >
+            {copied ? <Check /> : <Copy />}
+          </Button>
+        </div>
+      )}
+    >
+      {empty ? (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-sm text-muted-foreground">No instructions yet. The agent only gets the title.</p>
+          <Button variant="outline" size="sm" onClick={onEdit}>Add instructions</Button>
+        </div>
+      ) : (
+        <>
+          <MarkdownBody className="text-sm text-foreground" linkIssueReferences>
+            {expanded ? markdown : preview}
+          </MarkdownBody>
+          {truncated ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-mx-2 w-fit"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "Show less" : "Show all"}
+              <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")} />
+            </Button>
+          ) : null}
+        </>
+      )}
+    </Field>
+  );
+}
+
+export function RoutinePage({
+  routine,
+  agent,
+  project,
+  responsibleUser,
+  responsibilities,
+  history,
+  historyLoading = false,
+  hasMoreHistory = false,
+  loadingMoreHistory = false,
+  onLoadMoreHistory,
+  skippedRunCount = 0,
+  instructionCommentCount,
+  statusPending = false,
+  onToggleActive,
+  onEdit,
+  onSaveSchedule,
+  onRemoveSchedule,
+  onOpenWebhook,
+  onOpenInstructionComments,
+}: RoutinePageProps) {
+  const state = routineAutomationState(routine);
+  const schedules = routine.triggers.filter((trigger) => trigger.kind === "schedule");
+  const webhooks = routine.triggers.filter((trigger) => trigger.kind === "webhook");
+  const standingCheck = routine.triggers.find((trigger) => trigger.kind === "heartbeat");
+  const apiTrigger = routine.triggers.find((trigger) => trigger.kind === "api");
+  const nextRun = state === "active" ? nextScheduledRun(routine.triggers) : null;
+  const hasEnabledWebhook = webhooks.some((trigger) => trigger.enabled && !trigger.setupPending);
+  const runRules = customRunRules(routine);
+  const secretNames = Object.keys(routine.env ?? {});
+  const archived = state === "archived";
+  const active = state === "active";
+  const hasSchedule = schedules.some((trigger) => trigger.enabled);
+  const pausedNotice =
+    state === "paused" || state === "draft"
+      ? webhooks.length > 0 && hasSchedule
+        ? "Scheduled runs are skipped and webhook events are ignored until this routine is on."
+        : webhooks.length > 0
+          ? "Webhook events are ignored until this routine is on. The sending app gets an error."
+          : hasSchedule
+            ? "Scheduled runs are skipped until this routine is on."
+            : null
+      : null;
+
+  const statusDetail =
+    state === "draft"
+      ? null
+      : state === "archived"
+        ? "No longer runs"
+        : state === "paused"
+          ? "Run now still works"
+          : nextRun
+            ? `Next run ${formatNextRun(nextRun)}`
+            : hasEnabledWebhook
+              ? "Runs when a webhook arrives"
+              : standingCheck
+                ? "Checked each time the agent wakes up"
+                : "Only runs when you start it";
+
+  return (
+    <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-x-12 gap-y-10 px-4 py-8 md:px-8 lg:grid-cols-5">
+      <div className="flex min-w-0 flex-col gap-6 lg:col-span-2">
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <h1 className="text-xl font-semibold text-balance">{routine.title}</h1>
+          {routine.managedByPlugin ? (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+              Managed by {routine.managedByPlugin.pluginDisplayName}
+            </p>
+          ) : null}
+        </div>
+
+        <Field label="Status">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <ToggleSwitch
+              checked={state === "active"}
+              onCheckedChange={onToggleActive}
+              disabled={statusPending || archived || state === "draft"}
+              aria-label={state === "active" ? "Pause this routine" : "Turn this routine on"}
+            />
+            <span className={cn("text-sm font-medium", state !== "active" && "text-muted-foreground")}>
+              {ROUTINE_STATE_LABELS[state]}
+            </span>
+            {statusDetail ? <span className="text-sm text-muted-foreground">{statusDetail}</span> : null}
+          </div>
+          {pausedNotice ? <p className="text-sm text-muted-foreground" role="note">{pausedNotice}</p> : null}
+          {state === "draft" ? (
+            <p className="text-sm text-muted-foreground">
+              <button type="button" className="font-medium text-foreground underline-offset-4 hover:underline" onClick={onEdit}>
+                Choose a default agent
+              </button>{" "}
+              to turn this routine on.
+            </p>
+          ) : null}
+        </Field>
+
+        <Field label="Repeats">
+          <div className="flex min-w-0 flex-col">
+            {schedules.map((trigger) => (
+              <ScheduleRow
+                key={trigger.id}
+                trigger={trigger}
+                routineActive={active}
+                onSave={(change) => onSaveSchedule(trigger.id, change)}
+                onRemove={() => onRemoveSchedule(trigger.id)}
+              />
+            ))}
+            {webhooks.map((trigger) => (
+              <WebhookRow key={trigger.id} trigger={trigger} routineActive={active} onOpen={() => onOpenWebhook(trigger)} />
+            ))}
+            {standingCheck ? (
+              <StaticTriggerRow icon={Radar} title="Standing check" detail="Each time the agent wakes up" />
+            ) : null}
+            {apiTrigger ? <StaticTriggerRow icon={Terminal} title="API" detail="Started by an API call" /> : null}
+            {routine.triggers.length === 0 ? (
+              <p className="py-1.5 text-sm text-muted-foreground">Doesn’t repeat. Runs only when you start it.</p>
+            ) : null}
+          </div>
+        </Field>
+
+        <Field label="Default agent">
+          {agent ? (
+            <Link
+              to={`/agents/${agent.urlKey ?? agent.id}`}
+              className="flex w-fit max-w-full items-center gap-2 py-1.5 text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <AgentAvatar agent={agent} size={20} className="shrink-0" />
+              <span className="truncate">{agent.name}</span>
+            </Link>
+          ) : (
+            <Button variant="outline" size="sm" className="w-fit" onClick={onEdit}>Choose an agent</Button>
+          )}
+        </Field>
+
+        <Field label="Default responsible user">
+          {responsibleUser ? (
+            <p className="flex min-w-0 items-center gap-2 py-1.5 text-sm font-medium">
+              <PersonAvatar person={responsibleUser} />
+              <span className="truncate">{responsibleUser.name}</span>
+            </p>
+          ) : (
+            <p className="py-1.5 text-sm text-muted-foreground">No one yet</p>
+          )}
+        </Field>
+
+        <Field label="Project">
+          {project ? (
+            <Link
+              to={`/projects/${project.urlKey ?? project.id}`}
+              className="flex w-fit max-w-full items-center gap-2 py-1.5 text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <span className="h-3.5 w-3.5 shrink-0 rounded-sm" style={{ backgroundColor: project.color ?? "var(--project-none)" }} aria-hidden="true" />
+              <span className="truncate">{project.name}</span>
+            </Link>
+          ) : (
+            <p className="py-1.5 text-sm text-muted-foreground">No project</p>
+          )}
+        </Field>
+
+        {responsibilities ? (
+          <Field label="Responsibility">
+            {responsibilities.length === 0 ? (
+              <p className="py-1.5 text-sm text-muted-foreground">None</p>
+            ) : (
+              <ul className="flex min-w-0 flex-col">
+                {responsibilities.map((responsibility) => (
+                  <li key={responsibility.id} className="flex min-w-0 items-baseline gap-2 py-1.5 text-sm">
+                    <Link
+                      to={`/responsibilities/${responsibility.id}`}
+                      className="min-w-0 truncate font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {responsibility.title}
+                    </Link>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {responsibility.via === "project" && project
+                        ? `Through ${project.name}`
+                        : responsibility.areaTitle ?? ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Field>
+        ) : null}
+
+        {routine.variables.length > 0 ? (
+          <Field label="Asks for">
+            <ul className="flex min-w-0 flex-col gap-1.5 py-1.5">
+              {routine.variables.map((variable) => (
+                <li key={variable.name} className="flex min-w-0 items-baseline gap-2 text-sm">
+                  <span className="truncate font-medium">{variable.label || variable.name}</span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {variable.defaultValue != null && variable.defaultValue !== ""
+                      ? `Usually ${String(variable.defaultValue)}`
+                      : variable.required
+                        ? "Required"
+                        : "Optional"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Field>
+        ) : null}
+
+        {secretNames.length > 0 ? (
+          <Field label="Secrets">
+            <ul className="flex min-w-0 flex-wrap gap-x-4 gap-y-1.5 py-1.5">
+              {secretNames.map((name) => (
+                <li key={name} className="flex min-w-0 items-center gap-1.5 font-mono text-xs">
+                  <KeyRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <span className="truncate">{name}</span>
+                </li>
+              ))}
+            </ul>
+          </Field>
+        ) : null}
+
+        {runRules.length > 0 ? (
+          <Field label="Run rules">
+            <ul className="flex flex-col gap-1 py-1.5 text-sm">
+              {runRules.map((rule) => <li key={rule}>{rule}</li>)}
+            </ul>
+          </Field>
+        ) : null}
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-8 lg:col-span-3">
+        <Instructions
+          markdown={routine.description ?? ""}
+          commentCount={instructionCommentCount}
+          onOpenComments={onOpenInstructionComments}
+          onEdit={onEdit}
+        />
+
+        <Field label="History">
+          {historyLoading ? (
+            <p className="py-1.5 text-sm text-muted-foreground" role="status">Loading tasks…</p>
+          ) : history.length === 0 ? (
+            <p className="py-1.5 text-sm text-muted-foreground">
+              {state === "active" && nextRun
+                ? `No tasks yet. The first one starts ${formatNextRun(nextRun)}.`
+                : "No tasks yet. Each run creates a task here."}
+            </p>
+          ) : (
+            <TaskSummaryList issues={history} label="Tasks created by this routine" />
+          )}
+          {hasMoreHistory && history.length > 0 ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-mx-2 w-fit text-muted-foreground"
+              disabled={loadingMoreHistory}
+              onClick={onLoadMoreHistory}
+            >
+              {loadingMoreHistory ? "Loading…" : "Load more"}
+            </Button>
+          ) : null}
+          {skippedRunCount > 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {skippedRunCount === 1 ? "1 run was" : `${skippedRunCount} runs were`} folded into a task that was still in
+              progress.
+            </p>
+          ) : null}
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+export type RoutinePageActionsProps = {
+  archived?: boolean;
+  runPending?: boolean;
+  /** Start with the menu open, for review. */
+  defaultMenuOpen?: boolean;
+  onEdit: () => void;
+  onRunNow: () => void;
+  onOpenVersionHistory: () => void;
+  onOpenAuditLog: () => void;
+  onArchive: () => void;
+  onRestore?: () => void;
+};
+
+/** Header controls for the routine page: edit, a short overflow menu, and Run now. */
+export function RoutinePageActions({
+  archived = false,
+  runPending = false,
+  defaultMenuOpen = false,
+  onEdit,
+  onRunNow,
+  onOpenVersionHistory,
+  onOpenAuditLog,
+  onArchive,
+  onRestore,
+}: RoutinePageActionsProps) {
+  return (
+    <div className="flex items-center gap-1">
+      {archived ? null : (
+        <Button variant="ghost" size="icon-sm" aria-label="Edit routine" onClick={onEdit}>
+          <Pencil />
+        </Button>
+      )}
+      <DropdownMenu defaultOpen={defaultMenuOpen}>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon-sm" aria-label="More routine actions">
+            <MoreHorizontal />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={onOpenVersionHistory}>
+            <History />
+            Version history
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onOpenAuditLog}>
+            <ScrollText />
+            Audit log
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {archived && onRestore ? (
+            <DropdownMenuItem onSelect={onRestore}>Restore routine</DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem variant="destructive" onSelect={onArchive}>
+              <Trash2 />
+              Archive routine
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {archived ? null : <RunButton onClick={onRunNow} disabled={runPending} />}
+    </div>
+  );
+}
