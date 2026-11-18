@@ -12,7 +12,7 @@ Related: [production checklist](../plans/2026-11-17-google-workspace-production-
 [code-fix plan](../plans/2026-11-17-google-workspace-code-fixes.md),
 [connector doc](../connections/GOOGLE-WORKSPACE.md).
 
-Last updated: November 17, 2026 (night).
+Last updated: November 18, 2026.
 
 ## Decisions
 
@@ -131,8 +131,8 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
    reported scopes instead of failing; stop offering Chat, People and Search
    on the verified client; turn on revoke support; add a per-workspace Google
    client override.
-2. Create the staging tester (`googletester.staging.paperclip.app`).
-3. Live acceptance on the staging tester.
+2. Point the staging tester at the separate Google app (see "Environments").
+3. Finish live acceptance on the staging tester.
 4. Switch services to REST one at a time, each after its live test.
 5. Revoke at Google when the last connection is removed.
 6. Security scans.
@@ -143,23 +143,41 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
 | Name | Address | Notes |
 | --- | --- | --- |
 | Earlier tester | `googletester.paperclip.app` (company prefix `GOO`) | On **production**. Used for earlier tests. Hard to deploy to; do not build on it further. |
-| New tester | `googletester.staging.paperclip.app` | **To be created** on staging. Engineering qualification happens here. |
+| New tester | `googletester.staging.paperclip.app` (company prefix `GOO`) | **Created November 18** on staging. Engineering qualification happens here. State below. |
 | Test 02 | In the private handoff | Staging stack used for the October proof. Holds Dotta's own Gmail grant, so not for reviewers. |
 | Reviewer destination | Undecided | See "Still open". |
 
-Creating the staging tester (as reported by the Nov 17 read-only audit; not yet
-done):
+Staging tester state (November 18):
 
-1. On the staging account site, create an organization with the slug
-   `googletester`. That gives `googletester.staging.paperclip.app`.
-2. Pin its app version with the Cloud repository's deploy-stack command.
-3. Turn on `enableGoogleWorkspaceConnector`.
+- Organization slug `googletester`; the stack id is in staging fleet admin.
+  Agent `Workspace Tester` runs OpenCode on DeepSeek V4.1 Flash 1017 through
+  a company OpenRouter connection (a dedicated key with a spending limit).
+- `enableGoogleWorkspaceConnector` is on through a fleet-admin override.
+- It runs an app build from before the disconnect-revoke change, because no
+  Cloud composition existed yet for a newer commit. Redeploy, then test
+  disconnect.
+- **Passed, on staging's default Google client and Google's MCP transport:**
+  picker and disclosure, a 10-scope request, consent, connection test calls
+  (list labels, search, read the synthetic email in full, create a draft),
+  "Delete data", and a real agent task that found the synthetic email by its
+  marker, returned the full body and left an unsent draft (about 2 minutes).
+- **Not yet on the separate Google app.** That app is External, In
+  Production, 0 of 100 users, with the six REST APIs enabled and the staging
+  broker callback registered on its one web client. The staging environment
+  has the alternate client ID. Still needed, in this order: Dotta adds a
+  client secret and stores it as the one-time bootstrap secret, then the
+  stack list variable is set, then a staging deploy, then reconnect. Setting
+  the stack list before the secret exists fails every staging deploy.
+- Reviewer password login for this host is supported by the broker but its
+  secret is not set yet.
 
-Two obstacles (reported):
+Found while testing:
 
-- The broker cannot point one workspace at the separate Google app. Every
-  workspace in an environment uses that environment's one Google client.
-- The scoped reviewer password login is hard-coded to the production tester.
+- Google's MCP offers 34 of our 36 allowlisted actions; `gmail__list_threads`
+  and `gmail__search_messages` are missing there.
+- Write actions default to "Allowed" with no approval step. Dotta to decide.
+- The connection audit page shows internal tool names and raw ids.
+- The REST tools have not been run against real Google yet.
 
 Reviewer login: Google's reviewers could not use our normal sign-in, so we
 gave them **a custom password** for the Paperclip login. Any reviewer
