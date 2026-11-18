@@ -77,14 +77,14 @@ export function RunCostSettlementDialog({ companyId, runId, open, onOpenChange, 
       {data && !preview.error && <div className="space-y-4 text-sm">
         <dl className="space-y-1">
           {([
-            ["Model", [data.provider, data.model].filter(Boolean).join(" · ") || "Not reported"],
-            ["Recorded tokens", `${formatNumber(data.inputTokens)} input · ${formatNumber(data.cachedInputTokens)} cached · ${formatNumber(data.outputTokens)} output`],
-            ["Recorded cost", cents(data.recordedCents)],
-            ["Reserved", cents(data.reservedCents)],
-            ["Proposed estimate", cents(data.proposedCents)],
-          ] as const).map(([term, detail]) => <div key={term} className="flex gap-4">
+            ["Model", [data.provider, data.model].filter(Boolean).join(" · ") || "Not reported", false],
+            ["Recorded tokens", `${formatNumber(data.inputTokens)} input · ${formatNumber(data.cachedInputTokens)} cached · ${formatNumber(data.outputTokens)} output`, true],
+            ["Recorded cost", cents(data.recordedCents), true],
+            ["Reserved", cents(data.reservedCents), true],
+            ["Proposed estimate", cents(data.proposedCents), true],
+          ] as const).map(([term, detail, machine]) => <div key={term} className="flex gap-4">
             <dt className="w-36 shrink-0 text-muted-foreground">{term}</dt>
-            <dd>{detail}</dd>
+            <dd className={machine ? "font-mono" : undefined}>{detail}</dd>
           </div>)}
         </dl>
         <p className="text-muted-foreground">
@@ -94,7 +94,7 @@ export function RunCostSettlementDialog({ companyId, runId, open, onOpenChange, 
         </p>
         <div className="space-y-1.5">
           <Label htmlFor={ids.amount}>Estimated cost (USD)</Label>
-          <Input id={ids.amount} value={value} inputMode="decimal" onChange={event => setAmount(event.target.value)}
+          <Input id={ids.amount} className="font-mono" value={value} inputMode="decimal" onChange={event => setAmount(event.target.value)}
             aria-invalid={estimatedCents === null || tooLow} aria-describedby={estimatedCents === null || tooLow ? ids.amountError : undefined} />
           {(estimatedCents === null || tooLow) && <p id={ids.amountError} className="text-xs text-destructive">
             {tooLow ? `Enter at least ${cents(data.recordedCents)}, the cost Paperclip already recorded.` : "Enter an amount in US dollars."}
@@ -116,7 +116,7 @@ export function RunCostSettlementDialog({ companyId, runId, open, onOpenChange, 
           {reviewChanged && !preview.isFetching && " The figures above are current. Review them and settle again."}
         </p>}
       </div>}
-      <DialogFooter>
+      <DialogFooter className="flex-row items-center justify-between sm:justify-between">
         <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
         <Button type="button" disabled={!ready} onClick={() => settle.mutate()}>
           {settle.isPending ? "Settling…" : estimatedCents !== null && !tooLow ? `Settle at ${cents(estimatedCents)}` : "Settle"}
