@@ -58,10 +58,13 @@ export interface AwsRoleSetupProps {
   beforeFooter?: React.ReactNode;
 }
 
-/** The app definition's role ARN rule, so this check matches what the server accepts. */
+/**
+ * The app definition's role ARN rule (a server test keeps it equal to the server's), so this
+ * check matches what the server accepts. Without a definition the server alone decides.
+ */
 const ROLE_ARN_PATTERN = new RegExp(
   getAppStoreDefinition("aws")?.methods.find((method) => method.key === "aws-role")
-    ?.tenantFields?.find((field) => field.key === "roleArn")?.validation?.pattern ?? "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
+    ?.tenantFields?.find((field) => field.key === "roleArn")?.validation?.pattern ?? "^arn:",
 );
 
 /**

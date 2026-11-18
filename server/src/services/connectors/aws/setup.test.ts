@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { APP_DEFINITIONS } from "@paperclipai/shared";
+import { AWS_ROLE_ARN_PATTERN } from "./mcp-credentials.js";
 import { awsConnectionRoleName, awsRoleSetup } from "./setup.js";
 
 const ISSUER = "https://acme.paperclip.app/oidc/companies/company-1";
@@ -46,5 +48,33 @@ describe("awsRoleSetup", () => {
     expect(awsConnectionRoleName(id)).toBe(`paperclip-${id}`);
     expect(awsConnectionRoleName("x".repeat(80))).toHaveLength(64);
     expect(awsConnectionRoleName("a/b c")).toBe("paperclip-a-b-c");
+  });
+});
+
+describe("role ARN rule", () => {
+  it("is the same in the app definition (what the form accepts) and on the server", () => {
+    const aws = APP_DEFINITIONS.find((app) => app.slug === "aws")!;
+    const patterns = aws.methods.flatMap((method) => [...(method.tenantFields ?? []), ...(method.extensionFields ?? [])])
+      .filter((field) => field.key === "roleArn")
+      .map((field) => new RegExp(field.validation!.pattern!));
+    expect(patterns.length).toBeGreaterThan(0);
+    const accepted = [
+      "arn:aws:iam::123456789012:role/paperclip-agents",
+      "arn:aws:iam::123456789012:role/team/sub/paperclip-ops",
+      `arn:aws:iam::123456789012:role/${"x".repeat(64)}`,
+      "arn:aws-us-gov:iam::123456789012:role/ops",
+    ];
+    const rejected = [
+      `arn:aws:iam::123456789012:role/${"x".repeat(65)}`,
+      "arn:aws:iam::123456789012:role/team/",
+      "arn:azure:iam::123456789012:role/ops",
+      "arn:aws:iam::12345:role/ops",
+      "arn:aws:iam::123456789012:user/ops",
+    ];
+    for (const arn of [...accepted, ...rejected]) {
+      const expected = accepted.includes(arn);
+      expect(AWS_ROLE_ARN_PATTERN.test(arn), arn).toBe(expected);
+      for (const pattern of patterns) expect(pattern.test(arn), `${pattern} ${arn}`).toBe(expected);
+    }
   });
 });
