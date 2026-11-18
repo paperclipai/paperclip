@@ -141,6 +141,8 @@ concrete blocker. This creates no generic human completion approval.
 
 Reassessment uses the same bounded incomplete-delivery continuation as initial
 finalization. A stable unmerged PR does not create a status-race retry deadline.
+The proposed server status controls delivery validation, including when new
+evidence completes a result that previously reported another disposition.
 The transactional commit also checks these outputs, including reassessment
 paths. Human and agent work-product updates lock their source and destination
 tasks in a stable order before changing status or identity. Provider reads occur

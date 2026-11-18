@@ -2921,12 +2921,18 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
 
     it.each([
-      { trigger: "retired review", correctiveUsed: false },
-      { trigger: "new evidence", correctiveUsed: false },
-      { trigger: "retired review", correctiveUsed: true },
-      { trigger: "new evidence", correctiveUsed: true },
-    ])("settles unmerged delivery from $trigger without retry polling (corrective used=$correctiveUsed)", async ({ trigger, correctiveUsed }) => {
+      { trigger: "retired review", correctiveUsed: false, disposition: "done" },
+      { trigger: "new evidence", correctiveUsed: false, disposition: "done" },
+      { trigger: "retired review", correctiveUsed: true, disposition: "done" },
+      { trigger: "new evidence", correctiveUsed: true, disposition: "done" },
+      ...["needs_review", "yielded", "blocked"].flatMap(disposition => [false, true].map(correctiveUsed =>
+        ({ trigger: "new evidence", correctiveUsed, disposition }))),
+    ])("settles unmerged delivery from $trigger without retry polling (disposition=$disposition, corrective used=$correctiveUsed)", async ({ trigger, correctiveUsed, disposition }) => {
       const seeded = await seedAutomaticReview();
+      const [saved] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+      await db.update(nativeRunResults).set({ resultJson: { ...saved.resultJson,
+        result: { ...(saved.resultJson.result as object), reportedWorkDisposition: disposition } } })
+        .where(eq(nativeRunResults.id, saved.id));
       const [originalAssessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, seeded.assessmentId));
       await db.update(workAssessments).set({ createdAt: new Date(Date.now() - 2000),
         assessmentJson: { ...originalAssessment.assessmentJson, allCriteriaSatisfied: false } }).where(eq(workAssessments.id, seeded.assessmentId));
@@ -2957,6 +2963,8 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         expect(effects.some(effect => effect.kind === "enqueue_continuation")).toBe(!correctiveUsed);
         expect(effects.some(effect => effect.kind === "record_finalization_error")).toBe(correctiveUsed);
         expect(effects.some(effect => (effect.summary ?? effect.nextAction ?? "").includes("not been verified as merged"))).toBe(true);
+        await db.update(statusDecisionEffects).set({ deliveryState: "delivered" })
+          .where(eq(statusDecisionEffects.decisionId, latest.id));
         const assessments = await db.select().from(workAssessments).where(eq(workAssessments.runId, seeded.runId));
         expect(await work.load(scope)).toEqual([]);
         expect(await work.check(pending)).toBeNull();

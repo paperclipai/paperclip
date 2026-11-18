@@ -257,7 +257,7 @@ export async function reassessNativeStatusFromSource(
         : [currentIssue.title, currentIssue.description].filter(Boolean).join("\n");
       try {
         await validateNativeDeliverableEvidence(db, { companyId: row.companyId, issueId: row.issueId,
-          runId: row.runId, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts },
+          runId: row.runId, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts, authoritativeDone: true },
         record(resultRow.resultJson).result);
       } catch (error) {
         if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
