@@ -523,7 +523,9 @@ apps?: AppDefinition[];
   from 1000 to 60000) for how long the gateway waits for a tool call; a
   tool's value overrides its method's. Without one the gateway waits 30000 ms
   for plugin-served tools. A caller's explicit timeout still wins, capped at
-  the same 60 s ceiling.
+  the same 60 s ceiling. An "ask first" call that a person has approved runs
+  with the gateway's fixed 60 s approved-execution budget instead of the
+  declared value.
   Authentication is `none` or `api_key`. The gateway keeps every decision
   (grant, policy, approval, rate limit, audit) and calls the worker's
   `executeTool` with `runContext.connection` (`id`, `appSlug`, `methodKey`,
