@@ -354,6 +354,8 @@ export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOpti
       credentials.expiration ? credentials.expiration.getTime() : Number.POSITIVE_INFINITY,
     );
     const header = `Bearer ${token}`;
+    // Drop tokens past their refresh point, so the cache only ever holds live tokens (removed connections included).
+    for (const [cachedKey, entry] of cache) if (entry.refreshAt <= now()) cache.delete(cachedKey);
     cache.set(key, { fingerprint, header, refreshAt: expiresAt - REFRESH_MARGIN_MS });
     return header;
   }
@@ -378,6 +380,10 @@ export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOpti
       }
       return { Authorization: await flight };
     },
+    /** How many tokens are cached (observability and tests). */
+    cachedTokenCount(): number {
+      return cache.size;
+    },
     /** Drops every cached token for a connection, for example after AWS answers 401. */
     evict(companyId: string, connectionId: string) {
       const prefix = `${companyId}:${connectionId}:`;
@@ -398,11 +404,14 @@ const sharedMinters = new WeakMap<object, AwsMcpCredentialMinter>();
 export function sharedAwsMcpCredentialMinter(
   db: object,
   signConnectionToken: AwsMcpCredentialMinterOptions["signConnectionToken"],
+  clients?: AwsMcpClients,
 ): AwsMcpCredentialMinter {
-  let minter = sharedMinters.get(db);
+  // Test fakes get one shared minter per fake, like production gets one per database.
+  const owner = clients ?? db;
+  let minter = sharedMinters.get(owner);
   if (!minter) {
-    minter = createAwsMcpCredentialMinter({ signConnectionToken });
-    sharedMinters.set(db, minter);
+    minter = createAwsMcpCredentialMinter({ signConnectionToken, clients });
+    sharedMinters.set(owner, minter);
   }
   return minter;
 }
@@ -415,7 +424,7 @@ interface RevisionSource {
 
 /**
  * What a cached token depends on besides the saved settings: which stored key it
- * came from and whether the connection and grant are live. Health and last-used
+ * came from and whether the grant is live. Health and last-used
  * stamps change on every call, so update times are deliberately not part of it.
  */
 export function awsMcpCredentialRevision(
@@ -425,7 +434,9 @@ export function awsMcpCredentialRevision(
   const refs = (grant?.credentialSecretRefs ?? connection.credentialSecretRefs)
     .map((ref) => `${ref.configPath}=${ref.secretId}@${String(ref.versionSelector ?? "latest")}`)
     .sort();
-  return JSON.stringify([connection.status, connection.enabled, grant?.id ?? null, grant?.status ?? null, refs]);
+  // Connection status is deliberately absent: finishing setup must not discard the token setup minted,
+  // and the gateway refuses a disabled connection before it asks for credentials.
+  return JSON.stringify([grant?.id ?? null, grant?.status ?? null, refs]);
 }
 
 /** The role method proves itself with the company's issuer, which must be published before the customer registers it in AWS. */

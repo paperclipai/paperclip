@@ -115,7 +115,10 @@ describe("AWS connector with minted credentials", () => {
       enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents",
     }, actor);
     const call = () => gateway.executeTestCall({ companyId: org.id, connectionId: connected.connectionId, agentId: agent.id, userId: actor.actorId, toolName: "aws___list_regions", parameters: {} });
+    const mintsAfterSetup = aws.createMcpToken.mock.calls.length;
     expect(await call()).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
+    // The first agent call reuses the token minted while setup listed the tools.
+    expect(aws.createMcpToken.mock.calls.length).toBe(mintsAfterSetup);
     const mintsBefore = aws.createMcpToken.mock.calls.length;
     expect(await call()).toMatchObject({ decision: "allowed" });
     expect(aws.createMcpToken.mock.calls.length).toBe(mintsBefore);

@@ -1,7 +1,6 @@
 import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
 import {
   AwsMcpCredentialError,
-  createAwsMcpCredentialMinter,
   isAwsMcpConnection,
   resolveAwsMcpAuthorization,
   sharedAwsMcpCredentialMinter,
@@ -1669,9 +1668,7 @@ export function createToolGatewayService(
       : options.vercelConnectClient;
   const signAwsConnectionToken = (input: { companyId: string; connectionId: string; audience: string }) =>
     workloadIdentityService(db).signConnectionToken(input);
-  const awsMcpMinter = options.awsMcpClients
-    ? createAwsMcpCredentialMinter({ clients: options.awsMcpClients, signConnectionToken: signAwsConnectionToken })
-    : sharedAwsMcpCredentialMinter(db, signAwsConnectionToken);
+  const awsMcpMinter = sharedAwsMcpCredentialMinter(db, signAwsConnectionToken, options.awsMcpClients);
   const protocolLimits = mcpGatewayProtocolLimits(
     options.mcpGatewayProtocolLimits,
   );

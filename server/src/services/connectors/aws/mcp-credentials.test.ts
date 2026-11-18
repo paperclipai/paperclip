@@ -102,6 +102,16 @@ describe("AWS MCP credential minter", () => {
     expect((await minter.authorizationHeader(input(roleSettings, { grantId: "grant-2", revision: "r2" }))).Authorization).toBe("Bearer mcp-token-6");
   });
 
+  it("keeps only live tokens: an expired token is pruned when the next one is stored", async () => {
+    let clock = Date.now();
+    const minter = createAwsMcpCredentialMinter({ clients: fakeAws(), signConnectionToken: async () => ({ token: "jwt" }), now: () => clock });
+    await minter.authorizationHeader(input(roleSettings, { connectionId: "old" }));
+    expect(minter.cachedTokenCount()).toBe(1);
+    clock += 56 * 60 * 1000;
+    await minter.authorizationHeader(input(roleSettings, { connectionId: "new" }));
+    expect(minter.cachedTokenCount()).toBe(1);
+  });
+
   it("shares one mint between concurrent callers", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

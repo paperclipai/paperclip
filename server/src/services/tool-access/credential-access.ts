@@ -1,5 +1,5 @@
 import { connectionActorUserId } from "./actor.js";
-import { AwsMcpCredentialError, createAwsMcpCredentialMinter, isAwsMcpConnection, resolveAwsMcpAuthorization, sharedAwsMcpCredentialMinter, type AwsMcpClients } from "../connectors/aws/mcp-credentials.js";
+import { AwsMcpCredentialError, isAwsMcpConnection, resolveAwsMcpAuthorization, sharedAwsMcpCredentialMinter, type AwsMcpClients } from "../connectors/aws/mcp-credentials.js";
 import { workloadIdentityService } from "../workload-identity.js";
 import type { ActorInfo } from "./types.js";
 import { oauthConfig } from "./oauth/metadata.js";
@@ -40,9 +40,7 @@ type CredentialAccessDependencies = {
 export function createConnectionCredentialAccess(db: Db, { secrets, audit, vercel, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials, awsMcpClients }: CredentialAccessDependencies) {
   const signAwsConnectionToken = (input: { companyId: string; connectionId: string; audience: string }) =>
     workloadIdentityService(db).signConnectionToken(input);
-  const awsMcpMinter = awsMcpClients
-    ? createAwsMcpCredentialMinter({ clients: awsMcpClients, signConnectionToken: signAwsConnectionToken })
-    : sharedAwsMcpCredentialMinter(db, signAwsConnectionToken);
+  const awsMcpMinter = sharedAwsMcpCredentialMinter(db, signAwsConnectionToken, awsMcpClients);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercel;
   async function vaultGrantForConnection(
     connection: typeof toolConnections.$inferSelect,
@@ -152,7 +150,8 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     actor: ActorInfo | undefined,
     options: { forceRefresh?: boolean },
   ): Promise<Record<string, string>> {
-    const grant = connection.credentialPolicy === "shared" ? null : await vaultGrantForConnection(connection, actor);
+    // The same grant the gateway uses (the default organization grant for a shared connection), so both share one cached token.
+    const grant = await vaultGrantForConnection(connection, actor);
     try {
       return await resolveAwsMcpAuthorization({
         minter: awsMcpMinter, connection, grant, forceRefresh: options.forceRefresh,
