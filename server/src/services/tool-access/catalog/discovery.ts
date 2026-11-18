@@ -1,4 +1,5 @@
 import { assertSupportedConnection } from "../connections/setup-policy.js";
+import { isAwsMcpConnection } from "../../connectors/aws/mcp-credentials.js";
 import { usesClientCredentials } from "../oauth/client-credentials.js";
 import { vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
@@ -344,6 +345,14 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     if (isInsufficientConnectionScope(response)) {
       await response.body?.cancel().catch(() => undefined);
       throw unprocessable(INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, { code: "oauth_insufficient_scope", connectionId: connection.id });
+    }
+    if (response.status === 401 && isAwsMcpConnection(connection)) {
+      // A refused AWS token: mint a fresh one and list again (listing has no side effects).
+      headers = {
+        ...projectedConnectionHeaders(connection),
+        ...(await resolveCredentialHeaders(connection, actor, { forceRefresh: true })),
+      };
+      response = await relistAfterCredentialRefresh();
     }
     if (
       response.status === 401 &&
