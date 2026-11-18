@@ -2416,6 +2416,27 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect((await db.select().from(issues).where(eq(issues.id, card!.issueId)))[0]!.status).toBe(status);
     });
 
+    it("keeps reconciling later pages of pending cards when the first page has no active work", async () => {
+      const f = await latchedFleet("later-page", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, card!.issueId));
+      const fillerAgentId = f.agentIds[0]!;
+      for (let index = 0; index < 50; index++) {
+        const issueId = randomUUID();
+        await db.insert(issues).values({ id: issueId, companyId, title: `Later page filler ${index}`, status: "blocked", assigneeAgentId: fillerAgentId });
+        await db.insert(issueThreadInteractions).values({ id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+          companyId, issueId, kind: "connection_intent", status: "pending", payload: {} } as never);
+      }
+      await f.reconnect();
+      const delivery = connectionIntentDeliveryService(db, { wakeup: vi.fn(async () => null) } as never);
+      for (let run = 0; run < 20; run++) {
+        await delivery.sweepPending();
+        if (!await delivery.hasPending() && delivery.nextRunAt() === null) break;
+      }
+      expect((await f.cardsFor([card!.issueId]))[0]!.status).toBe("expired");
+    });
+
     it.each(["todo", "backlog"] as const)("retires the AI repair card on a %s owner task without waking it", async (status) => {
       const f = await latchedFleet(`waiting-${status}`, 1);
       const [task] = f.tasks;

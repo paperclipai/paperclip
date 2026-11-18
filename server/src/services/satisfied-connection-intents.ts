@@ -178,6 +178,8 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
 export function satisfiedConnectionIntentService(db: Db) {
   let afterId: string | null = null;
   return {
+    /** True while the rotating sweep still has later candidate pages to read. */
+    hasLaterPages: () => afterId !== null,
     async sweepPending() {
       const candidates = await db.select({ id: issueThreadInteractions.id, issueId: issues.id, companyId: issues.companyId })
         .from(issueThreadInteractions).innerJoin(issues, and(
