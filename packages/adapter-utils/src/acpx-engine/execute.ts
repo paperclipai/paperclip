@@ -576,23 +576,13 @@ export function buildSessionFingerprint(identity: SessionFingerprintIdentity): s
   return shortHash(identity);
 }
 
-// ACPX names session files after the URI-encoded session key. The longest is an
-// event segment, `<key>.stream.<segment>.ndjson` with segments capped at 1024.
-// It must fit in 143 bytes: the NAME_MAX of eCryptfs (Synology encrypted shared
-// folders, legacy Ubuntu encrypted homes), the smallest limit a Paperclip home
-// is likely to sit on. Two UUIDs, a UUID task key and the fingerprint already
-// exceed it, as does every summary-slot task key.
 const SESSION_FILE_NAME_MAX_BYTES = 143;
 const LONGEST_SESSION_FILE_SUFFIX = ".stream.1024.ndjson";
 export const SESSION_KEY_MAX_ENCODED_LENGTH = SESSION_FILE_NAME_MAX_BYTES - LONGEST_SESSION_FILE_SUFFIX.length;
 
 /**
  * Build the session key from the fingerprint and the outer-key identity. The key
- * form is `paperclip:companyId:agentId:taskKey:fingerprint`. A key whose encoded
- * form exceeds `SESSION_KEY_MAX_ENCODED_LENGTH` becomes
- * `paperclip:sha256:<32 hex>`, a digest of that full key, so it keeps the same
- * scoping while its file names stay within NAME_MAX. Keys that fit are
- * unchanged, so their saved sessions still resume.
+ * form is `paperclip:companyId:agentId:taskKey:fingerprint`.
  */
 export function buildSessionKey(identity: SessionKeyIdentity, fingerprint: string): string {
   const key = `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}:${fingerprint}`;
@@ -6033,7 +6023,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const result = await runAttempt(plan);
       const previousSession = parseObject(ctx.runtime.sessionParams);
       if (asString(previousSession.acpSessionId, "") && result.sessionParams?.configFingerprint
-        && previousSession.configFingerprint !== result.sessionParams.configFingerprint) {
+        && (previousSession.configFingerprint !== result.sessionParams.configFingerprint
+          || previousSession.sessionKey !== result.sessionParams.sessionKey)) {
         return { ...result, resultJson: { ...result.resultJson,
           sessionReset: { code: "acpx_session_identity_changed", reason: "The agent configuration or execution identity changed." },
         } };
