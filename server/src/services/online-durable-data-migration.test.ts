@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/index.js";
-import { runOnlineDurableDataMigration } from "./online-durable-data-migration.js";
+import { resetOnlineDurableDataMigrationProgressForTests, runOnlineDurableDataMigration } from "./online-durable-data-migration.js";
 
 const db = {} as Db;
 const s3 = { provider: "s3" } as StorageService;
@@ -26,11 +26,14 @@ function owners(overrides: Record<string, unknown> = {}) {
     runtimeSkillAssets: page("runtimeSkillAssets", { inspected: 1, after: null, results: [{ runId: "r1", status: "preserved" }] }),
     nativeHarnessBackups: page("nativeHarnessBackups", { inspected: 1, published: 1, current: 0, deferred: { source_active: 2 } }),
     nativeControllers: page("nativeControllers", { inspected: 1, imported: 1, unchanged: 0, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} }),
-    eligibility: vi.fn(async () => ({ eligible: false, blockers: ["skills_require_migration"], controller: null })),
+    eligibility: vi.fn(async () => ({ eligible: false, blockers: ["skills_require_migration", "volume_free_storage_flags_required"] })),
+    record: vi.fn(async () => undefined),
     ...overrides,
   };
-  return { owners: base as never, calls, eligibility: base.eligibility };
+  return { owners: base as never, calls, eligibility: base.eligibility, record: base.record };
 }
+
+beforeEach(() => resetOnlineDurableDataMigrationProgressForTests());
 
 describe("online durable-data migration pass", () => {
   it("drives every online-safe owner while serving and reports what it moved and what it left", async () => {
@@ -43,9 +46,10 @@ describe("online durable-data migration pass", () => {
       counts: { agentFiles: 1, skillObjects: 1, skillSnapshots: 1, skillInstallations: 1, runtimeSkillRuns: 1, nativeHarnessBackups: 1, nativeControllers: 1 },
       deferred: { "agent_files:active_execution": 1, "skill_objects:owner_busy": 1, "skills:linked_local": 1, "native_harness:source_active": 2 },
       eligible: false,
-      blockers: ["skills_require_migration"],
+      blockers: ["skills_require_migration", "volume_free_storage_flags_required"],
     });
-    expect(fixture.eligibility).toHaveBeenCalledWith(db, { purpose: "startup" });
+    expect(fixture.eligibility).toHaveBeenCalledWith(db);
+    expect(fixture.record).toHaveBeenCalledWith(db, result);
   });
 
   it("migrates agent files with live writers, never the offline mode", async () => {
@@ -62,15 +66,54 @@ describe("online durable-data migration pass", () => {
     const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
     expect(result).toMatchObject({ state: "unsupported", reason, counts: {}, eligible: false });
     expect(fixture.calls).toEqual([]);
+    expect(fixture.record).toHaveBeenCalledOnce();
   });
 
-  it("stops between owners when the budget is spent and still reports eligibility", async () => {
+  it("resumes where the last budget ended instead of rescanning finished rows", async () => {
     let clock = 0;
-    const fixture = owners({ agentFiles: async () => { clock += 61_000; return { results: [], next: null }; } });
-    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000, now: () => clock }, fixture.owners);
-    expect(result.state).toBe("budget_exhausted");
-    expect(fixture.calls).toEqual([]);
-    expect(fixture.eligibility).toHaveBeenCalledOnce();
+    const seen: Array<string | undefined> = [];
+    const runtimeSkillAssets = vi.fn(async (_db: Db, options: { after?: string }) => {
+      seen.push(options.after);
+      clock += 40_000;
+      const start = Number(options.after ?? 0);
+      return { inspected: 50, after: String(start + 50), results: [] };
+    });
+    const fixture = owners({ runtimeSkillAssets });
+    const run = () => runOnlineDurableDataMigration(db, { budgetMs: 60_000, now: () => clock }, fixture.owners);
+    expect(await run()).toMatchObject({ state: "budget_exhausted", resumePhase: "runtime_skill_assets" });
+    expect(await run()).toMatchObject({ state: "budget_exhausted", resumePhase: "runtime_skill_assets" });
+    expect(seen).toEqual([undefined, "50", "100", "150"]);
+    expect(fixture.calls.filter(call => call === "agentFiles")).toHaveLength(1);
+  });
+
+  it("reaches the later owners over repeated budget-limited calls", async () => {
+    let clock = 0;
+    const slow = (name: string, value: unknown) => vi.fn(async () => { clock += 70_000; return value; });
+    const fixture = owners({
+      agentFiles: slow("agentFiles", { results: [], next: null }),
+      nativeHarnessBackups: slow("nativeHarnessBackups", { inspected: 0, published: 0, current: 0, deferred: {} }),
+    });
+    const run = () => runOnlineDurableDataMigration(db, { budgetMs: 60_000, now: () => clock }, fixture.owners);
+    expect((await run()).state).toBe("budget_exhausted");
+    expect((await run()).state).toBe("budget_exhausted");
+    expect((await run()).state).toBe("completed");
+    expect(fixture.calls).toContain("nativeControllers");
+  });
+
+  it("stops an owner that overruns the budget and still returns the partial report", async () => {
+    const nativeHarnessBackups = vi.fn(async (_db: Db, input: { signal: AbortSignal }) => new Promise((_resolve, reject) => {
+      input.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }));
+    const fixture = owners({ nativeHarnessBackups });
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 20 }, fixture.owners);
+    expect(result).toMatchObject({ state: "budget_exhausted", resumePhase: "native_harness_backups", counts: { agentFiles: 1 } });
+    expect(fixture.record).toHaveBeenCalledWith(db, result);
+  });
+
+  it("records a failed pass with the work it finished before rethrowing", async () => {
+    const fixture = owners({ skillObjects: async () => { throw new Error("storage_down"); } });
+    await expect(runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners)).rejects.toThrow("storage_down");
+    expect(fixture.record).toHaveBeenCalledWith(db, { state: "failed", counts: { agentFiles: 1 } });
   });
 
   it("runs one pass at a time and shares it with a concurrent caller", async () => {
