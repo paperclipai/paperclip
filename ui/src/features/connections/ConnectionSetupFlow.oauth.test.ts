@@ -263,4 +263,31 @@ describe("retained reconnect target matching", () => {
       reconnectApplication: curated,
     })).toBe(false);
   });
+
+  it("reconnects older Copilot accounts saved under the GitHub application through GitHub Copilot", () => {
+    const github = {
+      id: "app-1",
+      applicationKey: "app-gallery:github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+    const copilot = {
+      applicationId: "app-1",
+      connectionPurpose: "ai",
+      config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+    } as unknown as ToolConnection;
+    expect(retainedReconnectMatches({
+      requestedAppKey: "github-copilot",
+      byo: false,
+      applicationId: undefined,
+      reconnectConnection: copilot,
+      reconnectApplication: github,
+    })).toBe(true);
+    expect(retainedReconnectMatches({
+      requestedAppKey: "github-copilot",
+      byo: false,
+      applicationId: undefined,
+      reconnectConnection: connection,
+      reconnectApplication: github,
+    })).toBe(false);
+  });
 });

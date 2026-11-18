@@ -1261,7 +1261,7 @@ export function connectionIntentService(db: Db) {
       if (sourceSlugForConnection(
         selectedConnection,
         new Map([[selectedApplication.id, selectedApplication]]),
-      ) !== payload.serviceSlug) {
+      ) !== (payload.purpose === "ai" ? aiConnectionCatalogSlug(payload.serviceSlug) : payload.serviceSlug)) {
         throw notFound("Connection does not match this intent");
       }
       if (selectedConnection.status !== "active" || !selectedConnection.enabled || isToolConnectionAttentionHealth(selectedConnection.healthStatus)) {
@@ -1297,7 +1297,7 @@ export function connectionIntentService(db: Db) {
             throw conflict("The agent changed during validation. Reload the task and try again.");
           }
           const binding = options.validatedAdoption.binding;
-          if (binding.provider !== payload.serviceSlug || binding.mode !== "responsible_user") throw conflict("Invalid legacy adoption binding");
+          if (!aiBindingMatchesService(binding.provider, payload.serviceSlug) || binding.mode !== "responsible_user") throw conflict("Invalid legacy adoption binding");
           const updated = await updateAgentConfigurationInTransaction(txDb, agent.id, {
             runtimeConfig: { ...agent.runtimeConfig, aiConnection: binding },
           }, { recordRevision: { createdByUserId: userId, source: "patch" } });
