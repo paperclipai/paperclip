@@ -38,7 +38,13 @@ export function recentTaskHierarchy(entries: readonly RecentTaskEntry[], pathnam
     }
   }
   const nestedIds = new Set(entries.filter(entry => nested.get(entry.id)).map(entry => entry.id));
+  const latestVisitByRoot = new Map<string, number>();
+  for (const entry of entries) {
+    const rootId = nestedIds.has(entry.id) ? parents.get(entry.id)! : entry.id;
+    latestVisitByRoot.set(rootId, Math.max(latestVisitByRoot.get(rootId) ?? -Infinity, entry.recordedAt));
+  }
+  const roots = [...latestVisitByRoot.keys()].map(id => byId.get(id)!);
   const selectedRef = parseIssuePathIdFromPath(pathname);
   const selected = entries.find(entry => entry.id === selectedRef || entry.identifier === selectedRef);
-  return { nestedIds, flattenedIds, selectedChild: selected && nestedIds.has(selected.id) ? selected : undefined };
+  return { roots, latestVisitByRoot, nestedIds, flattenedIds, selectedChild: selected && nestedIds.has(selected.id) ? selected : undefined };
 }
