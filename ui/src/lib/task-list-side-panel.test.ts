@@ -1,11 +1,27 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
+import type { Issue } from "@paperclipai/shared";
 import {
+  findIssueByRef,
   readSidePanelTaskRef,
   shouldOpenTaskInSidePanel,
   withSidePanelTaskRef,
 } from "./task-list-side-panel";
+
+describe("findIssueByRef", () => {
+  const issues = [{ id: "id-1", identifier: "PAP-1" }, { id: "id-2", identifier: "PAP-2" }] as Issue[];
+
+  it("matches the open task by identifier or by id", () => {
+    expect(findIssueByRef(issues, "PAP-2")?.id).toBe("id-2");
+    expect(findIssueByRef(issues, "id-1")?.identifier).toBe("PAP-1");
+  });
+
+  it("returns nothing for a closed panel or an unknown task", () => {
+    expect(findIssueByRef(issues, null)).toBeUndefined();
+    expect(findIssueByRef(issues, "PAP-9")).toBeUndefined();
+  });
+});
 
 const plainClick = {
   button: 0,

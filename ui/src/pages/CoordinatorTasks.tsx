@@ -12,6 +12,7 @@ import { issuesApi } from "@/api/issues";
 import { EmptyState } from "@/components/EmptyState";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { TaskList, type TaskListItem } from "@/components/TaskList";
+import { TaskListSplit } from "@/components/TaskListSidePanel";
 import { TaskListToolbar } from "@/components/TaskListToolbar";
 import { TruncatedTextMarqueeProvider } from "@/components/TruncatedText";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useTaskListCollection } from "@/hooks/useTaskListCollection";
+import { useTaskListSidePanel } from "@/hooks/useTaskListSidePanel";
 import { useIssueRowDetails } from "@/hooks/useIssueRowDetails";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
@@ -31,6 +33,7 @@ import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
+import { findIssueByRef } from "@/lib/task-list-side-panel";
 import { loadTaskListView, saveTaskListView, taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 import { normalizeTaskViewKey, ORGANIZATION_SCOPED_PARAMS, taskView } from "@/lib/task-views";
 import type { Issue } from "@paperclipai/shared";
@@ -49,6 +52,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   const location = useLocation();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
+  const sidePanel = useTaskListSidePanel();
   const [layout, setLayout] = useState<"list" | "board">("list");
   const urlAssignee = JSON.stringify(params.getAll("assignee"));
   const urlStatuses = JSON.stringify(params.getAll("status"));
@@ -279,7 +283,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
   };
 
   if (!companyId) return <EmptyState icon={ListChecks} message="Select an organization to view tasks." />;
-  return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
+  const list = <section ref={listRef} className="coordinator-task-list task-row-design-preview flex min-w-0 flex-col gap-8" aria-label="Tasks">
     <TaskListToolbar view={view} onViewChange={setView} viewControl={viewControl}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
@@ -293,10 +297,14 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
         preferenceLocation={userId ? { companyId, collectionKey: `coordinator-tasks:${userId}` } : undefined}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
         sort={sort} onSortChange={setSort} preloadCompanyId={collection.layout === "list" ? companyId : null}
+        onOpenIssue={sidePanel.enabled ? sidePanel.openIssue : undefined} openIssueId={findIssueByRef(records, sidePanel.taskRef)?.id ?? null}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}
       {!needsAttention && tasks.hasNextPage ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{view === "unread" ? unreadIds.size : items.length} tasks loaded. Load more to include them in filters.</span><Button variant="outline" size="sm" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>{tasks.isFetchingNextPage ? "Loading…" : "Load more tasks"}</Button></div> : null}
     </>}
-  </section></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
+  </section>;
+  return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider>
+    {sidePanel.enabled ? <TaskListSplit taskRef={sidePanel.taskRef} onClose={sidePanel.close}>{list}</TaskListSplit> : list}
+  </TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }

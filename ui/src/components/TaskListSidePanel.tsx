@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,20 @@ const TaskDetailSurface = lazy(() =>
 interface TaskListSidePanelProps {
   taskRef: string;
   onClose: () => void;
+}
+
+/**
+ * A Tasks list beside its optional side panel. The list owns its scroll box
+ * whenever the panel can open, so opening and closing the panel never moves
+ * the list.
+ */
+export function TaskListSplit({ taskRef, onClose, children }: { taskRef: string | null; onClose: () => void; children: ReactNode }) {
+  return (
+    <div data-testid="task-list-split" className="flex h-full min-h-0 md:-my-6 md:-mr-6">
+      <div className="min-w-0 flex-1 overflow-auto md:py-6 md:pr-6">{children}</div>
+      {taskRef ? <TaskListSidePanel taskRef={taskRef} onClose={onClose} /> : null}
+    </div>
+  );
 }
 
 /**

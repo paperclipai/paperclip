@@ -1,3 +1,5 @@
+import type { Issue } from "@paperclipai/shared";
+
 /** Search param that keeps the task open in the Tasks list side panel, e.g. `?task=PAP-123`. */
 export const TASK_LIST_SIDE_PANEL_PARAM = "task";
 
@@ -18,6 +20,12 @@ export function shouldOpenTaskInSidePanel(event: ClickLike): boolean {
     && !event.ctrlKey
     && !event.shiftKey
     && !event.altKey;
+}
+
+/** The list row to highlight for the open task; the param may hold an identifier or an id. */
+export function findIssueByRef(issues: readonly Issue[], taskRef: string | null): Issue | undefined {
+  if (!taskRef) return undefined;
+  return issues.find((issue) => issue.identifier === taskRef || issue.id === taskRef);
 }
 
 export function readSidePanelTaskRef(searchParams: URLSearchParams): string | null {

@@ -42,10 +42,9 @@ import {
 } from "../lib/task-views";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 import { usePageContentReady } from "../hooks/usePageContentReady";
-import { useTaskListSidePanelEnabled } from "../hooks/useTaskListSidePanelEnabled";
-import { useSidebar } from "../context/SidebarContext";
-import { TaskListSidePanel } from "../components/TaskListSidePanel";
-import { readSidePanelTaskRef, withSidePanelTaskRef } from "../lib/task-list-side-panel";
+import { useTaskListSidePanel } from "../hooks/useTaskListSidePanel";
+import { TaskListSplit } from "../components/TaskListSidePanel";
+import { findIssueByRef } from "../lib/task-list-side-panel";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -224,23 +223,11 @@ function OrganizationIssues({
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
-  const { isMobile } = useSidebar();
-  const { enabled: sidePanelFlagEnabled } = useTaskListSidePanelEnabled();
-  const sidePanelEnabled = sidePanelFlagEnabled && !isMobile;
-  const sidePanelTaskRef = sidePanelEnabled ? readSidePanelTaskRef(searchParams) : null;
-  const showTaskInSidePanel = useCallback((taskRef: string | null) => {
-    setSearchParams(current => {
-      const next = withSidePanelTaskRef(current, taskRef);
-      if (syncedSearch) next.set("q", syncedSearch);
-      else next.delete("q");
-      return next;
-    });
-  }, [setSearchParams, syncedSearch]);
-  const openIssueInSidePanel = useCallback(
-    (issue: Issue) => showTaskInSidePanel(issue.identifier ?? issue.id),
-    [showTaskInSidePanel],
-  );
-  const closeSidePanel = useCallback(() => showTaskInSidePanel(null), [showTaskInSidePanel]);
+  const keepSyncedSearch = useCallback((next: URLSearchParams) => {
+    if (syncedSearch) next.set("q", syncedSearch);
+    else next.delete("q");
+  }, [syncedSearch]);
+  const sidePanel = useTaskListSidePanel(keepSyncedSearch);
   const handleSearchChange = useCallback((search: string) => {
     const nextUrl = buildIssuesSearchUrl(window.location.href, search);
     if (!nextUrl) {
@@ -393,23 +380,10 @@ function OrganizationIssues({
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy ? { participantAgentId, workspaceId: workspaceIdFilter, originKind, ...(includeBlockedBy ? { includeBlockedBy: true } : {}) } : undefined}
-      onOpenIssue={sidePanelEnabled ? openIssueInSidePanel : undefined}
-      openIssueId={findIssueByRef(issues, sidePanelTaskRef)?.id ?? null}
+      onOpenIssue={sidePanel.enabled ? sidePanel.openIssue : undefined}
+      openIssueId={findIssueByRef(issues, sidePanel.taskRef)?.id ?? null}
     />
   );
-  if (!sidePanelEnabled) return issuesList;
-
-  // The list owns its scroll box whenever the panel can open, so opening and
-  // closing the panel never moves the list.
-  return (
-    <div data-testid="task-list-split" className="flex h-full min-h-0 md:-my-6 md:-mr-6">
-      <div className="min-w-0 flex-1 overflow-auto md:py-6 md:pr-6">{issuesList}</div>
-      {sidePanelTaskRef ? <TaskListSidePanel taskRef={sidePanelTaskRef} onClose={closeSidePanel} /> : null}
-    </div>
-  );
-}
-
-export function findIssueByRef(issues: readonly Issue[], taskRef: string | null): Issue | undefined {
-  if (!taskRef) return undefined;
-  return issues.find((issue) => issue.identifier === taskRef || issue.id === taskRef);
+  if (!sidePanel.enabled) return issuesList;
+  return <TaskListSplit taskRef={sidePanel.taskRef} onClose={sidePanel.close}>{issuesList}</TaskListSplit>;
 }

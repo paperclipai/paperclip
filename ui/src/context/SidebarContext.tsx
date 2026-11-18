@@ -53,6 +53,12 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
   return <SidebarContext.Provider value={value}>{children}</SidebarContext.Provider>;
 }
 
+/** `isMobile` from the sidebar when a provider is present; the viewport width when a surface renders without one. */
+export function useIsMobileViewport(): boolean {
+  const ctx = useContext(SidebarContext);
+  return ctx?.isMobile ?? window.innerWidth < MOBILE_BREAKPOINT;
+}
+
 export function useSidebar() {
   const ctx = useContext(SidebarContext);
   if (!ctx) {
