@@ -5117,8 +5117,11 @@ export async function runChildProcess(
                 await target.cleanup?.();
               }
               const unverified = cleanupResult?.stopped === false;
+              const observedExit = cleanupResult?.outputRecovered && !timedOut && !signal
+                && !terminalCleanupStarted && code !== null && code >= 0 && code < 255;
+              const cleanupFailed = unverified && !observedExit;
               resolve({
-                exitCode: unverified ? 1 : code,
+                exitCode: cleanupFailed ? 1 : code,
                 signal,
                 timedOut,
                 stdout,
@@ -5126,7 +5129,7 @@ export async function runChildProcess(
                 pid: child.pid ?? null,
                 startedAt,
                 ...(cleanupResult ? { remoteProcessStopped: cleanupResult.stopped } : {}),
-                ...(unverified ? { errorCode: "ssh_remote_cleanup_failed" } : {}),
+                ...(cleanupFailed ? { errorCode: "ssh_remote_cleanup_failed" } : {}),
                 terminalResultCleanup: terminalCleanupStarted && !unverified
                   ? {
                       kind: "terminal_result_cleanup",

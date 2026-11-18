@@ -154,6 +154,14 @@ describe("OpenCode timeout reporting", () => {
       usage: {inputTokens: 10, outputTokens: 3, cachedInputTokens: 5}});
   });
 
+  it("preserves observed cost without finalizing usage on an unverified SSH exit", async () => {
+    const stdout = JSON.stringify({ type: "step_finish", part: { tokens: {
+      input: 10, output: 2, reasoning: 0, cache: { read: 0, write: 0 },
+    }, cost: 0.001 } }) + "\n";
+    mocks.process.mockResolvedValue({ ...failed, timedOut: false, exitCode: 0, stdout, stderr: "", remoteProcessStopped: false });
+    expect(await execute(context(12))).toMatchObject({ exitCode: 0, costUsd: 0.001, usageComplete: false });
+  });
+
   it("preserves the SSH cleanup failure code and incomplete usage", async () => {
     mocks.process.mockResolvedValue({...failed, timedOut: false, exitCode: 1,
       errorCode: "ssh_remote_cleanup_failed", remoteProcessStopped: false});

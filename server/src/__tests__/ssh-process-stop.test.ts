@@ -220,7 +220,7 @@ describe("OpenCode SSH transport process termination", { concurrent: false }, ()
     const target = await buildSshSpawnTarget({spec, command: process.execPath,
       args: ["-e", "process.on('SIGTERM',()=>process.exit(0));console.log('SPOOL_READY');setInterval(()=>{},1000)"],
       env: {}, ownedProcessGraceSec: 0.1});
-    const dir = target.args.at(-1)!.match(/\/tmp\/paperclip-ssh-[a-f0-9-]+/)![0];
+    const dir = Buffer.from(target.stdinPrefix.trim(), "base64").toString("utf8").match(/\/tmp\/paperclip-ssh-[a-f0-9-]+/)![0];
     const proc = spawn(target.command, target.args, {stdio: ["pipe", "pipe", "pipe"]});
     proc.stdin?.end(target.stdinPrefix);
     let stdout = "";

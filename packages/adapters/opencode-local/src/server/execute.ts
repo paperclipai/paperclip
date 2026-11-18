@@ -712,7 +712,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const toResult = (
         attempt: {
-          proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
+          proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null; remoteProcessStopped?: boolean };
           rawStderr: string;
           parsed: ReturnType<typeof parseOpenCodeJsonl>;
         },
@@ -774,7 +774,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: synthesizedExitCode,
           signal: attempt.proc.signal,
           timedOut: false,
-          usageComplete: attempt.proc.exitCode === 0 && !attempt.proc.signal
+          usageComplete: attempt.proc.remoteProcessStopped !== false && attempt.proc.exitCode === 0 && !attempt.proc.signal
             && (attempt.parsed.usageComplete || attempt.parsed.costUsd != null),
           usageBasis: "per_run",
           errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,

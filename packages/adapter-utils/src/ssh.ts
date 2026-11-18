@@ -1424,7 +1424,8 @@ export async function runSshCommand(
 }
 
 export interface SshProcessCleanup {
-  stopped: boolean;
+  stopped: false;
+  outputRecovered?: boolean;
   stdout: string;
   stderr: string;
 }
@@ -1528,9 +1529,9 @@ async function finishOwnedSshProcess(spec: SshRemoteExecutionSpec, dir: string, 
   try {
     const result = await runSshCommand(spec, script, { timeoutMs: (graceSec + 15) * 1000, maxBuffer: 12 * 1024 * 1024 });
     const lines = result.stdout.trimEnd().split("\n");
-    if (lines[0] === "fenced") return { stopped: true, stdout: "", stderr: "" };
+    if (lines[0] === "fenced") return { stopped: false, stdout: "", stderr: "" };
     if (lines[0] !== "stopped") return { stopped: false, stdout: "", stderr: "" };
-    const recovered = { stopped: true, stdout: Buffer.from(lines[1] ?? "", "base64").toString(),
+    const recovered: SshProcessCleanup = { stopped: false, outputRecovered: true, stdout: Buffer.from(lines[1] ?? "", "base64").toString(),
       stderr: Buffer.from(lines[2] ?? "", "base64").toString() };
     // Do not erase the spool until the SSH response has reached this process.
     // A lost cleanup response may leave private files, but cannot lose usage.
@@ -1624,7 +1625,7 @@ export async function buildSshSpawnTarget(input: {
     ...(owned && diagnosticFile ? { finish: async (out: number, err: number) => {
       const recovered = await finishOwnedSshProcess(input.spec, owned.dir, nonce, owned.graceSec, out, err);
       const localDiagnostics = await fs.readFile(diagnosticFile.path, "utf8").catch(() => null);
-      return localDiagnostics === null ? { ...recovered, stopped: false }
+      return localDiagnostics === null ? { ...recovered, outputRecovered: false }
         : { ...recovered, stderr: recovered.stderr + localDiagnostics };
     } } : {}),
   };
