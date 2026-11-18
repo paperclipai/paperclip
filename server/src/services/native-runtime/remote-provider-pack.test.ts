@@ -1,10 +1,46 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { createNativeRunTrace } from "./native-run-trace.js";
+import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
+  it("lets a transient gateway failure recover before spending the final verification attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const availableAt = Date.now() + 1_000;
+      const execute = vi.fn(async () => {
+        if (Date.now() < availableAt) throw new Error("Request failed with status code 502");
+        return ok;
+      });
+      const result = runRemoteProviderVerification(execute, "pack").then(
+        value => ({ value }), error => ({ error }),
+      );
+      await vi.advanceTimersByTimeAsync(999);
+      expect(execute).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toEqual({ value: ok });
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("still holds after two gateway failures without scheduling another attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi.fn().mockRejectedValue(new Error("Request failed with status code 502"));
+      const result = runRemoteProviderVerification(execute, "pack").catch(error => error);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await result).toMatchObject({ message: "runner_remote_provider_verification_unavailable: pack unavailable after 2 verification attempts (Request failed with status code 502)" });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it.each([
     { ...ok, exitCode: null, timedOut: true },
     { ...ok, exitCode: null },
@@ -96,8 +132,43 @@ describe("remote provider pack reuse", () => {
     stageAndVerify.mockResolvedValue(undefined);
     await expect(prepareVerifiedRemoteProviderPack(input)).resolves.toBe("uploaded");
   });
+
+  it("records on the selection span why the image pack was not reused", async () => {
+    const trace = createNativeRunTrace({ runId: "provider-pack-select-run", startedAtMs: Date.now() });
+    const annotate = vi.spyOn(trace, "annotate");
+    const rejected = Object.assign(new Error("runner_remote_provider_artifact_incompatible: provider pack verification failed"),
+      { failureCheck: "manifest_mismatch:runnerSourceRevision" });
+    await expect(prepareVerifiedRemoteProviderPack({
+      trace,
+      verifyStaged: async () => { throw new Error("missing"); },
+      usePreinstalled: onRejected => useVerifiedPreinstalledRemoteProviderPack({
+        candidates: ["/opt/paperclip-runner/provider-pack", "/home/operator/.local/share/paperclip-runner/provider-pack"], onRejected,
+        verifyAndLink: async root => {
+          throw root.startsWith("/opt/") ? rejected : Object.assign(new Error("missing"), { failureCheck: "manifest_unreadable" });
+        },
+      }),
+      stageAndVerify: async () => {},
+    })).resolves.toBe("uploaded");
+    expect(annotate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      stateSource: "uploaded", reason: "cached_packs_unverified", check: "manifest_mismatch:runnerSourceRevision" }));
+    annotate.mockClear();
+    await prepareVerifiedRemoteProviderPack({ trace, verifyStaged: async () => { throw new Error("missing"); },
+      usePreinstalled: async () => false, stageAndVerify: async () => {} });
+    expect(annotate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ check: "no_preinstalled_pack" }));
+  });
 });
 
+
+describe("same-content pack reuse across builds", () => {
+  it.each([
+    [{ retainProviderPack: false, explicitProviderPackSelection: false, authoritySelectable: true }, true],
+    [{ retainProviderPack: true, explicitProviderPackSelection: false, authoritySelectable: true }, false],
+    [{ retainProviderPack: false, explicitProviderPackSelection: true, authoritySelectable: true }, false],
+    [{ retainProviderPack: false, explicitProviderPackSelection: false, authoritySelectable: false }, false],
+  ])("allows provenance-only differences only for an unbound run: %j", (input, allowed) => {
+    expect(providerPackProvenanceReuseAllowed(input)).toBe(allowed);
+  });
+});
 
 describe("ordinary ACPX image artifacts", () => {
   const provider = (agent: string) => ({ kind: "acpx", agent, model: "selected-model" } as Parameters<typeof shouldUseBundledAcpxImageAssets>[0]["provider"]);

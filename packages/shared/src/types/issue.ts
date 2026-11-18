@@ -1,4 +1,8 @@
 import type { ChatProvider } from "./chat-channels.js";
+import type { SuggestRoutinePayload, SuggestRoutineResult } from "../routine-suggestions.js";
+import type { ProposeResponsibilityBarPayload, ProposeResponsibilityBarResult } from "../responsibility-bars.js";
+import type { ProposeAutomationPayload, ProposeAutomationResult } from "../responsibility-automation.js";
+import type { ProposeDashboardChangesPayload, ProposeDashboardChangesResult } from "../responsibility-dashboard.js";
 import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
 import type { ExecutionProjection, ExecutionBlocker, TaskInterruptionPresentation } from "./execution-projection.js";
 import type {
@@ -196,6 +200,12 @@ export interface IssueDocumentSummary {
 
 export interface IssueDocument extends IssueDocumentSummary {
   body: string;
+}
+
+/** Unreadable or nonexistent tasks are omitted. A readable task without the key has document: null. */
+export interface IssueDocumentBatch {
+  key: string;
+  items: Array<{ issueId: string; document: IssueDocument | IssueDocumentSummary | null }>;
 }
 
 export interface DocumentRevision {
@@ -901,6 +911,8 @@ export type IssueSummary = Pick<
   blockerAttention?: IssueBlockerAttention;
   /** Navigation-only projection. Counts include only readable direct children. */
   parentId?: string | null;
+  /** Viewer participates under the Mine rule, regardless of inbox archive state. Navigation only. */
+  isParticipantForMe?: boolean;
   isUnreadForMe?: boolean;
   subtaskCount?: number;
   unreadSubtaskCount?: number;
@@ -1821,13 +1833,45 @@ export interface ConnectionIntentInteraction extends IssueThreadInteractionBase 
   result?: ConnectionIntentResult | null;
 }
 
+/** Offer to repeat a finished task as a routine; see `routine-suggestions.ts`. */
+export interface SuggestRoutineInteraction extends IssueThreadInteractionBase {
+  kind: "suggest_routine";
+  payload: SuggestRoutinePayload;
+  result?: SuggestRoutineResult | null;
+}
+
+/** A bar an agent proposes in a responsibility's bar conversation; see `responsibility-bars.ts`. */
+export interface ProposeResponsibilityBarInteraction extends IssueThreadInteractionBase {
+  kind: "propose_responsibility_bar";
+  payload: ProposeResponsibilityBarPayload;
+  result?: ProposeResponsibilityBarResult | null;
+}
+
+/** An automation an agent proposes in a task's automation conversation; see `responsibility-automation.ts`. */
+export interface ProposeAutomationInteraction extends IssueThreadInteractionBase {
+  kind: "propose_automation";
+  payload: ProposeAutomationPayload;
+  result?: ProposeAutomationResult | null;
+}
+
+/** Changes an agent proposes to a person's Dashboard in their dashboard conversation; see `responsibility-dashboard.ts`. */
+export interface ProposeDashboardChangesInteraction extends IssueThreadInteractionBase {
+  kind: "propose_dashboard_changes";
+  payload: ProposeDashboardChangesPayload;
+  result?: ProposeDashboardChangesResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
   | RequestCheckboxConfirmationInteraction
   | RequestItemVerdictsInteraction
-  | ConnectionIntentInteraction;
+  | ConnectionIntentInteraction
+  | SuggestRoutineInteraction
+  | ProposeResponsibilityBarInteraction
+  | ProposeAutomationInteraction
+  | ProposeDashboardChangesInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
@@ -1835,7 +1879,11 @@ export type IssueThreadInteractionPayload =
   | RequestConfirmationPayload
   | RequestCheckboxConfirmationPayload
   | RequestItemVerdictsPayload
-  | ConnectionIntentPayload;
+  | ConnectionIntentPayload
+  | SuggestRoutinePayload
+  | ProposeResponsibilityBarPayload
+  | ProposeAutomationPayload
+  | ProposeDashboardChangesPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
@@ -1843,7 +1891,11 @@ export type IssueThreadInteractionResult =
   | RequestConfirmationResult
   | RequestCheckboxConfirmationResult
   | RequestItemVerdictsResult
-  | ConnectionIntentResult;
+  | ConnectionIntentResult
+  | SuggestRoutineResult
+  | ProposeResponsibilityBarResult
+  | ProposeAutomationResult
+  | ProposeDashboardChangesResult;
 
 export interface IssueAttachment {
   id: string;

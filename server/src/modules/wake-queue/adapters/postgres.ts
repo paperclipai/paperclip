@@ -13,7 +13,6 @@ import { readRunCancellation } from "../../../services/run-cancellation.js";
 import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
 import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
 import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
-import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
@@ -474,10 +473,18 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
       const rows = await tx
-        .select({ createdByRunId: issueComments.createdByRunId })
+        .select({
+          createdByRunId: issueComments.createdByRunId, authorType: issueComments.authorType,
+          authorUserId: issueComments.authorUserId, authorAgentId: issueComments.authorAgentId,
+          derivedAuthorAgentId: issueComments.derivedAuthorAgentId, deletedAt: issueComments.deletedAt,
+        })
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
-      return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+      return {
+        allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId),
+        includesPersonComment: rows.some((row) => !row.deletedAt && row.authorUserId !== null && row.createdByRunId === null &&
+          row.authorAgentId === null && row.derivedAuthorAgentId === null && (row.authorType === "user" || row.authorType === null)),
+      };
     },
 
     async isWatcherCommentDuringFinishingRun({ companyId, issueId, finishingRunId, commentIds }) {
@@ -1505,13 +1512,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
           runSnapshot.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status));
         if (executionBlocker && !recoveryOnly) {
-          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
-        }
-
-        // Releases still settle while Agent Chat is disabled, but no deferred
-        // turn or recovery successor may be created. Check here in the shared
-        // transaction so cleanup retries and restart sweeps use the same gate.
-        if (issueRow.conversationAgentId && !(await instanceSettingsService(tx).getExperimental()).enableAgentChat) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 

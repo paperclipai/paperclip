@@ -75,7 +75,7 @@ export interface InstanceExperimentalSettings {
   enableChatConnectors: boolean;
   /** Show GitHub review bot setup and management independently of chat connectors. */
   enableGitHubReviewBots: boolean;
-  /** Allow person-authorized assistant tools and task event delivery. */
+  /** @deprecated Compatibility key only. Assistant connections (MCP) are always enabled. */
   enablePublicMcp: boolean;
   /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
   enableOpenAiDot: boolean;
@@ -107,6 +107,8 @@ export interface InstanceExperimentalSettings {
   enableBetaSkills: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
+  /** Areas of responsibility: per-user areas with the projects, tasks and routines under them. */
+  enableResponsibilities: boolean;
   enableDecisions: boolean;
   /** Show company connection settings and allow contextual fast-response acknowledgements. */
   enableFastResponses: boolean;

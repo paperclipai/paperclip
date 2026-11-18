@@ -446,7 +446,8 @@ export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: D
   } finally {
     hold.active = false;
     try {
-      if (dedicated && completed && !set.closed && !set.ended.has(dedicated) && set.idle.length < DEDICATED_CONNECTION_IDLE_MAX) {
+      if (dedicated && completed && !set.closed && !set.ended.has(dedicated)
+        && (set.idle.length < DEDICATED_CONNECTION_IDLE_MAX || set.idle.length + set.inUse <= set.limit)) {
         set.idle.push(dedicated);
       } else if (dedicated && !set.ended.has(dedicated)) {
         await dedicated.$client.end({ timeout: 1 });
@@ -867,6 +868,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0486_heartbeat_runs_company_finished_index.sql",
   "0487_heartbeat_runs_settled_process_indexes.sql",
   "0469_zippy_photon.sql",
+  "0495_tiny_rage.sql",
 
 
   "0384_funny_adam_warlock.sql",

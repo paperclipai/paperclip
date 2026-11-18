@@ -152,6 +152,11 @@ export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
   baseTriggerSchema.extend({
     kind: z.literal("api"),
   }),
+  // A standing check (experimental `enableResponsibilities`): never fires a run;
+  // the routine's agent carries it out on each heartbeat wake-up.
+  baseTriggerSchema.extend({
+    kind: z.literal("heartbeat"),
+  }),
 ]);
 
 export type CreateRoutineTrigger = z.infer<typeof createRoutineTriggerSchema>;

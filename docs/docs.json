@@ -57,6 +57,7 @@
               "guides/board-operator/approvals",
               "guides/board-operator/costs-and-budgets",
               "guides/board-operator/activity-log",
+              "guides/board-operator/deleting-connection-data",
               "guides/board-operator/importing-and-exporting"
             ]
           },
@@ -129,6 +130,7 @@
               "api/costs",
               "api/secrets",
               "api/tool-gateway-tokens",
+              "api/tool-connections",
               "api/activity",
               "api/dashboard"
             ]

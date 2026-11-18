@@ -1,4 +1,4 @@
-import { APP_STORE_DEFINITIONS, aiConnectionRouterAppDefinition, appSupportsCatalogSetup } from "@paperclipai/shared";
+import { APP_STORE_DEFINITIONS, aiConnectionRouterAppDefinition, appSupportsCatalogSetup, pluginAppSlug } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import {
   MCP_DIRECT_OAUTH_CONNECT_SLUGS,
@@ -86,6 +86,12 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(params)).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=ai-router-invalid"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=ai-router-1"))).toBe(false);
+  });
+
+  it("lets plugin-provided connectors reach host catalog validation", () => {
+    const slug = pluginAppSlug("example.meetings", "circleback");
+    expect(canEnterAppsConnect(new URL(appSourceConnectHref(slug), "http://paperclip.test").searchParams)).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=plugin-zz-circleback"))).toBe(false);
   });
 
   it("routes every capability-backed catalog definition through its source deep link", () => {

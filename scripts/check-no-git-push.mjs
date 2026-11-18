@@ -50,8 +50,6 @@ export const GIT_PUSH_PATTERNS = [
   /\bgit[\s_-]+push\b/i,
   /["'`]git["'`]\s*,\s*\[?\s*["'`]push["'`]/i,
 ];
-// Kept for backwards-compatibility with existing tests/importers.
-export const GIT_PUSH_PATTERN = GIT_PUSH_PATTERNS[0];
 export const ALLOW_MARKER = "paperclip:allow-git-push";
 
 function lineMatchesGitPush(line) {

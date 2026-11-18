@@ -32,7 +32,7 @@ export class McpOAuthError extends Error {
   constructor(readonly code: string, message: string, readonly status = 400) { super(message); }
 }
 export class PublicMcpDisabledError extends McpOAuthError {
-  constructor() { super("temporarily_unavailable", "Assistant connections are disabled. Enable them in Settings > Experimental.", 503); }
+  constructor() { super("temporarily_unavailable", "This agent connection is disabled. Enable its provider in Settings > Experimental.", 503); }
 }
 const invalidGrant = () => new McpOAuthError("invalid_grant", "Authorization is expired, revoked, or invalid.");
 
@@ -101,8 +101,10 @@ export function createPublicMcpOAuth(db: Db, config: PublicMcpConfig, options: {
   const resolveMetadata = createClientMetadataResolver(options.metadataFetch);
   const settings = instanceSettingsService(db);
   const isEnabled = async (queryDb: Db = db) => {
+    // Personal assistant connections are always on; only agent connections keep experimental gates.
+    if (!agentConnection) return true;
     const experimental = await (queryDb === db ? settings : instanceSettingsService(queryDb)).getExperimental();
-    return museAgentConnection ? experimental.enableMuse && experimental.enableNativeRunner : experimental.enablePublicMcp && (!agentConnection || experimental.enableOpenAiDot || (experimental.enableGrokBot && experimental.enableNativeRunner));
+    return museAgentConnection ? experimental.enableMuse && experimental.enableNativeRunner : experimental.enableOpenAiDot || (experimental.enableGrokBot && experimental.enableNativeRunner);
   };
   async function assertEnabled(queryDb: Db = db) {
     if (!await isEnabled(queryDb)) throw new PublicMcpDisabledError();

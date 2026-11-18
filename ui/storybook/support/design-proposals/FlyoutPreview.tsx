@@ -28,7 +28,7 @@ export function FlyoutPreview({ mode, shadow }: FlyoutPreviewProps) {
             <DesignProposalAccess><FlyoutAppearanceProvider><TruncatedTextMarqueeProvider>
               <div className="flex min-h-96 w-(--profile-popover-width) items-end">
                 <div className="design-sidebar-account w-full">
-                  <SidebarAccountMenu forceExpanded open={accountOpen} onOpenChange={setAccountOpen} shadow={shadow} />
+                  <SidebarAccountMenu open={accountOpen} onOpenChange={setAccountOpen} shadow={shadow} />
                 </div>
               </div>
             </TruncatedTextMarqueeProvider></FlyoutAppearanceProvider></DesignProposalAccess>

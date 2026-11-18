@@ -43,6 +43,7 @@ export function queueIssueAssignmentWakeup(input: {
   /** External chat conversation the wake answers. The wake queue keeps each
    * conversation in its own batch, because a reviewed chat run attests one. */
   chatConversationId?: string | null;
+  allowRunCoalescing?: boolean;
   rethrowOnError?: boolean;
   durableChatRequest?: DurableChatWakeupRequest;
 }) {
@@ -61,6 +62,7 @@ export function queueIssueAssignmentWakeup(input: {
       },
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId ?? null,
+      ...(input.allowRunCoalescing !== undefined ? { allowRunCoalescing: input.allowRunCoalescing } : {}),
       ...(input.requestedByActorCompanyId ? { requestedByActorCompanyId: input.requestedByActorCompanyId } : {}),
       ...(input.durableChatRequest
         ? { durableChatRequest: input.durableChatRequest }

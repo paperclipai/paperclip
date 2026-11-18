@@ -1,5 +1,6 @@
 const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
+  "responsibilities",
   "companies",
   "company",
   "skills",
@@ -31,6 +32,8 @@ const BOARD_ROUTE_ROOTS = new Set([
   "search",
   "settings",
   "timeline",
+  "cases",
+  "status",
 ]);
 
 const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "mcp-connect", "dot-connect", "assistant-connections", "docs", "instance"]);
@@ -93,11 +96,6 @@ export function applyCompanyPrefix(path: string, companyPrefix: string | null | 
  * Build a company-prefixed href for an experimental Cases route, e.g.
  * `caseHref("PAP", "PAP-C5")` → `/PAP/cases/PAP-C5`.
  *
- * Case paths carry identifiers like `PAP-C5` in the first segment, which the
- * generic {@link applyCompanyPrefix} mistakes for a company prefix ("CASES") and
- * therefore leaves `/cases/...` unprefixed — every case link then only resolves
- * via the PAP-13002 unprefixed→prefixed redirect. This builder emits the
- * prefixed href directly so case-to-case navigation matches the rest of the app.
  * Falls back to the unprefixed path (still valid via the redirect) when no
  * company is active.
  */

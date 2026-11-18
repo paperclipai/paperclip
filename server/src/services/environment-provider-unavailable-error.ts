@@ -1,4 +1,4 @@
-import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquireErrorDiagnostic, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
+import { isRetryableEnvironmentErrorCode, isRetryableEnvironmentHttpStatus, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, readEnvironmentAcquireErrorDiagnostic, readEnvironmentAcquisitionDiagnostic } from "@paperclipai/plugin-sdk";
 import type { ProviderFailure } from "@paperclipai/shared";
 import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
 
@@ -13,14 +13,6 @@ import { getEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-d
  * with its own idempotent identity, so it can neither reuse nor leak it.
  */
 export const ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE = "environment_provider_unavailable";
-
-const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
-// Connection-level failures only. ENOTFOUND (a wrong host) and ABORT_ERR (our
-// own cancellation) are excluded: retrying cannot repair either.
-const TRANSIENT_ERROR_CODES = new Set([
-  "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENETUNREACH",
-  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
-]);
 
 /**
  * `reason` names evidence that has neither a provider status nor a deadline:
@@ -50,8 +42,8 @@ export function readTransientEnvironmentProviderFailure(error: unknown): Transie
     const statusValue = envelope?.httpStatus ?? [own(cause, "status"), own(cause, "statusCode")]
       .find(value => Number.isInteger(value));
     const codeValue = envelope?.errorCode ?? own(cause, "code");
-    const httpStatus = typeof statusValue === "number" && TRANSIENT_HTTP_STATUSES.has(statusValue) ? statusValue : undefined;
-    const errorCode = typeof codeValue === "string" && TRANSIENT_ERROR_CODES.has(codeValue) ? codeValue : undefined;
+    const httpStatus = typeof statusValue === "number" && isRetryableEnvironmentHttpStatus(statusValue) ? statusValue : undefined;
+    const errorCode = typeof codeValue === "string" && isRetryableEnvironmentErrorCode(codeValue) ? codeValue : undefined;
     if (httpStatus !== undefined || errorCode !== undefined) {
       return { ...(httpStatus !== undefined ? { httpStatus } : {}), ...(errorCode !== undefined ? { errorCode } : {}) };
     }
@@ -66,7 +58,7 @@ function definiteNonTransientStatus(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 5; cause = own(cause, "cause"), depth++) {
     const status = readEnvironmentAcquireErrorDiagnostic(cause)?.httpStatus
       ?? [own(cause, "status"), own(cause, "statusCode")].find(value => Number.isInteger(value));
-    if (typeof status === "number" && status >= 400 && !TRANSIENT_HTTP_STATUSES.has(status)) return true;
+    if (typeof status === "number" && status >= 400 && !isRetryableEnvironmentHttpStatus(status)) return true;
   }
   return false;
 }
@@ -136,10 +128,12 @@ export class EnvironmentProviderUnavailableError extends Error {
   readonly code = ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE;
   readonly httpStatus: number | null;
   readonly errorCode: string | null;
+  readonly environmentId: string | null;
+  readonly environmentName: string;
   /** Read by the setup-failure path and shown on the task as the reason. */
   readonly providerFailure: ProviderFailure;
 
-  constructor(input: { environmentName: string; driver: string; evidence: TransientProviderEvidence; cause: unknown }) {
+  constructor(input: { environmentId?: string; environmentName: string; driver: string; evidence: TransientProviderEvidence; cause: unknown }) {
     const status = input.evidence.httpStatus !== undefined ? `HTTP ${input.evidence.httpStatus}`
       : input.evidence.errorCode ?? (input.evidence.reason ? REASON_LABELS[input.evidence.reason] : undefined);
     super(status
@@ -148,6 +142,8 @@ export class EnvironmentProviderUnavailableError extends Error {
     this.name = "EnvironmentProviderUnavailableError";
     this.httpStatus = input.evidence.httpStatus ?? null;
     this.errorCode = input.evidence.errorCode ?? null;
+    this.environmentId = input.environmentId ?? null;
+    this.environmentName = input.environmentName;
     const providerCode = input.evidence.errorCode ?? (input.evidence.httpStatus === undefined ? input.evidence.reason : undefined);
     this.providerFailure = {
       schema: "paperclip.provider-failure.v1",
@@ -157,7 +153,7 @@ export class EnvironmentProviderUnavailableError extends Error {
       message: (status
         ? `The provider for "${input.environmentName}" was temporarily unavailable while Paperclip was starting it (${status}). `
         : `The sandbox for "${input.environmentName}" did not finish starting in time. `)
-        + "No agent work had started. Paperclip retries automatically; if those retries are used up, use Retry once the provider is available.",
+        + "No agent work had started. Paperclip keeps retrying automatically until the provider is back; if it stays unavailable for 30 minutes, use Retry once it is available.",
       ...(input.evidence.httpStatus !== undefined ? { httpStatus: input.evidence.httpStatus } : {}),
       ...(providerCode !== undefined ? { providerCode } : {}),
       retryability: "transient",

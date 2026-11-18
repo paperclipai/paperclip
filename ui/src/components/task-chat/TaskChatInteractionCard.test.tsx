@@ -219,6 +219,76 @@ describe("TaskChatInteractionCard", () => {
     expect(writeText).toHaveBeenCalledWith(argumentsHash);
   });
 
+  it("shows a proposed bar inline in the timeline and never in the composer", async () => {
+    const { barProposalFixture } = await import("../../../storybook/fixtures/responsibility-bars");
+    const proposal = barProposalFixture("percentage") as unknown as IssueThreadInteraction;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    const renderAs = (presentation: "timeline" | "takeover") => flushSync(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <TaskChatInteractionCard item={interactionItem(proposal)} presentation={presentation} showPendingRequest />
+        </QueryClientProvider>,
+      );
+    });
+    renderAs("timeline");
+    expect(container.querySelector('[data-testid="bar-proposal"]')).not.toBeNull();
+    expect(container.textContent).toContain("On track at 90% or more; at risk from 68%");
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+    renderAs("takeover");
+    expect(container.textContent).toBe("");
+  });
+
+  it("shows a proposed automation inline in the timeline and never in the composer", async () => {
+    const { automationProposalFixture } = await import("../../../storybook/fixtures/automation-proposals");
+    const proposal = automationProposalFixture("webhook") as unknown as IssueThreadInteraction;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    const renderAs = (presentation: "timeline" | "takeover") => flushSync(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <TaskChatInteractionCard item={interactionItem(proposal)} presentation={presentation} showPendingRequest />
+        </QueryClientProvider>,
+      );
+    });
+    renderAs("timeline");
+    expect(container.querySelector('[data-testid="automation-proposal"]')).not.toBeNull();
+    expect(container.textContent).toContain("From a webhook, when another system calls it");
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+    renderAs("takeover");
+    expect(container.textContent).toBe("");
+  });
+
+  it("shows a pending routine offer inline in the timeline and never in the composer", () => {
+    const offer = {
+      ...createRequestConfirmation(),
+      id: "offer-1",
+      kind: "suggest_routine",
+      continuationPolicy: "none",
+      createdByAgentId: "agent-1",
+      title: 'Repeat "Weekly pricing summary"?',
+      summary: "Every Monday at 9 AM",
+      payload: {
+        version: 1, title: "Weekly pricing summary", instructions: "Summarize pricing changes.", message: null,
+        cadence: { frequency: "weekly", dayOfWeek: "monday", dayOfMonth: null, time: "09:00" },
+        cadenceLabel: "Every Monday at 9 AM", cronExpression: "0 9 * * 1", assigneeAgentId: "agent-1", projectId: null,
+      },
+      result: null,
+    } as unknown as IssueThreadInteraction;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
+    const renderAs = (presentation: "timeline" | "takeover") => flushSync(() => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <TaskChatInteractionCard item={interactionItem(offer)} presentation={presentation} showPendingRequest />
+        </QueryClientProvider>,
+      );
+    });
+    renderAs("timeline");
+    expect(container.querySelector('[data-testid="routine-suggestion"]')).not.toBeNull();
+    expect(container.textContent).toContain("Every Monday at 9 AM");
+    expect(container.querySelector('[data-testid="task-chat-pending-request"]')).toBeNull();
+    renderAs("takeover");
+    expect(container.textContent).toBe("");
+  });
+
   it("does not render a pending confirmation in the timeline", () => {
     flushSync(() => {
       root.render(

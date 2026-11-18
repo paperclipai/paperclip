@@ -4,7 +4,7 @@ import { parseCommand } from "./config.js";
 import {
   agentRunCaps, assignAdapters, childLine, childNonce, doneMarker, expectedRoundHash, followUpMarker, gradeStagingMix, holdsRetry, planArrivals,
   arrivalEndMs, followUpRequestId, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
-  slotTimesMs, stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
+  bannerShownMs, noteRetryBanner, slotTimesMs, stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
 import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
@@ -402,6 +402,22 @@ describe("staging-mix board step", () => {
     expect(rec.stagingMix!.retryBanner).toMatchObject({ firstShownAt: 1_000, lastShownAt: 9_000, visibleSince: 1_000 });
     await step(rec, running, 20_000, false);
     expect(rec.stagingMix!.retryBanner).toMatchObject({ shownMs: 19_000, visibleSince: null });
+  });
+
+  it("counts a banner at most two minutes past its last sample when it was seen hidden late", () => {
+    const state: Parameters<typeof noteRetryBanner>[0] = {};
+    noteRetryBanner(state, true, 1_000, "setup_failed");
+    noteRetryBanner(state, true, 273_000, "setup_failed");
+    noteRetryBanner(state, false, 10_483_000, null);
+    expect(state.retryBanner).toMatchObject({ firstShownAt: 1_000, lastShownAt: 273_000, shownMs: 392_000, visibleSince: null });
+  });
+
+  it("bounds a banner that is still open when sampling stopped", () => {
+    const state: Parameters<typeof noteRetryBanner>[0] = {};
+    noteRetryBanner(state, true, 1_000, "setup_failed");
+    noteRetryBanner(state, true, 273_000, "setup_failed");
+    expect(bannerShownMs(state.retryBanner!, 10_483_000)).toBe(392_000);
+    expect(bannerShownMs(state.retryBanner!, 300_000)).toBe(299_000);
   });
 
   it("with --mix-retry-during-wave, waits for an overlap to click a Retry, and holds the observer's own click until the hold runs out", async () => {

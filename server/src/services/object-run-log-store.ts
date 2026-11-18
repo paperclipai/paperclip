@@ -399,6 +399,10 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         nextOffset: nextOffset ?? offset + bytes.length,
       };
     },
+    async remove(handle, signal) {
+      if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
+      await journal(handle.logRef, "background").remove(signal);
+    },
     async flushInflightMirrors() {
       await Promise.all([...writers.values()].map(flush));
     },

@@ -1,6 +1,7 @@
 import { isCrossSiteOAuthCallbackNavigation, oauthCallbackInterstitialHtml } from "../lib/oauth-browser-return.js";
-import { aiConnectionRouterPluginKey } from "@paperclipai/shared";
+import { aiConnectionRouterPluginKey, isSamePaperclipInstance, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
+import { loadPluginAppCatalog } from "../services/plugin-app-catalog.js";
 import { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema } from "@paperclipai/shared";
 import { aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema } from "@paperclipai/shared/aggregator-apps";
 import { Router, type Request, type Response } from "express";
@@ -71,6 +72,8 @@ import { accessService, logActivity, toolAccessPolicyService, toolAccessService,
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService } from "../services/mcp-app-views.js";
+import { createConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { getRunLogStore } from "../services/run-log-store.js";
 import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
 import { mcpAppToolCallSchema } from "@paperclipai/shared";
 import { RailwayError } from "../services/railway.js";
@@ -443,6 +446,31 @@ export function toolAccessRoutes(
     return null;
   }
 
+  // Agents already have this instance's tools built in. Connecting it to itself
+  // only adds a second copy under another name, which is the confusion the
+  // peer-connection naming exists to prevent.
+  function assertNotThisPaperclip(req: Request, link: unknown) {
+    const peer = typeof link === "string" ? paperclipPeerFromMcpUrl(link) : null;
+    if (!peer) return;
+    const requestHost = req.get("host")?.trim();
+    const ownOrigins = [
+      configuredPublicBaseUrl(),
+      options.authPublicBaseUrl,
+      process.env.PAPERCLIP_PUBLIC_URL,
+      trustedBrowserBaseUrl(req),
+      requestLoopbackBaseUrl(req),
+      requestHost ? `${req.protocol}://${requestHost}` : null,
+      // The port this server actually listens on; startup may move off PORT.
+      process.env.PAPERCLIP_LISTEN_PORT ? `http://localhost:${process.env.PAPERCLIP_LISTEN_PORT}` : null,
+    ];
+    if (isSamePaperclipInstance(peer, ownOrigins)) {
+      throw unprocessable(
+        "That address is this Paperclip. Your agents already have its tools, so there is nothing to connect.",
+        { code: "paperclip_self_connection" },
+      );
+    }
+  }
+
   function oauthRedirectUri(req: Request, forInitiation = false) {
     const baseUrl = configuredPublicBaseUrl()
       ?? trustedBrowserBaseUrl(req)
@@ -544,6 +572,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
 
   const access = accessService(db);
   const managementGuard = connectionManagementGuard(db, "tool");
+  const contentDeletion = createConnectionContentDeletion(db, { runLogStore: getRunLogStore });
 
   async function assertBoardToolPermission(req: Request, companyId: string, permissionKey: PermissionKey) {
     if (req.actor.type === "agent") {
@@ -887,8 +916,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
         : null;
       if (details?.code !== "oauth_redirect_origin_unsupported") throw error;
     }
+    const pluginApps = (await loadPluginAppCatalog(db)).definitions;
     res.json({
       ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
+      // Full definitions of plugin-provided connectors. Like the built-in
+      // definitions the board bundles, they keep methods the gallery entry
+      // hides until (for example) Cloud connector enrollment is active.
+      pluginApps,
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
       credentialSources: {
         vercelConnect: {
@@ -905,6 +939,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
       },
       apps: [...APP_STORE_DEFINITIONS.filter((app) => (settings.enableMemoryConnectors || !isMemoryConnectorId(app.slug))
         && isConnectorFeatureEnabled(app, settings)).map((app) =>
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+      ), ...pluginApps.map((app) =>
         appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
       ), ...await aiConnectionRouterService(db).catalog()],
     });
@@ -964,6 +1000,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
           : ORGANIZATION_GRANT_DENIAL_REASON,
       );
     }
+    assertNotThisPaperclip(req, req.body.link);
     try {
       const result = await svc.connectGalleryApp(companyId, req.body, connectionRequestActor(req));
       if (result.auth?.kind === "oauth") {
@@ -1971,7 +2008,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       action: "tool_connection.grant_revoked",
       entityType: "connection_grant",
       entityId: grant.id,
-      details: { connectionId: connection.id, kind: grant.kind },
+      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}) },
     });
     res.json(grant);
   });
@@ -2371,6 +2408,8 @@ function connectorEnrollmentPrincipal(req: Request): string {
     await assertToolConnectionConfigureAccess(req, existing);
     if (aiConnectionRouterPluginKey(existing)) throw badRequest("Remove this connection pool through its revision-checked pool settings.");
     const applicationBefore = await svc.getApplication(existing.applicationId);
+    const deleteStoredContent = req.query.deleteStoredContent === "true";
+    if (deleteStoredContent) assertBoard(req);
     const { connection, removal } = await svc.archiveConnection(
       existing.id,
       existing.companyId,
@@ -2402,7 +2441,54 @@ function connectorEnrollmentPrincipal(req: Request): string {
         details: { type: applicationAfter.type, name: applicationAfter.name, reason: "last_connection_removed" },
       });
     }
-    res.json({ ...connection, removal });
+    const contentDeletion = deleteStoredContent
+      ? await requestStoredContentDeletion(req, connection)
+      : null;
+    res.json({ ...connection, removal, ...(contentDeletion ? { contentDeletion } : {}) });
+  });
+
+  async function requestStoredContentDeletion(req: Request, connection: { id: string; companyId: string }) {
+    const actor = getActorInfo(req);
+    const { deletion, created } = await contentDeletion.request(connection, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+    });
+    if (created) {
+      const { stored } = await contentDeletion.storedContent(connection);
+      await logActivity(db, {
+        companyId: connection.companyId,
+        ...connectionRequestActor(req),
+        action: "tool_connection.content_deletion_requested",
+        entityType: "tool_connection",
+        entityId: connection.id,
+        details: { ...stored },
+      });
+    }
+    return deletion;
+  }
+
+  router.get("/tool-connections/:connectionId/stored-content", managementGuard("connections:configure", "GET /tool-connections/:connectionId/stored-content", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json(await contentDeletion.storedContent(existing));
+  });
+
+  router.post("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "POST /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.status(202).json({ deletion: await requestStoredContentDeletion(req, existing) });
+  });
+
+  router.get("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "GET /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    await assertToolConnectionConfigureAccess(req, existing);
+    res.json({ deletion: await contentDeletion.latestDeletion(existing) });
   });
 
   router.post("/tool-connections/:connectionId/health-check", managementGuard("connections:configure", "POST /tool-connections/:connectionId/health-check", { personal: true }), async (req, res) => {

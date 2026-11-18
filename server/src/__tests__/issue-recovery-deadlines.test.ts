@@ -8,12 +8,15 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { registerIssueRecoveryWork } from "../services/recovery/work.js";
+import { changedTaskCondition } from "../services/recovery/changed-tasks.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { ISSUE_RECOVERY_BACKSTOP_MS, ISSUE_RECOVERY_MAX_ISSUE_IDS, notifyIssueRecovery, resolveIssueGraph }
   from "../services/issue-recovery-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
 import { notifyRunDispatch } from "../services/run-dispatch-notifications.js";
+import { notifyExternalConversationSettlement } from "../services/external-conversation-settlement-notifications.js";
+import { notifyChatInboundWakeNotices } from "../services/chat-inbound-wake-notice-notifications.js";
 import { promoteDeferredWorkIntents } from "../services/work-intent-outbox.js";
 import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -182,6 +185,83 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       status: "resolved", outcome: "restored", resolutionNote: "Recovered" }));
     await graph.backlog(4000);
     expect(await lifecycleEvent(finished())).toBe(first);
+  });
+  it("re-checks a run's own tasks for its settlement, lease and dispatch writers, and nothing for a run without a task", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    await graph.backlog(300);
+    const [taskless] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded",
+      finishedAt: new Date(), contextSnapshot: { source: "scheduler" } }).returning({ id: heartbeatRuns.id });
+    const checked: string[] = [];
+    const assigned: string[] = [];
+    await recordedRecovery({
+      stranded: async scope => { checked.push(scope.issueId); },
+      assignedWork: {
+        listSuspects: (scope, cursor, limit) => recoveryService(state.db, { enqueueWakeup: async () => null })
+          .assignedWork.listSuspects(scope, cursor, limit),
+        checkIssue: async scope => { assigned.push(scope.issueId); },
+      },
+    }, { backstopMs: 60 * 60_000 });
+    await settleWork({ backstopPending: true });
+    const writers = (runId: string): Array<(tx: object) => Promise<unknown>> => [
+      tx => notifyRunDispatch(tx, { companyId: f.companyId, runId }),
+      tx => notifyExecutionRunWork(tx, { companyId: f.companyId, runId }),
+      tx => notifyExternalConversationSettlement(tx, { companyId: f.companyId, runId }),
+      tx => notifyChatInboundWakeNotices(tx, { companyId: f.companyId, runId }),
+      tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "lock_released", issueId: null, runId }),
+    ];
+    for (const [runId, expected] of [[graph.runId, graph.affected], [taskless.id, []]] as Array<[string, string[]]>) {
+      for (const writer of writers(runId)) {
+        checked.length = 0; assigned.length = 0;
+        await state.db.transaction(tx => writer(tx));
+        await settleWork({ backstopPending: true });
+        expect([...new Set(checked)].sort()).toEqual(expected);
+        expect(assigned.every(id => expected.includes(id))).toBe(true);
+        await vi.advanceTimersByTimeAsync(31_000);
+      }
+    }
+    checked.length = 0; assigned.length = 0;
+    await issueService(state.db).addComment(graph.siblingId, "A note on the next task", { userId: "recovery-user" });
+    await settleWork({ backstopPending: true });
+    expect(checked).toEqual([graph.siblingId]);
+    expect(assigned.every(id => id === graph.siblingId)).toBe(true);
+  });
+  it("counts an agent's own run heartbeat as no change to its other tasks, and a resume as a change", async () => {
+    const f = await fixture();
+    const old = new Date(Date.now() - 60 * 60_000);
+    const tasks = await state.db.insert(issues).values(Array.from({ length: 5 }, (_, index) => ({ companyId: f.companyId,
+      title: `Waiting ${index}`, status: "todo", assigneeAgentId: f.agentId, createdAt: old, updatedAt: old }))).returning({ id: issues.id });
+    const since = new Date(Date.now() - 5 * 60_000);
+    const changed = async () => (await state.db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, f.companyId), changedTaskCondition(since)))).map(row => row.id).sort();
+    const heartbeatAt = new Date();
+    await state.db.update(agents).set({ status: "idle", lastHeartbeatAt: heartbeatAt, updatedAt: heartbeatAt }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual([]);
+    await state.db.update(agents).set({ status: "idle", updatedAt: new Date(heartbeatAt.getTime() + 1000) }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual(tasks.map(row => row.id).sort());
+  });
+  it("counts an agent's run start as no change to its other tasks, and a pause during the run as a change", async () => {
+    const f = await fixture();
+    const old = new Date(Date.now() - 60 * 60_000);
+    await state.db.update(agents).set({ lastHeartbeatAt: old, updatedAt: old }).where(eq(agents.id, f.agentId));
+    const tasks = await state.db.insert(issues).values(Array.from({ length: 5 }, (_, index) => ({ companyId: f.companyId,
+      title: `Settled ${index}`, status: "in_review", assigneeAgentId: f.agentId, createdAt: old, updatedAt: old }))).returning({ id: issues.id });
+    const since = new Date(Date.now() - 5 * 60_000);
+    const changed = async () => (await state.db.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, f.companyId), changedTaskCondition(since)))).map(row => row.id).sort();
+    // The write of execution start in heartbeat.ts: a status flip with no heartbeat time.
+    await state.db.update(agents).set({ status: "running", updatedAt: new Date() }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual([]);
+    await state.db.update(agents).set({ status: "paused", updatedAt: new Date() }).where(eq(agents.id, f.agentId));
+    expect(await changed()).toEqual(tasks.map(row => row.id).sort());
+  });
+  it("resolves a run without a task to no tasks and a missing task to the whole company", async () => {
+    const f = await fixture();
+    const [taskless] = await state.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running",
+      contextSnapshot: { source: "scheduler" } }).returning({ id: heartbeatRuns.id });
+    expect(await resolveIssueGraph(state.db, { companyId: f.companyId, runId: taskless.id })).toEqual([]);
+    expect(await resolveIssueGraph(state.db, { companyId: f.companyId, runId: randomUUID() })).toEqual([]);
+    expect(await resolveIssueGraph(state.db, { companyId: f.companyId, issueId: randomUUID() })).toBeNull();
   });
   it("resolves a run's task graph through index lookups, not the backlog", async () => {
     const f = await fixture();
@@ -361,10 +441,19 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       const [row] = await state.db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, watchdog.watchdog.id));
       expect(row.watchdogIssueId).toBeTruthy(); reviewId = row.watchdogIssueId!;
     }, { timeout: 15_000 });
-    await completed(reviewId!);
+    const review = await completed(reviewId!);
     expect(failures).toEqual([]);
+    // Ordinary assignment recovery can win the wake reason while the watchdog
+    // wake coalesces into that run. Verify its mandate and one dispatch instead.
+    expect(review.contextSnapshot).toMatchObject({
+      watchdogId: watchdog.watchdog.id,
+      taskWatchdog: {
+        watchedIssueId: source.id,
+        stopFingerprint: expect.stringMatching(/^task_watchdog_stop:/),
+      },
+    });
     expect(await state.db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
-      sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'task_watchdog_stopped_subtree'`))).toHaveLength(1);
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${reviewId}`))).toHaveLength(1);
     await finish(reviewId!);
     await taskWatchdogService(state.db).disableForIssue(f.companyId, source.id);
     if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }); await quiet();

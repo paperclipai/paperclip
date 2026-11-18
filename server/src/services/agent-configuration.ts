@@ -6,13 +6,13 @@ import { notifyMuseContactVerification } from "../modules/external-agents/index.
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
-import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAgentConfigurationDispatch } from "./run-dispatch-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { and, eq } from "drizzle-orm";
-import { agents, assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, type Db } from "@paperclipai/db";
+import { agents, assets, agentConfigRevisions, agentTaskSessions, agentRuntimeState, issues, type Db } from "@paperclipai/db";
 import { normalizeAgentUrlKey, extractAgentMentionIds } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -20,6 +20,7 @@ import { agentRecordQueries, type UpdateAgentOptions, type AgentConfigurationPat
   hasConfigPatchFields, changedPendingApprovalConfigFields, diffConfigSnapshot, jsonEqual } from "../lib/agent-records.js";
 import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
 import type { ActivityPublication } from "../types/activity-publication.js";
+import { logActivity } from "./activity-log.js";
 import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
@@ -127,7 +128,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
     ||normalizedPatch.adapterConfig!==undefined&&!jsonEqual(normalizedPatch.adapterConfig,existing.adapterConfig))
     await notifyMuseContactVerification(db,{companyId:existing.companyId,agentId:existing.id});
   await notifyStrandedAgentStatus(db, { companyId: existing.companyId, agentId: existing.id });
-  await notifyRunDispatch(db, { companyId: existing.companyId });
+  await notifyAgentConfigurationDispatch(db, { companyId: existing.companyId });
   await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });
   if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
@@ -141,6 +142,22 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
 
 export async function completeAgentConfiguration(txDb: Db, existing: AgentConfigurationRecord, updated: AgentConfigurationRecord, normalizedPatch: AgentConfigurationPatch, options: UpdateAgentOptions | undefined, publications: ActivityPublication[]) {
   const id = updated.id;
+  if (existing.name !== updated.name) {
+    const renamed = await txDb.update(issues).set({ title: `Chat with ${updated.name}`, updatedAt: updated.updatedAt }).where(and(
+      eq(issues.companyId, updated.companyId), eq(issues.conversationAgentId, id),
+      eq(issues.title, `Chat with ${existing.name}`),
+    )).returning({ id: issues.id, title: issues.title, identifier: issues.identifier });
+    for (const chat of renamed) {
+      const actorAgentId = options?.recordRevision?.createdByAgentId;
+      const actorUserId = options?.recordRevision?.createdByUserId;
+      await logActivity(txDb, { companyId: updated.companyId,
+        actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+        actorId: actorAgentId ?? actorUserId ?? id, agentId: actorAgentId,
+        action: "issue.updated", entityType: "issue", entityId: chat.id,
+        details: { title: chat.title, identifier: chat.identifier, source: "agent_rename", _previous: { title: `Chat with ${existing.name}` } },
+      }, publications);
+    }
+  }
   const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
   const beforeConfig = shouldRecordRevision
     ? buildConfigSnapshot(agentRecordQueries(txDb).normalizeAgentRow(existing))

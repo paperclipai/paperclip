@@ -19,7 +19,7 @@ import { decodeAcpxRuntimeHandleState } from "acpx/runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
-import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openCodexAcpxRuntime, resetAbandonedBootstrapRecord } from "./acpx-runtime-adapter.js";
+import { acpxSessionHandshakeTimeoutMs, claudeExitPlanModeProposal, openQualifiedAcpxRuntime, resetAbandonedBootstrapRecord } from "./acpx-runtime-adapter.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
 import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
@@ -44,7 +44,7 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(runtime.ensureSession).mockRejectedValue(rejection);
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "claude" };
-    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+    await expect(openQualifiedAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: () => runtime })).rejects.toMatchObject({
       code: "ACPX_SESSION_ENSURE_FAILED",
       providerFailure: { provider: "anthropic", category: "rate_limit", httpStatus: 429,
@@ -59,7 +59,7 @@ describe("Codex ACPX runtime adapter", () => {
     options.launchEnvironment = { ANTHROPIC_API_KEY: "fixture-anthropic-secret" };
     const rejection = new Error("Claude Code exited during startup for fixture-anthropic-secret (sk-ant-api03-fixtureprivate)");
     vi.mocked(runtime.ensureSession).mockRejectedValue(rejection);
-    const failure = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+    const failure = await openQualifiedAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: () => runtime }).catch((error: unknown) => error);
     expect(failure).toBe(rejection);
     expect(failure).toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED", providerFailure: { provider: "anthropic",
@@ -72,7 +72,7 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(runtime.ensureSession).mockRejectedValue(Object.assign(new Error(message), { code: -32000 }));
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "claude" };
-    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+    await expect(openQualifiedAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED",
       providerFailure: { category: "authentication", message, phase: "startup", retryability: "requires_action" } });
   });
@@ -81,7 +81,7 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(runtime.ensureSession).mockRejectedValue({ code: -32603, message: "Internal error", data: { errorKind: "billing_error" } });
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "claude" };
-    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+    await expect(openQualifiedAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_NON_ERROR",
       providerFailure: { category: "quota_exhausted", providerCode: "billing_error", phase: "startup" } });
   });
@@ -96,7 +96,7 @@ describe("Codex ACPX runtime adapter", () => {
     });
     const options = openOptions(fakeCommand());
     options.signal = controller.signal;
-    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+    await expect(openQualifiedAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: () => runtime })).rejects.toBe(reason);
     await vi.waitFor(() => expect(rejection).toHaveProperty("code", "ACPX_SESSION_ENSURE_FAILED"));
     expect(rejection).not.toHaveProperty("providerFailure");
@@ -124,7 +124,7 @@ describe("Codex ACPX runtime adapter", () => {
       guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
       guard("inbound", { id: 1, result: { configOptions: [{ id: "effort", currentValue: input.value }] } });
     });
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
       awaitProviderOwnership: providerOwnershipEstablished,
       awaitProviderExit: providerOwnershipEstablished,
@@ -160,7 +160,7 @@ describe("Codex ACPX runtime adapter", () => {
     runtime.requestExtension.mockImplementation(async () => {
       spawnProvider(); acknowledge(); return {};
     });
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
       awaitProviderOwnership: providerOwnershipEstablished,
       awaitProviderExit: providerOwnershipEstablished,
@@ -205,11 +205,11 @@ describe("Codex ACPX runtime adapter", () => {
         PAPERCLIP_RUNNER_HOME_MODE: "preconfigured", ANTHROPIC_API_KEY: "local-fixture-only",
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
     };
-    let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+    let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
     const priorSettingsFlag = process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
     process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
     try {
-      port = await openCodexAcpxRuntime(options, {
+      port = await openQualifiedAcpxRuntime(options, {
         // This test exercises ACP/model admission; lifetime-fence tests are separate.
         awaitProviderOwnership: async () => undefined,
         awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
@@ -241,7 +241,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(command);
     options.profile = { ...options.profile, agent: "claude" };
     options.permissionMode = "approve-all";
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished, awaitProviderExit: () => providerExit,
       createRuntime: value => { created = value; return runtimeWithProvider(runtime, value); },
@@ -283,7 +283,7 @@ describe("Codex ACPX runtime adapter", () => {
     const createRuntime = vi.fn();
     const options = openOptions(fakeCommand());
     options.launchEnvironment = { HOME: "/users/executor", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" };
-    await expect(openCodexAcpxRuntime(options, { createRuntime })).rejects.toThrow("cannot protect Runner state");
+    await expect(openQualifiedAcpxRuntime(options, { createRuntime })).rejects.toThrow("cannot protect Runner state");
     expect(createRuntime).not.toHaveBeenCalled();
   });
 
@@ -301,7 +301,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(command);
     options.profile = { ...options.profile, agent: "copilot" };
     options.permissionMode = "approve-paperclip";
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
       awaitProviderExit: () => providerExit,
@@ -351,7 +351,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(command);
     options.profile = { ...options.profile, agent: "copilot" };
     options.permissionMode = "approve-paperclip";
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
       awaitProviderExit: () => providerExit,
@@ -400,7 +400,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(command);
     options.profile = { ...options.profile, agent: "copilot" };
     options.permissionMode = "approve-paperclip";
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished, awaitProviderExit: () => providerExit,
       createRuntime: value => { created = value; return runtimeWithProvider(runtime, value); },
@@ -428,7 +428,7 @@ describe("Codex ACPX runtime adapter", () => {
       let created!: AcpRuntimeOptions;
       const options = openOptions(fakeCommand());
       options.profile = { ...options.profile, agent };
-      const port = await openCodexAcpxRuntime(options, {
+      const port = await openQualifiedAcpxRuntime(options, {
         createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
       });
       // Copilot no longer needs a patched ACPX admission hook; Grok keeps one
@@ -460,7 +460,7 @@ describe("Codex ACPX runtime adapter", () => {
     let created!: AcpRuntimeOptions;
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "copilot" };
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
     });
     created.onAcpMessage!("inbound", { jsonrpc: "2.0", method: "session/update", params: { sessionId: "backend-1", update: {
@@ -487,7 +487,7 @@ describe("Codex ACPX runtime adapter", () => {
       { name: "paperclip_runner_fixture", url: "http://127.0.0.1:3211/mcp", bearerToken: "runner-fixture", runnerOwned: true },
       { name: "paperclip", url: "http://127.0.0.1:3212/mcp", bearerToken: "external-fixture", runnerOwned: false },
     ];
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
     });
     const sessionOptions = vi.mocked(runtime.ensureSession).mock.calls[0]?.[0].sessionOptions;
@@ -511,7 +511,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
     let created!: AcpRuntimeOptions;
     const options = openOptions(fakeCommand());
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: (value) => { created = value; return runtime; },
     });
     const handler = vi.fn(async () => ({ outcome: "allow_once" as const }));
@@ -535,7 +535,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);
     let created!: AcpRuntimeOptions;
     const options = openOptions(fakeCommand());
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
     });
     let callbackSignal!: AbortSignal;
@@ -572,7 +572,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime();
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "cursor" };
-    await expect(openCodexAcpxRuntime(options, {
+    await expect(openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
     })).rejects.toThrow("Cursor instruction admission failed");
     expect(runtime.startTurn).not.toHaveBeenCalled();
@@ -592,7 +592,7 @@ describe("Codex ACPX runtime adapter", () => {
       } } } });
       if (mode === "unsupported") throw new Error("Exact model unsupported");
     });
-    const opening = openCodexAcpxRuntime(options, {
+    const opening = openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
     });
     if (mode === "valid") {
@@ -620,7 +620,7 @@ describe("Codex ACPX runtime adapter", () => {
       guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
       guard("inbound", { id: 1, result: { configOptions: configs(input.key === "mode" ? selected : "agent") } });
     });
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
     });
     expect(vi.mocked(runtime.setConfigOption!).mock.calls.map(([call]) => [call.key, call.value])).toEqual([["model", options.profile.reportedModelId], ["mode", selected]]);
@@ -639,7 +639,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "cursor" };
     options.clientCapabilities = { _meta: { cursor: { test: true } } };
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (value) => {
         created = value;
@@ -702,7 +702,7 @@ describe("Codex ACPX runtime adapter", () => {
       guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
       guard("inbound", { id: 1, result: { configOptions: [{ id: "thought_level", currentValue: "low" }] } });
     });
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (value) => { created = value; return runtime; },
     });
@@ -735,7 +735,7 @@ describe("Codex ACPX runtime adapter", () => {
     let created!: AcpRuntimeOptions;
     const baseRecord = { acpxRecordId: "record-1", acpSessionId: "backend-1", cwd: "/workspace",
       agentCapabilities: { loadSession: true, _meta: { vendor: { kept: true } } } } as unknown as AcpSessionRecord;
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
       createStore: () => ({ load: vi.fn(), save: vi.fn(async (record: AcpSessionRecord) => { saved.push(structuredClone(record)); }) }),
       createRuntime: (value) => { created = value; return fakeRuntime(); },
@@ -767,7 +767,7 @@ describe("Codex ACPX runtime adapter", () => {
       guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
       guard("inbound", { id: 1, result: { configOptions: [{ id: "thought_level", currentValue: "low" }] } });
     });
-    const restoredPort = await openCodexAcpxRuntime(piOptions, {
+    const restoredPort = await openQualifiedAcpxRuntime(piOptions, {
       createRegistry: () => registry(),
       createStore: () => ({ load: vi.fn(async () => structuredClone(record)), save: vi.fn() }),
       createRuntime: (value) => { restored = value; return piRuntime; },
@@ -793,7 +793,7 @@ describe("Codex ACPX runtime adapter", () => {
       let created!: AcpRuntimeOptions;
       const options = openOptions(fakeCommand());
       options.stateDirectory = stateDirectory;
-      const port = await openCodexAcpxRuntime(options, {
+      const port = await openQualifiedAcpxRuntime(options, {
         createRegistry: () => registry(),
         createStore: () => ({ load: vi.fn(async () => structuredClone(parsed)), save: vi.fn(async (record: AcpSessionRecord) => { saves.push(structuredClone(record)); }) }),
         createRuntime: (value) => { created = value; return fakeRuntime(); },
@@ -812,7 +812,7 @@ describe("Codex ACPX runtime adapter", () => {
   it("does not grant steering to Copilot or Cursor when an untrusted initialize result claims Pi support", async () => {
     const options = openOptions(fakeCommand()); options.profile = { ...options.profile, agent: "copilot" };
     const runtime = fakeRuntime();
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (created) => {
         initializeOverWire(created, { agentCapabilities: { _meta: { paperclipPi: { version: 1, steering: true, queuedFollowUp: true } } } });
@@ -826,7 +826,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "claude" };
     let runtimeOptions: AcpRuntimeOptions | undefined;
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
     });
@@ -856,7 +856,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "claude" };
     let runtimeOptions: AcpRuntimeOptions | undefined;
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
     });
@@ -886,7 +886,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "claude" };
     let runtimeOptions: AcpRuntimeOptions | undefined;
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(), createStore: () => store(),
       createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
     });
@@ -943,7 +943,7 @@ describe("Codex ACPX runtime adapter", () => {
     });
     const options = openOptions(fakeCommand());
     options.permissionMode = permissionMode;
-    const port = await openCodexAcpxRuntime(options, {
+    const port = await openQualifiedAcpxRuntime(options, {
       createRegistry: () => registry(),
       createStore: () => store(),
       createRuntime: (created) => { runtimeOptions = created; return runtime; },
@@ -971,7 +971,7 @@ describe("Codex ACPX runtime adapter", () => {
       events: { async *[Symbol.asyncIterator]() {} }, result: Promise.resolve(result),
       cancel: vi.fn(), closeStream: vi.fn(),
     });
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
     });
     try {
@@ -993,7 +993,7 @@ describe("Codex ACPX runtime adapter", () => {
     const retainFailedAdmissionCleanup = vi.fn();
 
     await expect(
-      openCodexAcpxRuntime(
+      openQualifiedAcpxRuntime(
         {
           ...openOptions(command),
           signal: controller.signal,
@@ -1015,7 +1015,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
     const command = fakeCommand();
-    const port = await openCodexAcpxRuntime(openOptions(command), {
+    const port = await openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: ({ overrides }) => {
         expect(overrides).toEqual({
           codex: ["paperclip-verified-acpx-command"],
@@ -1068,7 +1068,7 @@ describe("Codex ACPX runtime adapter", () => {
       options.profile = resolveQualifiedAcpxProfile(agent, model);
       options.launchEnvironment = { PATH: "/verified/bin" };
 
-      await openCodexAcpxRuntime(options, {
+      await openQualifiedAcpxRuntime(options, {
         createRegistry: ({ overrides }) => {
           expect(overrides).toEqual({
             [agent]: [agent === "claude" ? "/paperclip-verified/claude-agent-acp" : "paperclip-verified-acpx-command"],
@@ -1107,7 +1107,7 @@ describe("Codex ACPX runtime adapter", () => {
         bearerToken: "bridge-secret", runnerOwned: binding === "runner-owned",
       }];
       let runtimeOptions: AcpRuntimeOptions | undefined;
-      await openCodexAcpxRuntime(options, {
+      await openQualifiedAcpxRuntime(options, {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: (created) => {
@@ -1128,7 +1128,7 @@ describe("Codex ACPX runtime adapter", () => {
     const child = fakeChild();
     vi.mocked(command.spawn).mockReturnValue(child);
     const spawnOptions = { cwd: "/runtime/spawn" };
-    await openCodexAcpxRuntime(openOptions(command), {
+    await openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
@@ -1165,7 +1165,7 @@ describe("Codex ACPX runtime adapter", () => {
     const assertWorkspaceHeld = vi.fn(() => {
       throw workspaceSubstituted;
     });
-    await openCodexAcpxRuntime(
+    await openQualifiedAcpxRuntime(
       { ...openOptions(command), assertWorkspaceHeld },
       {
         createRegistry: () => registry(),
@@ -1194,7 +1194,7 @@ describe("Codex ACPX runtime adapter", () => {
     let created!: AcpRuntimeOptions;
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "grok" };
-    const port = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => durableStore,
+    const port = await openQualifiedAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => durableStore,
       createRuntime: value => { created = value; return runtime; } });
     let sequence = 0;
     vi.mocked(runtime.startTurn).mockImplementation(input => {
@@ -1228,7 +1228,7 @@ describe("Codex ACPX runtime adapter", () => {
   it("journals a turn before provider work and its prompt dispatch before the prompt write", async () => {
     const runtime = fakeRuntime();
     let created!: AcpRuntimeOptions;
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: value => { created = value; return runtime; } });
     const order: string[] = [];
     const journal = {
@@ -1256,7 +1256,7 @@ describe("Codex ACPX runtime adapter", () => {
   it("runs a turn unjournaled when its start cannot be journaled", async () => {
     const runtime = fakeRuntime();
     let created!: AcpRuntimeOptions;
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: value => { created = value; return runtime; } });
     const pending = pendingExtensionTurn("unjournaled-start");
     vi.mocked(runtime.startTurn).mockImplementation(() => pending.turn);
@@ -1274,7 +1274,7 @@ describe("Codex ACPX runtime adapter", () => {
   it("aborts the prompt write when its dispatch cannot be journaled", async () => {
     const runtime = fakeRuntime();
     let created!: AcpRuntimeOptions;
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), { createRegistry: () => registry(), createStore: () => store(),
       createRuntime: value => { created = value; return runtime; } });
     const pending = pendingExtensionTurn("unjournaled-turn");
     vi.mocked(runtime.startTurn).mockImplementation(() => pending.turn);
@@ -1302,7 +1302,7 @@ describe("Codex ACPX runtime adapter", () => {
     const result = new Promise<{ status: "completed" }>(resolve => { settle = resolve; });
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "grok" };
-    const port = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => durableStore,
+    const port = await openQualifiedAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => durableStore,
       createRuntime: value => { created = value; return runtime; } });
     vi.mocked(runtime.startTurn).mockImplementation(input => {
       durableRecord.lastRequestId = input.requestId;
@@ -1352,7 +1352,7 @@ describe("Codex ACPX runtime adapter", () => {
       load: vi.fn(async () => structuredClone(durableRecord)),
       save: vi.fn(),
     };
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
       createStore: () => durableStore,
       createRuntime: () => runtime,
@@ -1398,7 +1398,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -1445,7 +1445,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -1497,7 +1497,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -1556,7 +1556,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -1611,7 +1611,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("reconciliation 1 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 3 failed"));
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -1654,7 +1654,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockReturnValueOnce(reconciliationAttempts[1]!)
         .mockReturnValueOnce(reconciliationAttempts[2]!)
         .mockResolvedValueOnce(undefined);
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -1722,7 +1722,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
         .mockReturnValueOnce(finalReconciliation)
         .mockResolvedValueOnce(undefined);
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -1780,7 +1780,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("renewed reconciliation 1 failed"))
         .mockRejectedValueOnce(new Error("renewed reconciliation 2 failed"))
         .mockRejectedValueOnce(new Error("renewed reconciliation 3 failed"));
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -1842,7 +1842,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("reconciliation 1 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
         .mockReturnValueOnce(finalReconciliation);
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -1916,7 +1916,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = failingSignalChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child.child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -1995,7 +1995,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = failingSignalChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child.child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -2055,7 +2055,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("reconciliation 1 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 2 failed"))
         .mockRejectedValueOnce(new Error("reconciliation 3 failed"));
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -2103,7 +2103,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockRejectedValueOnce(new Error("reconciliation 3 failed"))
         .mockReturnValueOnce(newerClose)
         .mockResolvedValueOnce(undefined);
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -2152,7 +2152,7 @@ describe("Codex ACPX runtime adapter", () => {
       let finishPendingWork!: () => void;
       const pendingWork = new Promise<void>((resolve) => { finishPendingWork = resolve; });
       runtime.shutdown = vi.fn(() => pendingWork);
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: () => runtime,
@@ -2189,7 +2189,7 @@ describe("Codex ACPX runtime adapter", () => {
     let finishPendingWork!: () => void;
     const pendingWork = new Promise<void>((resolve) => { finishPendingWork = resolve; });
     runtime.shutdown = vi.fn(() => pendingWork);
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
       createStore: () => store(),
       createRuntime: () => runtime,
@@ -2213,7 +2213,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime();
     vi.mocked(runtime.close).mockResolvedValue(undefined);
     runtime.shutdown = vi.fn().mockRejectedValue(new Error("owned client close failed"));
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
       createStore: () => store(),
       createRuntime: () => runtime,
@@ -2234,7 +2234,7 @@ describe("Codex ACPX runtime adapter", () => {
     const providerExit = new Promise<void>((resolve) => {
       proveProviderExit = resolve;
     });
-    const port = await openCodexAcpxRuntime(openOptions(command), {
+    const port = await openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
@@ -2270,7 +2270,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = childThatExitsOnKill();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -2311,7 +2311,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = stubbornChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -2346,7 +2346,7 @@ describe("Codex ACPX runtime adapter", () => {
     const createRuntime = vi.fn(() => fakeRuntime());
 
     await expect(
-      openCodexAcpxRuntime(openOptions(command), {
+      openQualifiedAcpxRuntime(openOptions(command), {
         platform: "win32",
         createRuntime,
       }),
@@ -2367,7 +2367,7 @@ describe("Codex ACPX runtime adapter", () => {
     const createRuntime = vi.fn(() => fakeRuntime());
 
     await expect(
-      openCodexAcpxRuntime(
+      openQualifiedAcpxRuntime(
         {
           ...openOptions(command),
           credentialFenceFds: fences as unknown as readonly [number, number],
@@ -2387,7 +2387,7 @@ describe("Codex ACPX runtime adapter", () => {
     const createRuntime = vi.fn(() => fakeRuntime());
 
     await expect(
-      openCodexAcpxRuntime(
+      openQualifiedAcpxRuntime(
         {
           ...openOptions(command),
           activateCredentialFenceOwner: null,
@@ -2414,7 +2414,7 @@ describe("Codex ACPX runtime adapter", () => {
         .mockReturnValueOnce(lateChild);
       const retainedCleanups: Promise<void>[] = [];
       let runtimeOptions: AcpRuntimeOptions | undefined;
-      const port = await openCodexAcpxRuntime(openOptions(command), {
+      const port = await openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -2470,7 +2470,7 @@ describe("Codex ACPX runtime adapter", () => {
         cancel: vi.fn(),
         closeStream: vi.fn(),
       });
-      const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
       });
       const onTerminalSessionFailure = vi.fn();
@@ -2491,7 +2491,7 @@ describe("Codex ACPX runtime adapter", () => {
       cancel: vi.fn(),
       closeStream: vi.fn(),
     });
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
     });
     const onTerminalSessionFailure = vi.fn();
@@ -2511,7 +2511,7 @@ describe("Codex ACPX runtime adapter", () => {
       closeStream: vi.fn(),
     };
     vi.mocked(runtime.startTurn).mockReturnValue(turn);
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
       createStore: () => store(),
       createRuntime: () => runtime,
@@ -2561,7 +2561,7 @@ describe("Codex ACPX runtime adapter", () => {
       cancel: vi.fn(),
       closeStream: vi.fn(),
     }));
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
     });
     const turn = port.startTurn({ text: "Resume", requestId: "turn-recovered-failure" });
@@ -2587,7 +2587,7 @@ describe("Codex ACPX runtime adapter", () => {
       await Promise.resolve();
       runtimeOptions?.spawnAgent?.({ command: "ignored", args: ["--stdio"], options: {} });
     });
-    const port = await openCodexAcpxRuntime(openOptions(command), {
+    const port = await openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(), createStore: () => store(),
       awaitProviderOwnership: () => ownership,
       awaitProviderExit: providerOwnershipEstablished,
@@ -2634,7 +2634,7 @@ describe("Codex ACPX runtime adapter", () => {
         closeStream: vi.fn(),
       };
     });
-    const port = await openCodexAcpxRuntime(
+    const port = await openQualifiedAcpxRuntime(
       {
         ...openOptions(owner.command),
         refreshConsumedCommand: owner.refreshConsumedCommand,
@@ -2689,7 +2689,7 @@ describe("Codex ACPX runtime adapter", () => {
       });
       return rawTurn;
     });
-    const port = await openCodexAcpxRuntime(openOptions(command), {
+    const port = await openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
@@ -2718,7 +2718,7 @@ describe("Codex ACPX runtime adapter", () => {
   it("projects only ephemeral MCP bindings and applies fail-closed permissions", async () => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
-    const port = await openCodexAcpxRuntime(
+    const port = await openQualifiedAcpxRuntime(
       {
         ...openOptions(fakeCommand()),
         permissionMode: "deny-all",
@@ -2770,7 +2770,7 @@ describe("Codex ACPX runtime adapter", () => {
   it("rejects permissions that require an unavailable coordinator", async () => {
     const runtime = fakeRuntime();
     let runtimeOptions: AcpRuntimeOptions | undefined;
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
       createStore: () => store(),
       createRuntime: (options) => {
@@ -2804,7 +2804,7 @@ describe("Codex ACPX runtime adapter", () => {
       const options = openOptions(fakeCommand());
       options.profile = resolveQualifiedAcpxProfile(agent, model);
       options.permissionMode = permissionMode;
-      const port = await openCodexAcpxRuntime(options, {
+      const port = await openQualifiedAcpxRuntime(options, {
         createRegistry: () => registry(),
         createStore: () => store(),
         createRuntime: (createdOptions) => {
@@ -2836,7 +2836,7 @@ describe("Codex ACPX runtime adapter", () => {
       ),
       save: vi.fn(),
     };
-    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+    const port = await openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
       createRegistry: () => registry(),
       createStore: () => durableStore,
       createRuntime: () => runtime,
@@ -2869,7 +2869,7 @@ describe("Codex ACPX runtime adapter", () => {
       const child = fakeChild();
       const command = fakeCommand();
       vi.mocked(command.spawn).mockReturnValue(child);
-      const opening = openCodexAcpxRuntime(openOptions(command), {
+      const opening = openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderExit: providerOwnershipEstablished,
@@ -2915,7 +2915,7 @@ describe("Codex ACPX runtime adapter", () => {
       vi.mocked(command.spawn).mockReturnValue(child);
       const runtime = fakeRuntime();
       const options = openOptions(command);
-      const opening = openCodexAcpxRuntime({ ...options, profile: { ...options.profile, agent } }, {
+      const opening = openQualifiedAcpxRuntime({ ...options, profile: { ...options.profile, agent } }, {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -2977,7 +2977,7 @@ describe("Codex ACPX runtime adapter", () => {
       const runtime = fakeRuntime();
       const order: string[] = [];
       vi.mocked(sessions.save).mockImplementation(async () => { order.push("save"); });
-      const port = await openCodexAcpxRuntime({ ...openOptions(command), restoringSession: restoring }, {
+      const port = await openQualifiedAcpxRuntime({ ...openOptions(command), restoringSession: restoring }, {
         createRegistry: () => registry(),
         createStore: () => sessions,
         awaitProviderOwnership: providerOwnershipEstablished,
@@ -3004,7 +3004,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime();
 
     await expect(
-      openCodexAcpxRuntime(openOptions(command), {
+      openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderExit: providerOwnershipEstablished,
@@ -3037,7 +3037,7 @@ describe("Codex ACPX runtime adapter", () => {
     const controller = new AbortController();
     const cancellation = new Error("runtime admission cancelled");
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       { ...openOptions(command), signal: controller.signal },
       {
         createRegistry: () => registry(),
@@ -3099,7 +3099,7 @@ describe("Codex ACPX runtime adapter", () => {
     const cancellation = new Error("runtime admission cancelled");
     let runtimeOptions: AcpRuntimeOptions | undefined;
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       {
         ...openOptions(fakeCommand()),
         signal: controller.signal,
@@ -3154,7 +3154,7 @@ describe("Codex ACPX runtime adapter", () => {
     const cancellation = new Error("runtime admission cancelled");
     const retainedAdmissionCleanups: Promise<void>[] = [];
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       {
         ...openOptions(fakeCommand()),
         signal: controller.signal,
@@ -3202,7 +3202,7 @@ describe("Codex ACPX runtime adapter", () => {
     const cancellation = new Error("runtime admission cancelled");
     const retainedCleanups: Promise<void>[] = [];
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       { ...openOptions(fakeCommand()), signal: controller.signal },
       {
         createRegistry: () => registry(),
@@ -3257,7 +3257,7 @@ describe("Codex ACPX runtime adapter", () => {
     const cancellation = new Error("runtime admission cancelled");
     let runtimeOptions: AcpRuntimeOptions | undefined;
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       {
         ...openOptions(fakeCommand()),
         signal: controller.signal,
@@ -3319,7 +3319,7 @@ describe("Codex ACPX runtime adapter", () => {
     const retainedCleanups: Promise<void>[] = [];
     let runtimeOptions: AcpRuntimeOptions | undefined;
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       {
         ...openOptions(fakeCommand()),
         signal: controller.signal,
@@ -3383,7 +3383,7 @@ describe("Codex ACPX runtime adapter", () => {
     const cancellation = new Error("runtime admission cancelled");
     let runtimeOptions: AcpRuntimeOptions | undefined;
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       { ...openOptions(fakeCommand()), signal: controller.signal },
       {
         createRegistry: () => registry(),
@@ -3435,7 +3435,7 @@ describe("Codex ACPX runtime adapter", () => {
     const cancellation = new Error("runtime admission cancelled");
     let runtimeOptions: AcpRuntimeOptions | undefined;
 
-    const opening = openCodexAcpxRuntime(
+    const opening = openQualifiedAcpxRuntime(
       {
         ...openOptions(fakeCommand()),
         signal: controller.signal,
@@ -3493,7 +3493,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime();
     const retainedCleanups: Promise<void>[] = [];
 
-    const result = openCodexAcpxRuntime(openOptions(command), {
+    const result = openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderExit: providerOwnershipEstablished,
@@ -3541,7 +3541,7 @@ describe("Codex ACPX runtime adapter", () => {
     const retainedCleanups: Promise<void>[] = [];
 
     await expect(
-      openCodexAcpxRuntime(openOptions(command), {
+      openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderExit: providerOwnershipEstablished,
@@ -3579,7 +3579,7 @@ describe("Codex ACPX runtime adapter", () => {
     const failure = new Error("recovered ACP handshake rejected");
 
     await expect(
-      openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => recoveredStore,
         createRuntime: (runtimeOptions) => {
@@ -3627,7 +3627,7 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(failingStore.save).mockRejectedValue(failure);
 
     await expect(
-      openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => failingStore,
         createRuntime: (runtimeOptions) => {
@@ -3674,7 +3674,7 @@ describe("Codex ACPX runtime adapter", () => {
     );
 
     await expect(
-      openCodexAcpxRuntime(openOptions(command), {
+      openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         awaitProviderExit: providerOwnershipEstablished,
@@ -3731,7 +3731,7 @@ describe("Codex ACPX runtime adapter", () => {
     const retainedCleanups: Promise<void>[] = [];
 
     await expect(
-      openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      openQualifiedAcpxRuntime(openOptions(fakeCommand()), {
         createRegistry: () => registry(),
         createStore: () => store(),
         runtimeCloseTimeoutMs: 1,
@@ -3780,7 +3780,7 @@ describe("Codex ACPX runtime adapter", () => {
     const command = fakeCommand();
     const child = failingSignalChild();
     vi.mocked(command.spawn).mockReturnValue(child.child);
-    const port = await openCodexAcpxRuntime(openOptions(command), {
+    const port = await openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
@@ -3817,7 +3817,7 @@ describe("Codex ACPX runtime adapter", () => {
     const child = fakeChild();
     const providerError = new Error("provider spawn failed");
     vi.mocked(command.spawn).mockReturnValue(child);
-    const port = await openCodexAcpxRuntime(openOptions(command), {
+    const port = await openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership: providerOwnershipEstablished,
@@ -3879,7 +3879,7 @@ describe("Codex ACPX runtime adapter", () => {
       return HANDLE;
     });
 
-    const opening = openCodexAcpxRuntime(openOptions(command), {
+    const opening = openQualifiedAcpxRuntime(openOptions(command), {
       createRegistry: () => registry(),
       createStore: () => store(),
       awaitProviderOwnership,
@@ -3907,7 +3907,7 @@ describe("Codex ACPX runtime adapter", () => {
     const runtime = fakeRuntime();
 
     await expect(
-      openCodexAcpxRuntime(openOptions(command), {
+      openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         sessionHandshakeTimeoutMs: 1,
@@ -3948,7 +3948,7 @@ describe("Codex ACPX runtime adapter", () => {
     );
 
     await expect(
-      openCodexAcpxRuntime(openOptions(command), {
+      openQualifiedAcpxRuntime(openOptions(command), {
         createRegistry: () => registry(),
         createStore: () => store(),
         sessionHandshakeTimeoutMs: 1,

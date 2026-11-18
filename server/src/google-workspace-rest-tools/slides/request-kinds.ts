@@ -1,0 +1,63 @@
+import { refuseGoogleFileUrl, type RequestKindRules } from "../documents-shared.js";
+
+const allow = { allowed: true } as const;
+const SHEETS = "reads a chart from a Google Sheets spreadsheet, which is another file.";
+
+function youtubeOnly(body: Record<string, unknown>): string | undefined {
+  return body.source === "YOUTUBE" ? undefined : "is accepted only with source YOUTUBE; a DRIVE video is another file.";
+}
+
+export const SLIDES_REQUEST_KINDS: RequestKindRules = {
+  createSlide: allow,
+  createShape: allow,
+  createTable: allow,
+  insertText: allow,
+  insertTableRows: allow,
+  insertTableColumns: allow,
+  deleteTableRow: allow,
+  deleteTableColumn: allow,
+  replaceAllText: allow,
+  deleteObject: allow,
+  updatePageElementTransform: allow,
+  updateSlidesPosition: allow,
+  deleteText: allow,
+  createImage: { allowed: true, refuse: refuseGoogleFileUrl("url"), example: { url: "https://example.test/chart.png", elementProperties: { pageObjectId: "s1" } } },
+  createVideo: { allowed: true, refuse: youtubeOnly, example: { source: "YOUTUBE", id: "synthetic", elementProperties: { pageObjectId: "s1" } } },
+  createLine: allow,
+  updateShapeProperties: allow,
+  updateImageProperties: allow,
+  updateVideoProperties: allow,
+  updateAudioProperties: allow,
+  updatePageProperties: { allowed: true, refuse: refuseGoogleFileUrl("pageProperties", "pageBackgroundFill", "stretchedPictureFill", "contentUrl"), example: { objectId: "s1", pageProperties: { pageBackgroundFill: { stretchedPictureFill: { contentUrl: "https://example.test/bg.png" } } }, fields: "pageBackgroundFill" } },
+  updateTableCellProperties: allow,
+  updateLineProperties: allow,
+  createParagraphBullets: allow,
+  replaceAllShapesWithImage: { allowed: true, refuse: refuseGoogleFileUrl("imageUrl"), example: { imageUrl: "https://example.test/logo.png", containsText: { text: "{{logo}}" } } },
+  duplicateObject: allow,
+  updateTextStyle: allow,
+  deleteParagraphBullets: allow,
+  updateParagraphStyle: allow,
+  updateTableBorderProperties: allow,
+  updateTableColumnProperties: allow,
+  updateTableRowProperties: allow,
+  mergeTableCells: allow,
+  unmergeTableCells: allow,
+  groupObjects: allow,
+  ungroupObjects: allow,
+  updatePageElementAltText: allow,
+  replaceImage: { allowed: true, refuse: refuseGoogleFileUrl("url"), example: { imageObjectId: "img1", url: "https://example.test/logo.png" } },
+  updateSlideProperties: allow,
+  updatePageElementsZOrder: allow,
+  updateLineCategory: allow,
+  rerouteLine: allow,
+  insertComment: allow,
+  addCommentReply: allow,
+  updateCommentPost: allow,
+  deleteComment: allow,
+  deleteCommentReply: allow,
+  createSheetsChart: { allowed: false, reason: SHEETS },
+  replaceAllShapesWithSheetsChart: { allowed: false, reason: SHEETS },
+  refreshSheetsChart: { allowed: false, reason: SHEETS },
+  importSlides: { allowed: false, reason: "copies slides from another presentation, which is another file." },
+  createAudio: { allowed: false, reason: "inserts an audio file from Google Drive, which is another file." },
+};

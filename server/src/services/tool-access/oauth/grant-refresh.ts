@@ -4,7 +4,7 @@ import type { ActorInfo, DbTransaction } from "../types.js";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -16,7 +16,7 @@ import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type P
 
 import { actorForSecret, type OAuthCredentialStore } from "./credential-store.js";
 import { withoutOAuthRefreshLease, type OAuthRefreshLeases } from "./refresh-leases.js";
-import { managedConnectorProfile, oauthGrantConfig, oauthGrantExpiresAtMs } from "./client-settings.js";
+import { managedConnectorProfile, managedConnectorSubject, oauthGrantConfig, oauthGrantExpiresAtMs } from "./client-settings.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { singleFlight } from "../single-flight.js";
 import { usesClientCredentials } from "./client-credentials.js";
@@ -106,14 +106,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 : undefined,
             );
             const cloudConnector = currentCloudConnector();
-            const connectorSubject =
-              grant.kind === "agent" && grant.subjectAgentId
-                ? `agent:${grant.subjectAgentId}`
-                : grant.kind === "user" && grant.subjectUserId
-                  ? grant.subjectUserId
-                  : typeof oauth.connectorSubjectUserId === "string"
-                    ? oauth.connectorSubjectUserId
-                    : null;
+            const connectorSubject = managedConnectorSubject(grant, oauth);
             const accessRef = grant.credentialSecretRefs.find(
               (ref) => ref.configPath === "oauth.access_token",
             );
@@ -149,8 +142,8 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 refreshToken: refreshSecret.value,
               });
               if (profile.id === "workspace.all") {
-                const requested = normalizeOauthScopes(oauthGrantConfig(grant).requestedScopes ?? oauthGrantConfig(grant).scopes);
-                credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
+                const requested = googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(oauthGrantConfig(grant).requestedScopes ?? oauthGrantConfig(grant).scopes));
+                credentials.scopes = googleWorkspaceEffectiveScopes(requested, googleWorkspaceSubmittedScopesIn(credentials.scopes));
               }
               if (profile.id === "workspace.all" && !isGoogleWorkspaceScopeGrant(credentials.scopes)) {
                 throw new PaperclipCloudConnectorError("Google did not return verifiable permissions", "REAUTHORIZATION_REQUIRED");
@@ -456,6 +449,9 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
           throw error;
         }
 
+        if (connection.config.sourceTemplateKey === "google-workspace") {
+          token.scope = googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(token.scope)).join(" ");
+        }
         if (connection.config.sourceTemplateKey === "google-workspace"
           && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
           await db.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: now() })

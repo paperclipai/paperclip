@@ -18,7 +18,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
+import { currentControllerBootId, currentProcessSpaceHash, currentProcessStartedAtMs } from "../services/controller-process-identity.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
@@ -34,6 +34,12 @@ async function exitedPid(): Promise<number> {
   const pid = child.pid!;
   await new Promise<void>(resolve => { child.once("exit", () => resolve()); child.kill("SIGKILL"); });
   return pid;
+}
+
+async function ownProcessStartedAt(): Promise<Date> {
+  const startedAt = await currentProcessStartedAtMs();
+  if (startedAt === null) throw new Error("This host cannot report this process's start time");
+  return new Date(startedAt);
 }
 
 /**
@@ -104,7 +110,7 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
       leaseOwner: null, failureCode: "native_session_cleanup_quarantined", recoveryState: "blocked", controllerGeneration: 2,
       ...(options.controllerAlive
         ? { controllerBootId: currentControllerBootId(), controllerPid: process.pid, controllerHostHash: currentProcessSpaceHash(),
-          controllerProcessStartedAt: new Date(Date.now() - process.uptime() * 1_000) }
+          controllerProcessStartedAt: await ownProcessStartedAt() }
         : { controllerBootId: options.controllerBootId ?? randomUUID(), controllerPid: await exitedPid(),
           controllerHostHash: options.hostHashUnrecorded ? null : currentProcessSpaceHash(),
           controllerProcessStartedAt: new Date(finishedAt.getTime() - 20 * 60_000) }) });
