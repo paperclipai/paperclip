@@ -75,15 +75,59 @@ describe("Coordinator task creation", () => {
     expect(region.querySelector('button[aria-expanded]')).toBeNull();
     expect(fixture.projectTasks).not.toHaveBeenCalled();
   });
-  it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
-    fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({
-      id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`, status: "todo", recordedAt: index,
+  it("keeps hundreds of mixed recent rows in visit order with bounded input reads", async () => {
+    const baseTime = Date.parse("2026-11-18T08:00:00Z");
+    const tasks = Array.from({ length: 300 }, (_, index) => ({
+      id: `task-${index}`, companyId: "company", identifier: `TASK-${index}`, title: `Recent task ${index}`,
+      status: "todo", recordedAt: baseTime + 2 * index,
+      parentId: index > 0 ? `task-${index - 1}` : null, subtaskCount: 1,
     }));
+    const agents = Array.from({ length: 100 }, (_, index) => ({
+      id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}`, role: "engineer", status: "idle",
+    } as Agent));
+    const chats = agents.map((agent, index) => ({
+      id: `chat-${index}`, conversationAgentId: agent.id,
+      updatedAt: new Date(baseTime + 6 * index + 3).toISOString(), isUnreadForMe: false,
+    }));
+    const projects = Array.from({ length: 60 }, (_, index) => ({
+      id: `project-${index}`, companyId: "company", name: `Project ${index}`, urlKey: `project-${index}`,
+    }));
+    const inputCount = tasks.length + agents.length + chats.length + projects.length;
+    let reads = 0;
+    function bounded<T>(items: T[]) {
+      return new Proxy(items, { get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property) && ++reads > 4 * inputCount) {
+          throw new Error("Recents scans growing lists repeatedly");
+        }
+        return Reflect.get(target, property, receiver);
+      } });
+    }
+
+    fixture.projects = bounded(projects);
+    const now = vi.spyOn(Date, "now").mockReturnValue(baseTime + 601);
+    try {
+      fixture.pathname = "/COO/projects/project-0";
+      await renderSidebar();
+      now.mockReturnValue(baseTime + 602);
+      fixture.pathname = "/COO/projects/project-1";
+      await renderSidebar();
+    } finally {
+      now.mockRestore();
+    }
+
+    fixture.recentTasks = bounded(tasks);
+    fixture.agents = bounded(agents);
+    fixture.chats = bounded(chats);
     await renderSidebar();
+
     const region = container.querySelector('[role="region"][aria-label="Recents"]')!;
-    expect(region.querySelectorAll("a")).toHaveLength(20);
-    expect(region.textContent).not.toContain("Recents");
-    expect(region.querySelector('a[href="/issues/TASK-0"]')).not.toBeNull();
+    const links = Array.from(region.querySelectorAll("a"), link => link.getAttribute("href"));
+    expect(links).toHaveLength(tasks.length + chats.length + 2);
+    expect(links.slice(0, 4)).toEqual(["/projects/project-1", "/projects/project-0", "/issues/TASK-299", "/chats/agent-99"]);
+    expect(links.at(-1)).toBe("/issues/TASK-0");
+    expect(new Set(links).size).toBe(links.length);
+    expect(fixture.projectTasks).not.toHaveBeenCalled();
+    expect(reads).toBeGreaterThanOrEqual(inputCount);
   });
   it("moves the child ahead of newer rows when reopened", async () => {
     const parent = { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 1 };
