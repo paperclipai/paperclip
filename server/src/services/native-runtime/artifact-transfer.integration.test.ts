@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -11,6 +12,24 @@ import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.
 import { SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { createArtifactInstaller } from "./artifact-transfer.js";
 import type { StorageService } from "../../storage/types.js";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { CodexAppServerDriver, createCodexTaskEnvelope, type CodexAppServerTransport, type CodexRpcServerRequest } from "@paperclipai/paperclip-runner";
+
+type TestTransport = CodexAppServerTransport & { invoke(request: CodexRpcServerRequest): Promise<Record<string, unknown>> };
+const { FakeCodexTransport } = await import(new URL("../../../../packages/paperclip-runner/src/drivers/codex/codex-app-server-driver.test-support.ts", import.meta.url).href) as { FakeCodexTransport: new () => TestTransport };
+
+const combinedRunner: Pick<CommandManagedRuntimeRunner, "execute"> = {
+  execute: input => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, input.args, { cwd: input.cwd, env: { ...process.env, ...input.env }, stdio: "pipe" });
+    let stdout = "";
+    child.stdout.on("data", data => { stdout += data; });
+    child.stderr.on("data", data => { stdout += data; });
+    child.on("error", reject);
+    child.on("close", (exitCode, signal) => resolve({ exitCode, signal, stdout, stderr: "", timedOut: false, pid: child.pid ?? null, startedAt: null }));
+    child.stdin.on("error", () => {});
+    child.stdin.end(input.stdin ?? "");
+  }),
+};
 
 describe.skipIf(process.platform !== "linux")("native authenticated artifact installation", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -67,6 +86,38 @@ describe.skipIf(process.platform !== "linux")("native authenticated artifact ins
       expect(remoteInstaller.mock.calls[1][0].verifyOnly).toBe(true);
       expect((await readFile(join(root, "remote-synthetic.bin"))).equals(bytes)).toBe(true);
       await rm(join(root, "remote-synthetic.bin"));
+
+      const combinedAuthority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workspaceRoot: root, storage,
+        executionTargetKind: "remote", installRemoteArtifact: createArtifactInstaller(root, combinedRunner) });
+      const transport = new FakeCodexTransport();
+      const request = transport.request.bind(transport);
+      transport.request = async (method, params) => {
+        const response = await request(method, params);
+        return method === "thread/start" || method === "thread/resume"
+          ? { ...response, cwd: root, thread: { ...response.thread as Record<string, unknown>, cwd: root } }
+          : response;
+      };
+      const session = await new CodexAppServerDriver({
+        taskEnvelope: createCodexTaskEnvelope({ objective: "Download synthetic bytes", constraints: [] }),
+        transportFactory: () => transport, dynamicTools: combinedAuthority.definitions(),
+        dynamicToolHandler: call => combinedAuthority.execute(call),
+      }).openSession({ runId, normalizedSessionId: randomUUID(), workingDirectory: root });
+      try {
+        await session.startTurn({ message: { role: "user", text: "Download synthetic bytes" } });
+        const invoke = (callId: string) => transport.invoke({ id: callId, method: "item/tool/call", params: {
+          threadId: "thread-1", turnId: "turn-1", callId, tool: "download_artifact",
+          arguments: { ...call.arguments, destination: "combined.bin" },
+        } });
+        expect(await invoke("combined-install")).toMatchObject({ success: true });
+        expect((await readFile(join(root, "combined.bin"))).equals(bytes)).toBe(true);
+        expect(await invoke("combined-identical-retry")).toMatchObject({ success: true });
+        await writeFile(join(root, "combined.bin"), "existing conflict");
+        expect(await invoke("combined-conflict")).toMatchObject({ success: false,
+          contentItems: [{ type: "inputText", text: "artifact_install_conflict" }] });
+        expect(await readFile(join(root, "combined.bin"), "utf8")).toBe("existing conflict");
+      } finally { await session.close({ reason: "synthetic verification complete" }); }
+      await rm(join(root, "combined.bin"));
+      expect(await readdir(root)).toEqual(["synthetic.bin"]);
       // Inputs with a different identity or without an available asset fail before storage.
       for (const arguments_ of [{ ...call.arguments, artifactId: randomUUID() }, { ...call.arguments, sha256: "0".repeat(64) }, { ...call.arguments, byteSize: 388130 }]) {
         getObject.mockClear();
