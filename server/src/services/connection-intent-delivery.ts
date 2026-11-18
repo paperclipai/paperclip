@@ -370,7 +370,9 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     // Passive records need no admitted-work hold or wake alarm. While the
     // process is already awake, keep the existing reconciliation cadence so
     // new access or responses resume work even without a queue notification.
-    maintenanceAt = !state.active && state.present ? Date.now() + 5_000 : null;
+    // Later sweep pages may hold cards that the owner-status filter above
+    // does not count, such as shared AI repair cards on blocked or closed tasks.
+    maintenanceAt = !state.active && (state.present || satisfiedIntents.hasLaterPages()) ? Date.now() + 5_000 : null;
     return state.active;
   }
   return { deliver, hasPending, nextRunAt: () => maintenanceAt, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
