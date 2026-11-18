@@ -63,12 +63,13 @@ ${options.brokerFile ? String.raw`
   env.PAPERCLIP_GITHUB_BROKER_URL = '';
   env.PAPERCLIP_GITHUB_BROKER_TOKEN = '';
   // An unreadable file (for example during a rewrite) keeps the last location.
-  // Only a missing file, or one without a broker, means the task's access ended.
+  // Only a missing file, or one without a usable broker, means the task's access ended.
   const readBroker = () => {
     let broker;
     try { broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8')); }
     catch (error) { return error && error.code === 'ENOENT' ? 'absent' : 'unreadable'; }
-    if (!broker || typeof broker.url !== 'string' || typeof broker.token !== 'string') return 'absent';
+    // A failed replacement bridge publishes empty values, which also means no broker.
+    if (!broker || typeof broker.url !== 'string' || typeof broker.token !== 'string' || !broker.url || !broker.token) return 'absent';
     env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
     env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
     return 'present';

@@ -482,7 +482,8 @@ it.each(["closed port", "bridge unavailable", "partly written broker file"])(
   expect(result.stderr).not.toMatch(/stopped-run|reattached-run/);
 }, 20_000);
 
-it("stops waiting for an unreachable task broker once its broker file is removed", async () => {
+// A failed replacement bridge publishes empty broker values instead of removing the file.
+it.each(["removed", "emptied"])("stops waiting for an unreachable task broker once its broker file is %s", async (ending) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-ended-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "managed"), real = path.join(root, "real");
@@ -497,7 +498,8 @@ it("stops waiting for an unreachable task broker once its broker file is removed
   const started = Date.now();
   const operation = exec(path.join(bin, "gh"), [], { env: { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}` } });
   await new Promise(resolve => setTimeout(resolve, 2500));
-  await rm(path.join(bin, "broker.json"));
+  if (ending === "removed") await rm(path.join(bin, "broker.json"));
+  else await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: "", token: "" }));
   const result = await operation;
   expect(result.stdout).toBe("anonymous");
   expect(result.stderr).toContain("broker_transport_unavailable");
