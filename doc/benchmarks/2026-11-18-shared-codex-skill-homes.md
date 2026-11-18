@@ -28,5 +28,20 @@ same files took 1.3 s. That is why reuse compares recorded file identities.
 Instance-wide on the same machine: 274 sessions held 9.2 GB in `codex-home/skills`,
 over 30 distinct skill sets. One home per set is about 2.0 GB.
 
-Not measured here: a real provider turn reading a skill through the shared `HOME`
-(needs a Codex login), and time to the provider's first event.
+## Real turn through the shared HOME
+
+Codex 0.160.0 `app-server` on WSL Linux, ChatGPT login, `HOME` = a published skill
+home with one skill (`alpha`: `SKILL.md` and `scripts/run.sh`), `CODEX_HOME` = a fresh
+session home with `plugins`, `remote_plugin` and `apps` disabled. Prompt: use the alpha
+skill and reply with the phrase `scripts/run.sh` echoes.
+
+- Codex discovered the skill under `$HOME/.agents/skills`, read
+  `<skill home>/.agents/skills/alpha/SKILL.md` and `.../scripts/run.sh`, and answered
+  with the phrase. The turn completed.
+- Files under the skill home changed during the turn: 0.
+- Session `codex-home` after the turn: 4.2 MB, with no `plugins/` or
+  `cache/remote_plugin_catalog`.
+
+This used Codex's plain `read-only` sandbox, not Paperclip's filesystem policy; the
+policy's read grant for `<skill home>/.agents/skills` is covered by unit tests.
+Not measured: time to the provider's first event in a full Paperclip launch.
