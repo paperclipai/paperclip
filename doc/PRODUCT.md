@@ -98,27 +98,17 @@ a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list and shows each task once. Project
 groups omit tasks already shown in the other sections and disappear when empty.
 
-Opening a personal task moves it to the top of sidebar Recents. A visit to a
-nested task moves its parent group. Coordinator Recents lets you pin tasks, agent
-chats, and projects above More. The pin button appears on the current row or
-when a row is hovered or focused with the keyboard. Shortcuts share the saved
-order with pinned pages and stay available as Recents changes.
+Sidebar Recents and Classic Recent Tasks show tasks from the viewer’s own
+recent activity as a flat list. A subtask has its own row and its own unread
+marker. Tasks archived from the viewer’s inbox leave Recents. Canceled and
+completed tasks remain eligible. Opening a recent task moves its row to the top
+of Recents.
 
-Sidebar Recents shows readable direct subtasks below a recent parent. Each group
-can fold independently, starts with at most ten children, and loads more on
-request. Waiting external chat children remain visible in explicit child lists.
-A selected child beyond the first ten replaces the last preview row.
-Children already in recent history appear once under their recent root parent.
-Orphans remain in the main list. Standard Recents and Classic Recent Tasks use
-the same groups; Classic keeps its existing parent action menus. Child reads stop
-when a group leaves the viewport. At most three child requests run together.
-Show less discards extra cached pages, so the next refresh reads one preview.
-Live updates refresh the affected child groups and recent summary batches;
-permission changes clear cached children before refetching.
-
-Unread stays personal to each task. Folding, loading children, and Show more do
-not mark tasks read. A folded group shows its readable unread-child count,
-including children beyond ten, separately from the parent's own unread marker.
+Standard Recents also shows recent chats and projects as individual links.
+Coordinator Recents lets you pin tasks, agent chats, and projects above More.
+The pin button appears on the current row or when a row is hovered or focused
+with the keyboard. Shortcuts share the saved order with pinned pages and stay
+available as Recents changes.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery

@@ -14,11 +14,7 @@ export interface RecentTaskEntry {
   externalConversationState?: Issue["externalConversationState"];
   /** Blocked tasks covered by active work render the "in queue" glyph everywhere. */
   blockerAttention?: Issue["blockerAttention"];
-  /** Refreshed navigation state; do not persist these personal read projections. */
-  parentId?: string | null;
   isUnreadForMe?: boolean;
-  subtaskCount?: number;
-  unreadSubtaskCount?: number;
   recordedAt: number;
   // Server version of the title/status snapshot, independent of comment activity.
   // Legacy entries have no version until a detail query refreshes them.
@@ -143,11 +139,11 @@ export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnaps
 }
 
 export function recordRecentTask(
-  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention" | "updatedAt" | "conversationAgentId">,
+  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention" | "updatedAt" | "conversationAgentId" | "archivedAt">,
   userId: string | null | undefined,
   recordedAt?: number,
 ) {
-  if (issue.conversationAgentId) return;
+  if (issue.conversationAgentId || issue.archivedAt) return;
   const storageKey = getRecentTasksStorageKey(issue.companyId, userId);
   const current = readRecentTasks(storageKey, issue.companyId);
   const existing = current.find((candidate) => candidate.id === issue.id);
