@@ -1385,8 +1385,6 @@ export function createToolGatewayService(
     remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
     /** Test seam for refreshing personal Gmail grants. */
     paperclipCloudConnector?: PaperclipCloudConnector | null;
-    /** @deprecated Use paperclipCloudConnector. */
-    paperclipIdGmailConnector?: PaperclipCloudConnector | null;
     /** Refreshes customer-owned/DCR OAuth grants before remote MCP execution. */
     oauthGrantRefresher?: (input: {
       companyId: string;
@@ -1638,12 +1636,8 @@ export function createToolGatewayService(
       headers: Record<string, string>;
     }
   >();
-  const configuredCloudConnector =
-    options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
-  const connectorWasProvided =
-    options.paperclipCloudConnector !== undefined ||
-    options.paperclipIdGmailConnector !== undefined;
-  let cachedCloudConnector = configuredCloudConnector ?? null;
+  const connectorWasProvided = options.paperclipCloudConnector !== undefined;
+  let cachedCloudConnector = options.paperclipCloudConnector ?? null;
   const currentCloudConnector = (): PaperclipCloudConnector | null => {
     if (cachedCloudConnector || connectorWasProvided)
       return cachedCloudConnector;

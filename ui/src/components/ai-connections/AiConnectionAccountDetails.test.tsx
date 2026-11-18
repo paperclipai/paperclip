@@ -7,6 +7,7 @@ import type { AiConnectionAccountIdentity, AiManagedConnectionSummary, Connectio
 import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: vi.fn(async () => ({ user: { id: "user" } })) } }));
@@ -155,4 +156,11 @@ it("reuses recent identity observations and invalidates them after reconnect", a
   expect(identityCalls()).toHaveLength(2);
   expect(host.textContent).toContain("new-account@example.test");
   expect(host.textContent).not.toContain("avery@example.test");
+});
+
+it("masks the provider account and organization labels in session replay", async () => {
+  observation = { ...known, accountLabel: "perrin.ashdown@example.test", organizationLabel: "Brackenridge Analytics" };
+  await render();
+  expect(replayLeaks("perrin.ashdown@example.test", document.body)).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("Brackenridge Analytics", document.body)).toEqual({ rendered: true, recorded: false });
 });

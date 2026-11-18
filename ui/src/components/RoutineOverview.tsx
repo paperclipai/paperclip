@@ -48,6 +48,9 @@ export function summarizeRoutineSchedule(triggers: RoutineTrigger[]): RoutineSch
         nextRunAt: null,
       };
     }
+    if (triggers.some((trigger) => trigger.kind === "heartbeat" && trigger.enabled)) {
+      return { label: "Standing check", detail: "Carried out on each of the agent's wake-ups", nextRunAt: null };
+    }
     return { label: "No active schedule", detail: "Manual runs only", nextRunAt: null };
   }
 

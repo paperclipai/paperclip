@@ -2,14 +2,17 @@ import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyIssueRecovery, notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { ISSUE_DOCUMENT_BATCH_MAX_IDS, isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import { conflict, notFound, payloadTooLarge, unprocessable } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
 import type { ImportIssueDocumentRow } from "./import-write-types.js";
+
+// Stay below download_artifact's 10 MiB limit, including JSON escaping and metadata.
+export const ISSUE_DOCUMENT_BATCH_MAX_BYTES = 8 * 1024 * 1024;
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -170,6 +173,34 @@ export function documentService(db: Db) {
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
         .then((rows) => rows[0] ?? null);
       return row ? mapIssueDocumentRow(row, true) : null;
+    },
+
+    /** Caller authorizes the task set first. One query reads only the requested key. */
+    getIssueDocumentsByKey: async (companyId: string, issueIds: string[], rawKey: string, includeBody = true) => {
+      const key = normalizeDocumentKey(rawKey);
+      if (issueIds.length > ISSUE_DOCUMENT_BATCH_MAX_IDS) throw unprocessable("Too many issue document IDs");
+      if (!issueIds.length) return [];
+      const join = and(eq(issueDocuments.documentId, documents.id), eq(documents.companyId, companyId));
+      const condition = and(eq(issueDocuments.companyId, companyId), inArray(issueDocuments.issueId, issueIds), eq(issueDocuments.key, key));
+      const read = async (connection: Db) => {
+        if (includeBody) {
+          // PostgreSQL counts encoded JSON one body at a time; no bodies cross
+          // into the app before the entire set fits. The same snapshot below
+          // prevents a concurrent edit from growing the admitted response.
+          const [size] = await connection.select({ bytes: sql<string>`coalesce(sum(octet_length(to_json(${documents.latestBody})::text)), 0)` })
+            .from(issueDocuments).innerJoin(documents, join).where(condition);
+          if (Number(size.bytes) > ISSUE_DOCUMENT_BATCH_MAX_BYTES) {
+            throw payloadTooLarge("Document batch exceeds 8 MiB; split issueIds into smaller requests or use includeBody=false", { maxResponseBytes: ISSUE_DOCUMENT_BATCH_MAX_BYTES });
+          }
+        }
+        const rows = await connection
+          .select({ ...issueDocumentSelect, latestBody: includeBody ? documents.latestBody : sql<string>`''` })
+          .from(issueDocuments).innerJoin(documents, join).where(condition);
+        return rows.map(row => mapIssueDocumentRow(row, includeBody));
+      };
+      return includeBody
+        ? db.transaction(tx => read(tx as unknown as Db), { isolationLevel: "repeatable read", accessMode: "read only" })
+        : read(db);
     },
 
     /** Bounded receipt read: never load every historical body for one revision. */

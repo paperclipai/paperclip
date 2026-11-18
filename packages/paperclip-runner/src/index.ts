@@ -8,6 +8,7 @@ export * from "./contracts/completion-result.js";
 export * from "./contracts/codex.js";
 export * from "./contracts/provider-performance.js";
 export * from "./contracts/durable-recovery.js";
+export * from "./contracts/sandbox-disk-full.js";
 export * from "./contracts/harness-driver.js";
 export * from "./contracts/local-runner.js";
 export * from "./contracts/native-execution.js";

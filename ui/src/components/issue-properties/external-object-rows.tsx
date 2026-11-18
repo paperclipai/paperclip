@@ -16,6 +16,7 @@ import { cn } from "../../lib/utils";
 import { ExternalObjectStatusIcon } from "../ExternalObjectStatusIcon";
 import { PropertyRow } from "./primitives";
 import { ExpandRelationListButton } from "./relation-controls";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const EXTERNAL_OBJECT_PROPERTY_PREVIEW_COUNT = 5;
 
@@ -45,7 +46,7 @@ function externalObjectRowLabel(group: IssueExternalObjectGroup): ReactNode {
   return (
     <span className="inline-flex min-w-0 items-start gap-1" title={displayKey}>
       {Icon ? <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 mt-0.5" /> : null}
-      <span className="truncate">{displayKey}</span>
+      <span className={cn("truncate", ANALYTICS_MASK_CLASS)}>{displayKey}</span>
     </span>
   );
 }
@@ -115,7 +116,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         sizeClassName="h-3.5 w-3.5"
         label={`${providerLabel}: ${statusLabel}`}
       />
-      <span className="min-w-0 truncate">{value}</span>
+      <span className={cn("min-w-0 truncate", ANALYTICS_MASK_CLASS)}>{value}</span>
     </>
   );
   const className = cn(

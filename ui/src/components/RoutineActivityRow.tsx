@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export type RoutineActivityEvent = Pick<ActivityEvent, "id" | "action" | "details" | "createdAt">;
 
@@ -89,7 +90,7 @@ export function RoutineActivityRow({ event }: { event: RoutineActivityEvent }) {
         ) : null}
       </button>
       {expanded && hasPayload ? (
-        <pre className="mx-2 mb-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground">
+        <pre className={cn("mx-2 mb-2 overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
           {JSON.stringify(event.details, null, 2)}
         </pre>
       ) : null}

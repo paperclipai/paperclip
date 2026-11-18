@@ -104,12 +104,12 @@ export function RoutineContextualSidebar({
           Operate
         </p>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem analyticsChrome
+          <SidebarNavItem
             to={routineDetailHref(routineId, "runs")}
             label="Runs"
             icon={Play}
           />
-          <SidebarNavItem analyticsChrome
+          <SidebarNavItem
             to={routineDetailHref(routineId, "activity")}
             label="Activity"
             icon={Activity}

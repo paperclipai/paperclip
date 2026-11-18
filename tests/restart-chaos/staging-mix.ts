@@ -672,10 +672,12 @@ export function latestFailureCode(sample: Pick<TaskSample, "runs">): string | nu
   return failed[0]?.errorCode ?? failed[0]?.failureCause ?? null;
 }
 
+export const BANNER_MAX_UNSAMPLED_MS = 2 * 60_000;
+
 export function noteRetryBanner(state: StagingMixRecord, shown: boolean, now: number, errorCode: string | null): void {
   const banner = state.retryBanner;
   if (!shown) {
-    if (banner?.visibleSince != null) { banner.shownMs += now - banner.visibleSince; banner.visibleSince = null; }
+    if (banner?.visibleSince != null) { banner.shownMs = bannerShownMs(banner, now); banner.visibleSince = null; }
     return;
   }
   if (!banner) { state.retryBanner = { firstShownAt: now, lastShownAt: now, shownMs: 0, visibleSince: now, errorCode }; return; }
@@ -685,7 +687,9 @@ export function noteRetryBanner(state: StagingMixRecord, shown: boolean, now: nu
 }
 
 export function bannerShownMs(banner: RetryBanner, now: number): number {
-  return banner.shownMs + (banner.visibleSince === null ? 0 : now - banner.visibleSince);
+  if (banner.visibleSince === null) return banner.shownMs;
+  const until = Math.min(now, banner.lastShownAt + BANNER_MAX_UNSAMPLED_MS);
+  return banner.shownMs + Math.max(0, until - banner.visibleSince);
 }
 
 export function collectStagingMixArtifacts(record: TaskRecord,

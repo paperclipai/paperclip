@@ -942,7 +942,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
   });
 
-  it.each(["claude_local", "codex_local"])("keeps %s SSH runtime and its durable workspace receipt on a volume-free server", async adapterType => {
+  it.each(["claude_local", "codex_local", "cursor", "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"])("keeps %s SSH runtime and its durable workspace receipt on a volume-free server", async adapterType => {
     const { input, run, agent, issue } = await fixture(adapterType);
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     const environmentId = randomUUID(), leaseId = randomUUID(), workspaceId = randomUUID();

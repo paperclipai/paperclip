@@ -263,7 +263,7 @@ describeEmbeddedPostgres("native question bridge", () => {
     const stateDirectory = mkdtempSync(join(tmpdir(), "native-permission-authority-"));
     const server = createServer();
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
+    setupRunnerPrpWebSocketServer(server);
     const authority = new DurablePrpControlPlane({
       stateDirectory,
       identity: { runnerInstanceId, environmentLeaseId: "lease-1", runId, normalizedSessionId: sessionId, turnId: "turn-1", itemId: "item-1" },

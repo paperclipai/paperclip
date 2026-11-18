@@ -3,6 +3,12 @@ import { resolveGeminiExecutionEngineForRun } from "./acp.js";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
 
+const remoteCommandProbe = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+vi.mock("@paperclipai/adapter-utils/execution-target", async importOriginal => ({
+  ...await importOriginal<typeof import("@paperclipai/adapter-utils/execution-target")>(),
+  ensureAdapterExecutionTargetCommandResolvable: remoteCommandProbe,
+}));
+
 const originalVersion = process.version;
 afterEach(() => Object.defineProperty(process, "version", { value: originalVersion }));
 
@@ -40,5 +46,26 @@ describe("gemini engine availability", () => {
     });
     expect(result.engine).toBe("acp");
     expect(result.unavailableReason).toContain("not available");
+  });
+});
+
+
+describe("managed SSH ACP selection", () => {
+  afterEach(() => remoteCommandProbe.mockReset().mockResolvedValue(undefined));
+  it.each(["account", "host auth", "missing account", "missing command"])("checks the selected %s setup", async reason => {
+    Object.defineProperty(process, "version", { value: "v24.11.0" });
+    const config = { managedAiConnection: reason === "missing account" ? undefined : { identity: "fixture-account" } };
+    const target = { kind: "remote" as const, transport: "ssh" as const, remoteCwd: "/remote/workspace",
+      workspaceRealization: { mode: "in_place" as const, authoritativeRoot: "/remote/workspace", pathAliases: [], outboundRestorePaths: [] },
+      spec: { useHostAuth: reason === "host auth", host: "ssh.example.test", port: 22, username: "fixture",
+        remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    if (reason === "missing command") remoteCommandProbe.mockRejectedValueOnce(new Error("missing command"));
+    const result = await resolveGeminiExecutionEngineForRun({ config, executionTarget: target });
+    expect(result.engine).toBe("acp");
+    if (reason === "account") {
+      expect(result.unavailableReason).toBeUndefined();
+      expect(remoteCommandProbe).toHaveBeenCalledOnce();
+      expect(remoteCommandProbe.mock.calls[0]![3]).toEqual({ PATH: process.env.PATH });
+    } else expect(result.unavailableReason).toBeTruthy();
   });
 });

@@ -29,6 +29,7 @@ import { toApplication } from "./tool-access/applications/projection.js";
 import { groupedActions } from "./tool-access/catalog/action-summary.js";
 import { createConnectionSetupPolicy, assertSupportedConnection } from "./tool-access/connections/setup-policy.js";
 import { createOrganizationGrantStore } from "./tool-access/connections/organization-grant.js";
+import { createAgentGrantStore } from "./tool-access/connections/agent-grant.js";
 import { createPersonalConnectionIdentity } from "./tool-access/connections/personal-identity.js";
 import { createOAuthStateStore } from "./tool-access/oauth/state.js";
 import { createOAuthCatalogCompletion } from "./tool-access/oauth/catalog-completion.js";
@@ -170,8 +171,6 @@ type ToolAccessServiceOptions = {
   composioAppToolkits?: readonly string[];
   /** Test seam for the centrally registered Gmail OAuth broker. */
   paperclipCloudConnector?: PaperclipCloudConnector | null;
-  /** @deprecated Use paperclipCloudConnector. */
-  paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
 };
@@ -752,16 +751,13 @@ export function toolAccessService(
   const { resolveInstalledConnectionsForAgent, listConnectionInstalls } = connectionInstalls;
   const audit = createToolAccessAudit(db);
   const ensureDefaultOrganizationGrant = createOrganizationGrantStore(db);
+  const agentGrants = createAgentGrantStore(db);
   const { mintConnectionTokenForAgent, loadBrokerRunContext } = createConnectionTokenBroker(db, { now, secrets, policySvc, audit, getConnectionRow, ensureDefaultOrganizationGrant });
   const profileService = createToolProfileService(db, now);
   const profileDetails = profileService.getProfile;
   const profileResolver = createToolProfileResolver(db, { assertOptionalAgent, resolveInstalledConnectionsForAgent, toCatalogEntry });
-  const configuredCloudConnector =
-    options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
-  const connectorWasProvided =
-    options.paperclipCloudConnector !== undefined ||
-    options.paperclipIdGmailConnector !== undefined;
-  let cachedCloudConnector = configuredCloudConnector ?? null;
+  const connectorWasProvided = options.paperclipCloudConnector !== undefined;
+  let cachedCloudConnector = options.paperclipCloudConnector ?? null;
   const currentCloudConnector = (): PaperclipCloudConnector | null => {
     if (cachedCloudConnector || connectorWasProvided)
       return cachedCloudConnector;
@@ -785,8 +781,8 @@ export function toolAccessService(
       ? createVercelConnectClient()
       : options.vercelConnectClient;
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
-  const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect });
-  const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow });
+  const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets });
+  const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow });
   /**
    * Connection setup resolves connector definitions synchronously. Refresh the
    * plugin-provided part of the catalog from the plugins table first, so a
@@ -2081,8 +2077,28 @@ export function toolAccessService(
         `${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`,
       );
     }
-    const dedicatedAgentId =
+    // OAuth names the agent in its state and the callback writes that agent's
+    // grant. A curated method without sign-in (`none` or `api_key`) has no
+    // callback, so connect itself must create the agent's grant.
+    const createsAgentGrantAtConnect = Boolean(
+      requestedGrantKind === "agent" && galleryEntry && method && method.auth !== "oauth" && !remoteMcpConnector,
+    );
+    let dedicatedAgentId =
       requestedGrantKind === "agent" ? (input.subjectAgentId ?? null) : null;
+    if (createsAgentGrantAtConnect && !dedicatedAgentId) {
+      // Continuing the same identity (resume or reconnect) without naming the
+      // agent keeps its one active agent. A fresh connect that only recovered
+      // an archived row is a new identity decision and must name the agent.
+      const retainedAgentGrant = retainsIdentity && retainedConnection
+        ? await agentGrants.activeAgentGrant(companyId, retainedConnection.id)
+        : null;
+      dedicatedAgentId = retainedAgentGrant?.subjectAgentId ?? null;
+      if (!dedicatedAgentId) {
+        throw badRequest("Choose the agent that uses this connection", {
+          code: "connection_subject_agent_required",
+        });
+      }
+    }
     if (dedicatedAgentId) {
       const [subjectAgent] = await db
         .select({ id: agents.id })
@@ -2093,7 +2109,7 @@ export function toolAccessService(
         .limit(1);
       if (!subjectAgent)
         throw badRequest(
-          "Dedicated GitHub identity requires an agent in this company",
+          "A dedicated agent identity requires an agent in this company",
         );
     }
     const credentialSource: ToolConnectionCredentialSource =
@@ -2399,8 +2415,22 @@ export function toolAccessService(
       retainedMethodKey === method?.key &&
       (!remoteMcpConnector || (baseConfig.url === retainedConfig.url && genericAuthKind === retainedConnection.authKind)),
     );
+    // A dedicated agent's API key lives on its grant, not on the connection.
+    const [retainedAgentGrant] = canRetainCredentialMaterial && createsAgentGrantAtConnect && retainedConnection && dedicatedAgentId
+      ? await db
+          .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
+          .from(connectionGrants)
+          .where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.connectionId, retainedConnection.id),
+            eq(connectionGrants.kind, "agent"),
+            eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+          ))
+          .limit(1)
+      : [];
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
       ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ??
+        retainedAgentGrant?.credentialSecretRefs ??
         retainedConnection?.credentialSecretRefs ??
         [])
       : [];
@@ -2809,6 +2839,19 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        // Without sign-in, the agent's grant is written here, carrying the
+        // API key when the method has one. The grant alone gives no tools:
+        // the agent still needs an install of the active connection.
+        if (createsAgentGrantAtConnect) {
+          const mutation = await agentGrants.upsertConnectAgentGrant({
+            companyId,
+            connectionId: connectionRow.id,
+            subjectAgentId: dedicatedAgentId,
+            credentialSecretRefs,
+            actor,
+          });
+          if (revivedConnectionPrevious) revivedGrantMutation = mutation;
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,
@@ -3789,8 +3832,20 @@ export function toolAccessService(
       undefined,
       actor,
     );
+    // A dedicated agent's key lives on its grant, which is what the gateway
+    // reads for a per-agent connection. Rotate it there.
+    const agentGrant = connection.credentialPolicy === "per_agent"
+      ? await agentGrants.activeAgentGrant(companyId, connection.id)
+      : null;
+    if (connection.credentialPolicy === "per_agent" && !agentGrant) {
+      throw conflict("This connection has no agent to update. Connect it again and choose its agent.", {
+        code: "connection_subject_agent_required",
+      });
+    }
+    const grantIdentity = Boolean(personalIdentity || agentGrant);
     const credentialSecretRefs = [
       ...(personalIdentity?.grant?.credentialSecretRefs ??
+        agentGrant?.credentialSecretRefs ??
         connection.credentialSecretRefs),
     ];
     const credentialRefs: McpConnectionCredentialRef[] = [
@@ -3872,13 +3927,19 @@ export function toolAccessService(
           });
         }
       }
+      if (agentGrant) {
+        await tx
+          .update(connectionGrants)
+          .set({ credentialSecretRefs, updatedAt })
+          .where(eq(connectionGrants.id, agentGrant.id));
+      }
       const [nextConnection] = await tx
         .update(toolConnections)
         .set({
           credentialRefs,
-          // Personal reconnect rotates the existing user's grant. The
+          // Personal and agent reconnects rotate that identity's grant. The
           // connection-level organization slot stays exactly as it was.
-          credentialSecretRefs: personalIdentity
+          credentialSecretRefs: grantIdentity
             ? connection.credentialSecretRefs
             : credentialSecretRefs,
           lastError: null,
@@ -3887,7 +3948,7 @@ export function toolAccessService(
         .where(eq(toolConnections.id, connection.id))
         .returning();
       await syncConnectionCredentialBindings(tx, nextConnection,
-        personalIdentity ? credentialSecretRefs : []);
+        grantIdentity ? credentialSecretRefs : []);
       return nextConnection;
     });
     const health = await checkConnectionHealth(updated.id, actor);

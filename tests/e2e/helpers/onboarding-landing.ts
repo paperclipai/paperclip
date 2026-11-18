@@ -2,9 +2,9 @@ import { expect, type Page } from "@playwright/test";
 
 /**
  * Regression guard for PAP-404: onboarding must land the user on the newly
- * created first-task detail page and must NOT bounce to the company dashboard.
+ * created agent chat and must NOT bounce to the company dashboard.
  *
- * The bounce is a navigation race: the wizard `navigate(/…/issues/…)` used to
+ * The bounce is a navigation race: the wizard `navigate(/…/chats/…)` used to
  * be clobbered by `useCompanyPageMemory`, which restores a company's remembered
  * page (falling back to `/dashboard`) on a non-`route_sync` selection change.
  *
@@ -15,7 +15,7 @@ import { expect, type Page } from "@playwright/test";
  * one that later self-corrects) leaves a trace in the log.
  */
 
-const ISSUE_URL = /\/issues\/[^/]+$/;
+const CHAT_URL = /\/chats\/[^/]+$/;
 const DASHBOARD_PATH = /\/dashboard(\/|$)/;
 
 /**
@@ -50,26 +50,26 @@ async function readNavLog(page: Page): Promise<string[]> {
 }
 
 /**
- * Assert the wizard settled on the first-task detail page and never rested on
+ * Assert the wizard settled on the agent chat and never rested on
  * (or bounced through) the dashboard.
  *
  * Fails if a dashboard bounce is reintroduced: the History-API log will contain
- * a `/dashboard` entry and/or the settled URL will not be the issue page.
+ * a `/dashboard` entry and/or the settled URL will not be the chat page.
  */
-export async function expectLandsOnFirstTaskWithoutDashboardBounce(
+export async function expectLandsOnChatWithoutDashboardBounce(
   page: Page,
 ): Promise<void> {
-  // The wizard's launch handler does async work (hire + create issue) before
-  // navigating, so give reaching the issue page a generous budget.
-  await expect(page).toHaveURL(ISSUE_URL, { timeout: 30_000 });
+  // The wizard's launch handler does async work (hire + open chat) before
+  // navigating, so give reaching the chat page a generous budget.
+  await expect(page).toHaveURL(CHAT_URL, { timeout: 30_000 });
   const settledUrl = page.url();
 
   // Short settle window: the page-memory effect fires on the selection change
   // that accompanies the launch navigate, so any bounce lands within ~1s. If
-  // the URL is still the issue after this window it has genuinely settled.
+  // the URL is still the chat after this window it has genuinely settled.
   await page.waitForTimeout(1_500);
-  expect(page.url(), "onboarding bounced away from the first task").toBe(settledUrl);
-  await expect(page).toHaveURL(ISSUE_URL);
+  expect(page.url(), "onboarding bounced away from the chat").toBe(settledUrl);
+  await expect(page).toHaveURL(CHAT_URL);
 
   const navLog = await readNavLog(page);
   const bounced = navLog.filter((path) => DASHBOARD_PATH.test(path));

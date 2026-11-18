@@ -41,6 +41,7 @@ import {
 } from "./format";
 import type { StatusCardView } from "./types";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export function StatusCardDetailDrawer({
   card,
@@ -518,7 +519,7 @@ function QueryDebugSection({ card }: { card: StatusCardView }) {
         <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-2 border-t border-border px-3 py-3">
-        <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground">
+        <pre className={cn("max-h-64 overflow-auto rounded-md bg-muted p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
           {card.queries.length > 0 ? queryJson : "// query not compiled yet"}
         </pre>
         <p className="text-xs text-muted-foreground">

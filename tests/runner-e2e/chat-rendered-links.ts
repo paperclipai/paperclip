@@ -47,7 +47,7 @@ export function unresolvedLinkTarget(href: string): boolean {
 export const APP_ROUTE_ROOTS: readonly string[] = ["activity", "agents", "approvals", "apps", "artifacts", "assistant-connections", "audit", "auth",
   "board-chat", "board-claim", "budgets", "cases", "chat-identity", "chats", "cli-auth", "companies", "company", "costs", "dashboard", "decisions",
   "design-guide", "dev", "dot-connect", "execution-workspaces", "goals", "inbox", "instance", "invite", "issues", "mcp-connect", "mcp-device",
-  "oauth-handoff", "onboarding", "org", "plugins", "projects", "routines", "runs", "search", "settings", "skills", "status", "status-cards", "tasks",
+  "oauth-handoff", "onboarding", "org", "plugins", "projects", "responsibilities", "routines", "runs", "search", "settings", "skills", "status", "status-cards", "tasks",
   "tests", "timeline", "tools", "u", "ux-lab", "workspaces"];
 export type UnservedLinkReason = "protocol-relative" | "not-a-served-route";
 /** Why a rendered same-origin link opens nothing the product serves, or undefined when it does. `savedTargets` are the
