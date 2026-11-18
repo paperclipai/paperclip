@@ -21,13 +21,21 @@ it("backs off lease retries while preserving the ten-second wait bound", async (
   }));
   const db = { insert, update } as unknown as Db;
   const withLease = chatCredentialMutationLease(db);
+  let settled = false;
   const pending = withLease({ id: "endpoint", companyId: "company" } as never, async () => undefined)
-    .catch(error => error);
+    .catch(error => {
+      settled = true;
+      return error;
+    });
 
   await vi.advanceTimersByTimeAsync(1_000);
   expect(insert.mock.calls.length).toBeLessThan(12);
 
-  await vi.advanceTimersByTimeAsync(9_000);
+  await vi.advanceTimersByTimeAsync(8_999);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(1);
   await expect(pending).resolves.toMatchObject({ details: { code: "chat_endpoint_credentials_busy" } });
+  expect(settled).toBe(true);
   expect(vi.getTimerCount()).toBe(0);
 });
