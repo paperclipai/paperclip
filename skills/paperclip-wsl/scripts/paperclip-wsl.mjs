@@ -86,7 +86,7 @@ try {
     const cliIndex = ["paperclip", "paperclipai"].includes(executable) ? 1
       : ["pnpm", "npm", "npx"].includes(executable) ? commands.findIndex((value, index) => index > 1 && ["paperclip", "paperclipai"].includes(value)) : ["node", "tsx"].includes(executable) ? directEntry : -1;
     const cliArguments = cliIndex < 0 ? [] : commands.slice(cliIndex + 1);
-    if (executable === "npm" && commands.slice(2,cliIndex).some(value => ["run","run-script"].includes(value)) && cliArguments[0] === "--") cliArguments.shift();
+    if (executable === "npm" && commands.slice(2,cliIndex).some(value => ["run","run-script","exec","x"].includes(value)) && cliArguments[0] === "--") cliArguments.shift();
     const endOptions = cliArguments.indexOf("--");
     if (endOptions >= 0) cliArguments.splice(endOptions);
     const optionValue = (name, short) => {
