@@ -2,7 +2,6 @@ import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunSessionOutcome } from "./run-state.js";
 
 const TERMINAL_RESULT_CLEANUP_EXIT_CODES: ReadonlySet<number> = new Set([0, 143, 137]);
-const TERMINAL_RESULT_CLEANUP_SIGNALS: ReadonlySet<string> = new Set(["SIGTERM", "SIGKILL"]);
 
 /**
  * The CLI reported its terminal result and then lingered (a background task or
@@ -25,7 +24,14 @@ export function isTerminalResultCleanupSuccess(
 
   const { exitCode, signal } = adapterResult;
   if (signal) {
-    return TERMINAL_RESULT_CLEANUP_SIGNALS.has(signal) && cleanup.signal === signal;
+    // Cleanup always sends SIGTERM first. It sends SIGKILL only when it
+    // escalates, and then records SIGKILL in the evidence. The CLI can exit
+    // on the first SIGTERM while a child that ignores it holds the output
+    // open until the escalation, so a SIGTERM exit with SIGKILL evidence is
+    // still the cleanup's own termination.
+    if (signal === "SIGTERM") return cleanup.signal === "SIGTERM" || cleanup.signal === "SIGKILL";
+    if (signal === "SIGKILL") return cleanup.signal === "SIGKILL";
+    return false;
   }
   return exitCode !== null && exitCode !== undefined && TERMINAL_RESULT_CLEANUP_EXIT_CODES.has(exitCode);
 }

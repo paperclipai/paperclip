@@ -33,6 +33,7 @@ describe("resolveAdapterResultOutcome: terminal-result cleanup", () => {
   it.each([
     ["signal SIGTERM recorded in the evidence", {}, {}],
     ["signal SIGKILL recorded in the evidence", { signal: "SIGKILL" as const }, { signal: "SIGKILL", forceKilled: true }],
+    ["SIGTERM exit after cleanup escalated to SIGKILL for a child", {}, { signal: "SIGKILL", forceKilled: true }],
     ["exit 143", { exitCode: 143, signal: null }, {}],
     ["exit 137", { exitCode: 137, signal: null }, { signal: "SIGKILL", forceKilled: true }],
     ["exit 0", { exitCode: 0, signal: null }, {}],
@@ -48,7 +49,8 @@ describe("resolveAdapterResultOutcome: terminal-result cleanup", () => {
     ["terminal result not seen", {}, { terminalResultSeen: false }],
     ["adapter error message (error result)", { errorMessage: "Claude reported an error" }, {}],
     ["adapter error code", { errorCode: "claude_transient_upstream" }, {}],
-    ["signal not recorded in the evidence", {}, { signal: "SIGKILL" }],
+    ["SIGKILL exit without SIGKILL in the evidence", { signal: "SIGKILL" as const }, { signal: "SIGTERM" }],
+    ["evidence without a cleanup signal", {}, { signal: null }],
     ["signal that cleanup does not send", { signal: "SIGINT" as const }, { signal: "SIGINT" }],
     ["other non-zero exit", { exitCode: 1, signal: null }, {}],
   ])("keeps failed when %s", (_label, overrides, evidence) => {

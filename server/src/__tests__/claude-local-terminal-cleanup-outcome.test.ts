@@ -9,15 +9,18 @@ import { resolveAdapterResultOutcome } from "../services/heartbeat/adapter-resul
 // something it started (a background task, a lingering child) holds it open.
 async function writeLingeringSuccessClaudeCommand(
   commandPath: string,
-  options: { resultEvent: Record<string, unknown>; lingeringChild: boolean },
+  options: { resultEvent: Record<string, unknown>; lingeringChild: boolean; childIgnoresSigterm?: boolean },
 ): Promise<void> {
+  const childScript = options.childIgnoresSigterm
+    ? 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'
+    : "setInterval(() => {}, 1000)";
   const script = `#!/usr/bin/env node
 if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const { spawn } = require("node:child_process");
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "11111111-1111-4111-8111-111111111111", model: "claude-sonnet" }));
 console.log(${JSON.stringify(JSON.stringify(options.resultEvent))});
 if (${options.lingeringChild}) {
-  spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });
+  spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: "inherit" });
 }
 setInterval(() => {}, 1000);
 `;
@@ -25,7 +28,7 @@ setInterval(() => {}, 1000);
   await fs.chmod(commandPath, 0o755);
 }
 
-async function runLingeringCli(options: { resultEvent: Record<string, unknown>; lingeringChild: boolean }) {
+async function runLingeringCli(options: { resultEvent: Record<string, unknown>; lingeringChild: boolean; childIgnoresSigterm?: boolean }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-terminal-cleanup-"));
   const workspace = path.join(root, "workspace");
   const commandPath = path.join(root, "claude");
@@ -94,6 +97,24 @@ describe("claude_local terminal-result cleanup run outcome", () => {
       expect(resolveAdapterResultOutcome(adapterResult)).toBe("succeeded");
     }, 30_000);
   }
+
+  it("records succeeded when cleanup escalates to SIGKILL for a child that ignores SIGTERM", async () => {
+    const adapterResult = await runLingeringCli({
+      resultEvent: successResult,
+      lingeringChild: true,
+      childIgnoresSigterm: true,
+    });
+
+    expect(adapterResult.errorMessage).toBeNull();
+    expect(adapterResult.errorCode).toBeNull();
+    expect(adapterResult.resultJson?.unmanagedBackgroundTask).toMatchObject({
+      stopped: true,
+      terminalResultSeen: true,
+      signal: "SIGKILL",
+      forceKilled: true,
+    });
+    expect(resolveAdapterResultOutcome(adapterResult)).toBe("succeeded");
+  }, 30_000);
 
   it("keeps an error result failed even when cleanup stopped the CLI", async () => {
     const adapterResult = await runLingeringCli({
