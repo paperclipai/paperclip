@@ -10,6 +10,7 @@ import {
   resetAnalyticsConsentForTest,
   storeAnalyticsChoice,
 } from "@/lib/analytics/consent";
+import { queryKeys } from "@/lib/queryKeys";
 import { ProductAnalyticsGate } from "./ProductAnalyticsGate";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
@@ -30,6 +31,8 @@ vi.mock("@/api/auth", () => ({
   authApi: { getSession: () => getSessionMock() },
 }));
 
+const scriptDownload: { hold: boolean; pending: Array<() => void> } = { hold: false, pending: [] };
+
 /** PostHog script elements the module adds to the page. */
 function injectedScripts() {
   return [...document.querySelectorAll("script")].filter((script) => script.src.includes("/static/array.js"));
@@ -42,7 +45,9 @@ vi.spyOn(document.head, "appendChild").mockImplementation(<T extends Node>(node:
   const result = appendChild(node);
   if (node instanceof HTMLScriptElement && node.src.includes("/static/array.js")) {
     (window as unknown as { posthog: typeof posthogMock }).posthog = posthogMock;
-    queueMicrotask(() => node.onload?.(new Event("load")));
+    const finish = () => node.onload?.(new Event("load"));
+    if (scriptDownload.hold) scriptDownload.pending.push(finish);
+    else queueMicrotask(finish);
   }
   return result;
 });
@@ -105,6 +110,8 @@ describe("ProductAnalyticsGate", () => {
     resetProductAnalyticsForTest();
     resetAnalyticsConsentForTest();
     window.localStorage.clear();
+    scriptDownload.hold = false;
+    scriptDownload.pending = [];
     Object.defineProperty(navigator, "globalPrivacyControl", { value: undefined, configurable: true });
     for (const script of injectedScripts()) script.remove();
     delete (window as unknown as { posthog?: unknown }).posthog;
@@ -230,6 +237,51 @@ describe("ProductAnalyticsGate", () => {
     getSessionMock.mockResolvedValue(session(analyticsConfig({ consentRequired: true })));
     const root = await renderGate();
     expect(posthogMock.opt_in_capturing).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
+  it("never initializes PostHog when the visitor turns analytics off while its script is downloading", async () => {
+    scriptDownload.hold = true;
+    getSessionMock.mockResolvedValue(session(analyticsConfig({ consentRequired: false, replayEnabled: true })));
+    const root = await renderGate();
+    expect(injectedScripts()).toHaveLength(1);
+    act(() => storeAnalyticsChoice("denied"));
+    await act(async () => {
+      for (const finish of scriptDownload.pending.splice(0)) finish();
+      await Promise.resolve();
+    });
+    expect(posthogMock.init).not.toHaveBeenCalled();
+    act(() => storeAnalyticsChoice("granted"));
+    expect(posthogMock.init).toHaveBeenCalledTimes(1);
+    expect(injectedScripts()).toHaveLength(1);
+    act(() => root.unmount());
+  });
+
+  it("stops analytics when another tab clears the choice and the visitor must be asked again", async () => {
+    window.localStorage.setItem(ANALYTICS_CONSENT_STORAGE_KEY, "granted");
+    getSessionMock.mockResolvedValue(session(analyticsConfig({ consentRequired: true, replayEnabled: true })));
+    const root = await renderGate();
+    expect(posthogMock.init).toHaveBeenCalledTimes(1);
+    act(() => {
+      window.localStorage.removeItem(ANALYTICS_CONSENT_STORAGE_KEY);
+      window.dispatchEvent(new StorageEvent("storage", { key: ANALYTICS_CONSENT_STORAGE_KEY }));
+    });
+    expect(banner()).not.toBeNull();
+    expect(posthogMock.opt_out_capturing).toHaveBeenCalledTimes(1);
+    expect(posthogMock.stopSessionRecording).toHaveBeenCalledTimes(1);
+    act(() => root.unmount());
+  });
+
+  it("stops analytics when a session refresh says the visitor must consent", async () => {
+    getSessionMock.mockResolvedValue(session(analyticsConfig({ consentRequired: false })));
+    const root = await renderGate();
+    expect(posthogMock.init).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, session(analyticsConfig({ consentRequired: true })));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(banner()).not.toBeNull();
+    expect(posthogMock.opt_out_capturing).toHaveBeenCalledTimes(1);
     act(() => root.unmount());
   });
 });

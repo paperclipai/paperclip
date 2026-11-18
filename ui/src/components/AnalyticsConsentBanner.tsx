@@ -22,7 +22,7 @@ export function AnalyticsConsentBanner({
       <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
         <p id={textId} className="flex-1 text-sm text-muted-foreground">
           {recordings
-            ? "Paperclip uses analytics and session recordings to improve the product. Recordings hide your content. "
+            ? "Paperclip uses analytics and session recordings to improve the product. Recordings hide what you type and your messages, documents and connected accounts, but may show page names like task titles. "
             : "Paperclip uses analytics to improve the product. "}
           <a
             href={PRIVACY_POLICY_URL}

@@ -20,7 +20,7 @@ export function ProductAnalyticsSetting({ config }: { config: BrowserAnalyticsCo
           </div>
           <p id={descriptionId} className="text-sm text-muted-foreground">
             {config.replayEnabled
-              ? "Share usage analytics and session recordings from this browser to help improve Paperclip. Recordings hide your content. "
+              ? "Share usage analytics and session recordings from this browser to help improve Paperclip. Recordings hide what you type and your messages, documents and connected accounts, but may show page names like task titles. "
               : "Share usage analytics from this browser to help improve Paperclip. "}
             <a
               href={PRIVACY_POLICY_URL}

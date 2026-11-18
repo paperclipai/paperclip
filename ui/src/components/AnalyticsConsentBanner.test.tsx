@@ -30,7 +30,7 @@ describe("AnalyticsConsentBanner", () => {
     expect(region.getAttribute("aria-label")).toBe("Analytics choice");
     const description = document.getElementById(region.getAttribute("aria-describedby")!);
     expect(description?.textContent).toContain(
-      "Paperclip uses analytics and session recordings to improve the product. Recordings hide your content.",
+      "Paperclip uses analytics and session recordings to improve the product. Recordings hide what you type and your messages, documents and connected accounts, but may show page names like task titles.",
     );
     const link = region.querySelector("a")!;
     expect(link.textContent).toBe("Privacy policy");

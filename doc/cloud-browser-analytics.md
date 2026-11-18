@@ -52,14 +52,18 @@ they set no cookies.
 1. The server decides when it knows the visitor's country. If
    `PAPERCLIP_POSTHOG_COUNTRY_HEADER` names a header and the request carries a
    valid two-letter code in it, `browserAnalytics.consentRequired` is `true`
-   for the EU and EEA countries (and their outermost regions), the UK (and the
-   Crown Dependencies and Gibraltar) and Switzerland, and `false` for every
-   other country.
+   for the EU and EEA countries (and their outermost regions and Svalbard), the
+   UK (and the Crown Dependencies and Gibraltar) and Switzerland, and `false`
+   for every other country.
 2. Otherwise `consentRequired` is `null`, and the browser decides from its time
-   zone (`ui/src/lib/analytics/consent.ts`). It asks when the zone starts with
+   zone. It asks when the zone starts with
    `Europe/`, is an EU, EEA or UK zone outside Europe (for example
    `Atlantic/Canary`, `Atlantic/Reykjavik`, `Asia/Nicosia`, `Indian/Reunion`),
    or is unknown (`UTC`, `Etc/*`, empty, or `Intl` fails). When unsure, it asks.
+
+Both lists live in one place, `packages/shared/src/analytics-consent.ts`
+(`countryRequiresAnalyticsConsent`, `timeZoneRequiresAnalyticsConsent`). The
+browser's choice logic is in `ui/src/lib/analytics/consent.ts`.
 
 Paperclip Cloud uses the time zone today. Requests reach Railway through
 DNS-only Cloudflare records, so no Cloudflare country header arrives, and the
@@ -73,17 +77,25 @@ their own browser.
 | Visitor | Before a choice | Accept / switch on | Decline / switch off |
 | --- | --- | --- | --- |
 | Must agree, no Do Not Track or Global Privacy Control | Banner. posthog-js does not load: no `/_ph` requests, no PostHog cookies or storage. | posthog-js loads at once, without a reload. | Nothing loads. |
-| Must agree, `navigator.doNotTrack === "1"` or `navigator.globalPrivacyControl === true` | No banner. Counts as Decline. | The settings switch can still turn it on. | Nothing loads. |
+| Must agree, `navigator.doNotTrack === "1"` or `navigator.globalPrivacyControl === true`, no stored choice | No banner. Counts as Decline. | The settings switch can still turn it on. An explicit choice wins over the browser signal. | Nothing loads. |
 | Everyone else | Loads after the page settles, as before. | — | `opt_out_capturing()` and `stopSessionRecording()` run at once. After the next load, posthog-js does not load. |
 
+Analytics stops whenever the choice is not `granted`, also when it goes back
+to "ask" (another tab removes the stored choice, or a session refresh changes
+`consentRequired` to `true`). If the choice changes while posthog-js is still
+downloading, `init()` does not run until the choice is `granted` again.
+
 The banner sits at the bottom of the page and does not block the board. It
-links to the privacy policy (https://paperclip.ing/privacy/).
+says that recordings hide what the visitor types and their messages,
+documents and connected accounts, but can show page names such as task
+titles. It links to the privacy policy (https://paperclip.ing/privacy/).
 
 ### Where the choice is kept
 
 The choice is per browser, in `localStorage` under
-`paperclip.analyticsConsent` (`granted` or `denied`). If storage is blocked,
-the choice lasts for the open page only. Each user can change it in
+`paperclip.analyticsConsent` (`granted` or `denied`). The latest choice on
+the page wins, also when storage rejects the write; it then lasts for the open
+page only. Each user can change it in
 **Settings → Profile → Product analytics**. The switch shows only when browser
 analytics is on for the instance. Turning it on after an earlier opt-out also
 clears the PostHog opt-out (`opt_in_capturing()`).

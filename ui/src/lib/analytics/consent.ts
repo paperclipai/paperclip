@@ -1,48 +1,10 @@
 import { useSyncExternalStore } from "react";
-import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
+import { timeZoneRequiresAnalyticsConsent, type BrowserAnalyticsConfig } from "@paperclipai/shared";
 
 export const ANALYTICS_CONSENT_STORAGE_KEY = "paperclip.analyticsConsent";
 
 export type AnalyticsChoice = "granted" | "denied";
 export type AnalyticsConsent = AnalyticsChoice | "ask";
-
-const CONSENT_TIME_ZONES = new Set([
-  "Arctic/Longyearbyen",
-  "Asia/Famagusta",
-  "Asia/Nicosia",
-  "Atlantic/Azores",
-  "Atlantic/Canary",
-  "Atlantic/Faeroe",
-  "Atlantic/Faroe",
-  "Atlantic/Jan_Mayen",
-  "Atlantic/Madeira",
-  "Atlantic/Reykjavik",
-  "America/Cayenne",
-  "America/Guadeloupe",
-  "America/Marigot",
-  "America/Martinique",
-  "America/St_Barthelemy",
-  "Indian/Mayotte",
-  "Indian/Reunion",
-  "CET",
-  "EET",
-  "Eire",
-  "GB",
-  "GB-Eire",
-  "Iceland",
-  "MET",
-  "Poland",
-  "Portugal",
-  "WET",
-]);
-
-const UNKNOWN_TIME_ZONES = new Set(["", "UTC", "GMT", "UCT", "Universal", "Zulu", "Greenwich"]);
-
-export function timeZoneRequiresConsent(timeZone: string | null | undefined): boolean {
-  const zone = timeZone?.trim() ?? "";
-  if (UNKNOWN_TIME_ZONES.has(zone) || zone.startsWith("Etc/")) return true;
-  return zone.startsWith("Europe/") || CONSENT_TIME_ZONES.has(zone);
-}
 
 function browserTimeZone(): string | null {
   try {
@@ -54,7 +16,7 @@ function browserTimeZone(): string | null {
 
 export function consentRequired(config: BrowserAnalyticsConfig): boolean {
   if (typeof config.consentRequired === "boolean") return config.consentRequired;
-  return timeZoneRequiresConsent(browserTimeZone());
+  return timeZoneRequiresAnalyticsConsent(browserTimeZone());
 }
 
 export function browserAsksNotToTrack(): boolean {
@@ -94,7 +56,7 @@ export function analyticsChoiceMadeOnThisPage(): boolean {
 }
 
 export function resolveAnalyticsConsent(config: BrowserAnalyticsConfig): AnalyticsConsent {
-  const stored = readStoredAnalyticsChoice() ?? pageChoice;
+  const stored = pageChoice ?? readStoredAnalyticsChoice();
   if (stored) return stored;
   if (!consentRequired(config)) return "granted";
   if (browserAsksNotToTrack()) return "denied";
@@ -104,7 +66,9 @@ export function resolveAnalyticsConsent(config: BrowserAnalyticsConfig): Analyti
 function subscribe(listener: () => void) {
   listeners.add(listener);
   const onStorage = (event: StorageEvent) => {
-    if (event.key === null || event.key === ANALYTICS_CONSENT_STORAGE_KEY) listener();
+    if (event.key !== null && event.key !== ANALYTICS_CONSENT_STORAGE_KEY) return;
+    pageChoice = null;
+    listener();
   };
   window.addEventListener("storage", onStorage);
   return () => {

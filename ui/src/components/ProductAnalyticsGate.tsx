@@ -43,10 +43,13 @@ export function ProductAnalyticsGate() {
   const name = session?.user.name ?? null;
   const consent = useAnalyticsConsent(config);
   const granted = consent === "granted";
-  const denied = consent === "denied";
 
   useEffect(() => {
-    if (!config || !granted) return;
+    if (!config) return;
+    if (!granted) {
+      stopProductAnalytics();
+      return;
+    }
     startProductAnalytics(config, {
       schedule: (start) => {
         if (analyticsChoiceMadeOnThisPage()) {
@@ -64,10 +67,6 @@ export function ProductAnalyticsGate() {
     return () => cancelPendingProductAnalytics();
     // Keyed by value: the config object identity changes on every session refetch.
   }, [configKey, granted, queryClient]);
-
-  useEffect(() => {
-    if (denied) stopProductAnalytics();
-  }, [denied]);
 
   useEffect(() => {
     setProductAnalyticsUser(userId ? { id: userId, email, name } : null);

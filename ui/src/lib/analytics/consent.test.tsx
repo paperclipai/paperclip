@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
 import {
@@ -7,8 +9,10 @@ import {
   resetAnalyticsConsentForTest,
   resolveAnalyticsConsent,
   storeAnalyticsChoice,
-  timeZoneRequiresConsent,
+  useAnalyticsConsent,
 } from "./consent";
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const config: BrowserAnalyticsConfig = {
   token: "phc_test",
@@ -36,36 +40,6 @@ afterEach(() => {
   resetAnalyticsConsentForTest();
   setNavigatorSignal("doNotTrack", null);
   setNavigatorSignal("globalPrivacyControl", undefined);
-});
-
-describe("timeZoneRequiresConsent", () => {
-  it.each([
-    "Europe/Berlin",
-    "Europe/London",
-    "Europe/Zurich",
-    "Europe/Dublin",
-    "Atlantic/Canary",
-    "Atlantic/Reykjavik",
-    "Asia/Nicosia",
-    "Indian/Reunion",
-    "UTC",
-    "Etc/GMT+1",
-    "",
-  ])("requires consent for %s", (zone) => {
-    expect(timeZoneRequiresConsent(zone)).toBe(true);
-  });
-
-  it.each(["America/New_York", "America/Los_Angeles", "Asia/Tokyo", "Australia/Sydney", "America/Sao_Paulo"])(
-    "does not require consent for %s",
-    (zone) => {
-      expect(timeZoneRequiresConsent(zone)).toBe(false);
-    },
-  );
-
-  it("requires consent when the time zone is unknown", () => {
-    expect(timeZoneRequiresConsent(null)).toBe(true);
-    expect(timeZoneRequiresConsent(undefined)).toBe(true);
-  });
 });
 
 describe("resolveAnalyticsConsent", () => {
@@ -117,5 +91,33 @@ describe("resolveAnalyticsConsent", () => {
     expect(resolveAnalyticsConsent({ ...config, consentRequired: true })).toBe("ask");
     storeAnalyticsChoice("granted");
     expect(resolveAnalyticsConsent({ ...config, consentRequired: true })).toBe("granted");
+  });
+
+  it("lets the latest choice on this page win when saving fails but reading still works", () => {
+    window.localStorage.setItem(ANALYTICS_CONSENT_STORAGE_KEY, "granted");
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    storeAnalyticsChoice("denied");
+    expect(window.localStorage.getItem(ANALYTICS_CONSENT_STORAGE_KEY)).toBe("granted");
+    expect(resolveAnalyticsConsent({ ...config, consentRequired: false })).toBe("denied");
+  });
+
+  it("follows a choice that another tab changes", () => {
+    const seen: string[] = [];
+    const container = document.createElement("div");
+    function Probe() {
+      seen.push(String(useAnalyticsConsent({ ...config, consentRequired: true })));
+      return null;
+    }
+    const root = createRoot(container);
+    act(() => root.render(<Probe />));
+    act(() => storeAnalyticsChoice("granted"));
+    act(() => {
+      window.localStorage.removeItem(ANALYTICS_CONSENT_STORAGE_KEY);
+      window.dispatchEvent(new StorageEvent("storage", { key: ANALYTICS_CONSENT_STORAGE_KEY }));
+    });
+    expect(seen.at(-1)).toBe("ask");
+    act(() => root.unmount());
   });
 });

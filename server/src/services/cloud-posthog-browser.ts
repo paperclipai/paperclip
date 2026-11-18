@@ -9,7 +9,7 @@
 // The browser sends to `POSTHOG_PROXY_PATH` on its own origin, not to PostHog,
 // so ad blockers do not drop the events. See `routes/posthog-proxy.ts`.
 
-import type { BrowserAnalyticsConfig } from "@paperclipai/shared";
+import { countryRequiresAnalyticsConsent, type BrowserAnalyticsConfig } from "@paperclipai/shared";
 import { isCloudStagingInstance, type CloudInstanceEnv } from "./cloud-instance.js";
 import { resolveCloudPostHogConfig, type CloudPostHogConfig } from "./cloud-posthog-config.js";
 
@@ -18,28 +18,13 @@ export const POSTHOG_PROXY_PATH = "/_ph";
 
 const POSTHOG_CLOUD_INGEST_HOST = /^(us|eu)\.i\.posthog\.com$/i;
 
-const CONSENT_REQUIRED_COUNTRIES = new Set([
-  "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE",
-  "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE",
-  "AX", "GF", "GP", "MQ", "RE", "YT", "MF",
-  "IS", "LI", "NO",
-  "GB", "UK", "GG", "JE", "IM", "GI",
-  "CH",
-]);
-
 export type RequestHeaders = Record<string, string | string[] | undefined>;
-
-export function analyticsConsentRequiredForCountry(country: string | null | undefined): boolean | null {
-  const code = country?.trim().toUpperCase();
-  if (!code || !/^[A-Z]{2}$/.test(code) || code === "XX") return null;
-  return CONSENT_REQUIRED_COUNTRIES.has(code);
-}
 
 export function resolveAnalyticsConsentRequired(env: CloudInstanceEnv, headers: RequestHeaders): boolean | null {
   const headerName = env.PAPERCLIP_POSTHOG_COUNTRY_HEADER?.trim().toLowerCase();
   if (!headerName) return null;
   const value = headers[headerName];
-  return analyticsConsentRequiredForCountry(Array.isArray(value) ? value[0] : value);
+  return countryRequiresAnalyticsConsent(Array.isArray(value) ? value[0] : value);
 }
 
 /** The browser analytics part of the Cloud PostHog config, or null when it is off. */

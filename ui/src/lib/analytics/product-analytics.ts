@@ -207,6 +207,7 @@ type State = {
   config: BrowserAnalyticsConfig;
   client: ProductAnalyticsClient | null;
   cancelSchedule: (() => void) | null;
+  pendingClient: ProductAnalyticsClient | null;
   loading: boolean;
   optedOut: boolean;
 };
@@ -235,11 +236,6 @@ function applyIdentity(client: ProductAnalyticsClient, config: BrowserAnalyticsC
   }
 }
 
-/**
- * Start browser analytics for this page session. Idempotent: posthog-js is a
- * page-wide singleton, so later calls (session refetches) keep the first
- * config.
- */
 function optOut(client: ProductAnalyticsClient) {
   client.opt_out_capturing?.();
   client.stopSessionRecording?.();
@@ -250,18 +246,44 @@ function optIn(client: ProductAnalyticsClient, config: BrowserAnalyticsConfig) {
   if (config.replayEnabled) client.startSessionRecording?.();
 }
 
+function initialize(current: State, client: ProductAnalyticsClient) {
+  const { config } = current;
+  client.init(config.token, buildPostHogInitOptions(config, window.location.hostname));
+  if (client.has_opted_out_capturing?.()) optIn(client, config);
+  client.register(superProperties(config));
+  current.client = client;
+  applyIdentity(client, config);
+}
+
+/**
+ * Start browser analytics for this page session. Idempotent: posthog-js is a
+ * page-wide singleton, so later calls (session refetches) keep the first
+ * config.
+ */
 export function startProductAnalytics(
   config: BrowserAnalyticsConfig,
   options: ProductAnalyticsOptions,
 ): void {
   if (state) {
-    if (state.optedOut) {
-      state.optedOut = false;
-      if (state.client) optIn(state.client, state.config);
+    if (!state.optedOut) return;
+    state.optedOut = false;
+    if (state.client) {
+      optIn(state.client, state.config);
+    } else if (state.pendingClient) {
+      const client = state.pendingClient;
+      state.pendingClient = null;
+      initialize(state, client);
     }
     return;
   }
-  const current: State = { config, client: null, cancelSchedule: null, loading: false, optedOut: false };
+  const current: State = {
+    config,
+    client: null,
+    pendingClient: null,
+    cancelSchedule: null,
+    loading: false,
+    optedOut: false,
+  };
   state = current;
   const load = options.load ?? loadPostHog;
   current.cancelSchedule = options.schedule(() => {
@@ -274,12 +296,8 @@ export function startProductAnalytics(
     load(config)
       .then((client) => {
         if (state !== current) return;
-        client.init(config.token, buildPostHogInitOptions(config, window.location.hostname));
-        if (current.optedOut) optOut(client);
-        else if (client.has_opted_out_capturing?.()) optIn(client, config);
-        client.register(superProperties(config));
-        current.client = client;
-        applyIdentity(client, config);
+        if (current.optedOut) current.pendingClient = client;
+        else initialize(current, client);
       })
       .catch(() => {
         // Analytics must never break the board. A failed script load leaves it
@@ -310,14 +328,14 @@ export function resetProductAnalyticsIdentity(): void {
  * through `setProductAnalyticsUser(null)`.
  */
 export function cancelPendingProductAnalytics(): void {
-  if (!state || state.client || state.loading) return;
+  if (!state || state.client || state.pendingClient || state.loading) return;
   state.cancelSchedule?.();
   state = null;
 }
 
 export function stopProductAnalytics(): void {
   if (!state) return;
-  if (!state.client && !state.loading) {
+  if (!state.client && !state.pendingClient && !state.loading) {
     state.cancelSchedule?.();
     state = null;
     return;
