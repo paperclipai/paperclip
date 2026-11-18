@@ -12866,8 +12866,6 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      // The checkout locks the issue before the agent rows. A deadlock victim
-      // rolled back whole, so retry it instead of failing the run's setup.
       const updated = await retryTransientLockContention(() => db.transaction(async tx => {
         await assertAgentInteraction(tx as unknown as Db, {
           companyId: issueCompany.companyId, actorAgentId: agentId, operation: "assign",
