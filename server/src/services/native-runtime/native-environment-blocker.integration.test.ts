@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, statusDecisionEffects, statusDecisions } from "@paperclipai/db";
 import type { ControlPlanePort, NativeExecutionInputV1, PrpStructuredRunResult, PrpTerminalState } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { CONTROL_PLANE_CONFORMANCE_RESULT } from "../../vendor/paperclip-runner/testing.js";
@@ -17,6 +17,7 @@ import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE,
   NATIVE_ENVIRONMENT_BLOCKER_HINT, NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
 import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
+import { NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE } from "./status-arbiter.js";
 
 type Blocker = NonNullable<PrpStructuredRunResult["blocker"]>;
 
@@ -113,6 +114,23 @@ describe("native run that reports a system environment blocker", () => {
     });
     expect(decision.reasonCode).not.toBe(NATIVE_ENVIRONMENT_BLOCKER_CODE);
     expect(retries).toHaveLength(0);
+  });
+
+  it("lets a queued chat request start the next turn instead of continuing the blocked run", async () => {
+    // A GitHub push during a review waits as a chat wake. A fresh-session
+    // continuation would keep the older push's binding and could not publish.
+    let wakeId = "";
+    const { decision, retries, issue } = await reportBlocked(environmentBlocker, {}, async issueId => {
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+        reason: "issue_execution_deferred", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "env-owner",
+        payload: { issueId, _paperclipWakeContext: { wakeReason: "external_chat_message", chatConversationId: randomUUID() } } }).returning();
+      wakeId = wake!.id;
+    });
+    expect(decision).toMatchObject({ reasonCode: NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE });
+    expect(retries).toHaveLength(0);
+    expect(issue).toMatchObject({ status: "in_progress", unblockDescriptor: null });
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+    expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null });
   });
 
   it("keeps a blocker that only its owner can resolve", async () => {

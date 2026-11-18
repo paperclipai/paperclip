@@ -12,6 +12,7 @@ export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 /** The automatic continuation after a failed turn is used once per chain. */
 export const NATIVE_RUN_FAILED_RETRY_CAUSE = "native_run_failed";
 export const NATIVE_RESPONSE_WAKE_WAITING_REASON = "response_wake_waiting_for_input";
+export const NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE = "native_blocker_superseded_by_queued_request";
 export const NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION =
   "The agent's turn failed again after Paperclip continued it automatically. The saved work is kept. Check the failed run, then Retry the task.";
 
@@ -265,6 +266,8 @@ export function arbitrateNativeStatus(input: {
   /** The current owner's blocked report names a system-owned environment or tool outage. */
   environmentBlocker?: boolean;
   agentBlockerRecoverable?: boolean;
+  /** A chat request for this task and agent is waiting as a deferred wake behind this run. */
+  hasQueuedChatRequest?: boolean;
   failureRetryCount?: number;
   /**
    * This run was itself the automatic continuation of an earlier failed turn.
@@ -629,6 +632,26 @@ export function arbitrateNativeStatus(input: {
         ownerUserId: request.ownerClass === "agent" ? null : (input.reviewOwnerUserId ?? null),
         ownerAgentId: request.ownerClass === "agent" ? request.targetAgentId : null,
       })),
+    };
+  }
+  // A newer chat request waits behind this run. It starts the next turn with
+  // its own source binding and the full task history. A fresh-session
+  // continuation would inherit this run's older request instead, and would
+  // hold the task so the newer request never runs.
+  if (
+    input.assessment.reportedDisposition === "blocked" &&
+    input.assessment.blocker &&
+    input.hasQueuedChatRequest &&
+    !input.isConversation &&
+    !input.hasActivePauseHold &&
+    (input.environmentBlocker ||
+      (input.agentBlockerRecoverable && input.assessment.blocker.scope === "task_wide" && !input.assessment.blocker.boardOwned))
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve", toStatus: input.priorIssueStatus,
+      reasonCode: NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE, unblockDescriptor: null,
+      effects: [{ kind: "release_checkout" }],
     };
   }
   if (
