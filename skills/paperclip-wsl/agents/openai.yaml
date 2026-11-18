@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paperclip in WSL"
+  short_description: "Run Paperclip with native Linux tools in WSL"
+  default_prompt: "Use $paperclip-wsl to check this checkout and run the requested Paperclip work in WSL."

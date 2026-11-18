@@ -68,6 +68,10 @@ Greptile setup.
 
 ## 4. Dev Setup
 
+When `.paperclip/wsl.local.json` exists, follow
+`skills/paperclip-wsl/SKILL.md` before running repository commands.
+That local profile selects the Linux checkout and instance for Codex and Claude.
+
 ```sh
 node scripts/agent-preflight.mjs   # prepare a new or updated worktree
 pnpm dev                           # API and UI at http://localhost:3100
