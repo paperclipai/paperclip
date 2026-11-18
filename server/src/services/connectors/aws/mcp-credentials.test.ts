@@ -46,9 +46,9 @@ describe("AWS MCP credential minter", () => {
     expect(sign).toHaveBeenCalledWith({ companyId: "company-1", connectionId: "connection-1", audience: "sts.amazonaws.com" });
     expect(clients.assumeRoleWithWebIdentity).toHaveBeenCalledWith({
       region: "us-east-1", roleArn: roleSettings.roleArn, sessionName: "paperclip-aws-prod",
-      webIdentityToken: "paperclip-jwt", policyArns: AWS_MCP_READ_ONLY_SESSION_POLICIES,
+      webIdentityToken: "paperclip-jwt", policyArns: AWS_MCP_READ_ONLY_SESSION_POLICIES, signal: expect.any(AbortSignal),
     });
-    expect(clients.createMcpToken).toHaveBeenCalledWith({ region: "us-east-1", credentials: expect.objectContaining({ accessKeyId: "ASIAWEB" }) });
+    expect(clients.createMcpToken).toHaveBeenCalledWith({ region: "us-east-1", credentials: expect.objectContaining({ accessKeyId: "ASIAWEB" }), signal: expect.any(AbortSignal) });
 
     await minter.authorizationHeader(input({ ...roleSettings, accessLevel: "full" }, { connectionId: "connection-2" }));
     expect(clients.assumeRoleWithWebIdentity).toHaveBeenLastCalledWith(expect.objectContaining({ policyArns: undefined }));
@@ -61,12 +61,12 @@ describe("AWS MCP credential minter", () => {
     await minter.authorizationHeader(input(keySettings));
     expect(clients.getFederationToken).toHaveBeenCalledWith({
       region: "eu-west-1", credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "stored-secret" },
-      name: "paperclip-aws-prod", policyArns: AWS_MCP_READ_ONLY_SESSION_POLICIES,
+      name: "paperclip-aws-prod", policyArns: AWS_MCP_READ_ONLY_SESSION_POLICIES, signal: expect.any(AbortSignal),
     });
-    expect(clients.createMcpToken).toHaveBeenLastCalledWith({ region: "eu-west-1", credentials: expect.objectContaining({ accessKeyId: "ASIAFED" }) });
+    expect(clients.createMcpToken).toHaveBeenLastCalledWith({ region: "eu-west-1", credentials: expect.objectContaining({ accessKeyId: "ASIAFED" }), signal: expect.any(AbortSignal) });
 
     await minter.authorizationHeader(input({ ...keySettings, accessLevel: "full" }, { connectionId: "c-full" }));
-    expect(clients.createMcpToken).toHaveBeenLastCalledWith({ region: "eu-west-1", credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "stored-secret" } });
+    expect(clients.createMcpToken).toHaveBeenLastCalledWith({ region: "eu-west-1", credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "stored-secret" }, signal: expect.any(AbortSignal) });
 
     await minter.authorizationHeader(input({ ...keySettings, roleArn: "arn:aws:iam::123456789012:role/x" }, { connectionId: "c-role" }));
     expect(clients.assumeRole).toHaveBeenCalledWith(expect.objectContaining({
@@ -104,6 +104,23 @@ describe("AWS MCP credential minter", () => {
     release();
     expect(new Set((await Promise.all(calls)).map((h) => h.Authorization))).toEqual(new Set(["Bearer only"]));
     expect(clients.createMcpToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops waiting for a stalled AWS request, aborts it, and lets the next call try again", async () => {
+    let aborted = false;
+    let stall = true;
+    const clients = fakeAws({
+      assumeRoleWithWebIdentity: vi.fn((input: { signal?: AbortSignal }) => {
+        if (!stall) return Promise.resolve({ accessKeyId: "ASIAOK", secretAccessKey: "s", sessionToken: "t" });
+        return new Promise<never>(() => { input.signal?.addEventListener("abort", () => { aborted = true; }); });
+      }),
+    });
+    const minter = createAwsMcpCredentialMinter({ clients, signConnectionToken: async () => ({ token: "jwt" }), stepTimeoutMs: 50 });
+    const callers = [minter.authorizationHeader(input(roleSettings)), minter.authorizationHeader(input(roleSettings))];
+    for (const caller of callers) await expect(caller).rejects.toMatchObject({ code: "aws_unavailable", status: 503, health: "degraded" });
+    expect(aborted).toBe(true);
+    stall = false;
+    expect(await minter.authorizationHeader(input(roleSettings))).toEqual({ Authorization: "Bearer mcp-token-1" });
   });
 
   it("maps AWS failures to stable codes and messages without AWS's own text", async () => {

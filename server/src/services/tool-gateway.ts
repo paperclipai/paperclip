@@ -8264,7 +8264,7 @@ export function createToolGatewayService(
         // declares form questions; it is kept apart from sessions that only
         // read (resources, prompts, listing), which declare none.
         const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:elicit-form:${endpoint}`;
-        requestHeaders = await getMcpHttpSession({
+        const openSession = () => getMcpHttpSession({
           scope,
           send: sendForNegotiation,
           headers,
@@ -8272,6 +8272,20 @@ export function createToolGatewayService(
           eraKey,
           elicitationForm: true,
         });
+        try {
+          requestHeaders = await openSession();
+        } catch (error) {
+          if (!(error instanceof McpHttpInitializationError && error.status === 401 && isAwsMcpConnection(connection))) throw error;
+          // AWS refused the cached token while opening the session. No tool ran,
+          // so mint a fresh token and open the session once more.
+          awsMcpMinter.evict(connection.companyId, connection.id);
+          resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
+          credentialHeaders = { ...projectedConnectionHeaders(connection), ...resolvedCredentials };
+          builtHeaders = buildRemoteHeaders({ session, connection, credentialHeaders, callerHeaders });
+          headers = builtHeaders.headers;
+          headerSummary = builtHeaders.summary;
+          requestHeaders = await openSession();
+        }
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
         const negotiated = mcpProtocolVersionOf(requestHeaders);

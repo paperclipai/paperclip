@@ -172,6 +172,8 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
               "This AWS connection has no saved access key. Reconnect AWS.", "error",
             );
           }
+          // A grant's keys may be user-owned (personal connections); read them the way other grant credentials are read.
+          if (grant) return (await resolveOAuthGrantSecret(connection, grant, ref, actor, undefined)).value;
           return secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.versionSelector ?? "latest");
         },
       });

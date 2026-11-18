@@ -31,6 +31,8 @@ export const AWS_MCP_READ_ONLY_SESSION_POLICIES = [
 export const AWS_MCP_ACCESS_KEY_ID_PATH = "credentials.accessKeyId";
 export const AWS_MCP_SECRET_ACCESS_KEY_PATH = "credentials.secretAccessKey";
 const SESSION_SECONDS = 3600;
+/** Each AWS request in a mint must finish within this, so a stalled AWS never holds a tool call. */
+const DEFAULT_STEP_TIMEOUT_MS = 10_000;
 /** Mint again this long before the token expires, so an in-flight call never carries an expiring token. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const ROLE_ARN_PATTERN = /^arn:aws[a-z-]*:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
@@ -122,15 +124,15 @@ export function awsSessionName(connectionName: string, maxLength = 64): string {
 /** The four AWS calls the minter makes. Tests replace them with a fake AWS. */
 export interface AwsMcpClients {
   assumeRoleWithWebIdentity(input: {
-    region: string; roleArn: string; sessionName: string; webIdentityToken: string; policyArns?: readonly string[];
+    region: string; roleArn: string; sessionName: string; webIdentityToken: string; policyArns?: readonly string[]; signal?: AbortSignal;
   }): Promise<AwsSessionCredentials>;
   assumeRole(input: {
-    region: string; credentials: AwsSessionCredentials; roleArn: string; sessionName: string; policyArns?: readonly string[];
+    region: string; credentials: AwsSessionCredentials; roleArn: string; sessionName: string; policyArns?: readonly string[]; signal?: AbortSignal;
   }): Promise<AwsSessionCredentials>;
   getFederationToken(input: {
-    region: string; credentials: AwsSessionCredentials; name: string; policyArns: readonly string[];
+    region: string; credentials: AwsSessionCredentials; name: string; policyArns: readonly string[]; signal?: AbortSignal;
   }): Promise<AwsSessionCredentials>;
-  createMcpToken(input: { region: string; credentials: AwsSessionCredentials }): Promise<{ token: string; expiresInSeconds: number }>;
+  createMcpToken(input: { region: string; credentials: AwsSessionCredentials; signal?: AbortSignal }): Promise<{ token: string; expiresInSeconds: number }>;
 }
 
 function stsCredentials(value: { AccessKeyId?: string; SecretAccessKey?: string; SessionToken?: string; Expiration?: Date } | undefined): AwsSessionCredentials {
@@ -152,7 +154,7 @@ export const sdkAwsMcpClients: AwsMcpClients = {
     const out = await sts.send(new AssumeRoleWithWebIdentityCommand({
       RoleArn: input.roleArn, RoleSessionName: input.sessionName, WebIdentityToken: input.webIdentityToken,
       DurationSeconds: SESSION_SECONDS, ...policyArnList(input.policyArns),
-    }));
+    }), { abortSignal: input.signal });
     return stsCredentials(out.Credentials);
   },
   async assumeRole(input) {
@@ -160,21 +162,21 @@ export const sdkAwsMcpClients: AwsMcpClients = {
     const out = await sts.send(new AssumeRoleCommand({
       RoleArn: input.roleArn, RoleSessionName: input.sessionName,
       DurationSeconds: SESSION_SECONDS, ...policyArnList(input.policyArns),
-    }));
+    }), { abortSignal: input.signal });
     return stsCredentials(out.Credentials);
   },
   async getFederationToken(input) {
     const sts = new STSClient({ region: input.region, credentials: input.credentials });
     const out = await sts.send(new GetFederationTokenCommand({
       Name: input.name, DurationSeconds: SESSION_SECONDS, ...policyArnList(input.policyArns),
-    }));
+    }), { abortSignal: input.signal });
     return stsCredentials(out.Credentials);
   },
   async createMcpToken(input) {
     const signin = new SigninClient({ region: input.region, credentials: input.credentials });
     const out = await signin.send(new CreateOAuth2TokenWithIAMCommand({
       grantType: "client_credentials", resource: AWS_MCP_TOKEN_RESOURCE,
-    } as ConstructorParameters<typeof CreateOAuth2TokenWithIAMCommand>[0]));
+    } as ConstructorParameters<typeof CreateOAuth2TokenWithIAMCommand>[0]), { abortSignal: input.signal });
     const token = (out as { accessToken?: string }).accessToken;
     const expiresInSeconds = (out as { expiresIn?: number }).expiresIn ?? SESSION_SECONDS;
     if (!token) throw new Error("AWS returned no MCP token");
@@ -256,6 +258,8 @@ export interface AwsMcpCredentialMinterOptions {
   /** Signs a connection identity token (the workload identity issuer). */
   signConnectionToken(input: { companyId: string; connectionId: string; audience: string }): Promise<{ token: string }>;
   now?: () => number;
+  /** Deadline for each AWS request (default 10 s). */
+  stepTimeoutMs?: number;
 }
 
 interface CacheEntry { fingerprint: string; header: string; refreshAt: number }
@@ -263,14 +267,26 @@ interface CacheEntry { fingerprint: string; header: string; refreshAt: number }
 export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOptions) {
   const clients = options.clients ?? sdkAwsMcpClients;
   const now = options.now ?? (() => Date.now());
+  const stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
   const cache = new Map<string, CacheEntry>();
   const inFlight = new Map<string, Promise<string>>();
 
-  async function step<T>(name: Step, run: () => Promise<T>): Promise<T> {
+  async function step<T>(name: Step, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(Object.assign(new Error("AWS request timed out"), { name: "TimeoutError" }));
+      }, stepTimeoutMs);
+      timer.unref?.();
+    });
     try {
-      return await run();
+      return await Promise.race([run(controller.signal), deadline]);
     } catch (error) {
       throw classifyAwsMcpError(name, error);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -283,8 +299,8 @@ export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOpti
       const { token } = await step("identity", () => options.signConnectionToken({
         companyId: input.companyId, connectionId: input.connectionId, audience: AWS_MCP_STS_AUDIENCE,
       }));
-      return step("role", () => clients.assumeRoleWithWebIdentity({
-        region, roleArn: settings.roleArn!, sessionName, webIdentityToken: token, policyArns: readOnlyPolicies,
+      return step("role", (signal) => clients.assumeRoleWithWebIdentity({
+        region, roleArn: settings.roleArn!, sessionName, webIdentityToken: token, policyArns: readOnlyPolicies, signal,
       }));
     }
     const base: AwsSessionCredentials = {
@@ -292,14 +308,14 @@ export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOpti
       secretAccessKey: await input.readSecret(AWS_MCP_SECRET_ACCESS_KEY_PATH),
     };
     if (settings.roleArn) {
-      return step("role", () => clients.assumeRole({
-        region, credentials: base, roleArn: settings.roleArn!, sessionName, policyArns: readOnlyPolicies,
+      return step("role", (signal) => clients.assumeRole({
+        region, credentials: base, roleArn: settings.roleArn!, sessionName, policyArns: readOnlyPolicies, signal,
       }));
     }
     if (readOnlyPolicies) {
       // Federation token names allow at most 32 characters.
-      return step("federation", () => clients.getFederationToken({
-        region, credentials: base, name: awsSessionName(input.connectionName, 32), policyArns: readOnlyPolicies,
+      return step("federation", (signal) => clients.getFederationToken({
+        region, credentials: base, name: awsSessionName(input.connectionName, 32), policyArns: readOnlyPolicies, signal,
       }));
     }
     return base;
@@ -307,8 +323,8 @@ export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOpti
 
   async function mintHeader(input: AwsMcpMintInput, fingerprint: string, key: string): Promise<string> {
     const credentials = await sessionCredentials(input);
-    const { token, expiresInSeconds } = await step("signin", () => clients.createMcpToken({
-      region: input.settings.endpointRegion, credentials,
+    const { token, expiresInSeconds } = await step("signin", (signal) => clients.createMcpToken({
+      region: input.settings.endpointRegion, credentials, signal,
     }));
     const expiresAt = Math.min(
       now() + expiresInSeconds * 1000,

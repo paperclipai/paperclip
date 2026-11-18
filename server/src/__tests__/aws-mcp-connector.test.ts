@@ -11,6 +11,7 @@ import { createToolGatewayService } from "../services/tool-gateway.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { AWS_MCP_READ_ONLY_SESSION_POLICIES, type AwsMcpClients } from "../services/connectors/aws/mcp-credentials.js";
 import { resetWorkloadIdentityKeyCacheForTests, workloadIdentityService } from "../services/workload-identity.js";
+import { forgetMcpHttpSessions } from "../services/mcp-http.js";
 
 const actor = { actorType: "user" as const, actorId: "aws-test-user", actorSource: "local_implicit" as const };
 const ACCESS_KEY_ID = "AKIAEXAMPLE1234567";
@@ -129,6 +130,45 @@ describe("AWS connector with minted credentials", () => {
     expect(aws.createMcpToken.mock.calls.length).toBe(mintsBefore + 1);
     expect(await call()).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
     expect(requests.at(-1)!.headers.get("authorization")).not.toBe(lastAuthorization);
+  });
+
+  it("access key: a personal connection reads its owner's keys", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAwsConnector: true });
+    const { org } = await company();
+    const { service, aws } = harness();
+    const connected = await service.connectGalleryApp(org.id, {
+      galleryKey: "aws", connectionMethodKey: "aws-access-key", grantKind: "user",
+      configValues: { endpointRegion: "us-east-1", accessLevel: "full" },
+      credentialValues: { "credentials.accessKeyId": ACCESS_KEY_ID, "credentials.secretAccessKey": SECRET_ACCESS_KEY },
+    }, actor);
+    expect(connected.catalog).toHaveLength(2);
+    expect(aws.createMcpToken).toHaveBeenCalledWith(expect.objectContaining({
+      credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+    }));
+  });
+
+  it("mints a fresh token when AWS refuses the cached one while opening an MCP session", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAwsConnector: true });
+    const { org, agent } = await company();
+    const { service, gateway, aws, requests, rejected } = harness();
+    const connected = await service.connectGalleryApp(org.id, {
+      galleryKey: "aws", connectionMethodKey: "aws-access-key",
+      configValues: { endpointRegion: "us-east-1", accessLevel: "full" },
+      credentialValues: { "credentials.accessKeyId": ACCESS_KEY_ID, "credentials.secretAccessKey": SECRET_ACCESS_KEY },
+    }, actor);
+    await service.finishGalleryAppConnection(org.id, connected.connectionId, {
+      enabledCatalogEntryIds: connected.catalog.map((entry) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents",
+    }, actor);
+    const call = () => gateway.executeTestCall({ companyId: org.id, connectionId: connected.connectionId, agentId: agent.id, userId: actor.actorId, toolName: "aws___list_regions", parameters: {} });
+    expect(await call()).toMatchObject({ decision: "allowed" });
+    // AWS stops accepting the cached token, and the MCP session is gone, so the next call starts by opening a session.
+    for (const request of requests) rejected.add(request.headers.get("authorization") ?? "");
+    forgetMcpHttpSessions(connected.connectionId);
+    const mintsBefore = aws.createMcpToken.mock.calls.length;
+    const initializesBefore = requests.filter((request) => request.method === "initialize").length;
+    expect(await call()).toMatchObject({ decision: "allowed", result: { data: { isError: false } } });
+    expect(aws.createMcpToken.mock.calls.length).toBe(mintsBefore + 1);
+    expect(requests.filter((request) => request.method === "initialize").length).toBe(initializesBefore + 2);
   });
 
   it("role: proves the connection with a Paperclip-signed token and reports AWS refusals plainly", async () => {
