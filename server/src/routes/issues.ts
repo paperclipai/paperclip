@@ -19904,7 +19904,7 @@ export function issueRoutes(
         return;
       }
       const issue = await svc.create(companyId, {
-        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        title: `Chat with ${agent.name}`, generateConversationTitle: true, assigneeAgentId: agent.id,
         conversationAgentId: agent.id, conversationUserId: req.actor.userId,
         conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
       });

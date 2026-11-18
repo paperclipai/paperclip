@@ -168,9 +168,12 @@ for (const journey of [
         }),
       );
       await page.goto(`/${seed.prefix}/apps/${connection.id}/permissions`);
-      await page
-        .getByRole("radio", { name: "List fixture pages: Ask first" })
-        .click();
+      const [permissionSave] = await Promise.all([
+        page.waitForResponse(response => response.request().method() === "POST" &&
+          new URL(response.url()).pathname === `/api/companies/${seed.companyId}/tools/apps/${connection.id}/finish`),
+        page.getByRole("radio", { name: "List fixture pages: Ask first" }).click(),
+      ]);
+      expect(permissionSave.ok()).toBe(true);
       const configureAgent = async (query: string) =>
         json(
           await request.patch(`/api/agents/${agent.id}`, {
