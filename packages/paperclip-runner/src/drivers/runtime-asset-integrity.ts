@@ -71,7 +71,7 @@ export async function runtimeAssetManifest(asset: NativeRuntimeAssetReference): 
   for (const file of manifest.files) {
     if (!safePath(file.path) || !/^[a-f0-9]{64}$/.test(file.sha256) || !Number.isSafeInteger(file.size) || file.size < 0
       || !Number.isSafeInteger(file.mode) || file.mode < 0 || (file.mode & 0o555) !== file.mode) fail();
-    const name = file.path.normalize("NFC").toLowerCase();
+    const name = process.platform === "linux" ? file.path : file.path.normalize("NFC").toLowerCase();
     if (names.has(name)) fail();
     names.add(name);
     total += file.size;

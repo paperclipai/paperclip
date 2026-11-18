@@ -23,7 +23,7 @@ afterEach(async () => { for (const root of roots.splice(0)) {
   await writable(root); await rm(root, { recursive: true, force: true });
 } });
 
-async function fixture() {
+async function fixture(repositoryExtras: Record<string, string> = {}) {
   const root = await mkdtemp(join(tmpdir(), "shared-skill-layout-")); roots.push(root);
   async function asset(files: Record<string, string>): Promise<NativeRuntimeAssetReference> {
     const entries = Object.entries(files).sort(([a], [b]) => a.localeCompare(b)).map(([path, content]) => ({ path, sha256: hash(content), mode: 0o444, size: Buffer.byteLength(content) }));
@@ -35,7 +35,7 @@ async function fixture() {
     await mkdir(join(root, "assets", "manifests"), { recursive: true }); await writeFile(join(root, "assets", "manifests", `${digest}.json`), text);
     return { schema: "paperclip.runtime-asset.v1", digest, manifestDigest: hash(text), rootPath, fileCount: entries.length, totalBytes };
   }
-  const repo = await asset({ "skills/één/SKILL.md": "Read ../../shared.txt", "skills/two/SKILL.md": "Read ../../shared.txt", "skills/één/agents/openai.yaml": "interface: {}", "shared.txt": "original" });
+  const repo = await asset({ "skills/één/SKILL.md": "Read ../../shared.txt", "skills/two/SKILL.md": "Read ../../shared.txt", "skills/één/agents/openai.yaml": "interface: {}", "shared.txt": "original", ...repositoryExtras });
   const skills = [];
   for (const [runtimeName, entryPath] of [["nested/één", "skills/één/SKILL.md"], ["two", "skills/two/SKILL.md"]]) {
     const link = `${"../".repeat(runtimeName!.split("/").length + 1)}repositories/${repo.digest}/${entryPath}`;
@@ -47,6 +47,15 @@ async function fixture() {
 }
 
 describe("shared repository materialization", () => {
+  it.skipIf(process.platform !== "linux")("preserves case-distinct Linux repository files", async () => {
+    const f = await fixture({ "README.md": "upper", "readme.md": "lower" });
+    const home = join(f.root, "home");
+    await materializeNativeRuntimeSkills(f.context, join(home, "skills"));
+    await verifyMaterializedNativeRuntimeSkills(f.context, join(home, "skills"));
+    const repository = join(home, "repositories", f.repo.digest);
+    expect(await readFile(join(repository, "README.md"), "utf8")).toBe("upper");
+    expect(await readFile(join(repository, "readme.md"), "utf8")).toBe("lower");
+  });
   it("rejects a substituted source bundle parent with otherwise matching bytes", async () => {
     const f = await fixture(), original = dirname(f.repo.rootPath), moved = join(f.root, "substituted-source");
     await rename(original, moved);
