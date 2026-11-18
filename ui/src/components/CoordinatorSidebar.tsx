@@ -181,8 +181,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         <div className="design-sidebar-primary my-2">
           {responsibilitiesHome && <SidebarNavItem className="design-sidebar-item" to="/responsibilities" label="Dashboard" icon={Compass} />}
           <div className="group/coordinator-new relative">
-            <SidebarNavItem className={cn("design-sidebar-item", !rail && "pr-16")} to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
-            {!rail && agentChatEnabled && <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
+            <SidebarNavItem className="design-sidebar-item pr-16" to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
+            {agentChatEnabled && <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
               <button type="button" aria-label="All conversations" title="All conversations" onClick={() => setChatHistoryOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><History className="size-4" /></button>
               <button type="button" aria-label="New chat" title="New chat" onClick={() => setChatPickerOpen(true)} className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>
             </div>}
@@ -226,8 +226,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
             </RecentTaskGroup>
           : item.kind === "chat"
             ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}/${item.id}`} label={`${item.chat.title} · ${item.agent.name}`} iconNode={<AgentAvatar agent={item.agent} size={16} />}
-              trailing={<span data-slot="chat-recent-date" className="shrink-0 font-mono text-xs text-muted-foreground">{formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)}</span>}
-              trailingLabel={formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)} />
+              trailing={<span data-slot="chat-recent-date" className="shrink-0 font-mono text-xs text-muted-foreground">{formatDateTime(item.chat.createdAt ?? item.chat.updatedAt)}</span>} />
             : <ProjectRecent key={item.id} project={item.project} />)}
         </RecentNavigationList>
       </SidebarSection></div>}
