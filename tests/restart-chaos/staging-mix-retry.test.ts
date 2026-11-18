@@ -641,6 +641,21 @@ describe("a recovery continuation of a follow-up run that never committed (w-202
     }
   });
 
+  it("still fails a retry of a committed continuation that keeps a stale previousRunId to the answering run", () => {
+    const retry = "9c9c9c9c-retry";
+    const evidence = t128();
+    evidence.runs!.push({ runId: retry, createdAt: 1_794_946_800_000, startedAt: 1_794_946_810_000, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "w-retry", retryOfRunId: continuation, acceptedDisposition: "done", acceptedAt: 1_794_946_900_000, status: "succeeded", providerTurnStarted: true,
+      contextSnapshot: { wakeReason: "transient_failure_retry", previousRunId: answering, retryOfRunId: continuation } });
+    evidence.wakes!.push({ id: "w-retry", reason: "transient_failure_retry", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: null, createdAt: 1_794_946_800_000, payload: { retryOfRunId: continuation } });
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started.map(turn => turn.runId)).toEqual([retry]);
+      expect(completionOnce(completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 38a8772f, 9c9c9c9c each reported completion" });
+    }
+  });
+
   it("still fails a continuation with no lineage to the answering run", () => {
     const evidence = withLineage({});
     for (const completion of both(evidence)) {

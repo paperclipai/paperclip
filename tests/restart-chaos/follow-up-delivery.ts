@@ -93,7 +93,8 @@ export function followUpAnsweringRuns(evidence: { runs?: ReadonlyArray<DeliveryR
   const byId = new Map(runs.map(run => [run.runId, run]));
   for (const run of [...runs].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
     const predecessors = continuedRunIds(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined);
-    if (predecessors.some(id => answering.has(id) && !committedCompletion(byId.get(id), rejected))) answering.add(run.runId);
+    if (predecessors.some(id => committedCompletion(byId.get(id), rejected))) continue;
+    if (predecessors.some(id => answering.has(id))) answering.add(run.runId);
   }
   return answering;
 }
