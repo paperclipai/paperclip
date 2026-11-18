@@ -198,8 +198,8 @@ function buildTargetSummary(input: {
   };
 }
 
-function normalizeReason(vote: FeedbackVoteValue, reason: string | null | undefined) {
-  if (vote !== "down" || typeof reason !== "string") return null;
+function normalizeReason(reason: string | null | undefined) {
+  if (typeof reason !== "string") return null;
   const trimmed = reason.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
@@ -1938,6 +1938,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       authorUserId: string;
       reason?: string | null;
       allowSharing?: boolean;
+      recordSharingConsent?: boolean;
     }) =>
       db.transaction(async (tx) => {
         const issue = await tx
@@ -1967,8 +1968,9 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
         if (!existingCompany) throw notFound("Company not found");
 
         const now = new Date();
-        const normalizedReason = normalizeReason(input.vote, input.reason);
-        const sharedWithLabs = input.allowSharing === true;
+        const normalizedReason = normalizeReason(input.reason);
+        const recordSharingConsent = input.recordSharingConsent !== false;
+        const sharedWithLabs = recordSharingConsent && input.allowSharing === true;
         let consentEnabledNow = false;
         let consentVersion = existingCompany.feedbackDataSharingTermsVersion ?? null;
         let persistedSharingPreference: "allowed" | "not_allowed" | null = null;
@@ -1988,61 +1990,63 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
             .where(eq(companies.id, issue.companyId));
         }
 
-        const existingInstanceSettings = await tx
-          .select({
-            id: instanceSettings.id,
-            general: instanceSettings.general,
-          })
-          .from(instanceSettings)
-          .where(eq(instanceSettings.singletonKey, DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY))
-          .then((rows) => rows[0] ?? null);
-
-        const currentInstanceSettings =
-          existingInstanceSettings ??
-          (await tx
-            .insert(instanceSettings)
-            .values({
-              singletonKey: DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY,
-              general: {},
-              experimental: {},
-              createdAt: now,
-              updatedAt: now,
-            })
-            .onConflictDoUpdate({
-              target: [instanceSettings.singletonKey],
-              set: {
-                updatedAt: now,
-              },
-            })
-            .returning({
+        if (recordSharingConsent) {
+          const existingInstanceSettings = await tx
+            .select({
               id: instanceSettings.id,
               general: instanceSettings.general,
             })
-            .then((rows) => rows[0] ?? null));
+            .from(instanceSettings)
+            .where(eq(instanceSettings.singletonKey, DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY))
+            .then((rows) => rows[0] ?? null);
 
-        // Operator setting defaults apply to the effective value: when the
-        // operator supplies a feedback-sharing default, the preference is no
-        // longer "prompt", so a stray answer must not persist over it.
-        const currentGeneral = applyOperatorGeneralDefaults(
-          normalizeInstanceGeneralSettings(currentInstanceSettings?.general),
-          getOperatorSettingDefaults(),
-        );
-        if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
-          await announceInstanceSettingsChange(tx);
-          const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
-          const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
-          await tx
-            .update(instanceSettings)
-            .set({
-              general: {
-                ...currentGeneralRaw,
-                censorUsernameInLogs: currentGeneral.censorUsernameInLogs,
-                feedbackDataSharingPreference: nextSharingPreference,
-              },
-              updatedAt: now,
-            })
-            .where(eq(instanceSettings.id, currentInstanceSettings.id));
-          persistedSharingPreference = nextSharingPreference;
+          const currentInstanceSettings =
+            existingInstanceSettings ??
+            (await tx
+              .insert(instanceSettings)
+              .values({
+                singletonKey: DEFAULT_INSTANCE_SETTINGS_SINGLETON_KEY,
+                general: {},
+                experimental: {},
+                createdAt: now,
+                updatedAt: now,
+              })
+              .onConflictDoUpdate({
+                target: [instanceSettings.singletonKey],
+                set: {
+                  updatedAt: now,
+                },
+              })
+              .returning({
+                id: instanceSettings.id,
+                general: instanceSettings.general,
+              })
+              .then((rows) => rows[0] ?? null));
+
+          // Operator setting defaults apply to the effective value: when the
+          // operator supplies a feedback-sharing default, the preference is no
+          // longer "prompt", so a stray answer must not persist over it.
+          const currentGeneral = applyOperatorGeneralDefaults(
+            normalizeInstanceGeneralSettings(currentInstanceSettings?.general),
+            getOperatorSettingDefaults(),
+          );
+          if (currentInstanceSettings && currentGeneral.feedbackDataSharingPreference === "prompt") {
+            await announceInstanceSettingsChange(tx);
+            const nextSharingPreference = sharedWithLabs ? "allowed" : "not_allowed";
+            const currentGeneralRaw = asRecord(currentInstanceSettings.general) ?? {};
+            await tx
+              .update(instanceSettings)
+              .set({
+                general: {
+                  ...currentGeneralRaw,
+                  censorUsernameInLogs: currentGeneral.censorUsernameInLogs,
+                  feedbackDataSharingPreference: nextSharingPreference,
+                },
+                updatedAt: now,
+              })
+              .where(eq(instanceSettings.id, currentInstanceSettings.id));
+            persistedSharingPreference = nextSharingPreference;
+          }
         }
 
         const [savedVote] = await tx

@@ -427,6 +427,10 @@ class FakeEndpointRuntime {
     this.recordedMicrosoftTeamsRoutes.push({ threadId, serviceUrl });
   }
 
+  async withTeamsFeedbackLoop<T>(operation: () => Promise<T>): Promise<T> {
+    return await operation();
+  }
+
   async postSlackFilePublication(
     threadId: string,
     message: unknown,

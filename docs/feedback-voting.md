@@ -8,6 +8,15 @@ When you rate an agent's response with **Helpful** (thumbs up) or **Needs work**
 2. If you click **Needs work**, an optional text prompt appears: _"What could have been better?"_ You can type a reason or dismiss it.
 3. A consent dialog asks whether to keep the vote local or share it. Your choice is remembered for future votes.
 
+### Votes from Microsoft Teams
+
+Agent replies that a Microsoft Teams connection posts show the native Teams thumbs up and thumbs down buttons. A click becomes a vote on the agent comment that the reply came from:
+
+- A thumbs up is **Helpful**. A thumbs down is **Needs work**. The text that the person types in the Teams feedback form is the reason, for both votes.
+- A person whose Teams account is linked to a Paperclip user votes as that user. A person who is not linked votes as `chat:<principal id>` when the connection accepts unlinked people. Otherwise Paperclip ignores the click.
+- Teams votes are always `local_only`. They never change the company or instance sharing preference.
+- Progress notices, file cards, and replies that are not agent comments do not show the buttons.
+
 ### What gets stored
 
 Each vote creates two local records:

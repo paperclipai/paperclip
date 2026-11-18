@@ -429,6 +429,7 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
 
     expect(result.vote.vote).toBe("up");
+    expect(result.vote.reason).toBeNull();
     expect(result.sharingEnabled).toBe(false);
     expect(result.persistedSharingPreference).toBe("not_allowed");
     expect(result.vote.consentVersion).toBeNull();
@@ -459,6 +460,40 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
     expect(traces[0]?.payloadSnapshot?.bundle).toBeNull();
     expect(traces[0]?.exportId).toBeNull();
+  });
+
+  it("records a vote without touching sharing consent when the caller opts out", async () => {
+    const { companyId, issueId, commentId } = await seedIssueWithAgentComment();
+
+    const result = await svc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      reason: "Clear and complete.",
+      authorUserId: "chat:principal-1",
+      allowSharing: true,
+      recordSharingConsent: false,
+    });
+
+    expect(result.vote.reason).toBe("Clear and complete.");
+    expect(result.sharingEnabled).toBe(false);
+    expect(result.consentEnabledNow).toBe(false);
+    expect(result.persistedSharingPreference).toBeNull();
+    expect(result.vote.consentVersion).toBeNull();
+
+    const company = await db
+      .select()
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    expect(company?.feedbackDataSharingEnabled).toBe(false);
+    expect(company?.feedbackDataSharingConsentAt).toBeNull();
+    expect(await db.select().from(instanceSettings)).toHaveLength(0);
+
+    const traces = await svc.listFeedbackTraces({ companyId, issueId, includePayload: true });
+    expect(traces).toHaveLength(1);
+    expect(traces[0]?.status).toBe("local_only");
   });
 
   it("keeps a stored sharing preference when the settings row still carries retired keys", async () => {

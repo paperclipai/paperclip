@@ -76,6 +76,7 @@ import type {
 import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import type { EndpointRecord } from "../runtime-types.js";
 import { isExplicitOperatorPublication } from "./policy.js";
+import { teamsFeedbackLoopPublication } from "../microsoft-teams/feedback.js";
 type PublicationTransportOptions = {
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;
   fetchImpl: typeof globalThis.fetch;
@@ -419,19 +420,23 @@ function safeCardForPublication(
           : thread.post(streamSafePublicationText(text)),
       );
     }
-    return await attemptProviderPublication(async () =>
-      input.replaceProviderMessageId
-        ? await editOrPostProviderPublication(
-            () =>
-              thread.adapter.editMessage(
-                thread.id,
-                input.replaceProviderMessageId!,
-                { markdown: text },
-              ),
-            () => thread.post({ markdown: text }),
-          )
-        : await thread.post({ markdown: text }),
-    );
+    const sendText = () =>
+      attemptProviderPublication(async () =>
+        input.replaceProviderMessageId
+          ? await editOrPostProviderPublication(
+              () =>
+                thread.adapter.editMessage(
+                  thread.id,
+                  input.replaceProviderMessageId!,
+                  { markdown: text },
+                ),
+              () => thread.post({ markdown: text }),
+            )
+          : await thread.post({ markdown: text }),
+      );
+    return (await teamsFeedbackLoopPublication(db, input))
+      ? await endpointRuntime.withTeamsFeedbackLoop(sendText)
+      : await sendText();
   }
   return { postSafePublication, recordExactOutboundPublicationLink };
 }
