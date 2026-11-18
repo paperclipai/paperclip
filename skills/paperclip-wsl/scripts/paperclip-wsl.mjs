@@ -68,12 +68,17 @@ try {
     const configuredBins = config.binPaths ?? ["/usr/local/bin", "/usr/bin", "/bin"];
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
+    const optionValue = name => {
+      const index = commands.findIndex(value => value === name || value.startsWith(name + "="));
+      return index < 0 ? undefined : commands[index].startsWith(name + "=") ? commands[index].slice(name.length + 1) : commands[index + 1];
+    };
     let contextPath = path.join(config.paperclipHome, "context.json");
     for (let directory = repository;; directory = path.dirname(directory)) {
       const candidate = path.join(directory, ".paperclip", "context.json");
       if (fs.existsSync(candidate)) { contextPath = candidate; break; }
       if (path.dirname(directory) === directory) break;
     }
+    if (optionValue("--context")) contextPath = path.resolve(repository, optionValue("--context"));
     const validateApiBase = value => {
       const target = new URL(value);
       if (target.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(target.hostname) || Number(target.port || 80) !== config.port || !["", "/"].includes(target.pathname) || target.username || target.password || target.search || target.hash) fail("CLI context targets another instance");
@@ -81,8 +86,11 @@ try {
     if (!nativePath(contextPath)) fail("CLI context must be a native Linux path");
     if (fs.existsSync(contextPath)) {
       const context = JSON.parse(fs.readFileSync(contextPath, "utf8"));
-      for (const profile of Object.values(context.profiles ?? {})) if (profile?.apiBase) validateApiBase(profile.apiBase);
+      const profile = context.profiles?.[optionValue("--profile")?.trim() || context.currentProfile || "default"];
+      const target = optionValue("--api-base")?.trim() || process.env.PAPERCLIP_API_URL?.trim() || profile?.apiBase;
+      if (target) validateApiBase(target);
     }
+    if (optionValue("--api-base")) validateApiBase(optionValue("--api-base"));
     const validateEnvironment = source => {
       for (const [key, expected] of [["PAPERCLIP_HOME", config.paperclipHome], ["PAPERCLIP_INSTANCE_ID", config.instanceId]]) {
         if (source[key] !== undefined && source[key] !== expected) fail(key + " selects another instance");

@@ -171,3 +171,15 @@ test('preserves the checkout CLI context for the selected local instance', { ski
     assert.equal(result.stdout.trim(), file);
   } finally { await rm(file); }
 });
+
+test('allows unused remote profiles while rejecting an explicitly selected remote profile', { skip: !enabled }, async () => {
+  const file = path.join(root, 'data', 'context.json');
+  await writeFile(file, JSON.stringify({version:2,currentProfile:'local',profiles:{local:{apiBase:'http://localhost:3100'},remote:{apiBase:'https://remote.invalid'}}}));
+  try {
+    const local = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")']);
+    assert.equal(local.status, 0, local.stderr);
+    const remote = invoke(['exec', 'pnpm', 'paperclipai', '--profile', 'remote', 'company', 'list']);
+    assert.equal(remote.status, 1);
+    assert.match(remote.stderr, /CLI context targets another instance/);
+  } finally { await rm(file); }
+});
