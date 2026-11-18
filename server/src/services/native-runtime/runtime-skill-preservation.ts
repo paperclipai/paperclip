@@ -59,7 +59,11 @@ async function readLocalManifest(asset: NativeRuntimeAssetReference) {
 }
 async function readSource(asset: NativeRuntimeAssetReference) {
   const { expected, manifestText, entries } = await readLocalManifest(asset);
-  if (!await verifyFileManifest(expected, entries.map(f => ({ ...f, executable: Boolean(f.mode & 0o111) })))) throw new Error("runtime_skill_source_changed");
+  if (!await verifyFileManifest(expected, entries.map(f => ({ ...f, executable: Boolean(f.mode & 0o111) })))) {
+    // A listed file that is gone is a missing source, not a changed one.
+    for (const entry of entries) await fs.lstat(path.join(expected, entry.path));
+    throw new Error("runtime_skill_source_changed");
+  }
   const files = [];
   for (const entry of entries) {
     const handle = await fs.open(path.join(expected, entry.path), constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -220,25 +224,28 @@ function runtimeSkillSourceAbsent(error: unknown) {
 }
 
 /** Copies every retained bundle this filesystem still holds into durable
- * storage: the same copy the skill package maintenance command makes. A run
- * whose bundle files are not here is reported, never guessed at. Any other
- * failure (a changed source, storage) propagates to the caller. */
+ * storage: the same copy the skill package maintenance command makes. Runs
+ * that stay unsaved are reported, never guessed at: their bundle files are not
+ * here, or their admitted input names no bundle this copy can capture (a
+ * non-null pin that is not a version ID). Any other failure (a changed
+ * source, storage) propagates to the caller. */
 export async function preserveLocalRuntimeSkillObligations(db: Db, options: { signal?: AbortSignal } = {}, storage?: StorageService) {
-  let preserved = 0;
-  const sourceAbsent: string[] = [];
+  let bundles = 0;
+  const unsaved: string[] = [];
   await withSkillPackageReadScope(db, async () => {
     for await (const run of localRuntimeSkillObligations(db)) {
       options.signal?.throwIfAborted();
       try {
-        await preserveRuntimeSkillAssets(db, { companyId: run.companyId, runId: run.id, signal: options.signal }, storage);
-        preserved++;
+        const { preserved } = await preserveRuntimeSkillAssets(db, { companyId: run.companyId, runId: run.id, signal: options.signal }, storage);
+        if (preserved) bundles += preserved;
+        else unsaved.push(run.id);
       } catch (error) {
         if (!runtimeSkillSourceAbsent(error)) throw error;
-        sourceAbsent.push(run.id);
+        unsaved.push(run.id);
       }
     }
   });
-  return { preserved, sourceAbsent };
+  return { bundles, unsaved };
 }
 
 /** Existing bounded skill maintenance owns this optional online conversion;

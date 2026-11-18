@@ -13,12 +13,13 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { materializeAsset } from "../services/native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
-import { hasLocalRuntimeSkillObligations } from "../services/native-runtime/runtime-skill-preservation.js";
+import { hasLocalRuntimeSkillObligations, preserveLocalRuntimeSkillObligations } from "../services/native-runtime/runtime-skill-preservation.js";
 import { removeRuntimeAssetTree } from "../services/native-runtime/runtime-asset-retention.js";
 import { assertEphemeralServerData } from "../services/ephemeral-server-contract.js";
 import { volumeFreeControllerStateOwned } from "../services/native-runtime/volume-free-controller-state.js";
 
-vi.mock("../services/native-runtime/native-harness-backup-migration.js", () => ({ hasLocalNativeHarnessObligations: vi.fn(async () => false) }));
+vi.mock("../services/native-runtime/native-harness-backup-migration.js", () => ({
+  hasLocalNativeHarnessObligations: vi.fn(async () => false) }));
 vi.mock("../services/native-runtime/volume-free-controller-state.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/native-runtime/volume-free-controller-state.js")>(),
   volumeFreeControllerStateOwned: vi.fn(),
@@ -51,15 +52,16 @@ afterAll(async () => {
 
 /** A native run admitted by a release that did not yet save runtime skill
  * bundles at admission: the bundle exists only on the admitting server's disk. */
-async function retainedUnsavedRuntimeSkill() {
+async function retainedUnsavedRuntimeSkill(options: { versionId?: string } = {}) {
   const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), issueId = randomUUID();
   await db.insert(companies).values({ id: companyId, name: "Runtime skill startup", issuePrefix: `S${companyId.slice(0, 6)}` });
   await db.insert(agents).values({ id: agentId, companyId, name: "Legacy admission" });
   await db.insert(agentFileRoots).values({ companyId, agentId, generation: randomUUID(), entries: [] });
   await db.insert(issues).values({ id: issueId, companyId, title: "Old native run" });
-  const bundle = await materializeAsset([{ path: "SKILL.md", content: Buffer.from(`# legacy ${runId}\n`), mode: 0o400 }]);
+  const bundle = await materializeAsset([{ path: "SKILL.md", content: Buffer.from(`# legacy ${runId}\n`), mode: 0o400 },
+    { path: "notes.md", content: Buffer.from("notes\n"), mode: 0o400 }]);
   const context = nativeRuntimeContextFixture();
-  context.skills = [{ key: "legacy", runtimeName: "legacy", versionId: null, bundle }];
+  context.skills = [{ key: "legacy", runtimeName: "legacy", versionId: options.versionId ?? null, bundle }];
   context.aggregateDigest = canonicalNativeRuntimeContextDigest(context);
   const execution = parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v3",
     binding: { companyId, runId, agentId, issueId, executionWorkspaceId: runId },
@@ -75,6 +77,11 @@ async function retainedUnsavedRuntimeSkill() {
   await db.insert(nativeRunFinalizations).values({ companyId, runId, issueId, phase: "terminal_failure", recoveryState: "blocked" });
   return { runId, bundle };
 }
+const lose = (bundle: { rootPath: string }) => removeRuntimeAssetTree(bundle.rootPath);
+const saved = async (runId: string) => {
+  const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+  return Object.hasOwn(run!.runnerProfileJson ?? {}, "nativeRuntimeSkillPreservation");
+};
 const volumeFreeServer = () => {
   vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
   vi.stubEnv("PAPERCLIP_DURABLE_AGENT_FILES", "true");
@@ -110,4 +117,50 @@ it("still refuses a missing bundle on a filesystem with no volume-free owner mar
   const { bundle } = await retainedUnsavedRuntimeSkill();
   await removeRuntimeAssetTree(path.dirname(path.dirname(bundle.rootPath)));
   await expect(assertEphemeralServerData(db)).rejects.toThrow("runtime_skill_assets_require_migration");
+});
+
+it("saves the bundles still here and starts over the lost ones on a volume-free filesystem", async () => {
+  volumeFreeServer();
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(true);
+  const present = await retainedUnsavedRuntimeSkill(), lost = await retainedUnsavedRuntimeSkill();
+  await lose(lost.bundle);
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+  expect(await saved(present.runId)).toBe(true);
+  expect(await saved(lost.runId)).toBe(false);
+});
+
+it("treats a bundle missing one listed file as lost, not changed", async () => {
+  volumeFreeServer();
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(true);
+  const { bundle } = await retainedUnsavedRuntimeSkill();
+  await fs.chmod(bundle.rootPath, 0o700);
+  await fs.rm(path.join(bundle.rootPath, "notes.md"));
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+});
+
+it("starts over a retained pin this copy cannot capture on a volume-free filesystem", async () => {
+  volumeFreeServer();
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(true);
+  await retainedUnsavedRuntimeSkill({ versionId: "legacy-pin" });
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+});
+
+it("refuses when saving a bundle that is here fails, even on a volume-free filesystem", async () => {
+  volumeFreeServer();
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(true);
+  const { runId } = await retainedUnsavedRuntimeSkill();
+  const put = vi.spyOn(storageModule.getStorageService(), "putFile").mockRejectedValue(new Error("storage offline"));
+  try { await expect(assertEphemeralServerData(db)).rejects.toThrow("runtime_skill_assets_require_migration"); }
+  finally { put.mockRestore(); }
+  expect(await saved(runId)).toBe(false);
+});
+
+// The offline enrollment phase is this pass with a hard refusal on any unsaved
+// run; the full enrollment suite needs a real S3 endpoint (ephemeral-migration.test.ts).
+it("reports exactly the runs it could not save, for enrollment to refuse", async () => {
+  const present = await retainedUnsavedRuntimeSkill(), lost = await retainedUnsavedRuntimeSkill();
+  await lose(lost.bundle);
+  expect(await preserveLocalRuntimeSkillObligations(db)).toEqual({ bundles: 1, unsaved: [lost.runId] });
+  expect(await saved(present.runId)).toBe(true);
+  expect(await preserveLocalRuntimeSkillObligations(db)).toEqual({ bundles: 0, unsaved: [lost.runId] });
 });

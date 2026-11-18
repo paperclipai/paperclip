@@ -6,7 +6,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { offlineMigrationExecutionWhere } from "../services/offline-migration-execution.js";
 import { getStorageService } from "../storage/index.js";
 import { migrateAgentFiles, verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
-import { readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
+import { readEphemeralServerDataEligibility, RUNTIME_SKILL_ASSETS_BLOCKER } from "../services/ephemeral-server-contract.js";
 import { migrateRunEvidence } from "../services/run-evidence-migration.js";
 import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
@@ -35,7 +35,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
     "agent_files_require_migration", "run_logs_require_migration", "provider_traces_require_migration", "skills_require_migration", "workspaces_require_migration",
     "native_harness_backups_require_migration",
     "native_controllers_require_migration",
-    "runtime_skill_assets_require_migration",
+    RUNTIME_SKILL_ASSETS_BLOCKER,
   ].includes(blocker));
   if (unsupported.length) throw new Error(unsupported[0]);
 
@@ -48,11 +48,6 @@ export async function migrateEphemeralServerData(db: Db, input: {
   counts.nativeControllerSourcesAlreadyAbsent = controllers.sourceAlreadyAbsent;
   counts.nativeControllersArchivedFailed = controllers.archivedFailed;
   counts.nativeControllersPreservedFailed = controllers.preservedFailed;
-  phase("runtime_skill_assets");
-  // The volume is still attached here, so every retained bundle must be on it.
-  const runtimeSkills = await preserveLocalRuntimeSkillObligations(db, { signal }, storage);
-  if (runtimeSkills.sourceAbsent.length) throw new Error("runtime_skill_asset_migration_blocked");
-  counts.runtimeSkillAssets = runtimeSkills.preserved;
   phase("native_harness_backups");
   counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
   phase("workspace_operation_receipts");
@@ -110,6 +105,13 @@ export async function migrateEphemeralServerData(db: Db, input: {
       after = page.after;
     }
   }
+  // After the package phases: a bundle whose bytes match a package snapshot
+  // reuses that snapshot, which must already live in shared storage.
+  phase("runtime_skill_assets");
+  // The volume is still attached here, so every retained bundle must be on it.
+  const runtimeSkills = await preserveLocalRuntimeSkillObligations(db, { signal }, storage);
+  if (runtimeSkills.unsaved.length) throw new Error("runtime_skill_asset_migration_blocked");
+  counts.runtimeSkillAssets = runtimeSkills.bundles;
   phase("skill_installations");
   after = undefined;
   for (;;) {
