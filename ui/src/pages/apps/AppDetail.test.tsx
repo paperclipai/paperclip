@@ -83,7 +83,7 @@ vi.mock("@/api/tools", () => ({
       finalizeOAuthAccessMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
       putConnectionInstallsMock(connectionId, installs),
-    archiveConnection: vi.fn(),
+    archiveConnection: (connectionId: string) => archiveConnectionMock(connectionId),
     refreshCatalog: (connectionId: string) => refreshCatalogMock(connectionId),
     checkConnectionHealth: (connectionId: string) => checkConnectionHealthMock(connectionId),
     startOAuth: (connectionId: string, input?: unknown) => input === undefined
@@ -179,6 +179,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 }));
 
 const pushToastMock = vi.hoisted(() => vi.fn());
+const archiveConnectionMock = vi.hoisted(() => vi.fn());
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: pushToastMock }),
   useOptionalToastActions: () => ({ pushToast: pushToastMock }),
@@ -610,6 +611,25 @@ describe("AppDetail", () => {
     await act(async () => danger.click());
     expect(container.textContent).toContain("Remove app");
     expect(Array.from(container.querySelectorAll("button")).some((b) => b.textContent === "Reconnect")).toBe(false);
+  });
+
+  it("tells the user when Google access could not be ended after removing the app", async () => {
+    getConnectionMock.mockResolvedValue(connection({ transport: "rest_api", config: { sourceTemplateKey: "composio", connectionMethodKey: "api-key" }, enabled: false, healthStatus: "error" }));
+    archiveConnectionMock.mockResolvedValueOnce({ removal: { providerAccess: { provider: "google", result: "not_ended", outcomes: ["broker_unavailable"] } } });
+    await renderAppDetail();
+    const danger = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Danger zone"))!;
+    await act(async () => danger.click());
+    const remove = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Remove app")!;
+    await act(async () => remove.click());
+    const confirm = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.trim() === "Yes, remove it")!;
+    await act(async () => confirm.click());
+    await act(async () => { await Promise.resolve(); });
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Disconnected",
+      tone: "warn",
+      body: expect.stringContaining("couldn't end its access at Google"),
+      action: expect.objectContaining({ label: "Open Google account connections" }),
+    }));
   });
 
   it("uses Permissions as the primary connection page and has no Setup tab", () => {

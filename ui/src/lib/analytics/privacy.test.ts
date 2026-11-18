@@ -3,10 +3,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ANALYTICS_MASK_CLASS,
+  ANALYTICS_MASK_TEXT_SELECTOR,
   ANALYTICS_NO_CAPTURE_CLASS,
-  ANALYTICS_UNMASK_ATTRIBUTE,
   maskReplayAttribute,
-  maskReplayText,
   redactAnalyticsUrl,
 } from "./privacy";
 
@@ -15,35 +14,26 @@ function render(html: string) {
   return (id: string) => document.getElementById(id) as HTMLElement;
 }
 
-describe("session replay text masking", () => {
+describe("session replay text mask selector", () => {
   afterEach(() => {
     document.body.innerHTML = "";
   });
 
-  it("masks text on any surface that nobody marked", () => {
-    const el = render(`<main><p id="p">Quarterly revenue plan</p></main>`);
-    expect(maskReplayText("Quarterly revenue plan", el("p"))).toBe("********* ******* ****");
-  });
-
-  it("masks text when the element is unknown", () => {
-    expect(maskReplayText("hello", null)).toBe("*****");
-    expect(maskReplayText("hello")).toBe("*****");
-  });
-
-  it("shows text inside opted-in chrome", () => {
-    const el = render(`<button ${ANALYTICS_UNMASK_ATTRIBUTE}><span id="s">New task</span></button>`);
-    expect(maskReplayText("New task", el("s"))).toBe("New task");
-  });
-
-  it("keeps customer content masked even inside opted-in chrome", () => {
+  it("matches only text inside customer content, secrets and editable content", () => {
     const el = render(
-      `<nav ${ANALYTICS_UNMASK_ATTRIBUTE}><div class="${ANALYTICS_MASK_CLASS}"><p id="c">Customer secret</p></div>`
+      `<nav><a id="n">Tasks</a></nav><main><p id="p">Quarterly revenue plan</p>`
+      + `<div class="${ANALYTICS_MASK_CLASS}"><p id="c">Customer secret</p></div>`
       + `<div contenteditable="true"><p id="e">Draft</p></div>`
-      + `<div class="${ANALYTICS_NO_CAPTURE_CLASS}"><span id="k">sk-123</span></div></nav>`,
+      + `<div contenteditable="false"><p id="r">Read only</p></div>`
+      + `<div class="${ANALYTICS_NO_CAPTURE_CLASS}"><span id="k">sk-123</span></div></main>`,
     );
-    expect(maskReplayText("Customer secret", el("c"))).toBe("******** ******");
-    expect(maskReplayText("Draft", el("e"))).toBe("*****");
-    expect(maskReplayText("sk-123", el("k"))).toBe("******");
+    const masked = (id: string) => el(id).closest(ANALYTICS_MASK_TEXT_SELECTOR) !== null;
+    expect(masked("n")).toBe(false);
+    expect(masked("p")).toBe(false);
+    expect(masked("r")).toBe(false);
+    expect(masked("c")).toBe(true);
+    expect(masked("e")).toBe(true);
+    expect(masked("k")).toBe(true);
   });
 });
 
@@ -54,7 +44,7 @@ describe("session replay attribute masking", () => {
 
   it("masks free-text attributes that carry customer data, such as an organization switcher label", () => {
     const el = render(
-      `<button ${ANALYTICS_UNMASK_ATTRIBUTE} id="b" aria-label="Open Verify Co organization switcher" title="Verify Co">`
+      `<button id="b" aria-label="Open Verify Co organization switcher" title="Verify Co">`
       + `<span class="${ANALYTICS_MASK_CLASS}" id="n" title="Verify Co">Verify Co</span></button>`
       + `<span id="t" title="Customer task title">Customer task title</span>`
       + `<img id="i" src="/api/attachments/1" alt="Quarterly plan">`,
@@ -75,8 +65,8 @@ describe("session replay attribute masking", () => {
     expect(maskReplayAttribute("id", "main-content", el("t"))).toBe("main-content");
   });
 
-  it("keeps layout attributes and masks labels even on opted-in chrome", () => {
-    const el = render(`<button ${ANALYTICS_UNMASK_ATTRIBUTE} id="b" aria-label="New task" class="btn" data-state="open">New task</button>`);
+  it("keeps layout attributes and masks labels on chrome", () => {
+    const el = render(`<button id="b" aria-label="New task" class="btn" data-state="open">New task</button>`);
     expect(maskReplayAttribute("aria-label", "New task", el("b"))).toBe("*** ****");
     expect(maskReplayAttribute("class", "btn", el("b"))).toBe("btn");
     expect(maskReplayAttribute("data-state", "open", el("b"))).toBe("open");

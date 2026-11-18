@@ -653,6 +653,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       sql`(${issueRecoveryActions.evidence} ? 'freshContinuationSettlement' or ${issueRecoveryActions.evidence} ? 'freshContinuationCheck')`)) : [];
   const pendingSchema = freshRows.some(row => row.delivery === "pending")
     ? (await import("./fresh-continuation-fallback.js")).FRESH_CONTINUATION_SCHEMA : null;
+  const unfinished = runs.filter(run => ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+    && selected.some(issue => issue.id === run.issueId && !["done", "cancelled"].includes(issue.status)));
+  const awaitingSystemContinuation = unfinished.length
+    ? await (await import("./fresh-continuation-fallback.js")).runsAwaitingSystemContinuation(db, companyId,
+      unfinished.map(run => run.issueId), unfinished.map(run => run.id))
+    : new Set<string>();
   const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
     // Only the primary record (it carries `freshContinuation`) says whether a
@@ -664,6 +670,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     }
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
       .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
+    if (awaitingSystemContinuation.has(`${issueId}:${runId}`) && retryWaitMap.get(issueId)?.sourceRunId !== runId)
+      return { state: "continuing" };
     return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
   };
   const dispositionRows = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,

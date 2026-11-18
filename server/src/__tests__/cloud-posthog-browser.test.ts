@@ -12,6 +12,7 @@ import { resolveCloudPostHogConfig } from "../services/cloud-posthog-config.js";
 import {
   posthogProxyRoutes,
   posthogUpstreamUrl,
+  posthogVisitorIp,
   resolvePostHogProxyMount,
 } from "../routes/posthog-proxy.js";
 
@@ -171,6 +172,17 @@ describe("PostHog proxy forwarding", () => {
     expect(seen[0]!.headers["x-forwarded-for"]).toBeTruthy();
   });
 
+  it("forwards the visitor's IP from X-Forwarded-For when the peer is a private proxy hop", async () => {
+    const res = await request(proxyApp())
+      .post("/_ph/e/")
+      .set("Content-Type", "application/json")
+      .set("X-Forwarded-For", "8.8.8.8, 100.64.0.11")
+      .send(JSON.stringify({ event: "$pageview" }));
+
+    expect(res.status).toBe(200);
+    expect(seen[0]!.headers["x-forwarded-for"]).toBe("8.8.8.8");
+  });
+
   it.each([
     ["GET", "/_ph/api/projects/@current"],
     ["PUT", "/_ph/e/"],
@@ -291,5 +303,29 @@ describe("PostHog proxy forwarding", () => {
       await new Promise<void>((resolve) => broken.close(() => resolve()));
     }
     expect(errors).toEqual([]);
+  });
+});
+
+describe("posthogVisitorIp", () => {
+  it("keeps a public peer address and ignores X-Forwarded-For", () => {
+    expect(posthogVisitorIp("9.9.9.9", { "x-forwarded-for": "8.8.8.8" })).toBe("9.9.9.9");
+  });
+
+  it.each(["100.64.0.11", "10.1.2.3", "172.20.0.1", "192.168.1.5", "127.0.0.1", "::1", "::ffff:100.64.0.5", "::ffff:7f00:1", "fd00::1", "febf::1"])(
+    "uses the edge-appended X-Forwarded-For entry behind private hop %s",
+    (peer) => {
+      expect(posthogVisitorIp(peer, { "x-forwarded-for": "8.8.8.8, 100.64.0.2" })).toBe("8.8.8.8");
+    },
+  );
+
+  it("ignores a client-supplied leftmost entry and uses the address the edge appended", () => {
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 1.1.1.1" })).toBe("1.1.1.1");
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "1.2.3.4, 1.1.1.1, 100.64.0.3" })).toBe("1.1.1.1");
+  });
+
+  it("falls back to the peer when X-Forwarded-For is missing or not an IP", () => {
+    expect(posthogVisitorIp("100.64.0.11", {})).toBe("100.64.0.11");
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "not-an-ip" })).toBe("100.64.0.11");
+    expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "10.0.0.1, 100.64.0.3" })).toBe("100.64.0.11");
   });
 });

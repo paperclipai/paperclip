@@ -1507,7 +1507,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       });
       expect(selectedCopilot.grant.id).toBe(copilot.grantId);
     } finally {
-      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0492_marvelous_black_bolt.sql", import.meta.url), "utf8");
+      const restoreMigration = await readFile(new URL("../../../packages/db/src/migrations/0499_marvelous_black_bolt.sql", import.meta.url), "utf8");
       await db.transaction(async (tx) => {
         for (const statement of restoreMigration.split("--> statement-breakpoint")) {
           if (statement.trim()) await tx.execute(sql.raw(statement));
@@ -1912,6 +1912,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await create(userId, "Another API");
     await expect(service.select({ ...input, userId })).rejects.toThrow("Reconnect");
     await service.setDefault(companyId, userId, subscription.grantId);
+    expect(await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId))).toEqual([]);
     expect((await service.select({ ...input, userId })).attribution).toMatchObject({ method: "subscription", grantId: subscription.grantId });
     expect((await service.list(companyId, userId)).filter(account => account.isDefault)).toHaveLength(1);
     await expect(service.select({ ...input, userId, binding: { ...binding, mode: "delegated", ...subscription } })).rejects.toThrow("incompatible");
@@ -1923,7 +1924,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Migration API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Migration subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-migration-subscription");
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, api.grantId));
-    await db.update(aiConnectionDefaults).set({ updatedAt: new Date("2030-01-01") }).where(eq(aiConnectionDefaults.grantId, api.grantId));
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId, updatedAt: new Date("2030-01-01") },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     await db.delete(aiProviderDefaults).where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId)));
     const legacyRows = await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId));
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0277_uneven_lady_deathstrike.sql", import.meta.url), "utf8");
@@ -1940,6 +1944,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Rolling API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Rolling subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-rolling-subscription");
     expect((await service.select({ ...input, userId })).grant.id).toBe(api.grantId);
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     // An older server updates only the legacy per-method row on Make default.
     await db.update(aiConnectionDefaults).set({ grantId: subscription.grantId, updatedAt: new Date() })
       .where(and(eq(aiConnectionDefaults.userId, userId), eq(aiConnectionDefaults.method, "subscription")));

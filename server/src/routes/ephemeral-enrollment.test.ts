@@ -10,7 +10,9 @@ import { CLOUD_CONTROL_AUDIENCE, CLOUD_CONTROL_HEADER, CLOUD_CONTROL_JWS_TYPE,
   CLOUD_RUNTIME_IDENTITY_ISSUER, resetCloudControlReplayFenceForTests } from "../services/cloud-runtime-identity.js";
 
 const prepare = vi.hoisted(() => vi.fn());
-vi.mock("../services/ephemeral-enrollment.js", () => ({ prepareOnlineEphemeralEnrollment: prepare }));
+const eligibility = vi.hoisted(() => vi.fn());
+vi.mock("../services/ephemeral-enrollment.js", () => ({ prepareOnlineEphemeralEnrollment: prepare,
+  readOnlineEphemeralEnrollmentEligibility: eligibility }));
 const pair = generateKeyPairSync("ed25519");
 const jwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "enrollment-fixture", alg: "EdDSA", use: "sig" };
 const path = "/api/instance/ephemeral-enrollment/prepare";
@@ -42,6 +44,7 @@ beforeEach(() => {
   vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "stack-fixture");
   vi.stubEnv("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS", JSON.stringify({ keys: [jwk] }));
   prepare.mockResolvedValue({ attemptId, enrollmentReady: false, decisionSigningSecret: "fixture-original-key" });
+  eligibility.mockResolvedValue({ eligible: false, blockers: ["workspaces_require_migration"], ephemeralServer: false });
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -78,4 +81,25 @@ it("keeps enrollment HTTP diagnostics secret-sensitive, including rejected metho
     expect(isSecretSensitiveHttpRequest(method, path)).toBe(true);
     expect(isSecretSensitiveHttpRequest(method, `https://fixture.test${path}`)).toBe(true);
   }
+});
+
+const eligibilityPath = "/api/instance/ephemeral-enrollment/eligibility";
+
+it("reports durable-data eligibility to a signed read and changes nothing", async () => {
+  const result = await request(app()).get(eligibilityPath).set(CLOUD_CONTROL_HEADER, assertion("ephemeral-enrollment:eligibility"));
+  expect(result.status).toBe(200);
+  expect(result.headers["cache-control"]).toBe("no-store");
+  expect(result.body).toEqual({ eligible: false, blockers: ["workspaces_require_migration"], ephemeralServer: false });
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("refuses an unsigned eligibility read, including a tenant instance admin (%s)", async tenant => {
+  expect((await request(app(tenant)).get(eligibilityPath)).status).toBe(403);
+  expect(eligibility).not.toHaveBeenCalled();
+});
+
+it("refuses a prepare assertion on the eligibility read", async () => {
+  const result = await request(app()).get(eligibilityPath).set(CLOUD_CONTROL_HEADER, assertion("ephemeral-enrollment:prepare"));
+  expect(result.status).toBe(401);
+  expect(eligibility).not.toHaveBeenCalled();
 });

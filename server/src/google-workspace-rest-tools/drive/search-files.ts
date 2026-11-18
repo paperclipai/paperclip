@@ -2,10 +2,9 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { GoogleToolError } from "../errors.js";
 import type { GoogleRequest } from "../google-http.js";
-import { defineTool } from "../tool.js";
+import { defineTool, structuredResult } from "../tool.js";
 import {
   assertSnippetArgs,
-  boundedResult,
   READ_LESS,
   DRIVE_BASE,
   DRIVE_HOST,
@@ -58,7 +57,7 @@ export function searchFilesRequest(input: SearchFilesArgs): GoogleRequest {
 }
 
 export function searchFilesResult(list: RestFileList, rich: boolean): CallToolResult {
-  return boundedResult(listResult(list, rich), READ_LESS.list);
+  return structuredResult(listResult(list, rich));
 }
 
 const QUERY_HELP = [
@@ -88,6 +87,7 @@ export const searchFiles = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: READ_LESS.list,
   async run(input, http) {
     assertSnippetArgs(input);
     const rich = input.includeRichMetadata === true;

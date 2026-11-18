@@ -89,6 +89,7 @@ export const listThreads = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: "Ask for fewer threads with a smaller pageSize, then read single threads with get_thread.",
   async run(input, http) {
     const list = await http.send<GmailThreadList>(listThreadsToolRequest(input));
     return searchThreadsResult(list, await readThreads(threadIds(list), http), { view: input.view });

@@ -344,6 +344,9 @@ const ACTION_REQUEST_EXECUTION_WAIT_MS = APPROVED_EXECUTION_TIMEOUT_MS + 5_000;
 // grace must exceed the normal sign path (approval-snapshot fetch + interaction
 // create) so a live create keeps its own row.
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
+const MCP_RESULT_FRAMING_BYTES = Buffer.byteLength(
+  `event: message\ndata: ${JSON.stringify({ jsonrpc: "2.0", id: `paperclip-tool-${randomUUID()}-version`, result: {} })}`, "utf8") - "{}".length;
+export const GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES = MAX_REMOTE_MCP_RESPONSE_BYTES - MCP_RESULT_FRAMING_BYTES;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 // A tool listing decides access for every tool in the company. The decisions
 // of one listing share a read cache, so this cap only limits how many of them
@@ -1382,8 +1385,6 @@ export function createToolGatewayService(
     remoteHttpRequest?: (url: string, init: RequestInit) => Promise<Response>;
     /** Test seam for refreshing personal Gmail grants. */
     paperclipCloudConnector?: PaperclipCloudConnector | null;
-    /** @deprecated Use paperclipCloudConnector. */
-    paperclipIdGmailConnector?: PaperclipCloudConnector | null;
     /** Refreshes customer-owned/DCR OAuth grants before remote MCP execution. */
     oauthGrantRefresher?: (input: {
       companyId: string;
@@ -1635,12 +1636,8 @@ export function createToolGatewayService(
       headers: Record<string, string>;
     }
   >();
-  const configuredCloudConnector =
-    options.paperclipCloudConnector ?? options.paperclipIdGmailConnector;
-  const connectorWasProvided =
-    options.paperclipCloudConnector !== undefined ||
-    options.paperclipIdGmailConnector !== undefined;
-  let cachedCloudConnector = configuredCloudConnector ?? null;
+  const connectorWasProvided = options.paperclipCloudConnector !== undefined;
+  let cachedCloudConnector = options.paperclipCloudConnector ?? null;
   const currentCloudConnector = (): PaperclipCloudConnector | null => {
     if (cachedCloudConnector || connectorWasProvided)
       return cachedCloudConnector;
@@ -8127,6 +8124,7 @@ export function createToolGatewayService(
           service: workspaceTarget.service,
           toolName: workspaceTarget.leaf,
           arguments: parameters,
+          maxResultBytes: GOOGLE_WORKSPACE_REST_MAX_RESULT_BYTES,
           credentialHeaders,
           signal,
           fetch: (url, init) => options.remoteHttpRequest

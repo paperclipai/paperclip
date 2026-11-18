@@ -1,9 +1,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { defineTool } from "../tool.js";
+import { defineTool, structuredResult } from "../tool.js";
 import {
   assertSnippetArgs,
-  boundedResult,
   READ_LESS,
   fileFields,
   fileId,
@@ -21,7 +20,7 @@ const args = z.object({ fileId, includeRichMetadata: z.boolean().optional(), ...
 export type GetFileMetadataArgs = z.infer<typeof args>;
 
 export function getFileMetadataResult(file: RestFile, rich: boolean): CallToolResult {
-  return boundedResult(toMcpFile(file, rich), READ_LESS.metadata);
+  return structuredResult(toMcpFile(file, rich));
 }
 
 export const getFileMetadata = defineTool({
@@ -41,6 +40,7 @@ export const getFileMetadata = defineTool({
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   args,
+  whenTooLarge: READ_LESS.metadata,
   async run(input, http) {
     assertSnippetArgs(input);
     const rich = input.includeRichMetadata === true;

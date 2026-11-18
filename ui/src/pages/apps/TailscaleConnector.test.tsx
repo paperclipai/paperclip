@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TailscaleConnector, TailscaleConnectorCard } from "./TailscaleConnector";
 import { ApiError } from "@/api/client";
 import { shouldRetryRequest } from "@/lib/query-client";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const fixture = vi.hoisted(() => ({ companyId: "company-1", search: "", navigate: vi.fn(), access: vi.fn(), list: vi.fn(), connect: vi.fn(), deviceLogin: vi.fn(), disconnect: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: fixture.access } }));
@@ -79,6 +80,7 @@ describe("Tailscale network connector", () => {
     expect(fixture.list).toHaveBeenCalledWith("company-1");
     expect(container.textContent).toContain("Home tailnet");
     expect(container.textContent).toContain("any harness supported");
+    expect(replayLeaks("Home tailnet", container)).toEqual({ rendered: true, recorded: false });
     expect(container.textContent).not.toContain("Claude");
     expect(container.querySelector('a[href="/company/settings/instance/environments/new?tailscale_connection=tailnet-1"]')?.textContent).toBe("Create SSH environment");
     expect(fixture.connect).not.toHaveBeenCalled();

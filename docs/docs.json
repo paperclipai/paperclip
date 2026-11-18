@@ -131,6 +131,7 @@
               "api/costs",
               "api/secrets",
               "api/tool-gateway-tokens",
+              "api/tool-connections",
               "api/activity",
               "api/dashboard"
             ]
