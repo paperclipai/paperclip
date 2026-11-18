@@ -237,6 +237,36 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(active).toHaveLength(1);
   });
 
+  it("replaces a dedicated agent's API key on that agent's grant", async () => {
+    const f = await setup();
+    const result = await connectAndFinish(f, { galleryKey: API_KEY, connectionMethodKey: "api-key", grantKind: "agent", subjectAgentId: f.agentA.id,
+      credentialValues: { "credentials.apiKey": "agent-key-old" } }, { agentIds: [f.agentA.id] });
+    const replaced = await request(f.routes).post(`/api/tool-connections/${result.connectionId}/reconnect`)
+      .send({ credentialValues: { "credentials.apiKey": "agent-key-new" } });
+    expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, result.connectionId));
+    expect(connection!.credentialSecretRefs).toEqual([]);
+    const lookup = (await f.tools(f.tokenA)).find((tool) => tool.upstreamToolName === "lookup")!;
+    await f.gateway.executeTool({ sessionToken: f.tokenA, tool: lookup.name, parameters: {}, idempotencyKey: randomUUID() });
+    expect(workerCalls.filter((call) => call.method === "executeTool").at(-1)!.params.runContext.connection.credential)
+      .toMatchObject({ value: "agent-key-new" });
+  });
+
+  it("does not revive a removed agent identity for a connect that names no agent", async () => {
+    const f = await setup();
+    const result = await connectAndFinish(f, { galleryKey: NO_SIGN_IN, connectionMethodKey: "none", grantKind: "agent", subjectAgentId: f.agentA.id },
+      { agentIds: [f.agentA.id] });
+    const removed = await request(f.routes).delete(`/api/tool-connections/${result.connectionId}`);
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    const again = await request(f.routes).post(`/api/companies/${f.company.id}/tools/apps/connect`)
+      .send({ galleryKey: NO_SIGN_IN, connectionMethodKey: "none" });
+    expect(again.status).toBe(400);
+    const active = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, result.connectionId), eq(connectionGrants.status, "active")));
+    expect(active).toEqual([]);
+    expect(await f.tools(f.tokenA)).toEqual([]);
+  });
+
   it("keeps the default organization grant for a method without agent grants", async () => {
     const f = await setup();
     const result = await connectAndFinish(f, { galleryKey: SHARED, connectionMethodKey: "none" }, "all_agents");
