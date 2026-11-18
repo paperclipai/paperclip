@@ -312,7 +312,9 @@ each step is verified before the next one starts.
       version of the canary stack before each step.
 - [ ] Dotta signs in to `admin.paperclip.app` in the coordinator's browser
       pane (the coordinator has no production admin access).
-- [ ] Decision: consent approach for browser analytics (Step 4).
+- [x] Decision: consent approach for browser analytics (Step 4). Dotta chose
+      option 1, the EU/UK consent banner (2026-11-18). Its PR must be merged
+      and in the production release before Step 4.
 - [ ] PostHog: set a billing limit on Session replay before Step 4, so a spike
       cannot run up the bill.
 - [ ] PostHog: set the project's internal/test account filter to exclude
@@ -346,7 +348,7 @@ each step is verified before the next one starts.
 
 #### Step 4: browser analytics and replay
 
-Needs a decision first. Options:
+Decided: option 1 (Dotta, 2026-11-18). The options considered:
 
 1. Consent banner for EU/UK visitors (recommended): analytics and replay start
    only after the visitor accepts; other regions start as on staging. Needs a
