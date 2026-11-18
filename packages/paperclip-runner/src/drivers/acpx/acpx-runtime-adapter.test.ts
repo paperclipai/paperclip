@@ -1127,6 +1127,7 @@ describe("Codex ACPX runtime adapter", () => {
     const options = openOptions(fakeCommand());
     options.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
     options.mcpServers = [
+      { name: "desktop", command: "/bin/desktop-mcp", args: ["mcp"], env: { HOME: "/runtime/home" } },
       { name: "paperclip", url: "http://127.0.0.1:3210/mcp", bearerToken: "bridge-secret", runnerOwned: true },
       { name: "connector", url: "https://connector.invalid/mcp", bearerToken: "connector-secret", runnerOwned: false },
     ];
@@ -1143,19 +1144,21 @@ describe("Codex ACPX runtime adapter", () => {
     expect(projected).not.toContain("bridge-secret");
     expect(projected).not.toContain("connector-secret");
     expect(runtimeOptions?.mcpServers).toEqual([
+      { name: "desktop", command: "/bin/desktop-mcp", args: ["mcp"], env: [{ name: "HOME", value: "/runtime/home" }] },
       {
         type: "http", name: "paperclip", url: "http://127.0.0.1:3210/mcp",
-        headers: [{ name: "Authorization", value: "Bearer ${PAPERCLIP_ACPX_MCP_BEARER_0}" }],
+        headers: [{ name: "Authorization", value: "Bearer ${PAPERCLIP_ACPX_MCP_BEARER_1}" }],
       },
       {
         type: "http", name: "connector", url: "https://connector.invalid/mcp",
-        headers: [{ name: "Authorization", value: "Bearer ${PAPERCLIP_ACPX_MCP_BEARER_1}" }],
+        headers: [{ name: "Authorization", value: "Bearer ${PAPERCLIP_ACPX_MCP_BEARER_2}" }],
       },
     ]);
     expect(spawnedAgentEnvironment(runtimeOptions, options.command)).toMatchObject({
-      PAPERCLIP_ACPX_MCP_BEARER_0: "bridge-secret",
-      PAPERCLIP_ACPX_MCP_BEARER_1: "connector-secret",
+      PAPERCLIP_ACPX_MCP_BEARER_1: "bridge-secret",
+      PAPERCLIP_ACPX_MCP_BEARER_2: "connector-secret",
     });
+    expect(spawnedAgentEnvironment(runtimeOptions, options.command)).not.toHaveProperty("PAPERCLIP_ACPX_MCP_BEARER_0");
   });
 
   it("launches only through the verified command lease", async () => {
