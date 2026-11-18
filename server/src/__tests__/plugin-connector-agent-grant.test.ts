@@ -19,7 +19,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, plugins, toolConnectionInstalls,
+  agents, companies, companyMemberships, connectionGrants, createDb, heartbeatRuns, issues, plugins, toolConnectionInstalls, toolConnections,
 } from "@paperclipai/db";
 import { pluginAppSlug, pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { toolAccessRoutes } from "../routes/tool-access.js";
@@ -220,6 +220,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(grants[0]!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["credentials.apiKey"]);
   });
 
+  it("lets only one of two concurrent resumes claim a grant-less agent draft", async () => {
+    const f = await setup();
+    const connected = await request(f.routes).post(`/api/companies/${f.company.id}/tools/apps/connect`)
+      .send({ galleryKey: NO_SIGN_IN, connectionMethodKey: "none", grantKind: "agent", subjectAgentId: f.agentA.id });
+    expect(connected.status).toBe(201);
+    const connectionId = connected.body.connectionId as string;
+    // A draft saved before connect created agent grants has none.
+    await db.delete(connectionGrants).where(eq(connectionGrants.connectionId, connectionId));
+    const resume = (agentId: string) => request(f.routes).post(`/api/companies/${f.company.id}/tools/apps/connect`)
+      .send({ galleryKey: NO_SIGN_IN, connectionMethodKey: "none", resumeConnectionId: connectionId, grantKind: "agent", subjectAgentId: agentId });
+    const results = await Promise.all([resume(f.agentA.id), resume(f.agentB.id)]);
+    expect(results.filter((result) => result.status === 201)).toHaveLength(1);
+    const active = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connectionId), eq(connectionGrants.status, "active")));
+    expect(active).toHaveLength(1);
+  });
+
   it("keeps the default organization grant for a method without agent grants", async () => {
     const f = await setup();
     const result = await connectAndFinish(f, { galleryKey: SHARED, connectionMethodKey: "none" }, "all_agents");
@@ -239,5 +256,16 @@ const support = await getEmbeddedPostgresTestSupport();
     // Search by the tool's manifest name finds the gateway tool.
     expect(await runnerA.search("update_record")).toHaveLength(1);
     expect((await f.runnerTools(f.agentB)).definitions).toEqual([]);
+  });
+
+  it("keeps plugin-transport tools in a Paperclip Runner session after a stale health error", async () => {
+    const f = await setup();
+    const { connectionId } = await connectAndFinish(f, { galleryKey: SHARED, connectionMethodKey: "none" }, { agentIds: [f.agentA.id] });
+    // A health check that ran while the worker was down saved an error; the
+    // worker is running again, so each call can succeed.
+    await db.update(toolConnections).set({ healthStatus: "error", healthMessage: "Plugin worker unavailable" })
+      .where(eq(toolConnections.id, connectionId));
+    expect(await f.tools(f.tokenA)).toHaveLength(2);
+    expect((await f.runnerTools(f.agentA)).definitions).toHaveLength(2);
   });
 });

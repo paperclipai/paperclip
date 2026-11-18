@@ -3319,6 +3319,13 @@ export function toolAccessService(
     actor?: ActorInfo;
   }): Promise<{ previous: typeof connectionGrants.$inferSelect | null; current: typeof connectionGrants.$inferSelect }> {
     return db.transaction(async (tx) => {
+      // Lock the connection first: with no grant rows yet, locking grants
+      // alone would let two concurrent connects each add a different agent.
+      await tx
+        .select({ id: toolConnections.id })
+        .from(toolConnections)
+        .where(and(eq(toolConnections.id, input.connectionId), eq(toolConnections.companyId, input.companyId)))
+        .for("update");
       const grants = await tx
         .select()
         .from(connectionGrants)

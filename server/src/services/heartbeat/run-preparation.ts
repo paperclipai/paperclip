@@ -991,6 +991,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         (connection.config?.sourceTemplateKey === "github" ||
           connection.transportConfig?.sourceTemplateKey === "github")) ||
         connection.credentialPolicy === "per_user" ||
+        // A plugin connection's health mostly reflects its worker, which the
+        // host restarts; calls fail retryably while it is down. Match the
+        // gateway, which keeps these tools discoverable.
+        connection.transport === "plugin" ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
       // Keep this transport list equal to the native runtime assignment
       // digest in native-runtime/runtime-context.ts.
