@@ -517,6 +517,7 @@ export {
   createIssueAttachmentMetadataSchema,
   issueDocumentFormatSchema,
   issueDocumentKeySchema,
+  issueDocumentBatchQuerySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueWatchdogSchema,

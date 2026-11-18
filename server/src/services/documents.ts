@@ -2,10 +2,10 @@ import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyIssueRecovery, notifyIssueGraphRecovery } from "./issue-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
-import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
+import { ISSUE_DOCUMENT_BATCH_MAX_IDS, isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { isUniqueViolation } from "../db-errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
@@ -170,6 +170,19 @@ export function documentService(db: Db) {
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
         .then((rows) => rows[0] ?? null);
       return row ? mapIssueDocumentRow(row, true) : null;
+    },
+
+    /** Caller authorizes the task set first. One query reads only the requested key. */
+    getIssueDocumentsByKey: async (companyId: string, issueIds: string[], rawKey: string, includeBody = true) => {
+      const key = normalizeDocumentKey(rawKey);
+      if (issueIds.length > ISSUE_DOCUMENT_BATCH_MAX_IDS) throw unprocessable("Too many issue document IDs");
+      if (!issueIds.length) return [];
+      const rows = await db
+        .select({ ...issueDocumentSelect, latestBody: includeBody ? documents.latestBody : sql<string>`''` })
+        .from(issueDocuments)
+        .innerJoin(documents, and(eq(issueDocuments.documentId, documents.id), eq(documents.companyId, companyId)))
+        .where(and(eq(issueDocuments.companyId, companyId), inArray(issueDocuments.issueId, issueIds), eq(issueDocuments.key, key)));
+      return rows.map(row => mapIssueDocumentRow(row, includeBody));
     },
 
     /** Bounded receipt read: never load every historical body for one revision. */

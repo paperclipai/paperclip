@@ -18,6 +18,7 @@ import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
 import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
+import { registerIssueDocumentBatchRoute } from "./issue-document-batch.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
 import { listIssueNavigationState, listIssueSummaries } from "../services/issue-summaries.js";
@@ -11445,6 +11446,11 @@ export function issueRoutes(
       res.json({ refreshed: results });
     },
   );
+
+  registerIssueDocumentBatchRoute(router, db, {
+    filterReadable: filterIssuesForActor,
+    recordRead: (req, issue) => recordAgentChildTaskRead(db, req, issue),
+  });
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
