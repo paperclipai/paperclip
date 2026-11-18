@@ -233,6 +233,7 @@ export const browserAnalyticsConfigSchema = z.object({
   environment: z.string().min(1),
   stackId: z.string().min(1),
   replayEnabled: z.boolean(),
+  consentRequired: z.boolean().nullable().optional(),
 });
 
 export type BrowserAnalyticsConfig = z.infer<typeof browserAnalyticsConfigSchema>;

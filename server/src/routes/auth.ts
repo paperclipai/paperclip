@@ -76,7 +76,7 @@ export function authRoutes(db: Db) {
       browserTracing: resolveBrowserTracingConfig(process.env, warnBrowserTracing),
       // Hosted Paperclip Cloud with PAPERCLIP_POSTHOG_BROWSER_ENABLED=1 only;
       // null everywhere else. See `server/src/services/cloud-posthog-browser.ts`.
-      browserAnalytics: resolveBrowserAnalyticsConfig(process.env),
+      browserAnalytics: resolveBrowserAnalyticsConfig(process.env, req.headers),
     });
     res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
   });
