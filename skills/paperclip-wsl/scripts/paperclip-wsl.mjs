@@ -68,14 +68,30 @@ try {
     const configuredBins = config.binPaths ?? ["/usr/local/bin", "/usr/bin", "/bin"];
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
+    let contextPath = path.join(config.paperclipHome, "context.json");
+    for (let directory = repository;; directory = path.dirname(directory)) {
+      const candidate = path.join(directory, ".paperclip", "context.json");
+      if (fs.existsSync(candidate)) { contextPath = candidate; break; }
+      if (path.dirname(directory) === directory) break;
+    }
+    const validateApiBase = value => {
+      const target = new URL(value);
+      if (target.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(target.hostname) || Number(target.port || 80) !== config.port || !["", "/"].includes(target.pathname) || target.username || target.password || target.search || target.hash) fail("CLI context targets another instance");
+    };
+    if (!nativePath(contextPath)) fail("CLI context must be a native Linux path");
+    if (fs.existsSync(contextPath)) {
+      const context = JSON.parse(fs.readFileSync(contextPath, "utf8"));
+      for (const profile of Object.values(context.profiles ?? {})) if (profile?.apiBase) validateApiBase(profile.apiBase);
+    }
     const validateEnvironment = source => {
       for (const [key, expected] of [["PAPERCLIP_HOME", config.paperclipHome], ["PAPERCLIP_INSTANCE_ID", config.instanceId]]) {
         if (source[key] !== undefined && source[key] !== expected) fail(key + " selects another instance");
       }
       if (source.PAPERCLIP_CONFIG !== undefined && path.resolve(repository, source.PAPERCLIP_CONFIG) !== selectedConfig) fail("PAPERCLIP_CONFIG selects another instance");
-      for (const [key, expected] of [["PAPERCLIP_CONTEXT", path.join(config.paperclipHome, "context.json")], ["PAPERCLIP_AUTH_STORE", path.join(config.paperclipHome, "auth.json")]]) {
+      for (const [key, expected] of [["PAPERCLIP_CONTEXT", contextPath], ["PAPERCLIP_AUTH_STORE", path.join(config.paperclipHome, "auth.json")]]) {
         if (source[key] !== undefined && path.resolve(repository, source[key]) !== expected) fail(key + " selects another CLI state root");
       }
+      if (source.PAPERCLIP_API_URL) validateApiBase(source.PAPERCLIP_API_URL);
       if (source.PAPERCLIP_IN_WORKTREE === "true") fail("PAPERCLIP_IN_WORKTREE selects another scheduling context");
       for (const [key, expected] of [
         ["PAPERCLIP_STORAGE_PROVIDER", settings.storage?.provider ?? "local_disk"],
@@ -101,7 +117,7 @@ try {
     }
     if (process.env.WSL_DISTRO_NAME && !config.capacityPath) fail("capacityPath must select the Windows volume that contains the WSL virtual disk");
     if (config.capacityPath !== undefined && (!config.capacityPath.startsWith("/mnt/") || !/^[a-z]$/.test(config.capacityPath.split("/")[2]))) fail("capacityPath must select a Windows host volume");
-    const environment = { ...process.env, PATH: bins.join(":"), PAPERCLIP_HOME: config.paperclipHome, PAPERCLIP_INSTANCE_ID: config.instanceId, PAPERCLIP_CONFIG: selectedConfig, PAPERCLIP_DISABLE_CWD_ENV_FILE: "true", PAPERCLIP_CONTEXT: path.join(config.paperclipHome, "context.json"), PAPERCLIP_AUTH_STORE: path.join(config.paperclipHome, "auth.json") };
+    const environment = { ...process.env, PATH: bins.join(":"), PAPERCLIP_HOME: config.paperclipHome, PAPERCLIP_INSTANCE_ID: config.instanceId, PAPERCLIP_CONFIG: selectedConfig, PAPERCLIP_DISABLE_CWD_ENV_FILE: "true", PAPERCLIP_CONTEXT: contextPath, PAPERCLIP_AUTH_STORE: path.join(config.paperclipHome, "auth.json") };
     for (const key of ["CARGO_HOME", "RUSTUP_HOME"]) if (config[key]) { if (!nativePath(config[key])) fail("invalid " + key); environment[key] = config[key]; }
     const capacity = fs.statfsSync(config.capacityPath ?? config.paperclipHome);
     const availableBytes = capacity.bavail * capacity.bsize;

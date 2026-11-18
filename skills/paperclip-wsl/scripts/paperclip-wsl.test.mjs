@@ -131,11 +131,11 @@ for (const backup of ['~/backups', './backups']) {
   });
 }
 
-for (const [key, value] of [['PAPERCLIP_CONTEXT','/tmp/other/context.json'], ['PAPERCLIP_AUTH_STORE','/tmp/other/auth.json'], ['PAPERCLIP_STORAGE_PROVIDER','s3'], ['PAPERCLIP_STORAGE_S3_BUCKET','other'], ['PAPERCLIP_STORAGE_S3_ENDPOINT','https://other.invalid'], ['PAPERCLIP_STORAGE_S3_PREFIX','other/'], ['PAPERCLIP_IN_WORKTREE','true']]) {
+for (const [key, value] of [['PAPERCLIP_CONTEXT','/tmp/other/context.json'], ['PAPERCLIP_AUTH_STORE','/tmp/other/auth.json'], ['PAPERCLIP_STORAGE_PROVIDER','s3'], ['PAPERCLIP_STORAGE_S3_BUCKET','other'], ['PAPERCLIP_STORAGE_S3_ENDPOINT','https://other.invalid'], ['PAPERCLIP_STORAGE_S3_PREFIX','other/'], ['PAPERCLIP_IN_WORKTREE','true'], ['PAPERCLIP_API_URL','http://localhost:3101']]) {
   test('rejects inherited instance selector ' + key, { skip: !enabled }, () => {
     const result = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")'], { [key]: value });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, new RegExp(key));
+    assert.match(result.stderr, key === "PAPERCLIP_API_URL" ? /CLI context targets another instance/ : new RegExp(key));
     assert.doesNotMatch(result.stdout, /STARTED/);
   });
 }
@@ -148,4 +148,26 @@ test('rejects a normalized data path into a Windows mount', { skip: !enabled }, 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Windows data paths/);
   } finally { await writeFile(file, saved); }
+});
+
+for (const location of ['home', 'checkout']) {
+  test('rejects a saved CLI API target in the ' + location + ' context', { skip: !enabled }, async () => {
+    const file = location === 'home' ? path.join(root, 'data', 'context.json') : path.join(root, 'repo', '.paperclip', 'context.json');
+    await writeFile(file, JSON.stringify({version:2,currentProfile:'default',profiles:{default:{apiBase:'https://another-instance.invalid'}}}));
+    try {
+      const result = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")']);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /CLI context targets another instance/);
+      assert.doesNotMatch(result.stdout, /STARTED/);
+    } finally { await rm(file); }
+  });
+}
+test('preserves the checkout CLI context for the selected local instance', { skip: !enabled }, async () => {
+  const file = path.join(root, 'repo', '.paperclip', 'context.json');
+  await writeFile(file, JSON.stringify({version:2,currentProfile:'default',profiles:{default:{apiBase:'http://localhost:3100',companyId:'local-company'}}}));
+  try {
+    const result = invoke(['exec', process.execPath, '-e', 'console.log(process.env.PAPERCLIP_CONTEXT)']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), file);
+  } finally { await rm(file); }
 });
