@@ -138,6 +138,12 @@ place). A change in skills produces a new directory.
 - Full hashing reads the bytes once per launch but writes nothing, replacing a copy
   that reads and writes them. Measure it; a cheaper check is acceptable only if it
   still detects equal-size edits with restored mtimes.
+- Implemented (2026-11-18): full hashing on every reuse took 16-33 s for a 25k-file
+  set. After sealing, each file's inode, size and ctime are recorded in
+  `skill-homes/<digest>.stat.json`; reuse compares those and runs the full hash only
+  on a mismatch. ctime changes on any write, chmod or replacement and cannot be set
+  back by an unprivileged process, so equal-size edits with restored mtimes are still
+  detected. Warm reuse is now under 1 s (`doc/benchmarks/2026-11-18-shared-codex-skill-homes.md`).
 
 ### Which launches use a skill home
 
@@ -173,9 +179,10 @@ with an isolated (not preconfigured) home:
 - A separate marker file, not a field in `RUNNERD_STATE_SCHEMA` or
   `CODEX_PROVIDER_STATE_SCHEMA`, so no state-schema bump and no change for
   sessions in flight during the upgrade. (Builder's call, recorded for review.)
-- Excluded from nothing: it is tiny. `skills` itself is added to
-  `CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES`, so failover backups stop carrying skill
-  bytes.
+- `skills` is not added to `CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES` (changed while
+  planning): recovery of sessions that still copy skills (Windows, preconfigured,
+  remote) relies on the retained `codex-home/skills`. With a skill home that
+  directory only holds Codex's own `.system` skills (~0.4 MB).
 
 ### Changing skills during a run
 

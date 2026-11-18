@@ -136,6 +136,31 @@ control-plane state, is kept.
 Each batch that finds candidates logs them with candidate and reclaimed allocated
 bytes, cleared task sessions, and skip reasons.
 
+### Shared Codex skill homes
+
+On Mac and Linux, a local Codex session with an isolated home does not copy its
+assigned skills into `codex-home/skills`. Its Codex app-server gets a shared,
+read-only skill home as `HOME` instead:
+`<instance>/runtime/paperclip-runner/skill-homes/<digest>/.agents/skills/`. The
+digest covers the assigned skill names and bundle digests, so sessions with the
+same skills use one copy. A home is sealed once it is published and never edited;
+a skill change produces a new home. Next to each home, `<digest>.last-used` records
+its last launch and `<digest>.stat.json` records each file's inode, size and ctime
+after sealing. A launch reuses a home when those still match; otherwise it checks
+every file against `manifest.json` and moves a damaged home to
+`skill-homes/quarantine/`. Each session names its home in
+`codex-home/paperclip-skill-home.json`. Windows, preconfigured homes and remote
+Runner hosts keep the per-session copy, because Codex reads `HOME` only on Mac and
+Linux.
+
+The same sweep removes a skill home when no session's
+`codex-home/paperclip-skill-home.json` names it and it was not launched for a day.
+Expiring a session's `codex-home` therefore releases its skill home too. A home is
+renamed to `.retiring-<digest>.<UUID>` first and restored when a launch references
+it before the removal. Leftover `.staging-*` and `.retiring-*` directories older than
+a day and quarantined homes older than seven days are removed. The dry-run setting
+above applies.
+
 ### Continuity-break archives and quarantined session state
 
 The same sweep also removes two kinds of evidence that native sessions leave behind
