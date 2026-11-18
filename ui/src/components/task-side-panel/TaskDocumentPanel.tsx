@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
 import { FileQuestion, Loader2 } from "lucide-react";
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
@@ -11,7 +12,25 @@ import { queryKeys } from "@/lib/queryKeys";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import { useLocation } from "@/lib/router";
 
+type HeadingNode = { type: string; value?: string; children?: HeadingNode[] };
+
+function headingText(node: HeadingNode): string {
+  if (node.type === "text" || node.type === "inlineCode") return node.value ?? "";
+  if (node.type === "break") return " ";
+  return node.children?.map(headingText).join("") ?? "";
+}
+
+function startsWithMatchingHeading(body: string, title: string): boolean {
+  if (!body || !title) return false;
+  const first = fromMarkdown(body).children.find((node) =>
+    node.type !== "definition" && !(node.type === "html" && /^<!--[\s\S]*-->$/.test(node.value.trim())),
+  );
+  const normalize = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+  return first?.type === "heading" && normalize(headingText(first)) === normalize(title);
+}
+
 export function TaskDocumentPanel({
+  companyId,
   issueId,
   documentKey,
   initialDocument,
@@ -19,6 +38,7 @@ export function TaskDocumentPanel({
   documentIssueId,
   currentIssueId = issueId,
 }: {
+  companyId?: string;
   issueId: string;
   documentKey: string;
   initialDocument?: IssueDocument;
@@ -29,10 +49,11 @@ export function TaskDocumentPanel({
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const query = useQuery<IssueDocument | null>({
-    queryKey: [...queryKeys.issues.documents(issueId), documentKey, ...(revisionId ? ["revision", revisionId] : [])],
+    queryKey: [...queryKeys.issues.documents(issueId), documentKey, ...(revisionId ? ["revision", revisionId] : []), ...(documentIssueId && companyId ? ["company", companyId] : [])],
     queryFn: async () => {
       try {
         const current = await issuesApi.getDocument(issueId, documentKey);
+        if (companyId && current.companyId !== companyId) return null;
         if (!revisionId) return current;
         const revision = await issuesApi.getDocumentRevision(issueId, documentKey, revisionId);
         return { ...current, title: revision.title, body: revision.body, format: revision.format,
@@ -46,6 +67,10 @@ export function TaskDocumentPanel({
   });
 
   const view = useQueryView(query);
+  const document = query.data;
+  const title = document ? documentDisplayTitle(document) : "";
+  const body = document?.body ?? "";
+  const hasMatchingHeading = useMemo(() => startsWithMatchingHeading(body, title), [body, title]);
 
   if (query.isLoading || view.kind === "reconnecting") {
     return (
@@ -62,7 +87,6 @@ export function TaskDocumentPanel({
       </div>
     );
   }
-  const document = query.data;
   if (!document) {
     return (
       <div className="flex items-start gap-3 py-8 text-sm" role="status">
@@ -80,7 +104,7 @@ export function TaskDocumentPanel({
   return (
     <article className="space-y-4">
       <header className="space-y-1">
-        <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
+        {!hasMatchingHeading ? <h2 className="text-lg font-semibold">{title}</h2> : null}
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
           <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
           <span aria-hidden>·</span>

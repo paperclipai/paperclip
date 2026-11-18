@@ -29,6 +29,7 @@ import { DevRestartBanner } from "./DevRestartBanner";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
+import { CoordinatorAgentSwitcher } from "./CoordinatorAgentSwitcher";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
 import { SidebarShell } from "./SidebarShell";
 import { SecondarySidebar } from "./SecondarySidebar";
@@ -92,7 +93,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     isMobile,
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
-  const { togglePanelVisible, setPanelVisible } = usePanel();
+  const { panelContent, panelVisible, togglePanelVisible, setPanelVisible } = usePanel();
   // Optional: Layout also renders in harnesses without a ToastProvider.
   const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
@@ -128,6 +129,25 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   }, [coordinatorWorkspaceEnabled, location.pathname, setPanelVisible]);
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
+  const desktopAgentChat = !isMobile && isAgentChatRoute;
+  const measureChatSpace = desktopAgentChat && panelVisible && panelContent != null;
+  const chatAreaRef = useRef<HTMLDivElement>(null);
+  const [chatListTooWide, setChatListTooWide] = useState(false);
+  const chatListCollapsed = measureChatSpace && chatListTooWide;
+
+  useLayoutEffect(() => {
+    const area = chatAreaRef.current;
+    if (!measureChatSpace || !area) return;
+    const tokens = getComputedStyle(document.documentElement);
+    const listWidth = Number.parseFloat(tokens.getPropertyValue("--sz-280px"));
+    const conversationMinWidth = Number.parseFloat(tokens.getPropertyValue("--sz-420px"));
+    const measure = () => setChatListTooWide(area.clientWidth < listWidth + conversationMinWidth);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(area);
+    return () => observer?.disconnect();
+  }, [measureChatSpace]);
+
   // Chat keeps its header beside the agent sidebar, including before an agent is selected.
   const useStreamlinedTaskDetailShell = streamlinedUiEnabled && (isTaskDetailRoute || isAgentChatRoute);
   const useInsetTaskDetailHeader = useStreamlinedTaskDetailShell && !isAgentChatRoute;
@@ -565,7 +585,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             )}
           >
             <StandaloneBrowserControls mobile={isMobile} />
-            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} />
+            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} toolbarAction={chatListCollapsed ? <CoordinatorAgentSwitcher /> : undefined} />
             {isMobile && isCompanySettingsRoute ? (
               <div className="border-b border-border px-4 pb-3">
                 <CompanySettingsNav />
@@ -577,12 +597,20 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             isMobile ? "block" : "flex flex-1 min-h-0",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>
-            {!isMobile && (keepsPrimarySidebar || isAgentChatRoute) ? (
-              <SecondarySidebar className={cn(isAgentChatRoute ? "w-70" : "w-60", "shrink-0 bg-background")}>
+            {!isMobile && keepsPrimarySidebar && !isAgentChatRoute ? (
+              <SecondarySidebar className="w-60 shrink-0 bg-background">
                 {secondarySidebar}
               </SecondarySidebar>
             ) : null}
-            <div className={cn(!isMobile && useStreamlinedTaskDetailShell ? "flex min-w-0 flex-1 flex-col" : "contents")}>
+            <div
+              ref={desktopAgentChat ? chatAreaRef : undefined}
+              className={cn(desktopAgentChat ? "flex min-w-0 flex-1" : !isMobile && useStreamlinedTaskDetailShell ? "flex min-w-0 flex-1 flex-col" : "contents")}
+            >
+              {desktopAgentChat ? (
+                <SecondarySidebar className={cn("w-(--sz-280px) shrink-0 bg-background", chatListCollapsed && "hidden")}>
+                  {secondarySidebar}
+                </SecondarySidebar>
+              ) : null}
               {!isMobile && useInsetTaskDetailHeader ? (
                 <>
                   <StandaloneBrowserControls mobile={false} />
@@ -615,6 +643,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               }
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
+                desktopAgentChat && "min-w-0",
                 // The task thread owns its scrollable top spacing. Leaving the
                 // page shell's top padding in place creates a stationary dark
                 // strip below the breadcrumb while messages scroll behind it.

@@ -8,6 +8,7 @@ import { Layout } from "./Layout";
 import { Layout as ProductionLayout } from "./Layout.production";
 import { existsSync, readFileSync } from "node:fs";
 import { act as reactAct } from "react";
+import type { ReactNode } from "react";
 
 const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
 vi.mock("./Sidebar.production", async () => await import("./Sidebar"));
@@ -54,6 +55,7 @@ const mockSidebarState = vi.hoisted(() => ({
   sidebarOpen: true,
   isMobile: false,
 }));
+const mockPanelState = vi.hoisted(() => ({ visible: false, content: null as ReactNode, setVisible: vi.fn() }));
 let currentPathname = "/PAP/dashboard";
 
 vi.mock("@/lib/router", () => ({
@@ -121,8 +123,10 @@ vi.mock("./AppConnectionSidebar", () => ({
 }));
 
 vi.mock("./BreadcrumbBar", () => ({
-  BreadcrumbBar: () => <div>Breadcrumbs</div>,
+  BreadcrumbBar: ({ toolbarAction }: { toolbarAction?: ReactNode }) => <div>Breadcrumbs{toolbarAction}</div>,
 }));
+vi.mock("./AgentConversationsSidebar", () => ({ AgentConversationsSidebar: () => <aside aria-label="Chat contacts" /> }));
+vi.mock("./CoordinatorAgentSwitcher", () => ({ CoordinatorAgentSwitcher: () => <button>Browse chats</button> }));
 
 vi.mock("./PropertiesPanel", () => ({
   PropertiesPanel: () => null,
@@ -234,8 +238,10 @@ vi.mock("../context/DialogContext", () => ({
 
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
+    panelVisible: mockPanelState.visible,
+    panelContent: mockPanelState.content,
     togglePanelVisible: vi.fn(),
-    setPanelVisible: vi.fn(),
+    setPanelVisible: mockPanelState.setVisible,
   }),
 }));
 
@@ -405,6 +411,8 @@ describe("Layout", () => {
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
     mockSidebarState.isMobile = false;
+    mockPanelState.visible = false;
+    mockPanelState.content = null;
   });
 
   afterEach(() => {
@@ -425,6 +433,56 @@ describe("Layout", () => {
       await act(async () => renderLayoutView(root, queryClient));
       expect(container.querySelector(".coordinator-workspace")).toBeNull();
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
+  });
+
+  it("collapses the mounted chat list only when the open side panel crowds the conversation", async () => {
+    classicWorkspace.enabled = false;
+    currentPathname = "/PAP/chats/planner";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const style = document.createElement("style");
+    style.textContent = ":root { --sz-280px: 280px; --sz-420px: 420px; }";
+    document.head.append(style);
+    let readingWidth = 416;
+    let measure: ResizeObserverCallback | undefined;
+    const width = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => readingWidth);
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { measure = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const render = () => reactAct(async () => renderLayoutView(root, queryClient));
+    try {
+      await render();
+      const list = container.querySelector('[aria-label="Chat contacts"]')?.closest("[data-secondary-sidebar]");
+      expect(list?.classList.contains("hidden")).toBe(false);
+      expect(container.textContent).not.toContain("Browse chats");
+
+      mockPanelState.visible = true;
+      mockPanelState.content = <div>Plan</div>;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(true);
+      expect(container.textContent).toContain("Browse chats");
+
+      readingWidth = 700;
+      await reactAct(async () => measure?.([], {} as ResizeObserver));
+      expect(list?.classList.contains("hidden")).toBe(false);
+
+      readingWidth = 699;
+      await reactAct(async () => measure?.([], {} as ResizeObserver));
+      expect(list?.classList.contains("hidden")).toBe(true);
+
+      mockPanelState.visible = false;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+      expect(container.textContent).not.toContain("Browse chats");
+    } finally {
+      await reactAct(async () => root.unmount());
+      queryClient.clear();
+      width.mockRestore();
+      vi.unstubAllGlobals();
+      style.remove();
+    }
   });
 
   it("does not render the deployment explainer in the shared layout", async () => {

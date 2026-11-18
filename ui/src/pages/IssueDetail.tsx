@@ -353,7 +353,7 @@ import {
   buildAnsweredQuestionsDeliveryText,
   buildIssueThreadInteractionSummary,
 } from "../lib/issue-thread-interactions";
-import { resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "../lib/issue-document-deep-link";
+import { chatSidebarDocumentHash, resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "../lib/issue-document-deep-link";
 import {
   buildIssueSiblingNavigation,
   shouldRenderRichSubIssuesSection,
@@ -3261,6 +3261,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 } }) {
   const { issueId: routeIssueId, companyPrefix } = useParams<{ issueId: string; companyPrefix: string }>();
   const issueId = conversation ? conversation.issue?.id : routeIssueId;
+  const isAgentChatRoute = Boolean(conversation);
+  const persistedAgentChat = Boolean(conversation?.issue);
   const [loadingTitleIssueId, setLoadingTitleIssueId] = useState<string | null>(null);
   useEffect(() => setLoadingTitleIssueId(null), [issueId, companyPrefix]);
   const [draftWorkMode, setDraftWorkMode] = useState<IssueWorkMode>("standard");
@@ -3277,7 +3279,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     streamlinedUiEnabled,
     loaded: taskInterfaceSettingsLoaded,
     coordinatorWorkspaceEnabled,
-  } = useTaskDetailInterfaceMode(!!conversation);
+  } = useTaskDetailInterfaceMode(isAgentChatRoute);
   const designSandbox = useDesignSandbox();
   const proposedTaskHeader = (designSandbox || coordinatorWorkspaceEnabled) && streamlinedTaskDetailEnabled;
   // Chat-style: the page wrapper spans the full center pane so the thread's
@@ -4334,7 +4336,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const breadcrumbTitle = issue?.title ?? issueHeaderSeed?.title ?? "";
   const breadcrumbIdentifier =
-    issue?.identifier ?? issueHeaderSeed?.identifier ?? (issueId && /^[a-z0-9]+-\d+$/i.test(issueId) ? issueId : undefined);
+    issue?.identifier ?? issueHeaderSeed?.identifier ?? (issueId && /^[a-z0-9]+-\d+$/i.test(issueId) ? issueId : issue?.id.slice(0, 8));
   const breadcrumbStatus = issue?.status ?? issueHeaderSeed?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
@@ -6093,7 +6095,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     );
   }, [breadcrumbParentRef, resolvedIssueDetailState, location.state, location.search]);
   useEffect(() => {
-    if (conversationAgent) {
+    if (isAgentChatRoute) {
       setBreadcrumbs([{ label: "Chat" }]);
       return;
     }
@@ -6120,7 +6122,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       },
     ]);
   }, [
-    conversationAgent,
+    isAgentChatRoute,
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,
@@ -6425,6 +6427,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onBrowserOpened={handleBrowserOpened}
             key={panelIssue.id}
             {...sharedProps}
+            showDocumentSourceTask={persistedAgentChat}
             accountScope={taskPanelAccountScope}
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
@@ -6463,6 +6466,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     handleSkillOpened,
     panelChildIssues,
     panelIssue,
+    persistedAgentChat,
     suppressPanelUntilPlan,
     relationIssueLinkState,
     streamlinedTaskDetailEnabled,
@@ -6724,7 +6728,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (!rawHref) return;
 
       const currentUrl = new URL(`${location.pathname}${location.search}${location.hash}`, window.location.origin);
-      const hash = sameIssueDocumentHash(rawHref, currentUrl, [issue?.id, issue?.identifier, issueId].filter((id): id is string => !!id));
+      const issueReferences = [issue?.id, issue?.identifier, issueId].filter((id): id is string => !!id);
+      const hash = persistedAgentChat && anchor.hasAttribute("data-sidebar-document-link")
+        ? chatSidebarDocumentHash(rawHref, currentUrl, issueReferences)
+        : sameIssueDocumentHash(rawHref, currentUrl, issueReferences);
       if (!hash) return;
       const route = resolveIssueDocumentDeepLink(hash);
       if (route?.kind === "properties-pane" && (!taskInterfaceSettingsLoaded || !taskChatShellEnabled)) return;
@@ -6751,6 +6758,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     issue?.id,
     issue?.identifier,
     issueId,
+    persistedAgentChat,
     navigate,
     location.hash,
     location.key,
@@ -9070,6 +9078,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     onBrowserOpened={handleBrowserOpened}
                     key={`${issue.id}:mobile`}
                     issue={issue}
+                    showDocumentSourceTask={persistedAgentChat}
                     accountScope={taskPanelAccountScope}
                     childIssues={childIssues}
                     issueLinkState={

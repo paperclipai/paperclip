@@ -23,6 +23,7 @@ import {
   type IssueDocument,
 } from "@paperclipai/shared";
 import {
+  ArrowUpRight,
   Globe,
   AppWindow,
   Box,
@@ -76,8 +77,9 @@ import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import type { IssueExternalObjectGroup } from "@/hooks/useIssueExternalObjects";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
+import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
 import { queryKeys } from "@/lib/queryKeys";
-import { useLocation, useNavigate } from "@/lib/router";
+import { Link, useLocation, useNavigate } from "@/lib/router";
 import {
   readTaskSidePanelState,
   taskPanelBrowserTab,
@@ -125,6 +127,7 @@ export interface TaskSidePanelProps {
   checkingMonitorNow?: boolean;
   fileTabsEnabled: boolean;
   documentDeepLink?: { requestId: number; documentKey: string } | null;
+  showDocumentSourceTask?: boolean;
   /** A new durable output asks the host to reveal this tab once. */
   artifactsOpenRequestId?: number;
   onArtifactsOpened?: (requestId: number) => void;
@@ -284,6 +287,7 @@ function TaskSidePanelForScope({
   checkingMonitorNow = false,
   fileTabsEnabled,
   documentDeepLink,
+  showDocumentSourceTask = false,
   artifactsOpenRequestId,
   onArtifactsOpened,
   onRequestClose,
@@ -473,7 +477,11 @@ function TaskSidePanelForScope({
   }, [controller.openTab, planDocument, coordinatorWorkspaceEnabled]);
 
   useEffect(() => {
-    if (!documentDeepLink || handledDocumentRequestRef.current === documentDeepLink.requestId) return;
+    if (!documentDeepLink) {
+      handledDocumentRequestRef.current = undefined;
+      return;
+    }
+    if (handledDocumentRequestRef.current === documentDeepLink.requestId) return;
     const parsedTarget = parseDocumentAnnotationHash(location.hash);
     const target = parsedTarget?.documentKey === documentDeepLink.documentKey ? parsedTarget : null;
     const documentIssueId = target?.documentIssueId && target.documentIssueId !== issue.id ? target.documentIssueId : undefined;
@@ -857,18 +865,30 @@ function TaskSidePanelForScope({
       if (viewer.state || viewer.browse) viewer.close();
     }}><IssuePropertiesArtifactsTab issue={issue} documentEditor={documentEditor ?? {}} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
   } else if (activeTab.payload.kind === "issue-document") {
-    content = activeTab.payload.documentKey === "plan" && !activeTab.payload.revisionId && !activeTab.payload.documentIssueId ? (
+    const { documentKey, revisionId, documentIssueId } = activeTab.payload;
+    const sourceTask = documentIssueId ?? issue.identifier ?? issue.id;
+    const documentBody = documentKey === "plan" && !revisionId && !documentIssueId ? (
       <IssuePropertiesPlansTab issue={issue} inline={inline} />
     ) : (
       <TaskDocumentPanel
-        issueId={activeTab.payload.documentIssueId ?? issue.id}
-        documentKey={activeTab.payload.documentKey}
-        revisionId={activeTab.payload.revisionId}
-        documentIssueId={activeTab.payload.documentIssueId}
+        companyId={issue.companyId}
+        issueId={documentIssueId ?? issue.id}
+        documentKey={documentKey}
+        revisionId={revisionId}
+        documentIssueId={documentIssueId}
         currentIssueId={issue.id}
-        initialDocument={!activeTab.payload.documentIssueId || activeTab.payload.documentIssueId === issue.id ? documentByKey.get(activeTab.payload.documentKey) : undefined}
+        initialDocument={!documentIssueId || documentIssueId === issue.id ? documentByKey.get(documentKey) : undefined}
       />
     );
+    content = showDocumentSourceTask ? (
+      <div className="flex flex-col gap-4">
+        <Link to={createIssueDetailPath(encodeURIComponent(sourceTask))} disableIssueQuicklook
+          className="inline-flex w-fit items-center gap-1.5 rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          Open source task <ArrowUpRight className="size-4" aria-hidden />
+        </Link>
+        {documentBody}
+      </div>
+    ) : documentBody;
   } else if (activeTab.payload.kind === "attachment") {
     content = <TaskAttachmentPanel key={activeTab.payload.attachmentId} issueId={issue.id} attachmentId={activeTab.payload.attachmentId} />;
   } else if (activeTab.payload.kind === "skill") {
