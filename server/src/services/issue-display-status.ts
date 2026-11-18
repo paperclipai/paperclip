@@ -1,7 +1,20 @@
 import { sql, type SQL } from "drizzle-orm";
 import { issues, issueThreadInteractions } from "@paperclipai/db";
-import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type IssueDisplayStatus } from "@paperclipai/shared";
+import { EXECUTION_RECONCILIATION_CAUSES, PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type IssueDisplayStatus } from "@paperclipai/shared";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
+import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+
+/**
+ * A resolved recovery action that keeps `automaticRecovery.replay = blocked`
+ * still holds execution: wake admission (`executionBlockerPredicate`) refuses
+ * every wake, including a due monitor. Without this, the task shows as a
+ * scheduled wait whose check never starts. This is the cheap subset of that
+ * predicate whose holds are always effective. Its exceptions apply only to
+ * legacy reconciliation holds, legacy workspace-restore holds and conversation
+ * boundaries, so those keep their current display.
+ */
+const DISPLAYED_NO_REPLAY_HOLD_CAUSES = EXECUTION_RECONCILIATION_CAUSES
+  .filter(cause => cause !== "legacy_execution_requires_reconciliation");
 
 /** Read-only projection shared by task reads, search, filters and counts.
  * Lifecycle status and locks remain admission/recovery inputs. Neither alone
@@ -28,6 +41,14 @@ export function issueDisplayStatusSql(): SQL<IssueDisplayStatus> {
       WHERE display_recovery.company_id = ${companyId}
         AND display_recovery.source_issue_id = ${issueId}
         AND display_recovery.status IN ('active', 'escalated')
+    ) THEN 'blocked'
+    WHEN ${issues.conversationAgentId} IS NULL AND EXISTS (
+      SELECT 1 FROM issue_recovery_actions display_hold
+      WHERE display_hold.company_id = ${companyId}
+        AND display_hold.source_issue_id = ${issueId}
+        AND display_hold.cause IN (${sql.join(DISPLAYED_NO_REPLAY_HOLD_CAUSES.map(cause => sql`${cause}`), sql`, `)})
+        AND display_hold.evidence->'automaticRecovery'->>'replay' = 'blocked'
+        AND display_hold.evidence->'workspaceRestoreRecovery'->>'schema' IS DISTINCT FROM ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}
     ) THEN 'blocked'
     WHEN (${issues.executionState}->>'status' = 'pending'
       AND ${issues.executionState}->>'currentParticipant' IS NOT NULL)
