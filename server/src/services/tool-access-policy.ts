@@ -86,7 +86,6 @@ export type ToolAccessContext = {
   catalogVersionHash: string | null;
   catalogSchemaHash: string | null;
   providerType: string | null;
-  /** Read from the stored connection, never from the caller. */
   connectionTransport: string | null;
   applicationKey: string | null;
   upstreamToolName: string | null;
@@ -1613,10 +1612,6 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       return decision("deny", "deny_policy_block", "Tool invocation no longer matches this admission.", [], []);
     }
     if (input.consumeRateLimit === true) consumedRateAdmissions.push(...(admittedRates ?? []));
-    // Rule 3 for plugin connectors: an agent reaches a plugin-served
-    // connection only through an install for that agent or the whole company.
-    // No profile, grant, trust rule or allow policy replaces the install; they
-    // can only narrow what an installed agent may call.
     if (ctx.actorType === "agent" && ctx.connectionId && ctx.connectionTransport === "plugin"
       && !(await connectionInstalledForAgent(ctx, cache))) {
       return decision("deny", "deny_connection_not_installed",

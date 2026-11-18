@@ -1,11 +1,3 @@
-/**
- * Rule 3: an agent gets a connector's tools only through an install of an
- * active connection for that agent (or the company). Standard agents hold an
- * unscoped `tools:use` grant, so this must hold even when the agent has a
- * general permission to use tools. Checked through the gateway session, the
- * Paperclip Runner's run-scoped assigned-tool gateway, and direct invocation
- * by name, for organization-grant and per-agent connections.
- */
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -91,8 +83,6 @@ const support = await getEmbeddedPostgresTestSupport();
       { companyId: company!.id, name: "Installed", role: "engineer", adapterType: "process" },
       { companyId: company!.id, name: "Not installed", role: "engineer", adapterType: "process" },
     ]).returning();
-    // Both are standard agents with the default direct grants, including an
-    // unscoped `tools:use`.
     for (const agent of [agentA!, agentB!]) {
       await db.insert(principalPermissionGrants).values(NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
         companyId: company!.id, principalType: "agent", principalId: agent.id, permissionKey,
@@ -138,7 +128,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const assigned = await createAssignedMcpTools({ gateway, companyId: company!.id, gatewayPublicId, bearerToken: server.token });
       return { listed, assigned, gatewayPublicId, bearerToken: server.token };
     };
-    return { company: company!, agentA: agentA!, agentB: agentB!, gateway, sessions, connect, gatewayTools, runner };
+    return { company: company!, agentA: agentA!, agentB: agentB!, routes, gateway, sessions, connect, gatewayTools, runner };
   }
 
   const executeCalls = () => workerCalls.filter((call) => call.method === "executeTool").length;
@@ -149,12 +139,10 @@ const support = await getEmbeddedPostgresTestSupport();
   ])("gives the tools of a $label connection only to the installed agent", async ({ body, perAgent }) => {
     const f = await setup();
     const connectionId = await f.connect({ ...body, ...(perAgent ? { subjectAgentId: f.agentA.id } : {}) }, [f.agentA.id]);
-    // B has its own install of an unrelated connection, so it has a runner gateway.
     await f.connect({ galleryKey: OTHER, connectionMethodKey: "none" }, [f.agentB.id]);
     const installs = await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connectionId));
     expect(installs.map((install) => install.targetId)).toEqual([f.agentA.id]);
 
-    // The installed agent lists and calls the tool.
     const toolA = (await f.gatewayTools(f.agentA.id)).find((tool) => tool.connectionId === connectionId)!;
     expect(toolA).toBeDefined();
     const runnerA = await f.runner(f.agentA.id);
@@ -164,18 +152,31 @@ const support = await getEmbeddedPostgresTestSupport();
       parameters: {}, idempotencyKey: randomUUID() });
     expect(executeCalls()).toBe(before + 1);
 
-    // The agent without an install neither sees nor reaches it.
     expect((await f.gatewayTools(f.agentB.id)).filter((tool) => tool.connectionId === connectionId)).toEqual([]);
     const runnerB = await f.runner(f.agentB.id);
     expect(runnerB!.listed.filter((tool) => tool.connectionId === connectionId)).toEqual([]);
     expect(runnerB!.listed.some((tool) => tool.upstreamToolName === "other_lookup")).toBe(true);
     const callsBefore = executeCalls();
     await expect(f.gateway.executeTool({ sessionToken: f.sessions.get(f.agentB.id)!, tool: toolA.name, parameters: {}, idempotencyKey: randomUUID() }))
-      .rejects.toMatchObject({ status: expect.any(Number) });
+      .rejects.toMatchObject({ reasonCode: "deny_connection_not_installed" });
     await expect(f.gateway.executeTool({ gatewayPublicId: runnerB!.gatewayPublicId, sessionToken: runnerB!.bearerToken, tool: toolA.name,
       parameters: {}, idempotencyKey: randomUUID() })).rejects.toMatchObject({ status: expect.any(Number) });
     await expect(runnerB!.assigned.execute({ tool: "paperclip_call_assigned_tool", arguments: { name: toolA.name, arguments: {} } }))
       .rejects.toThrow();
     expect(executeCalls()).toBe(callsBefore);
+  });
+
+  it("gives the tools of a company-installed connection to every agent", async () => {
+    const f = await setup();
+    const connectionId = await f.connect({ galleryKey: SHARED, connectionMethodKey: "none" }, []);
+    await request(f.routes).put(`/api/tool-connections/${connectionId}/installs`)
+      .send({ installs: [{ targetType: "company", targetId: f.company.id }] }).expect(200);
+    for (const agentId of [f.agentA.id, f.agentB.id]) {
+      const tool = (await f.gatewayTools(agentId)).find((candidate) => candidate.connectionId === connectionId)!;
+      expect(tool).toBeDefined();
+      const before = executeCalls();
+      await f.gateway.executeTool({ sessionToken: f.sessions.get(agentId)!, tool: tool.name, parameters: {}, idempotencyKey: randomUUID() });
+      expect(executeCalls()).toBe(before + 1);
+    }
   });
 });
