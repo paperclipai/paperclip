@@ -16,7 +16,11 @@ import {
   reusableSandboxNotKeptAfterReplacementSql,
   reusableSandboxReplacementPlan,
   type ReusableSandboxReplacementPlan,
-  sandboxStateTransitionFailure,
+  jitteredResumeRetryDelayMs,
+  nextResumeRetryBaseDelayMs,
+  RESUME_RETRY_FIRST_DELAY_MS,
+  resumeFailureTimedOut,
+  transientSandboxResumeFailure,
 } from "./reusable-sandbox-resume-replacement.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import { HttpError } from "../errors.js";
@@ -590,6 +594,9 @@ export interface EnvironmentDriverResumeInput extends EnvironmentDriverLeaseInpu
   warmRunnerIdleTimeoutMs?: number;
   /** The run's remote runner reconnect grace, forwarded to the provider worker only. */
   runnerReconnectGraceMs?: number;
+  /** Upper bound for the provider resume call, so a caller's retry budget bounds a retry.
+   * Only the sandbox plugin driver honors it; other drivers keep their own deadline. */
+  timeoutMs?: number;
 }
 
 export interface EnvironmentDriverRealizeWorkspaceInput extends EnvironmentDriverLeaseInput {
@@ -800,26 +807,6 @@ const DEFAULT_DEFERRED_ORPHAN_CLEANUP_BUFFER_LIMIT = 256;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function transientSandboxResumeFailure(error: unknown): boolean {
-  const candidate = error && typeof error === "object"
-    ? error as Record<string, unknown>
-    : {};
-  const status = typeof candidate.status === "number"
-    ? candidate.status
-    : typeof candidate.statusCode === "number"
-      ? candidate.statusCode
-      : null;
-  if (status === 429 || (status !== null && status >= 500)) return true;
-  // A sandbox still stopping, archiving, or starting can be started shortly.
-  if (sandboxStateTransitionFailure(error)) return true;
-  const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";
-  if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENETUNREACH"].includes(code)) {
-    return true;
-  }
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  return /\b(timeout|timed out|rate limit|temporar|network|connection reset|service unavailable)\b/.test(message);
 }
 
 function getLeaseDriverKey(
@@ -1919,7 +1906,7 @@ function createSandboxEnvironmentDriver(
               configuredResumeTimeoutMs,
               Math.min(providerStartTimeoutMs, REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS),
             );
-            let retryDelayMs = 250;
+            let retryDelayMs = RESUME_RETRY_FIRST_DELAY_MS;
             let idleStartWaitExtended = false;
             let everyResumeTimedOut = true;
             let resumed: PluginEnvironmentLease;
@@ -1945,11 +1932,11 @@ function createSandboxEnvironmentDriver(
                 break;
               } catch (error) {
                 if (!transientSandboxResumeFailure(error)) throw error;
-                if (sandboxProviderFailureLabel(error).label !== "transport_timeout") everyResumeTimedOut = false;
+                if (!resumeFailureTimedOut(error)) everyResumeTimedOut = false;
                 const retryAt = Date.now() + retryDelayMs * 1.25;
                 if (retryAt >= resumeDeadline) {
                   const waitForIdleStart = resumeDeadline < idleResumeDeadline && retryAt < idleResumeDeadline
-                    && sandboxProviderFailureLabel(error).label === "transport_timeout"
+                    && resumeFailureTimedOut(error)
                     && await reusableSandboxLeaseIsIdle({
                       db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
                     });
@@ -1960,12 +1947,8 @@ function createSandboxEnvironmentDriver(
                   resumeDeadline = idleResumeDeadline;
                   idleStartWaitExtended = true;
                 }
-                const jitteredDelayMs = Math.max(
-                  1,
-                  Math.round(retryDelayMs * (0.75 + Math.random() * 0.5)),
-                );
-                await delay(jitteredDelayMs);
-                retryDelayMs = Math.min(retryDelayMs * 2, 5_000);
+                await delay(jitteredResumeRetryDelayMs(retryDelayMs));
+                retryDelayMs = nextResumeRetryBaseDelayMs(retryDelayMs);
               }
             }
             providerLease =
@@ -2779,7 +2762,7 @@ function createSandboxEnvironmentDriver(
         issueId: input.lease.issueId, config, providerLeaseId: input.lease.providerLeaseId,
         leaseMetadata: input.lease.metadata ?? undefined,
         ...(input.requestedCwd !== undefined ? { requestedCwd: input.requestedCwd } : {}),
-      }, resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000);
+      }, Math.min(resolvePluginSandboxRpcTimeoutMs(config) ?? 60_000, input.timeoutMs ?? Number.POSITIVE_INFINITY));
       if (resumed?.providerLeaseId !== input.lease.providerLeaseId) {
         if (resumeReplyConfirmsAbsence(resumed)) throw new RetainedSandboxAbsentError();
         throw new Error("The provider did not confirm the exact retained sandbox. No replacement was acquired.");

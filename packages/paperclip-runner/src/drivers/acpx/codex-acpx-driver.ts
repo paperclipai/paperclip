@@ -67,7 +67,7 @@ import {
 import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
   AcpxProviderProcessLostError,
-  openCodexAcpxRuntime,
+  openQualifiedAcpxRuntime,
 } from "./acpx-runtime-adapter.js";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
 import {
@@ -276,7 +276,7 @@ function openProductionAcpxHost(
   options: OpenAcpxRuntimeHostOptions,
 ): Promise<AcpxRuntimeHost> {
   return AcpxRuntimeHost.open(options, {
-    openRuntime: openCodexAcpxRuntime,
+    openRuntime: openQualifiedAcpxRuntime,
     reportRetainedCleanupFailure: reportRetainedAcpxCleanupFailure,
   });
 }

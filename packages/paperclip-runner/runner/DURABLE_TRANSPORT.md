@@ -14,6 +14,9 @@ checks for an incoming connection every 10 ms (or sooner, when that delay is
 smaller). It never redials, so a connection does not wait out the reconnect
 delay after a disconnect or an authority rotation.
 
+In both modes, Runner enables `TCP_NODELAY` before the WebSocket handshake
+when the connected peer is on loopback.
+
 Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
 Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 

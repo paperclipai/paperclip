@@ -5,6 +5,7 @@ import {
   createAgentConversationSchema,
   paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
+  issueDocumentBatchQuerySchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -23,6 +24,15 @@ describe("issue validators", () => {
     for (const body of [{}, { clientRequestId: null }, { clientRequestId: "invalid" }, { clientRequestId, conversationUserId: "spoof" }]) {
       expect(createAgentConversationSchema.safeParse(body).success).toBe(false);
     }
+  });
+  it("bounds document batches before deduplication and normalizes keys and IDs", () => {
+    const id = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    expect(issueDocumentBatchQuerySchema.parse({ key: " SENTRY-CASE ", issueIds: ` ${id},${id} ` })).toEqual({
+      key: "sentry-case", issueIds: [id.toLowerCase()], includeBody: true,
+    });
+    expect(issueDocumentBatchQuerySchema.parse({ key: "notes", issueIds: Array(200).fill(id).join(","), includeBody: "false" }).includeBody).toBe(false);
+    expect(issueDocumentBatchQuerySchema.safeParse({ key: "notes", issueIds: Array(201).fill(id).join(",") }).success).toBe(false);
+    expect(issueDocumentBatchQuerySchema.safeParse({ key: "notes", issueIds: [id] }).success).toBe(false);
   });
   it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
     for (const name of [key, key.toLowerCase()]) {

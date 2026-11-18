@@ -33,11 +33,16 @@ describe("LiveUpdatesProvider issue invalidation", () => {
   it.each(["issue.thread_interaction_accepted", "issue.thread_interaction_answered", "decision.decided", "decision.effect_succeeded", "decision.effect_failed", "issue.conversation_session_started", "inbox.dismissed", "inbox.snoozed", "inbox.restored"])("refreshes canonical attention, history and source-chat projections after %s", action => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
+    const cancel = vi.spyOn(client, "cancelQueries");
     __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
       entityType: action.startsWith("decision.") ? "decision" : "issue", entityId: "task-1", action,
     }, { userId: "user-1", agentId: null });
     for (const queryKey of [queryKeys.attention("company-1"), ["decisions", "company-1"], ["issues", "decision-receipts"], ["issues", "chat-handoffs"], ["issues", "pending-questions"]]) {
       expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
+    if (action.startsWith("issue.thread_interaction_")) {
+      expect(cancel).toHaveBeenCalledWith({ queryKey: queryKeys.attention("company-1") });
+      expect(cancel).toHaveBeenCalledWith({ queryKey: ["issues", "interactions"] });
     }
     client.clear();
   });
