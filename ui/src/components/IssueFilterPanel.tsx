@@ -1,4 +1,4 @@
-import { useState, type ComponentProps, type CSSProperties, type ReactNode } from "react";
+import { useState, type ComponentProps, type CSSProperties } from "react";
 import { Bot, User } from "lucide-react";
 import type { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { Button } from "./ui/button";

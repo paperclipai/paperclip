@@ -48,7 +48,7 @@ export function readRoutineView(params: URLSearchParams, saved: unknown = {}): R
 }
 export function writeRoutineViewParams(current: URLSearchParams, view: RoutineViewState) {
   const params = new URLSearchParams(current);
-  params.set("filters", "1"); // An empty linked view must also override saved filters.
+  params.set("filters", "1");
   params.delete("q");
   if (view.query) params.set("q", view.query);
   for (const key of routineFilterKeys) {

@@ -132,4 +132,14 @@ describe("routine view persistence", () => {
     await act(() => current[1]({ collapsedGroups: ["g1"] }));
     expect(JSON.parse(localStorage.getItem(routineViewStorageKey("c1", "u1"))!)).toMatchObject({ projects: ["shared"], statuses: ["paused"], collapsedGroups: ["g1"] });
   });
+
+  it("restores personal filters after leaving a shared link with changed columns", async () => {
+    localStorage.setItem(routineViewStorageKey("c1", "u1"), JSON.stringify({ ...defaultRoutineView, projects: ["personal"], statuses: ["paused"] }));
+    await render("c1", "/routines?projects=shared");
+    await act(() => current[1]({ columns: ["assignee"], collapsedGroups: ["g1"] }));
+    await act(() => navigate("/routines"));
+    expect(current[0]).toMatchObject({ projects: ["personal"], statuses: ["paused"], columns: ["assignee"], collapsedGroups: ["g1"] });
+    await act(() => navigate(-1));
+    expect(current[0].projects).toEqual(["shared"]);
+  });
 });

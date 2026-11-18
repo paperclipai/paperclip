@@ -5811,7 +5811,6 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
   -webkit-text-security: disc;
 }
 
-/* Routine columns share their tracks between headings and rows. */
 :root {
   --routine-title-min: calc(var(--spacing) * 48);
   --routine-column-project: calc(var(--spacing) * 36);

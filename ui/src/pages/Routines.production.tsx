@@ -1,7 +1,6 @@
 import { useRoutineListView } from "../hooks/useRoutineListView";
 import { routineFilterKeys } from "../lib/routine-list-view";
 import { buildRoutineFilterOptions, selectRoutineRows } from "../lib/routine-list-data";
-export { sortRoutines } from "../lib/routine-list-data";
 import { RoutineTable } from "../components/RoutineTable";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { AgentAvatar } from "@/components/AgentAvatar";

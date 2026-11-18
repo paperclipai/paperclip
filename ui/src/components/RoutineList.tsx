@@ -220,7 +220,6 @@ function routineRowParts<TRoutine extends RoutineListRowItem>({
   return { title, selection, actions, cellByColumn };
 }
 
-/** Column rows keep table and title-link semantics on separate elements. */
 export function RoutineTableRow<TRoutine extends RoutineListRowItem>(props: RoutineRowProps<TRoutine> & { columns: RoutineColumn[]; userById: Map<string, CompanyUserProfile> }) {
   const { title, selection, actions, cellByColumn } = routineRowParts(props);
   return <div role="row" onClick={openRoutineFromRow} style={{ gridTemplateColumns: routineColumnGrid(props.columns, props.selectMode) }} className={`routine-table-grid group cursor-pointer px-3 py-3 transition-colors hover:bg-accent/50${props.divider !== false ? " border-b border-border last:border-b-0" : ""}`}>
@@ -231,13 +230,13 @@ export function RoutineTableRow<TRoutine extends RoutineListRowItem>(props: Rout
   </div>;
 }
 
-/** Plugin-managed lists retain their compact metadata layout. */
 export function RoutineListRow<TRoutine extends RoutineListRowItem>(props: RoutineRowProps<TRoutine>) {
-  const { title, actions, cellByColumn } = routineRowParts(props);
+  const { title, selection, actions, cellByColumn } = routineRowParts(props);
   return <div onClick={openRoutineFromRow} className={`group flex flex-col gap-3 px-3 py-3 transition-colors hover:bg-accent/50 sm:flex-row sm:items-center cursor-pointer${props.divider !== false ? " border-b border-border last:border-b-0" : ""}`}>
+    {props.selectMode ? selection : null}
     <div className="min-w-0 flex-1 space-y-1.5">
       {title}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">{cellByColumn.project}{cellByColumn.assignee}{cellByColumn.lastRun}</div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">{cellByColumn.project}{cellByColumn.assignee}{props.userById ? cellByColumn.responsibleUser : null}{cellByColumn.lastRun}</div>
     </div>
     {cellByColumn.enabled}{actions}
   </div>;

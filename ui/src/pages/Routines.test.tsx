@@ -8,7 +8,8 @@ import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import type { RequestOptions } from "../api/client";
-import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
+import { Routines, buildRoutineGroups, buildRoutineSections } from "./Routines";
+import { sortRoutines } from "../lib/routine-list-data";
 
 let currentSearch = "";
 
