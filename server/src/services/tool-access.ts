@@ -2075,8 +2075,35 @@ export function toolAccessService(
         `${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`,
       );
     }
-    const dedicatedAgentId =
+    // OAuth names the agent in its state and the callback writes that agent's
+    // grant. A curated method without sign-in (`none` or `api_key`) has no
+    // callback, so connect itself must create the agent's grant.
+    const createsAgentGrantAtConnect = Boolean(
+      requestedGrantKind === "agent" && galleryEntry && method && method.auth !== "oauth" && !remoteMcpConnector,
+    );
+    let dedicatedAgentId =
       requestedGrantKind === "agent" ? (input.subjectAgentId ?? null) : null;
+    if (createsAgentGrantAtConnect && !dedicatedAgentId) {
+      // Resuming an agent identity without naming the agent keeps the one
+      // agent that identity already belongs to.
+      const retainedAgentGrants = retainedConnection
+        ? await db
+            .select({ subjectAgentId: connectionGrants.subjectAgentId })
+            .from(connectionGrants)
+            .where(and(
+              eq(connectionGrants.companyId, companyId),
+              eq(connectionGrants.connectionId, retainedConnection.id),
+              eq(connectionGrants.kind, "agent"),
+            ))
+            .limit(2)
+        : [];
+      dedicatedAgentId = retainedAgentGrants.length === 1 ? retainedAgentGrants[0]!.subjectAgentId : null;
+      if (!dedicatedAgentId) {
+        throw badRequest("Choose the agent that uses this connection", {
+          code: "connection_subject_agent_required",
+        });
+      }
+    }
     if (dedicatedAgentId) {
       const [subjectAgent] = await db
         .select({ id: agents.id })
@@ -2087,7 +2114,7 @@ export function toolAccessService(
         .limit(1);
       if (!subjectAgent)
         throw badRequest(
-          "Dedicated GitHub identity requires an agent in this company",
+          "A dedicated agent identity requires an agent in this company",
         );
     }
     const credentialSource: ToolConnectionCredentialSource =
@@ -2393,8 +2420,22 @@ export function toolAccessService(
       retainedMethodKey === method?.key &&
       (!remoteMcpConnector || (baseConfig.url === retainedConfig.url && genericAuthKind === retainedConnection.authKind)),
     );
+    // A dedicated agent's API key lives on its grant, not on the connection.
+    const [retainedAgentGrant] = canRetainCredentialMaterial && createsAgentGrantAtConnect && retainedConnection && dedicatedAgentId
+      ? await db
+          .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
+          .from(connectionGrants)
+          .where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.connectionId, retainedConnection.id),
+            eq(connectionGrants.kind, "agent"),
+            eq(connectionGrants.subjectAgentId, dedicatedAgentId),
+          ))
+          .limit(1)
+      : [];
     const retainedCredentialSecretRefs = canRetainCredentialMaterial
       ? (retainedPersonalIdentity?.grant?.credentialSecretRefs ??
+        retainedAgentGrant?.credentialSecretRefs ??
         retainedConnection?.credentialSecretRefs ??
         [])
       : [];
@@ -2803,6 +2844,19 @@ export function toolAccessService(
       } else if (dedicatedAgentId) {
         // Managed OAuth creates the credential-bearing grant in the callback.
         // Keep the connection free of organization secrets from the outset.
+        // Without sign-in, the agent's grant is written here, carrying the
+        // API key when the method has one. The grant alone gives no tools:
+        // the agent still needs an install of the active connection.
+        if (createsAgentGrantAtConnect) {
+          const mutation = await upsertConnectAgentGrant({
+            companyId,
+            connectionId: connectionRow.id,
+            subjectAgentId: dedicatedAgentId,
+            credentialSecretRefs,
+            actor,
+          });
+          if (revivedConnectionPrevious) revivedGrantMutation = mutation;
+        }
       } else {
         const organizationGrant = await ensureDefaultOrganizationGrant(
           connectionRow,
@@ -3250,6 +3304,83 @@ export function toolAccessService(
       );
     }
     return rows;
+  }
+
+  /**
+   * Write the one active agent grant of a dedicated-agent connection whose
+   * method has no sign-in step. A per-agent connection serves exactly one
+   * agent, so a grant for another agent is a conflict, not a second identity.
+   */
+  async function upsertConnectAgentGrant(input: {
+    companyId: string;
+    connectionId: string;
+    subjectAgentId: string;
+    credentialSecretRefs: CreateToolConnection["credentialSecretRefs"];
+    actor?: ActorInfo;
+  }): Promise<{ previous: typeof connectionGrants.$inferSelect | null; current: typeof connectionGrants.$inferSelect }> {
+    return db.transaction(async (tx) => {
+      const grants = await tx
+        .select()
+        .from(connectionGrants)
+        .where(and(
+          eq(connectionGrants.companyId, input.companyId),
+          eq(connectionGrants.connectionId, input.connectionId),
+          eq(connectionGrants.kind, "agent"),
+        ))
+        .for("update");
+      if (grants.some((grant) => grant.status === "active" && grant.subjectAgentId !== input.subjectAgentId)) {
+        throw conflict(
+          "This connection already belongs to another agent. Add a separate connection for this agent.",
+          { code: "connection_agent_identity_in_use" },
+        );
+      }
+      const previous = grants.find((grant) => grant.subjectAgentId === input.subjectAgentId) ?? null;
+      const createdByAgentId = input.actor?.actorType === "agent" ? (input.actor.actorId ?? null) : null;
+      const createdByUserId = connectionActorUserId(input.actor);
+      const [current] = previous
+        ? await tx
+            .update(connectionGrants)
+            .set({
+              credentialSecretRefs: input.credentialSecretRefs,
+              status: "active",
+              revokedAt: null,
+              revokedByAgentId: null,
+              revokedByUserId: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(connectionGrants.id, previous.id))
+            .returning()
+        : await tx
+            .insert(connectionGrants)
+            .values({
+              companyId: input.companyId,
+              connectionId: input.connectionId,
+              kind: "agent",
+              subjectAgentId: input.subjectAgentId,
+              credentialSecretRefs: input.credentialSecretRefs,
+              status: "active",
+              isDefault: false,
+              createdByAgentId,
+              createdByUserId,
+            })
+            .returning();
+      if (!current) throw new Error("Failed to save the agent connection grant");
+      await tx.insert(toolAccessAuditEvents).values({
+        companyId: input.companyId,
+        connectionId: input.connectionId,
+        actorType: input.actor?.actorType ?? "system",
+        actorId: input.actor?.actorId ?? null,
+        action: previous ? "connection_grant.updated" : "connection_grant.created",
+        outcome: "success",
+        reasonCode: previous ? "agent_identity_reconnected" : "agent_identity_created",
+        details: {
+          kind: "agent",
+          subjectAgentId: input.subjectAgentId,
+          credentialSecretRefCount: input.credentialSecretRefs.length,
+        },
+      });
+      return { previous, current };
+    });
   }
 
   async function assertAgentsInCompany(companyId: string, agentIds: string[]) {

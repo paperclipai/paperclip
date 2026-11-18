@@ -967,7 +967,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     .filter(
       (connection) =>
         (connection.transport === "mcp_remote" ||
-          connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
+          connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
         !allInstalledConnectionIds.has(connection.id),
     )
     .map(({ id, name }) => ({ id, name }))
@@ -992,8 +992,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
           connection.transportConfig?.sourceTemplateKey === "github")) ||
         connection.credentialPolicy === "per_user" ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
+      // Keep this transport list equal to the native runtime assignment
+      // digest in native-runtime/runtime-context.ts.
       (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
+        connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
   );
   const assignedConnectionIds = new Set(
     assignedConnections.map((connection) => connection.id),
