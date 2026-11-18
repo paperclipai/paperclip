@@ -1,4 +1,6 @@
 import { connectionActorUserId } from "./actor.js";
+import { AwsMcpCredentialError, awsMcpCredentialRevision, awsMcpSettings, createAwsMcpCredentialMinter, isAwsMcpConnection, sharedAwsMcpCredentialMinter, type AwsMcpClients } from "../connectors/aws/mcp-credentials.js";
+import { workloadIdentityService } from "../workload-identity.js";
 import type { ActorInfo } from "./types.js";
 import { oauthConfig } from "./oauth/metadata.js";
 import { remoteEndpoint } from "./connection-methods.js";
@@ -26,6 +28,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 type CredentialAccessDependencies = {
   secrets: ReturnType<typeof secretService>;
+  /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+  awsMcpClients?: AwsMcpClients;
   audit: ToolAccessAudit;
   vercel: VercelCredentialService;
   resolveOAuthGrantSecret: OAuthCredentialStore["resolveOAuthGrantSecret"];
@@ -33,7 +37,12 @@ type CredentialAccessDependencies = {
   refreshOAuthGrantCredentials: ReturnType<typeof createOAuthGrantRefresh>;
 };
 
-export function createConnectionCredentialAccess(db: Db, { secrets, audit, vercel, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials }: CredentialAccessDependencies) {
+export function createConnectionCredentialAccess(db: Db, { secrets, audit, vercel, resolveOAuthGrantSecret, maybeRefreshOAuthCredentials, refreshOAuthGrantCredentials, awsMcpClients }: CredentialAccessDependencies) {
+  const signAwsConnectionToken = (input: { companyId: string; connectionId: string; audience: string }) =>
+    workloadIdentityService(db).signConnectionToken(input);
+  const awsMcpMinter = awsMcpClients
+    ? createAwsMcpCredentialMinter({ clients: awsMcpClients, signConnectionToken: signAwsConnectionToken })
+    : sharedAwsMcpCredentialMinter(db, signAwsConnectionToken);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercel;
   async function vaultGrantForConnection(
     connection: typeof toolConnections.$inferSelect,
@@ -137,6 +146,44 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     return null;
   }
 
+  /** Minted at call time for AWS's hosted MCP server; shares the gateway's token cache. */
+  async function resolveAwsMcpHeaders(
+    connection: typeof toolConnections.$inferSelect,
+    actor: ActorInfo | undefined,
+    options: { forceRefresh?: boolean },
+  ): Promise<Record<string, string>> {
+    const grant = connection.credentialPolicy === "shared" ? null : await vaultGrantForConnection(connection, actor);
+    const refs = grant?.credentialSecretRefs ?? connection.credentialSecretRefs;
+    const minter = awsMcpMinter;
+    try {
+      return await minter.authorizationHeader({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        connectionName: connection.name,
+        grantId: grant?.id ?? "shared",
+        revision: awsMcpCredentialRevision(connection, grant),
+        settings: awsMcpSettings(connection),
+        forceRefresh: options.forceRefresh,
+        readSecret: async (configPath) => {
+          const ref = refs.find((candidate) => candidate.configPath === configPath);
+          if (!ref) {
+            throw new AwsMcpCredentialError(
+              "aws_access_key_invalid", 422,
+              "This AWS connection has no saved access key. Reconnect AWS.", "error",
+            );
+          }
+          return secrets.resolveSecretValue(connection.companyId, ref.secretId, ref.versionSelector ?? "latest");
+        },
+      });
+    } catch (error) {
+      if (!(error instanceof AwsMcpCredentialError)) throw error;
+      throw new HttpError(error.status, error.message, {
+        code: error.code, connectionId: connection.id,
+        ...(error.awsErrorName ? { awsError: error.awsErrorName } : {}),
+      });
+    }
+  }
+
   async function resolveCredentialHeaders(
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
@@ -146,6 +193,7 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
       const grant = await vercelGrantForConnection(connection, actor);
       return resolveVercelCredentialHeaders(connection, grant, options);
     }
+    if (isAwsMcpConnection(connection)) return resolveAwsMcpHeaders(connection, actor, options);
     let grant: typeof connectionGrants.$inferSelect | null = null;
     try {
       if (

@@ -1,0 +1,395 @@
+import { createHash } from "node:crypto";
+import {
+  AssumeRoleCommand,
+  AssumeRoleWithWebIdentityCommand,
+  GetFederationTokenCommand,
+  STSClient,
+} from "@aws-sdk/client-sts";
+import { CreateOAuth2TokenWithIAMCommand, SigninClient } from "@aws-sdk/client-signin";
+
+/**
+ * Credentials for AWS's hosted MCP server, minted on the control plane for each
+ * connection. A connection proves who it is with a Paperclip-signed OIDC token
+ * (role method) or its own stored access key, gets short-lived AWS credentials,
+ * and exchanges them for a one-hour MCP bearer token. Agents never see any of it.
+ */
+
+export const AWS_MCP_SOURCE_TEMPLATE_KEY = "aws";
+export const AWS_MCP_METHOD_KEYS = ["aws-role", "aws-access-key"] as const;
+export type AwsMcpMethodKey = (typeof AWS_MCP_METHOD_KEYS)[number];
+export const AWS_MCP_ENDPOINT_REGIONS = [
+  "us-east-1", "us-west-2", "eu-west-1", "eu-west-2", "eu-central-1",
+  "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
+] as const;
+export const AWS_MCP_STS_AUDIENCE = "sts.amazonaws.com";
+export const AWS_MCP_TOKEN_RESOURCE = "aws-mcp.amazonaws.com";
+/** Read-only sessions also need the sign-in policy, or AWS refuses the token exchange. */
+export const AWS_MCP_READ_ONLY_SESSION_POLICIES = [
+  "arn:aws:iam::aws:policy/ReadOnlyAccess",
+  "arn:aws:iam::aws:policy/AWSMCPSignInOAuthAccessPolicy",
+] as const;
+export const AWS_MCP_ACCESS_KEY_ID_PATH = "credentials.accessKeyId";
+export const AWS_MCP_SECRET_ACCESS_KEY_PATH = "credentials.secretAccessKey";
+const SESSION_SECONDS = 3600;
+/** Mint again this long before the token expires, so an in-flight call never carries an expiring token. */
+const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+const ROLE_ARN_PATTERN = /^arn:aws[a-z-]*:iam::[0-9]{12}:role\/[A-Za-z0-9+=,.@_/-]{1,512}$/;
+
+export type AwsMcpAccessLevel = "read_only" | "full";
+
+export interface AwsMcpSettings {
+  method: AwsMcpMethodKey;
+  roleArn: string | null;
+  endpointRegion: (typeof AWS_MCP_ENDPOINT_REGIONS)[number];
+  accessLevel: AwsMcpAccessLevel;
+}
+
+export interface AwsSessionCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  expiration?: Date;
+}
+
+export type AwsMcpCredentialErrorCode =
+  | "aws_mcp_settings_invalid"
+  | "aws_identity_unavailable"
+  | "aws_role_access_denied"
+  | "aws_access_key_invalid"
+  | "aws_mcp_signin_denied"
+  | "aws_unavailable";
+
+/** A failure with a plain-language message. AWS's own message is never shown, since it can carry account IDs and ARNs. */
+export class AwsMcpCredentialError extends Error {
+  constructor(
+    readonly code: AwsMcpCredentialErrorCode,
+    readonly status: number,
+    message: string,
+    readonly health: "degraded" | "error",
+    readonly awsErrorName?: string,
+  ) {
+    super(message);
+    this.name = "AwsMcpCredentialError";
+  }
+}
+
+interface ConnectionLike {
+  id: string;
+  transport: string;
+  config: Record<string, unknown>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function isAwsMcpConnection(connection: ConnectionLike): boolean {
+  return connection.transport === "mcp_remote"
+    && connection.config.sourceTemplateKey === AWS_MCP_SOURCE_TEMPLATE_KEY
+    && (AWS_MCP_METHOD_KEYS as readonly unknown[]).includes(connection.config.connectionMethodKey);
+}
+
+/** Saved settings, rechecked at call time: the URL must be AWS's endpoint for the saved region. */
+export function awsMcpSettings(connection: ConnectionLike & { config: Record<string, unknown> }): AwsMcpSettings {
+  const invalid = () => new AwsMcpCredentialError(
+    "aws_mcp_settings_invalid", 422,
+    "This AWS connection's settings are incomplete. Reconnect AWS.", "error",
+  );
+  const method = connection.config.connectionMethodKey;
+  if (!(AWS_MCP_METHOD_KEYS as readonly unknown[]).includes(method)) throw invalid();
+  const values = asRecord(connection.config.methodConfig);
+  const endpointRegion = values.endpointRegion;
+  if (!(AWS_MCP_ENDPOINT_REGIONS as readonly unknown[]).includes(endpointRegion)) throw invalid();
+  if (connection.config.url !== `https://aws-mcp.${endpointRegion}.api.aws/mcp`) throw invalid();
+  const roleArn = typeof values.roleArn === "string" && values.roleArn.trim() ? values.roleArn.trim() : null;
+  if (roleArn !== null && !ROLE_ARN_PATTERN.test(roleArn)) throw invalid();
+  if (method === "aws-role" && !roleArn) throw invalid();
+  const accessLevel = values.accessLevel === "full" ? "full" : "read_only";
+  return {
+    method: method as AwsMcpMethodKey,
+    roleArn,
+    endpointRegion: endpointRegion as AwsMcpSettings["endpointRegion"],
+    accessLevel,
+  };
+}
+
+/** `paperclip-<name>` in the characters STS allows, so CloudTrail shows which connection acted. */
+export function awsSessionName(connectionName: string, maxLength = 64): string {
+  const cleaned = connectionName.toLowerCase().replace(/[^a-z0-9+=,.@-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `paperclip-${cleaned || "connection"}`.slice(0, maxLength);
+}
+
+/** The four AWS calls the minter makes. Tests replace them with a fake AWS. */
+export interface AwsMcpClients {
+  assumeRoleWithWebIdentity(input: {
+    region: string; roleArn: string; sessionName: string; webIdentityToken: string; policyArns?: readonly string[];
+  }): Promise<AwsSessionCredentials>;
+  assumeRole(input: {
+    region: string; credentials: AwsSessionCredentials; roleArn: string; sessionName: string; policyArns?: readonly string[];
+  }): Promise<AwsSessionCredentials>;
+  getFederationToken(input: {
+    region: string; credentials: AwsSessionCredentials; name: string; policyArns: readonly string[];
+  }): Promise<AwsSessionCredentials>;
+  createMcpToken(input: { region: string; credentials: AwsSessionCredentials }): Promise<{ token: string; expiresInSeconds: number }>;
+}
+
+function stsCredentials(value: { AccessKeyId?: string; SecretAccessKey?: string; SessionToken?: string; Expiration?: Date } | undefined): AwsSessionCredentials {
+  if (!value?.AccessKeyId || !value.SecretAccessKey) throw new Error("AWS returned no credentials");
+  return {
+    accessKeyId: value.AccessKeyId,
+    secretAccessKey: value.SecretAccessKey,
+    sessionToken: value.SessionToken,
+    expiration: value.Expiration,
+  };
+}
+
+const policyArnList = (arns?: readonly string[]) => arns?.length ? { PolicyArns: arns.map((arn) => ({ arn })) } : {};
+
+export const sdkAwsMcpClients: AwsMcpClients = {
+  async assumeRoleWithWebIdentity(input) {
+    // No caller credentials: the signed web identity token is the proof.
+    const sts = new STSClient({ region: input.region, credentials: { accessKeyId: "none", secretAccessKey: "none" } });
+    const out = await sts.send(new AssumeRoleWithWebIdentityCommand({
+      RoleArn: input.roleArn, RoleSessionName: input.sessionName, WebIdentityToken: input.webIdentityToken,
+      DurationSeconds: SESSION_SECONDS, ...policyArnList(input.policyArns),
+    }));
+    return stsCredentials(out.Credentials);
+  },
+  async assumeRole(input) {
+    const sts = new STSClient({ region: input.region, credentials: input.credentials });
+    const out = await sts.send(new AssumeRoleCommand({
+      RoleArn: input.roleArn, RoleSessionName: input.sessionName,
+      DurationSeconds: SESSION_SECONDS, ...policyArnList(input.policyArns),
+    }));
+    return stsCredentials(out.Credentials);
+  },
+  async getFederationToken(input) {
+    const sts = new STSClient({ region: input.region, credentials: input.credentials });
+    const out = await sts.send(new GetFederationTokenCommand({
+      Name: input.name, DurationSeconds: SESSION_SECONDS, ...policyArnList(input.policyArns),
+    }));
+    return stsCredentials(out.Credentials);
+  },
+  async createMcpToken(input) {
+    const signin = new SigninClient({ region: input.region, credentials: input.credentials });
+    const out = await signin.send(new CreateOAuth2TokenWithIAMCommand({
+      grantType: "client_credentials", resource: AWS_MCP_TOKEN_RESOURCE,
+    } as ConstructorParameters<typeof CreateOAuth2TokenWithIAMCommand>[0]));
+    const token = (out as { accessToken?: string }).accessToken;
+    const expiresInSeconds = (out as { expiresIn?: number }).expiresIn ?? SESSION_SECONDS;
+    if (!token) throw new Error("AWS returned no MCP token");
+    return { token, expiresInSeconds };
+  },
+};
+
+type Step = "identity" | "role" | "access_key" | "federation" | "signin";
+
+function awsErrorName(error: unknown): string | undefined {
+  const record = asRecord(error);
+  return typeof record.name === "string" ? record.name : undefined;
+}
+
+function awsHttpStatus(error: unknown): number | undefined {
+  const status = asRecord(asRecord(error).$metadata).httpStatusCode;
+  return typeof status === "number" ? status : undefined;
+}
+
+/** Maps an AWS failure to a stable code and a message that names the fix, never AWS's raw text. */
+export function classifyAwsMcpError(step: Step, error: unknown): AwsMcpCredentialError {
+  if (error instanceof AwsMcpCredentialError) return error;
+  const name = awsErrorName(error);
+  const status = awsHttpStatus(error);
+  const details = asRecord(asRecord(error).details);
+  if (step === "identity") {
+    if (details.code === "workload_identity_unavailable" || details.code === "workload_identity_issuer_changed") {
+      return new AwsMcpCredentialError(
+        "aws_identity_unavailable", 422,
+        "The AWS role method needs this Paperclip instance to have a stable public HTTPS address. Use an access key instead.",
+        "error",
+      );
+    }
+    return new AwsMcpCredentialError("aws_unavailable", 503, "Paperclip could not prepare this AWS connection's identity. Try again.", "degraded");
+  }
+  const transient = !status || status >= 500 || status === 429
+    || ["ThrottlingException", "Throttling", "TimeoutError", "RequestTimeout", "IDPCommunicationError"].includes(name ?? "");
+  if (transient) {
+    return new AwsMcpCredentialError("aws_unavailable", 503, "AWS did not respond. Try again shortly.", "degraded", name);
+  }
+  if (step === "signin") {
+    return new AwsMcpCredentialError(
+      "aws_mcp_signin_denied", 403,
+      "AWS refused the MCP sign-in. Attach the AWSMCPSignInOAuthAccessPolicy managed policy to this connection's role or user.",
+      "error", name,
+    );
+  }
+  if (step === "role") {
+    return new AwsMcpCredentialError(
+      "aws_role_access_denied", 403,
+      "AWS refused this connection's role. Check that the role exists and trusts this connection.",
+      "error", name,
+    );
+  }
+  return new AwsMcpCredentialError(
+    "aws_access_key_invalid", 403,
+    step === "federation"
+      ? "AWS refused a read-only session for this access key. Allow sts:GetFederationToken for this IAM user."
+      : "AWS did not accept this connection's access key. Check that the key is active, or reconnect AWS with a new key.",
+    "error", name,
+  );
+}
+
+export interface AwsMcpMintInput {
+  companyId: string;
+  connectionId: string;
+  connectionName: string;
+  /** Changes whenever the connection or its grant is edited, so any edit makes a fresh token. */
+  revision: string;
+  grantId: string;
+  settings: AwsMcpSettings;
+  /** Reads a stored credential field by config path (access-key method only). */
+  readSecret(configPath: string): Promise<string>;
+  forceRefresh?: boolean;
+}
+
+export interface AwsMcpCredentialMinterOptions {
+  clients?: AwsMcpClients;
+  /** Signs a connection identity token (the workload identity issuer). */
+  signConnectionToken(input: { companyId: string; connectionId: string; audience: string }): Promise<{ token: string }>;
+  now?: () => number;
+}
+
+interface CacheEntry { fingerprint: string; header: string; refreshAt: number }
+
+export function createAwsMcpCredentialMinter(options: AwsMcpCredentialMinterOptions) {
+  const clients = options.clients ?? sdkAwsMcpClients;
+  const now = options.now ?? (() => Date.now());
+  const cache = new Map<string, CacheEntry>();
+  const inFlight = new Map<string, Promise<string>>();
+
+  async function step<T>(name: Step, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      throw classifyAwsMcpError(name, error);
+    }
+  }
+
+  async function sessionCredentials(input: AwsMcpMintInput): Promise<AwsSessionCredentials> {
+    const { settings } = input;
+    const region = settings.endpointRegion;
+    const sessionName = awsSessionName(input.connectionName);
+    const readOnlyPolicies = settings.accessLevel === "read_only" ? AWS_MCP_READ_ONLY_SESSION_POLICIES : undefined;
+    if (settings.method === "aws-role") {
+      const { token } = await step("identity", () => options.signConnectionToken({
+        companyId: input.companyId, connectionId: input.connectionId, audience: AWS_MCP_STS_AUDIENCE,
+      }));
+      return step("role", () => clients.assumeRoleWithWebIdentity({
+        region, roleArn: settings.roleArn!, sessionName, webIdentityToken: token, policyArns: readOnlyPolicies,
+      }));
+    }
+    const base: AwsSessionCredentials = {
+      accessKeyId: await input.readSecret(AWS_MCP_ACCESS_KEY_ID_PATH),
+      secretAccessKey: await input.readSecret(AWS_MCP_SECRET_ACCESS_KEY_PATH),
+    };
+    if (settings.roleArn) {
+      return step("role", () => clients.assumeRole({
+        region, credentials: base, roleArn: settings.roleArn!, sessionName, policyArns: readOnlyPolicies,
+      }));
+    }
+    if (readOnlyPolicies) {
+      // Federation token names allow at most 32 characters.
+      return step("federation", () => clients.getFederationToken({
+        region, credentials: base, name: awsSessionName(input.connectionName, 32), policyArns: readOnlyPolicies,
+      }));
+    }
+    return base;
+  }
+
+  async function mintHeader(input: AwsMcpMintInput, fingerprint: string, key: string): Promise<string> {
+    const credentials = await sessionCredentials(input);
+    const { token, expiresInSeconds } = await step("signin", () => clients.createMcpToken({
+      region: input.settings.endpointRegion, credentials,
+    }));
+    const expiresAt = Math.min(
+      now() + expiresInSeconds * 1000,
+      credentials.expiration ? credentials.expiration.getTime() : Number.POSITIVE_INFINITY,
+    );
+    const header = `Bearer ${token}`;
+    cache.set(key, { fingerprint, header, refreshAt: expiresAt - REFRESH_MARGIN_MS });
+    return header;
+  }
+
+  return {
+    /** The Authorization header for one connection and grant, cached until about 55 minutes in. */
+    async authorizationHeader(input: AwsMcpMintInput): Promise<Record<string, string>> {
+      const key = `${input.companyId}:${input.connectionId}:${input.grantId}`;
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify([input.revision, input.settings]))
+        .digest("base64url");
+      const cached = cache.get(key);
+      if (!input.forceRefresh && cached && cached.fingerprint === fingerprint && cached.refreshAt > now()) {
+        return { Authorization: cached.header };
+      }
+      if (input.forceRefresh || (cached && cached.fingerprint !== fingerprint)) cache.delete(key);
+      const flightKey = `${key}:${fingerprint}`;
+      let flight = inFlight.get(flightKey);
+      if (!flight) {
+        flight = mintHeader(input, fingerprint, key).finally(() => inFlight.delete(flightKey));
+        inFlight.set(flightKey, flight);
+      }
+      return { Authorization: await flight };
+    },
+    /** Drops every cached token for a connection, for example after AWS answers 401. */
+    evict(companyId: string, connectionId: string) {
+      const prefix = `${companyId}:${connectionId}:`;
+      for (const key of cache.keys()) if (key.startsWith(prefix)) cache.delete(key);
+    },
+  };
+}
+
+export type AwsMcpCredentialMinter = ReturnType<typeof createAwsMcpCredentialMinter>;
+
+const sharedMinters = new WeakMap<object, AwsMcpCredentialMinter>();
+
+/**
+ * One minter per database, shared by the gateway and connection health checks so
+ * a token minted for discovery is reused by the next call, and an eviction after a
+ * 401 applies everywhere.
+ */
+export function sharedAwsMcpCredentialMinter(
+  db: object,
+  signConnectionToken: AwsMcpCredentialMinterOptions["signConnectionToken"],
+): AwsMcpCredentialMinter {
+  let minter = sharedMinters.get(db);
+  if (!minter) {
+    minter = createAwsMcpCredentialMinter({ signConnectionToken });
+    sharedMinters.set(db, minter);
+  }
+  return minter;
+}
+
+interface RevisionSource {
+  status: string;
+  enabled: boolean;
+  credentialSecretRefs: Array<{ secretId: string; versionSelector?: unknown; configPath: string }>;
+}
+
+/**
+ * What a cached token depends on besides the saved settings: which stored key it
+ * came from and whether the connection and grant are live. Health and last-used
+ * stamps change on every call, so update times are deliberately not part of it.
+ */
+export function awsMcpCredentialRevision(
+  connection: RevisionSource,
+  grant?: { id: string; status: string; credentialSecretRefs: RevisionSource["credentialSecretRefs"] } | null,
+): string {
+  const refs = (grant?.credentialSecretRefs ?? connection.credentialSecretRefs)
+    .map((ref) => `${ref.configPath}=${ref.secretId}@${String(ref.versionSelector ?? "latest")}`)
+    .sort();
+  return JSON.stringify([connection.status, connection.enabled, grant?.id ?? null, grant?.status ?? null, refs]);
+}
+
+/** The role method proves itself with the company's issuer, which must be published before the customer registers it in AWS. */
+export function awsMcpMethodUsesIssuer(appSlug: string | null | undefined, methodKey: string | null | undefined): boolean {
+  return appSlug === AWS_MCP_SOURCE_TEMPLATE_KEY && methodKey === "aws-role";
+}

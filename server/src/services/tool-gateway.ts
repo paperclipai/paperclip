@@ -1,4 +1,14 @@
 import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
+import {
+  AwsMcpCredentialError,
+  awsMcpCredentialRevision,
+  awsMcpSettings,
+  createAwsMcpCredentialMinter,
+  isAwsMcpConnection,
+  sharedAwsMcpCredentialMinter,
+  type AwsMcpClients,
+} from "./connectors/aws/mcp-credentials.js";
+import { workloadIdentityService } from "./workload-identity.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
   approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
@@ -1400,6 +1410,8 @@ export function createToolGatewayService(
     }) => Promise<typeof connectionGrants.$inferSelect>;
     /** Test seam for resolving Vercel Connect credentials. */
     vercelConnectClient?: VercelConnectClient | null;
+    /** Test seam for the AWS calls behind minted AWS MCP credentials. */
+    awsMcpClients?: AwsMcpClients;
     /** Test seam for reproducing the managed-argument drift expiry race. */
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
@@ -1655,6 +1667,11 @@ export function createToolGatewayService(
     options.vercelConnectClient === undefined
       ? createVercelConnectClient()
       : options.vercelConnectClient;
+  const signAwsConnectionToken = (input: { companyId: string; connectionId: string; audience: string }) =>
+    workloadIdentityService(db).signConnectionToken(input);
+  const awsMcpMinter = options.awsMcpClients
+    ? createAwsMcpCredentialMinter({ clients: options.awsMcpClients, signConnectionToken: signAwsConnectionToken })
+    : sharedAwsMcpCredentialMinter(db, signAwsConnectionToken);
   const protocolLimits = mcpGatewayProtocolLimits(
     options.mcpGatewayProtocolLimits,
   );
@@ -4703,6 +4720,9 @@ export function createToolGatewayService(
         });
       }
     }
+    if (isAwsMcpConnection(connection)) {
+      return resolveAwsMcpHeaders(session, connection, grant, resolveOptions);
+    }
     const oauth = asRecord(asRecord(connection.config)?.oauth);
     if (
       isPaperclipCloudConnectorStrategy(oauth?.strategy) &&
@@ -4815,6 +4835,50 @@ export function createToolGatewayService(
       }
     }
     return headers;
+  }
+
+  /** AWS's Authorization header is minted per connection at call time and never stored. */
+  async function resolveAwsMcpHeaders(
+    session: ToolGatewaySession,
+    connection: typeof toolConnections.$inferSelect,
+    grant: typeof connectionGrants.$inferSelect,
+    resolveOptions: { forceRefresh?: boolean },
+  ): Promise<Record<string, string>> {
+    try {
+      return await awsMcpMinter.authorizationHeader({
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        connectionName: connection.name,
+        grantId: grant.id,
+        revision: awsMcpCredentialRevision(connection, grant),
+        settings: awsMcpSettings(connection),
+        forceRefresh: resolveOptions.forceRefresh,
+        readSecret: async (configPath) => {
+          const ref = grant.credentialSecretRefs.find((candidate) => candidate.configPath === configPath);
+          if (!ref) {
+            throw new AwsMcpCredentialError(
+              "aws_access_key_invalid", 422,
+              "This AWS connection has no saved access key. Reconnect AWS.", "error",
+            );
+          }
+          return resolveGrantSecretValue(session, connection, grant, ref);
+        },
+      });
+    } catch (error) {
+      if (error instanceof ToolGatewayHttpError) {
+        await markRemoteConnectionHealth(connection, "missing_secret", "A configured credential secret could not be resolved.");
+        throw error;
+      }
+      const known = error instanceof AwsMcpCredentialError
+        ? error
+        : new AwsMcpCredentialError("aws_unavailable", 503, "AWS credentials could not be prepared. Try again.", "degraded");
+      await markRemoteConnectionHealth(connection, known.health, known.message);
+      throw new ToolGatewayHttpError(known.status, known.message, known.code, {
+        connectionId: connection.id,
+        grantId: grant.id,
+        ...(known.awsErrorName ? { awsError: known.awsErrorName } : {}),
+      });
+    }
   }
 
   function credentialVersionRefHash(value: Record<string, unknown>): string {
@@ -8453,6 +8517,23 @@ export function createToolGatewayService(
         !isPaperclipCloudConnectorStrategy(oauth?.strategy) &&
         options.oauthGrantRefresher
       ) {
+        resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
+        credentialHeaders = {
+          ...projectedConnectionHeaders(connection), ...resolvedCredentials,
+        };
+        builtHeaders = buildRemoteHeaders({
+          session,
+          connection,
+          credentialHeaders,
+          callerHeaders,
+        });
+        headers = builtHeaders.headers;
+        headerSummary = builtHeaders.summary;
+        await requireExplicitRetryAfterOAuthRefresh(response);
+      }
+      if (response.status === 401 && isAwsMcpConnection(connection)) {
+        // The cached AWS token was refused: mint a fresh one, never replay the call.
+        awsMcpMinter.evict(connection.companyId, connection.id);
         resolvedCredentials = await resolveCredentialHeaders(session, connection, grant, { forceRefresh: true });
         credentialHeaders = {
           ...projectedConnectionHeaders(connection), ...resolvedCredentials,
