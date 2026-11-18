@@ -1,5 +1,14 @@
 # Shared repository assets for native skills
 
+## Linux scope after Windows downscope
+
+The current contribution targets isolated native Codex on Linux, including WSL.
+Native Windows runtime qualification is deferred and is not a release gate for
+this Linux scope. Keep saved-context compatibility, source and delivered byte
+checks, and portable filesystem fallbacks. The Windows measurements below are
+historical evidence, not a native Windows support claim.
+
+
 Status: approved by the user on 2026-11-17 for implementation. Live agent migration or restart is not part of this approval.
 
 ## Problem and measured evidence

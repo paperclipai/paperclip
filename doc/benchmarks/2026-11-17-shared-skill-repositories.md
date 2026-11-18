@@ -1,5 +1,14 @@
 # Shared skill repository qualification
 
+## Linux scope after Windows downscope
+
+The current contribution targets isolated native Codex on Linux, including WSL.
+Native Windows runtime qualification is deferred and is not a release gate for
+this Linux scope. Keep saved-context compatibility, source and delivered byte
+checks, and portable filesystem fallbacks. The Windows measurements below are
+historical evidence, not a native Windows support claim.
+
+
 Status: qualification in progress. These measurements do not prove a completed
 agent start. No live instance has been migrated to this layout.
 

@@ -1,5 +1,14 @@
 # Shared skill repository assets implementation plan
 
+## Linux scope after Windows downscope
+
+The current contribution targets isolated native Codex on Linux, including WSL.
+Native Windows runtime qualification is deferred and is not a release gate for
+this Linux scope. Keep saved-context compatibility, source and delivered byte
+checks, and portable filesystem fallbacks. The Windows measurements below are
+historical evidence, not a native Windows support claim.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stage one verified copy of each authorized repository snapshot per native runtime, while preserving exact skills, relative references, old sessions and Legacy compatibility.
@@ -82,7 +91,7 @@
 - [ ] Gate emission by the qualified v12 transport/runner pair; unsupported layouts return a permanent named compatibility failure without deleting saved sessions or retrying forever.
 - [ ] Prove physical repository copies and transferred bytes drop with 2/4 selected entrypoints from one snapshot. Report logical assigned bytes, unique staged bytes, copies and integrity reads separately.
 - [ ] Run affected tests and `pnpm verify`; exit 2 requires focused tests plus applicable CI, not an automatic full local suite.
-- [ ] Qualify native Codex in an isolated Windows instance with held skill versions; measure cold/warm through first tool and repeat with a real changed file. Do not restart or retarget live product tasks.
+- Deferred outside the Linux scope: qualify native Codex on physical Windows filesystems. Retain the historical attempt and report its failure without treating it as Linux acceptance.
 - [ ] Run the equivalent isolated Linux proof on its native filesystem, using a copied backup and separate port; retain authenticated/private mode and existing credential scope.
 - [ ] Integration check against local develop preserves its pool/v11 parser and active saved states. No cutover to the live instance before qualification.
 - [ ] Run a fresh whole-change review, address findings, and complete relevant final-revision CI. Prepare the upstream PR with all template sections; report any external platform gate honestly. Do not fold unrelated Windows/pool history into the feature diff.
