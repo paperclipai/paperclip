@@ -693,3 +693,63 @@ describe("claude CLI local hello probe hardening", () => {
     expect(targetCheck?.message).toContain("Paperclip host");
   });
 });
+
+describe("claude auth mode detection", () => {
+  const originalFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY;
+
+  beforeEach(() => {
+    probeResult.value = { exitCode: 1, stdout: "", stderr: "" };
+  });
+
+  afterEach(() => {
+    if (originalFoundry === undefined) delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+    else process.env.CLAUDE_CODE_USE_FOUNDRY = originalFoundry;
+  });
+
+  const foundryCheck = (checks: { code: string; detail?: string | null }[]) =>
+    checks.find((check) => check.code === "claude_foundry_auth");
+
+  it("reports Foundry auth from the adapter config env", async () => {
+    delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude", env: { CLAUDE_CODE_USE_FOUNDRY: "1" } },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+    expect(foundryCheck(result.checks)?.detail).toBe("Detected in adapter config env.");
+  });
+
+  it("reports Foundry auth from the server environment for a local target", async () => {
+    process.env.CLAUDE_CODE_USE_FOUNDRY = "1";
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+    });
+    expect(foundryCheck(result.checks)?.detail).toBe("Detected in server environment.");
+  });
+
+  it("honors an adapter config env that turns host Foundry auth off", async () => {
+    process.env.CLAUDE_CODE_USE_FOUNDRY = "1";
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude", env: { CLAUDE_CODE_USE_FOUNDRY: "0" } },
+    });
+    expect(foundryCheck(result.checks)).toBeUndefined();
+  });
+
+  it("ignores host Foundry auth for a remote target", async () => {
+    process.env.CLAUDE_CODE_USE_FOUNDRY = "1";
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+    expect(foundryCheck(result.checks)).toBeUndefined();
+  });
+});
