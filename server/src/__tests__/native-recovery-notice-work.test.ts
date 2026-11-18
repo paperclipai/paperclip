@@ -30,7 +30,9 @@ import { CONTROL_PLANE_CONFORMANCE_RESULT, CONTROL_PLANE_CONFORMANCE_TERMINAL } 
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
-vi.mock("../services/agent-task-run-telemetry.js", () => ({ emitAgentTaskRun: vi.fn(async () => undefined) }));
+vi.mock("../services/agent-task-run-telemetry.js", () => ({
+  emitAgentTaskRun: vi.fn(async () => undefined), emitAgentTaskCompleted: vi.fn(async () => undefined),
+}));
 vi.mock("../services/run-failure-report.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/run-failure-report.js")>(), reportRunFailure: vi.fn(async () => undefined),
 }));
