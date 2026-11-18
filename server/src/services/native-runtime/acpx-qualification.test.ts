@@ -88,6 +88,20 @@ describe("host ACPX qualification admission", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig }))
       .toMatchObject({ acpxAgent, model: "explicit-new-model" });
   });
+  it("names the Claude Code gap when the bundled SDK predates the model's minimum", () => {
+    expect(QUALIFIED_ACPX_PROFILES.claude.agentRuntimeVersion).toBe("0.3.286");
+    for (const model of ["claude-fable-5-2", "claude-fable-5-2[1m]"]) {
+      expect(() => resolvePaperclipRunnerProviderProfile({ provider: "acpx", acpxAgent: "claude", model }))
+        .toThrow(expect.objectContaining({
+          code: "paperclip_runner_claude_cli_version_incompatible",
+          message: expect.stringContaining("requires Claude Code 2.1.321 or newer; this Paperclip Runner bundles Claude Code 2.1.286"),
+        }));
+    }
+    for (const model of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
+      expect(resolvePaperclipRunnerProviderProfile({ provider: "acpx", acpxAgent: "claude", model }))
+        .toMatchObject({ acpxAgent: "claude", model });
+    }
+  });
   it("requires an explicit Codex ACP selection", () => {
     for (const model of [undefined, "", " "]) {
       expect(() => resolvePaperclipRunnerProviderProfile({ provider: "acpx", acpxAgent: "codex", model }))

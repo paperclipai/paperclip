@@ -24,6 +24,13 @@ describe("bounded Codex model fallback", () => {
     expect(unavailable.mock.calls).toEqual([["gpt-6-sol"], ["gpt-5.6-sol"]]);
   });
 
+  it("moves GPT-6.2 to the newest same-class model the pinned 0.160.0 CLI accepts", () => {
+    expect(codexModelFallbackCandidates("gpt-6.2-sol")).toEqual(["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"]);
+    expect(codexModelFallbackCandidates("gpt-6.2-astra")).toEqual(["gpt-6-astra", "gpt-5.6-sol"]);
+    expect(compatibleCodexModel("gpt-6.2-sol", "0.160.0")).toBe("gpt-6.1-sol");
+    expect(compatibleCodexModel("gpt-6.2-astra", "0.160.0")).toBe("gpt-6-astra");
+  });
+
   it.each([
     ["gpt-6.1-sol", "0.159.0"], ["gpt-6-sol", "0.157.0"], ["gpt-5.6-sol", "0.156.0"],
     ["team-model", "0.156.0"], [null, "0.156.0"], ["gpt-6.1-sol", null],
