@@ -2016,6 +2016,7 @@ export function routineService(
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",
+          responsibleUserId,
           requestedByActorType: interactionActorAgentId ? "agent" : input.actor?.userId ? "user" : input.source === "schedule" ? "system" : undefined,
           requestedByActorId: interactionActorAgentId ?? input.actor?.userId ?? null,
           requestedByActorCompanyId: interactionActorCompanyId,
