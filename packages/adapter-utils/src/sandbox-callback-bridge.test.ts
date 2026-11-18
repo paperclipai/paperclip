@@ -2605,12 +2605,16 @@ describe("sandbox callback bridge", () => {
     const requestBodies = new Map<string, string>();
     requestBodies.set(requestPath, bridgeRequestJson("req-404"));
     let writeAttempts = 0;
+    let failWrites = true;
 
     const client: SandboxCallbackBridgeQueueClient = {
       ...virtualQueueReadClient(directories, requestBodies),
       writeResponseFile: async () => {
         writeAttempts += 1;
-        throw new Error('Request failed with status 404: {"error":"not_found"}');
+        if (failWrites) {
+          throw new Error('Request failed with status 404: {"error":"not_found"}');
+        }
+        return { wrote: true };
       },
       rename: async () => {},
       remove: async (remotePath) => {
@@ -2635,8 +2639,13 @@ describe("sandbox callback bridge", () => {
       await waitFor(() => writeAttempts > 3, 3_000);
       expect(warn.mock.calls.some((call) => String(call[0]).includes("the sandbox no longer exists"))).toBe(false);
     } finally {
-      await worker.stop({ drainTimeoutMs: 10 });
-      warn.mockRestore();
+      failWrites = false;
+      try {
+        await waitFor(() => !requestBodies.has(requestPath), 3_000);
+      } finally {
+        await worker.stop({ drainTimeoutMs: 10 });
+        warn.mockRestore();
+      }
     }
   });
 
