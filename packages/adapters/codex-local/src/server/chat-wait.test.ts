@@ -47,3 +47,17 @@ it("keeps a fast reply free of wait notices and ignores quoted and oversized con
   expect(publish).not.toHaveBeenCalled();
   wait.stop();
 });
+
+it("preserves an explicit provider reset instant including its UTC offset", async () => {
+  vi.useFakeTimers();
+  const publish = vi.fn();
+  const wait = observeChatWait(publish);
+  wait.stdout(JSON.stringify({
+    type: "error",
+    message: "Reconnecting 2/5 (429)",
+    retry_at: "2026-11-18T15:02:31+03:00",
+  }) + "\n");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(publish.mock.calls.at(-1)?.[0].message).toContain("retry at 2026-11-18T12:02:31.000Z");
+  wait.stop();
+});
