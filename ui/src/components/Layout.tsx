@@ -92,7 +92,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     isMobile,
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
-  const { panelContent, panelVisible, togglePanelVisible, setPanelVisible } = usePanel();
+  const { panelContent, panelVisible, panelShowsArtifact, togglePanelVisible, setPanelVisible } = usePanel();
   // Optional: Layout also renders in harnesses without a ToastProvider.
   const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
@@ -129,7 +129,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
   const desktopAgentChat = !isMobile && isAgentChatRoute;
-  const measureChatSpace = desktopAgentChat && panelVisible && panelContent != null;
+  const measureChatSpace = desktopAgentChat && panelVisible && panelContent != null && panelShowsArtifact;
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const [chatListTooWide, setChatListTooWide] = useState(false);
   const chatListCollapsed = measureChatSpace && chatListTooWide;

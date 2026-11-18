@@ -10,6 +10,7 @@ import { TaskBrowserPanel } from "./TaskBrowserPanel";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -128,6 +129,7 @@ export interface TaskSidePanelProps {
   fileTabsEnabled: boolean;
   documentDeepLink?: { requestId: number; documentKey: string } | null;
   showDocumentSourceTask?: boolean;
+  onArtifactVisibilityChange?: (showsArtifact: boolean) => void;
   /** A new durable output asks the host to reveal this tab once. */
   artifactsOpenRequestId?: number;
   onArtifactsOpened?: (requestId: number) => void;
@@ -288,6 +290,7 @@ function TaskSidePanelForScope({
   fileTabsEnabled,
   documentDeepLink,
   showDocumentSourceTask = false,
+  onArtifactVisibilityChange,
   artifactsOpenRequestId,
   onArtifactsOpened,
   onRequestClose,
@@ -414,6 +417,14 @@ function TaskSidePanelForScope({
     }
   }, [openBrowserId, controller.activeTabId, onBrowserOpened, accountScope, issue.companyId, issue.id, fileTabsEnabled]);
   const activeTab = controller.tabs.find((tab) => tab.id === controller.activeTabId) ?? null;
+  const activeKind = activeTab?.payload.kind;
+  const showsArtifact = activeKind === "artifacts" || activeKind === "issue-document"
+    || activeKind === "attachment" || activeKind === "workspace-file" || activeKind === "skill";
+  useLayoutEffect(() => {
+    if (!onArtifactVisibilityChange || !showsArtifact) return;
+    onArtifactVisibilityChange(true);
+    return () => onArtifactVisibilityChange(false);
+  }, [onArtifactVisibilityChange, showsArtifact]);
   const hasArtifactUploadSlot = !conversationAgentId && !issue.id.startsWith("chat:")
     && controller.tabs.some((tab) => tab.payload.kind === "artifacts");
   const canUploadArtifacts = hasArtifactUploadSlot && activeTab?.payload.kind === "artifacts";

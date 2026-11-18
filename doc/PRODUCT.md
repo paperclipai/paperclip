@@ -501,9 +501,9 @@ filters by name, title, or role; **+** starts or reopens a conversation.
 Selecting an agent opens their persistent conversation; it does not reset history
 or create a task until the existing first-write flow requires one.
 
-When the side panel leaves too little room for the conversation, the chat list
-collapses and **Browse chats** opens the chat picker from the header. The list
-returns when the side panel closes or there is room for all three panes.
+When an artifact in the side panel leaves too little room for the conversation,
+the chat list collapses and **Browse chats** opens the chat picker from the
+header. The list returns when you leave the artifact or make more room.
 
 Beside a conversation, the side panel opens on the agent's tasks: one card per
 task the agent created, was assigned, commented on, or acted on, newest first,

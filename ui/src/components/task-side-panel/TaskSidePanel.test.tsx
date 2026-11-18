@@ -871,6 +871,19 @@ describe("TaskSidePanel", () => {
     expect(container.querySelectorAll('[data-side-panel-tab-target="document:brief"]')).toHaveLength(1);
   });
 
+  it("reports artifact visibility when switching between a document and Properties", async () => {
+    const onArtifactVisibilityChange = vi.fn();
+    fixture.documents = [issueDocument("brief", "Implementation brief")];
+    await render(panel({ onArtifactVisibilityChange }));
+    expect(onArtifactVisibilityChange).not.toHaveBeenCalled();
+
+    await render(panel({ onArtifactVisibilityChange, documentDeepLink: { requestId: 1, documentKey: "brief" } }));
+    expect(onArtifactVisibilityChange).toHaveBeenLastCalledWith(true);
+
+    await act(async () => container.querySelector<HTMLButtonElement>("#side-panel-tab-properties")?.click());
+    expect(onArtifactVisibilityChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("keeps Files out of the launcher when the experiment is disabled", async () => {
     writeTaskSidePanelState("user-1", "company-1", "task-1", {
       state: { tabs: [], activeTabId: null },

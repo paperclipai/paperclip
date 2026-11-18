@@ -3294,6 +3294,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     closePanel,
     panelVisible,
     setPanelVisible,
+    setPanelShowsArtifact,
     requestPanelMaximize,
     clearPanelMaximizeRequest,
   } = usePanel();
@@ -6428,6 +6429,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             key={panelIssue.id}
             {...sharedProps}
             showDocumentSourceTask={persistedAgentChat}
+            onArtifactVisibilityChange={persistedAgentChat ? setPanelShowsArtifact : undefined}
             accountScope={taskPanelAccountScope}
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
@@ -6467,6 +6469,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     panelChildIssues,
     panelIssue,
     persistedAgentChat,
+    setPanelShowsArtifact,
     suppressPanelUntilPlan,
     relationIssueLinkState,
     streamlinedTaskDetailEnabled,

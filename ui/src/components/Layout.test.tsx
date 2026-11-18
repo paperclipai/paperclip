@@ -55,7 +55,7 @@ const mockSidebarState = vi.hoisted(() => ({
   sidebarOpen: true,
   isMobile: false,
 }));
-const mockPanelState = vi.hoisted(() => ({ visible: false, content: null as ReactNode, setVisible: vi.fn() }));
+const mockPanelState = vi.hoisted(() => ({ visible: false, showsArtifact: false, content: null as ReactNode, setVisible: vi.fn() }));
 let currentPathname = "/PAP/dashboard";
 
 vi.mock("@/lib/router", () => ({
@@ -240,6 +240,7 @@ vi.mock("../context/DialogContext", () => ({
 vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({
     panelVisible: mockPanelState.visible,
+    panelShowsArtifact: mockPanelState.showsArtifact,
     panelContent: mockPanelState.content,
     togglePanelVisible: vi.fn(),
     setPanelVisible: mockPanelState.setVisible,
@@ -413,6 +414,7 @@ describe("Layout", () => {
     mockSidebarState.sidebarOpen = true;
     mockSidebarState.isMobile = false;
     mockPanelState.visible = false;
+    mockPanelState.showsArtifact = false;
     mockPanelState.content = null;
   });
 
@@ -436,7 +438,7 @@ describe("Layout", () => {
     } finally { await act(async () => root.unmount()); queryClient.clear(); }
   });
 
-  it("collapses the mounted chat list only when the open side panel crowds the conversation", async () => {
+  it("collapses the mounted chat list only when an artifact crowds the conversation", async () => {
     classicWorkspace.enabled = false;
     currentPathname = "/PAP/chats/planner";
     const root = createRoot(container);
@@ -460,10 +462,21 @@ describe("Layout", () => {
       expect(container.textContent).not.toContain("Browse chats");
 
       mockPanelState.visible = true;
-      mockPanelState.content = <div>Plan</div>;
+      mockPanelState.content = <div>Tasks</div>;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+
+      mockPanelState.showsArtifact = true;
       await render();
       expect(list?.classList.contains("hidden")).toBe(true);
       expect(container.textContent).toContain("Browse chats");
+
+      mockPanelState.showsArtifact = false;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(false);
+      mockPanelState.showsArtifact = true;
+      await render();
+      expect(list?.classList.contains("hidden")).toBe(true);
 
       readingWidth = 700;
       await reactAct(async () => measure?.([], {} as ResizeObserver));
