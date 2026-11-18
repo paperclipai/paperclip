@@ -15,6 +15,9 @@ import {
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { allowedToolsLabel } from "./gateway-helpers";
+import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export const gatewaysQueryKey = (companyId: string) => ["tools", "gateways", companyId] as const;
 
@@ -73,7 +76,7 @@ export function NewGatewayDialog({
     onError: (error) => {
       pushToast({
         title: "Gateway was not created",
-        body: error instanceof Error ? error.message : String(error),
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -90,7 +93,7 @@ export function NewGatewayDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className={cn("sm:max-w-lg", ANALYTICS_MASK_CLASS)}>
         <DialogHeader>
           <DialogTitle>New gateway</DialogTitle>
           <DialogDescription>

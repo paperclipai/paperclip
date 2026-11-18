@@ -136,7 +136,7 @@ describeDatabase("tool definition runtime synchronization", () => {
     await db.update(toolConnections).set({ config: { mcpAgentAccessConfigured: true } }).where(eq(toolConnections.id, connectionId));
     await db.insert(toolProfiles).values({ companyId, profileKey: `app:${connectionId}`, name: "Install profile" });
     const [lower, higher] = [randomUUID(), randomUUID()].sort();
-    await db.insert(toolPolicies).values([higher, lower].map((id, index) => ({ id, companyId, name: `Managed policy ${index}`, policyType: "require_approval", priority: (index + 1) * 100, config: { source: "app_gallery_finish", connectionId } })));
+    await db.insert(toolPolicies).values([higher, lower].map((id, index) => ({ id, companyId, name: `Managed policy ${index}`, policyType: "require_approval" as const, priority: (index + 1) * 100, config: { source: "app_gallery_finish", connectionId } })));
     let locked!: () => void; let release!: () => void;
     const held = new Promise<void>(resolve => { locked = resolve; });
     const resume = new Promise<void>(resolve => { release = resolve; });
@@ -222,10 +222,10 @@ describeDatabase("tool definition runtime synchronization", () => {
       expect(row.wait_event_type).toBe("Lock");
     }, { timeout: 5000 });
     const mutation = run(writer => change === "profile entry add"
-      ? writer.addProfileEntry(profile.id, { selectorType: "catalog_entry", catalogEntryId: entry.id, connectionId, applicationId })
+      ? writer.addProfileEntry(profile.id, { selectorType: "catalog_entry", effect: "include", catalogEntryId: entry.id, connectionId, applicationId })
       : change === "profile entry edit" ? writer.updateProfileEntry(profileEntry.id, { effect: "exclude" })
       : change === "profile entry delete" ? writer.deleteProfileEntry(profileEntry.id)
-      : writer.updateProfile(profile.id, { entries: [{ selectorType: "catalog_entry", catalogEntryId: entry.id, connectionId, applicationId }] }));
+      : writer.updateProfile(profile.id, { entries: [{ selectorType: "catalog_entry", effect: "include", catalogEntryId: entry.id, connectionId, applicationId }] }));
     const mutationResult = Promise.allSettled([mutation]);
     let finishResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
     try {
@@ -279,7 +279,7 @@ describeDatabase("tool definition runtime synchronization", () => {
 
   it.each(["add", "edit", "delete", "replace"] as const)("completes profile entry %s with a single database connection", async change => {
     const [profile] = await db.insert(toolProfiles).values({ companyId, profileKey: "single-entry", name: "Single entry" }).returning();
-    const input = { selectorType: "connection" as const, applicationId, connectionId };
+    const input = { selectorType: "connection" as const, effect: "include" as const, applicationId, connectionId };
     const [entry] = await db.insert(toolProfileEntries).values({ companyId, profileId: profile.id, ...input }).returning();
     const single = createDb(database.connectionString, { maxConnections: 1 });
     const service = toolAccessService(single);
@@ -301,7 +301,7 @@ describeDatabase("tool definition runtime synchronization", () => {
     const [profile] = await db.insert(toolProfiles).values({ companyId, profileKey: "scoped", name: "Scoped" }).returning();
     await db.insert(toolProfileBindings).values({ companyId, profileId: profile.id, targetType: "agent", targetId: agentId });
     const [entry] = await db.insert(toolProfileEntries).values({ companyId, profileId: profile.id, selectorType: "connection", connectionId }).returning();
-    const [policy] = await db.insert(toolPolicies).values({ companyId, name: "Scoped", policyType: "deny", selectors: { agentId } }).returning();
+    const [policy] = await db.insert(toolPolicies).values({ companyId, name: "Scoped", policyType: "block", selectors: { agentId } }).returning();
     for (let index = 0; index < 4; index++) {
       const before = (await events()).length;
       if (change === "entry") await db.update(toolProfileEntries).set({ effect: index % 2 ? "include" : "exclude" }).where(eq(toolProfileEntries.id, entry.id));
@@ -318,7 +318,7 @@ describeDatabase("tool definition runtime synchronization", () => {
   });
 
   it("uses old and new policy selectors with the execution match semantics", async () => {
-    const [policy] = await db.insert(toolPolicies).values({ companyId, name: "Retarget", policyType: "deny", selectors: { agentId } }).returning();
+    const [policy] = await db.insert(toolPolicies).values({ companyId, name: "Retarget", policyType: "block", selectors: { agentId } }).returning();
     const write = async (selectors: Record<string, unknown>, expected: string[]) => {
       const before = (await events()).length;
       await db.update(toolPolicies).set({ selectors }).where(eq(toolPolicies.id, policy.id));
@@ -365,7 +365,7 @@ describeDatabase("tool definition runtime synchronization", () => {
     const [profile] = await db.insert(toolProfiles).values({ companyId, profileKey: "coalesced", name: "Coalesced" }).returning();
     await db.insert(toolProfileBindings).values({ companyId, profileId: profile.id, targetType: "agent", targetId: agentId });
     const [entry] = await db.insert(toolProfileEntries).values({ companyId, profileId: profile.id, selectorType: "connection", connectionId }).returning();
-    const [policy] = await db.insert(toolPolicies).values({ companyId, name: "Coalesced", policyType: "deny", selectors: { agentId } }).returning();
+    const [policy] = await db.insert(toolPolicies).values({ companyId, name: "Coalesced", policyType: "block", selectors: { agentId } }).returning();
     let before = (await events()).length;
     await db.transaction(async tx => {
       await tx.update(toolProfileEntries).set({ effect: "exclude" }).where(eq(toolProfileEntries.id, entry.id));
@@ -383,7 +383,7 @@ describeDatabase("tool definition runtime synchronization", () => {
 
   it("orders scoped policy reorder before company agent fanout", async () => {
     const [lower, higher] = [agentId, peerId].sort();
-    const policies = await db.insert(toolPolicies).values([higher, lower].map((target, index) => ({ companyId, name: `Scoped ${index}`, policyType: "deny", priority: (index + 5) * 100, selectors: { agentId: target } }))).returning();
+    const policies = await db.insert(toolPolicies).values([higher, lower].map((target, index) => ({ companyId, name: `Scoped ${index}`, policyType: "block" as const, priority: (index + 5) * 100, selectors: { agentId: target } }))).returning();
     let locked!: () => void; let release!: () => void;
     const held = new Promise<void>(resolve => { locked = resolve; });
     const resume = new Promise<void>(resolve => { release = resolve; });
@@ -454,7 +454,7 @@ describeDatabase("tool definition runtime synchronization", () => {
   }, 15000);
 
   it("retries changed old references before taking profile runtime locks", async () => {
-    const [oldApp, newApp] = await db.insert(toolApplications).values(["Old retry app", "New retry app"].map(name => ({ companyId, name, type: "mcp_http" }))).returning();
+    const [oldApp, newApp] = await db.insert(toolApplications).values(["Old retry app", "New retry app"].map(name => ({ companyId, name, type: "mcp_http" as const }))).returning();
     const [profile] = await db.insert(toolProfiles).values({ companyId, profileKey: "retry-references", name: "Retry references" }).returning();
     await db.insert(toolProfileBindings).values({ companyId, profileId: profile.id, targetType: "agent", targetId: agentId });
     const [entry] = await db.insert(toolProfileEntries).values({ companyId, profileId: profile.id, selectorType: "application", applicationId: oldApp.id }).returning();

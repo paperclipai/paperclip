@@ -15,19 +15,20 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitration.js";
 
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ARBITRATION_TEST_DATABASE_URL");
+
 describe("provider-owned interaction arbitration", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
-  let companyCount = 0;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
-      "chat-interaction-owner-",
-    );
-    db = createDb(temporary.connectionString);
+    if (!externalDatabaseUrl) temporary = await startEmbeddedPostgresTestDatabase("chat-interaction-owner-");
+    db = createDb(externalDatabaseUrl ?? temporary!.connectionString);
   }, 30_000);
   afterAll(async () => {
+    await db?.$client.end();
     await temporary?.cleanup();
   });
 
@@ -43,7 +44,7 @@ describe("provider-owned interaction arbitration", () => {
       .values({
         id: companyId,
         name: "Arbitration",
-        issuePrefix: `CI${String.fromCharCode(65 + companyCount++)}`,
+        issuePrefix: `C${companyId.slice(0, 7)}`,
       });
     await db.insert(agents).values(
       [agentId, otherAgentId].map((id) => ({
@@ -90,12 +91,17 @@ describe("provider-owned interaction arbitration", () => {
     return { companyId, agentId, otherAgentId, issueId, runId, interactionId };
   }
 
-  it("does not suppress a chat final for a system or board completion review", async () => {
+  it("does not suppress a chat final for a system, board, or originating agent completion review", async () => {
     const binding = await seed();
     expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
     await db
       .update(issueThreadInteractions)
       .set({ createdByUserId: "board-user" })
+      .where(eq(issueThreadInteractions.id, binding.interactionId));
+    expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
+    await db
+      .update(issueThreadInteractions)
+      .set({ createdByUserId: null, createdByAgentId: binding.agentId })
       .where(eq(issueThreadInteractions.id, binding.interactionId));
     expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
   });
@@ -104,7 +110,7 @@ describe("provider-owned interaction arbitration", () => {
     const binding = await seed();
     await db
       .update(issueThreadInteractions)
-      .set({ createdByAgentId: binding.otherAgentId })
+      .set({ createdByAgentId: binding.otherAgentId, payload: { version: 1, prompt: "Confirm the requested action" } })
       .where(eq(issueThreadInteractions.id, binding.interactionId));
     expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
     await db

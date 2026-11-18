@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { LifecycleDriver, LifecycleStore, LifecycleFailure } from "./ports.js";
 import { isLifecycleWorkPending } from "../domain/policy.js";
-import { lifecycleFailureMessage } from "./failure.js";
+import { lifecycleFailureCode, lifecycleFailureMessage, lifecycleVerificationNeedsRetry } from "./failure.js";
 
 /** Database leases protect each attempt across server processes. */
 export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDriver, reportFailure: (context: LifecycleFailure, error: unknown) => void, canRun = () => true) {
@@ -20,7 +20,8 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
       const agent = await attempt({ stage: "claim", agentId: id }, () => store.claim(id, owner, new Date()));
       if (!agent || !isLifecycleWorkPending(agent.lifecycleState)) return;
       const context = { agentId: agent.id, companyId: agent.companyId, phase: agent.lifecycleState,
-        operationId: agent.lifecycleOperation?.id, version: agent.lifecycleVersion };
+        operationId: agent.lifecycleOperation?.id, version: agent.lifecycleVersion,
+        attempts: agent.lifecycleOperation?.attempts };
       let failureContext: LifecycleFailure = { ...context, stage: "host" };
       const runStep = <T>(stage: LifecycleFailure["stage"], work: () => Promise<T>, pluginId?: string) => {
         const stepContext = { ...context, stage, ...(pluginId ? { pluginId } : {}) };
@@ -32,16 +33,27 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
       renewal.unref?.();
       try {
         const operation = agent.lifecycleOperation!;
-        const pluginIds = agent.lifecycleRequiredPluginIds ?? await runStep("select_plugins", () => driver.requiredPluginIds(agent));
-        if (agent.lifecycleRequiredPluginIds === null && !await runStep("save_plugins", () => store.setRequiredPlugins(agent, owner, pluginIds))) continue;
+        const saved = agent.lifecycleRequiredPluginIds;
+        const selecting = saved === null || (["preparing", "resuming"].includes(agent.lifecycleState)
+          && !operation.hostComplete && operation.completedPluginIds.length === 0);
+        const pluginIds = !selecting ? saved
+          : [...new Set([...(saved ?? []), ...await runStep("select_plugins", () => driver.requiredPluginIds(agent))])];
+        if ((saved === null || pluginIds.length !== saved.length) && !await runStep("save_plugins", () => store.setRequiredPlugins(agent, owner, pluginIds))) continue;
         if (!canRun()) {
           await runStep("defer", () => store.defer(agent, owner, null, new Date()));
           return;
         }
         if (!operation.hostComplete) {
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue;
-          if (await runStep("host", () => driver.runHost(agent)) === "pending") {
-            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue;
+          const host = await runStep("host", () => driver.runHost(agent));
+          if (host === "waiting") {
+            if (agent.lifecycleState !== "verifying") throw new Error("Only host verification may await an external event");
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { waitForSignal: true }))) continue;
+            return;
+          }
+          if (host === "pending" || typeof host === "object") {
+            const pendingReason = typeof host === "object" ? host.pending : "host_step_pending";
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { pendingReason }))) continue;
             return;
           }
           if (!await runStep("complete_host", () => store.completeHost(agent, owner))) continue;
@@ -54,7 +66,7 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
           }
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue phase;
           if (await runStep("plugin", () => driver.runPlugin(agent, pluginId), pluginId) === "pending") {
-            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue phase;
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { pendingReason: "plugin_step_pending" }))) continue phase;
             return;
           }
           if (!await runStep("complete_plugin", () => store.completePlugin(agent, owner, pluginId), pluginId)) continue phase;
@@ -70,8 +82,16 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
         }
         if (changed && !isLifecycleWorkPending(changed.lifecycleState)) return;
       } catch (error) {
+        // Claims can defer before runHost. Only a failed host test spends this budget.
+        const verificationFailures = failureContext.stage === "host" && agent.lifecycleState === "verifying"
+          && lifecycleFailureCode(error) === "harness_test_failed"
+          ? (agent.lifecycleOperation?.verificationFailures ?? 0) + 1 : undefined;
+        failureContext = { ...failureContext, verificationFailures };
         const message = lifecycleFailureMessage(failureContext, error);
-        if (!await runStep("defer", () => store.defer(agent, owner, message, new Date()))) continue;
+        const retryRequired = lifecycleVerificationNeedsRetry(failureContext, error);
+        if (!await runStep("defer", () => retryRequired || verificationFailures !== undefined
+          ? store.defer(agent, owner, message, new Date(), { retryRequired, ...(verificationFailures !== undefined ? { verificationFailures } : {}) })
+          : store.defer(agent, owner, message, new Date()))) continue;
         return;
       } finally {
         clearInterval(renewal);

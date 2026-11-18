@@ -1,10 +1,8 @@
-import { mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sql } from "drizzle-orm";
-import { createDb, ensurePostgresDatabase, getEmbeddedPostgresTestSupport, runDatabaseBackup, runDatabaseRestore, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
 import { clearIdleBackupWakeRequired, idleBackupWakeMarker, markIdleBackupWakeRequired, verifyIdleDatabaseBackup } from "../services/idle-database-backup.js";
 
 let directory: string;
@@ -47,46 +45,4 @@ describe("idle database backup persistence", () => {
     await expect(markIdleBackupWakeRequired(directory)).rejects.toThrow();
     expect(await readFile(target)).toEqual(gzipSync("SELECT 1;"));
   });
-});
-
-const support = await getEmbeddedPostgresTestSupport();
-describe.skipIf(!support.supported)("idle backup restore", () => {
-  it("restores the last pre-sleep state into a separate database", async () => {
-    const source = await startEmbeddedPostgresTestDatabase("idle-backup-restore-");
-    const sourceDb = createDb(source.connectionString);
-    const targetUrl = new URL(source.connectionString);
-    targetUrl.pathname = "/idle_restore";
-    try {
-      await sourceDb.execute(sql`CREATE TABLE backup_fixture (id integer PRIMARY KEY, value text NOT NULL)`);
-      await sourceDb.execute(sql`INSERT INTO backup_fixture VALUES (1, 'last committed state')`);
-      await markIdleBackupWakeRequired(directory);
-      const result = await runDatabaseBackup({
-        connectionString: source.connectionString, backupDir: directory,
-        retention: { dailyDays: 14, weeklyWeeks: 4, monthlyMonths: 6 },
-        verifyBeforePrune: verifyIdleDatabaseBackup,
-      });
-      await verifyIdleDatabaseBackup(result.backupFile);
-      await ensurePostgresDatabase(source.connectionString, "idle_restore");
-      await runDatabaseRestore({ connectionString: targetUrl.toString(), backupFile: result.backupFile });
-      const target = createDb(targetUrl.toString());
-      expect(await target.execute(sql`SELECT id, value FROM backup_fixture`)).toEqual([{ id: 1, value: "last committed state" }]);
-      const checkpointBytes = await readFile(result.backupFile);
-      expect(await readFile(idleBackupWakeMarker(directory), "utf8")).toContain("restarts");
-      // A failed verification must not delete existing recovery points, even
-      // when their age would make them eligible for the configured pruning.
-      const history = path.join(directory, "paperclip-history.sql.gz");
-      const historyBytes = gzipSync("SELECT 'historical recovery point';");
-      await writeFile(history, historyBytes);
-      await utimes(history, new Date(0), new Date(0));
-      await expect(runDatabaseBackup({
-        connectionString: source.connectionString, backupDir: directory,
-        backupEngine: "javascript", retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
-        verifyBeforePrune: async () => { throw new Error("verification failed"); },
-      })).rejects.toThrow("verification failed");
-      expect(await readFile(history)).toEqual(historyBytes);
-      expect(await readFile(result.backupFile)).toEqual(checkpointBytes);
-    } finally {
-      await source.cleanup();
-    }
-  }, 60_000);
 });

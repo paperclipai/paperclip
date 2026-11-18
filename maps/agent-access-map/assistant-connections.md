@@ -20,7 +20,7 @@ API: `present` — GET /api/mcp/setup for authenticated setup metadata; GET /mcp
 
 Agent access: `restricted` — an external assistant can read enabled public setup instructions, but authenticated setup management requires a signed-in human session/cloud_tenant source. A Paperclip agent, personal MCP bearer, local implicit board, or human board bearer does not supply that browser identity.
 
-Policy: The instance enablePublicMcp gate and configured MCP/authorization origin govern public setup and transport. Authenticated management requires an actual board user from session or cloud_tenant. The copied company hint does not grant membership, scopes, or execution authority. HTTPS is required apart from the defined loopback development exception.
+Policy: The configured MCP/authorization origin governs public setup and transport. Authenticated management requires an actual board user from session or cloud_tenant. The copied company hint does not grant membership, scopes, or execution authority. HTTPS is required apart from the defined loopback development exception.
 
 Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Apps setup](../../ui/src/pages/apps/AssistantConnection.tsx), [public MCP routes](../../server/src/routes/public-mcp.ts), and [origin/gate policy](../../server/src/services/public-mcp/oauth.ts).
 
@@ -70,11 +70,11 @@ Capability ID: `assistant-connections/client-use`.
 
 Review: `baseline`.
 
-API: `present` — POST /mcp/paperclip for MCP tools/list and tools/call. Supported modern request transport also includes server/discover and events/list, events/subscribe, and events/unsubscribe; these are protocol operations, not arbitrary REST endpoints.
+API: `present` — POST /mcp/paperclip for MCP tools/list and tools/call. Supported modern request transport also includes server/discover and events/list, events/subscribe, and events/unsubscribe; these are protocol operations, not arbitrary REST endpoints. The private POST /mcp/runner/oauth/cloud-principal identity check is machine-only Cloud control, not an agent entry point.
 
 Agent access: `available` — a configured external MCP client or the supported CLI proxy acts through the authorizing human’s grant. Each Paperclip native/remote run still needs its own actual admitted client/binding; a personal assistant connection is not automatically an agent tool or credential.
 
-Policy: Every remote call rechecks the experimental gate, resource/client/grant/token status, expiration/revocation, human/company/membership status, scopes, and underlying domain permissions for exactly one company. The public paperclip_call_api tool permits only enumerated capabilities. An MCP bearer cannot authenticate as an ordinary REST board user or agent, and the grant confers no instance-administrator authority. The proxy does not automatically retry writes.
+Policy: Every remote call rechecks the experimental gate, resource/client/grant/token status, expiration/revocation, human/company/membership status, scopes, and underlying domain permissions for exactly one company. The public paperclip_call_api tool permits only enumerated capabilities. An MCP bearer cannot authenticate as an ordinary REST board user or agent, and the grant confers no instance-administrator authority. The proxy does not automatically retry writes. The private original-token check requires the existing signed Cloud action, current namespace and the original Dot OAuth restrictions; it creates no board actor or operation permission. See the [private authority contract](../../doc/public-mcp.md#private-dot-original-token-authority).
 
 Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [MCP capabilities](../../server/src/services/public-mcp/capabilities.ts), [per-call authorization](../../server/src/services/public-mcp/oauth.ts), [public MCP routes](../../server/src/routes/public-mcp.ts), and [stdio proxy](../../cli/src/commands/mcp.ts).
 

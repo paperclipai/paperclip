@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { ToastProvider, useToastActions, type ToastInput } from "../context/ToastContext";
 import { ToastViewport } from "./ToastViewport";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 vi.stubGlobal("requestAnimationFrame", (callback: () => void) => setTimeout(callback, 0));
@@ -22,6 +23,17 @@ describe("notification avatars", () => {
       expect(container.textContent).toContain("Alex Example created a task");
       if (type === "user") expect(container.querySelector('[data-slot="avatar-fallback"]')?.textContent).toBe("AE");
       else expect(container.querySelector('[data-slot="agent-avatar"] img')?.getAttribute("src")).toContain("/api/agent-avatars/");
+    } finally { act(() => root.unmount()); }
+  });
+});
+describe("toast session replay", () => {
+  it("masks both the title and the body", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      act(() => root.render(<ToastProvider><Notify toast={{ title: "Default set to ops@globex.com", body: "Globex workspace connected" }} /></ToastProvider>));
+      expect(replayLeaks("ops@globex.com", container)).toEqual({ rendered: true, recorded: false });
+      expect(replayLeaks("Globex workspace connected", container)).toEqual({ rendered: true, recorded: false });
     } finally { act(() => root.unmount()); }
   });
 });

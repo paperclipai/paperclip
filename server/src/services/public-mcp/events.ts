@@ -1,13 +1,15 @@
-import { createHash } from "node:crypto";
+import {cloudEventAuthoritySchema,cloudEventValidationOrigin,currentTenantEventOrigin,type CloudEventAuthority} from "./cloud-event-authority.js";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, count, inArray, eq, gt, gte, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { companies, activityLog, issueComments, heartbeatRuns, dotMailboxItems, dotAgentBindings, dotRunnerAssignments, mcpEventAdmissions as admissions, mcpEventDeliveries as deliveries, mcpEventSubscriptions as subscriptions, type Db } from "@paperclipai/db";
 import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { ISSUE_STATUSES } from "@paperclipai/shared";
-import { localEncryptedProvider } from "../../secrets/local-encrypted-provider.js";
+import { createLocalEncryptedCipher, localEncryptedProvider } from "../../secrets/local-encrypted-provider.js";
 import { logActivity } from "../activity-log.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import type { DeadlineReconciliationSnapshot } from "../deadline-reconciliation.js";
 import { type ApiDispatch } from "./capabilities.js";
 import { PublicMcpDisabledError, type McpPrincipal, type PublicMcpOAuth } from "./oauth.js";
 import { boundedJson, callbackUrl, eventFetch, McpEventError, postEvent, signingKey, verifyCallback, type EventFetch } from "./event-webhooks.js";
@@ -23,7 +25,7 @@ const hour = 3600_000;
 const lifetime = 24 * hour;
 const rotationMs = 5 * 60_000;
 type Subscription = typeof subscriptions.$inferSelect;
-export type CloudEventAuthority = { token: string; expiresAt: number };
+export type {CloudEventAuthority} from "./cloud-event-authority.js";
 type Destination = { url: string; secret: string; previousSecret?: string; previousUntil?: number; cloud?: CloudEventAuthority };
 
 export const publicMcpEventDefinitions = names.slice(0, 3).map((name, index) => ({
@@ -55,6 +57,10 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
   let moreSources = false;
   let nextPage: string | null = null;
   let enabled = false;
+  const ownerGeneration = randomUUID();
+  let ownerRevision = 0;
+  let ownerReconciled = false;
+  const invalidate = () => { ownerRevision++; ownerReconciled = false; };
   const now = options.now ?? Date.now;
   // Dedicated tenant Dot grants are authenticated locally, including background
   // deliveries. They never use the personal connection's Cloud broker proof.
@@ -72,9 +78,12 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
     await api(principal, "GET", `/issues/${args.taskId}`);
   }
   async function authorizeCloud(principal: McpPrincipal, authority?: CloudEventAuthority) {
-    if (!cloudOrigin) return;
+    if(authority!==undefined&&!cloudEventAuthoritySchema.safeParse(authority).success)throw new McpEventError(-32602,"Invalid hosted subscription authority.");
+    if (!cloudOrigin&&authority?.transport===undefined) return;
     if (!authority || !Number.isFinite(authority.expiresAt) || authority.expiresAt <= now() || authority.token.length > 24000) throw new McpEventError(-32602, "Refresh the hosted connection before subscribing.");
-    const response = await fetcher(cloudOrigin + "/mcp/paperclip", {
+    const validationOrigin=await cloudEventValidationOrigin(db,oauth.config,cloudOrigin,authority);
+    if(!validationOrigin)throw new McpEventError(-32602,"The hosted subscription authority is unavailable.");
+    const response = await fetcher(validationOrigin + "/mcp/paperclip", {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
       headers: { Authorization: `Bearer ${authority.token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "paperclip_connection", arguments: {} } }),
@@ -383,12 +392,15 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
     return coordinator.register(queue, {
       retryMs: 2_000,
       pausePassiveMaintenance: true,
+      onStop: invalidate,
       onSettled: hints => {
+        invalidate();
         requested++;
         if (!hints || hints.has("*")) requestedIds = null;
         else if (requestedIds) for (const id of hints) requestedIds.add(id);
       },
       async run() {
+        invalidate();
         if (stopped || options.isBackgroundWorkEnabled?.() === false) return;
         const generation = requested;
         if (!scan && completed !== requested) {
@@ -417,19 +429,45 @@ export function createPublicMcpEvents(db: Db, oauth: PublicMcpOAuth, api: ApiDis
           completed = generation; scan = null;
           if (completed === requested) requestedIds = new Set();
         }
+        ownerReconciled = completed === requested && !scan && !moreSources && !more;
       },
       hasPending: async () => false,
       nextRunAt: () => stopped ? null : completed !== requested
         ? Math.min(nextDeadline ?? Infinity, Date.now() + 2_000) : nextDeadline,
     });
   }
-  return { subscribe, unsubscribe, tick,
+  function createIdleDestinationInspector() {
+    let cipher: ReturnType<typeof createLocalEncryptedCipher> | undefined;
+    return async (s: Subscription): Promise<boolean> => {
+    try {
+      if (JSON.stringify(s.deliveryMaterial).length > 65_536) return false;
+
+
+      cipher ??= createLocalEncryptedCipher("read",{readOnly:true});
+      const destination: Destination = JSON.parse(cipher.decrypt(s.deliveryMaterial));
+      callbackUrl(destination.url); signingKey(destination.secret);
+      if (destination.previousSecret) signingKey(destination.previousSecret);
+      if (destination.previousUntil !== undefined && !Number.isFinite(destination.previousUntil)) return false;
+
+
+      if(destination.cloud?.transport!==undefined){
+        if(!cloudEventAuthoritySchema.safeParse(destination.cloud).success||!cloudOrigin)return false;
+        currentTenantEventOrigin(oauth.config);
+      }
+      return !cloudOrigin || s.expiresAt.getTime() <= now() || !!destination.cloud && cloudEventAuthoritySchema.safeParse(destination.cloud).success
+        && destination.cloud.expiresAt > now();
+    } catch { return false; }
+    };
+  }
+  const inspectIdleDestination = (s: Subscription) => createIdleDestinationInspector()(s);
+  return { subscribe, unsubscribe, tick, inspectIdleDestination, createIdleDestinationInspector,
     definitions: options.enableDotRunner ? [{ name: names[4], description: "The bound Dot mailbox changed. Drain paperclip_dot_inbox, read and accept current work. Duplicate/out-of-order events do not imply new assignments. Readiness challenges require paperclip_dot_confirm_event.", delivery: ["webhook"],
       inputSchema: z.toJSONSchema(z.object({ companyId: z.uuid(), bindingId: z.uuid() }).strict()),
       payloadSchema: z.toJSONSchema(z.object({ companyId: z.uuid(), bindingId: z.uuid(), bindingGeneration: z.number().int(), mailboxItemId: z.number().int(), kind: z.string() }).passthrough()),
     }] : [...publicMcpEventDefinitions, ...(options.enableDotPrototype ? [dotEventDefinition] : [])],
     start,
-    async stop() { stopped = true; await running?.catch(() => {}); },
+    reconciliationSnapshot: (): DeadlineReconciliationSnapshot => ({ revision: `${ownerGeneration}:${ownerRevision}`, reconciled: ownerReconciled && !stopped && !running }),
+    async stop() { invalidate(); stopped = true; await running?.catch(() => {}); },
   };
 }
 export type PublicMcpEvents = ReturnType<typeof createPublicMcpEvents>;

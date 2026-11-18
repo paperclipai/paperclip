@@ -13,6 +13,7 @@ import type {
 
 export type FindCandidateSilentRunsInput = {
   companyId?: string;
+  runId?: string;
   suspicionBefore: Date;
   issueCreatedAtGte?: Date | null;
 };
@@ -55,7 +56,9 @@ export interface WatchdogRunReader {
   findRunForCompany(companyId: string, runId: string): Promise<RunSnapshot | null>;
   isRuntimeSettlementPending(companyId: string, runId: string): Promise<boolean>;
   findLatestDecision(companyId: string, runId: string, now: Date): Promise<FindLatestDecisionResult>;
+  findLatestDecisions(companyId: string, runIds: readonly string[], now: Date): Promise<Map<string, FindLatestDecisionResult>>;
   findOpenStaleRunEvaluation(companyId: string, runId: string): Promise<EvaluationIssueSnapshot | null>;
+  findOpenStaleRunEvaluations(companyId: string, runIds: readonly string[]): Promise<Map<string, EvaluationIssueSnapshot>>;
   findLatestSameRunTerminalEvidence(
     companyId: string,
     input: FindLatestSameRunTerminalEvidenceInput,

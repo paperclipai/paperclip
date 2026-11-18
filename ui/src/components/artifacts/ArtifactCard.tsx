@@ -3,6 +3,7 @@ import { Download, ExternalLink, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 interface ArtifactCardProps {
   artifact: CompanyArtifact;
@@ -24,7 +25,7 @@ function PreviewFrame({ children, className }: { children: React.ReactNode; clas
 function PlaceholderPreview({ label }: { label?: string }) {
   return (
     <PreviewFrame className="flex items-center justify-center">
-      <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50">
+      <div className="flex flex-col items-center gap-1.5 text-muted-foreground">
         <Paperclip className="h-7 w-7" aria-hidden="true" />
         {label ? <span className="text-(length:--text-micro) font-medium uppercase tracking-wide">{label}</span> : null}
       </div>
@@ -141,7 +142,7 @@ function TextPreview({ artifact }: { artifact: PreviewArtifact }) {
   return (
     <PreviewFrame className="bg-card">
       <div className="absolute inset-0 overflow-hidden p-3">
-        <p className="max-h-full overflow-hidden whitespace-pre-wrap break-words text-base leading-6 text-muted-foreground/75">
+        <p className={cn("max-h-full overflow-hidden whitespace-pre-wrap break-words text-base leading-6 text-muted-foreground/75", ANALYTICS_MASK_CLASS)}>
           {preview}
         </p>
       </div>

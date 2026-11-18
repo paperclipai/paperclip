@@ -1,4 +1,4 @@
-import { isPaperclipExternalChatContractTurn, normalizePaperclipWakePayload } from "@paperclipai/adapter-utils/server-utils";
+import { isPaperclipExternalChatContractTurn, normalizePaperclipWakePayload, PAPERCLIP_EARLIER_READ_COMMENT_NOTE } from "@paperclipai/adapter-utils/server-utils";
 import type { CaseExecutionContext, projectCaseContinuation } from "../case-context.js";
 import { caseInstructionAlreadyRepresented } from "../case-context.js";
 
@@ -84,7 +84,13 @@ export function buildNativeContinuationPrompt(input: {
     ...(wake.childIssueSummaries.length ? { childResults: wake.childIssueSummaries } : {}),
     ...(wake.childIssueSummaryTruncated ? { childResultsTruncated: true } : {}),
     ...(wake.unresolvedBlockerIssueIds.length ? { unresolvedBlockerIssueIds: wake.unresolvedBlockerIssueIds } : {}),
+    // Server-rendered "App context (untrusted)" from the task's MCP Apps widgets:
+    // a resumed turn sees the current selection as well as the new comment.
+    ...(typeof rawWake.mcpAppContext === "string" && rawWake.mcpAppContext.trim() ? { appContext: rawWake.mcpAppContext.trim() } : {}),
   };
+  const earlierRead = wake.comments.filter((comment) => comment.readByEarlierTurn && comment.id
+    && events.messages.some((message) => message.id === comment.id)).map((comment) => comment.id!);
+  if (earlierRead.length > 0) Object.assign(events, { readByEarlierTurn: { messageIds: earlierRead, note: PAPERCLIP_EARLIER_READ_COMMENT_NOTE } });
   if (!events.messages.length && !humanResponses.length && !wake.childIssueSummaries.length && !Object.keys(taskChanges).length && !input.workflowCase) return null;
   return JSON.stringify(events);
 }

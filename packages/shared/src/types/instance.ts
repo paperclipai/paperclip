@@ -53,6 +53,8 @@ export interface InstanceExperimentalSettings {
    */
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
+  /** Enroll eligible native sandbox workspaces in remote, snapshot-backed storage. */
+  remoteWorkspaceStorageEnabled: boolean;
   /**
    * Move the execution workspace default for a project that carries no policy
    * of its own from the shared project checkout to an isolated per-task
@@ -73,7 +75,7 @@ export interface InstanceExperimentalSettings {
   enableChatConnectors: boolean;
   /** Show GitHub review bot setup and management independently of chat connectors. */
   enableGitHubReviewBots: boolean;
-  /** Allow person-authorized assistant tools and task event delivery. */
+  /** @deprecated Compatibility key only. Assistant connections (MCP) are always enabled. */
   enablePublicMcp: boolean;
   /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
   enableOpenAiDot: boolean;
@@ -85,6 +87,10 @@ export interface InstanceExperimentalSettings {
   /** Show experimental memory connection setup. Existing connections remain usable. */
   enableMemoryConnectors: boolean;
   enablePaperclipNotebook: boolean;
+  /** Show and allow the built-in Google Workspace connector while its Google verification is pending. */
+  enableGoogleWorkspaceConnector: boolean;
+  /** Show and allow the AWS connector (minted per-connection AWS credentials). */
+  enableAwsConnector: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
   /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
@@ -93,6 +99,8 @@ export interface InstanceExperimentalSettings {
   enableArtifactsV1: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
+  /** Require Cmd/Ctrl+Enter to submit task replies and new tasks. */
+  enableLegacyComposerSubmit: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableExternalObjects: boolean;
@@ -101,6 +109,8 @@ export interface InstanceExperimentalSettings {
   enableBetaSkills: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
+  /** Areas of responsibility: per-user areas with the projects, tasks and routines under them. */
+  enableResponsibilities: boolean;
   enableDecisions: boolean;
   /** Show company connection settings and allow contextual fast-response acknowledgements. */
   enableFastResponses: boolean;
@@ -140,6 +150,12 @@ export interface InstanceExperimentalSettings {
    * redeploy.
    */
   enableSandboxDuplexBridge: boolean;
+  /**
+   * MCP Tasks: long provider tool calls become durable tasks that survive
+   * timeouts, restarts, and deploys. Default off: the extension is not
+   * declared, so behavior matches a client without it.
+   */
+  enableMcpTasks: boolean;
   /**
    * @deprecated Compatibility-only. Provider WebSocket ingress now follows
    * enableNativeRunner and this value has no runtime effect.

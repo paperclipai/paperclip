@@ -7,6 +7,7 @@ import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { assertMetadata, tarManifest, versionFor } from "./preview-artifacts.mjs";
 
 export const artifactBase = "https://d1p6rlowie26tp.cloudfront.net/cloud-migrators/v1";
@@ -30,10 +31,111 @@ function assertDescriptor(pin, extension) {
   }
 }
 
+const compatibilityValues = ["online_compatible", "requires_staging", "unknown"];
+const migrationsPrefix = "package/dist/migrations/";
+
+/** Regular files under `prefix` in a package archive, by archive path. */
+function tarFiles(bytes, prefix) {
+  const tar = gunzipSync(bytes, { maxOutputLength: 128 * 1024 * 1024 });
+  const files = new Map();
+  for (let offset = 0; offset + 512 <= tar.length;) {
+    const h = tar.subarray(offset, offset + 512);
+    if (h.every((v) => v === 0)) break;
+    const field = (start, size) => h.subarray(start, start + size).toString("utf8").split("\0")[0].trim();
+    const sizeText = field(124, 12);
+    if (!/^[0-7]+$/.test(sizeText)) throw new Error("Invalid package archive.");
+    const size = Number.parseInt(sizeText, 8);
+    if (offset + 512 + size > tar.length) throw new Error("Truncated package archive.");
+    const name = `${field(345, 155) ? field(345, 155) + "/" : ""}${field(0, 100)}`;
+    if ([0, 48].includes(h[156]) && name.startsWith(prefix)) {
+      if (files.has(name)) throw new Error("Duplicate package archive entry.");
+      files.set(name, tar.subarray(offset + 512, offset + 512 + size));
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+/** The journal of the packed migrator, in apply order, with each file's bytes. */
+function packedMigrations(dbBytes) {
+  const files = tarFiles(dbBytes, migrationsPrefix);
+  const journal = files.get(`${migrationsPrefix}meta/_journal.json`);
+  if (!journal) throw new Error("Migrator package has no migration journal.");
+  const entries = JSON.parse(journal.toString("utf8")).entries;
+  if (!Array.isArray(entries) || entries.length === 0) throw new Error("Migrator package has an empty migration journal.");
+  // The migrator's apply order: journal idx, then file name. The shipped
+  // journal repeats an idx, so idx alone does not identify a migration.
+  return [...entries].sort((left, right) => left.idx - right.idx || (String(left.tag) < String(right.tag) ? -1 : 1)).map(({ idx, tag }) => {
+    const sql = files.get(`${migrationsPrefix}${tag}.sql`);
+    if (!sql) throw new Error(`Migrator package is missing migration ${tag}.`);
+    // The same digest the migrator records in the database's migration history.
+    return { idx, tag, sql, sqlSha256: createHash("sha256").update(sql).digest("hex") };
+  });
+}
+
+/**
+ * Whether each packed migration can be applied while the previous release is
+ * still running. `classify` is classifyMigrationSequence from @paperclipai/db:
+ * it takes the SQL of every migration in apply order. The overrides it honours
+ * come only from the packed SQL itself.
+ */
+export function migrationCompatibility(dbBytes, classify) {
+  const packed = packedMigrations(dbBytes);
+  const results = classify(packed.map(({ sql }) => sql.toString("utf8")));
+  if (!Array.isArray(results) || results.length !== packed.length) throw new Error("The classifier did not return one result per migration.");
+  return {
+    version: 1,
+    migrations: packed.map(({ idx, tag, sqlSha256 }, position) => {
+      const result = results[position];
+      return {
+        idx, tag, sqlSha256,
+        compatibility: result.compatibility,
+        classified: result.classified,
+        override: Boolean(result.override),
+        ...(result.override ? { overrideJustification: result.override.justification } : {}),
+        reasons: result.reasons.map(({ code, compatibility, message, statements }) => ({ code, compatibility, message, statements: [...statements] })),
+      };
+    }),
+  };
+}
+
+function assertMigrationCompatibility(value) {
+  const fail = () => { throw new Error("Invalid migration compatibility data."); };
+  if (value?.version !== 1 || !Array.isArray(value.migrations) || value.migrations.length === 0) fail();
+  const text = (candidate) => typeof candidate === "string" && candidate.length > 0 && candidate.length <= 2000;
+  value.migrations.forEach((migration, position) => {
+    const previous = value.migrations[position - 1];
+    if (!Number.isSafeInteger(migration?.idx) || migration.idx < 0 ||
+        (previous && (migration.idx < previous.idx || (migration.idx === previous.idx && !(migration.tag > previous.tag)))) ||
+        typeof migration.tag !== "string" || !/^\d{4}_[A-Za-z0-9_]+$/.test(migration.tag) ||
+        typeof migration.sqlSha256 !== "string" || !/^[0-9a-f]{64}$/.test(migration.sqlSha256) ||
+        !compatibilityValues.includes(migration.compatibility) || !compatibilityValues.includes(migration.classified) ||
+        typeof migration.override !== "boolean" || !Array.isArray(migration.reasons)) fail();
+    // An override always carries its justification and never yields `unknown`.
+    if (migration.override ? !text(migration.overrideJustification) || migration.compatibility === "unknown" : migration.overrideJustification !== undefined) fail();
+    for (const reason of migration.reasons) {
+      if (typeof reason?.code !== "string" || !/^[a-z_]+$/.test(reason.code) || !compatibilityValues.includes(reason.compatibility) || !text(reason.message) ||
+          !Array.isArray(reason.statements) || !reason.statements.every((statement) => Number.isSafeInteger(statement) && statement > 0)) fail();
+    }
+  });
+}
+
 export function assertManifest(manifest, sha) {
   if (manifest?.version !== 1 || manifest.sourceSha !== sha || manifest.packageVersion !== versionFor(sha)) throw new Error("Artifact source identity mismatch.");
   for (const name of names) assertDescriptor(manifest.packages?.[name], "tgz");
   assertDescriptor(manifest.lockfile, "json");
+  // Additive since the classifier shipped; manifests published earlier lack it.
+  if (manifest.migrationCompatibility !== undefined) assertMigrationCompatibility(manifest.migrationCompatibility);
+}
+
+/** The published classification must describe exactly the migrations in db.tgz. */
+function assertCompatibilityMatchesPackage(manifest, dbBytes) {
+  const published = manifest.migrationCompatibility?.migrations;
+  const packed = packedMigrations(dbBytes);
+  if (!published || published.length !== packed.length || packed.some(({ idx, tag, sqlSha256 }, position) =>
+    published[position].idx !== idx || published[position].tag !== tag || published[position].sqlSha256 !== sqlSha256)) {
+    throw new Error("Migration compatibility data does not match the packed migrations.");
+  }
 }
 
 export function assertLockfile(lock, manifest) {
@@ -61,8 +163,9 @@ export function assertLockfile(lock, manifest) {
   }
 }
 
-export function buildBundle(directory, sha, { exec = execFileSync } = {}) {
+export function buildBundle(directory, sha, { exec = execFileSync, classify } = {}) {
   versionFor(sha);
+  if (typeof classify !== "function") throw new Error("buildBundle needs the migration compatibility classifier.");
   directory = path.resolve(directory);
   const packages = {};
   for (const name of names) {
@@ -83,8 +186,11 @@ export function buildBundle(directory, sha, { exec = execFileSync } = {}) {
     lock.packages[""].dependencies = { "@paperclipai/db": versionFor(sha) };
     for (const name of names) lock.packages[`node_modules/@paperclipai/${name}`].resolved = packages[name].url;
     const lockBytes = Buffer.from(JSON.stringify(lock) + "\n");
-    const manifest = { version: 1, sourceSha: sha, packageVersion: versionFor(sha), packages, lockfile: descriptor(lockBytes, "json") };
+    const dbBytes = readFileSync(path.join(directory, "db.tgz"));
+    const manifest = { version: 1, sourceSha: sha, packageVersion: versionFor(sha), packages, lockfile: descriptor(lockBytes, "json"),
+      migrationCompatibility: migrationCompatibility(dbBytes, classify) };
     assertManifest(manifest, sha);
+    assertCompatibilityMatchesPackage(manifest, dbBytes);
     assertLockfile(lock, manifest);
     writeFileSync(path.join(directory, "package-lock.json"), lockBytes);
     writeFileSync(path.join(directory, "manifest.json"), JSON.stringify(manifest) + "\n");
@@ -103,6 +209,7 @@ export function validateBundle(directory, sha) {
     const bytes = readFileSync(path.join(directory, `${name}.tgz`));
     verifyBytes(bytes, manifest.packages[name]);
     assertMetadata(tarManifest(bytes), `@paperclipai/${name}`, sha);
+    if (name === "db") assertCompatibilityMatchesPackage(manifest, bytes);
   }
   const bytes = readFileSync(path.join(directory, "package-lock.json"));
   verifyBytes(bytes, manifest.lockfile);
@@ -160,6 +267,7 @@ export async function verifyPublished(sha, fetchImpl = fetch, { verifyProvenance
     const bytes = await download(manifest.packages[name].url, fetchImpl);
     verifyBytes(bytes, manifest.packages[name]);
     assertMetadata(tarManifest(bytes), `@paperclipai/${name}`, sha);
+    if (name === "db" && manifest.migrationCompatibility !== undefined) assertCompatibilityMatchesPackage(manifest, bytes);
   }));
   const lock = await download(manifest.lockfile.url, fetchImpl);
   verifyBytes(lock, manifest.lockfile);
@@ -200,7 +308,12 @@ export async function publishBundle(directory, sha, { exec = execFileSync, fetch
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, directory, sha] = process.argv.slice(2);
   try {
-    if (command === "build") buildBundle(directory, sha);
+    if (command === "build") {
+      // Type-stripped by Node; the module has no imports, so the build job
+      // needs nothing beyond the checkout.
+      const { classifyMigrationSequence } = await import(new URL("../packages/db/src/migration-compatibility.ts", import.meta.url).href);
+      buildBundle(directory, sha, { classify: classifyMigrationSequence });
+    }
     else if (command === "validate") validateBundle(directory, sha);
     else if (command === "verify-install") verifyInstall(directory, sha);
     else if (command === "publish") await publishBundle(directory, sha);

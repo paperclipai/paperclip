@@ -1,4 +1,4 @@
-import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage } from "@paperclipai/shared";
+import { checkMcpRemoteHeaderName, checkMcpRemoteHeaderValue, mcpRemoteHeaderRejectionMessage, paperclipPeerFromMcpUrl } from "@paperclipai/shared";
 import type { GenericMcpAuthMode } from "@paperclipai/shared";
 
 /**
@@ -67,6 +67,8 @@ export function oauthCallbackUrlForBrowser(
  * excluded because remote MCP URLs can carry credentials there.
  */
 export function defaultGenericMcpName(url: string): string | null {
+  const peer = paperclipPeerFromMcpUrl(url);
+  if (peer) return peer.name;
   try {
     const parsed = new URL(url);
     const host = parsed.host.replace(/^www\./, "");
@@ -137,14 +139,14 @@ export function genericConnectGuidance(
     case "oauth_challenge":
       return {
         title: "This server wants a credential",
-        body: "It asked us to authenticate but didn't offer a sign-in Paperclip can complete on its own. Add the key or headers its docs list under Advanced authentication.",
+        body: "It asked us to authenticate but didn't offer a sign-in Paperclip can complete on its own. Add the key or headers its docs list below.",
         focus: "credentials",
       };
     case "oauth_manual_client_required":
     case "oauth_manual_client_rebinding_required":
       return {
         title: "This server needs sign-in details you create yourself",
-        body: "Register Paperclip in the provider's settings, then add the client ID and secret it gives you under Advanced authentication.",
+        body: "Register Paperclip in the provider's settings, then add the client ID and secret it gives you below.",
         focus: "credentials",
       };
     case "oauth_redirect_origin_unsupported":

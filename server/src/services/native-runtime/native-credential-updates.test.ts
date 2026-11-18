@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
@@ -60,4 +60,20 @@ it("rejects unbound runs and credential payloads with secret fields", async () =
   await expect(appendNativeCredentialUpdate(db, { ...binding, event: { ...event,
     payload: { ...event.payload, access_token: "synthetic-secret" },
   } })).rejects.toThrow("native_credential_update_binding_mismatch");
+});
+
+it("retries credential writeback after the event is durably recorded", async () => {
+  const synchronizeCredentials = vi.fn().mockRejectedValueOnce(new Error("synthetic writeback failure"))
+    .mockResolvedValue(undefined);
+  const update = { ...event, sourceSeq: 10, sourceEventId: "credential_update_retry", payload: { ...event.payload, revision: 2 } };
+  await expect(appendNativeCredentialUpdate(db, { ...binding, event: update, synchronizeCredentials }))
+    .rejects.toThrow("synthetic writeback failure");
+  await appendNativeCredentialUpdate(db, { ...binding, event: update, synchronizeCredentials });
+  expect(synchronizeCredentials).toHaveBeenCalledTimes(2);
+  const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+  expect(rows.filter(row => row.sourceEventId === `credentials:${update.sourceEventId}`)).toHaveLength(1);
+  synchronizeCredentials.mockClear();
+  await expect(appendNativeCredentialUpdate(db, { ...binding, companyId: randomUUID(), event: update, synchronizeCredentials }))
+    .rejects.toThrow("binding_mismatch");
+  expect(synchronizeCredentials).not.toHaveBeenCalled();
 });

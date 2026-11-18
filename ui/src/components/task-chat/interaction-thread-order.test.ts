@@ -5,8 +5,10 @@ import type {
 } from "@/lib/issue-thread-interactions";
 import {
   interactionThreadAnchorMs,
+  isOutdatedPlanConfirmation,
   isSuppressedThreadInteraction,
 } from "./interaction-thread-order";
+import { pendingAskUserQuestionsInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 
 function confirmation(
   overrides: Partial<RequestConfirmationInteraction> = {},
@@ -45,6 +47,35 @@ function result(outcome: RequestConfirmationResult["outcome"]): RequestConfirmat
 
 const CREATED_MS = new Date("2026-04-06T12:00:00.000Z").getTime();
 const RESOLVED_MS = new Date("2026-04-06T12:05:00.000Z").getTime();
+
+describe("isOutdatedPlanConfirmation", () => {
+  const plan = {
+    id: "document-plan", companyId: "company-1", issueId: "issue-1",
+    latestRevisionId: "revision-4", latestRevisionNumber: 4, updatedAt: new Date("2026-04-06T12:01:00Z"),
+  };
+  const review = confirmation({ payload: { version: 1, prompt: "Approve?", target: {
+    type: "issue_document", key: "plan", documentId: plan.id, revisionId: "revision-3", revisionNumber: 3,
+  } } });
+  const idOnlyReview = confirmation({ payload: { version: 1, prompt: "Approve?", target: {
+    type: "issue_document", key: "plan", revisionId: "revision-3",
+  } } });
+
+  it.each([
+    { name: "no plan", interaction: review, document: null },
+    { name: "accepted decision", interaction: { ...review, status: "accepted" as const }, document: plan },
+    { name: "question", interaction: pendingAskUserQuestionsInteraction, document: plan },
+    { name: "other issue", interaction: review, document: { ...plan, issueId: "other-issue" } },
+    { name: "other company", interaction: review, document: { ...plan, companyId: "other-company" } },
+    { name: "matching revision", interaction: review, document: { ...plan, latestRevisionId: "revision-3" } },
+    { name: "older document cache", interaction: idOnlyReview, document: { ...plan, updatedAt: new Date("2026-04-06T11:59:00Z") } },
+  ])("keeps $name", ({ interaction, document }) => {
+    expect(isOutdatedPlanConfirmation(interaction, document)).toBe(false);
+  });
+
+  it.each([review, idOnlyReview])("hides an older saved revision", interaction => {
+    expect(isOutdatedPlanConfirmation(interaction, plan)).toBe(true);
+  });
+});
 
 describe("isSuppressedThreadInteraction", () => {
   it("hides withdrawn confirmations", () => {

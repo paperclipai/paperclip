@@ -168,7 +168,7 @@ describe("CloudAccessGate", () => {
 
   it("admits signed-in nonmembers only for the private invitation landing page", async () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ isInstanceAdmin: false, companyIds: [] });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ userId: "invitee", isInstanceAdmin: false, companyIds: [] });
     const root = renderGate(container, true);
     await waitForText(container, "Outlet content");
     unmountRoot(root);

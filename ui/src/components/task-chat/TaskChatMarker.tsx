@@ -1,16 +1,18 @@
 import { useId, useState } from "react";
 import { cn } from "@/lib/utils";
-import { ChevronDown, CircleDot, OctagonX, Square, Flag, KeyRound } from "lucide-react";
+import { ChevronDown, CircleDot, FoldVertical, OctagonX, Square, Flag, KeyRound } from "lucide-react";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type { TaskChatMarkerItem } from "./task-chat-model";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/lib/router";
 import { timeAgo } from "@/lib/timeAgo";
+import { useProviderLimitMessage } from "@/hooks/useProviderLimitMessage";
 
 const VARIANT_ICON = {
   session_start: CircleDot,
   interrupted: OctagonX,
   turn_boundary: Flag,
+  context_compacted: FoldVertical,
 } as const;
 
 /**
@@ -33,6 +35,8 @@ export function TaskChatMarker({
   const Icon = item.tone === "neutral" ? Square : VARIANT_ICON[item.variant];
   const interrupted = item.variant === "interrupted" && item.tone !== "neutral";
   const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
+  const label = useProviderLimitMessage(item.label);
+  const detail = useProviderLimitMessage(item.detail ?? "", !item.collapsible || open);
   const handleTryAgain = () => {
     void Promise.resolve()
       .then(() => onTryAgain?.())
@@ -82,7 +86,7 @@ export function TaskChatMarker({
             )}
           >
             <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span className="truncate font-medium">{item.label}</span>
+            <span className="truncate font-medium">{label}</span>
             {relative ? (
               <span className="shrink-0 text-muted-foreground">
                 · {relative}
@@ -115,9 +119,9 @@ export function TaskChatMarker({
             data-testid="task-chat-collapsible-marker-details"
             className="mt-1 w-full max-w-(--pct-85) overflow-hidden rounded-lg border border-border bg-muted/25 text-left text-sm dark:bg-muted/15"
           >
-            {item.detail ? (
+            {detail ? (
               <div className="px-3 py-2.5 text-foreground/90">
-                {item.detail}
+                {detail}
               </div>
             ) : null}
             {item.runHref || item.planHref || onTryAgain ? (
@@ -155,7 +159,7 @@ export function TaskChatMarker({
     <div
       className="tc-enter-marker flex items-center gap-2 py-1 text-xs text-muted-foreground"
       role={streamlined && item.variant !== "interrupted" ? "separator" : undefined}
-      aria-label={streamlined && item.variant !== "interrupted" ? item.label : undefined}
+      aria-label={streamlined && item.variant !== "interrupted" ? label : undefined}
     >
       {item.variant !== "interrupted" ? <span className="h-px flex-1 bg-border" /> : null}
       <span
@@ -165,9 +169,9 @@ export function TaskChatMarker({
         )}
       >
         <Icon className="h-3.5 w-3.5" />
-        <span className="font-medium">{item.label}</span>
-        {item.detail ? (
-          <span className="text-muted-foreground">· {item.detail}</span>
+        <span className="font-medium">{label}</span>
+        {detail ? (
+          <span className="text-muted-foreground">· {detail}</span>
         ) : null}
         {onTryAgain ? (
           <Button

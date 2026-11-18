@@ -8,6 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true, userId: "viewer" }),
+}));
+
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
@@ -55,11 +59,6 @@ vi.mock("../context/CompanyContext", () => ({
 const mockSidebar = vi.hoisted(() => ({
   isMobile: false,
   setSidebarOpen: vi.fn(),
-  collapsed: false,
-  collapseLocked: false,
-  peeking: false,
-  toggleCollapsed: vi.fn(),
-  setCollapsed: vi.fn(),
 }));
 
 vi.mock("../context/SidebarContext", () => ({
@@ -160,9 +159,6 @@ describe("Sidebar", () => {
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockAttentionApi.list.mockResolvedValue({ items: [] });
     mockSidebar.isMobile = false;
-    mockSidebar.collapsed = false;
-    mockSidebar.collapseLocked = false;
-    mockSidebar.peeking = false;
     mockInboxBadge.inbox = 0;
     mockInboxBadge.failedRuns = 0;
   });
@@ -322,19 +318,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("locks the legacy collapse control while a secondary sidebar forces the rail", async () => {
-    mockSidebar.collapseLocked = true;
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: false });
-    const root = await renderSidebar();
-
-    expect(container.querySelector('button[aria-label="Collapse sidebar"]')).toBeNull();
-    expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("renders plugin sidebar slots in Work below Workspaces", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
@@ -357,11 +340,11 @@ describe("Sidebar", () => {
     });
   });
 
-  it("keeps the Inbox row, Workspaces and no chat surfaces while both PAP-670 flags are off", async () => {
+  it("keeps Chat, Inbox and Workspaces without the combined Tasks experiment", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
-    expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(false);
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(true);
     expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/inbox")).toBe(true);
     expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(true);
 
@@ -399,12 +382,12 @@ describe("Sidebar", () => {
       });
     });
 
-    it("does not render Workspaces anywhere in the nav, even with isolated workspaces on", async () => {
+    it("keeps Workspaces available beside Chat when isolated workspaces are on", async () => {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableAgentChat: true, enableIsolatedWorkspaces: true });
       const root = await renderSidebar();
 
-      expect(container.textContent).not.toContain("Workspaces");
-      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(false);
+      expect(container.textContent).toContain("Workspaces");
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(true);
 
       flushSync(() => {
         root.unmount();
@@ -457,11 +440,11 @@ describe("Sidebar", () => {
       });
     });
 
-    it("adds no chat surfaces while Agent Chat is off", async () => {
+    it("keeps Chat available despite a retired off value", async () => {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCombinedInboxTasks: true, enableAgentChat: false });
       const root = await renderSidebar();
 
-      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(false);
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(true);
 
       flushSync(() => {
         root.unmount();
@@ -517,7 +500,7 @@ describe("Sidebar", () => {
     const labels = (section: Element | undefined) => [...(section?.querySelectorAll("a") ?? [])]
       .map((anchor) => anchor.textContent?.trim());
 
-    expect(labels(workSection)).toEqual(["Tasks", "Projects", "Routines", "Artifacts"]);
+    expect(labels(workSection)).toEqual(["Chat", "Tasks", "Projects", "Routines", "Artifacts"]);
     expect(labels(orgSection)).toEqual(["Agents", "Skills", "Connectors", "Audit"]);
     expect(sections.indexOf(workSection!)).toBeLessThan(sections.indexOf(orgSection!));
     expect(
@@ -678,6 +661,73 @@ describe("Sidebar", () => {
 
     flushSync(() => {
       root.unmount();
+    });
+  });
+
+  describe("with Responsibilities on", () => {
+    const groupLabels = (group: Element | undefined) =>
+      [...(group?.querySelectorAll("a") ?? [])].map((anchor) => anchor.textContent?.trim());
+    const primaryGroup = () => container.querySelector("nav > div") ?? undefined;
+    const section = (label: string) =>
+      [...container.querySelectorAll("nav > div")].find((candidate) => candidate.textContent?.startsWith(label));
+
+    it("leads with the Responsibilities home named Dashboard, then Chat, Tasks and Inbox, and leaves the classic dashboard out", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableResponsibilities: true });
+      const root = await renderSidebar();
+
+      expect(groupLabels(primaryGroup())).toEqual(["Search", "Dashboard", "Chat", "Tasks", "Inbox"]);
+      expect(primaryGroup()?.querySelector('a[href="/responsibilities"] svg')?.classList.contains("lucide-compass")).toBe(true);
+      expect(groupLabels(section("Work"))).toEqual(["Projects", "Routines", "Artifacts"]);
+      expect(container.querySelector('a[href="/dashboard"]')).toBeNull();
+      expect(container.querySelectorAll('a[href="/chats"]')).toHaveLength(1);
+      expect(container.querySelectorAll('a[href="/issues"]')).toHaveLength(1);
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("keeps the merged Tasks badge and no Inbox row with Combined Inbox + Task List", async () => {
+      mockInboxBadge.inbox = 4;
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableResponsibilities: true,
+        enableCombinedInboxTasks: true,
+      });
+      const root = await renderSidebar();
+
+      expect(groupLabels(primaryGroup())).toEqual(["Search", "Dashboard", "Chat", "Tasks4"]);
+      expect(container.querySelector('a[href="/inbox"]')).toBeNull();
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("applies the same order in the legacy shell", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+        enableResponsibilities: true,
+        enableStreamlinedUi: false,
+      });
+      const root = await renderSidebar();
+
+      expect(groupLabels(primaryGroup())).toEqual(["Search", "Dashboard", "Chat", "Tasks", "Inbox"]);
+      expect(container.querySelector('a[href="/dashboard"]')).toBeNull();
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("keeps Dashboard on top and no Responsibilities row while the flag is off", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableResponsibilities: false });
+      const root = await renderSidebar();
+
+      expect(groupLabels(primaryGroup())).toEqual(["Search", "Dashboard", "Inbox"]);
+      expect(container.querySelector('a[href="/responsibilities"]')).toBeNull();
+
+      flushSync(() => {
+        root.unmount();
+      });
     });
   });
 });

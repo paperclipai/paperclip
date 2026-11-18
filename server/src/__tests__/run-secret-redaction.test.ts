@@ -7,6 +7,11 @@ import { createRunSecretRedactionRegistry, redactRegisteredSecretValues } from "
 const secret = "q2a-exact-secret-value";
 
 describe("registered run secret redaction", () => {
+  it("omits host-only legacy settlement receipts from full and nested run responses", () => {
+    const proof = { schema: "paperclip.legacy-process-settlement.v1", processPid: 42 };
+    expect(redactRegisteredSecretValues({ id: "run", legacyProcessSettlement: proof,
+      nested: [{ legacyProcessSettlement: proof, status: "failed" }] }, [])).toEqual({ id: "run", nested: [{ status: "failed" }] });
+  });
   it("strips private credential fields and denies names unless the caller supplies an authorized projection", () => {
     const input = { resultJson: { configurationIncomplete: {
       credentialAccess: { connectionName: "private name", grantId: "private grant", secret: "private value" },
@@ -109,7 +114,7 @@ describe("batched run secret redaction", () => {
     expect(result.every(run => run.stdoutExcerpt === REDACTED_EVENT_VALUE)).toBe(true);
     expect(result[0].contextSnapshot).toEqual({});
     const dialect = new PgDialect();
-    const predicate = dialect.sqlToQuery(where.mock.calls[0][0]);
+    const predicate = dialect.sqlToQuery(where.mock.calls[0][0]!);
     expect(predicate.params).toContain("company-1");
     expect(predicate.sql).toContain('"company_id"');
     expect(dialect.sqlToQuery(select.mock.calls[0][0].contextSnapshot).sql).toContain("-> 'paperclipSecretRedactions'");

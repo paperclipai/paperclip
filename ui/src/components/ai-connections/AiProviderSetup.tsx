@@ -11,6 +11,8 @@ import {
 } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { ConnectionChoiceList } from "@/features/connections/ConnectionChoiceList";
 import { ConnectionAccessDefaults, connectionDefaultSummarySentence } from "@/features/connections/ConnectionSetupFlow";
 import { AppLogo } from "@/pages/apps/AppLogo";
@@ -24,6 +26,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 const providers = [
   {
@@ -36,7 +40,7 @@ const providers = [
     name: "Anthropic",
     description: "Claude subscription or API key",
   },
-  { id: "google", name: "Google", description: "Gemini API key" },
+  { id: "google", name: "Google", description: "Antigravity sign-in or Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
     id: "openrouter",
@@ -73,6 +77,7 @@ export function AiProviderSetup({
   initialProtocol,
   providerLabel,
   advancedOnly = false,
+  submitLabel,
   reconnect,
   onCancel,
   onComplete,
@@ -84,6 +89,7 @@ export function AiProviderSetup({
   initialProtocol?: AiProviderRouting["protocol"];
   providerLabel?: string;
   advancedOnly?: boolean;
+  submitLabel?: string;
   reconnect?: AiManagedConnectionSummary;
   onCancel: () => void;
   onComplete: (
@@ -124,6 +130,7 @@ export function AiProviderSetup({
     queryKey: ["ai-connections", companyId, agentId],
     queryFn: () => aiConnectionsApi.list(companyId, agentId),
   });
+  const accountsView = useQueryView(accounts);
   const canManageConnections = accounts.data?.canManageConnections ?? false;
   const ownership = reconnect?.ownership ?? ownershipChoice ?? (!agentId && canManageConnections ? "shared" : "personal");
   const allAgents = allAgentsChoice ?? (!agentId && canManageConnections);
@@ -131,6 +138,7 @@ export function AiProviderSetup({
     queryKey: ["agents", companyId, "provider-access"],
     queryFn: () => agentsApi.list(companyId),
   });
+  const agentsView = useQueryView(agents);
   const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? (provider === "github" ? "GitHub Copilot" : "provider");
   const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local"].includes(provider ?? "");
   const nativeProvider: AiProvider =
@@ -270,8 +278,8 @@ export function AiProviderSetup({
     />
   ) : undefined;
   const cancel = () => reconnect || initialProvider ? onCancel() : setStep("provider");
-  if (!reconnect && accounts.isPending) return <p role="status">Loading connection permissions…</p>;
-  if (!reconnect && accounts.isError) return <p role="alert">Could not load connection permissions. <Button type="button" variant="ghost" onClick={() => void accounts.refetch()}>Retry</Button></p>;
+  if (!reconnect && (accounts.isPending || accountsView.kind === "reconnecting")) return <p role="status">Loading connection permissions…</p>;
+  if (!reconnect && accountsView.kind === "error") return <QueryErrorState error={accounts.error} action="load connection permissions" onRetry={accountsView.retry} retrying={accountsView.isFetching} />;
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6" onSubmit={(event) => event.stopPropagation()}>
       <div className="space-y-2">
@@ -281,7 +289,7 @@ export function AiProviderSetup({
             : `${reconnect ? "Reconnect" : "Connect"} ${label}`}
         </h2>
       </div>
-      {agents.isError && <p role="alert" className="text-sm text-destructive">Could not load agents. <Button type="button" variant="ghost" onClick={() => void agents.refetch()}>Retry</Button></p>}
+      {agentsView.kind === "error" && <QueryErrorState size="inline" error={agents.error} action="load agents" onRetry={agentsView.retry} retrying={agentsView.isFetching} />}
       {step === "provider" ? (
         <>
           {advancedOnly ? choices(true) : <>
@@ -350,10 +358,10 @@ export function AiProviderSetup({
                   }}
                   disabled={Boolean(reconnect) || Boolean(initialProtocol)}
                 >
-                  <SelectTrigger aria-label="API format" className="w-full">
+                  <SelectTrigger aria-label="API format" className={cn("w-full", ANALYTICS_MASK_CLASS)}>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className={ANALYTICS_MASK_CLASS}>
                     <SelectItem value="responses">
                       OpenAI Responses · Codex
                     </SelectItem>
@@ -387,10 +395,10 @@ export function AiProviderSetup({
                 onValueChange={(v) => setAuth(v as typeof auth)}
                 disabled={Boolean(reconnect)}
               >
-                <SelectTrigger aria-label="Authentication" className="w-full">
+                <SelectTrigger aria-label="Authentication" className={cn("w-full", ANALYTICS_MASK_CLASS)}>
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className={ANALYTICS_MASK_CLASS}>
                   <SelectItem value="bearer">
                     {provider === "bedrock"
                       ? "Bedrock API key"
@@ -433,7 +441,7 @@ export function AiProviderSetup({
             <p role="alert" className="text-sm text-destructive">
               {save.error instanceof Error && save.error.name === "ZodError"
                 ? "Check the URL, API format, and authentication fields."
-                : save.error.message}
+                : describeError(save.error).body}
             </p>
           )}
           {accessDefaults}
@@ -449,16 +457,16 @@ export function AiProviderSetup({
             <Button
               type="submit"
               disabled={
-                save.isPending || accounts.isPending || accounts.isError ||
+                save.isPending || accounts.isPending || accountsView.kind === "reconnecting" || accountsView.kind === "error" ||
                 (!reconnect && ownership === "shared" && !allAgents && agentIds.size === 0) ||
                 (auth !== "none" && !apiKey.trim())
               }
             >
               {save.isPending
-                ? "Connecting…"
+                ? submitLabel ? "Saving…" : "Connecting…"
                 : reconnect
                   ? "Reconnect"
-                  : "Connect"}
+                  : submitLabel ?? "Connect"}
             </Button>
           </div>
         </form>

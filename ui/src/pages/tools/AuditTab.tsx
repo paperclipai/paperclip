@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { StatusBadge } from "@/components/StatusBadge";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -23,7 +24,8 @@ import {
 } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
 import { AgentSelect } from "@/components/AgentMultiSelect";
-import { ToolsPageHeader, LoadingState, ErrorState, RelativeTime } from "./shared";
+import { ToolsPageHeader, LoadingState, RelativeTime } from "./shared";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -298,7 +300,7 @@ function ActivityRow({
                       return connectionId ? (
                         <div key={connectionId} className="flex gap-2">
                           <span className="shrink-0 text-muted-foreground">Not installed</span>
-                          <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
+                          <Link to={`/apps/${connectionId}/permissions`} className={cn("font-medium text-primary hover:underline", ANALYTICS_MASK_CLASS)}>
                             {connectionName}
                           </Link>
                         </div>
@@ -309,7 +311,7 @@ function ActivityRow({
                 {argumentsText ? (
                   <div className="space-y-1">
                     <span className="text-muted-foreground">Parameters (redacted)</span>
-                    <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
+                    <pre className={cn("whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
                       {argumentsText}
                     </pre>
                   </div>
@@ -379,6 +381,8 @@ export function AuditTab({ companyId }: { companyId: string }) {
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
 
+  const activityView = useQueryView(activity);
+
   const events = useMemo(
     () => activity.data?.pages.flatMap((page) => page.events) ?? [],
     [activity.data],
@@ -400,7 +404,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
         description="What your agents actually did with your apps, newest first. Each line is one decision — allowed, blocked, asked first, waiting, or failed."
       />
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-canonical-toolbar="tool-audit" role="toolbar" aria-label="Tool audit filters" className="flex flex-wrap items-center gap-2">
         <Select value={app} onValueChange={setApp}>
           <SelectTrigger className="w-40">
             <SelectValue placeholder="App" />
@@ -457,10 +461,15 @@ export function AuditTab({ companyId }: { companyId: string }) {
         ) : null}
       </div>
 
-      {activity.isLoading ? (
+      {activity.isLoading || activityView.kind === "reconnecting" ? (
         <LoadingState />
-      ) : activity.error ? (
-        <ErrorState error={activity.error} onRetry={() => activity.refetch()} />
+      ) : activityView.kind === "error" ? (
+        <QueryErrorState
+          error={activity.error}
+          action="load activity"
+          onRetry={activityView.retry}
+          retrying={activityView.isFetching}
+        />
       ) : events.length === 0 ? (
         hasActiveFilters ? (
           <Card>

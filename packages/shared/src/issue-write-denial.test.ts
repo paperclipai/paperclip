@@ -54,10 +54,9 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.whoCanAct).toContain("CodexCoder");
   });
 
-  it("points a visibility denial at the sanctioned child-issue path", () => {
+  it("points a visibility denial at the missing permission", () => {
     const copy = describeIssueWriteDenial("issue_write_not_visible");
-    // The incident detour was discovering exactly this workaround.
-    expect(copy.sanctionedPath).toContain("child issue");
+    expect(copy.sanctionedPath).toContain("Ask the board to widen visibility");
   });
 
   it("frames the per-run cap as a rate backstop, not a permission decision", () => {

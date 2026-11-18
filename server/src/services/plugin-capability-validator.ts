@@ -47,6 +47,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "companies.get": ["companies.read"],
   "projects.list": ["projects.read"],
   "projects.get": ["projects.read"],
+  "projects.resolveGitCredential": ["projects.git-credentials"],
   "projects.getInstanceSecrets": ["projects.instance-secrets"],
   "projects.managed.get": ["projects.managed"],
   "projects.managed.reconcile": ["projects.managed"],
@@ -204,6 +205,7 @@ const LAUNCHER_PLACEMENT_CAPABILITIES: Record<
  */
 const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   tools: "agent.tools.register",
+  apps: "connectors.provide",
   jobs: "jobs.schedule",
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",

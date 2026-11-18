@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DotPairing } from "@paperclipai/shared";
@@ -15,7 +16,7 @@ export function GrokBotConnection({ companyId, agentId }: { companyId?: string; 
   const cache = useQueryClient();
   const key = ["grok-binding", companyId, agentId];
   const state = useQuery({ queryKey: key, enabled: !!companyId && !!agentId,
-    queryFn: ({ signal }) => grokBotApi.connection(companyId!, agentId!, signal), retry: false, refetchInterval: 5000 });
+    queryFn: ({ signal }) => grokBotApi.connection(companyId!, agentId!, signal), refetchInterval: 5000 });
   const [pairing, setPairing] = useState<DotPairing | null>(null);
   const [replace, setReplace] = useState(false);
   const [botName, setBotName] = useState("");
@@ -56,8 +57,8 @@ export function GrokBotConnection({ companyId, agentId }: { companyId?: string; 
   return <section aria-label="Grok Bot connection" className="space-y-4 text-sm">
     <p className="text-muted-foreground">Runs in Grok Bot. The Bot retains its apps and persistent context. Paperclip supplies task coordination and first-party tools. Usage and spending are not reported.</p>
     {state.isPending && <p role="status">Loading connection…</p>}
-    {error && <p role="alert" className="text-destructive">{error.message}</p>}
-    {state.data && !state.data.enabled && <p className="text-muted-foreground">Enable Grok Bot, Assistant connections (MCP), and Paperclip Runner on an authenticated public HTTPS instance.</p>}
+    {error && <p role="alert" className="text-destructive">{describeError(error).body}</p>}
+    {state.data && !state.data.enabled && <p className="text-muted-foreground">Enable Grok Bot and Paperclip Runner on an authenticated public HTTPS instance.</p>}
     {binding?.connected ? <>
       <p>Agent access connected. {routine?.verified && !recovering ? "Routine round trip verified." : "Assignments require a verified routine round trip."}</p>
       <dl className="space-y-2 text-muted-foreground"><div><dt>Bot</dt><dd>{routine?.botName ?? "Not configured"}</dd></div><div><dt>Last verified exchange</dt><dd>{routine?.verifiedAt ? new Date(routine.verifiedAt).toLocaleString() : "Not yet verified"}</dd></div><div><dt>Last authenticated contact</dt><dd>{routine?.lastContactAt ? new Date(routine.lastContactAt).toLocaleString() : "Not yet observed"}</dd></div></dl>

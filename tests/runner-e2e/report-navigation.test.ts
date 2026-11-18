@@ -14,7 +14,8 @@ describe("evaluation report navigation", () => {
     expect(sidebar).toContain("Overview");
     expect(sidebar).toContain("Needs attention");
     expect(sidebar).toContain("Campaign history");
-    expect(sidebar).not.toContain("Suites");
+    expect(sidebar).toContain('aria-label="E2E suites"');
+    expect(sidebar).toContain('data-index-suite-link="core-compatibility"');
     expect(page).not.toContain('aria-label="Campaign suites"');
     expect(page).not.toContain('data-nav-campaign aria-label="Campaign"');
   });
@@ -42,6 +43,9 @@ describe("evaluation report navigation", () => {
     const history = emptyRunnerHistory();
     history.campaigns = [{campaignId:"campaign-a",publicUrl:"/custom/reports/campaigns/campaign-a/"} as typeof history.campaigns[number]];
     expect(reportHistoryHref(history,"campaign-a")).toBe("/custom/reports/");
-    expect(reportHistoryHref(undefined,"campaign-a")).toBe("../../");
+    expect(reportHistoryHref(undefined,"campaign-a")).toBe("https://d1p6rlowie26tp.cloudfront.net/runner-e2e/");
+    history.campaigns[0]!.publicUrl = "https://pages.paperclip.ing/standalone-report/";
+    expect(reportHistoryHref(history,"campaign-a")).toBe("https://d1p6rlowie26tp.cloudfront.net/runner-e2e/");
+    expect(page).toContain('class="brand-lockup report-brand" href="https://pages.paperclip.ing/evals/"');
   });
 });
