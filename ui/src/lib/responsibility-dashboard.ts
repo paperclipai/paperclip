@@ -55,7 +55,7 @@ export interface DashboardChangeWords {
 export function dashboardChangeWords(change: ResponsibilityDashboardChange): DashboardChangeWords {
   switch (change.op) {
     case "add_area":
-      return { before: null, after: "New area", note: null };
+      return { before: null, after: change.name, note: null };
     case "rename_area":
       return {
         before: change.fromName,
@@ -63,7 +63,7 @@ export function dashboardChangeWords(change: ResponsibilityDashboardChange): Das
         note: change.sharedWith > 0 ? `Also renamed for ${change.sharedWith === 1 ? "1 other person" : `${change.sharedWith} other people`}` : null,
       };
     case "remove_area":
-      return { before: null, after: "Remove this area", note: null };
+      return { before: change.groupName, after: null, note: null };
     case "add_responsibility":
       return { before: null, after: change.sentence, note: null };
     case "reword_responsibility":
