@@ -38,6 +38,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness, verifyRetryWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
+import { responsibilitySummaryModelGenerator } from "./responsibility-summary-generator.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
@@ -1031,6 +1032,7 @@ export function heartbeatService(
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
       promptInjectionPreventionService(db, { budgetHooks }).recoverInterrupted(),
+      responsibilitySummaryModelGenerator(db).recoverInterrupted(),
     ]);
     const failed = outcomes.find(outcome => outcome.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;

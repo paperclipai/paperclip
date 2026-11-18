@@ -4217,6 +4217,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(await db.select().from(environmentLeases)).toHaveLength(1);
   });
 
+  it("caps the exact resume call at the caller's remaining budget", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner", { timeoutMs: 300_000 });
+    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+    const call = vi.fn(async () => ({ providerLeaseId: lease.providerLeaseId, metadata: { remoteCwd: "/workspace" } }));
+    const workerManager = { isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    await environmentRuntimeService(db, { pluginWorkerManager: workerManager })
+      .resumeRunLease({ environment: seeded.environment, lease, timeoutMs: 4_321 });
+    expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentResumeLease", expect.anything(), 4_321);
+  });
+
   it("forwards an explicit export directory to the selected generic plugin", async () => {
     const seeded = await seedReusablePluginSandboxLease();
     const requestedCwd = `/workspace/.paperclip-workspaces/${seeded.executionWorkspaceId}`;

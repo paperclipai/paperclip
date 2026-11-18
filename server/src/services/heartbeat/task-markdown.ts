@@ -4,6 +4,7 @@ import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
+import { routineSuggestionAgentGuidance } from "@paperclipai/shared";
 import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from "../onboarding-chat-prompt.js";
 
 export function buildPaperclipTaskMarkdown(input: {
@@ -76,6 +77,23 @@ export function buildPaperclipTaskMarkdown(input: {
   conferenceRoomEnabled?: boolean;
   statusCardsEnabled?: boolean;
   casesEnabled?: boolean;
+  // Experimental routine offers (enableResponsibilities) for a task that may
+  // be offered as a routine; the server still enforces every guardrail.
+  routineSuggestionsEnabled?: boolean;
+  // Experimental bar conversation (enableResponsibilities): the standing
+  // instructions for the agent in a responsibility's bar conversation.
+  responsibilityBarGuidance?: string | null;
+  // Experimental automation conversation (enableResponsibilities): the
+  // standing instructions for the agent turning one manual task into an automation.
+  automationConversationGuidance?: string | null;
+  // Experimental agent-written status (enableResponsibilities): the
+  // instructions on a status update request, and the short reminder on other
+  // work under a responsibility this agent reports on.
+  responsibilityStatusUpdateGuidance?: string | null;
+  responsibilityStatusReminder?: string | null;
+  // Experimental dashboard conversation (enableResponsibilities): the
+  // standing instructions for the agent drafting or changing a person's Dashboard.
+  responsibilityDashboardGuidance?: string | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -214,6 +232,24 @@ export function buildPaperclipTaskMarkdown(input: {
         'When a missing decision materially changes the outcome, scope, or what counts as success, ask one focused question at a time in this task using request_human_input with interactionKind: "questions", payload.questions, resolverPolicy: "human_only", continuationPolicy: "wake_assignee", a concise title and prompt, and a stable idempotencyKey. This creates an ask_user_questions card here; do not send the user to a separate chat or create a replacement task. Offer useful choices or a recommended default when appropriate, while letting the user supply their own answer.',
         "Reuse an existing relevant pending question instead of creating another. Follow the task question guidance above for answered, historical, or dismissed requests. Continue independent work, but wait for the missing answer before dependent work; an unanswered question is not consent to your proposed default. When the answer arrives, incorporate it into this task and continue without asking for the same information again.",
       );
+    }
+    if (input.routineSuggestionsEnabled && !issue.conversationAgentId && (issue.workMode ?? "standard") === "standard") {
+      lines.push("", "Routine offer:", routineSuggestionAgentGuidance(issue.id));
+    }
+    if (input.responsibilityBarGuidance) {
+      lines.push("", "Bar conversation:", input.responsibilityBarGuidance);
+    }
+    if (input.automationConversationGuidance) {
+      lines.push("", "Automation conversation:", input.automationConversationGuidance);
+    }
+    if (input.responsibilityStatusUpdateGuidance) {
+      lines.push("", "Status update:", input.responsibilityStatusUpdateGuidance);
+    }
+    if (input.responsibilityStatusReminder) {
+      lines.push("", "Responsibility status:", input.responsibilityStatusReminder);
+    }
+    if (input.responsibilityDashboardGuidance) {
+      lines.push("", "Dashboard conversation:", input.responsibilityDashboardGuidance);
     }
     if (input.nativeRunner && (input.coordinatorWorkspace || requiredQualityReview(issue.executionPolicy))) {
       lines.push("", "Requested quality review:", REQUIRED_QUALITY_REVIEW_GUIDANCE);

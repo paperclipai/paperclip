@@ -30,6 +30,7 @@ const CLOUD_STAGING_EXPERIMENTAL_KEYS: ReadonlySet<string> = new Set([
   "enableNativeRunner",
   "enableOpenAiDot",
   "enablePaperclipDeveloperMode",
+  "enableResponsibilities",
   "enableServerInfoDebugView",
   "enableSimplifiedEnglishInteractions",
   "enableSmokeLab",

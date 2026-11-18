@@ -591,6 +591,8 @@ function isValidUrl(value: string): boolean {
 // The message names the operation and the bound so an operator sees at once
 // that the sandbox connection is unresponsive, not that the operation is slow.
 class SandboxLivenessTimeoutError extends Error {
+  readonly code = "ETIMEDOUT";
+
   constructor(operation: string, timeoutMs: number) {
     super(
       `Daytona sandbox liveness call "${operation}" did not respond within ${timeoutMs} ms; `
