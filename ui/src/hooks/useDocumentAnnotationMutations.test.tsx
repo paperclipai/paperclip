@@ -79,4 +79,53 @@ describe("toggleReaction", () => {
     await act(async () => root.unmount());
     client.clear();
   });
+
+  it("keeps a pending reaction when another reaction on the same comment finishes first", async () => {
+    let finishDone!: () => void;
+    let finishQuestion!: () => void;
+    const doneSummary = { reaction: "done" as const, count: 1, reactedByMe: true, actors: [{ actorType: "user" as const, agentId: null, userId: null }] };
+    const questionSummary = { reaction: "question" as const, count: 1, reactedByMe: true, actors: [{ actorType: "user" as const, agentId: null, userId: null }] };
+    setReaction
+      .mockReset()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishDone = () => resolve({ id: "comment-1", reactions: [doneSummary] }); }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishQuestion = () => resolve({ id: "comment-1", reactions: [doneSummary, questionSummary] }); }));
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const queryKey = ["issues", "document-annotations", "issue-1", "plan", "all"];
+    client.setQueryData(queryKey, [{ id: "thread-1", comments: [{ id: "comment-1", reactions: [] }] }]);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    let toggle!: ReturnType<typeof useDocumentAnnotationMutations>["toggleReaction"];
+    function Harness() {
+      toggle = useDocumentAnnotationMutations({
+        target: { kind: "issue", issueId: "issue-1", documentKey: "plan" },
+        baseRevisionId: "rev-1",
+        baseRevisionNumber: 1,
+        pendingAnchor: null,
+        onFocusThread: () => undefined,
+      }).toggleReaction;
+      return null;
+    }
+    const reactionsInCache = () => (client.getQueryData(queryKey) as Array<{ comments: Array<{ reactions: Array<{ reaction: string; reactedByMe: boolean }> }> }>)[0].comments[0].reactions
+      .map((entry) => [entry.reaction, entry.reactedByMe]);
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
+
+    await act(async () => {
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-1", reaction: "done", present: true });
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-1", reaction: "question", present: true });
+    });
+    await vi.waitFor(() => expect(setReaction).toHaveBeenCalledTimes(2));
+    invalidate.mockClear();
+
+    await act(async () => finishDone());
+    expect(reactionsInCache()).toEqual([["done", true], ["question", true]]);
+    expect(invalidate).not.toHaveBeenCalled();
+
+    await act(async () => finishQuestion());
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled());
+    expect(reactionsInCache()).toEqual([["done", true], ["question", true]]);
+
+    await act(async () => root.unmount());
+    client.clear();
+  });
 });
