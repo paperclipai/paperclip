@@ -52,7 +52,7 @@ afterAll(async () => {
 
 /** A native run admitted by a release that did not yet save runtime skill
  * bundles at admission: the bundle exists only on the admitting server's disk. */
-async function retainedUnsavedRuntimeSkill(options: { versionId?: string } = {}) {
+async function retainedUnsavedRuntimeSkill(options: { pins?: Array<string | null> } = {}) {
   const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), issueId = randomUUID();
   await db.insert(companies).values({ id: companyId, name: "Runtime skill startup", issuePrefix: `S${companyId.slice(0, 6)}` });
   await db.insert(agents).values({ id: agentId, companyId, name: "Legacy admission" });
@@ -61,7 +61,7 @@ async function retainedUnsavedRuntimeSkill(options: { versionId?: string } = {})
   const bundle = await materializeAsset([{ path: "SKILL.md", content: Buffer.from(`# legacy ${runId}\n`), mode: 0o400 },
     { path: "notes.md", content: Buffer.from("notes\n"), mode: 0o400 }]);
   const context = nativeRuntimeContextFixture();
-  context.skills = [{ key: "legacy", runtimeName: "legacy", versionId: options.versionId ?? null, bundle }];
+  context.skills = (options.pins ?? [null]).map((versionId, index) => ({ key: `legacy-${index}`, runtimeName: `legacy-${index}`, versionId, bundle }));
   context.aggregateDigest = canonicalNativeRuntimeContextDigest(context);
   const execution = parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v3",
     binding: { companyId, runId, agentId, issueId, executionWorkspaceId: runId },
@@ -138,11 +138,43 @@ it("treats a bundle missing one listed file as lost, not changed", async () => {
   await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
 });
 
-it("starts over a retained pin this copy cannot capture on a volume-free filesystem", async () => {
+it("does not hold startup on a non-null pin that is not a version ID, which preservation never copies", async () => {
+  volumeFreeServer();
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(false);
+  await retainedUnsavedRuntimeSkill({ pins: ["legacy-pin"] });
+  expect(await hasLocalRuntimeSkillObligations(db)).toBe(false);
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+});
+
+it("saves the null pin of a run that mixes it with a non-version pin, and settles the run", async () => {
+  volumeFreeServer();
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(false);
+  const { runId } = await retainedUnsavedRuntimeSkill({ pins: ["legacy-pin", null] });
+  expect(await preserveLocalRuntimeSkillObligations(db)).toEqual({ bundles: 1, unsaved: [] });
+  expect(await saved(runId)).toBe(true);
+  expect(await hasLocalRuntimeSkillObligations(db)).toBe(false);
+});
+
+it("recaptures a bundle still here when its receipt's package is no longer durable", async () => {
+  volumeFreeServer();
+  vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(false);
+  const { runId } = await retainedUnsavedRuntimeSkill();
+  await preserveLocalRuntimeSkillObligations(db);
+  await db.update(snapshots).set({ storage: null });
+  expect(await hasLocalRuntimeSkillObligations(db)).toBe(true);
+  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+  expect(await hasLocalRuntimeSkillObligations(db)).toBe(false);
+  expect(await saved(runId)).toBe(true);
+});
+
+it("refuses a storage error that looks like a missing file, even on a volume-free filesystem", async () => {
   volumeFreeServer();
   vi.mocked(volumeFreeControllerStateOwned).mockResolvedValue(true);
-  await retainedUnsavedRuntimeSkill({ versionId: "legacy-pin" });
-  await expect(assertEphemeralServerData(db)).resolves.toBeUndefined();
+  await retainedUnsavedRuntimeSkill();
+  const missing = Object.assign(new Error("temp file vanished"), { code: "ENOENT" });
+  const put = vi.spyOn(storageModule.getStorageService(), "putFile").mockRejectedValue(missing);
+  try { await expect(assertEphemeralServerData(db)).rejects.toThrow("runtime_skill_assets_require_migration"); }
+  finally { put.mockRestore(); }
 });
 
 it("refuses when saving a bundle that is here fails, even on a volume-free filesystem", async () => {
