@@ -152,4 +152,11 @@ describe("TaskList progressive rendering", () => {
     await act(async () => host.querySelector<HTMLButtonElement>('[data-issue-row-details="task-0"] button')!.click());
     expect(onOpenIssue).toHaveBeenCalledWith(items[0].issue);
   });
+  it("keeps the first-paint budget with the side panel open on a large list", async () => {
+    const items = tasks(300);
+    await act(async () => root.render(<TooltipProvider><TaskList items={items} onOpenIssue={vi.fn()} openIssueId="task-42" /></TooltipProvider>));
+    expect(rows()).toHaveLength(100);
+    expect(host.querySelectorAll('[data-selected="true"]')).toHaveLength(1);
+    expect(host.querySelector('[data-issue-row-details="task-42"]')?.getAttribute("data-selected")).toBe("true");
+  });
 });

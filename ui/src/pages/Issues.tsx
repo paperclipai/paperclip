@@ -326,6 +326,7 @@ function OrganizationIssues({
   usePageContentReady(!selectedCompanyId || (issuesView.kind !== "loading" && issuesView.kind !== "reconnecting"));
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
+  const openIssueId = useMemo(() => findIssueByRef(issues, sidePanel.taskRef)?.id ?? null, [issues, sidePanel.taskRef]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
     && hasNextPage === true;
   const loadMoreServerIssues = useCallback(() => {
@@ -381,7 +382,7 @@ function OrganizationIssues({
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
       searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy ? { participantAgentId, workspaceId: workspaceIdFilter, originKind, ...(includeBlockedBy ? { includeBlockedBy: true } : {}) } : undefined}
       onOpenIssue={sidePanel.enabled ? sidePanel.openIssue : undefined}
-      openIssueId={findIssueByRef(issues, sidePanel.taskRef)?.id ?? null}
+      openIssueId={openIssueId}
     />
   );
   if (!sidePanel.enabled) return issuesList;
