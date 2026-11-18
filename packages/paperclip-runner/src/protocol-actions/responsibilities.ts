@@ -16,7 +16,7 @@ function responsibilityAction<const Id extends string, const Schema, const Input
   return {
     id: input.id,
     canonical: {
-      operationId: input.id, surfaces: ["live"], placement: "optional_agent_tool", optionalGroup: "responsibilities",
+      operationId: input.id, surfaces: ["live"], placement: "optional_agent_tool", optionalGroup: "discovery",
       requiredClaims: [], taskModes: modes, sideEffectClass: input.write ? "company_write" : "read",
       idempotency: input.write ? "required" : "none", disabledByDefault: false,
       realBindingStatus: "live_codex", realServiceBinding: binding,
