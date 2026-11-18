@@ -138,7 +138,9 @@ export function AwsRoleSetup({
           <ol className="list-decimal space-y-4 pl-5 text-sm text-muted-foreground">
             <li className="space-y-2">
               <span className="text-foreground">Give this prompt to an agent on a computer signed in to your AWS account.</span>{" "}
-              It creates the role with the AWS CLI and tells you the role ARN.
+              {ready.savedRoleArn
+                ? "It updates the existing role with the AWS CLI and tells you the role ARN."
+                : "It creates the role with the AWS CLI and tells you the role ARN."}
               <div>
                 <AgentSetupPrompt
                   prompt={awsAgentSetupPrompt(ready)}
@@ -206,17 +208,23 @@ export function AwsRoleSetup({
                     CreateIdentityProvider to false. On the last page, tick the box that acknowledges the stack creates IAM
                     resources.
                   </li>
-                  <li>When the stack finishes, copy RoleArn from its Outputs tab into the field above.</li>
+                  <li>
+                    When the stack finishes, copy RoleArn from its Outputs tab into the field above. If this role came from
+                    this template before, update that stack (<span className="font-mono text-foreground">{ready.roleName}</span>)
+                    with the new template instead of creating another.
+                  </li>
                 </ol>
               </section>
 
               <section className="space-y-3" aria-labelledby="aws-role-manual">
                 <h3 id="aws-role-manual" className="text-sm font-medium text-foreground">In the IAM console or AWS CLI</h3>
                 <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
-                  <li>Add an OpenID Connect identity provider with the provider URL and audience below.</li>
+                  <li>Add an OpenID Connect identity provider with the provider URL and audience below, unless the account already has one for it.</li>
                   <li>
-                    Create the role <span className="font-mono text-foreground">{ready.roleName}</span> with the trust
-                    policy below, replacing ACCOUNT_ID with your AWS account ID.
+                    {ready.savedRoleArn ? "Update the role " : "Create the role "}
+                    <span className="font-mono text-foreground">{ready.savedRoleArn ?? ready.roleName}</span>{" "}
+                    {ready.savedRoleArn ? "so its trust policy is the one below" : "with the trust policy below"}, replacing
+                    ACCOUNT_ID with your AWS account ID. The CLI commands do either.
                   </li>
                   <li>Attach AWSMCPSignInOAuthAccessPolicy and the permissions agents should have, then paste the role ARN above.</li>
                 </ol>
@@ -245,20 +253,36 @@ export function AwsRoleSetup({
   );
 }
 
-/** The by-hand setup for the AWS CLI; it reads the account ID, so nothing needs editing. */
+/**
+ * The by-hand setup for the AWS CLI. It reads the account ID, reuses an existing identity
+ * provider, and updates the role when it already exists (as on reconnect), so it can be pasted as is.
+ */
 export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: true }>): string {
+  const roleName = setupRoleName(setup);
   const policy = JSON.stringify(setup.trustPolicy, null, 2).replaceAll("ACCOUNT_ID", "${ACCOUNT_ID}");
+  const accessPolicy = setup.accessLevel === "read_only" ? "arn:aws:iam::aws:policy/ReadOnlyAccess" : "REPLACE_WITH_POLICY_ARN";
   return [
+    ...(setup.accessLevel === "read_only" ? [] : ["# Replace REPLACE_WITH_POLICY_ARN below with the managed policy agents should have."]),
     "ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)",
-    `aws iam create-open-id-connect-provider --url ${setup.issuer} --client-id-list ${setup.audience}`,
+    `aws iam get-open-id-connect-provider --open-id-connect-provider-arn "arn:aws:iam::\${ACCOUNT_ID}:oidc-provider/${setup.providerHost}" >/dev/null 2>&1 \\`,
+    `  || aws iam create-open-id-connect-provider --url ${setup.issuer} --client-id-list ${setup.audience}`,
     "cat > paperclip-trust-policy.json <<EOF",
     policy,
     "EOF",
-    `aws iam create-role --role-name ${setup.roleName} --max-session-duration 3600 --assume-role-policy-document file://paperclip-trust-policy.json`,
-    `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn arn:aws:iam::aws:policy/AWSMCPSignInOAuthAccessPolicy`,
-    `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn ${setup.accessLevel === "read_only" ? "arn:aws:iam::aws:policy/ReadOnlyAccess" : "<the managed policy agents should have>"}`,
-    `echo "Role ARN: arn:aws:iam::\${ACCOUNT_ID}:role/${setup.roleName}"`,
+    `if aws iam get-role --role-name ${roleName} >/dev/null 2>&1; then`,
+    `  aws iam update-assume-role-policy --role-name ${roleName} --policy-document file://paperclip-trust-policy.json`,
+    "else",
+    `  aws iam create-role --role-name ${roleName} --max-session-duration 3600 --assume-role-policy-document file://paperclip-trust-policy.json`,
+    "fi",
+    `aws iam attach-role-policy --role-name ${roleName} --policy-arn arn:aws:iam::aws:policy/AWSMCPSignInOAuthAccessPolicy`,
+    `aws iam attach-role-policy --role-name ${roleName} --policy-arn ${accessPolicy}`,
+    `aws iam get-role --role-name ${roleName} --query Role.Arn --output text`,
   ].join("\n");
+}
+
+/** The role to set up: the saved one when the connection already has a role (reconnect), else the connection's. */
+function setupRoleName(setup: Extract<AwsConnectionSetup, { available: true }>): string {
+  return setup.savedRoleArn?.split("/").at(-1) || setup.roleName;
 }
 
 /**
@@ -273,20 +297,27 @@ export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { availab
     ? "The connection is read only, so keep the template's default AccessPolicyArn (ReadOnlyAccess)."
     : "The connection has full access, so ask me which managed policy agents should have, then pass it as AccessPolicyArn. Do not pick one yourself.";
   return [
-    "Set up an AWS IAM role so Paperclip can connect to my AWS account. Use the AWS CLI on this computer.",
+    setup.savedRoleArn
+      ? `Update the AWS IAM role ${setup.savedRoleArn} so Paperclip can connect to my AWS account again. Use the AWS CLI on this computer.`
+      : "Set up an AWS IAM role so Paperclip can connect to my AWS account. Use the AWS CLI on this computer.",
     "",
     "Steps:",
     "1. Run `aws sts get-caller-identity` and tell me which account and identity it shows. If the CLI is not signed in, or I may want a different account, stop and ask me which profile to use.",
     `2. Run \`aws iam list-open-id-connect-providers\`. If one already ends with ${setup.providerHost}, pass CreateIdentityProvider=false; otherwise pass true.`,
     `3. ${policyStep}`,
-    "4. Save the CloudFormation template below to a file and deploy it:",
-    `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
-    `5. Read the stack's RoleArn output (aws cloudformation describe-stacks --stack-name ${stack}) and give it to me, so I can paste it into Paperclip and press Test connection.`,
+    ...(setup.savedRoleArn && setupRoleName(setup) !== setup.roleName
+      ? [`4. The role ${setup.savedRoleArn} already exists and was not made by this template. Update its trust policy with \`aws iam update-assume-role-policy\` to the one in the template (with this account's ID and the identity provider's ARN, creating the provider first if step 2 found none), and make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached. Do not deploy the template.`]
+      : [
+          "4. Save the CloudFormation template below to a file and deploy it. This creates the stack, or updates it if it already exists:",
+          `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
+          `   If it fails because the role ${setup.roleName} already exists outside this stack, do not delete it. Instead update its trust policy with \`aws iam update-assume-role-policy\` to the trust policy in the template (with this account's ID and the identity provider's ARN), make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached, and use that role's ARN in step 5.`,
+        ]),
+    `5. Give me the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setupRoleName(setup)} --query Role.Arn --output text\`), so I can paste it into Paperclip and press Test connection.`,
     "",
     "The role trusts only this one Paperclip connection, and no AWS keys are created or shared:",
     `- Identity provider: ${setup.issuer} (audience ${setup.audience})`,
     `- Connection subject: ${setup.subject}`,
-    `- Role name: ${setup.roleName}`,
+    `- Role name: ${setupRoleName(setup)}`,
     "",
     "CloudFormation template:",
     setup.cloudFormationTemplate.trimEnd(),

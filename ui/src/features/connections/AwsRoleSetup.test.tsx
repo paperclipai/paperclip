@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AwsConnectionSetup } from "@paperclipai/shared";
-import { AwsRoleSetup, awsAgentSetupPrompt, awsSetupErrorMessage, type AwsRoleSetupClient } from "./AwsRoleSetup";
+import { AwsRoleSetup, awsAgentSetupPrompt, awsCliCommands, awsSetupErrorMessage, type AwsRoleSetupClient } from "./AwsRoleSetup";
 import { ApiError } from "@/api/client";
 
 vi.mock("@/api/tools", () => ({ toolsApi: {} }));
@@ -91,7 +91,7 @@ describe("AwsRoleSetup", () => {
     expect(cli).toContain("arn:aws:iam::${ACCOUNT_ID}:oidc-provider/");
     expect(cli).toContain("--role-name paperclip-conn-1");
     expect(cli).toContain("arn:aws:iam::aws:policy/ReadOnlyAccess");
-    expect(cli).toContain('echo "Role ARN: arn:aws:iam::${ACCOUNT_ID}:role/paperclip-conn-1"');
+    expect(cli).toContain("aws iam get-role --role-name paperclip-conn-1 --query Role.Arn --output text");
   });
 
   it("gives the user's agent a prompt that deploys this connection's template and reports the role ARN", () => {
@@ -106,6 +106,29 @@ describe("AwsRoleSetup", () => {
     const full = awsAgentSetupPrompt({ ...READY, accessLevel: "full" } as Ready);
     expect(full).toContain("ask me which managed policy");
     expect(full).toContain("AccessPolicyArn=<policy ARN>");
+  });
+
+  it("updates the saved role on reconnect, with CLI commands that paste as is", async () => {
+    const custom = "arn:aws:iam::123456789012:role/team/existing-ops";
+    const setup = { ...READY, savedRoleArn: custom, accessLevel: "full" } as Ready;
+    await render(setup);
+    expect(container.textContent).toContain("It updates the existing role");
+    await act(async () => { button("Or do it by hand")?.click(); });
+    expect(container.textContent).toContain("Update the role");
+    const cli = awsCliCommands(setup);
+    expect(cli).toContain("if aws iam get-role --role-name existing-ops");
+    expect(cli).toContain("aws iam update-assume-role-policy --role-name existing-ops");
+    expect(cli).toContain("|| aws iam create-open-id-connect-provider");
+    expect(cli).toContain("REPLACE_WITH_POLICY_ARN");
+    expect(cli).not.toMatch(/<[^<>\n]*>/);
+    const prompt = awsAgentSetupPrompt(setup);
+    expect(prompt).toContain(`Update the AWS IAM role ${custom}`);
+    expect(prompt).toContain("Do not deploy the template.");
+    expect(prompt).toContain("aws iam get-role --role-name existing-ops");
+    // A role this template made is updated by deploying the same stack again.
+    const own = awsAgentSetupPrompt({ ...READY, savedRoleArn: ROLE_ARN } as Ready);
+    expect(own).toContain("creates the stack, or updates it if it already exists");
+    expect(own).not.toContain("Do not deploy the template.");
   });
 
   it("asks for the access policy when the connection has full access", async () => {
