@@ -20,6 +20,7 @@ export const budgetPolicies = pgTable(
     isActive: boolean("is_active").notNull().default(true),
     enforcementVersion: integer("enforcement_version").notNull().default(0),
     enforcementDeliveredVersion: integer("enforcement_delivered_version").notNull().default(0),
+    evaluationVersion: integer("evaluation_version").notNull().default(0),
     createdByUserId: text("created_by_user_id"),
     updatedByUserId: text("updated_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

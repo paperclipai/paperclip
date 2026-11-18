@@ -71,7 +71,7 @@ it("reproduces the controller-side remote cwd requirement for plugin-owned launc
   try {
     const { backend, prepareLaunch, launches } = await pluginBackend(root, root, "remote_runner");
     await expect(backend.openSession({ identity: sessionIdentity, workingDirectory: "/controller/workspace" }))
-      .rejects.toThrow("Remote Codex working directory requires an assigned workspace");
+      .rejects.toThrow("Remote agent working directory requires an assigned workspace");
     expect(prepareLaunch).not.toHaveBeenCalled();
     expect(launches).toEqual([]);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -106,10 +106,10 @@ it.each([
     const recovered = await restarted.backend.recoverSession!(snapshot, { signal: new AbortController().signal });
     expect(recovered).toMatchObject({ recovered: true });
     if (!recovered.recovered) throw new Error(recovered.reason);
-    expect((await recovered.session.snapshot()).workingDirectory).toBe(cwd);
+    expect((await recovered.session!.snapshot()).workingDirectory).toBe(cwd);
     // Recovery reuses the saved preparation instead of resolving a new directory.
     expect(restarted.prepareLaunch.mock.calls[0]![1]).toMatchObject({ configurationId: "plugin-run" });
-    await recovered.session.close({ reason: "test complete" });
+    await recovered.session!.close({ reason: "test complete" });
 
     const moved = await pluginBackend(root, join(root, "unused"), "runner_prepared_launch");
     await expect(moved.backend.recoverSession!({ ...snapshot, workingDirectory: join(root, "elsewhere") },

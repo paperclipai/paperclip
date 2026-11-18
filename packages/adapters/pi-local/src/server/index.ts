@@ -1,3 +1,4 @@
+import { normalizeAdapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
@@ -17,8 +18,10 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.cwd) ??
       readNonEmptyString(record.workdir) ??
       readNonEmptyString(record.folder);
+    const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(record.remoteExecution);
     return {
       sessionId,
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(cwd ? { cwd } : {}),
     };
   },
@@ -33,8 +36,10 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.cwd) ??
       readNonEmptyString(params.workdir) ??
       readNonEmptyString(params.folder);
+    const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(params.remoteExecution);
     return {
       sessionId,
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(cwd ? { cwd } : {}),
     };
   },

@@ -23,7 +23,9 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
     from(table: unknown) {
       return {
         where() {
-          return Promise.resolve(rowsForTable(table));
+          return Object.assign(Promise.resolve(rowsForTable(table)), {
+            prepare: () => ({ execute: async () => rowsForTable(table) }),
+          });
         },
       };
     },
@@ -307,7 +309,7 @@ describe("agent auth middleware", () => {
   it.each(["key", "jwt"])("rejects unfinished setup authentication with a %s", async kind => {
     const companyId = randomUUID();
     const agentId = randomUUID();
-    const token = kind === "jwt" ? createLocalAgentJwt(agentId, companyId, "codex_local", randomUUID(), "user-1") : "pcp_setup-test-token";
+    const token = kind === "jwt" ? createLocalAgentJwt(agentId, companyId, "codex_local", randomUUID(), "user-1")! : "pcp_setup-test-token";
     const { db } = createDbState({
       agent: { id: agentId, companyId, status: "paused", lifecycleHolds: ["setup"] },
       ...(kind === "key" ? { agentKey: { id: randomUUID(), agentId, companyId, keyHash: hashToken(token), responsibleUserId: "user-1" } } : {}),

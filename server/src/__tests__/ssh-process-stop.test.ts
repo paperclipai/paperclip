@@ -197,8 +197,9 @@ describe("OpenCode SSH transport process termination", { concurrent: false }, ()
       env: {}, ownedProcessGraceSec: 0.1});
     try {
       expect((await target.finish!(0, 0)).stopped).toBe(true);
-      await expect(promisify(execFile)(target.command, target.args, {timeout: 5_000}))
-        .rejects.toMatchObject({code: 125});
+      const launched = promisify(execFile)(target.command, target.args, {timeout: 5_000});
+      launched.child.stdin?.end(target.stdinPrefix);
+      await expect(launched).rejects.toMatchObject({code: 125});
       expect(await readFile(marker).catch(() => null)).toBeNull();
     } finally {
       await target.finish!(0, 0);
@@ -220,7 +221,8 @@ describe("OpenCode SSH transport process termination", { concurrent: false }, ()
       args: ["-e", "process.on('SIGTERM',()=>process.exit(0));console.log('SPOOL_READY');setInterval(()=>{},1000)"],
       env: {}, ownedProcessGraceSec: 0.1});
     const dir = target.args.at(-1)!.match(/\/tmp\/paperclip-ssh-[a-f0-9-]+/)![0];
-    const proc = spawn(target.command, target.args, {stdio: ["ignore", "pipe", "pipe"]});
+    const proc = spawn(target.command, target.args, {stdio: ["pipe", "pipe", "pipe"]});
+    proc.stdin?.end(target.stdinPrefix);
     let stdout = "";
     proc.stdout.on("data", chunk => {stdout += String(chunk);});
     proc.stderr.resume();

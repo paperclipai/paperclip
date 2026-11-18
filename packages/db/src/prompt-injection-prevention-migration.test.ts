@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import postgres from "postgres";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
@@ -10,6 +10,25 @@ const migrationHash = createHash("sha256").update(migration).digest("hex");
 // SQL published by this PR before its replay guards were added (14a1d73991).
 const originalMigrationHash = "bf087cbc9551b3c07aabffac45c87239ba53d1a095f03807d4ff98718028ea25";
 const statements = migration.split("--> statement-breakpoint").map(statement => statement.trim()).filter(Boolean);
+// Later migrations that redefine a CHECK constraint 0362 also defines. An
+// upgrade that runs 0362 runs these after it, in journal order, so the
+// recovery cases below leave them pending too and let the migrator run them.
+const SHARED_CONSTRAINTS = ["budget_reservations_source_check", "cost_events_usage_kind_check"];
+const laterRedefining = (await Promise.all((await readdir(new URL("./migrations/", import.meta.url)))
+  .filter(name => /^\d{4}_.*\.sql$/.test(name) && Number(name.slice(0, 4)) > 362)
+  .sort()
+  .map(name => readFile(new URL(`./migrations/${name}`, import.meta.url), "utf8"))))
+  .filter(text => SHARED_CONSTRAINTS.some(name => text.includes(`"${name}"`)))
+  .map(text => ({
+    hash: createHash("sha256").update(text).digest("hex"),
+    statements: text.split("--> statement-breakpoint").map(statement => statement.trim()).filter(Boolean),
+  }));
+async function replayLaterMigrations(sql: ReturnType<typeof postgres>) {
+  for (const later of laterRedefining) for (const statement of later.statements) await sql.unsafe(statement);
+}
+async function forgetLaterMigrations(sql: ReturnType<typeof postgres>) {
+  for (const later of laterRedefining) await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${later.hash}`;
+}
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { while (cleanups.length) await cleanups.pop()?.(); });
 
@@ -76,6 +95,7 @@ describe("prompt injection migration replay", () => {
     const before = { shape: await shape(sql), rows: await rows(sql), history: await history(sql) };
     await replay(sql);
     await replay(sql);
+    await replayLaterMigrations(sql);
     expect(await shape(sql)).toEqual(before.shape);
     expect(await rows(sql)).toEqual(before.rows);
     expect(await history(sql)).toEqual(before.history);
@@ -95,6 +115,7 @@ describe("prompt injection migration replay", () => {
     const { sql, url } = await database();
     const expectedShape = await shape(sql);
     await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${migrationHash}`;
+    await forgetLaterMigrations(sql);
     await sql`DROP TABLE prompt_injection_invocations`;
     await sql`DROP TABLE company_prompt_injection_prevention`;
     await sql`ALTER TABLE budget_reservations DROP CONSTRAINT budget_reservations_source_check`;
@@ -114,7 +135,7 @@ describe("prompt injection migration replay", () => {
     expect(await rows(sql)).toEqual(beforeRows);
     const afterHistory = await history(sql);
     expect(afterHistory.slice(0, beforeHistory.length)).toEqual(beforeHistory);
-    expect(afterHistory).toHaveLength(beforeHistory.length + 1);
+    expect(afterHistory).toHaveLength(beforeHistory.length + 1 + laterRedefining.length);
     await replay(sql);
     await applyPendingMigrations(url);
     expect(await history(sql)).toEqual(afterHistory);
@@ -125,6 +146,7 @@ describe("prompt injection migration replay", () => {
     const { sql, url } = await database();
     await seed(sql);
     await sql`UPDATE drizzle.__drizzle_migrations SET hash = ${originalMigrationHash} WHERE hash = ${migrationHash}`;
+    await forgetLaterMigrations(sql);
     const before = { shape: await shape(sql), rows: await rows(sql), history: await history(sql) };
     await applyPendingMigrations(url);
     expect((await inspectMigrations(url)).status).toBe("upToDate");

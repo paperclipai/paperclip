@@ -55,6 +55,7 @@ export interface AdapterConfigFieldsProps {
   openAiDotEnabled?: boolean;
   /** Personal Muse is offered only with its own flag and the native Runner enabled. */
   museEnabled?: boolean;
+  /** The parent Harness control determines the profile; hide runner and ACP agent selectors. */
   hideRunnerHarness?: boolean;
 }
 
@@ -62,7 +63,9 @@ export interface UIAdapterModule extends TranscriptParserSource {
   type: string;
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
-  buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  buildAdapterConfig: (values: CreateConfigValues, context?: {
+    candidateHarnesses?: readonly { agent: "antigravity"; model: string }[];
+  }) => Record<string, unknown>;
   /**
    * Optional issue-chat transcript presentation hints. Shared rendering code
    * resolves these through the registry and never branches on adapter

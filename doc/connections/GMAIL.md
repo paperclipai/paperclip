@@ -247,12 +247,13 @@ deletes the ciphertext on expiry and excludes it from long-term backups. Refresh
 and supported revoke operations handle plaintext only in memory for one bounded
 request.
 
-Removing one managed Google profile revokes only the local Paperclip grant.
-Paperclip does not call Google's token revocation endpoint for that action.
-Google treats revocation as client-wide for the user, so a provider-side revoke
-could also invalidate the user's other managed Gmail, Drive, and Calendar
-profiles. A future provider-level disconnect must present that all-profiles
-effect explicitly.
+Removing a managed Google profile asks Paperclip Cloud to revoke the grant.
+Google treats revocation as client-wide for the user, so the broker revokes at
+Google only when no other live binding it knows of could share the grant, and
+otherwise reports that other connections remain. Paperclip commits the local
+removal first and calls the broker only after that; the answer never changes
+the local result. See "Removing a managed Google connection" in
+[GOOGLE-WORKSPACE.md](GOOGLE-WORKSPACE.md).
 
 ### Configure each originating Paperclip instance
 
@@ -386,6 +387,7 @@ seven-day testing-token expiry.
 | The managed method is unavailable | Confirm the exact profile is in `CLOUD_HARNESS_CONNECTOR_GOOGLE_ENABLED_PROFILES` and its client id and secret reference are configured. |
 | Login starts asking for Gmail | Stop the rollout. The login and Gmail clients or route namespaces have been mixed. |
 | Connector is unavailable | Keep the grant in `needs_reauthorization` or an actionable unavailable state. Never use a login token or another environment's client. |
+| Refresh reports `reason=PROVIDER_REAUTHORIZATION_REQUIRED` | The provider revoked, expired, or already rotated the grant, or the grant no longer matches the profile. Paperclip marks it `needs_reauthorization`; the user reconnects. `reason=PROVIDER_OPERATION_FAILED` is a provider or Cloud outage; retry later. |
 
 ## References
 

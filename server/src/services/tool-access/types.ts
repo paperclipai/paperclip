@@ -1,6 +1,9 @@
+import type { ConnectionManagementContext } from "../connection-management.js";
 import type { Db } from "@paperclipai/db";
 
 export type ActorInfo = {
+  managementContext?: ConnectionManagementContext;
+  responsibleUserId?: string | null;
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
   sessionId?: string | null;
@@ -13,6 +16,7 @@ export type ActorInfo = {
     | "mcp_oauth"
     | "cloud_tenant";
 };
+
 
 export type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 

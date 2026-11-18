@@ -124,28 +124,6 @@ export function extractSecretRefBindingsFromConfig(
   return [...refsByPath.values()];
 }
 
-/** Backward-compatible helper returning only secret IDs. */
-export function extractSecretRefsFromConfig(
-  configJson: unknown,
-  schema?: Record<string, unknown> | null,
-): Set<string> {
-  return new Set(extractSecretRefBindingsFromConfig(configJson, schema).map((ref) => ref.secretId));
-}
-
-/** Backward-compatible helper returning secret IDs grouped by config path. */
-export function extractSecretRefPathsFromConfig(
-  configJson: unknown,
-  schema?: Record<string, unknown> | null,
-): Map<string, Set<string>> {
-  const refs = new Map<string, Set<string>>();
-  for (const ref of extractSecretRefBindingsFromConfig(configJson, schema)) {
-    const paths = refs.get(ref.secretId) ?? new Set<string>();
-    paths.add(ref.configPath);
-    refs.set(ref.secretId, paths);
-  }
-  return refs;
-}
-
 // ---------------------------------------------------------------------------
 // Handler factory
 // ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
-import { RequestCollapsedSidebar } from "@/components/RequestCollapsedSidebar";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -361,7 +360,6 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   if (!selectedCompanyId) {
     return (
       <>
-        {!embedded && <RequestCollapsedSidebar />}
         <EmptyState icon={GanttChartSquare} message="Select an organization to view its work timeline." />
       </>
     );
@@ -396,7 +394,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   const summary = data ? timelineSummary(data, visibleWindow ?? dataWindow(data)) : null;
 
   const rangeControls = (
-    <label className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+    <label data-canonical-toolbar="timeline-range" className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
       Range
       <Segmented
         value={rangePreset}
@@ -438,7 +436,7 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   const toolbar = (
     <div className="flex flex-wrap items-start gap-3">
       {summary && <TimelineSummaryStats summary={summary} />}
-      <div className="ml-auto flex items-center gap-1 pt-3" aria-label="Timeline zoom controls">
+      <div data-canonical-toolbar="timeline-zoom" role="toolbar" className="ml-auto flex items-center gap-1 pt-3" aria-label="Timeline zoom controls">
         <Button
           type="button"
           variant="outline"
@@ -475,7 +473,6 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
 
   return (
     <div className="space-y-6">
-      {!embedded && <RequestCollapsedSidebar />}
       {header}
       {toolbar}
 

@@ -26,6 +26,8 @@ const AUTOMATIC_PAPERCLIP_WORKFLOW_ACTIONS = new Set([
   "create_project", "select_workspace", "request_approval",
 ]);
 
+export const CLAUDE_SELF_SCHEDULING_TOOLS: readonly string[] = Object.freeze(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]);
+
 /** Exact SDK rules for the run's runner-owned Paperclip MCP connection. */
 export function claudePaperclipPermissionRules(
   tools: readonly Readonly<Record<string, unknown>>[],

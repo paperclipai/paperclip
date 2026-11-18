@@ -3,6 +3,11 @@ const REDACTED_URL_VALUE = "REDACTED";
 const SENSITIVE_URL_FIELD_PATTERN =
   /^(?:code|state|nonce|key|[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:[-_]?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*)$/i;
 
+/** The same query-name policy must cover vault storage and reflected errors. */
+export function isRemoteUrlSecretParameter(name: string): boolean {
+  return SENSITIVE_URL_FIELD_PATTERN.test(name);
+}
+
 export const REMOTE_URL_SECRET_CONFIG_PATH = "remote.url";
 
 export interface SplitRemoteUrlCredential {
@@ -27,7 +32,7 @@ export function splitRemoteUrlCredential(value: string): SplitRemoteUrlCredentia
   }
   const secretParameterNames: string[] = [];
   for (const key of [...url.searchParams.keys()]) {
-    if (!SENSITIVE_URL_FIELD_PATTERN.test(key)) continue;
+    if (!isRemoteUrlSecretParameter(key)) continue;
     secretParameterNames.push(key);
     url.searchParams.delete(key);
   }
@@ -48,7 +53,7 @@ export function redactRemoteUrlCredential(value: string): string {
       url.password = "";
     }
     for (const key of [...url.searchParams.keys()]) {
-      if (SENSITIVE_URL_FIELD_PATTERN.test(key)) url.searchParams.set(key, REDACTED_URL_VALUE);
+      if (isRemoteUrlSecretParameter(key)) url.searchParams.set(key, REDACTED_URL_VALUE);
     }
     return url.toString();
   } catch {

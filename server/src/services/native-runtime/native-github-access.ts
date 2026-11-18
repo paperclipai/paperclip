@@ -1,10 +1,12 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import {
   cleanupGitHubOperationLaunchers,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
+  adapterExecutionTargetDuplexObservabilityRecorder,
   githubOperationLauncherDirectory,
   prepareGitHubOperationLaunchers,
+  runAdapterExecutionTargetProcess,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
@@ -12,6 +14,8 @@ import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launc
 type Binding = { companyId: string; agentId: string; issueId: string; runId: string };
 type LauncherInput = Parameters<typeof prepareGitHubOperationLaunchers>[0];
 export type NativeGitHubAccess = Awaited<ReturnType<typeof createNativeGitHubAccess>>;
+
+const launcherOwners = new Map<string, symbol>();
 
 /** A process-lifetime transport, with authority only while its controller owns a run.
  * No run token or GitHub credential is stored in the provider's environment/files.
@@ -24,15 +28,27 @@ export async function createNativeGitHubAccess(input: {
   env: NodeJS.ProcessEnv;
   resolveCredentials: (binding: Binding) => Promise<unknown>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  launcherKey?: string;
 }, startBridge = startAdapterExecutionTargetPaperclipBridge) {
   const duplexRequested = adapterExecutionTargetEnablesSandboxDuplexBridge(input.target);
   const token = randomBytes(32).toString("hex");
   const location = { runId: `native-session-${randomUUID()}`, target: input.target };
+  const launcherLocation = input.launcherKey === undefined ? location : {
+    runId: `native-github-${createHash("sha256").update(input.launcherKey).digest("hex").slice(0, 32)}`,
+    target: input.target,
+  };
+  const launcherDirectory = githubOperationLauncherDirectory(launcherLocation);
+  const launcherOwner = Symbol("GitHub launcher owner");
   let active: Binding | null = null;
   let stopped = false;
   let ready = true;
   let stopping: Promise<void> | undefined;
   let bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+  const stopBridge = async () => {
+    bridge?.markOrderlyCompletion?.();
+    await bridge?.stop();
+    bridge = null;
+  };
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Content-Type", "application/json");
@@ -75,15 +91,17 @@ export async function createNativeGitHubAccess(input: {
   });
   server.requestTimeout = 15_000;
   server.headersTimeout = 10_000;
-  const stop = () => stopping ??= (async () => {
+  const stop = (options: { preserveLaunchers?: boolean } = {}) => stopping ??= (async () => {
     stopped = true;
     active = null;
-    bridge?.markOrderlyCompletion?.();
     server.closeAllConnections();
+    const removeLaunchers = !options.preserveLaunchers && launcherOwners.get(launcherDirectory) === launcherOwner;
+    if (removeLaunchers) launcherOwners.delete(launcherDirectory);
     const results = await Promise.allSettled([
-      bridge?.stop(),
+      stopBridge(),
       new Promise<void>(resolve => server.close(() => resolve())),
-      cleanupGitHubOperationLaunchers(location),
+      ...(launcherLocation !== location ? [cleanupGitHubOperationLaunchers(location)] : []),
+      ...(removeLaunchers ? [cleanupGitHubOperationLaunchers(launcherLocation)] : []),
     ]);
     if (results.some(result => result.status === "rejected")) {
       await input.onLog?.("stderr", "[paperclip] GitHub session cleanup incomplete.\n").catch(() => undefined);
@@ -97,7 +115,7 @@ export async function createNativeGitHubAccess(input: {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("GitHub broker did not listen");
     const url = `http://127.0.0.1:${address.port}`;
-    try {
+    const startVerifiedBridge = async (enableSandboxDuplexBridge: boolean) => {
       bridge = await startBridge({
         ...location,
         runtimeRootDir: input.target?.kind === "remote"
@@ -106,28 +124,66 @@ export async function createNativeGitHubAccess(input: {
         adapterKey: "native-github",
         hostApiToken: token,
         hostApiUrl: url,
-        enableSandboxDuplexBridge: duplexRequested,
+        enableSandboxDuplexBridge,
+        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(input.target),
         onLog: input.onLog,
       });
       if (input.target?.kind === "remote" && !bridge) {
         throw new Error("GitHub session requires a remote callback bridge");
       }
+      if (!bridge) return null;
+      // A gateway greeting does not prove that HTTP/2 can carry a request.
+      // Probe from the execution target before publishing its endpoint. No run
+      // is active yet, so this checks transport/authentication without acquiring
+      // a GitHub credential or performing any provider operation.
+      const probe = await runAdapterExecutionTargetProcess(location.runId, input.target, "node", ["-e", `
+        (async () => {
+          const response = await fetch(process.env.PAPERCLIP_API_URL + '/runtime-tools/github/credentials', {
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+            headers: { authorization: 'Bearer ' + process.env.PAPERCLIP_API_KEY, 'content-type': 'application/json' },
+            body: '{}',
+          });
+          const body = await response.json();
+          if (response.status !== 403 || body.error !== 'No active GitHub run') process.exitCode = 1;
+        })().catch(() => { process.exitCode = 1; });
+      `], { cwd: input.cwd, env: bridge.env, timeoutSec: 15, graceSec: 1, onLog: async () => {} });
+      if (probe.exitCode !== 0 || probe.timedOut || bridge.readRunDisposition?.().failed) {
+        throw new Error("GitHub session transport verification failed");
+      }
+      return bridge;
+    };
+    try {
+      try {
+        bridge = await startVerifiedBridge(duplexRequested);
+      } catch (error) {
+        if (!duplexRequested || bridge?.env.PAPERCLIP_API_BRIDGE_MODE !== "http2_v1") throw error;
+        // Only the inactive readiness probe can have crossed this bridge.
+        // Replacing it cannot replay an agent command or change its identity.
+        await stopBridge();
+        await input.onLog?.("stderr", "[paperclip] GitHub HTTP/2 startup check failed; retrying with the file bridge.\n").catch(() => undefined);
+        bridge = await startVerifiedBridge(false);
+      }
     } catch {
       // GitHub remains optional. Stage anonymous wrappers for this session;
       // the supervisor retries transport setup on the next run.
       ready = false;
+      // Stop an unverified transport now, including its remote queue polling.
+      // Retain ownership if cleanup throws so the outer teardown can retry it.
+      await stopBridge();
       await new Promise<void>(resolve => server.close(() => resolve()));
       await input.onLog?.("stderr", "[paperclip] GitHub runtime transport unavailable; continuing without managed GitHub access.\n").catch(() => undefined);
     }
+    const broker = {
+      url: ready ? bridge?.env.PAPERCLIP_API_URL ?? url : "",
+      token: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
+    };
+    launcherOwners.set(launcherDirectory, launcherOwner);
     const env = await prepareGitHubOperationLaunchers({
-      ...location, cwd: input.cwd,
+      ...launcherLocation, cwd: input.cwd, ...(input.target?.kind === "remote" ? { broker } : {}),
       env: {
-        ...githubBrokerEnvironment({ PATH: input.env.PATH }, {
-          url: ready ? bridge?.env.PAPERCLIP_API_URL ?? url : "",
-          token: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
-        }),
+        ...githubBrokerEnvironment({ PATH: input.env.PATH }, broker),
         // Never retain an old run's bridge authentication override.
-        PAPERCLIP_GITHUB_BRIDGE_TOKEN: ready ? bridge?.env.PAPERCLIP_API_KEY ?? token : "",
+        PAPERCLIP_GITHUB_BRIDGE_TOKEN: broker.token,
       },
     });
     return {

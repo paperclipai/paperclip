@@ -1,5 +1,7 @@
+import os from "node:os";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
@@ -7,7 +9,13 @@ import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetSessionIdentity,
+  normalizeAdapterExecutionTargetSessionIdentity,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  ensureAdapterExecutionTargetDirectory,
+  ensureAdapterExecutionTargetLocalWorkspace,
+  ensureAdapterExecutionTargetCommandResolvable,
+  isAdapterExecutionTargetUnavailableError,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -31,6 +39,75 @@ function sshExecutionTarget(): AdapterSshExecutionTarget {
     },
   };
 }
+
+describe("persisted execution target identities", () => {
+  it("retains SSH session guards without persisting connection credentials or socket paths", () => {
+    const target = sshExecutionTarget();
+    target.spec.useHostAuth = false;
+    const identity = adapterExecutionTargetSessionIdentity(target)!;
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, privateKey: "credential canary", tailscaleSocket: "/private/socket", unexpected: { secret: "canary" } })).toEqual(identity);
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, port: "22" })).toBeNull();
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, host: {} })).toBeNull();
+  });
+  it("retains sandbox lease guards and rejects unknown transports", () => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", providerKey: "fixture", environmentId: "environment", leaseId: "lease" };
+    const identity = adapterExecutionTargetSessionIdentity(target)!;
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, credential: "canary" })).toEqual(identity);
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, transport: "unknown" })).toBeNull();
+  });
+});
+
+describe("execution target validation failures", () => {
+  afterEach(() => vi.restoreAllMocks());
+  const result = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+
+  it.each(["directory", "command"] as const)("preserves temporary %s probe failures", async check => {
+    for (const failure of ["timeout", "transport", "interrupted"] as const) {
+      const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", runner: {
+        execute: vi.fn(async () => {
+          if (failure === "transport") throw Object.assign(new Error("private transport detail"), { code: "ECONNRESET" });
+          return { ...result, exitCode: null, timedOut: failure === "timeout", signal: failure === "interrupted" ? "SIGTERM" : null };
+        }),
+      } };
+      const work = check === "directory"
+        ? ensureAdapterExecutionTargetDirectory("test", target, "/workspace", { cwd: "/workspace", env: {} })
+        : ensureAdapterExecutionTargetCommandResolvable("opencode", target, "/workspace", {});
+      const error = await work.catch(error => error);
+      expect(isAdapterExecutionTargetUnavailableError(error)).toBe(true);
+    }
+  });
+
+  it("preserves SSH disconnections instead of reporting a missing directory", async () => {
+    vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("private SSH detail"), { code: 255 }));
+    const error = await ensureAdapterExecutionTargetDirectory("test", sshExecutionTarget(), "/workspace", {
+      cwd: "/workspace", env: {},
+    }).catch(error => error);
+    expect(isAdapterExecutionTargetUnavailableError(error)).toBe(true);
+  });
+
+  it.each(["directory", "command"] as const)("retains a confirmed missing %s as a configuration failure", async check => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", runner: {
+      execute: vi.fn(async () => ({ ...result, exitCode: 1 })),
+    } };
+    const error = await (check === "directory"
+      ? ensureAdapterExecutionTargetDirectory("test", target, "/workspace", { cwd: "/workspace", env: {} })
+      : ensureAdapterExecutionTargetCommandResolvable("opencode", target, "/workspace", {})).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(isAdapterExecutionTargetUnavailableError(error)).toBe(false);
+  });
+
+  it("does not turn an installation timeout into a permanent missing command", async () => {
+    const execute = vi.fn().mockResolvedValueOnce({ ...result, exitCode: 1 })
+      .mockResolvedValueOnce({ ...result, exitCode: null, timedOut: true })
+      .mockResolvedValueOnce({ ...result, exitCode: 1 });
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", runner: { execute } };
+    const error = await ensureAdapterExecutionTargetCommandResolvable("opencode", target, "/workspace", {}, {
+      installCommand: "install-fixture",
+    }).catch(error => error);
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(isAdapterExecutionTargetUnavailableError(error)).toBe(true);
+  });
+});
 
 describe("runAdapterExecutionTargetShellCommand", () => {
   afterEach(() => {
@@ -133,6 +210,20 @@ describe("runAdapterExecutionTargetShellCommand", () => {
     expect(onLog).toHaveBeenCalledWith("stderr", "partial stderr");
   });
 
+  it("returns a timedOut result for the rejection runSshCommand gives when its timeout kills ssh", async () => {
+    vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("Process exited with code -1"), {
+      code: null,
+      signal: "SIGTERM",
+      killed: true,
+      stdout: "",
+      stderr: "",
+    }));
+
+    const result = await runAdapterExecutionTargetShellCommand("run-2b", sshExecutionTarget(), "sleep 10", { cwd: "/tmp/local", env: {} });
+
+    expect(result).toMatchObject({ exitCode: null, signal: "SIGTERM", timedOut: true });
+  });
+
   it("returns the SSH process exit code for non-zero remote command failures", async () => {
     vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("non-zero exit"), {
       code: 17,
@@ -181,6 +272,14 @@ describe("runAdapterExecutionTargetShellCommand", () => {
         strictHostKeyChecking: true,
       },
     })).toBe(false);
+  });
+
+  it("uses a managed home on SSH when the agent has a configured AI connection", () => {
+    const target = sshExecutionTarget();
+    expect(adapterExecutionTargetUsesManagedHome(target, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: false } }, true)).toBe(true);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: true } }, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome(null, true)).toBe(false);
   });
 });
 
@@ -387,5 +486,23 @@ describe("GitHub launcher lifecycle", () => {
       cwd: "/remote/workspace", timeoutMs: 5_000 });
     await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
     expect(runner.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("controller workspace preparation", () => {
+  it.each(["local", "copy", "in_place"] as const)("keeps %s workspace access on its owning filesystem", async mode => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-path-"));
+    try {
+      const mount = path.join(root, "remote-filesystem");
+      await writeFile(mount, "Not a controller directory");
+      const cwd = path.join(mount, "workspace");
+      const target = mode === "local" ? null : { ...sshExecutionTarget(), remoteCwd: cwd,
+        workspaceRealization: { mode, authoritativeRoot: cwd, pathAliases: [], outboundRestorePaths: [] } };
+      const prepare = ensureAdapterExecutionTargetLocalWorkspace(target, cwd);
+      if (mode === "in_place") await expect(prepare).resolves.toBeUndefined();
+      else await expect(prepare).rejects.toMatchObject({ code: "ENOTDIR" });
+      expect(await readFile(mount, "utf8")).toBe("Not a controller directory");
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

@@ -20,7 +20,7 @@ it("reports missing Copilot authentication before spawn and releases admission o
       agentServerPackageJsonPath: join(root, "provider/package.json"), agentRuntimePackageJsonPath: null, openCommand }),
     openRuntime, reportRetainedCleanupFailure: () => {},
   };
-  const options = { agent: "copilot" as const, model: "explicit-model", normalizedSessionId: "copilot-auth-test",
+  const options = { agent: "copilot" as const, model: "explicit-model", permissionMode: "approve-reads" as const, normalizedSessionId: "copilot-auth-test",
     runtimeDirectory, workingDirectory, providerPolicy: { readOnly: false } };
   try {
     await expect(AcpxRuntimeHost.open({ ...options, environment: { GH_TOKEN: "ambient-forbidden", GITHUB_TOKEN: "ambient-forbidden" } }, dependencies))

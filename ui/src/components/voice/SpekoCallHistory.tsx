@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { voiceSessionsApi } from "@/api/voiceSessions";
 import { voicePhoneApi } from "@/api/voicePhone";
 import { voiceHistoryApi } from "@/api/voiceHistory";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 function charge(amount: string | null) {
   if (amount === null) return "Not yet reported";
@@ -17,7 +19,7 @@ export function SpekoCallReport({ report }: { report: VoiceCallReport }) {
   return <div className="space-y-3">
     <dl className="flex flex-wrap gap-4 text-sm"><div><dt className="text-muted-foreground">Speko charge</dt><dd>{charge(report.costMicroUsd)}</dd></div>{report.durationSeconds !== null && <div><dt className="text-muted-foreground">Duration</dt><dd>{report.durationSeconds} seconds</dd></div>}</dl>
     <p className="text-xs text-muted-foreground">Agent costs are separate. Recordings remain in Speko.</p>
-    {report.transcript.length ? <ol aria-label="Call transcript" className="space-y-3">{report.transcript.map(turn => <li key={turn.id} className="min-w-0"><p className="text-xs font-medium text-muted-foreground">{turn.speaker === "caller" ? "You" : "Agent"}{turn.interrupted ? " · interrupted" : ""}</p><p className="whitespace-pre-wrap break-words text-sm">{turn.text}</p></li>)}</ol>
+    {report.transcript.length ? <ol aria-label="Call transcript" className={cn("space-y-3", ANALYTICS_MASK_CLASS)}>{report.transcript.map(turn => <li key={turn.id} className="min-w-0"><p className="text-xs font-medium text-muted-foreground">{turn.speaker === "caller" ? "You" : "Agent"}{turn.interrupted ? " · interrupted" : ""}</p><p className="whitespace-pre-wrap break-words text-sm">{turn.text}</p></li>)}</ol>
       : <p className="text-sm text-muted-foreground">{report.status === "unavailable" ? "The transcript is unavailable. Paperclip will retry while Speko finishes the report." : report.status === "pending" ? "The transcript will appear after Speko finishes the call report." : "Speko did not provide a transcript for this call."}</p>}
   </div>;
 }
@@ -55,8 +57,8 @@ export function SpekoCallHistoryView({ entries = [], unapprovedCalls = [], loadi
   </section>;
 }
 export function useSpekoCallHistory(companyId: string, endpointId: string, enabled = true) {
-  const query = useQuery({ queryKey: ["speko-history", companyId, endpointId], queryFn: () => voiceHistoryApi.list(companyId, endpointId), enabled, retry: false, refetchInterval: enabled ? 30_000 : false });
-  const incoming = useQuery({queryKey: ["speko-unapproved-history", companyId, endpointId], queryFn: () => voicePhoneApi.history(companyId, endpointId), retry: false, enabled: enabled && query.isSuccess, refetchInterval: enabled ? 30_000 : false});
+  const query = useQuery({ queryKey: ["speko-history", companyId, endpointId], queryFn: () => voiceHistoryApi.list(companyId, endpointId), enabled, refetchInterval: enabled ? 30_000 : false });
+  const incoming = useQuery({queryKey: ["speko-unapproved-history", companyId, endpointId], queryFn: () => voicePhoneApi.history(companyId, endpointId), enabled: enabled && query.isSuccess, refetchInterval: enabled ? 30_000 : false});
   const ending = useMutation({mutationFn: (sessionId: string) => voiceSessionsApi.end(companyId, sessionId), onSuccess: () => query.refetch()});
   return { entries: query.data ?? [], unapprovedCalls: incoming.data ?? [], loading: query.isLoading || incoming.isLoading, error: query.error?.message, incomingError: incoming.error?.message, endError: ending.error?.message, endingSessionId: ending.isPending ? ending.variables : undefined,
     onEnd: (sessionId: string) => ending.mutate(sessionId), onRetry: () => { ending.reset(); void query.refetch(); void incoming.refetch(); } };

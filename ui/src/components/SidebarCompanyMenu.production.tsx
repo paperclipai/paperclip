@@ -38,7 +38,8 @@ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { useSignOut } from "@/hooks/useSignOut";
 import { queryKeys } from "@/lib/queryKeys";
-import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useSidebar } from "../context/SidebarContext";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 
@@ -158,8 +159,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
   const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
     useCompany();
   const { openOnboarding } = useDialogActions();
-  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
-  const rail = collapsed && !peeking;
+  const { isMobile, setSidebarOpen } = useSidebar();
   const location = useLocation();
   const navigate = useNavigate();
   const open = controlledOpen ?? internalOpen;
@@ -179,7 +179,6 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { orderedCompanies, persistOrder } = useCompanyOrder({
@@ -272,23 +271,21 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
               : `Open ${switcherNoun} switcher`
           }
         >
-          <span className="flex min-w-0 flex-1 items-center gap-2">
+          {/* Customer data: the organization name stays masked in session replay. */}
+          <span className={cn("flex min-w-0 flex-1 items-center gap-2", ANALYTICS_MASK_CLASS)}>
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             {/* The header has room for ~110px of name beside the collapse
                 control (~142px on mobile, which hides it) — search moved to
                 the nav to buy that width. A name that still
                 truncates stays hover-recoverable via title. */}
             <span
-              className={cn(
-                "min-w-0 truncate text-sm font-bold text-foreground",
-                rail && SIDEBAR_RAIL_HIDDEN_LABEL,
-              )}
+              className="min-w-0 truncate text-sm font-bold text-foreground"
               title={currentName ?? undefined}
             >
               {currentName ?? `Select ${switcherNoun}`}
             </span>
           </span>
-          {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
+          <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

@@ -1,4 +1,5 @@
 import { AgentIdentity } from "./AgentIdentity";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
@@ -27,6 +28,7 @@ import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -748,6 +750,7 @@ export function CommentThread({
   composerDisabledReason = null,
   externalReferences,
 }: CommentThreadProps) {
+  const submitKey = useComposerSubmitKey();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -959,7 +962,7 @@ export function CommentThread({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="space-y-4">
+    <div className={cn("space-y-4", ANALYTICS_MASK_CLASS)}>
       <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
 
       <TimelineList
@@ -1030,6 +1033,7 @@ export function CommentThread({
             placeholder="Leave a comment..."
             mentions={mentions}
             onSubmit={handleSubmit}
+            submitKey={submitKey}
             imageUploadHandler={imageUploadHandler}
             contentClassName="min-h-(--sz-60px) text-sm"
           />

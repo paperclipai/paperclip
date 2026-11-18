@@ -4,10 +4,11 @@ import type { OpenCodeCompletionFeedback } from "../drivers/opencode/opencode-se
 
 /** Preserve the exact call binding and the controller's acceptance/rejection. */
 export function openCodeProxyCompletionFeedback(
-  request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+  request: (method: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>,
 ): OpenCodeCompletionFeedback {
-  return async (result, call) => {
-    const response = await request("item/tool/call", { ...call, arguments: result });
+  return async (result, { signal, ...call }) => {
+    // The signal withdraws a still-queued request; it is never sent as data.
+    const response = await request("item/tool/call", { ...call, arguments: result }, signal);
     if (!response || typeof response !== "object" || Array.isArray(response))
       throw new Error("Completion controller returned an invalid response");
     const value = response as Record<string, unknown>;

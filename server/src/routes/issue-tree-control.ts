@@ -6,6 +6,8 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { resumePauseInterruptedWork as resumeInterruptedWork } from "../services/issue-tree-resume.js";
+import { ISSUE_TREE_RESUME_EXECUTABLE_STATUSES } from "../services/issue-tree-control.js";
 import { conflict } from "../errors.js";
 import {
   createIssueTreeHoldSchema,
@@ -26,7 +28,6 @@ import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
-const RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 
 function errorToMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -90,6 +91,33 @@ export function issueTreeControlRoutes(
     const rootIssueId = req.params.id as string;
     const root = await issuesSvc.getById(rootIssueId);
     return root;
+  }
+
+  async function resumePauseInterruptedWork(
+    root: { id: string; companyId: string },
+    holdId: string,
+    actor: ReturnType<typeof getActorInfo>,
+    /** Snapshot members already received an explicit wake. */
+    options: { skipMembers?: boolean } = {},
+  ) {
+    // A pause Stop is an operator hold. Re-dispatch the work it interrupted
+    // once, under current admission gates; never replay uncertain actions.
+    const hold = await treeControlSvc.getHold(root.companyId, holdId);
+    if (!hold || hold.mode !== "pause") return [];
+    // Tasks under the tree now include ones added after the snapshot, whose
+    // work an overlapping hold that was released earlier may have refused.
+    const currentTree = await treeControlSvc.listTreeIssues(root.companyId, hold.rootIssueId);
+    return resumeInterruptedWork(db, {
+      companyId: root.companyId,
+      issueIds: [...(options.skipMembers ? [] : (hold.members ?? []).map((member) => member.issueId)),
+        ...currentTree.map((issue) => issue.id)],
+      // Gates also refused work for this hold on tasks moved out of the tree since.
+      suppressedByHoldId: hold.id,
+      excludeIssueIds: options.skipMembers ? (hold.members ?? []).map((member) => member.issueId) : [],
+      rootIssueId: root.id,
+      actor,
+      wakeup: (agentId, opts) => heartbeat.wakeup(agentId, opts),
+    });
   }
 
   router.post("/issues/:id/tree-control/preview", validate(previewIssueTreeControlSchema), async (req, res) => {
@@ -356,6 +384,14 @@ export function issueTreeControlRoutes(
       }
     }
 
+    if (result.hold.mode === "resume") {
+      const wakeFailures: Array<{ issueId: string; message: string }> = [];
+      for (const pauseHoldId of result.resumedPauseHoldIds ?? []) {
+        wakeFailures.push(...await resumePauseInterruptedWork(root, pauseHoldId, actor));
+      }
+      if (wakeFailures.length) result = { ...result, wakeFailures } as typeof result;
+    }
+
     res
       .status(result.hold.mode === "restore" || result.hold.mode === "resume" ? 200 : 201)
       .json(result);
@@ -436,15 +472,13 @@ export function issueTreeControlRoutes(
         const activeHold = await treeControlSvc.getHold(root.companyId, holdId);
         const issueIds =
           activeHold?.mode === "pause" && activeHold.rootIssueId === root.id
-            ? (activeHold.members ?? [])
-                .filter((member) => !member.skipped)
-                .map((member) => member.issueId)
+            ? (activeHold.members ?? []).map((member) => member.issueId)
             : [];
         if (issueIds.length > 0) {
           const candidates = await db.select({ id: issueRows.id, identifier: issueRows.identifier })
             .from(issueRows).where(and(
               eq(issueRows.companyId, root.companyId), inArray(issueRows.id, issueIds),
-              inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
+              inArray(issueRows.status, ISSUE_TREE_RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
             ));
           for (const task of candidates) {
             const blocked = await getExecutionBlocker(db, root.companyId, task.id);
@@ -489,16 +523,18 @@ export function issueTreeControlRoutes(
       const wakeFailures: Array<{ issueId: string; message: string }> = [];
       if (hold.mode === "pause" && req.body.metadata?.wakeAgents === true) {
         for (const member of hold.members ?? []) {
-          if (member.skipped) continue;
           try {
             const issue = await issuesSvc.getById(member.issueId);
             if (
               !issue ||
               issue.companyId !== root.companyId ||
               !issue.assigneeAgentId ||
-              !RESUME_EXECUTABLE_STATUSES.includes(issue.status)
+              !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)
             )
               continue;
+            // The snapshot may predate reopening a task or releasing another
+            // pause. Current task state and remaining holds govern execution.
+            if (await treeControlSvc.getActivePauseHoldGate(root.companyId, issue.id)) continue;
             await heartbeat.wakeup(issue.assigneeAgentId, {
               source: "assignment",
               triggerDetail: "system",
@@ -542,6 +578,13 @@ export function issueTreeControlRoutes(
             ).catch(() => null);
           }
         }
+      }
+
+      // An explicit wake above already covers every executable member, but not
+      // tasks outside the snapshot whose work a gate refused for this hold.
+      if (hold.mode === "pause") {
+        wakeFailures.push(...await resumePauseInterruptedWork(root, hold.id, actor,
+          { skipMembers: req.body.metadata?.wakeAgents === true }));
       }
 
       res.json({ ...hold, ...(wakeFailures.length ? { wakeFailures } : {}) });

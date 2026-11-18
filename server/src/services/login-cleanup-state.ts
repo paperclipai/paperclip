@@ -18,10 +18,10 @@ export function orphanLoginLeases(db: Db, now = new Date()) {
     notExists(db.select({ id: adapterAuthSessions.id }).from(adapterAuthSessions).where(and(
       eq(adapterAuthSessions.companyId, environmentLeases.companyId),
       eq(adapterAuthSessions.environmentId, environmentLeases.environmentId),
+      sql`${adapterAuthSessions.id}::text = ${environmentLeases.metadata}->>${LOGIN_LEASE_SESSION_TAG_KEY}`,
       or(
         eq(adapterAuthSessions.providerLeaseId, environmentLeases.providerLeaseId),
         and(
-          sql`${adapterAuthSessions.id}::text = ${environmentLeases.metadata}->>${LOGIN_LEASE_SESSION_TAG_KEY}`,
           inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_ACTIVE_STATUSES]),
           sql`greatest(${adapterAuthSessions.expiresAt}, case when ${adapterAuthSessions.status} = 'promoting' then ${adapterAuthSessions.promotionExpiresAt} end) > ${now.toISOString()}::timestamptz`,
         ),

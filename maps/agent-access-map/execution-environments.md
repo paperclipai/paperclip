@@ -109,6 +109,14 @@ only confirmed cleanup permits recording it. A draft probe does not record saved
 qualification. Reading stored qualification does not lease/provision a target and
 does not grant an agent permission to probe or manage that target.
 
+Managed Cloud images do not require saved qualification for runner discovery
+or execution. The server checks company access before applying this policy.
+Execution uses the platform-selected image and keeps runtime startup checks.
+Self-hosted environments and active captured custom images keep qualification.
+This exception does not grant access to the probe endpoints.
+The active Cloud provisioner configuration must cover the provider; a leftover
+metadata marker is insufficient. Discovery does not resolve provider secrets.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/environments.ts#L353)
 at the reviewed commit above.
 
@@ -173,8 +181,30 @@ plugin capability does not authorize the agent to change its environment.
 The [integration fixture](../../server/src/__tests__/plugin-runner-task.integration.test.ts)
 exercises the host and SDK with synthetic tasks and a mocked WebSocket.
 The task API does not transfer files or reveal guest filesystem paths.
+Controller replacement preserves the original task lease and run identity.
+Current company, agent, workspace, and lease checks still gate state reads and
+connection acquisition. Reconnection adds no agent management permission or
+replacement task submission. The integration covers this with synthetic tasks;
+it does not establish deployed plugin recovery.
+Successful warm tasks can refresh their control connection through the current
+retained lease. Expired, superseded, retiring, and stopped leases remain denied.
+The [focused policy tests](../../server/src/__tests__/environment-task-runtime.test.ts)
+cover these checks; this is not live provider verification.
 This source update does not qualify live agent access, warm retention, or a provider.
 See the [execution contract](../../doc/plugins/PLUGIN_RUNNER_EXECUTION.md).
+Managed GitHub shell selectors are controller-owned. Task overrides cannot set
+BASH_ENV, ZDOTDIR, GH_CONFIG_DIR or the launcher-directory marker. Stored bindings
+are stripped before secret resolution, and configured environment projections
+reject shell selectors. The native qualified executable checks still apply.
+
+Same-run checkpoint recovery also uses the saved lease path after a turn omits
+its completion result. It requires verified prior termination, retained session
+state, and matching company, agent, workspace, and complete Runner identity.
+The [executor regression](../../server/src/services/native-runtime/native-session-executor.test.ts)
+checks checkpoint retrieval and identity/termination denials. The
+[lease authority fixture](../../server/src/__tests__/environment-task-authority.integration.test.ts)
+checks the same-run read through the database-backed task API. These are
+controlled regressions; live provider acceptance remains separate.
 
 ## `images`
 
@@ -213,3 +243,11 @@ Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and
 project set. New preparation removes old validation. Core checks the saved
 validation again in the dispatch update.
+
+Plugin task providers can advertise `githubCredentialBrokerVersion: 1` and receive
+a live-run capability during preparation. This adds no agent management API.
+Core resolves accepted identity, grants, company scope and trust at command time.
+The plugin owns the command implementation; no particular script is required.
+[Broker handoff coverage](../../server/src/services/native-runtime/plugin-runner-task.test.ts)
+checks capability changes across warm turns. This is contract coverage, not live
+authenticated push acceptance.

@@ -263,7 +263,7 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
           authorAgentId: entry.comment.authorAgentId,
           authorUserId: entry.comment.authorUserId,
         });
-        if (!owns) {
+        if (!owns && !(input.actor.actorType === "user" && entry.canDiscard)) {
           throw new QueuedCommentMutationForbiddenError("Only the queued message author can discard it");
         }
 

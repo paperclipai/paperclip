@@ -5,7 +5,6 @@ import { PluginLauncherProvider } from "@/plugins/launchers";
 import { Link, Route, Routes } from "@/lib/router";
 import { Browse } from "@/pages/apps/Browse";
 import { AssistantConnection } from "@/pages/apps/AssistantConnection";
-import { InstanceExperimentalSettings } from "@/pages/InstanceExperimentalSettings";
 import { PublicMcpPresenter } from "../../support/public-mcp-presenter";
 import { connectedUser, installPublicMcpFixture } from "../../fixtures/publicMcp";
 
@@ -14,7 +13,6 @@ function ConnectionJourney({ assistant = "opencode" }: { assistant?: "codex" | "
     <Route path="/:companyPrefix" element={<Layout />}>
       <Route path="apps" element={<Browse />} />
       <Route path="apps/assistant-connection" element={<AssistantConnection initialAssistant={assistant} />} />
-      <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
       <Route path="*" element={<Link className="text-sm underline" to="/apps">Return to Connections</Link>} />
     </Route>
   </Routes></PluginLauncherProvider>;
@@ -25,8 +23,8 @@ const meta = {
   title: "Apps, channels, and extensions/Tool gateways and access profiles/Assistant connections/Start here",
   component: ConnectionJourney,
   parameters: {
-    layout: "fullscreen", initialEntries: ["/PAP/apps"], fixture: { enabled: false, empty: true },
-    docs: { description: { component: "Begin inside Paperclip. Open Assistant Connection (MCP), follow its Experimental settings link if needed, then choose your assistant. These are production pages in the real app shell; API responses are fixtures. Follow the displayed commands in a live instance to launch browser sign-in and consent. Storybook does not run a terminal, grant access, or simulate a successful OpenCode conversation. Consent states have their own stories. The Connected checkpoint represents returning after a real grant, not clicking a mock connect button." } },
+    layout: "fullscreen", initialEntries: ["/PAP/apps"], fixture: { empty: true },
+    docs: { description: { component: "Begin inside Paperclip. Open Assistant Connection (MCP), then choose your assistant. These are production pages in the real app shell; API responses are fixtures. Follow the displayed commands in a live instance to launch browser sign-in and consent. Storybook does not run a terminal, grant access, or simulate a successful OpenCode conversation. Consent states have their own stories. The Connected checkpoint represents returning after a real grant, not clicking a mock connect button." } },
     paperclip: {
       "capabilities": [
         "gateways-profiles/client-connect"
@@ -41,12 +39,11 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 export const GuidedWalkthrough: Story = { render: () => <PublicMcpPresenter /> };
 export const Connections: Story = {};
-export const EnableSetup: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"] } };
-export const ConnectionStatusUnavailable: Story = { parameters: { fixture: { enabled: true, connectionsUnavailable: true } } };
-export const OpenCodeSetup: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"], fixture: { enabled: true, empty: true } } };
+export const ConnectionStatusUnavailable: Story = { parameters: { fixture: { connectionsUnavailable: true } } };
+export const OpenCodeSetup: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"], fixture: { empty: true } } };
 export const CodexSetup: Story = { ...OpenCodeSetup, args: { assistant: "codex" } };
 export const ClaudeSetup: Story = { ...OpenCodeSetup, args: { assistant: "claude" } };
-export const Connected: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"], fixture: { enabled: true, empty: false, connections: [
+export const Connected: Story = { parameters: { initialEntries: ["/PAP/apps/assistant-connection"], fixture: { empty: false, connections: [
   { id: "opencode", companyId: "company-storybook", companyName: "Paperclip", clientName: "OpenCode", user: connectedUser, scopes: ["paperclip:read", "paperclip:write", "offline_access"], createdAt: "2026-10-05T12:00:00Z", revokedAt: null },
   { id: "other-org", companyId: "another-company", companyName: "Other organization", clientName: "Private other client", scopes: ["paperclip:read"], createdAt: "2026-10-05T12:00:00Z", revokedAt: null },
 ] } } };
@@ -55,9 +52,6 @@ export const Loading: Story = { parameters: { initialEntries: ["/PAP/apps/assist
 export const NavigationCheck: Story = { play: async ({ canvasElement }) => {
   const c = within(canvasElement);
   await userEvent.click(await c.findByRole("button", { name: "Set up Assistant Connection (MCP)" }));
-  await userEvent.click(await c.findByRole("link", { name: "Open Experimental settings" }));
-  await userEvent.click(await c.findByRole("switch", { name: "Toggle assistant connections experimental setting" }));
-  await userEvent.click(await c.findByRole("link", { name: "Set up an assistant connection" }));
   await expect(await c.findByRole("button", { name: "Copy invitation" })).toBeVisible();
   await userEvent.click(c.getByText("Set up manually"));
   await expect(c.getByText("opencode mcp auth paperclip")).toBeVisible();

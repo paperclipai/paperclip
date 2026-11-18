@@ -10,14 +10,12 @@ import { CompanyPatternIcon } from "./CompanyPatternIcon";
 import { Skeleton } from "./ui/skeleton";
 
 /** Reserve the trigger's space until its owner is known. Never flash another name. */
-function OrganizationSwitcherLoading({ collapsed }: { collapsed: boolean }) {
+function OrganizationSwitcherLoading() {
   return <div role="status" aria-label="Loading organization" aria-busy="true"
     className="flex h-9 min-w-0 flex-1 items-center gap-2 px-4">
     <Skeleton className="size-5 shrink-0" />
-    {!collapsed && <>
-      <span className="min-w-0 flex-1"><Skeleton className="h-4 w-20 max-w-full" /></span>
-      <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-    </>}
+    <span className="min-w-0 flex-1"><Skeleton className="h-4 w-20 max-w-full" /></span>
+    <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
   </div>;
 }
 
@@ -35,7 +33,7 @@ export function PluginOrganizationSwitcher({ children, open: controlledOpen, onO
   const selectedCompany = companyList.data?.companies.find(company => company.id === selectedCompanyId) ?? null;
   const contextSettled = settled && companyList.isSuccess && !companyList.data?.unauthorized
     && (selectedCompanyId === null || selectedCompany !== null);
-  const contextLoading = !contextSettled && !failed && !companyList.isError && !companyList.data?.unauthorized;
+  const contextLoading = !contextSettled && !failed && !companyList.isError && !companyList.data?.unauthorized; // query-error-ok: loading gate;on error the built-in fallback renders
   return (
     <OrganizationSwitcher key={JSON.stringify([userId, selectedCompanyId])}
       settled={contextSettled} loading={contextLoading} companyId={selectedCompanyId}
@@ -51,7 +49,7 @@ function OrganizationSwitcher({ children, settled, loading, companyId, company, 
   open?: boolean; onOpenChange?: (open: boolean) => void;
 }) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+  const { isMobile, setSidebarOpen } = useSidebar();
   const open = controlledOpen ?? internalOpen;
   const setOpen = onOpenChange ?? setInternalOpen;
   function closeNavigation() {
@@ -61,14 +59,14 @@ function OrganizationSwitcher({ children, settled, loading, companyId, company, 
   const signOut = useSignOut({ onSignedOut: closeNavigation });
   const { slots, isLoading, errorMessage } = usePluginSlots({ slotTypes: ["organizationSwitcher"], companyId, enabled: settled });
   if (loading || (settled && isLoading && !errorMessage)) {
-    return <OrganizationSwitcherLoading collapsed={collapsed && !peeking} />;
+    return <OrganizationSwitcherLoading />;
   }
   // Never choose an arbitrary winner for a replacement surface.
   if (!settled || errorMessage || slots.length !== 1) return children;
   const props: PluginOrganizationSwitcherProps = {
     organizationSwitcher: {
       currentCompany: company ? { name: company.name, logoUrl: company.logoUrl ?? null } : null,
-      collapsed: collapsed && !peeking, open, onOpenChange: setOpen,
+      collapsed: false, open, onOpenChange: setOpen,
       onNavigate: closeNavigation, onSignOut: () => signOut.mutate(), signingOut: signOut.isPending,
       renderIcon: (name, logoUrl, inMenu) => <CompanyPatternIcon companyName={name} logoUrl={logoUrl}
         className={inMenu

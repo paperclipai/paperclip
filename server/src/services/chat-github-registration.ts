@@ -1,3 +1,4 @@
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, sql } from "drizzle-orm";
 import {
@@ -52,6 +53,7 @@ export function githubChatRegistrationService(
         clientId?: string;
         clientSecret?: string;
       },
+      managementContext?: ConnectionManagementContext,
     ) => Promise<void>;
   },
 ) {
@@ -59,7 +61,9 @@ export function githubChatRegistrationService(
     endpointId: string,
     userId: string,
     input: string | GitHubAppRegistrationInput,
+    managementContext?: ConnectionManagementContext,
   ) {
+    await managementContext?.reauthorize();
     const {
       name,
       ownerType = "personal",
@@ -111,6 +115,7 @@ export function githubChatRegistrationService(
       .where(eq(companies.id, endpoint.companyId));
     const state = randomBytes(32).toString("base64url");
     const expiresAt = new Date(Date.now() + 30 * 60_000);
+    await managementContext?.reauthorize();
     await db.transaction(async (tx) => {
       const [lockedEndpoint] = await tx
         .select()
@@ -151,6 +156,7 @@ export function githubChatRegistrationService(
         appName: name.trim(),
         handoff: {
           cloudId: "",
+          ...(managementContext?.actor.type === "board" && managementContext.actor.sessionId ? { browserSessionId: managementContext.actor.sessionId } : {}),
           redemptionId: randomBytes(32).toString("base64url"),
           returnState: state,
         },
@@ -158,8 +164,7 @@ export function githubChatRegistrationService(
       });
       await logActivity(tx as unknown as Db, {
         companyId: endpoint.companyId,
-        actorType: "user",
-        actorId: userId,
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
         action: "chat_github.registration_started",
         entityType: "tool_connection",
         entityId: endpoint.connectionId,
@@ -234,7 +239,8 @@ export function githubChatRegistrationService(
       },
     };
   }
-  async function resumeRegistration(endpointId: string, userId: string) {
+  async function resumeRegistration(endpointId: string, userId: string, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     const [session] = await db
       .select()
       .from(chatGitHubRegistrations)
@@ -277,7 +283,8 @@ export function githubChatRegistrationService(
       expiresAt: session.expiresAt,
     });
   }
-  async function complete(state: string, code: string) {
+  async function complete(state: string, code: string, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     if (
       !/^[A-Za-z0-9_-]{43}$/.test(state) ||
       !/^[a-zA-Z0-9_-]{1,256}$/.test(code)
@@ -353,6 +360,7 @@ export function githubChatRegistrationService(
           app.owner?.login?.toLowerCase() !== session.ownerLogin?.toLowerCase())
       )
         throw badRequest("GitHub returned an App owned by a different account");
+      await managementContext?.reauthorize();
       await options.storeApp(session.endpointId, session.userId, {
         appId: String(app.id),
         privateKey: app.pem,
@@ -360,7 +368,7 @@ export function githubChatRegistrationService(
         slug: app.slug,
         clientId: app.client_id,
         clientSecret: app.client_secret,
-      });
+      }, managementContext);
       await db
         .update(chatGitHubRegistrations)
         .set({ status: "completed" })

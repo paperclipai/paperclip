@@ -47,7 +47,7 @@ pnpm test:lifecycle-baseline integration
 pnpm test:lifecycle-baseline grading
 pnpm test:lifecycle-baseline
 pnpm test:lifecycle-baseline:support
-pnpm exec tsc -p tests/lifecycle-baseline/tsconfig.json
+pnpm test:lifecycle-baseline:typecheck
 ```
 
 All four lanes are credential-free. The integration lane uses disposable embedded

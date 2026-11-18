@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 
 const telemetryMocks = vi.hoisted(() => ({
   track: vi.fn(),
@@ -29,7 +31,8 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: telemetryMocks.getTelemetryClient,
 }));
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_INTERACTION_TELEMETRY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
@@ -38,13 +41,14 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-interaction-telemetry-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-interaction-telemetry-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
     interactionsSvc = issueThreadInteractionService(db);
   }, 20_000);
 
   beforeEach(() => {
     telemetryMocks.track.mockClear();
+    telemetryMocks.track.mockImplementation(() => scopedTelemetryCompanyId());
     telemetryMocks.getTelemetryClient.mockReturnValue({
       track: telemetryMocks.track,
       hashPrivateRef: vi.fn((value: string) => `hashed:${value}`),
@@ -65,6 +69,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -132,6 +137,11 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     return calls.at(-1)?.[1] as Record<string, unknown>;
   }
 
+  function scopesOf(name: string) {
+    return telemetryMocks.track.mock.calls.flatMap(([eventName], index) =>
+      eventName === name ? [telemetryMocks.track.mock.results[index]?.value] : []);
+  }
+
   it("emits deprecated resolver alias use at creation without interaction content", async () => {
     const { companyId, issueId } = await seedIssue("Deprecated alias telemetry issue title");
 
@@ -158,6 +168,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       interaction_kind: "request_confirmation",
       used_deprecated_resolver_policy_alias: true,
     });
+    expect(scopesOf("interaction.created")).toEqual([companyId]);
   });
 
   it("emits skipped resolution telemetry for composer Skip", async () => {
@@ -194,6 +205,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       target_type: "none",
     });
     expectNoRawInteractionIds(dimensions);
+    expect(scopesOf("interaction.resolved")).toEqual([companyId]);
   });
 
   it("emits accepted suggested-task telemetry with created and skipped task counts", async () => {

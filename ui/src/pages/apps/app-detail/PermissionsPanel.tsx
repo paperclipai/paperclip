@@ -1,5 +1,5 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Ban, Check, FlaskConical, Loader2, RefreshCw, Search, ShieldQuestion } from "lucide-react";
 import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
@@ -13,7 +13,15 @@ import { cn } from "@/lib/utils";
 import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
 import { ActionTestDialog } from "./ActionTestDialog";
+import { ACTION_PAGE_SIZE } from "./constants";
+import { ProviderToolIcon } from "@/components/ProviderToolIcon";
+
+/** Action rows without a provider icon show none, as before. */
+function NoIcon() {
+  return null;
+}
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
@@ -114,12 +122,14 @@ function AgentAccessSection({
   disabled: boolean;
   onSave: (next: AccessDraft) => void;
 }) {
-  const liveAgents = agents.filter((agent) => agent.status !== "terminated");
+  const liveAgents = useMemo(() => agents.filter((agent) => agent.status !== "terminated"), [agents]);
   const canManage = capabilities?.canConfigure ?? false;
   const editableAgentIds = capabilities?.editableAgentIds;
-  const selectableAgents = editableAgentIds
-    ? liveAgents.filter((agent) => editableAgentIds.includes(agent.id))
-    : liveAgents;
+  const selectableAgents = useMemo(() => {
+    if (!editableAgentIds) return liveAgents;
+    const editable = new Set(editableAgentIds);
+    return liveAgents.filter((agent) => editable.has(agent.id));
+  }, [editableAgentIds, liveAgents]);
   const selectedAgents = liveAgents.filter((agent) => access.agentIds.has(agent.id));
   const requiredAgentIds = install.agentIds;
 
@@ -233,21 +243,19 @@ export function ActionsSection({
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<ActionKindFilter>("all");
   const [showPermissionChangeWarning, setShowPermissionChangeWarning] = useState(false);
-  const byName = (a: ToolCatalogEntry, b: ToolCatalogEntry) =>
-    (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
   const sortedRead = useMemo(() => [...readOnly].sort(byName), [readOnly]);
   const sortedWrite = useMemo(() => [...canChange].sort(byName), [canChange]);
-  const matches = (entry: ToolCatalogEntry) => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return true;
-    return (entry.title ?? entry.toolName).toLowerCase().includes(needle)
-      || (entry.description ?? "").toLowerCase().includes(needle);
-  };
-  const visibleRead = kindFilter === "write" ? [] : sortedRead.filter(matches);
-  const visibleWrite = kindFilter === "read" ? [] : sortedWrite.filter(matches);
+  const needle = query.trim().toLowerCase();
+  const visibleRead = useMemo(() => kindFilter === "write" ? [] : sortedRead.filter(entry => matchesAction(entry, needle)), [kindFilter, needle, sortedRead]);
+  const visibleWrite = useMemo(() => kindFilter === "read" ? [] : sortedWrite.filter(entry => matchesAction(entry, needle)), [kindFilter, needle, sortedWrite]);
+  const setPermission = useCallback((ids: string[], next: ActionPermission) => {
+    setShowPermissionChangeWarning(true);
+    onSetPermission(ids, next);
+  }, [onSetPermission]);
   const visibleCount = visibleRead.length + visibleWrite.length;
 
   return (
+    <TooltipProvider>
     <section className="space-y-6 border-t border-border pt-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-foreground">Actions</h2>
@@ -311,6 +319,8 @@ export function ActionsSection({
       ) : (
         <div className="space-y-6">
           <ActionGroup
+            key={`read:${needle}:${kindFilter}`}
+            kind="read"
             title={`Read (${visibleRead.length})`}
             actions={visibleRead}
             connectionId={connectionId}
@@ -320,12 +330,11 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(ids, next) => {
-              setShowPermissionChangeWarning(true);
-              onSetPermission(ids, next);
-            }}
+            onSetPermission={setPermission}
           />
           <ActionGroup
+            key={`write:${needle}:${kindFilter}`}
+            kind="write"
             title={`Write (${visibleWrite.length})`}
             actions={visibleWrite}
             connectionId={connectionId}
@@ -335,14 +344,12 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(ids, next) => {
-              setShowPermissionChangeWarning(true);
-              onSetPermission(ids, next);
-            }}
+            onSetPermission={setPermission}
           />
         </div>
       )}
     </section>
+    </TooltipProvider>
   );
 }
 
@@ -364,7 +371,18 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
+
+function byName(a: ToolCatalogEntry, b: ToolCatalogEntry) {
+  return (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
+}
+
+function matchesAction(entry: ToolCatalogEntry, needle: string) {
+  return !needle || (entry.title ?? entry.toolName).toLowerCase().includes(needle)
+    || (entry.description ?? "").toLowerCase().includes(needle);
+}
+
 function ActionGroup({
+  kind,
   title,
   actions,
   connectionId,
@@ -376,6 +394,7 @@ function ActionGroup({
   canConfigure,
   onSetPermission,
 }: {
+  kind: "read" | "write";
   title: string;
   actions: ToolCatalogEntry[];
   connectionId: string;
@@ -387,6 +406,10 @@ function ActionGroup({
   canConfigure: boolean;
   onSetPermission: (ids: string[], next: ActionPermission) => void;
 }) {
+  const [visibleLimit, setVisibleLimit] = useState(ACTION_PAGE_SIZE);
+  const visibleActions = actions.slice(0, visibleLimit);
+  const focusedAction = focusId ? actions.find(action => action.id === focusId) : undefined;
+  if (focusedAction && !visibleActions.includes(focusedAction)) visibleActions.push(focusedAction);
   if (actions.length === 0) return null;
   const groupValue = (() => {
     const first = actionPermission(actions[0]!.id, enabledIds, askFirstIds);
@@ -425,7 +448,7 @@ function ActionGroup({
         ) : null}
       </div>
       <div className="divide-y divide-border">
-        {actions.map((action) => (
+        {visibleActions.map((action) => (
           <ActionRow
             key={action.id}
             action={action}
@@ -439,6 +462,11 @@ function ActionGroup({
           />
         ))}
       </div>
+      {visibleLimit < actions.length ? (
+        <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setVisibleLimit(limit => limit + ACTION_PAGE_SIZE)}>
+          Show more {kind} actions
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -454,7 +482,7 @@ const PERMISSION_OPTIONS: Array<{
   { value: "allowed", label: "Allowed", description: "Runs without approval.", icon: Check },
 ];
 
-function ActionRow({
+const ActionRow = memo(function ActionRow({
   action,
   connectionId,
   appName,
@@ -493,6 +521,9 @@ function ActionRow({
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            {action.icons?.length ? (
+              <ProviderToolIcon icons={action.icons} fallback={NoIcon} className="h-4 w-4 shrink-0" testId="app-action-icon" />
+            ) : null}
             <span className="text-sm font-medium text-foreground">{title}</span>
             {/* PAP-659 C7: the gate is only as good as the classifier, so say
                 what each action was classified as. A misfiled tool is then one
@@ -510,7 +541,6 @@ function ActionRow({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {canConfigure ? (
-            <TooltipProvider>
               <div
                 role="radiogroup"
                 aria-label={`${title} permission`}
@@ -539,14 +569,13 @@ function ActionRow({
                         <Icon className="h-3.5 w-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">
+                    <TooltipContent className={ANALYTICS_MASK_CLASS} side="top">
                       <span className="font-medium">{option.label}</span> — {option.description}
                     </TooltipContent>
                   </Tooltip>
                 );
               })}
               </div>
-            </TooltipProvider>
           ) : (
             <span className="text-sm text-muted-foreground">
               {PERMISSION_OPTIONS.find((option) => option.value === value)?.label}
@@ -558,16 +587,16 @@ function ActionRow({
           </Button>
         </div>
       </div>
-      <ActionTestDialog
+      {testOpen ? <ActionTestDialog
         connectionId={connectionId}
         appName={appName}
         entry={action}
         open={testOpen}
         onOpenChange={setTestOpen}
-      />
+      /> : null}
     </>
   );
-}
+});
 
 function actionPermission(
   id: string,

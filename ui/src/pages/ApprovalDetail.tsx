@@ -1,3 +1,4 @@
+import { describeError } from "../api/errors";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
@@ -16,6 +17,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
@@ -92,7 +95,7 @@ export function ApprovalDetail() {
       refresh();
       navigate(`/approvals/${approvalId}?resolved=approved`, { replace: true });
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Approve failed"),
+    onError: (err) => setError(describeError(err, { action: "approve this request" }).body),
   });
 
   const rejectMutation = useMutation({
@@ -101,7 +104,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
+    onError: (err) => setError(describeError(err, { action: "reject this request" }).body),
   });
 
   const revisionMutation = useMutation({
@@ -110,7 +113,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Revision request failed"),
+    onError: (err) => setError(describeError(err, { action: "request a revision" }).body),
   });
 
   const resubmitMutation = useMutation({
@@ -119,7 +122,7 @@ export function ApprovalDetail() {
       setError(null);
       refresh();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : "Resubmit failed"),
+    onError: (err) => setError(describeError(err, { action: "resubmit this request" }).body),
   });
 
   const addCommentMutation = useMutation({
@@ -230,7 +233,7 @@ export function ApprovalDetail() {
             See full request
           </button>
           {showRawPayload && (
-            <pre className="text-xs bg-muted/40 rounded-md p-3 overflow-x-auto">
+            <pre className={cn("text-xs bg-muted/40 rounded-md p-3 overflow-x-auto", ANALYTICS_MASK_CLASS)}>
               {JSON.stringify(payload, null, 2)}
             </pre>
           )}
