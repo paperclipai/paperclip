@@ -117,3 +117,16 @@ test('requires host capacity selection when invoked in WSL', { skip: !enabled },
     assert.match(result.stderr, /capacityPath/);
   } finally { await writeFile(file, saved); }
 });
+
+for (const backup of ['~/backups', './backups']) {
+  test('accepts supported native backup path ' + backup, { skip: !enabled }, async () => {
+    const file = path.join(root, 'data', 'instances', 'default', 'config.json');
+    const saved = await readFile(file, 'utf8');
+    await writeFile(file, JSON.stringify({server:{port:3100},database:{backup:{dir:backup}}}));
+    try {
+      const result = invoke(['exec', process.execPath, '-e', 'console.log("STARTED")']);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /STARTED/);
+    } finally { await writeFile(file, saved); }
+  });
+}

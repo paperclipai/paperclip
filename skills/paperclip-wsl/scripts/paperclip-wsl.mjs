@@ -45,8 +45,12 @@ try {
     const selectedConfig = path.join(instance, "config.json");
     const settings = JSON.parse(fs.readFileSync(selectedConfig, "utf8"));
     if (settings.server?.port !== config.port) fail("instance port differs from the local profile");
-    const dataPaths = [settings.database?.embeddedPostgresDataDir, settings.database?.backup?.dir, settings.storage?.localDisk?.baseDir, settings.secrets?.localEncrypted?.keyFilePath].filter(Boolean);
+    const dataPaths = [settings.database?.embeddedPostgresDataDir, settings.storage?.localDisk?.baseDir, settings.secrets?.localEncrypted?.keyFilePath].filter(Boolean);
     if (dataPaths.some(value => !nativePath(value))) fail("instance still contains Windows data paths");
+    if (settings.database?.backup?.dir) {
+      const backup = settings.database.backup.dir;
+      if (/^[a-z]:/i.test(backup) || backup.includes("\\") || !nativePath(path.resolve(repository, backup === "~" ? os.homedir() : backup.startsWith("~/") ? path.join(os.homedir(), backup.slice(2)) : backup))) fail("instance still contains Windows data paths");
+    }
     const configuredBins = config.binPaths ?? ["/usr/local/bin", "/usr/bin", "/bin"];
     if (!Array.isArray(configuredBins) || configuredBins.some(value => !nativePath(value))) fail("tool directories must be native Linux paths");
     const bins = [...new Set([path.dirname(config.node), ...configuredBins])];
