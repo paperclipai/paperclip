@@ -182,6 +182,7 @@ describe("assigned-work invariant", () => {
       ["approval", { interruption: { responsibility: "user", state: "waiting_for_user", userAction: "approval", nextRetryAt: null, canRetry: false } }],
       ["credential", { interruption: { responsibility: "user", state: "waiting_for_user", userAction: "reconnect", nextRetryAt: null, canRetry: false } }],
       ["board_confirmation", { interruption: { responsibility: "user", state: "waiting_for_user", userAction: "confirm_owner_stop", nextRetryAt: null, canRetry: false } }],
+      ["assignee_declared_block", { interruption: { responsibility: "user", state: "waiting_for_user", userAction: "unblock", nextRetryAt: null, canRetry: true } }],
       ["user_stop", { issue: { status: "blocked", blockedTransitionAt: ago(60 * 60_000) }, blockedBy: "user" }],
       ["assignee_declared_block", { issue: { status: "blocked", blockedTransitionAt: ago(60 * 60_000) }, blockedBy: "assignee" }],
       ["assignee_declared_block", { issue: { status: "blocked", blockedTransitionAt: ago(60 * 60_000), unblockOwner: "board" }, blockedBy: "unknown" }],
