@@ -316,6 +316,13 @@ impl DurableRunnerConfig {
                 "reconnect delay must be between one millisecond and 60 seconds",
             ));
         }
+        if self.controller_silence < Duration::from_millis(100)
+            || self.controller_silence > Duration::from_secs(3600)
+        {
+            return Err(DurableRunnerError::invalid(
+                "controller silence must be between 100 milliseconds and one hour",
+            ));
+        }
         if self.reconnect_grace.is_some_and(|grace| grace.is_zero()) {
             return Err(DurableRunnerError::invalid(
                 "reconnect grace must be non-zero when configured",

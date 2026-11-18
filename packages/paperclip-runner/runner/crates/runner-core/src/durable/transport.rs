@@ -1151,6 +1151,7 @@ impl AuthenticatedTransport {
                 expected_lease,
                 challenge.selected_version,
             )?;
+            transport.last_inbound = Instant::now();
             // Authentication can wait longer for control-plane validation, but
             // the steady-state runner loop must return to provider polling
             // promptly when no control message is available.
@@ -1180,12 +1181,17 @@ impl AuthenticatedTransport {
     }
 
     pub(crate) fn receive_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
-        self.receive_json_until(None)
+        match self.receive_json_until(None)? {
+            None if self.listener_controller_silent() => Err(DurableRunnerError::invalid(
+                "controller sent no frame within the liveness window; listening for a new connection",
+            )),
+            message => Ok(message),
+        }
     }
 
     pub(crate) fn receive_queued_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
         self.set_runtime_read_timeout(QUEUED_CONTROL_READ_TIMEOUT)?;
-        let message = self.receive_json_until(None);
+        let message = self.receive_json();
         self.set_runtime_read_timeout(RUNTIME_READ_TIMEOUT)?;
         message
     }
@@ -1207,11 +1213,6 @@ impl AuthenticatedTransport {
             Some(&mut self.last_inbound),
         )? {
             Some(frame) => frame,
-            None if self.listener_controller_silent() => {
-                return Err(DurableRunnerError::invalid(
-                    "controller sent no frame within the liveness window; listening for a new connection",
-                ))
-            }
             None => return Ok(None),
         };
         self.secure_channel.decrypt(&frame, false).map(Some)
