@@ -634,8 +634,9 @@ function taskBridgeScopeIds(
   ].filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
-function taskBridgeKeyScopesProject(actor: AuthorizationActor, projectId: string) {
+function taskBridgeKeyScopesProject(actor: AuthorizationActor, companyId: string, projectId: string) {
   if (actor.type !== "agent" || actor.source !== "agent_key" || actor.keyScope?.kind !== "task_bridge") return false;
+  if (actor.companyId !== companyId || !actor.agentId || !actor.keyId) return false;
   return taskBridgeScopeIds(actor.keyScope, "projectId", "projectIds").includes(projectId);
 }
 
@@ -3110,7 +3111,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       action: "project:read" as const,
       resource: { type: "project" as const, companyId: input.companyId, projectId: input.projectId },
     };
-    if (!taskBridgeKeyScopesProject(input.actor, input.projectId)) return decide(readInput);
+    if (!taskBridgeKeyScopesProject(input.actor, input.companyId, input.projectId)) return decide(readInput);
     const scoped = allow({
       action: readInput.action,
       reason: "allow_explicit_grant",

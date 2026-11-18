@@ -1047,6 +1047,23 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.create).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ["another company", { companyId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }, "deny_company_boundary"],
+      ["no key id", { keyId: undefined }, "deny_scope"],
+      ["no agent id", { agentId: "" }, "deny_unauthenticated"],
+    ])("denies the scoped project to a task bridge key with %s", async (_name, override, reason) => {
+      const { authorizationService } = await vi.importActual<typeof import("../services/authorization.js")>(
+        "../services/authorization.js",
+      );
+      const decision = await authorizationService(dbWithProjectPrivacy(true) as never).decideProjectForIssueCreate({
+        actor: { ...bridgeActor({ projectIds: [scopedProjectId] }), ...override } as never,
+        companyId,
+        projectId: scopedProjectId,
+      });
+
+      expect(decision).toMatchObject({ allowed: false, reason });
+    });
+
     it("logs the privacy denial for a scoped private project in shadow mode", async () => {
       vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "shadow");
       const { logger } = await vi.importActual<typeof import("../middleware/logger.js")>("../middleware/logger.js");
