@@ -525,7 +525,10 @@ apps?: AppDefinition[];
   for plugin-served tools. A caller's explicit timeout still wins, capped at
   the same 60 s ceiling. An "ask first" call that a person has approved runs
   with the gateway's fixed 60 s approved-execution budget instead of the
-  declared value.
+  declared value. The gateway enforces the deadline and gives the worker call
+  1 s more, so callers always see the gateway's `tool_timeout`. Worker calls
+  cannot be cancelled, so a timed-out call may still finish in the worker;
+  write tools should be idempotent on the call's idempotency key.
   Authentication is `none` or `api_key`. The gateway keeps every decision
   (grant, policy, approval, rate limit, audit) and calls the worker's
   `executeTool` with `runContext.connection` (`id`, `appSlug`, `methodKey`,
