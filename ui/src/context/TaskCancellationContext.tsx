@@ -3,7 +3,7 @@ import type { Issue } from "@paperclipai/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { bindAccount } from "@/lib/account-scope";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { StatusIcon } from "@/components/StatusIcon";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
@@ -48,12 +48,9 @@ export function TaskCancellationProvider({ children }: { children: ReactNode }) 
     <TaskCancellationContext.Provider value={confirm}>
       {children}
       <Dialog open={subtasks !== null} onOpenChange={open => { if (!open) finish("dismiss"); }}>
-        <DialogContent className="max-h-(--sz-calc-18) overflow-y-auto">
+        <DialogContent aria-describedby={undefined} className="max-h-(--sz-calc-18) overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Cancel active subtasks?</DialogTitle>
-            <DialogDescription>
-              This task has {subtasks?.length ?? 0} active {(subtasks?.length ?? 0) === 1 ? "subtask" : "subtasks"}. Would you like to cancel {(subtasks?.length ?? 0) === 1 ? "it" : "those"} as well?
-            </DialogDescription>
+            <DialogTitle>Cancel {subtasks?.length ?? 0} active {(subtasks?.length ?? 0) === 1 ? "subtask" : "subtasks"}?</DialogTitle>
           </DialogHeader>
           <ul aria-label="Active subtasks" className="flex flex-col gap-2 text-sm">
             {subtaskList}

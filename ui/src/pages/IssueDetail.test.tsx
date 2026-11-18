@@ -6598,7 +6598,7 @@ describe("IssueDetail", () => {
     await act(async () => stop!.click());
     await flushReact();
     const dialog = container.querySelector('[data-slot="dialog-content"]')!;
-    expect(dialog.textContent).toContain("This task has 1 active subtask");
+    expect(dialog.textContent).toContain("Cancel 1 active subtask?");
     expect(dialog.textContent).toContain(child.title);
     expect(dialog.querySelector("a")).toBeNull();
     expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();

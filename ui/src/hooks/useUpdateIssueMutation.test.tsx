@@ -255,7 +255,11 @@ describe("useUpdateIssueMutation", () => {
     render();
     await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
     const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain("This task has 5 active subtasks. Would you like to cancel those as well?");
+    expect(dialog.querySelector("h2")?.textContent).toBe("Cancel 5 active subtasks?");
+    expect(dialog.querySelector('[data-slot="dialog-description"]')).toBeNull();
+    expect(dialog.hasAttribute("aria-describedby")).toBe(false);
+    expect(dialog.textContent).not.toContain("This task has");
+    expect(dialog.textContent).not.toContain("Would you like to cancel");
     expect(dialog.querySelectorAll("li")).toHaveLength(5);
     expect(dialog.querySelectorAll("a")).toHaveLength(0);
     expect(Array.from(dialog.querySelectorAll('li [role="img"]'), icon => icon.getAttribute("aria-label")))
@@ -298,7 +302,7 @@ describe("useUpdateIssueMutation", () => {
     mockUpdate.mockResolvedValue(issue({ status: "cancelled" }));
     render();
     await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
-    expect(document.querySelector('[role="dialog"]')!.textContent).toContain("This task has 1 active subtask. Would you like to cancel it as well?");
+    expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe("Cancel 1 active subtask?");
     await choose("Cancel task only");
     expect(mockUpdate).toHaveBeenCalledExactlyOnceWith("PAP-1", { status: "cancelled" });
   });
@@ -310,7 +314,7 @@ describe("useUpdateIssueMutation", () => {
     mockUpdate.mockResolvedValue(issue({ status: "cancelled" }));
     render();
     await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("This task has 1 active subtask.");
+    expect(document.querySelector('[role="dialog"] h2')?.textContent).toBe("Cancel 1 active subtask?");
     await choose("Cancel task and subtasks");
     expect(mockUpdate.mock.calls.map(call => call[0])).toEqual(["PAP-1", provider]);
   });
@@ -376,7 +380,7 @@ describe("useUpdateIssueMutation", () => {
     await act(async () => current.mutate({ id: "PAP-1", data: { status: "cancelled" } }));
     for (let renderIndex = 0; renderIndex < 3; renderIndex++) render();
     const dialog = document.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain("This task has 500 active subtasks.");
+    expect(dialog.querySelector("h2")?.textContent).toBe("Cancel 500 active subtasks?");
     expect(dialog.querySelectorAll("li")).toHaveLength(500);
     expect(dialog.querySelectorAll('li [role="img"]')).toHaveLength(500);
     expect(dialog.querySelectorAll("a")).toHaveLength(0);
