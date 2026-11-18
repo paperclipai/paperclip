@@ -300,7 +300,7 @@ if (process.argv.includes('--acp-fixture')) {
     await secretService(db).replaceSecretRefsForInstanceTarget({ targetType: "environment", targetId: environment.id },
       await collectEnvironmentSecretRefs({ db, environment: { id: environment.id, driver: "ssh", config: storedConfig } }));
     const adapterConfig = { command, ...(engine === "cli" ? { engine: "cli" } : { agentCommand: `${shellQuote(command)} --acp-fixture`, acpWarmHandleIdleMs: 60_000 }),
-      model, timeoutSec: 20, env: { PATH: process.env.PATH, ...(!provider ? { [authEnv]: "synthetic-selected-ssh-key" } : {}) } };
+      model, timeoutSec: 20, env: { PATH: [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter), ...(!provider ? { [authEnv]: "synthetic-selected-ssh-key" } : {}) } };
     await db.insert(agents).values({ id: agentId, companyId, name: `${adapterType} SSH task`, adapterType, status: "idle",
       defaultEnvironmentId: environment.id, adapterConfig,
       runtimeConfig: account ? { aiConnection: { provider, method: "api_key", mode: "delegated", connectionId: account.connectionId, grantId: account.grantId } } : {} });
