@@ -16,10 +16,15 @@ export interface DashboardChangeGroup {
   name: string;
   /** The group is a new area. */
   isNew: boolean;
+  hasExistingArea: boolean;
+  areaChanges: ResponsibilityDashboardChange[];
+  responsibilityChanges: ResponsibilityDashboardChange[];
   changes: ResponsibilityDashboardChange[];
 }
 
-const AREA_OPS = new Set<ResponsibilityDashboardChange["op"]>(["add_area", "rename_area", "remove_area"]);
+export function isDashboardAreaChange(change: ResponsibilityDashboardChange): boolean {
+  return change.op === "add_area" || change.op === "rename_area" || change.op === "remove_area";
+}
 
 function groupKey(change: Pick<ResponsibilityDashboardChange, "groupAreaId" | "groupRef">) {
   if (change.groupRef !== null) return `new:${change.groupRef}`;
@@ -28,18 +33,27 @@ function groupKey(change: Pick<ResponsibilityDashboardChange, "groupAreaId" | "g
 
 /** The changes by area, in the order the agent first named each area; area changes first within a group. */
 export function dashboardChangeGroups(changes: readonly ResponsibilityDashboardChange[]): DashboardChangeGroup[] {
-  const groups = new Map<string, DashboardChangeGroup>();
+  const groups = new Map<string, Omit<DashboardChangeGroup, "changes">>();
   for (const change of changes) {
     const key = groupKey(change);
-    const group = groups.get(key) ?? { key, name: change.groupName, isNew: false, changes: [] };
+    const group = groups.get(key) ?? {
+      key,
+      name: change.groupName,
+      isNew: false,
+      hasExistingArea: change.groupAreaId !== null,
+      areaChanges: [],
+      responsibilityChanges: [],
+    };
     if (change.op === "add_area") group.isNew = true;
-    group.changes.push(change);
+    if (isDashboardAreaChange(change)) group.areaChanges.push(change);
+    else group.responsibilityChanges.push(change);
     groups.set(key, group);
   }
-  return [...groups.values()].map((group) => ({
-    ...group,
-    changes: [...group.changes].sort((a, b) => Number(!AREA_OPS.has(a.op)) - Number(!AREA_OPS.has(b.op)) || a.index - b.index),
-  }));
+  return [...groups.values()].map((group) => {
+    group.areaChanges.sort((a, b) => a.index - b.index);
+    group.responsibilityChanges.sort((a, b) => a.index - b.index);
+    return { ...group, changes: [...group.areaChanges, ...group.responsibilityChanges] };
+  });
 }
 
 export interface DashboardChangeWords {

@@ -127,6 +127,16 @@ describe("DashboardChangesCard", () => {
     expect(acceptMock).toHaveBeenCalledExactlyOnceWith("issue-dashboard-conversation", "dashboard-changes-create", [0, 1, 2, 3, 5, 6, 7, 8, 9]);
   });
 
+  it("does not label an unfiled responsibility as an existing area", async () => {
+    const interaction = dashboardChangesFixture("edit");
+    await render(<DashboardChangesCard interaction={{ ...interaction, payload: { ...interaction.payload, changes: [
+      { ...interaction.payload.changes[0]!, groupAreaId: null, groupName: "No area" },
+    ] } }} />);
+    expect(group("No area").textContent).not.toContain("Existing area");
+    expect(group("No area").querySelector("h3")?.textContent).toBe("No area");
+    expect(rows("No area")[0]!.textContent).toContain("Every prospective LP hears from us at least every two weeks.");
+  });
+
   it("applies everything when nothing is dropped, and cannot apply nothing", async () => {
     await render(<DashboardChangesCard interaction={dashboardChangesFixture("edit")} />);
     for (const name of ["Fundraising", "Portfolio", "Team"]) {

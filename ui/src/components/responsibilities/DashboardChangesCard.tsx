@@ -12,6 +12,7 @@ import {
   dashboardChangeGroups,
   dashboardChangeWords,
   droppedWithArea,
+  isDashboardAreaChange,
   keptDashboardChanges,
   lettingGoWith,
   toggleDashboardChange,
@@ -68,10 +69,6 @@ const CHANGE_LABELS: Record<ResponsibilityDashboardChange["op"], string> = {
   remove_responsibility: "Let go of responsibility",
 };
 
-function isAreaChange(change: ResponsibilityDashboardChange) {
-  return change.op === "add_area" || change.op === "rename_area" || change.op === "remove_area";
-}
-
 function ChangeRow({
   change,
   changes,
@@ -87,7 +84,7 @@ function ChangeRow({
 }) {
   const isDropped = dropped.has(change.index);
   const words = dashboardChangeWords(change);
-  const areaChange = isAreaChange(change);
+  const areaChange = isDashboardAreaChange(change);
   const Row = areaChange ? "div" : "li";
   const withArea = isDropped ? droppedWithArea(changes, dropped, change) : null;
   const lettingGo = change.op === "remove_area" && !isDropped ? lettingGoWith(changes, dropped, change) : [];
@@ -210,8 +207,7 @@ export function DashboardChangesCard({
       </div>
       <div className="flex flex-col gap-6">
         {groups.map((group) => {
-          const areaChanges = group.changes.filter(isAreaChange);
-          const responsibilities = group.changes.filter((change) => !isAreaChange(change));
+          const { areaChanges, responsibilityChanges } = group;
           const row = (change: ResponsibilityDashboardChange) => (
             <ChangeRow
               key={change.index}
@@ -227,12 +223,12 @@ export function DashboardChangesCard({
               {areaChanges.length > 0 ? areaChanges.map(row) : (
                 <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
                   <h3 className="min-w-0 break-words text-base font-semibold text-foreground">{group.name}</h3>
-                  {group.key !== "__none__" ? <span className="text-xs text-muted-foreground">Existing area</span> : null}
+                  {group.hasExistingArea ? <span className="text-xs text-muted-foreground">Existing area</span> : null}
                 </div>
               )}
-              {responsibilities.length > 0 ? (
+              {responsibilityChanges.length > 0 ? (
                 <ul aria-label={`Responsibilities in ${group.name}`} className="flex min-w-0 flex-col gap-3 pl-4 sm:pl-6">
-                  {responsibilities.map(row)}
+                  {responsibilityChanges.map(row)}
                 </ul>
               ) : null}
             </section>
