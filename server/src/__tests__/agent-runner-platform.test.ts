@@ -59,7 +59,7 @@ describe("local runner platform probe", () => {
     }
     expect(probe.execFile).toHaveBeenCalledTimes(1);
     expect(probe.execFile).toHaveBeenCalledWith("getconf", ["GNU_LIBC_VERSION"], {
-      encoding: "utf8", timeout: 1_000, killSignal: "SIGKILL", maxBuffer: 1_024,
+      encoding: "utf8", timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1_024,
     }, expect.any(Function));
   });
 
@@ -88,5 +88,17 @@ describe("local runner platform probe", () => {
     const module = await import("../lib/agent-runner-platform.js");
     expect(module.localAgentRunnerTarget()).toEqual({ driver: "local", platform: value, architecture: "x64" });
     expect(probe.execFile).not.toHaveBeenCalled();
+  });
+  it.skipIf(platform.value !== "linux")("keeps a completed libc probe when startup blocks the event loop", async () => {
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const measured = actual.execFileSync("getconf", ["GNU_LIBC_VERSION"], { encoding: "utf8" }).trim().split(/\s+/)[1];
+    probe.execFile.mockImplementation((command, args, options, callback) => {
+      const child = actual.execFile(command, args, options, callback);
+      const until = performance.now() + 1_300;
+      while (performance.now() < until) { /* Simulate synchronous module evaluation during startup. */ }
+      return child;
+    });
+    const module = await import("../lib/agent-runner-platform.js");
+    expect(module.localAgentRunnerTarget()).toMatchObject({ libc: "glibc", glibcVersion: measured });
   });
 });
