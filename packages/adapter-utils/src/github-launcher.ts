@@ -54,6 +54,30 @@ function connectorRepositoryTool(args) {
   if (program !== 'gh' || args[0] !== 'repo' || args.includes('--help') || args.includes('-h')) return null;
   return connectorRepositoryTools.get(args[1]) || null;
 }
+// Node refuses to spawn .bat/.cmd files directly on Windows (EINVAL since the
+// CVE-2024-27980 fix), so batch tools run through cmd.exe with every argument
+// quoted and caret-escaped twice: once for cmd's /c parse, once for the batch
+// file's own %* re-parse. Line breaks and NUL cannot cross cmd.exe intact, so
+// such arguments are refused instead of being reinterpreted.
+const cmdMeta = /([()\][%!^"\x60<>&|;, *?])/g;
+function cmdQuote(arg) {
+  let quoted = String(arg).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
+  quoted = ('"' + quoted + '"').replace(cmdMeta, '^$1');
+  return quoted.replace(cmdMeta, '^$1');
+}
+function spawnResolved(file, args, env) {
+  if (process.platform !== 'win32' || !/\.(bat|cmd)$/i.test(file)) {
+    return spawn(file, args, { env, stdio: 'inherit' });
+  }
+  if (args.some(arg => /[\r\n\0]/.test(arg))) {
+    process.stderr.write('Paperclip: GitHub batch_argument_rejected; line breaks cannot be passed to a batch file.\n');
+    process.exitCode = 1;
+    return null;
+  }
+  const shell = path.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'cmd.exe');
+  const line = [file.replace(cmdMeta, '^$1'), ...args.map(cmdQuote)].join(' ');
+  return spawn(shell, ['/d', '/s', '/v:off', '/c', '"' + line + '"'], { env, stdio: 'inherit', windowsVerbatimArguments: true });
+}
 async function main() {
   let env = { ...process.env };
 ${options.brokerFile ? String.raw`
@@ -170,7 +194,8 @@ ${options.brokerFile ? String.raw`
   env.ZDOTDIR = configDirectory;
   env.BASH_ENV = '/dev/null';
   env.GIT_SSH_COMMAND = 'ssh -F /dev/null -o IdentityAgent=none -o IdentitiesOnly=yes -o IdentityFile=none -o BatchMode=yes';
-  const child = spawn(executable, process.argv.slice(2), { env, stdio: 'inherit' });
+  const child = spawnResolved(executable, process.argv.slice(2), env);
+  if (!child) return;
   for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
   child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });

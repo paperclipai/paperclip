@@ -440,3 +440,61 @@ it("captures the current task broker file once per invocation and never falls ba
   expect((await run()).stdout).toBe("anonymous");
   expect(captured).toEqual(["Bearer first-run", "Bearer next-run"]);
 });
+
+// Windows resolves gh/git through PATHEXT, and Node cannot spawn .bat/.cmd
+// files directly (EINVAL since CVE-2024-27980), so the launcher runs them
+// through cmd.exe with every argument escaped.
+describe.runIf(process.platform === "win32")("managed GitHub launchers on Windows", () => {
+  async function windowsFixture() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-windows-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const managed = path.join(root, "managed"), first = path.join(root, "first"), second = path.join(root, "second");
+    for (const dir of [managed, first, second]) await mkdir(dir);
+    await writeFile(path.join(managed, "gh"), githubLauncherSource());
+    const argv = path.join(root, "argv.cjs");
+    await writeFile(argv, "process.stdout.write(JSON.stringify({ args: process.argv.slice(2), token: process.env.GH_TOKEN || null }))");
+    const env: NodeJS.ProcessEnv = { ...process.env, ...githubBrokerEnvironment({}, { url: "", token: "" }),
+      GH_CONFIG_DIR: path.join(root, "config"),
+      PATH: [managed, first, second, path.join(process.env.SystemRoot ?? "C:\\Windows", "System32")].join(path.delimiter) };
+    delete env.PAPERCLIP_GITHUB_OPERATION_ACTIVE;
+    const gh = (...args: string[]) => exec(process.execPath, [path.join(managed, "gh"), ...args], { env, timeout: 20_000 });
+    const forwarder = `@echo off\r\n"${process.execPath}" "${argv}" %*\r\n`;
+    return { root, first, second, gh, forwarder };
+  }
+
+  it.each(["gh.cmd", "gh.CMD", "gh.bat", "gh.BAT"])("runs a %s tool and passes harmless arguments", async file => {
+    const { first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, file), forwarder);
+    const result = await gh("--version");
+    expect(JSON.parse(result.stdout)).toEqual({ args: ["--version"], token: null });
+    expect(result.stderr).not.toContain("launcher_setup_failed");
+  });
+
+  it("follows PATH order before PATHEXT order", async () => {
+    const { first, second, gh } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), "@echo off\r\necho first-cmd\r\n");
+    await writeFile(path.join(second, "gh.bat"), "@echo off\r\necho second-bat\r\n");
+    expect((await gh()).stdout.trim()).toBe("first-cmd");
+    await writeFile(path.join(first, "gh.bat"), "@echo off\r\necho first-bat\r\n");
+    // PATHEXT lists .BAT before .CMD by default, so .bat wins within one directory.
+    expect((await gh()).stdout.trim()).toBe("first-bat");
+  });
+
+  it("passes cmd.exe metacharacters to a batch tool as data, never as commands", async () => {
+    const { root, first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    const marker = path.join(root, "injected.txt");
+    const args = ["plain", "a b", "", " ", `x&echo injected>${marker}`, "|", "a|b", "<in", ">out", "(", ")", "^", "^^",
+      "%PATH%", "%%", "!PATH!", "\"", "\"\"", "q\"uote", "\\", "trail\\", "trail\\\\", "\\\"",
+      `a\\"&echo injected>${marker}&\\"`, `"&echo injected>${marker}&"`, "*", "?", "a,b", "a;b", "a=b", "%~dp0", "%1", "%*", "ünicode-ação"];
+    expect(JSON.parse((await gh(...args)).stdout).args).toEqual(args);
+    await expect(readFile(marker)).rejects.toThrow();
+  });
+
+  it("refuses line breaks for batch tools instead of letting cmd.exe split them", async () => {
+    const { first, gh, forwarder } = await windowsFixture();
+    await writeFile(path.join(first, "gh.cmd"), forwarder);
+    await expect(gh("line\nbreak")).rejects.toMatchObject({ code: 1, stdout: "",
+      stderr: expect.stringContaining("batch_argument_rejected") });
+  });
+});
