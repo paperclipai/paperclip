@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { DocumentAnnotationComment, DocumentAnnotationThreadStatus, DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
+import type { DocumentAnnotationComment, DocumentAnnotationCommentReactionName, DocumentAnnotationCommentReactionSummary, DocumentAnnotationThreadStatus, DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
+import { DOCUMENT_ANNOTATION_COMMENT_REACTIONS } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { queryKeys } from "@/lib/queryKeys";
@@ -114,7 +115,81 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     onSuccess: () => setMutationError(null),
     onSettled: invalidateAll,
   });
-  return { createThread, addReply, updateStatus, mutationError, currentUser };
+  const reactionWrites = useRef(new Map<string, Promise<DocumentAnnotationComment>>());
+  const toggleReaction = useMutation({
+    mutationFn: ({ threadId, commentId, reaction, present }: ReactionToggle) => {
+      const key = reactionWriteKey(commentId, reaction);
+      const previous = reactionWrites.current.get(key);
+      const write = (previous ? previous.catch(() => undefined) : Promise.resolve())
+        .then(() => documentAnnotationsApi.setReactionForTarget(options.target, threadId, commentId, reaction, present));
+      reactionWrites.current.set(key, write);
+      return write.finally(() => {
+        if (reactionWrites.current.get(key) === write) reactionWrites.current.delete(key);
+      });
+    },
+    onMutate: async ({ threadId, commentId, reaction, present }) => {
+      setMutationError(null);
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(queryKey);
+      queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(queryKey, (current) => (current ?? []).map((thread) =>
+        thread.id !== threadId ? thread : {
+          ...thread,
+          comments: thread.comments.map((comment) => comment.id === commentId
+            ? { ...comment, reactions: applyOptimisticReaction(comment.reactions ?? [], reaction, present, currentUser.id) }
+            : comment),
+        }));
+      return { previous };
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
+      setMutationError(messageFor(error, "Failed to update reaction."));
+    },
+    onSuccess: (comment, { threadId, commentId, reaction }) => {
+      setMutationError(null);
+      if (reactionWrites.current.has(reactionWriteKey(commentId, reaction))) return;
+      queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(queryKey, (current) => (current ?? []).map((thread) =>
+        thread.id !== threadId ? thread : {
+          ...thread,
+          comments: thread.comments.map((entry) => entry.id === comment.id ? { ...entry, reactions: comment.reactions ?? [] } : entry),
+        }));
+    },
+    onSettled: (_comment, _error, { commentId, reaction }) => {
+      if (reactionWrites.current.has(reactionWriteKey(commentId, reaction))) return;
+      return invalidateAll();
+    },
+  });
+  return { createThread, addReply, updateStatus, toggleReaction, mutationError, currentUser };
+}
+
+function reactionWriteKey(commentId: string, reaction: DocumentAnnotationCommentReactionName) {
+  return `${commentId}:${reaction}`;
+}
+
+export interface ReactionToggle {
+  threadId: string;
+  commentId: string;
+  reaction: DocumentAnnotationCommentReactionName;
+  present: boolean;
+}
+
+export function applyOptimisticReaction(
+  reactions: DocumentAnnotationCommentReactionSummary[],
+  reaction: DocumentAnnotationCommentReactionName,
+  present: boolean,
+  userId: string | null,
+): DocumentAnnotationCommentReactionSummary[] {
+  const existing = reactions.find((entry) => entry.reaction === reaction);
+  if (Boolean(existing?.reactedByMe) === present) return reactions;
+  const actors = (existing?.actors ?? []).filter((actor) => !(actor.actorType === "user" && actor.userId === userId));
+  const next: DocumentAnnotationCommentReactionSummary = {
+    reaction,
+    count: Math.max(0, (existing?.count ?? 0) + (present ? 1 : -1)),
+    reactedByMe: present,
+    actors: present ? [...actors, { actorType: "user", agentId: null, userId }] : actors,
+  };
+  const others = reactions.filter((entry) => entry.reaction !== reaction);
+  const merged = next.count > 0 ? [...others, next] : others;
+  return DOCUMENT_ANNOTATION_COMMENT_REACTIONS.flatMap((name) => merged.filter((entry) => entry.reaction === name));
 }
 
 function messageFor(error: unknown, fallback: string) { return error instanceof Error && error.message ? error.message : fallback; }
