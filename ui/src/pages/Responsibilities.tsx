@@ -264,13 +264,13 @@ export function Responsibilities() {
       >
         <div className="pointer-events-auto">
           {agentsView.kind === "error" ? (
-            <div className="rounded-lg border border-border bg-background px-4 py-3" data-dashboard-chat="error">
+            <div className="mb-2 rounded-lg border border-border bg-background px-4 py-3" data-dashboard-chat="error">
               <QueryErrorState error={agentsView.error} size="inline" action="load your agents"
                 onRetry={agentsView.retry} retrying={agentsView.isFetching} />
             </div>
-          ) : (
-            <DashboardChatComposer companyId={selectedCompanyId} agents={agents} loaded={agentsQuery.isSuccess} />
-          )}
+          ) : null}
+          {/* Always mounted: it owns the draft, which a failed refresh must not discard. */}
+          <DashboardChatComposer companyId={selectedCompanyId} agents={agents} loaded={agentsQuery.data !== undefined} />
         </div>
       </div>
 

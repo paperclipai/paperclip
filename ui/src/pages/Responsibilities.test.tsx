@@ -106,7 +106,18 @@ describe("Responsibilities home", () => {
     await render();
     const dock = host.querySelector('[data-dashboard-chat-dock=""]')!;
     expect(dock.querySelector('[data-query-view="error"]')).not.toBeNull();
-    expect(dock.querySelector('[data-dashboard-chat-stub=""]')).toBeNull();
+  });
+
+  it("keeps the chat composer, and its draft, mounted when a refresh of the agents fails", async () => {
+    await render();
+    const composer = host.querySelector('[data-dashboard-chat-stub=""]');
+    expect(composer).not.toBeNull();
+    agentsApi.list.mockRejectedValue(new ApiError("Server error", 500, { error: "internal" }));
+    await act(async () => { await client.refetchQueries(); });
+    await flush();
+    const dock = host.querySelector('[data-dashboard-chat-dock=""]')!;
+    expect(dock.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(dock.querySelector('[data-dashboard-chat-stub=""]')).toBe(composer);
   });
 
   it("is titled Dashboard and offers onboarding to an agentless company", async () => {
