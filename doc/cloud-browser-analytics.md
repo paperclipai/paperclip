@@ -247,7 +247,7 @@ their original time. Withdrawing consent drops the queue.
 | `onboarding_opened` | The wizard opens, once per open. Auto-open (`useAgentlessOnboardingAutoOpen`), a button, and the `/onboarding` route all count. | `step` when the wizard opens on an agent step |
 | `onboarding_step_viewed` | A step is shown, once per step change. | `step` |
 | `onboarding_step_completed` | The customer moves forward one step, presses Launch on the review step, or Launch finishes. | `step`; `outcome` for `connect_model` (`subscription` or `api_key`) and for `launch` (`succeeded` or `failed`) |
-| `onboarding_dismissed` | The customer closes the wizard before it finishes. | `step` when closed on an agent step |
+| `onboarding_dismissed` | The wizard closes before Launch finishes, for example when the customer leaves the onboarding page. | `step` when closed on an agent step |
 
 `step` is one of `create_agent`, `connect_model`, `review`, or `launch`. The
 organization-naming steps have no `step` value. No event carries free text.

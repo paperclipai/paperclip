@@ -58,11 +58,16 @@ export function useOnboardingAnalytics(input: {
     );
   }, []);
 
+  const launched = useCallback(() => {
+    session.current = null;
+    captureOnboardingStepCompleted("launch", "succeeded");
+  }, []);
+
   const { open, step } = input;
   useEffect(() => {
     const current = session.current;
     if (!open) {
-      session.current = null;
+      if (current) dismissed(current.viewedStep);
       return;
     }
     if (!current) return;
@@ -84,5 +89,5 @@ export function useOnboardingAnalytics(input: {
     if (viewed) captureProductAnalyticsEvent(ONBOARDING_ANALYTICS_EVENTS.stepViewed, stepProperties(viewed));
   }, [open, step]);
 
-  return { opened, dismissed };
+  return { opened, dismissed, launched };
 }

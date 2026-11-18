@@ -159,7 +159,7 @@ describe("onboarding funnel events", () => {
     wizard.rerender({ open: true, step: 4, connectOutcome: "api_key" });
     wizard.rerender({ open: true, step: 5, connectOutcome: "api_key" });
     captureOnboardingStepCompleted("review");
-    captureOnboardingStepCompleted("launch", "succeeded");
+    act(() => wizard.result.current.launched());
     wizard.rerender({ open: false, step: 1, connectOutcome: "subscription" });
 
     expect(captured()).toEqual([
@@ -204,6 +204,23 @@ describe("onboarding funnel events", () => {
       ["onboarding_dismissed", { step: "connect_model" }],
       ["onboarding_opened", { step: "create_agent" }],
       ["onboarding_step_viewed", { step: "create_agent" }],
+    ]);
+  });
+
+  it("captures a dismissal when the wizard closes before launch", async () => {
+    await startAnalytics();
+    const wizard = renderWizard({ open: true, step: 3 });
+    act(() => wizard.result.current.opened(3, 3));
+    wizard.rerender({ open: true, step: 4, connectOutcome: "subscription" });
+    wizard.rerender({ open: false, step: 1, connectOutcome: "subscription" });
+    wizard.rerender({ open: false, step: 1, connectOutcome: "subscription" });
+
+    expect(captured()).toEqual([
+      ["onboarding_opened", { step: "create_agent" }],
+      ["onboarding_step_viewed", { step: "create_agent" }],
+      ["onboarding_step_completed", { step: "create_agent" }],
+      ["onboarding_step_viewed", { step: "connect_model" }],
+      ["onboarding_dismissed", { step: "connect_model" }],
     ]);
   });
 

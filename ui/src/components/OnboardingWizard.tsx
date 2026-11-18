@@ -1897,7 +1897,7 @@ function OnboardingWizardInner({
     captureOnboardingStepCompleted("review");
     try {
       await agentChatsApi.startOnboarding(createdCompanyId, createdAgentId);
-      captureOnboardingStepCompleted("launch", "succeeded");
+      onboardingAnalytics.launched();
       if (!stillTheSameCompany(createdCompanyId)) return;
       const prefix = createdCompanyPrefix;
       const agentId = createdAgentId;
