@@ -1940,6 +1940,39 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           contentBase64,
         };
       },
+      async createAttachment(issueId, companyId, input) {
+        requireCapability(manifest, capabilitySet, "issue.attachments.create");
+        if (!isInCompany(issues.get(issueId), companyId)) throw new Error(`Issue not found: ${issueId}`);
+        const byteSize = Buffer.from(input.contentBase64, "base64").length;
+        if (byteSize <= 0) throw new Error("Attachment is empty");
+        if (byteSize > 10 * 1024 * 1024) throw new Error("Attachment is larger than the 10 MB limit");
+        const id = randomUUID();
+        const now = new Date();
+        const contentPath = `/api/attachments/${id}/content`;
+        const attachment: IssueAttachment = {
+          id,
+          companyId,
+          issueId,
+          issueCommentId: null,
+          assetId: randomUUID(),
+          provider: "test",
+          objectKey: `${companyId}/issues/${issueId}/${id}`,
+          contentType: input.contentType.split(";", 1)[0]!.trim().toLowerCase() || "application/octet-stream",
+          byteSize,
+          sha256: "",
+          originalFilename: input.filename.split(/[\\/]/).pop() || null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          createdAt: now,
+          updatedAt: now,
+          contentPath,
+          openPath: contentPath,
+          downloadPath: `${contentPath}?download=1`,
+        };
+        issueAttachments.set(issueId, [...(issueAttachments.get(issueId) ?? []), attachment]);
+        attachmentContentById.set(id, input.contentBase64);
+        return attachment;
+      },
       documents: {
         async list(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");

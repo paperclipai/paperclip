@@ -1546,6 +1546,7 @@ export interface PluginIssueAttachmentContent {
  * - `issue.interactions.read` for `listInteractions`
  * - `issue.interactions.respond` for `respondInteraction`
  * - `issue.attachments.read` for `listAttachments` and `getAttachmentContent`
+ * - `issue.attachments.create` for `createAttachment`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1744,6 +1745,12 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { maxBytes?: number | null },
   ): Promise<PluginIssueAttachmentContent | null>;
+  /** Add an attachment to an issue through the host bridge. Requires `issue.attachments.create`. */
+  createAttachment(
+    issueId: string,
+    companyId: string,
+    input: { filename: string; contentType: string; contentBase64: string },
+  ): Promise<IssueAttachment>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */

@@ -256,6 +256,7 @@ export interface HostServices {
     respondInteraction(params: WorkerToHostMethods["issues.respondInteraction"][0]): Promise<WorkerToHostMethods["issues.respondInteraction"][1]>;
     listAttachments(params: WorkerToHostMethods["issues.listAttachments"][0]): Promise<WorkerToHostMethods["issues.listAttachments"][1]>;
     getAttachmentContent(params: WorkerToHostMethods["issues.getAttachmentContent"][0]): Promise<WorkerToHostMethods["issues.getAttachmentContent"][1]>;
+    createAttachment(params: WorkerToHostMethods["issues.createAttachment"][0]): Promise<WorkerToHostMethods["issues.createAttachment"][1]>;
   };
 
   /** Provides `approvals.list`, `approvals.get`, `approvals.decide`. */
@@ -484,6 +485,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.respondInteraction": "issue.interactions.respond",
   "issues.listAttachments": "issue.attachments.read",
   "issues.getAttachmentContent": "issue.attachments.read",
+  "issues.createAttachment": "issue.attachments.create",
 
   // Approvals
   "approvals.list": "approvals.read",
@@ -997,6 +999,9 @@ export function createHostClientHandlers(
     }),
     "issues.getAttachmentContent": gated("issues.getAttachmentContent", async (params) => {
       return services.issues.getAttachmentContent(params);
+    }),
+    "issues.createAttachment": gated("issues.createAttachment", async (params) => {
+      return services.issues.createAttachment(params);
     }),
 
     // Approvals
