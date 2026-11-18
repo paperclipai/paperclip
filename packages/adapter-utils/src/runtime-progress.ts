@@ -22,6 +22,7 @@ export type RuntimeProgressDirection = "to" | "from";
 export type RuntimeProgressTarget = "sandbox" | "ssh";
 
 export type RuntimeStatusPhase =
+  | "run_activity"
   | "git_sync"
   | "config_sync"
   | "adapter_startup"
