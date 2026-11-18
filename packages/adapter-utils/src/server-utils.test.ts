@@ -19,6 +19,8 @@ import {
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
+  capPaperclipWakePayloadForEnv,
+  MAX_WAKE_PAYLOAD_ENV_BYTES,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
 
@@ -1462,6 +1464,131 @@ describe("renderPaperclipWakePrompt - task watchdog", () => {
     const parsed = JSON.parse(serialized ?? "{}");
     expect(parsed.taskWatchdog.customInstructions.length).toBeLessThanOrEqual(4_000);
     expect(parsed.taskWatchdog.terminalLeafSummaries.length).toBeLessThanOrEqual(25);
+  });
+});
+
+describe("stringifyPaperclipWakePayload env-size cap", () => {
+  const makeComments = (count: number, bodyBytes: number) =>
+    Array.from({ length: count }, (_, idx) => ({
+      id: `comment-${idx}`,
+      issueId: "AGE-741",
+      body: `${idx}:` + "x".repeat(bodyBytes),
+      bodyTruncated: false,
+      createdAt: `2026-11-18T00:${String(idx % 60).padStart(2, "0")}:00Z`,
+      author: { type: "agent", id: `agent-${idx}` },
+    }));
+
+  const baseThreadPayload = (comments: unknown[]) => ({
+    reason: "issue_continuation_needed",
+    issue: { id: "AGE-741", identifier: "AGE-741", title: "MHA monitor thread" },
+    comments,
+    requestedCount: comments.length,
+    includedCount: comments.length,
+    missingCount: 0,
+    latestCommentId: `comment-${comments.length - 1}`,
+    continuationSummary: {
+      key: "monitor-digest",
+      title: "Continuation",
+      body: "Earlier monitor context preserved.",
+      bodyTruncated: false,
+      updatedAt: "2026-11-18T00:00:00Z",
+    },
+  });
+
+  it("leaves a small payload untouched and does not force a fallback fetch", () => {
+    const serialized = stringifyPaperclipWakePayload(baseThreadPayload(makeComments(3, 10)));
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized ?? "", "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+    const parsed = JSON.parse(serialized ?? "{}");
+    expect(parsed.comments).toHaveLength(3);
+    expect(parsed.truncated).toBe(false);
+    expect(parsed.fallbackFetchNeeded).toBe(false);
+  });
+
+  it("caps a huge append-only thread below the env budget and signals a fallback fetch", () => {
+    // Simulate a long-lived monitor thread like AGE-741: many large comments.
+    const payload = baseThreadPayload(makeComments(400, 2_000));
+    const uncapped = Buffer.byteLength(
+      JSON.stringify(payload),
+      "utf8",
+    );
+    expect(uncapped).toBeGreaterThan(MAX_WAKE_PAYLOAD_ENV_BYTES);
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized ?? "", "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+
+    const parsed = JSON.parse(serialized ?? "{}");
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.fallbackFetchNeeded).toBe(true);
+    // Oldest comments are shed first; the newest and the continuation survive.
+    expect(parsed.comments.length).toBeLessThan(400);
+    expect(parsed.comments.length).toBeGreaterThan(0);
+    expect(parsed.comments.at(-1)?.id).toBe("comment-399");
+    expect(parsed.continuationSummary?.body).toContain("Earlier monitor context");
+    expect(parsed.missingCount).toBe(400 - parsed.comments.length);
+    expect(parsed.includedCount).toBe(parsed.comments.length);
+  });
+
+  it("stays under budget even when a single retained comment body is enormous", () => {
+    const payload = baseThreadPayload(makeComments(3, 200_000));
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized ?? "", "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+    const parsed = JSON.parse(serialized ?? "{}");
+    expect(parsed.fallbackFetchNeeded).toBe(true);
+    for (const comment of parsed.comments) {
+      expect(comment.bodyTruncated).toBe(true);
+    }
+  });
+
+  it("caps an append-only thread whose unbounded commentIds list alone exceeds the budget", () => {
+    // Reproduces the AGE-741 failure mode: bodies are windowed out (comments: [])
+    // but the full comment-id history is embedded and grows past the env limit.
+    const commentIds = Array.from({ length: 8_000 }, (_, idx) => `cmt_${String(idx).padStart(24, "0")}`);
+    const payload = {
+      reason: "issue_continuation_needed",
+      issue: { id: "AGE-741", identifier: "AGE-741", title: "MHA monitor thread" },
+      comments: [],
+      commentIds,
+      requestedCount: commentIds.length,
+      includedCount: 0,
+      missingCount: 0,
+      latestCommentId: commentIds[commentIds.length - 1],
+      fallbackFetchNeeded: false,
+    };
+    expect(Buffer.byteLength(JSON.stringify(payload), "utf8")).toBeGreaterThan(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(Buffer.byteLength(serialized ?? "", "utf8")).toBeLessThanOrEqual(
+      MAX_WAKE_PAYLOAD_ENV_BYTES,
+    );
+
+    const parsed = JSON.parse(serialized ?? "{}");
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.fallbackFetchNeeded).toBe(true);
+    // The id list is trimmed to a recent tail that preserves the newest id.
+    expect(parsed.commentIds.length).toBeLessThan(commentIds.length);
+    if (parsed.commentIds.length > 0) {
+      expect(parsed.commentIds.at(-1)).toBe(commentIds[commentIds.length - 1]);
+    }
+    expect(parsed.latestCommentId).toBe(commentIds[commentIds.length - 1]);
+  });
+
+  it("capPaperclipWakePayloadForEnv reports trimmed=false when within budget", () => {
+    const serialized = stringifyPaperclipWakePayload(baseThreadPayload(makeComments(1, 5)));
+    const parsed = JSON.parse(serialized ?? "{}");
+    const { trimmed } = capPaperclipWakePayloadForEnv(parsed);
+    expect(trimmed).toBe(false);
   });
 });
 
