@@ -7280,11 +7280,27 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertAgentMayLeaveBlocked(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string; status: string },
+    targetStatus?: string,
+  ) {
+    if (req.actor.type !== "agent" || issue.status !== "blocked" || isClosedIssueStatus(targetStatus)) return true;
+    const hold = await getExecutionBlocker(db, issue.companyId, issue.id);
+    if (!hold?.recoveryActionId) return true;
+    res.status(409).json({
+      error: `Issue stays blocked until its execution recovery hold is released. ${hold.nextAction}`,
+      details: { issueId: issue.id, recoveryActionId: hold.recoveryActionId, cause: hold.cause, nextAction: hold.nextAction },
+    });
+    return false;
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
     issue: Parameters<typeof decideIssueAccess>[1],
-    options: { resumeIntent?: boolean } = {},
+    options: { resumeIntent?: boolean; targetStatus?: string } = {},
   ) {
     if (
       await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)
@@ -7343,6 +7359,7 @@ export function issueRoutes(
         });
         return false;
       }
+      if (!(await assertAgentMayLeaveBlocked(req, res, issue, options.targetStatus))) return false;
     }
 
     if (req.actor.type !== "agent") return true;
@@ -14915,7 +14932,7 @@ export function issueRoutes(
       if (
         resumeRequested !== true &&
         agentStatusTransitionRequiresResumeAuthority &&
-        !(await assertExplicitResumeIntentAllowed(req, res, existing))
+        !(await assertExplicitResumeIntentAllowed(req, res, existing, { targetStatus: updateFields.status }))
       ) {
         return;
       }
@@ -17116,6 +17133,7 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
+      if (req.body.expectedStatuses.includes("blocked") && !(await assertAgentMayLeaveBlocked(req, res, issue))) return;
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.

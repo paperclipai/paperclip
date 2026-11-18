@@ -2148,6 +2148,52 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
   });
 
+  async function seedHeldBlockedTask() {
+    const fixture = await seedCompany();
+    const failedRunId = randomUUID(), agentRunId = randomUUID();
+    await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.coderId, runId: failedRunId,
+      issueId: fixture.sourceIssueId, status: "failed" });
+    await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.coderId, runId: agentRunId });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.sourceIssueId));
+    const [hold] = await db.insert(issueRecoveryActions).values({
+      companyId: fixture.companyId, sourceIssueId: fixture.sourceIssueId, kind: "active_run_watchdog",
+      status: "resolved", outcome: "blocked", ownerType: "board", returnOwnerAgentId: fixture.coderId,
+      cause: "provider_failure_meaning_unverified", fingerprint: failedRunId,
+      nextAction: "Preserve recorded work without replay.",
+      evidence: { runId: failedRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).returning();
+    const agent = createApp({ type: "agent", source: "agent_jwt", companyId: fixture.companyId,
+      agentId: fixture.coderId, runId: agentRunId });
+    return { ...fixture, hold: hold!, agent };
+  }
+
+  it.each([
+    ["status change", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "in_progress" })],
+    ["reopen", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ reopen: true, comment: "Reopening the case." })],
+    ["resume comment", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).post(`/api/issues/${f.sourceIssueId}/comments`).send({ body: "Continuing the case.", resume: true })],
+    ["checkout", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
+      request(f.agent).post(`/api/issues/${f.sourceIssueId}/checkout`).send({ agentId: f.coderId, expectedStatuses: ["blocked"] })],
+  ])("keeps a task blocked behind a no-replay hold when its agent tries a %s", async (_entry, send) => {
+    const f = await seedHeldBlockedTask();
+    const response = await send(f);
+    expect(response.status).toBe(409);
+    expect(response.body.details).toMatchObject({ recoveryActionId: f.hold.id, nextAction: expect.stringContaining(f.hold.nextAction) });
+    expect((await db.select().from(issues).where(eq(issues.id, f.sourceIssueId)))[0]!.status).toBe("blocked");
+  });
+
+  it("lets the agent close a held task, or move it on once the hold no longer blocks replay", async () => {
+    const closed = await seedHeldBlockedTask();
+    await request(closed.agent).patch(`/api/issues/${closed.sourceIssueId}`).send({ status: "cancelled" }).expect(200);
+    const released = await seedHeldBlockedTask();
+    await db.update(issueRecoveryActions).set({ evidence: { runId: released.hold.evidence.runId } })
+      .where(eq(issueRecoveryActions.id, released.hold.id));
+    await request(released.agent).patch(`/api/issues/${released.sourceIssueId}`).send({ status: "todo" }).expect(200);
+    expect((await db.select().from(issues).where(eq(issues.id, released.sourceIssueId)))[0]!.status).toBe("todo");
+  });
+
   async function seedReconciledDelivery() {
     const fixture = await seedCompany();
     const { companyId, coderId, sourceIssueId } = fixture;
