@@ -19,7 +19,17 @@ export {
   createFileResourceListLimiter,
 } from "./file-resources.js";
 export { routineRoutes } from "./routines.js";
+export { routineSuggestionRoutes } from "./routine-suggestions.js";
 export { goalRoutes } from "./goals.js";
+export { responsibilityRoutes } from "./responsibilities.js";
+export { responsibilityAreaRoutes } from "./responsibility-areas.js";
+export { responsibilityBarRoutes } from "./responsibility-bars.js";
+export { responsibilityDashboardRoutes } from "./responsibility-dashboard.js";
+export { responsibilitySummaryRoutes } from "./responsibility-summaries.js";
+export { responsibilityAutomationRoutes } from "./responsibility-automation.js";
+export { responsibilityStatusReportRoutes } from "./responsibility-status-reports.js";
+export { responsibilityMetricRoutes } from "./responsibility-metrics.js";
+export { responsibilityRunRoutes } from "./responsibility-runs.js";
 export { onboardingSeedRoutes } from "./onboarding-seed.js";
 export { approvalRoutes } from "./approvals.js";
 export { secretRoutes } from "./secrets.js";

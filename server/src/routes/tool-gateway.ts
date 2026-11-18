@@ -186,7 +186,7 @@ async function handleMcpGatewayProtocol(
       } as const;
       const contextMethod = contextMethods[name as keyof typeof contextMethods];
       if (contextMethod) {
-        const result = await toolGateway.executeContextForNamedGateway({
+        const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
           ...locator,
           bearerToken: token,
           method: contextMethod,
@@ -194,7 +194,8 @@ async function handleMcpGatewayProtocol(
             ? params.arguments as Record<string, unknown>
             : {},
           callerHeaders: headers,
-        });
+          signal,
+        }));
         res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
@@ -225,13 +226,14 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (["resources/list", "resources/read", "prompts/list", "prompts/get"].includes(body.method ?? "")) {
-      const result = await toolGateway.executeContextForNamedGateway({
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
         ...locator,
         bearerToken: token,
         method: body.method as "resources/list" | "resources/read" | "prompts/list" | "prompts/get",
         params: body.params ?? {},
         callerHeaders: headers,
-      });
+        signal,
+      }));
       res.json({ jsonrpc: "2.0", id, result });
       return;
     }

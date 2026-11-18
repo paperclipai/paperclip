@@ -84,9 +84,7 @@ describe("paperclip-runner real server vertical slice", () => {
     await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("Expected a TCP listener.");
-    setupRunnerPrpWebSocketServer(server, {
-      apiUrl: `http://127.0.0.1:${address.port}`,
-    });
+    setupRunnerPrpWebSocketServer(server);
     const stateDirectory = await mkdtemp(resolve(tmpdir(), "paperclip-runner-real-resume-"));
     const expectedContextFile = resolve(stateDirectory, "expected-context.json");
     await writeFile(expectedContextFile, JSON.stringify({ companyId, actorId: agentId, taskId: issueId, runId, callId: "semantic-call-1" }));

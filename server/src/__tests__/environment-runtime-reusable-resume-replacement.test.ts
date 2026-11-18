@@ -358,6 +358,27 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentDestroyLease", expect.anything(), expect.anything());
   });
 
+  it("applies the idle-start extension to a provider liveness deadline named only by its errno", async () => {
+    const seeded = await seed({ leaseStatus: "released", dirty: true });
+    let clock = Date.now();
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    const { call, runtime } = worker(seeded, async (attempt, timeoutMs) => {
+      if (attempt === 1) {
+        clock += timeoutMs;
+        throw new JsonRpcCallError({ code: -32000,
+          message: `Daytona sandbox liveness call "sandbox.refreshData" did not respond within ${timeoutMs} ms; the sandbox connection is unresponsive.`,
+          data: environmentResumeErrorData(Object.assign(new Error("private"), { code: "ETIMEDOUT" })) });
+      }
+      return { providerLeaseId: seeded.providerLeaseId, metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } };
+    });
+
+    const acquired = await acquire(seeded, runtime);
+
+    expect(acquired.lease.providerLeaseId).toBe(seeded.providerLeaseId);
+    expect(call.mock.calls.filter(([, method]) => method === "environmentResumeLease")).toHaveLength(2);
+    expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentAcquireLease", expect.anything(), expect.anything());
+  });
+
   it("waits out the in-flight resume when a retry finds the stopped sandbox still settling", async () => {
     const seeded = await seed({ leaseStatus: "released", dirty: true });
     const clock = rpcTimeoutClock();

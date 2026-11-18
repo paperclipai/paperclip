@@ -63,6 +63,27 @@ export function chatInteractionPresentation(interaction: IssueThreadInteraction,
       context.push("The addressed user must review this connection request in Paperclip.");
       return { title: interaction.title ?? `Connect ${payload.serviceName}`, body: context.join("\n\n") };
     }
+    case "suggest_routine": {
+      const { payload } = interaction;
+      context.push(payload.cadenceLabel);
+      return { title: interaction.title ?? `Repeat "${payload.title}"?`, body: context.join("\n\n") };
+    }
+    case "propose_responsibility_bar": {
+      const { payload } = interaction;
+      context.push(payload.bar.standard, `${payload.templateLabel}: ${payload.targetLabel}`, payload.statusRule);
+      return { title: interaction.title ?? "Proposed bar", body: context.join("\n\n") };
+    }
+    case "propose_automation": {
+      const { payload } = interaction;
+      context.push(payload.title, payload.startLabel);
+      return { title: interaction.title ?? "Proposed automation", body: context.join("\n\n") };
+    }
+    case "propose_dashboard_changes": {
+      const { payload } = interaction;
+      if (payload.message) context.push(payload.message);
+      context.push(payload.changes.length === 1 ? "1 change to the dashboard" : `${payload.changes.length} changes to the dashboard`);
+      return { title: interaction.title ?? "Proposed dashboard changes", body: context.join("\n\n") };
+    }
   }
 }
 

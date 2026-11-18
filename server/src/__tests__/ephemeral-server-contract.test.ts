@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { assertEphemeralServerConfig } from "../services/ephemeral-server-contract.js";
-import { assertEphemeralWorkspaceExecution, assertEphemeralNativeRuntime } from "../services/remote-workspaces.js";
+import { assertEphemeralWorkspaceExecution, assertEphemeralNativeRuntime, shouldUseRemoteWorkspaces } from "../services/remote-workspaces.js";
 import { assertEphemeralAgentInstructions } from "../services/agent-instructions.js";
 
 const config = { databaseUrl: "postgresql://runtime:fixture@ep-example-pooler.neon.test/tenant", storageProvider: "s3" as const };
@@ -40,4 +40,19 @@ it("requires remote workspace authority and native execution independently of pr
   vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "false");
   expect(() => assertEphemeralWorkspaceExecution({ ...remote, remoteAuthority: false })).not.toThrow();
   expect(() => assertEphemeralNativeRuntime(false)).not.toThrow();
+});
+
+it.each(["claude_local", "codex_local", "cursor", "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"])("admits %s over SSH only with durable remote workspace authority", adapterType => {
+  vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+  vi.stubEnv("DATABASE_URL", config.databaseUrl);
+  vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+  vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", env.PAPERCLIP_SECRETS_MASTER_KEY);
+  const remote = { externalConversation: false, adapterType, environmentDriver: "ssh", pluginTaskWorkspace: false, remoteAuthority: true };
+  expect(shouldUseRemoteWorkspaces({ adapterType, environmentDriver: "ssh", experimentalEnabled: true })).toBe(true);
+  expect(() => assertEphemeralWorkspaceExecution(remote)).not.toThrow();
+  expect(() => assertEphemeralWorkspaceExecution({ ...remote, remoteAuthority: false })).toThrow();
+  expect(() => assertEphemeralWorkspaceExecution({ ...remote, environmentDriver: "local" })).toThrow();
+  expect(() => assertEphemeralWorkspaceExecution({ ...remote, adapterType: "process" })).toThrow();
+  expect(() => assertEphemeralNativeRuntime(false, { ...remote, remoteCwd: "/workspace", authorityCwd: "/workspace" })).not.toThrow();
+  expect(() => assertEphemeralNativeRuntime(false, { ...remote, remoteCwd: "/other", authorityCwd: "/workspace" })).toThrow();
 });

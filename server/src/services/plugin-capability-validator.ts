@@ -205,6 +205,7 @@ const LAUNCHER_PLACEMENT_CAPABILITIES: Record<
  */
 const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   tools: "agent.tools.register",
+  apps: "connectors.provide",
   jobs: "jobs.schedule",
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",

@@ -15,7 +15,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
-import { RequestCollapsedSidebar } from "@/components/RequestCollapsedSidebar";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -361,7 +360,6 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
   if (!selectedCompanyId) {
     return (
       <>
-        {!embedded && <RequestCollapsedSidebar />}
         <EmptyState icon={GanttChartSquare} message="Select an organization to view its work timeline." />
       </>
     );
@@ -475,7 +473,6 @@ export function Timeline({ embedded = false }: { embedded?: boolean } = {}) {
 
   return (
     <div className="space-y-6">
-      {!embedded && <RequestCollapsedSidebar />}
       {header}
       {toolbar}
 

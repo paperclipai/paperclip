@@ -99,7 +99,7 @@ export async function resolveCodexExecutionEngineForRun(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.workspaceRealization?.mode === "in_place") {
+  if (target?.workspaceRealization?.mode === "in_place" && !(target.kind === "remote" && target.transport === "ssh")) {
     return unavailable("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
   }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
@@ -509,9 +509,6 @@ async function codexAcpUnavailableReason(
   });
   const managedSsh = target?.kind === "remote" && target.transport === "ssh"
     && target.spec.useHostAuth === false && Boolean(input.config.managedAiConnection);
-  if (managedSsh && target.workspaceRealization?.mode === "in_place") {
-    return "In-place SSH workspace realization requires the Codex CLI engine; ACP archive staging is not supported.";
-  }
   if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target) && !managedSsh) {
     if (target.transport === "sandbox") {
       return "Codex ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";

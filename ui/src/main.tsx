@@ -8,6 +8,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
+import { ProductAnalyticsGate } from "./components/ProductAnalyticsGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
@@ -128,6 +129,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <SentryGate />
+        <ProductAnalyticsGate />
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>

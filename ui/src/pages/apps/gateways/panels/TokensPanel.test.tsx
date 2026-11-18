@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import type { ToolMcpGatewayToken, ToolMcpGatewayWithTokens } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TokensPanel } from "./TokensPanel";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 
 const createGatewayTokenMock = vi.hoisted(() => vi.fn());
 const revokeGatewayTokenMock = vi.hoisted(() => vi.fn());
@@ -210,6 +211,7 @@ describe("TokensPanel", () => {
     expect(container.textContent).toContain("New token — copy now");
     // Reveal-once banner shows the full value immediately after creation.
     expect(container.textContent).toContain("pcgw_live_FULLSECRETVALUE");
+    expect(isBlockedFromReplay("pcgw_live_FULLSECRETVALUE", document.body)).toBe(true);
 
     await clickButton("Copy");
     expect(writeText).toHaveBeenCalledWith("pcgw_live_FULLSECRETVALUE");
@@ -229,6 +231,7 @@ describe("TokensPanel", () => {
     expect(revealGatewayTokenMock).toHaveBeenCalledWith("company-1", "agent-token");
     expect(container.textContent).toContain("New token — copy now");
     expect(container.textContent).toContain("pcgw_live_REVEALEDVALUE");
+    expect(isBlockedFromReplay("pcgw_live_REVEALEDVALUE", document.body)).toBe(true);
   });
 
   it("does not offer to reveal a token that expired before its reveal", async () => {

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import type { ChatEndpoint } from "@/api/chatEndpoints";
 import { ManagedSlackSetup } from "./ManagedSlackSetup";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const api = vi.hoisted(() => ({ slackSetupOptions: vi.fn(), provisionManagedSlack: vi.fn(), authorizeSlackManager: vi.fn(), get: vi.fn() }));
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: api }));
@@ -160,4 +161,18 @@ it.each(["popup", "fallback"])("continues after manager authorization returns th
   await act(async () => button.click());
   expect(api.authorizeSlackManager).toHaveBeenCalledTimes(1);
   expect(api.provisionManagedSlack).toHaveBeenCalledWith("endpoint", expect.objectContaining({ grantId: "grant" }));
+});
+it("keeps the chosen workspace name out of session replay in the closed picker", async () => {
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [{ grantId: "one", workspaceName: "Globex Sales" }, { grantId: "two", workspaceName: "Initech Ops" }] });
+  endpoint.setup!.slackRegistration = { status: "failed", managerGrantId: "two" } as NonNullable<ChatEndpoint["setup"]>["slackRegistration"];
+  await render();
+  const trigger = container.querySelector('[aria-label="Slack workspace"]');
+  expect(trigger?.textContent).toContain("Initech Ops");
+  expect(replayLeaks("Initech Ops", document.body)).toEqual({ rendered: true, recorded: false });
+});
+it("keeps the only workspace name out of session replay", async () => {
+  api.slackSetupOptions.mockResolvedValue({ managedAvailable: true, workspaces: [{ grantId: "grant", workspaceName: "Globex Sales" }] });
+  endpoint.setup!.slackRegistration = { status: "failed" } as NonNullable<ChatEndpoint["setup"]>["slackRegistration"];
+  await render();
+  expect(replayLeaks("Globex Sales", document.body)).toEqual({ rendered: true, recorded: false });
 });

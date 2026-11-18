@@ -496,6 +496,60 @@ Plugin tools appear in the agent's tool list alongside core tools but are visual
 - Tool execution is subject to the same timeout and resource limits as other plugin worker calls.
 - Tool results are included in run logs.
 
+## 11A. Connectors
+
+A plugin with the `connectors.provide` capability can add connector types to
+the Connectors catalog. It declares them as `apps` in its manifest. Each entry
+uses the built-in app-definition schema
+(`packages/shared/src/app-definitions/*.json`, validated by
+`appDefinitionSchema`), so a built-in connector can be copied into a plugin
+unchanged.
+
+```ts
+apps?: AppDefinition[];
+```
+
+- The host namespaces each slug by plugin key (`pluginAppSlug(pluginKey, slug)`),
+  so a plugin app never shadows a built-in app or another plugin's app.
+- A method can use the `mcp_remote` or `local_stdio` transport. The host then
+  does setup, OAuth, discovery, grants, policies, approvals and audit exactly as
+  for a built-in connector. Transports that need provider code in the host
+  (REST adapters, chat channels, AI runtimes) are rejected.
+- A method can use `transport: "plugin"`: the plugin worker serves its tools.
+  It declares `tools` (`{ kind: "static", list }` with a `risk` per tool, or
+  `{ kind: "dynamic" }` served by `ctx.connectors.listTools`) and optionally a
+  `settingsSchema` for per-connection settings. Tool names use `[a-z0-9_]`.
+  Authentication is `none` or `api_key`. The gateway keeps every decision
+  (grant, policy, approval, rate limit, audit) and calls the worker's
+  `executeTool` with `runContext.connection` (`id`, `appSlug`, `methodKey`,
+  `grantId`, `settings`, and the call's `credential`). The worker never reads
+  the vault and never sees another connection's credential. A stopped worker
+  is a retryable `plugin_connector_unavailable` error.
+- Legacy top-level `tools` become one implicit connector (slug `default`, named
+  after the plugin, no authentication). Its tools keep their names and
+  handlers. A one-time migration recorded each plugin installed at upgrade
+  time; the host gives each such plugin, per company, one connection installed
+  for the whole company, so existing agents keep exactly their tools.
+- A definition can declare `reviewedTools` (read, write and destructive tool
+  names, and the risk for unlisted tools). The host classifies the connector's
+  tools from it wherever the definition is installed.
+- The manifest validator rejects apps without `connectors.provide`, duplicate
+  slugs, and host-derived fields (`plugin`, `aiConnectionRouter`,
+  `experimentalFeatureKey`, `availability`).
+
+Activation rules:
+
+1. Installing or enabling the plugin grants no tools. It only adds its connector
+   types to the catalog.
+2. Connecting an account grants no tools.
+3. An agent gets a connector's tools only from a connection installed for that
+   agent, or for the whole company. Discovery and invocation both enforce this.
+4. While the plugin is not `ready`, or after an upgrade removes the app, its
+   connector types and connections are hidden from the Connectors APIs and reach
+   no agent. Settings, credentials, installs and grants are kept and come back
+   unchanged when the plugin is ready again. Uninstalling archives the
+   connections, revokes their grants and deletes their owned credentials.
+
 ## 12. Runtime Model
 
 ## 12.1 Process Model
@@ -935,6 +989,10 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 ### Agent Tools
 
 - `agent.tools.register`
+
+### Connectors
+
+- `connectors.provide`
 
 ### UI
 
