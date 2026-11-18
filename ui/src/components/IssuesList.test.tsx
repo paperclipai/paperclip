@@ -459,6 +459,35 @@ describe("IssuesList", () => {
     await act(() => root.unmount()); queryClient.clear();
   });
 
+  it.each([true, false])("applies and reports the URL Updated filter (streamlined=%s)", async (enableStreamlinedUi) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi, enableExternalObjects: false });
+    const now = Date.now();
+    const issues = [
+      createIssue({ id: "recent", title: "Recent task", updatedAt: new Date(now - 60 * 60 * 1000) }),
+      createIssue({ id: "old", title: "Old task", updatedAt: new Date(now - 10 * 24 * 60 * 60 * 1000) }),
+    ];
+    const onUpdatedFilterChange = vi.fn();
+    const onUpdatedBeforeChange = vi.fn();
+    const props = { issues, agents: [], projects: [], viewStateKey: "paperclip:test-updated-url",
+      onUpdatedFilterChange, onUpdatedBeforeChange, onUpdateIssue: () => undefined };
+    const { root, queryClient } = renderWithQueryClient(
+      <IssuesList {...props} updatedFilter={{ updatedWithin: "3d", updatedFrom: null, updatedTo: null }} />, container);
+    const titles = () => [...container.querySelectorAll('[data-testid="issue-row"]')].map(row => row.textContent);
+    await waitForAssertion(() => expect(titles().join("|")).toContain("Recent task"));
+    expect(titles().join("|")).not.toContain("Old task");
+    const filterButton = container.querySelector<HTMLButtonElement>('button[title="Filter"], button[title^="Filters"]')
+      ?? [...container.querySelectorAll("button")].find(button => button.textContent?.startsWith("Filter"))!;
+    await act(() => filterButton.click());
+    await waitForAssertion(() => expect([...document.querySelectorAll("button")].some(button => button.textContent === "Any time")).toBe(true));
+    await act(() => [...document.querySelectorAll("button")].find(button => button.textContent === "Any time")!.click());
+    expect(onUpdatedFilterChange).toHaveBeenLastCalledWith({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+    await act(() => root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
+      <IssuesList {...props} updatedFilter={{ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-03" }} />
+    </TooltipProvider></QueryClientProvider>));
+    await waitForAssertion(() => expect(onUpdatedBeforeChange).toHaveBeenLastCalledWith(new Date(2026, 10, 4).toISOString()));
+    await act(() => root.unmount()); queryClient.clear();
+  });
+
   it.each([true, false])("honors a Coordinator task-ID link in the other task interfaces (streamlined=%s)", async (enableStreamlinedUi) => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi });
     const issues = [
