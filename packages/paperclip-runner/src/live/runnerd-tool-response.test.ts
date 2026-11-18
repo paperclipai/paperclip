@@ -14,7 +14,12 @@ describe("runnerd semantic tool response", () => {
 
   it.each(["Call connections_search and use the saved draft ID.", '{"error":"Specify exact toolNames"}'])("preserves the provider-facing error envelope: %s", text => {
     const response = { success: false, contentItems: [{ type: "inputText", text }] };
-    expect(unwrapToolResponse(response)).toEqual({ __paperclipSemanticToolOutcome: true, isError: true, result: response });
+    expect(unwrapToolResponse(response, true)).toEqual({ __paperclipSemanticToolOutcome: true, isError: true, result: response });
+  });
+
+  it("keeps the Codex JSON error result compatible with recovered receipts", () => {
+    const response = { success: false, contentItems: [{ type: "inputText", text: '{"error":"saved failure"}' }] };
+    expect(unwrapToolResponse(response)).toMatchObject({ isError: true, result: { error: "saved failure" } });
   });
 
   it("still unwraps successful JSON results", () => {
