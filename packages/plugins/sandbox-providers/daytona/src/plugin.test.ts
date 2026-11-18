@@ -39,7 +39,7 @@ import plugin, {
   STUCK_STOPPING_FORCE_AFTER_MS,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
+import { environmentAcquireErrorData, environmentResumeErrorData, readEnvironmentAcquireErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 import * as duplexCommands from "./duplex-command-stream.js";
@@ -1561,6 +1561,29 @@ describe("Daytona sandbox provider plugin", () => {
         observedProviderLeaseId: sandbox.id, companyId: params.companyId, runId: params.runId,
       });
       expect(sandbox.delete).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ["DaytonaConnectionError", "read EADDRNOTAVAIL", "CONNECTION_FAILED"],
+      ["DaytonaConnectionTimeoutError", "HTTP request timed out", "ETIMEDOUT"],
+    ])("reports a %s during setup as a transient transport failure", async (name, message, errorCode) => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      sandbox.getWorkDir.mockRejectedValue(Object.assign(new Error(message), { name, code: undefined }));
+      sandbox.delete.mockResolvedValue(undefined);
+      const error = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(error.message).toBe(message);
+      expect(readEnvironmentAcquireErrorDiagnostic({ data: environmentAcquireErrorData(error) })).toEqual({ errorCode });
+      expect(sandbox.delete).toHaveBeenCalledOnce();
+    });
+
+    it("leaves other setup failures without a transport diagnostic", async () => {
+      const sandbox = createMockSandbox();
+      mockCreate.mockResolvedValue(sandbox);
+      sandbox.getWorkDir.mockRejectedValue(new Error("workspace unavailable"));
+      sandbox.delete.mockResolvedValue(undefined);
+      const error = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(environmentAcquireErrorData(error)).toBeUndefined();
     });
 
     it("keeps ownership when setup and its inline deletion both reject", async () => {
@@ -5958,9 +5981,13 @@ describe("Daytona sandbox provider plugin", () => {
         // Idle past half of the default 15-min auto-stop interval so the next
         // lookup refreshes the stale handle.
         nowMs += 8 * 60_000;
-        await expect(
-          plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config }),
-        ).rejects.toThrow(/did not respond within 50 ms/);
+        const timedOut = await Promise.resolve(plugin.definition.onEnvironmentExecute?.({ ...execParams("lease-a"), config }))
+          .catch((error: unknown) => error);
+        expect(timedOut).toBeInstanceOf(Error);
+        expect((timedOut as Error).message).toMatch(/did not respond within 50 ms/);
+        expect(timedOut).toMatchObject({ code: "ETIMEDOUT" });
+        expect(environmentResumeErrorData(timedOut)).toEqual({ schema: "paperclip/environment-resume-error/v1",
+          diagnostic: { errorCode: "ETIMEDOUT" } });
       } finally {
         restoreFreshness();
       }

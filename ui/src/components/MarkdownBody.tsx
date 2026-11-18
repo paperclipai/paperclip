@@ -10,6 +10,7 @@ import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { MarkdownUrlLink } from "./MarkdownUrlLink";
 import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
@@ -1028,6 +1029,8 @@ function MarkdownBodyImpl({
       className={cn(
         "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
         theme === "dark" && "prose-invert",
+        // Customer content: masked in session replay, skipped by autocapture.
+        ANALYTICS_MASK_CLASS,
         className,
       )}
       style={mergeWrapStyle(style)}

@@ -4,6 +4,7 @@ import { decisionModelsApi } from "@/api/decision-models";
 import { Link } from "@/lib/router";
 import { formatDateTime, formatTokens, formatDetailedCents } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export function DecisionHistoryTable({ entries, fastResponse = false, fastResponsesEnabled = true }: { entries: (DecisionHistoryEntry & { publicationStatus?: string; connectionName?: string | null })[]; fastResponse?: boolean; fastResponsesEnabled?: boolean }) {
   if (!entries.length) return <p className="text-sm text-muted-foreground">{fastResponse ? "No fast responses in this period." : "No decision requests in this period."} <Link to={fastResponse && !fastResponsesEnabled ? "/company/settings/instance/experimental" : "/company/settings/connections"} className="underline underline-offset-4">{fastResponse ? fastResponsesEnabled ? "Configure fast response" : "Enable experimental fast responses" : "Configure a decision model"}</Link> to run a test.</p>;
@@ -15,7 +16,7 @@ export function DecisionHistoryTable({ entries, fastResponse = false, fastRespon
         <td className="px-3 py-3"><div className="whitespace-nowrap">{formatDateTime(row.startedAt)}</div><div className="text-xs text-muted-foreground">{row.feature === "settings.test" ? "Setup test" : row.feature}</div></td>
         <td className="px-3 py-3">{row.actorType === "system" ? "Paperclip services" : row.userName ?? (row.responsibleUserId === "local-board" ? "Board" : "Former user")}</td>
         <td className="px-3 py-3">{row.issueId ? <Link className="underline underline-offset-4" to={`/issues/${row.issueIdentifier ?? row.issueId}`}>{row.issueIdentifier ?? "View task"}</Link> : "—"}</td>
-        {fastResponse && <td className="px-3 py-3">{row.connectionName ?? (row.connectionId ? "Removed connection" : "—")}</td>}
+        {fastResponse && <td className={`px-3 py-3 ${ANALYTICS_MASK_CLASS}`}>{row.connectionName ?? (row.connectionId ? "Removed connection" : "—")}</td>}
         <td className="px-3 py-3 font-mono text-xs">{row.model}</td>
         <td className="px-3 py-3"><div>{row.status === "succeeded" ? "Succeeded" : row.status === "running" ? "Running" : row.status === "unknown" ? "Unresolved" : row.status === "skipped" ? "Skipped" : row.status === "pending" ? "Pending" : "Failed"}</div>{row.publicationStatus && <div className="text-xs text-muted-foreground">{row.publicationStatus}</div>}{row.errorCode && <div className="text-xs text-muted-foreground">{row.errorCode.replaceAll("_", " ")}</div>}</td>
         <td className="px-3 py-3 font-mono">{row.durationMs === null ? "—" : `${(row.durationMs / 1000).toFixed(1)}s`}</td>

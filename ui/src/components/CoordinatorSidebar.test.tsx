@@ -10,8 +10,8 @@ import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coor
 import { queryKeys } from "@/lib/queryKeys";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", search: "", collapsed: false, userId: "reviewer" as string | null, chats: [] as Array<{ isUnreadForMe: boolean }>,
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, agents: [] as Agent[] }));
+const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), pathname: "/COO/issues", search: "", userId: "reviewer" as string | null, chats: [] as Array<{ isUnreadForMe: boolean }>,
+  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, enableResponsibilities: false, agents: [] as Agent[] }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: fixture.userId }) }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
@@ -24,9 +24,9 @@ vi.mock("@/lib/issueDetailCache", async (importOriginal) => ({
   prefetchIssueDetailForNavigation: taskPrefetch,
 }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: fixture.openNewIssue }) }));
-vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ collapsed: fixture.collapsed, peeking: false, isMobile: false, setSidebarOpen: vi.fn() }) }));
+vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false, setSidebarOpen: vi.fn() }) }));
 vi.mock("@/api/attention", () => ({ attentionApi: { list: fixture.attention, summary: fixture.summary } }));
-vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases }) } }));
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: async () => ({ enableCases: fixture.enableCases, enableResponsibilities: fixture.enableResponsibilities }) } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => fixture.projects } }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
@@ -51,8 +51,8 @@ function summary(items: AttentionItem[], mineCount = items.length) {
 
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
-  vi.clearAllMocks(); localStorage.clear(); fixture.collapsed = false; fixture.userId = "reviewer"; fixture.pathname = "/COO/issues"; fixture.search = "";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.agents = [];
+  vi.clearAllMocks(); localStorage.clear(); fixture.userId = "reviewer"; fixture.pathname = "/COO/issues"; fixture.search = "";
+  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.enableResponsibilities = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -142,8 +142,7 @@ describe("Coordinator task creation", () => {
     expect(region.textContent).not.toContain("Recents");
     expect(region.querySelector('a[href="/issues/TASK-0"]')).not.toBeNull();
   });
-  it.each([false, true])("opens global search from the organization header when collapsed is %s", async collapsed => {
-    fixture.collapsed = collapsed;
+  it("opens global search from the organization header", async () => {
     await renderSidebar();
     const listener = vi.fn();
     document.addEventListener("keydown", listener);
@@ -154,8 +153,7 @@ describe("Coordinator task creation", () => {
       expect(listener).toHaveBeenCalledWith(expect.objectContaining({ key: "k", metaKey: true }));
     } finally { document.removeEventListener("keydown", listener); }
   });
-  it.each([false, true])("opens the task form from New task above Chat when collapsed is %s", async (collapsed) => {
-    fixture.collapsed = collapsed;
+  it("opens the task form from New task above Chat", async () => {
     await renderSidebar();
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task"]');
     const chat = container.querySelector('a[href="/chats"]');
@@ -256,10 +254,6 @@ describe("Coordinator pinned pages", () => {
       await act(async () => root.unmount()); root = createRoot(container);
       await renderSidebar();
       expect(order()).toEqual(["/dashboard", "/artifacts"]);
-      fixture.collapsed = true;
-      await renderSidebar();
-      expect(navigation().querySelector('[aria-label^="Reorder pinned"]')).toBeNull();
-      expect(order()).toEqual(["/dashboard", "/artifacts"]);
     } finally { rect.mockRestore(); }
   });
   it.each([false, true])("keeps Cases reachable in More only when enabled (%s)", async enabled => {
@@ -268,13 +262,10 @@ describe("Coordinator pinned pages", () => {
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More workspace pages"]')!.click());
     expect(document.querySelector('a[href="/cases"]') !== null).toBe(enabled);
   });
-  it("announces unread chat totals in expanded and collapsed navigation", async () => {
+  it("announces unread chat totals", async () => {
     fixture.chats = [{ isUnreadForMe: true }, { isUnreadForMe: false }, { isUnreadForMe: true }];
     await renderSidebar();
     expect(container.querySelector('a[href="/chats"] [aria-label="2 unread chats"]')).not.toBeNull();
-    fixture.collapsed = true;
-    await renderSidebar();
-    expect(container.querySelector('a[href="/chats"]')?.getAttribute("aria-label")).toBe("Chat, 2 unread chats");
   });
   const navigation = () => container.querySelector('nav[aria-label="Workspace navigation"]')!;
   const pinnedPage = (to: string) => navigation().querySelector(`a[href="${to}"]`);
@@ -285,8 +276,7 @@ describe("Coordinator pinned pages", () => {
     await flush();
   }
 
-  it.each([false, true])("keeps pins above More without a separate section, restores and unpins when collapsed is %s", async collapsed => {
-    fixture.collapsed = collapsed;
+  it("keeps pins above More without a separate section, restores and unpins", async () => {
     await renderSidebar();
     expect(pinnedPage("/projects")).toBeNull();
     await click("More workspace pages");
@@ -302,7 +292,6 @@ describe("Coordinator pinned pages", () => {
     root = createRoot(container);
     await renderSidebar();
     expect(pinnedPage("/projects")).not.toBeNull();
-    if (collapsed) await click("More workspace pages");
     await click("Unpin Projects");
     expect(pinnedPage("/projects")).toBeNull();
   });
@@ -399,11 +388,10 @@ describe("Coordinator Inbox badge", () => {
     expect(decisionLink().textContent).toBe("Inbox");
   });
 
-  it("announces only your outstanding count when the sidebar is collapsed", async () => {
-    fixture.collapsed = true;
+  it("announces only your outstanding count", async () => {
     fixture.summary.mockResolvedValue(summary([pending("for-reviewer"), pending("for-someone-else")], 1));
     await renderSidebar();
-    expect(decisionLink().getAttribute("aria-label")).toBe("Inbox, 1 decisions");
+    expect(decisionLink().querySelector('[aria-label="1 decisions"]')).not.toBeNull();
   });
 });
 
@@ -491,5 +479,27 @@ describe("Coordinator task status glyphs (BUG-07)", () => {
     taskPrefetch.mockClear();
     await act(async () => link!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })));
     expect(taskPrefetch).toHaveBeenCalledWith(expect.anything(), "ONB-3", expect.objectContaining({ history: true }));
+  });
+});
+
+describe("Coordinator with Responsibilities", () => {
+  const primaryLinks = () =>
+    [...container.querySelectorAll('nav[aria-label="Workspace navigation"] .design-sidebar-primary.my-2 > a, nav[aria-label="Workspace navigation"] .design-sidebar-primary.my-2 > div > a')]
+      .map(link => link.getAttribute("href"));
+  it("leads Chat, Tasks and Inbox with the Responsibilities home, named Dashboard, and leaves the classic dashboard out of More", async () => {
+    fixture.enableResponsibilities = true;
+    await renderSidebar();
+    expect(primaryLinks()).toEqual(["/responsibilities", "/chats", "/issues", "/decisions"]);
+    expect(container.querySelector('a[href="/responsibilities"] svg')?.classList.contains("lucide-compass")).toBe(true);
+    expect(container.querySelector('a[href="/responsibilities"]')?.textContent).toBe("Dashboard");
+    expect(container.querySelector('a[href="/dashboard"]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More workspace pages"]')!.click());
+    expect(document.querySelector('a[href="/projects"]')).not.toBeNull();
+    expect(document.querySelector('a[href="/dashboard"]')).toBeNull();
+  });
+  it("keeps Chat first with no Responsibilities row while the flag is off", async () => {
+    await renderSidebar();
+    expect(primaryLinks()).toEqual(["/chats", "/issues", "/decisions"]);
+    expect(container.querySelector('a[href="/responsibilities"]')).toBeNull();
   });
 });

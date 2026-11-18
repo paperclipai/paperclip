@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Clock3, RefreshCw, Save, Trash2, Webhook, Zap } from "lucide-react";
+import { Clock3, Radar, RefreshCw, Save, Trash2, Webhook, Zap } from "lucide-react";
 import type { RoutineTrigger } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,7 +61,7 @@ export function RoutineTriggerCard({
   }, [trigger]);
 
   const KindIcon =
-    trigger.kind === "schedule" ? Clock3 : trigger.kind === "webhook" ? Webhook : Zap;
+    trigger.kind === "schedule" ? Clock3 : trigger.kind === "webhook" ? Webhook : trigger.kind === "heartbeat" ? Radar : Zap;
   const humanCron = trigger.kind === "schedule" ? describeCron(draft.cronExpression) : null;
   const lastResultFailed = /fail|error/i.test(trigger.lastResult ?? "");
   const lastResultLabel = trigger.lastResult?.startsWith("Created execution issue ")
@@ -97,7 +97,9 @@ export function RoutineTriggerCard({
               ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
               : trigger.kind === "webhook"
                 ? "Webhook"
-                : "API"}
+                : trigger.kind === "heartbeat"
+                  ? "Standing check"
+                  : "API"}
           </span>
         </div>
       </div>

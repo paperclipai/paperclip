@@ -768,4 +768,20 @@ describe("native status authority", () => {
       expect(arbitrate({ assessment: blocked, environmentBlocker: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
     }
   });
+
+  it("continues a blocker the agent owns once, then hands it to the board, and never binds it back to the agent", () => {
+    const blocked = (ownerKind: "agent" | "external") => assessment({ reportedDisposition: "blocked", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, blocker: { unblockAction: "Save the ledger.", boardOwned: false, ownerKind, scope: "task_wide" } });
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true })).toMatchObject({ statusAction: "preserve",
+      reasonCode: "native_agent_blocker_continuation", effects: [{ kind: "schedule_retry", cause: "native_agent_blocker_continuation", agentId: "agent" }] });
+    const handoff = { toStatus: "blocked", reasonCode: "native_agent_blocker_needs_person",
+      unblockDescriptor: { owner: "board", action: "Save the ledger." },
+      effects: [{ kind: "bind_blocker", owner: "board", action: "Save the ledger." }] };
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, failureRetryCount: 1 })).toMatchObject(handoff);
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasActivePauseHold: true })).toMatchObject(handoff);
+    expect(arbitrate({ assessment: blocked("external"), agentBlockerRecoverable: true })).toMatchObject(handoff);
+    for (const held of [{ isConversation: true }, { agentBlockerRecoverable: false }]) {
+      expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    }
+  });
 });
