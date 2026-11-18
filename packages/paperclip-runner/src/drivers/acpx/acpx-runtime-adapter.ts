@@ -428,10 +428,6 @@ export async function openQualifiedAcpxRuntime(
     ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
     : null;
   const contextAdmission = instructionAdmission ?? antigravityAdmission;
-  // Claude's SDK inlines ACP MCP headers into the CLI's `--mcp-config` argv,
-  // which any `ps` in the sandbox prints. Claude Code expands `${VAR}` in that
-  // config, so the argv carries only a reference and the token stays in the
-  // owner-only launch environment.
   const mcpBearerVariable = (index: number): string | undefined =>
     options.profile.agent === "claude" ? `PAPERCLIP_ACPX_MCP_BEARER_${index}` : undefined;
   const mcpBearerEnvironment = Object.fromEntries(options.mcpServers.flatMap((server, index) => {

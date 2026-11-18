@@ -1124,8 +1124,6 @@ describe("Codex ACPX runtime adapter", () => {
   );
 
   it("keeps Claude MCP bearer tokens out of the CLI argv and in the launch environment", async () => {
-    // Claude's SDK inlines ACP MCP headers into `--mcp-config` argv, which any
-    // `ps` in the sandbox prints. Claude Code expands `${VAR}` in that config.
     const options = openOptions(fakeCommand());
     options.profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
     options.mcpServers = [
