@@ -242,6 +242,15 @@ describeEmbeddedPostgres("plugin issues.createAttachment host service", () => {
         contentBase64: "not*base64!",
       }),
     ).rejects.toThrow("contentBase64 is not valid base64");
+    await expect(
+      services().issues.createAttachment({
+        issueId,
+        companyId,
+        filename: "a.bin",
+        contentType: "application/octet-stream",
+        contentBase64: "YWJjZ",
+      }),
+    ).rejects.toThrow("contentBase64 is not valid base64");
     expect(stored.size).toBe(0);
     expect(await db.select().from(activityLog)).toHaveLength(0);
   });

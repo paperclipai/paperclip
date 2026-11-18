@@ -2938,7 +2938,7 @@ export function buildHostServices(
         const tooLargeMessage = `Attachment is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`;
         const encoded = params.contentBase64.replace(/\s+/g, "");
         if (encoded.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) throw new Error(tooLargeMessage);
-        if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+        if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
           throw new Error("contentBase64 is not valid base64");
         }
         const body = Buffer.from(encoded, "base64");

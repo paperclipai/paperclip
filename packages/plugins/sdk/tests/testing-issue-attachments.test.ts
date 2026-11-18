@@ -48,4 +48,27 @@ describe("createTestHarness issue attachments", () => {
       }),
     ).rejects.toThrow("larger than the 10 MB limit");
   });
+
+  it("refuses invalid base64 and infers Office types the way the host does", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.seed({ issues: [{ id: "issue-1", companyId: "company-1" } as Issue] });
+
+    for (const contentBase64 of ["not*base64!", "YWJjZ"]) {
+      await expect(
+        harness.ctx.issues.createAttachment("issue-1", "company-1", {
+          filename: "a.bin",
+          contentType: "application/octet-stream",
+          contentBase64,
+        }),
+      ).rejects.toThrow("contentBase64 is not valid base64");
+    }
+
+    const docx = await harness.ctx.issues.createAttachment("issue-1", "company-1", {
+      filename: "C:\\reports\\Q3.DOCX",
+      contentType: "application/octet-stream",
+      contentBase64: Buffer.from("doc").toString("base64"),
+    });
+    expect(docx.contentType).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    expect(docx.originalFilename).toBe("Q3.DOCX");
+  });
 });
