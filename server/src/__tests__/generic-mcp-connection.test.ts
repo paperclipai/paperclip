@@ -4684,9 +4684,9 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       expect(catalog.every((entry) => entry.status === "quarantined")).toBe(true);
 
       // "board-user" is the company admin (and the deployment's instance admin): the finish
-      // route's creator-or-manager gate lets it through. The service must still refuse a
-      // non-owner finish: approving Alice's quarantined tools and binding the whole company
-      // is exactly what putConnectionInstalls already refuses with personal_instance_owner_required.
+      // route's creator-or-manager gate lets it through, and an instance admin may review a personal
+      // instance's tools and install it on agents. The service must still refuse a finish that binds the
+      // whole company: a personal instance never goes to all agents, whoever asks.
       stubPublicUrl();
       const managerApp = createActorApp({
         type: "board",
@@ -4708,23 +4708,67 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
         });
       expect([403, 409, 422]).toContain(finish.status);
       expect(finish.status).not.toBe(200);
-      // The internal trusted/expectNewProfile context is server-only: a public body
-      // forging it (or a personal subject) cannot unlock someone else's instance.
-      const forged = await request(managerApp)
+      // The internal trusted/expectNewProfile context is server-only: a public body forging it (or a
+      // personal subject) cannot unlock someone else's instance for a connection manager who is not an
+      // instance admin. It sends a valid agent choice, so the request reaches the owner check itself.
+      const bob = await addHumanMember(company.id);
+      await db.insert(principalPermissionGrants).values({
+        companyId: company.id, principalType: "user", principalId: bob, permissionKey: "tools:manage_connections", scope: null,
+      });
+      const forged = await request(createActorApp(sessionActor(company.id, bob)))
         .post(`/api/companies/${company.id}/tools/apps/${instanceId}/finish`)
         .send({
           enabledCatalogEntryIds: [],
           askFirstCatalogEntryIds: [],
           reviewedCatalogEntryIds: catalog.map((entry) => entry.id),
-          access: "all_agents",
-          trusted: { personalSubjectUserId: "board-user", expectNewProfile: false },
+          access: { agentIds: [] },
+          trusted: { personalSubjectUserId: bob, expectNewProfile: false },
         });
-      expect(forged.status).not.toBe(200);
+      expect(forged.status).toBe(403);
       expect(forged.body.details).toMatchObject({ code: "personal_instance_owner_required" });
       // And nothing was enabled or bound regardless of the guard's shape.
       expect(await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, company.id))).toHaveLength(0);
       expect((await catalogOf(instanceId)).every((entry) => entry.status === "quarantined")).toBe(true);
       expect((await db.select().from(toolConnections).where(eq(toolConnections.id, instanceId)))[0]!.status).toBe("active");
+    });
+
+    it("an instance admin can review someone else's personal instance through the route, and the audit entry says so", async () => {
+      const fixture = installMcpOAuthFixture({ auth: "oauth", tools: GOOGLE_TOOLS });
+      const company = await createCompany(db);
+      await seedOauthSeeds(company.id);
+      const seed = (await googleSeed(company.id))!;
+      const alice = await addHumanMember(company.id);
+      const start = await startSeedConnect(company.id, seed.id, alice);
+      expect((await completeSeedConnect(company.id, alice, start.body.authorizationUrl, fixture)).status).toBe(200);
+      const instanceId = start.body.connectionId as string;
+      const catalog = await catalogOf(instanceId);
+
+      stubPublicUrl();
+      const adminApp = createActorApp({
+        type: "board",
+        userId: "board-user",
+        userName: "Board User",
+        userEmail: null,
+        isInstanceAdmin: true,
+        source: "local_implicit",
+        companyIds: [company.id],
+        memberships: [{ companyId: company.id, status: "active", membershipRole: "admin" }],
+      });
+      const finish = await request(adminApp)
+        .post(`/api/companies/${company.id}/tools/apps/${instanceId}/finish`)
+        .send({
+          enabledCatalogEntryIds: [catalog[0]!.id],
+          askFirstCatalogEntryIds: [],
+          reviewedCatalogEntryIds: catalog.map((entry) => entry.id),
+          access: { agentIds: [] },
+        });
+      expect(finish.status).toBe(200);
+      const after = await catalogOf(instanceId);
+      expect(after.find((entry) => entry.id === catalog[0]!.id)!.status).toBe("active");
+      expect(after.filter((entry) => entry.id !== catalog[0]!.id).every((entry) => entry.status === "quarantined")).toBe(true);
+      const audit = (await db.select().from(activityLog)).filter((row) => row.action === "tool_app.finished");
+      expect(audit).toHaveLength(1);
+      expect(audit[0]!.details).toMatchObject({ instanceAdminReview: true });
     });
 
     it("the owner's own finish review enables exactly the chosen tools; a later catalog refresh preserves the review and adds no company binding", async () => {

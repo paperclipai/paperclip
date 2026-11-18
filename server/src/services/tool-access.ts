@@ -361,7 +361,22 @@ type ActorInfo = {
     | "agent_jwt"
     | "mcp_oauth"
     | "cloud_tenant";
+  /** Set by the route layer from the authenticated session; never taken from a request payload. */
+  isInstanceAdmin?: boolean;
 };
+
+/**
+ * Who may review tools, edit the access profile, install on agents and re-enable a personal default-MCP instance:
+ * its owner, or an instance admin. Only the sign-in (OAuth finalize) stays owner-only, because it stores the
+ * caller's own credential as the grant.
+ */
+function canReviewPersonalInstance(
+  connection: { createdByUserId?: string | null },
+  actor?: ActorInfo,
+): boolean {
+  if (actor?.actorType !== "user" || !actor.actorId) return false;
+  return actor.actorId === connection.createdByUserId || actor.isInstanceAdmin === true;
+}
 
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
 const REMOTE_HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -6886,6 +6901,8 @@ export function toolAccessService(
     profile: { companyId: string; profileKey: string },
     actor?: ActorInfo,
     dbClient: ToolAccessMutationDb = db,
+    /** Binding target types the caller is about to add to this profile. */
+    addsBindingTargetTypes: readonly string[] = [],
   ) {
     const match = /^app:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(profile.profileKey);
     if (!match) return;
@@ -6913,10 +6930,17 @@ export function toolAccessService(
       });
     }
     if (isPersonalDefaultMcpInstance(connection)) {
-      if (actor?.actorType !== "user" || actor.actorId !== connection.createdByUserId) {
-        throw forbidden("Only the personal connection owner can modify this app's access profile", {
+      if (!canReviewPersonalInstance(connection, actor)) {
+        throw forbidden("Only the personal connection owner or an instance admin can modify this app's access profile", {
           code: "personal_instance_owner_required",
         });
+      }
+      // A personal instance runs as one person's own sign-in, so it never goes to the whole company, whoever asks.
+      if (addsBindingTargetTypes.includes("company")) {
+        throw unprocessable(
+          "This app runs as one person's own sign-in and cannot be shared with all agents. Choose specific agents instead.",
+          { code: "company_install_not_permitted" },
+        );
       }
     }
   }
@@ -15633,8 +15657,9 @@ export function toolAccessService(
     assertNotManagedTemplate(connection);
     if (isPersonalDefaultMcpInstance(connection)) {
       const subject = trusted?.personalSubjectUserId ?? (actor?.actorType === "user" ? actor.actorId : null);
-      if (!subject || subject !== connection.createdByUserId) {
-        throw forbidden("Only the personal connection owner can review and finalize app permissions", {
+      const adminReview = !trusted?.personalSubjectUserId && canReviewPersonalInstance(connection, actor);
+      if (!adminReview && (!subject || subject !== connection.createdByUserId)) {
+        throw forbidden("Only the personal connection owner or an instance admin can review and finalize app permissions", {
           code: "personal_instance_owner_required",
         });
       }
@@ -20670,7 +20695,7 @@ export function toolAccessService(
       // Only the owner reaches this branch; anyone else falls through to the owner check inside the finisher.
       if (actor?.actorType === "user") {
         const connection = await getConnectionRow(connectionId, companyId);
-        if (isPersonalDefaultMcpInstance(connection) && actor.actorId === connection.createdByUserId) {
+        if (isPersonalDefaultMcpInstance(connection) && canReviewPersonalInstance(connection, actor)) {
           if (input.access === "all_agents") {
             throw unprocessable(
               "This app runs as one person's own sign-in and cannot be shared with all agents. Choose specific agents instead.",
@@ -22327,8 +22352,8 @@ export function toolAccessService(
         }
         if (additionsToCheck.length > 0) {
           if (isPersonalDefaultMcpInstance(connection)) {
-            if (actor?.actorType !== "user" || !actor.actorId || actor.actorId !== connection.createdByUserId) {
-              throw forbidden("Only the personal connection owner can install this app on agents", {
+            if (!canReviewPersonalInstance(connection, actor)) {
+              throw forbidden("Only the personal connection owner or an instance admin can install this app on agents", {
                 code: "personal_instance_owner_required",
               });
             }
@@ -22551,10 +22576,9 @@ export function toolAccessService(
           );
         }
         if (input.enabled === true) {
-          const isOwner = actor?.actorType === "user" && actor.actorId === existing.createdByUserId;
-          if (!isOwner) {
+          if (!canReviewPersonalInstance(existing, actor)) {
             throw forbidden(
-              "Only the personal connection owner can re-enable this connection",
+              "Only the personal connection owner or an instance admin can re-enable this connection",
               { code: "personal_instance_owner_required" },
             );
           }
@@ -23519,8 +23543,9 @@ export function toolAccessService(
           existing.companyId,
           tx,
         );
-        // Bindings can never be moved onto the managed template's profile either.
-        await assertProfileNotManagedTemplate(target, actor);
+        // Bindings can never be moved onto the managed template's profile either, and a personal
+        // instance's profile never takes a company-wide binding.
+        await assertProfileNotManagedTemplate(target, actor, tx, details.bindings.map((binding) => binding.targetType));
         if (target.status !== "active") {
           throw unprocessable(
             "Tool profile assignments can only be reassigned to an active profile",
@@ -23694,7 +23719,7 @@ export function toolAccessService(
       const db = tx as unknown as Db;
       const [profile] = await tx.select().from(toolProfiles).where(eq(toolProfiles.id, profileId)).for("no key update");
       if (!profile) throw notFound("Tool profile not found");
-      await assertProfileNotManagedTemplate(profile, actor);
+      await assertProfileNotManagedTemplate(profile, actor, tx, [input.targetType]);
       await assertTargetExists(
         profile.companyId,
         input.targetType,

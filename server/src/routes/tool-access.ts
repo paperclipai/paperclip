@@ -7,7 +7,7 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
-import { isArcanaStaticTemplate, isDefaultMcpSeed } from "../services/default-mcp-spec.js";
+import { isArcanaStaticTemplate, isDefaultMcpSeed, isPersonalDefaultMcpInstance } from "../services/default-mcp-spec.js";
 import {
   loadCompanyVisibility,
   withCompanyVisibilityAvailability,
@@ -64,7 +64,7 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { getActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { getActorInfo as getBaseActorInfo, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
@@ -157,6 +157,11 @@ function classifyConnectionUpdate(
     events.push({ lifecycle: "allowlist_changed", details: { added, removed, total: afterIds.length } });
   }
   return events;
+}
+
+/** The base actor plus the session's instance-admin flag, which the service uses for personal-connection reviews. */
+function getActorInfo(req: Request) {
+  return { ...getBaseActorInfo(req), isInstanceAdmin: req.actor.isInstanceAdmin === true };
 }
 
 export function filterVisibleToolConnections<T extends {
@@ -1617,6 +1622,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
         askFirstPolicyCount: result.policies.length,
         reviewedCatalogEntryCount: req.body.reviewedCatalogEntryIds?.length ?? 0,
         access: req.body.access,
+        instanceAdminReview: req.actor.isInstanceAdmin === true
+          && isPersonalDefaultMcpInstance(existing)
+          && req.actor.userId !== existing.createdByUserId,
       },
     });
     res.json(result);
