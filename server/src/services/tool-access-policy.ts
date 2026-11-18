@@ -17,6 +17,7 @@ import {
   toolCatalogEntries,
   toolConnections,
   toolCallEvents,
+  toolConnectionInstalls,
   toolInvocations,
   toolMcpGateways,
   toolMcpGatewayTokens,
@@ -85,6 +86,8 @@ export type ToolAccessContext = {
   catalogVersionHash: string | null;
   catalogSchemaHash: string | null;
   providerType: string | null;
+  /** Read from the stored connection, never from the caller. */
+  connectionTransport: string | null;
   applicationKey: string | null;
   upstreamToolName: string | null;
   toolName: string;
@@ -1264,6 +1267,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         catalogVersionHash,
         catalogSchemaHash,
         providerType,
+        connectionTransport,
         applicationKey,
         upstreamToolName,
         toolName: input.request.toolName,
@@ -1318,6 +1322,16 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
           db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds))))
       : [];
     return { profiles: activeProfiles, entries };
+  }
+
+  async function connectionInstalledForAgent(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache): Promise<boolean> {
+    if (!ctx.agentId || !ctx.connectionId) return false;
+    const installs = await cachedRead(cache, `connection-installs:${ctx.companyId}:${ctx.connectionId}`, async () =>
+      db.select({ targetType: toolConnectionInstalls.targetType, targetId: toolConnectionInstalls.targetId })
+        .from(toolConnectionInstalls)
+        .where(and(eq(toolConnectionInstalls.companyId, ctx.companyId), eq(toolConnectionInstalls.connectionId, ctx.connectionId!))));
+    return installs.some((install) => (install.targetType === "company" && install.targetId === ctx.companyId)
+      || (install.targetType === "agent" && install.targetId === ctx.agentId));
   }
 
   async function explicitGrant(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache, options: { toolTargetedOnly?: boolean } = {}): Promise<boolean> {
@@ -1599,6 +1613,15 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       return decision("deny", "deny_policy_block", "Tool invocation no longer matches this admission.", [], []);
     }
     if (input.consumeRateLimit === true) consumedRateAdmissions.push(...(admittedRates ?? []));
+    // Rule 3 for plugin connectors: an agent reaches a plugin-served
+    // connection only through an install for that agent or the whole company.
+    // No profile, grant, trust rule or allow policy replaces the install; they
+    // can only narrow what an installed agent may call.
+    if (ctx.actorType === "agent" && ctx.connectionId && ctx.connectionTransport === "plugin"
+      && !(await connectionInstalledForAgent(ctx, cache))) {
+      return decision("deny", "deny_connection_not_installed",
+        "This connection is not installed for this agent.", [], [], { redactionPlan: redaction.redactionPlan });
+    }
     const profileState = await effectiveProfiles(ctx, cache);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
     const permittedByProfile = profileState.profiles.some((profile) => {
@@ -2004,6 +2027,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         projectId: invocation.issueId ? issueProjectById.get(invocation.issueId) ?? null : null,
         routineId: null,
         gatewayId: null,
+        connectionTransport: null,
         applicationId: invocation.applicationId,
         connectionId: invocation.connectionId,
         catalogEntryId: invocation.catalogEntryId,
