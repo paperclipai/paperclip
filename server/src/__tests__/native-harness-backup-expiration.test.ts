@@ -568,7 +568,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
 
   it.each([
     ["issue_open", { issueStatus: "in_progress" }],
-    ["recently_closed", { closedDaysAgo: 2 }],
+    ["recently_closed", { closedDaysAgo: 2, runFinishedDaysAgo: 10 }],
     ["live_run", { runStatus: "running" }],
     ["recent_backup", { backupAgeDays: 1 }],
     ["cleanup_active", { cleanupActive: true }],
@@ -1065,8 +1065,11 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
   it("allows an ordinary task reopen while backup byte counting is held outside the retirement lock", async () => {
     const own = await seedSession(); const lstat = fs.lstat;
     const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    // Bytes are counted only after the retirement committed, from the retiring copy.
+    const counted = path.join("codex-home", "history.jsonl");
     const held = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
-      if (String(args[0]) === path.join(own.current, "codex-home", "history.jsonl")) {
+      const target = String(args[0]);
+      if (target.includes(`${path.sep}.retiring-`) && target.endsWith(counted)) {
         entered.resolve(); await release.promise;
       }
       return lstat(...args);
@@ -1078,7 +1081,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
         await issueService(db).update(own.issueId, { status: "todo" }, tx);
       });
     } finally { release.resolve(); await startup; held.mockRestore(); }
-    await settled(); expect(await exists(own.current)).toBe(true); expect(backupErrors).toEqual([]); await quiet();
+    await settled(); expect(await exists(own.current)).toBe(false); expect(backupErrors).toEqual([]); await quiet();
   });
 
   it.each(["EIO", "EACCES"])("retains a failed identity read as real retry debt (%s)", async code => {
