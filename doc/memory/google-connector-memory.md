@@ -102,8 +102,9 @@ From the folder README (`server/src/google-workspace-rest-tools/README.md`).
   password login on the staging tester host. Its secret is not set yet; no
   broker change is needed.
 - **AI-agent client and REST.** Whether an OAuth client marked for AI agents
-  may call the REST APIs rather than MCP. To check before the staging tester is
-  wired.
+  may call the REST APIs rather than MCP. The tester's client is marked for
+  AI agents and is wired, but it has only been used through MCP. Check on the
+  tester before any service is switched to REST.
 - **Three Gmail tools are inferred.** Google's MCP reference does not list
   `get_draft`, `list_threads` and `search_messages`; their schemas copy the
   sibling tools (#22014).
