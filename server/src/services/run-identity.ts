@@ -77,6 +77,20 @@ export async function explicitOperatorRunIdentity(
 
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
 
+/** Only the recipient's completed connection action authorizes a handoff. */
+function acceptedConnectionRecipient(interaction: Pick<typeof issueThreadInteractions.$inferSelect,
+  "kind" | "status" | "resolvedByAgentId" | "resolvedByUserId" | "addresseeUserId" | "result"
+> | undefined): string | null {
+  return interaction?.kind === "connection_intent"
+    && interaction.status === "accepted"
+    && !interaction.resolvedByAgentId
+    && interaction.resolvedByUserId === interaction.addresseeUserId
+    && interaction.result?.outcome === "connected"
+    && "connectionId" in interaction.result
+    && typeof interaction.result.connectionId === "string"
+    ? interaction.addresseeUserId : null;
+}
+
 function assertRunTaskIdentity(run: {
   nativeIssueId?: string | null;
   issueId?: string | null;
@@ -270,13 +284,19 @@ export async function initializeRunIdentity(
         retryOrigin = origin.identityContextId;
       }
     }
-    const [parent] = input.parentRunId
+    const snapshotRetryRunId = run.contextSnapshot?.retryOfRunId;
+    const retryRunId = run.retryOfRunId ?? (
+      typeof snapshotRetryRunId === "string" ? snapshotRetryRunId.trim() || null : null
+    );
+    const isRetry = retryRunId !== null || retryOrigin !== null;
+    const parentRunId = retryRunId ?? input.parentRunId;
+    const [parent] = parentRunId
       ? await tx
           .select()
           .from(heartbeatRuns)
           .where(
             and(
-              eq(heartbeatRuns.id, input.parentRunId),
+              eq(heartbeatRuns.id, parentRunId),
               eq(heartbeatRuns.companyId, input.companyId),
             ),
           )
@@ -294,9 +314,9 @@ export async function initializeRunIdentity(
               ),
             )
         : [];
-    const retryContextId = retryOrigin ?? (
-      run.retryOfRunId || run.contextSnapshot?.retryOfRunId ? parent?.activeIdentityContextId : null
-    );
+    const retryContextId = retryOrigin ?? (isRetry ? parent?.activeIdentityContextId : null);
+    if (!operatorIdentity && isRetry && !retryContextId)
+      throw forbidden("Originating execution identity is unavailable");
     const parentId = operatorIdentity ? null : (
       retryContextId ?? interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
     );
@@ -314,17 +334,10 @@ export async function initializeRunIdentity(
       : [];
     if (parentId && !origin)
       throw forbidden("Originating execution identity is unavailable");
-    const connectionRecipient = interaction?.kind === "connection_intent"
-      && interaction.status === "accepted"
-      && !interaction.resolvedByAgentId
-      && interaction.resolvedByUserId === interaction.addresseeUserId
-      && interaction.result?.outcome === "connected"
-      && "connectionId" in interaction.result
-      && typeof interaction.result.connectionId === "string"
-      ? interaction.addresseeUserId : null;
+    const connectionRecipient = acceptedConnectionRecipient(interaction);
     const identity = operatorIdentity
       ? { responsibleUserId: operatorIdentity.actorId, cause: operatorIdentity.cause }
-      : !retryContextId && connectionRecipient && origin?.responsibleUserId !== connectionRecipient
+      : !isRetry && connectionRecipient && origin?.responsibleUserId !== connectionRecipient
         ? { responsibleUserId: connectionRecipient, cause: "connection_handoff" }
         : {
           responsibleUserId: origin ? origin.responsibleUserId : input.responsibleUserId,

@@ -14,8 +14,14 @@ An accepted connection request continues for the addressed person who connected
 the account. If an authorized transfer changed that person, the new run records
 a connection handoff and keeps the original context as its audit parent.
 Declined or automatically closed requests and ordinary approvals retain their
-originating identity. Retries keep the previous run's latest accepted context,
-even when the retry still references the original request. A transfer grants no
+originating identity. Automatic retirement observes the addressee's existing
+access; its wake does not attribute work to that person or authorize use of that
+person's accounts. A request transfer alone cannot authorize that identity.
+Retries keep the previous run's latest accepted context,
+even when the retry still references the original request. If that context is
+unavailable, the retry stops instead of replaying the handoff or falling back to
+another person. A new explicit operator action retains precedence.
+A transfer grants no
 credential access; connection selection still checks the new person's grants and
 policies.
 
