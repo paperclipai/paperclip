@@ -806,10 +806,9 @@ function StandardConnectionSetupFlow({
   const customerClientResumeRef = useRef<string | null>(null);
   // AWS role setup saves a draft first, so the customer can create a role that trusts
   // exactly this connection; the panel then tests the same draft.
-  const [awsRoleDraftId, setAwsRoleDraftId] = useState<string | null>(null);
-  const [awsRoleError, setAwsRoleError] = useState<string | null>(null);
-  const awsRoleDraftRef = useRef<string | null>(null);
-  const awsRoleTestingRef = useRef(false);
+  const [awsRoleStage, setAwsRoleStage] = useState<{ connectionId: string; error: string | null } | null>(null);
+  // The draft this setup saved (kept across Back, so Connect updates it) and whether the next connect is the test.
+  const awsRoleRef = useRef<{ draftId: string | null; testing: boolean }>({ draftId: null, testing: false });
   const hydratedResumeConnectionIdRef = useRef<string | null>(null);
   const [hydratedResumeConnectionId, setHydratedResumeConnectionId] = useState<string | null>(null);
   // Finishing a resumed unauthenticated/API-key draft activates that exact row.
@@ -1308,10 +1307,17 @@ function StandardConnectionSetupFlow({
     && resumeConnection.config?.sourceTemplateKey === "aws"
     && resumeConnection.config?.connectionMethodKey === "aws-role";
   useEffect(() => {
-    if (!resumingAwsRoleDraft || !resumeConnection || awsRoleDraftRef.current === resumeConnection.id) return;
-    awsRoleDraftRef.current = resumeConnection.id;
-    setAwsRoleDraftId(resumeConnection.id);
+    if (!resumingAwsRoleDraft || !resumeConnection || awsRoleRef.current.draftId === resumeConnection.id) return;
+    awsRoleRef.current = { draftId: resumeConnection.id, testing: false };
+    setAwsRoleStage({ connectionId: resumeConnection.id, error: null });
   }, [resumingAwsRoleDraft, resumeConnection]);
+  // Leaving the AWS role method (another app or method) drops its stage and draft.
+  useEffect(() => {
+    if ((entry && entry.slug !== "aws") || (connectionMethodKey && connectionMethodKey !== "aws-role")) {
+      setAwsRoleStage(null);
+      awsRoleRef.current = { draftId: null, testing: false };
+    }
+  }, [entry, connectionMethodKey]);
   const resumeApplication = useMemo(
     () => resumeConnection
       ? (applicationsQuery.data?.applications ?? []).find(
@@ -1526,12 +1532,10 @@ function StandardConnectionSetupFlow({
           requestedGrantKind,
         );
         // AWS role: the first connect saves a draft (reusing an earlier one); "Test connection" resumes it.
-        const awsRoleDraftFirst = connectEntry.slug === "aws" && connectionMethodKey === "aws-role"
-          && (!resumeConnectionId || resumingAwsRoleDraft) && !reconnectConnectionId && !awsRoleTestingRef.current;
-        if (awsRoleDraftFirst && awsRoleDraftRef.current && !customerClientResumeRef.current) {
-          customerClientResumeRef.current = awsRoleDraftRef.current;
-        }
-        awsRoleTestingRef.current = false;
+        const awsRole = connectEntry.slug === "aws" && connectionMethodKey === "aws-role" && !reconnectConnectionId;
+        const awsRoleDraftFirst = awsRole && (!resumeConnectionId || resumingAwsRoleDraft) && !awsRoleRef.current.testing;
+        const awsRoleResumeId = awsRole && !resumeConnectionId ? awsRoleRef.current.draftId : null;
+        awsRoleRef.current.testing = false;
         result = await toolsApi.connectApp(selectedCompanyId!, {
           ...(awsRoleDraftFirst ? { saveDraft: true } : {}),
           ...(connectEntry.slug === "google-workspace" && workspaceSelectionRef.current ? { workspaceServices: workspaceSelectionRef.current } : {}),
@@ -1559,8 +1563,8 @@ function StandardConnectionSetupFlow({
               ? configValues
               : undefined,
           applicationId: prefill.applicationId,
-          ...((resumeConnectionId ?? customerClientResumeRef.current)
-            ? { resumeConnectionId: resumeConnectionId ?? customerClientResumeRef.current! }
+          ...((resumeConnectionId ?? customerClientResumeRef.current ?? awsRoleResumeId)
+            ? { resumeConnectionId: resumeConnectionId ?? customerClientResumeRef.current ?? awsRoleResumeId! }
             : reconnectConnectionId ? { reconnectConnectionId } : {}),
           ...(requestedGrantKind !== "organization" ? { grantKind: requestedGrantKind } : {}),
           ...(requestedGrantKind === "agent" ? { subjectAgentId: [...installAgentIds][0] } : {}),
@@ -1638,9 +1642,8 @@ function StandardConnectionSetupFlow({
       oauthPopupRef.current?.close();
       oauthPopupRef.current = null;
       if (entry?.slug === "aws" && result.connection?.status === "draft" && result.catalog.length === 0) {
-        awsRoleDraftRef.current = result.connectionId;
-        setAwsRoleError(null);
-        setAwsRoleDraftId(result.connectionId);
+        awsRoleRef.current.draftId = result.connectionId;
+        setAwsRoleStage({ connectionId: result.connectionId, error: null });
         return;
       }
       acceptConnectedResult(result);
@@ -1648,8 +1651,8 @@ function StandardConnectionSetupFlow({
     onError: (error) => {
       oauthPopupRef.current?.close();
       oauthPopupRef.current = null;
-      if (awsRoleDraftId) {
-        setAwsRoleError(awsSetupErrorMessage(error));
+      if (awsRoleStage) {
+        setAwsRoleStage({ ...awsRoleStage, error: awsSetupErrorMessage(error) });
         return;
       }
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
@@ -2567,16 +2570,15 @@ function StandardConnectionSetupFlow({
     : undefined;
   const aiMethod = reconnectAiMethod ?? entry?.methods.find(method => method.key === connectionMethodKey)?.ai
     ?? (!connectionMethodKey && entry?.methods.every(method => method.ai) ? entry.methods[0]?.ai : undefined);
-  const awsRoleStep = entry?.slug === "aws" && awsRoleDraftId ? (
+  const awsRoleStep = entry?.slug === "aws" && awsRoleStage ? (
     <AwsRoleSetup
-      connectionId={awsRoleDraftId}
-      error={awsRoleError}
+      connectionId={awsRoleStage.connectionId}
+      error={awsRoleStage.error}
       testing={connectMutation.isPending}
-      onBack={() => { setAwsRoleDraftId(null); setAwsRoleError(null); }}
+      onBack={() => setAwsRoleStage(null)}
       onTest={() => {
-        setAwsRoleError(null);
-        awsRoleTestingRef.current = true;
-        customerClientResumeRef.current = awsRoleDraftId;
+        setAwsRoleStage({ ...awsRoleStage, error: null });
+        awsRoleRef.current = { draftId: awsRoleStage.connectionId, testing: true };
         connectApp();
       }}
     />

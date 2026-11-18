@@ -1,4 +1,5 @@
 import { AWS_MCP_STS_AUDIENCE, AWS_ROLE_ARN_PATTERN } from "./mcp-credentials.js";
+import { workloadIdentitySubject } from "../../workload-identity.js";
 
 /**
  * What a customer configures in AWS for an AWS role connection: an IAM OIDC
@@ -47,7 +48,8 @@ export function awsRoleSetup(input: AwsRoleSetupInput): AwsRoleSetup {
   if (!parts) throw new AwsRoleArnError();
   const [, partition, accountId, pathPrefix, roleName] = parts as unknown as [string, string, string, string, string];
   const providerHost = input.issuer.replace(/^https:\/\//, "");
-  const subject = `connection:${input.connectionId}`;
+  // The same subject the signer puts in the token, so the trust policy always matches it.
+  const subject = workloadIdentitySubject(input.connectionId);
   const condition = {
     StringEquals: {
       [`${providerHost}:aud`]: AWS_MCP_STS_AUDIENCE,

@@ -4010,11 +4010,12 @@ export function toolAccessService(
     if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role" || typeof roleArn !== "string") {
       throw unprocessable("This connection does not use an AWS role.", { code: "aws_role_setup_unavailable" });
     }
+    // Without a usable public address Paperclip cannot sign, so a recorded issuer would only look usable.
     const origin = workloadIdentityIssuerOrigin();
-    const current = origin.available ? workloadIdentityIssuer(origin.origin, companyId) : null;
+    if (!origin.available) return { available: false, reason: origin.reason };
+    const current = workloadIdentityIssuer(origin.origin, companyId);
     const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
     const issuer = typeof recorded === "string" ? recorded : current;
-    if (!issuer) return { available: false, reason: origin.available ? "no_public_url" : origin.reason };
     let setup: ReturnType<typeof awsRoleSetup>;
     try {
       setup = awsRoleSetup({
@@ -4029,7 +4030,7 @@ export function toolAccessService(
       available: true,
       ...setup,
       issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
-      addressChanged: current !== null && current !== issuer,
+      addressChanged: current !== issuer,
     };
   }
 
