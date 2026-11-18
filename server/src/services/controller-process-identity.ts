@@ -1,3 +1,4 @@
+import { observeLinuxKernelBoot, readLocalKernelBoot, type LocalKernelBoot } from "./local-process-space.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
@@ -13,7 +14,7 @@ import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/n
  */
 export type ControllerDeployment = { worker: WorkspaceWorker; exclusiveVolume: boolean; volumeId: string | null };
 export type ControllerProcess = {
-  bootId: string; pid: number; hostHash: string; processStartedAt: string | null; deployment?: ControllerDeployment;
+  bootId: string; pid: number; hostHash: string; processStartedAt: string | null; deployment?: ControllerDeployment; localKernelBoot?: LocalKernelBoot;
 };
 
 export function currentControllerDeployment(env: NodeJS.ProcessEnv = process.env): ControllerDeployment | null {
@@ -85,6 +86,10 @@ function processSpaceHash(): string {
 }
 
 const hostHash = processSpaceHash();
+const localKernelBoot = process.platform === "linux" ? observeLinuxKernelBoot(hostHash, hostname()) : null;
+export function currentLocalKernelBoot(): LocalKernelBoot | undefined {
+  return localKernelBoot ? { ...localKernelBoot } : undefined;
+}
 
 /** OS-observed start time of any PID (epoch ms), or null when it cannot be read. */
 export async function observedProcessStartedAt(pid: number): Promise<number | null> {
@@ -149,7 +154,7 @@ export async function currentControllerProcess(): Promise<ControllerProcess> {
   const iso = startedAt === null ? null : new Date(startedAt).toISOString();
   resolvedProcessStartedAt = iso;
   notifyStamp();
-  return { bootId, pid: process.pid, hostHash, processStartedAt: iso, ...deploymentField() };
+  return { bootId, pid: process.pid, hostHash, processStartedAt: iso, ...deploymentField(), ...(localKernelBoot ? { localKernelBoot } : {}) };
 }
 
 /**
@@ -160,7 +165,7 @@ export async function currentControllerProcess(): Promise<ControllerProcess> {
  */
 export function currentControllerProcessStamp(): ControllerProcess {
   notifyStamp();
-  return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt, ...deploymentField() };
+  return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt, ...deploymentField(), ...(localKernelBoot ? { localKernelBoot } : {}) };
 }
 
 export function readControllerProcess(value: unknown): ControllerProcess | null {
@@ -169,9 +174,10 @@ export function readControllerProcess(value: unknown): ControllerProcess | null 
   if (typeof record.bootId !== "string" || typeof record.hostHash !== "string" ||
       typeof record.pid !== "number" || !Number.isInteger(record.pid) || record.pid <= 0) return null;
   const deployment = readDeployment(record.deployment);
+  const localKernelBoot = readLocalKernelBoot(record.localKernelBoot, record.hostHash);
   return { bootId: record.bootId, pid: record.pid, hostHash: record.hostHash,
     processStartedAt: typeof record.processStartedAt === "string" ? record.processStartedAt : null,
-    ...(deployment ? { deployment } : {}) };
+    ...(deployment ? { deployment } : {}), ...(localKernelBoot ? { localKernelBoot } : {}) };
 }
 
 /**

@@ -312,6 +312,24 @@ callbacks without starting work. The service supplies its shutdown flag callback
 and shared execution sets so separate service instances keep the same ownership
 and shutdown barriers. Cleanup single-flight state stays at module scope.
 Keep recovery policy changes separate from retry scheduling and execution changes.
+Local Linux controller stamps can also carry `paperclip.local_kernel.v1`
+evidence. It binds the existing process-space hash to a kernel boot and an
+independent host identity. WSL uses the Windows host MachineGuid, not just the
+Linux machine-id that a distro export can copy. The read uses the standard
+Windows registry tool through WSL interop, with a 1.5-second timeout. Native
+Linux uses a readable DMI product UUID. Other containers and hosts without
+usable identity supply no cross-boot proof. Identity is observed once per server
+process; this adds no background scan.
+
+When saved and current evidence identify the same host but different kernel
+boots, the shared owner prover returns `kernel_restarted`. All processes and
+process groups in the old kernel have stopped. A local child inherits this
+proof only when its recorded process-space hash matches its controller's hash.
+The existing recovery path then applies its normal task eligibility, Stop,
+budget, admission and bounded continuation checks. No new retry lane is added.
+Previous-release stamps keep their exact hash and existing same-boot behavior.
+They do not gain cross-boot proof retrospectively. Native coordinator records
+without the additional JSON evidence retain their existing recovery behavior.
 
 Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
 It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,

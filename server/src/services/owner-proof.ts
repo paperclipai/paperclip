@@ -1,5 +1,7 @@
+import { localKernelRestarted, type LocalKernelBoot } from "./local-process-space.js";
 import { hostname } from "node:os";
 import {
+  currentLocalKernelBoot,
   currentControllerBootId,
   currentControllerDeployment,
   currentControllerProcessStamp,
@@ -38,6 +40,7 @@ export type LocalOwnerStamp = {
   host: string | null;
   /** Hash of host, kernel boot and PID namespace (`currentProcessSpaceHash`). */
   processSpace: string | null;
+  localKernelBoot?: LocalKernelBoot;
   bootId: string | null;
   pid: number | null;
   processStartedAt: string | null;
@@ -87,6 +90,7 @@ export type OwnerProof = {
 
 export type OwnerProofReason =
   // gone
+  | "kernel_restarted"
   | "pid_dead"
   | "pid_reused"
   | "fence_superseded"
@@ -138,6 +142,7 @@ export type ProcessProbe = {
   bootId: string;
   host: string;
   processSpace: string;
+  localKernelBoot?: LocalKernelBoot;
   pidExists(pid: number): boolean;
   processGroupExists(processGroupId: number): boolean;
   readStartedAt(pid: number): Promise<Date | null>;
@@ -175,6 +180,7 @@ export function currentProcessProbe(): ProcessProbe {
     bootId: currentControllerBootId(),
     host: hostname(),
     processSpace: currentProcessSpaceHash(),
+    localKernelBoot: currentLocalKernelBoot(),
     pidExists: processExists,
     processGroupExists,
     controllerInstance: async function (this: ProcessProbe, bootId, touchedAt) {
@@ -203,6 +209,7 @@ export function currentLocalOwnerStamp(scope: string, generation: number | null 
   return {
     kind: "local", scope, generation, host: hostname(), processSpace: controller.hostHash,
     bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt,
+    localKernelBoot: controller.localKernelBoot,
     processGroupId: null,
   };
 }
@@ -285,6 +292,8 @@ async function proveLocalProcessGone(stamp: LocalOwnerStamp, probe: ProcessProbe
     return { verdict: "unprovable", reason: "unknown_process_space" };
   }
   if (stamp.host && stamp.host !== probe.host) return { verdict: "unprovable", reason: "different_host" };
+  if (localKernelRestarted(stamp.localKernelBoot, stamp.processSpace, probe.localKernelBoot, probe.processSpace))
+    return { verdict: "gone", reason: "kernel_restarted" };
   if (stamp.processSpace !== probe.processSpace) return { verdict: "unprovable", reason: "different_process_space" };
 
   let processReason: "pid_dead" | "pid_reused";

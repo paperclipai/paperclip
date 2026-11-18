@@ -1,3 +1,4 @@
+import { readControllerProcess } from "../controller-process-identity.js";
 import type { heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
 import type { LocalOwnerStamp } from "../owner-proof.js";
 
@@ -28,6 +29,7 @@ export function nativeControllerOwnerStamp(row: ControllerRow, scope: string): L
 
 type RunProcessRow = Pick<typeof heartbeatRuns.$inferSelect, "processPid" | "processGroupId" | "processStartedAt"> & {
   processHostHash?: string | null;
+  controllerProcess?: unknown;
 };
 
 /** heartbeat_runs records the adapter child's PID, group, start time and,
@@ -37,8 +39,11 @@ type RunProcessRow = Pick<typeof heartbeatRuns.$inferSelect, "processPid" | "pro
  * is unprovable. */
 export function runProcessOwnerStamp(row: RunProcessRow, scope: string,
   options: { legacyFallback?: boolean } = {}): LocalOwnerStamp {
+  const controller = readControllerProcess(row.controllerProcess);
+  const localKernelBoot = controller?.hostHash === row.processHostHash ? controller?.localKernelBoot : undefined;
   return {
     kind: "local", scope, generation: null, host: null, processSpace: row.processHostHash ?? null,
+    ...(localKernelBoot ? { localKernelBoot } : {}),
     ...(options.legacyFallback ? { processSpaceUnrecorded: row.processHostHash == null } : {}),
     bootId: null, pid: row.processPid, processStartedAt: row.processStartedAt?.toISOString() ?? null,
     processGroupId: row.processGroupId,

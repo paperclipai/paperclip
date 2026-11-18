@@ -243,7 +243,8 @@ export function legacyControllerOwnerStamp(
   if (!controller || !run.controllerBootId || controller.bootId !== run.controllerBootId) return null;
   return { kind: "local", scope: "legacy_controller_lease", generation: null, host: null,
     processSpace: controller.hostHash, bootId: controller.bootId, pid: controller.pid,
-    processStartedAt: controller.processStartedAt, processGroupId: null };
+    processStartedAt: controller.processStartedAt, processGroupId: null,
+    localKernelBoot: controller.localKernelBoot };
 }
 
 /**
