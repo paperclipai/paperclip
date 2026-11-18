@@ -9,6 +9,10 @@ const TERMINAL_RESULT_CLEANUP_EXIT_CODES: ReadonlySet<number> = new Set([0, 143,
  * non-zero exit or signal is that cleanup's own termination, not a failure of
  * the turn. Only a clean result qualifies: any adapter error, timeout,
  * cancellation or failed process cancellation keeps the existing outcome.
+ * A result the CLI itself marks as an error, or whose explicit subtype is
+ * anything other than `success` (for example `error_max_turns`), is not a
+ * clean result even when the adapter reported no error. A result without a
+ * subtype keeps the generic adapter behaviour.
  */
 export function isTerminalResultCleanupSuccess(
   adapterResult: AdapterExecutionResult,
@@ -21,6 +25,9 @@ export function isTerminalResultCleanupSuccess(
   if (adapterResult.errorMessage || adapterResult.errorCode) return false;
   if (adapterResult.timedOut || options.processCancellationFailed) return false;
   if (adapterResult.resultJson?.status === "cancelled") return false;
+  if (adapterResult.resultJson?.is_error === true) return false;
+  const subtype = adapterResult.resultJson?.subtype;
+  if (typeof subtype === "string" && subtype.trim().toLowerCase() !== "success") return false;
 
   const { exitCode, signal } = adapterResult;
   if (signal) {

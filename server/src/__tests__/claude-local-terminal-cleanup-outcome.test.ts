@@ -5,22 +5,29 @@ import path from "node:path";
 import { execute } from "@paperclipai/adapter-claude-local/server";
 import { resolveAdapterResultOutcome } from "../services/heartbeat/adapter-result-outcome.js";
 
-// A Claude CLI that reports a successful turn, then keeps running because
+// A Claude CLI that reports a terminal result, then keeps running because
 // something it started (a background task, a lingering child) holds it open.
+// The cleanup timer starts when the result is read and signals the whole
+// process group, so a lingering child must be fully started (its SIGTERM
+// handler installed) before the result is printed. It reports readiness over
+// IPC and the CLI prints the result only after that.
 async function writeLingeringSuccessClaudeCommand(
   commandPath: string,
   options: { resultEvent: Record<string, unknown>; lingeringChild: boolean; childIgnoresSigterm?: boolean },
 ): Promise<void> {
   const childScript = options.childIgnoresSigterm
-    ? 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'
-    : "setInterval(() => {}, 1000)";
+    ? 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); process.send("ready")'
+    : 'setInterval(() => {}, 1000); process.send("ready")';
   const script = `#!/usr/bin/env node
 if (process.argv.includes("--version")) { console.log("2.1.286 (Claude Code)"); process.exit(0); }
 const { spawn } = require("node:child_process");
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "11111111-1111-4111-8111-111111111111", model: "claude-sonnet" }));
-console.log(${JSON.stringify(JSON.stringify(options.resultEvent))});
+const printResult = () => console.log(${JSON.stringify(JSON.stringify(options.resultEvent))});
 if (${options.lingeringChild}) {
-  spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: "inherit" });
+  const child = spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: ["inherit", "inherit", "inherit", "ipc"] });
+  child.once("message", () => { child.disconnect(); printResult(); });
+} else {
+  printResult();
 }
 setInterval(() => {}, 1000);
 `;
@@ -114,6 +121,55 @@ describe("claude_local terminal-result cleanup run outcome", () => {
       forceKilled: true,
     });
     expect(resolveAdapterResultOutcome(adapterResult)).toBe("succeeded");
+  }, 30_000);
+
+  for (const lingeringChild of [false, true]) {
+    it(`keeps error_max_turns without is_error failed when cleanup stops the lingering CLI (lingering child: ${lingeringChild})`, async () => {
+      const adapterResult = await runLingeringCli({
+        resultEvent: {
+          ...successResult,
+          subtype: "error_max_turns",
+          is_error: false,
+          stop_reason: "max_turns",
+          result: "Reached the maximum number of turns.",
+        },
+        lingeringChild,
+      });
+
+      // The adapter reports no error and the cleanup's own SIGTERM, which is
+      // the shape that must not be mistaken for a clean success.
+      expect(adapterResult.timedOut).toBe(false);
+      expect(adapterResult.errorMessage).toBeNull();
+      expect(adapterResult.errorCode).toBeNull();
+      expect(adapterResult.resultJson?.subtype).toBe("error_max_turns");
+      expect(adapterResult.resultJson?.unmanagedBackgroundTask).toMatchObject({
+        kind: "terminal_result_cleanup",
+        stopped: true,
+        terminalResultSeen: true,
+      });
+      expect(adapterResult.exitCode === 0 && adapterResult.signal === null).toBe(false);
+
+      expect(resolveAdapterResultOutcome(adapterResult)).toBe("failed");
+    }, 30_000);
+  }
+
+  it("keeps max-turn exhaustion failed and classified when cleanup stops the lingering CLI", async () => {
+    const adapterResult = await runLingeringCli({
+      resultEvent: {
+        ...successResult,
+        subtype: "error_max_turns",
+        is_error: true,
+        stop_reason: "max_turns",
+        result: "Reached the maximum number of turns.",
+      },
+      lingeringChild: true,
+    });
+
+    expect(adapterResult.resultJson?.unmanagedBackgroundTask).toMatchObject({ stopped: true, terminalResultSeen: true });
+    // Max-turn exhaustion handling keys off these and a failed outcome.
+    expect(adapterResult.errorCode).toBe("max_turns_exhausted");
+    expect(adapterResult.resultJson?.stopReason).toBe("max_turns_exhausted");
+    expect(resolveAdapterResultOutcome(adapterResult)).toBe("failed");
   }, 30_000);
 
   it("keeps an error result failed even when cleanup stopped the CLI", async () => {

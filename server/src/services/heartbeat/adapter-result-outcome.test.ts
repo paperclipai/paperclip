@@ -59,6 +59,30 @@ describe("resolveAdapterResultOutcome: terminal-result cleanup", () => {
     expect(resolveAdapterResultOutcome(result)).toBe("failed");
   });
 
+  it.each([
+    ["error_max_turns reported without is_error", { subtype: "error_max_turns", is_error: false }],
+    ["error_during_execution reported without is_error", { subtype: "error_during_execution", is_error: false }],
+    ["an empty subtype", { subtype: "  " }],
+    ["is_error true with a success subtype", { subtype: "success", is_error: true }],
+    ["is_error true without a subtype", { subtype: undefined, is_error: true }],
+  ])("keeps failed when the result is not a clean success: %s", (_label, fields) => {
+    const result = cleanupResult();
+    result.resultJson = { ...result.resultJson, ...fields };
+    expect(isTerminalResultCleanupSuccess(result)).toBe(false);
+    expect(resolveAdapterResultOutcome(result)).toBe("failed");
+  });
+
+  it.each([
+    ["a success subtype with surrounding space and capitals", { subtype: " Success " }],
+    ["no subtype (generic adapter result)", { subtype: undefined }],
+    ["a non-string subtype", { subtype: 1 }],
+  ])("records succeeded for %s", (_label, fields) => {
+    const result = cleanupResult();
+    result.resultJson = { ...result.resultJson, ...fields };
+    expect(isTerminalResultCleanupSuccess(result)).toBe(true);
+    expect(resolveAdapterResultOutcome(result)).toBe("succeeded");
+  });
+
   it("keeps failed when a process cancellation failed", () => {
     const result = cleanupResult();
     expect(isTerminalResultCleanupSuccess(result, { processCancellationFailed: true })).toBe(false);
