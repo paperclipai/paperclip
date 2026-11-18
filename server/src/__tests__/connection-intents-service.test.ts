@@ -1183,6 +1183,25 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       responsibleUserId: "grant-user", serviceSlug: "notion" })).resolves.toMatchObject({ id: f.connection.id });
   });
 
+  it("names an expired shared sign-in instead of a generic attention reason", async () => {
+    const f = await accessFixture("sentry");
+    const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Sentry", defaultAction: "allow", status: "active" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });
+    const sentry = async () => (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(await sentry()).toMatchObject({ state: "ready", connectionId: f.connection.id });
+    // The state OAuth refresh leaves after the provider rejects the refresh token.
+    await db.update(toolConnections).set({
+      authKind: "oauth", status: "draft", enabled: false, healthStatus: "error",
+      healthMessage: "OAuth authorization expired. Reconnect this app to continue.",
+      lastError: "oauth_reauthorization_required",
+    }).where(eq(toolConnections.id, f.connection.id));
+    const result = await sentry();
+    expect(result).toMatchObject({ state: "needs_user_action", connectionId: null });
+    expect(result?.reason).toContain("Saved sentry");
+    expect(result?.reason).toMatch(/sign-in .*expired/i);
+    expect(result?.reason).toMatch(/reconnect/i);
+  });
+
   it("creates a scoped access card and atomically accepts repeated clicks without granting other agents", async () => {
     const f = await accessFixture();
     const request = await f.service.request(f.claims, "composio", { connectionId: f.connection.id, toolNames: ["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_MANAGE_CONNECTIONS"] });

@@ -575,12 +575,17 @@ export function connectionIntentService(db: Db) {
           nextApiOperation: purpose === "chat" ? "POST /api/companies/{companyId}/chat-endpoints"
             : purpose === "ai" ? "POST /api/companies/{companyId}/ai-connections" : "POST /api/companies/{companyId}/tools/apps/connect" } };
       }));
+      // A rejected refresh disables the connection; name it so the agent can
+      // report the exact human action instead of a generic attention state.
+      const expired = matching.find(connection => connection.lastError === "oauth_reauthorization_required"
+        || connection.lastError === "oauth_refresh_missing");
       candidates.push({ score, nameScore, item: {
         service, name: app.name, description: app.description ?? null, logoUrl: app.branding.logoUrl ?? null,
         methods, source: app.source,
         state: ready ? "ready" : (denied && !isRemoteMcpConnectorId(service)) || !app.available || !app.methods.length ? "unavailable"
           : matching.length ? "needs_user_action" : "available",
         reason: ready ? "Connection is installed and usable by this agent" : denied ? "Ask the responsible user to grant this agent access with connection_request" : !app.available ? "Connection is disabled or unavailable"
+          : expired ? `The sign-in for "${expired.name}" expired. A person who manages this connection must reconnect it on its app page`
           : matching.some((connection) => isToolConnectionAttentionHealth(connection.healthStatus)) ? "Connection needs attention"
           : matching.length ? "Review identity and access for this agent" : "Connect this service to continue",
         connectionId: ready?.id ?? null,
