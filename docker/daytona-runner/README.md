@@ -25,8 +25,8 @@ The October 2026 refreshes pin Codex 0.160.0, Claude Agent SDK
 pack. Claude Code 2.1.280 is the minimum for
 [Opus 5.5](https://code.claude.com/docs/en/model-config) and 2.1.284 is the
 minimum for Sonnet 5.5; the pinned runtime also supports Fable 5.1. Fable 5.2
-needs Claude Code 2.1.321, so it does not run on this image until the provider
-pack moves past that version. Codex 0.160.0 ships bundled metadata for the
+needs Claude Code 2.1.321, so it does not run on Paperclip Runner with this
+image until the provider pack moves past that version. Codex 0.160.0 ships bundled metadata for the
 [GPT-6.1 Sol, GPT-6 Sol, and GPT-6 Luna model IDs](https://learn.chatgpt.com/docs/models);
 GPT-6.2 Sol and Astra need Codex 0.169.1.
 The sandbox layer pins Grok CLI 1.0.89, Gemini CLI 0.68.0, Kimi Code 2.3.3,
