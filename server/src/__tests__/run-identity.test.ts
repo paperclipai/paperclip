@@ -240,7 +240,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     }
   });
 
-  it.each(["accepted", "rejected", "expired"])("continues a transferred %s connection request as its recipient and retains the original audit identity", async (status) => {
+  it.each(["durable", "snapshot"])("continues a connected handoff and retains the latest identity on a %s retry", async (retryKind) => {
     const input = await seed();
     const origin = await initializeRunIdentity(db, {
       ...input, messageIds: [], responsibleUserId: "A", cause: "company_default",
@@ -248,11 +248,10 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     const interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({
       id: interactionId, companyId: input.companyId, issueId: input.issueId,
-      kind: "connection_intent", status, sourceRunId: input.runId,
-      sourceIdentityContextId: origin.id, addresseeUserId: "B", resolvedByUserId: status === "expired" ? null : "B",
-      payload: { version: 1, serviceSlug: "openai", purpose: "ai", requestingAgentId: input.agentId } as never,
-      result: status === "rejected" ? { version: 1, outcome: "declined" }
-        : { version: 1, outcome: status === "expired" ? "expired" : "connected", connectionId: randomUUID() }, resolvedAt: new Date(),
+      kind: "connection_intent", status: "accepted", sourceRunId: input.runId,
+      sourceIdentityContextId: origin.id, addresseeUserId: "B", resolvedByUserId: "B",
+      payload: { version: 1, serviceSlug: "openai", serviceName: "OpenAI", purpose: "ai", requestingAgentId: input.agentId, requestingAgentName: "Shared agent", phase: "requested" },
+      result: { version: 1, outcome: "connected", connectionId: randomUUID() }, resolvedAt: new Date(),
     });
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
@@ -272,26 +271,44 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     expect(request.sourceIdentityContextId).toBe(origin.id);
     expect((await listRunIdentityContexts(db, input.companyId, input.runId))[0].responsibleUserId).toBe("A");
     const retryRunId = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: retryRunId, companyId: input.companyId, agentId: input.agentId, status: "running" });
+    const retryFields = retryKind === "durable" ? { retryOfRunId: runId }
+      : { contextSnapshot: { issueId: input.issueId, interactionId, retryOfRunId: runId } };
+    await db.insert(heartbeatRuns).values({ id: retryRunId, companyId: input.companyId, agentId: input.agentId, status: "running", ...retryFields });
     expect(await initializeRunIdentity(db, {
-      ...input, runId: retryRunId, messageIds: [], parentRunId: runId, responsibleUserId: "A", cause: "retry",
+      ...input, runId: retryRunId, interactionId, messageIds: [], parentRunId: runId, responsibleUserId: "A", cause: "retry",
     })).toMatchObject({ responsibleUserId: "B", parentContextId: continued.id });
+    const later = await reserveSteeredIdentity(db, { ...input, runId, messageId: input.messageIds[0] });
+    await db.transaction(tx => acceptSteeredIdentity(tx, later!));
+    const steeredRetryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: steeredRetryRunId, companyId: input.companyId, agentId: input.agentId, status: "running", ...retryFields });
+    expect(await initializeRunIdentity(db, {
+      ...input, runId: steeredRetryRunId, interactionId, messageIds: [], parentRunId: runId, responsibleUserId: "B", cause: "retry",
+    })).toMatchObject({ responsibleUserId: "A", parentContextId: later!.id });
   });
 
-  it.each([
-    { kind: "request_confirmation", status: "accepted", addresseeUserId: "B", resolvedByUserId: "B" },
-    { kind: "connection_intent", status: "pending", addresseeUserId: "B", resolvedByUserId: null },
-    { kind: "connection_intent", status: "accepted", addresseeUserId: "B", resolvedByUserId: "C" },
-    { kind: "connection_intent", status: "accepted", addresseeUserId: null, resolvedByUserId: "B" },
-    { kind: "connection_intent", status: "expired", addresseeUserId: "B", resolvedByUserId: null },
-  ])("retains source identity without a completed connection handoff: %j", async (interaction) => {
+  it.each(["approval", "pending", "other-resolver", "unaddressed", "declined", "satisfied", "administrative-expiry", "agent-resolved", "unconnected", "missing-connection"])("retains source identity for a %s request without an accepted connection handoff", async (fault) => {
     const input = await seed();
     const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
     const interactionId = randomUUID(), runId = randomUUID();
-    await db.insert(issueThreadInteractions).values({
-      id: interactionId, companyId: input.companyId, issueId: input.issueId, ...interaction,
+    const interaction: typeof issueThreadInteractions.$inferInsert = {
+      id: interactionId, companyId: input.companyId, issueId: input.issueId,
+      kind: "connection_intent", status: "accepted", addresseeUserId: "B", resolvedByUserId: "B",
       sourceIdentityContextId: origin.id, payload: {} as never,
-    });
+      result: { version: 1, outcome: "connected", connectionId: randomUUID() },
+    };
+    if (fault === "approval") { interaction.kind = "request_confirmation"; interaction.result = { version: 1, outcome: "accepted" }; }
+    if (fault === "pending") { interaction.status = "pending"; interaction.resolvedByUserId = null; interaction.result = null; }
+    if (fault === "other-resolver") interaction.resolvedByUserId = "C";
+    if (fault === "unaddressed") interaction.addresseeUserId = null;
+    if (fault === "declined") { interaction.status = "rejected"; interaction.result = { version: 1, outcome: "declined" }; }
+    if (fault === "satisfied" || fault === "administrative-expiry") {
+      interaction.status = "expired"; interaction.resolvedByUserId = null;
+      interaction.result = { version: 1, outcome: "expired", ...(fault === "satisfied" ? { connectionId: randomUUID() } : { reason: "Request withdrawn" }) };
+    }
+    if (fault === "agent-resolved") interaction.resolvedByAgentId = input.agentId;
+    if (fault === "unconnected") interaction.result = { version: 1, outcome: "declined" };
+    if (fault === "missing-connection") interaction.result = { version: 1, outcome: "connected", connectionId: null };
+    await db.insert(issueThreadInteractions).values(interaction);
     await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
     expect(await initializeRunIdentity(db, {
       ...input, runId, interactionId, messageIds: [], responsibleUserId: "B", cause: "continuation",

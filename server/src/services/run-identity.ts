@@ -294,8 +294,11 @@ export async function initializeRunIdentity(
               ),
             )
         : [];
+    const retryContextId = retryOrigin ?? (
+      run.retryOfRunId || run.contextSnapshot?.retryOfRunId ? parent?.activeIdentityContextId : null
+    );
     const parentId = operatorIdentity ? null : (
-      retryOrigin ?? interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
+      retryContextId ?? interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
     );
     const [origin] = parentId
       ? await tx
@@ -312,22 +315,26 @@ export async function initializeRunIdentity(
     if (parentId && !origin)
       throw forbidden("Originating execution identity is unavailable");
     const connectionRecipient = interaction?.kind === "connection_intent"
+      && interaction.status === "accepted"
       && !interaction.resolvedByAgentId
-      && ((["accepted", "rejected"].includes(interaction.status)
-        && interaction.resolvedByUserId === interaction.addresseeUserId)
-        || (interaction.status === "expired" && !interaction.resolvedByUserId
-          && interaction.result?.outcome === "expired" && "connectionId" in interaction.result
-          && typeof interaction.result.connectionId === "string"))
+      && interaction.resolvedByUserId === interaction.addresseeUserId
+      && interaction.result?.outcome === "connected"
+      && "connectionId" in interaction.result
+      && typeof interaction.result.connectionId === "string"
       ? interaction.addresseeUserId : null;
-    const connectionHandoff = !operatorIdentity && connectionRecipient
-      && origin?.responsibleUserId !== connectionRecipient;
+    const identity = operatorIdentity
+      ? { responsibleUserId: operatorIdentity.actorId, cause: operatorIdentity.cause }
+      : !retryContextId && connectionRecipient && origin?.responsibleUserId !== connectionRecipient
+        ? { responsibleUserId: connectionRecipient, cause: "connection_handoff" }
+        : {
+          responsibleUserId: origin ? origin.responsibleUserId : input.responsibleUserId,
+          cause: origin?.cause === "company_default" ? "company_default" : input.cause,
+        };
     let current = await append(tx, {
       companyId: input.companyId,
       runId: input.runId,
-      responsibleUserId: operatorIdentity?.actorId ?? (connectionHandoff ? connectionRecipient : origin ? origin.responsibleUserId : input.responsibleUserId),
+      ...identity,
       parentContextId: origin?.id ?? null,
-      cause:
-        operatorIdentity ? operatorIdentity.cause : connectionHandoff ? "connection_handoff" : origin?.cause === "company_default" ? "company_default" : input.cause,
       correlationId: "dispatch",
     });
     const ids = [...new Set(input.messageIds ?? [])];
