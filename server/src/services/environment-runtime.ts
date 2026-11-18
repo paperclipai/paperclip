@@ -19,6 +19,7 @@ import {
   jitteredResumeRetryDelayMs,
   nextResumeRetryBaseDelayMs,
   RESUME_RETRY_FIRST_DELAY_MS,
+  resumeFailureTimedOut,
   transientSandboxResumeFailure,
 } from "./reusable-sandbox-resume-replacement.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
@@ -1931,11 +1932,11 @@ function createSandboxEnvironmentDriver(
                 break;
               } catch (error) {
                 if (!transientSandboxResumeFailure(error)) throw error;
-                if (sandboxProviderFailureLabel(error).label !== "transport_timeout") everyResumeTimedOut = false;
+                if (!resumeFailureTimedOut(error)) everyResumeTimedOut = false;
                 const retryAt = Date.now() + retryDelayMs * 1.25;
                 if (retryAt >= resumeDeadline) {
                   const waitForIdleStart = resumeDeadline < idleResumeDeadline && retryAt < idleResumeDeadline
-                    && sandboxProviderFailureLabel(error).label === "transport_timeout"
+                    && resumeFailureTimedOut(error)
                     && await reusableSandboxLeaseIsIdle({
                       db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
                     });

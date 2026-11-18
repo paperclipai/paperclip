@@ -1200,6 +1200,30 @@ describe("live remote runner lease reattachment", () => {
       .resolves.toMatchObject({ lease: { id: savedLease.id } });
     expect(resumeRunLease).toHaveBeenCalledTimes(2);
   });
+  it("retries a failed name lookup while reattaching to a host this run already reached", async () => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const lookup = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "getaddrinfo ENOTFOUND app.daytona.io",
+      data: environmentResumeErrorData(Object.assign(new Error("dns"), { code: "ENOTFOUND" })) });
+    const resumeRunLease = vi.fn()
+      .mockRejectedValueOnce(lookup)
+      .mockResolvedValueOnce({ providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/remote/workspace" } });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .resolves.toMatchObject({ lease: { id: savedLease.id } });
+    expect(resumeRunLease).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    ["a caller's cancellation", { code: "ABORT_ERR" }],
+    ["HTTP 501", { statusCode: 501 }],
+  ])("does not retry %s during reattachment", async (_label, fields) => {
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "refused",
+      data: environmentResumeErrorData(Object.assign(new Error("refused"), fields)) });
+    const resumeRunLease = vi.fn(async () => { throw refusal; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input)).rejects.toBe(refusal);
+    expect(resumeRunLease).toHaveBeenCalledOnce();
+  });
   it("does not retry a definite provider refusal during reattachment", async () => {
     const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "conflict",
       data: environmentResumeErrorData(Object.assign(new Error("conflict"), { statusCode: 409 })) });

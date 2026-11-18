@@ -421,7 +421,7 @@ export function environmentRunOrchestrator(
         // controller was offline. Ready the exact lease under its lifecycle
         // budget before short preparation commands (such as project-auth
         // checks) can run. This API cannot acquire a replacement.
-        const resumed = await retryTransientResumeCall({ budgetMs: reattachResumeRetryBudgetMs,
+        const resumed = await retryTransientResumeCall({ budgetMs: reattachResumeRetryBudgetMs, scope: "known_host",
           call: timeoutMs => environmentRuntime.resumeRunLease({
             environment, lease, requestedCwd: expected.remoteCwd, ...(timeoutMs !== undefined ? { timeoutMs } : {}),
             ...(warmRunnerIdleTimeoutMs !== undefined ? { warmRunnerIdleTimeoutMs } : {}),
