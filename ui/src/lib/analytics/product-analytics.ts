@@ -333,7 +333,7 @@ export function cancelPendingProductAnalytics(): void {
   state = null;
 }
 
-export function stopProductAnalytics(): void {
+function stopProductAnalytics(): void {
   if (!state) return;
   if (!state.client && !state.pendingClient && !state.loading) {
     state.cancelSchedule?.();
@@ -342,6 +342,25 @@ export function stopProductAnalytics(): void {
   }
   state.optedOut = true;
   if (state.client) optOut(state.client);
+}
+
+export function syncProductAnalytics(
+  config: BrowserAnalyticsConfig,
+  consent: "granted" | "denied" | "ask",
+  options: ProductAnalyticsOptions & { immediate?: boolean },
+): () => void {
+  if (consent !== "granted") {
+    stopProductAnalytics();
+    return () => undefined;
+  }
+  const schedule: ProductAnalyticsOptions["schedule"] = options.immediate
+    ? (start) => {
+        start();
+        return () => undefined;
+      }
+    : options.schedule;
+  startProductAnalytics(config, { ...options, schedule });
+  return cancelPendingProductAnalytics;
 }
 
 export function resetProductAnalyticsForTest(): void {

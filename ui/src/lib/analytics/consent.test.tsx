@@ -73,12 +73,23 @@ describe("resolveAnalyticsConsent", () => {
     expect(resolveAnalyticsConsent({ ...config, consentRequired: true })).toBe("denied");
   });
 
-  it("a stored choice wins over the region default and the browser signals", () => {
-    setNavigatorSignal("globalPrivacyControl", true);
+  it("a stored choice wins over the region default", () => {
     window.localStorage.setItem(ANALYTICS_CONSENT_STORAGE_KEY, "granted");
     expect(resolveAnalyticsConsent({ ...config, consentRequired: true })).toBe("granted");
     window.localStorage.setItem(ANALYTICS_CONSENT_STORAGE_KEY, "denied");
     expect(resolveAnalyticsConsent({ ...config, consentRequired: false })).toBe("denied");
+  });
+
+  it("lets Global Privacy Control and Do Not Track win over a stored grant where consent is required", () => {
+    window.localStorage.setItem(ANALYTICS_CONSENT_STORAGE_KEY, "granted");
+    setNavigatorSignal("globalPrivacyControl", true);
+    expect(resolveAnalyticsConsent({ ...config, consentRequired: true })).toBe("denied");
+    storeAnalyticsChoice("granted");
+    expect(resolveAnalyticsConsent({ ...config, consentRequired: true })).toBe("denied");
+    expect(resolveAnalyticsConsent({ ...config, consentRequired: false })).toBe("granted");
+    setNavigatorSignal("globalPrivacyControl", undefined);
+    setNavigatorSignal("doNotTrack", "1");
+    expect(resolveAnalyticsConsent({ ...config, consentRequired: true })).toBe("denied");
   });
 
   it("keeps the choice for this page when storage is unavailable", () => {

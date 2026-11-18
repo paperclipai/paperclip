@@ -61,4 +61,16 @@ describe("ProductAnalyticsSetting", () => {
     expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
     act(() => root.unmount());
   });
+
+  it("stays off and cannot be turned on when the browser asks not to be tracked where consent is required", () => {
+    Object.defineProperty(navigator, "globalPrivacyControl", { value: true, configurable: true });
+    window.localStorage.setItem(ANALYTICS_CONSENT_STORAGE_KEY, "granted");
+    const root = render({ ...config, consentRequired: true });
+    const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.disabled).toBe(true);
+    expect(container.textContent).toContain("Your browser asks sites not to track you");
+    Object.defineProperty(navigator, "globalPrivacyControl", { value: undefined, configurable: true });
+    act(() => root.unmount());
+  });
 });

@@ -4,11 +4,9 @@ import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { whenPageSettles } from "@/lib/when-page-settles";
 import {
-  cancelPendingProductAnalytics,
   PRODUCT_ANALYTICS_LOAD_DEADLINE_MS,
   setProductAnalyticsUser,
-  startProductAnalytics,
-  stopProductAnalytics,
+  syncProductAnalytics,
 } from "@/lib/analytics/product-analytics";
 import {
   analyticsChoiceMadeOnThisPage,
@@ -42,20 +40,12 @@ export function ProductAnalyticsGate() {
   const email = session?.user.email ?? null;
   const name = session?.user.name ?? null;
   const consent = useAnalyticsConsent(config);
-  const granted = consent === "granted";
 
   useEffect(() => {
-    if (!config) return;
-    if (!granted) {
-      stopProductAnalytics();
-      return;
-    }
-    startProductAnalytics(config, {
+    if (!config || !consent) return;
+    return syncProductAnalytics(config, consent, {
+      immediate: analyticsChoiceMadeOnThisPage(),
       schedule: (start) => {
-        if (analyticsChoiceMadeOnThisPage()) {
-          start();
-          return () => undefined;
-        }
         const cancelSettle = whenPageSettles(queryClient, start);
         const deadline = window.setTimeout(start, PRODUCT_ANALYTICS_LOAD_DEADLINE_MS);
         return () => {
@@ -64,9 +54,8 @@ export function ProductAnalyticsGate() {
         };
       },
     });
-    return () => cancelPendingProductAnalytics();
     // Keyed by value: the config object identity changes on every session refetch.
-  }, [configKey, granted, queryClient]);
+  }, [configKey, consent, queryClient]);
 
   useEffect(() => {
     setProductAnalyticsUser(userId ? { id: userId, email, name } : null);

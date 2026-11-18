@@ -77,10 +77,12 @@ their own browser.
 | Visitor | Before a choice | Accept / switch on | Decline / switch off |
 | --- | --- | --- | --- |
 | Must agree, no Do Not Track or Global Privacy Control | Banner. posthog-js does not load: no `/_ph` requests, no PostHog cookies or storage. | posthog-js loads at once, without a reload. | Nothing loads. |
-| Must agree, `navigator.doNotTrack === "1"` or `navigator.globalPrivacyControl === true`, no stored choice | No banner. Counts as Decline. | The settings switch can still turn it on. An explicit choice wins over the browser signal. | Nothing loads. |
+| Must agree, `navigator.doNotTrack === "1"` or `navigator.globalPrivacyControl === true` | No banner. Counts as Decline, also over a stored Accept. | Not possible: the settings switch is off and disabled, and says why. | Nothing loads. A running client opts out. |
 | Everyone else | Loads after the page settles, as before. | — | `opt_out_capturing()` and `stopSessionRecording()` run at once. After the next load, posthog-js does not load. |
 
-Analytics stops whenever the choice is not `granted`, also when it goes back
+The gate calls one function, `syncProductAnalytics(config, consent)` in
+`ui/src/lib/analytics/product-analytics.ts`. It starts, opts in, opts out or
+cancels. Analytics stops whenever the choice is not `granted`, also when it goes back
 to "ask" (another tab removes the stored choice, or a session refresh changes
 `consentRequired` to `true`). If the choice changes while posthog-js is still
 downloading, `init()` does not run until the choice is `granted` again.

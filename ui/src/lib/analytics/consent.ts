@@ -55,12 +55,15 @@ export function analyticsChoiceMadeOnThisPage(): boolean {
   return pageChoice !== null;
 }
 
+export function browserBlocksAnalytics(config: BrowserAnalyticsConfig): boolean {
+  return consentRequired(config) && browserAsksNotToTrack();
+}
+
 export function resolveAnalyticsConsent(config: BrowserAnalyticsConfig): AnalyticsConsent {
+  if (browserBlocksAnalytics(config)) return "denied";
   const stored = pageChoice ?? readStoredAnalyticsChoice();
   if (stored) return stored;
-  if (!consentRequired(config)) return "granted";
-  if (browserAsksNotToTrack()) return "denied";
-  return "ask";
+  return consentRequired(config) ? "ask" : "granted";
 }
 
 function subscribe(listener: () => void) {
