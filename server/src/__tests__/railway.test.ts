@@ -45,6 +45,22 @@ describe("Railway governed operations", () => {
     await expect(f.client.probe(target.projectId)).rejects.toMatchObject({ code: "railway_api_authorization_required", status: 403, message: expect.stringContaining("workspace selected during consent") });
     expect(f.request).toHaveBeenCalledTimes(1);
   });
+  it("reports a restricted environment instead of a workspace consent error when Railway denies the target", async () => {
+    const denied = () => Response.json({ errors: [{ message: "Not Authorized" }], data: null });
+    const access = (canAccess: boolean) => Response.json({ data: { project: { id: target.projectId, environments: { edges: [{ node: { id: target.environmentId, canAccess } }] } } } });
+    const restricted = fixture((q) => q === RAILWAY_QUERIES.target ? denied() : q === RAILWAY_QUERIES.environmentAccess ? access(false) : undefined);
+    const { deploymentId: _, ...ids } = target;
+    await expect(restricted.client.call("paperclip-railway-list-deployments", ids)).rejects.toMatchObject({ code: "railway_environment_restricted", status: 403, message: expect.stringContaining("restricted") });
+    expect(restricted.request.mock.calls.map(([, init]) => JSON.parse(String(init.body)).query)).toEqual([RAILWAY_QUERIES.target, RAILWAY_QUERIES.environmentAccess]);
+    expect(RAILWAY_QUERIES.environments).toContain("canAccess");
+
+    const other = fixture((q) => q === RAILWAY_QUERIES.target ? denied() : q === RAILWAY_QUERIES.environmentAccess ? access(true) : undefined);
+    await expect(other.client.call("paperclip-railway-service-status", ids)).rejects.toMatchObject({ code: "railway_api_authorization_required" });
+    const unknown = fixture((q) => q === RAILWAY_QUERIES.target || q === RAILWAY_QUERIES.environmentAccess ? denied() : undefined);
+    await expect(unknown.client.call("paperclip-railway-restart", target)).rejects.toMatchObject({ code: "railway_api_authorization_required" });
+    expect(unknown.request.mock.calls.every(([, init]) => !JSON.parse(String(init.body)).query.startsWith("mutation"))).toBe(true);
+  });
+
   it("requires exact provider identity and treats shell and remote agents as privileged", () => {
     expect(isRailwayEndpoint("https://mcp.railway.com/")).toBe(true);
     for (const url of ["https://mcp.railway.com/path", "https://mcp.railway.com?token=x", "https://mcp.railway.com.evil.test", "http://mcp.railway.com"]) expect(isRailwayEndpoint(url)).toBe(false);

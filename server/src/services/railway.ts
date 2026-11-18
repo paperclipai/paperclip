@@ -135,7 +135,9 @@ const instanceFields = "id environmentId serviceId serviceName source { repo } l
 export const RAILWAY_QUERIES = {
   projects: `query PaperclipRailwayProjects($workspaceId:String!,$first:Int!,$after:String) { projects(workspaceId:$workspaceId,first:$first,after:$after) { edges { node { id name workspaceId } } ${pageInfo} } }`,
   services: `query PaperclipRailwayServices($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id services(first:$first,after:$after) { edges { node { id name projectId } } ${pageInfo} } } }`,
-  environments: `query PaperclipRailwayEnvironments($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id environments(first:$first,after:$after) { edges { node { id name projectId } } ${pageInfo} } } }`,
+  environments: `query PaperclipRailwayEnvironments($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id environments(first:$first,after:$after) { edges { node { id name projectId canAccess } } ${pageInfo} } } }`,
+  // Restricted environments stay listed for non-admins, but reads inside them are denied.
+  environmentAccess: `query PaperclipRailwayEnvironmentAccess($projectId:String!) { project(id:$projectId) { id environments(first:100) { edges { node { id canAccess } } } } }`,
   target: `query PaperclipRailwayTarget($projectId:String!,$environmentId:String!,$serviceId:String!) { project(id:$projectId) { id } environment(id:$environmentId) { id projectId } service(id:$serviceId) { id projectId } serviceInstance(environmentId:$environmentId,serviceId:$serviceId) { ${instanceFields} } }`,
   deployment: `query PaperclipRailwayDeployment($deploymentId:String!) { deployment(id:$deploymentId) { ${deploymentFields} instances { id } } }`,
   deployments: `query PaperclipRailwayDeployments($input:DeploymentListInput!,$first:Int!,$after:String) { deployments(input:$input,first:$first,after:$after) { edges { node { ${deploymentFields} } } ${pageInfo} } }`,
@@ -234,8 +236,27 @@ export function createRailwayClient(options: RailwayClientOptions) {
     return payload.data;
   }
 
+  async function environmentRestricted(args: Record<string, any>): Promise<boolean> {
+    try {
+      const data = await query(RAILWAY_QUERIES.environmentAccess, { projectId: args.projectId });
+      const edges = record(record(data.project).environments).edges;
+      return Array.isArray(edges) && edges.some((edge) => edge?.node?.id === args.environmentId && edge.node.canAccess === false);
+    } catch (error) {
+      if (options.signal.aborted) throw error;
+      return false;
+    }
+  }
+
   async function validateTarget(args: Record<string, any>) {
-    const data = await query(RAILWAY_QUERIES.target, { projectId: args.projectId, environmentId: args.environmentId, serviceId: args.serviceId });
+    let data: Record<string, any>;
+    try {
+      data = await query(RAILWAY_QUERIES.target, { projectId: args.projectId, environmentId: args.environmentId, serviceId: args.serviceId });
+    } catch (error) {
+      if (error instanceof RailwayError && error.code === "railway_api_authorization_required" && await environmentRestricted(args)) {
+        throw new RailwayError("railway_environment_restricted", "This Railway environment is restricted. The connected account can see it but cannot read its services, deployments, or logs. Ask a Railway project admin for access to the environment, or use an environment the account can access. Reconnecting does not change this.", 403);
+      }
+      throw error;
+    }
     if (data.project?.id !== args.projectId || data.environment?.id !== args.environmentId || data.environment?.projectId !== args.projectId || data.service?.id !== args.serviceId || data.service?.projectId !== args.projectId || data.serviceInstance?.environmentId !== args.environmentId || data.serviceInstance?.serviceId !== args.serviceId) {
       throw new RailwayError("railway_target_mismatch", "The service and environment do not belong to the selected Railway project.", 403);
     }
