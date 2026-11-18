@@ -3840,27 +3840,79 @@ describeEmbeddedPostgres("tool access service", () => {
       credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: secret.id }],
       credentialSecretRefs: [{ secretId: secret.id, configPath: "headers.X-Key" }],
     });
-    const deadline = Date.now() + 10_000;
     let blocked = false;
-    while (!blocked && Date.now() < deadline) {
-      const rows = await db.execute(sql`select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database() and query ilike '%connection_grants%'`);
-      blocked = Array.from(rows as unknown as unknown[]).length > 0;
-      if (!blocked) await new Promise((resolve) => setTimeout(resolve, 25));
+    let connectionRowFree = false;
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!blocked && Date.now() < deadline) {
+        const rows = await db.execute(sql`select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database() and query ilike '%connection_grants%'`);
+        blocked = Array.from(rows as unknown as unknown[]).length > 0;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      connectionRowFree = await db.transaction(async (tx) => {
+        try {
+          await tx.execute(sql`select id from tool_connections where id = ${connection.id} for update nowait`);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    } finally {
+      release();
+      await holder;
+      await update;
     }
     expect(blocked).toBe(true);
-
-    const connectionRowFree = await db.transaction(async (tx) => {
-      try {
-        await tx.execute(sql`select id from tool_connections where id = ${connection.id} for update nowait`);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    release();
-    await holder;
-    await update;
     expect(connectionRowFree).toBe(true);
+  });
+
+  it("drops a credential another save added while this save waited for the grant lock", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Remote stale ${randomUUID()}`,
+      key: `remote.stale.${randomUUID()}`,
+      value: "stale-value",
+    });
+    const connection = await service.createConnection(company.id, connectionInput({
+      name: "Stale read remote",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+    }));
+    const added = [{ secretId: secret.id, configPath: "headers.X-Key" }];
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let locked!: () => void;
+    const grantsLocked = new Promise<void>((resolve) => { locked = resolve; });
+    const firstSave = db.transaction(async (tx) => {
+      await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+        .where(eq(connectionGrants.connectionId, connection.id)).for("update");
+      locked();
+      await held;
+      await tx.update(toolConnections).set({ credentialSecretRefs: added }).where(eq(toolConnections.id, connection.id));
+      await tx.update(connectionGrants).set({ credentialSecretRefs: added }).where(eq(connectionGrants.connectionId, connection.id));
+    });
+    await grantsLocked;
+
+    const secondSave = service.updateConnection(connection.id, { credentialRefs: [], credentialSecretRefs: [] });
+    let blocked = false;
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!blocked && Date.now() < deadline) {
+        const rows = await db.execute(sql`select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database() and query ilike '%connection_grants%'`);
+        blocked = Array.from(rows as unknown as unknown[]).length > 0;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      release();
+      await firstSave;
+      await secondSave;
+    }
+
+    expect(blocked).toBe(true);
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+    expect(grant!.credentialSecretRefs).toEqual([]);
   });
 
   it("leaves a revoked organization grant alone when a remote connection's credentials change", async () => {
