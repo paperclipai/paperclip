@@ -98,6 +98,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     backupAgeDays?: number;
     cleanupActive?: boolean;
     localHome?: boolean;
+    runFinishedDaysAgo?: number;
   } = {}) {
     if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
     const companyId = input.companyId ?? randomUUID();
@@ -122,7 +123,8 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
       issueId: issue!.id,
       nativeIssueId: issue!.id,
       nativeSessionId: sessionId,
-      finishedAt: ["queued", "running"].includes(runStatus) ? null : closedAt,
+      finishedAt: ["queued", "running"].includes(runStatus) ? null
+        : input.runFinishedDaysAgo === undefined ? closedAt : new Date(now.getTime() - input.runFinishedDaysAgo * DAY_MS),
     }).returning();
     await db.insert(agentTaskSessions).values({
       companyId,
@@ -582,7 +584,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
 
   it("restores a local provider home whose expiry stopped before its final check", async () => {
     const session = await seedSession({ localHome: true, issueStatus: "in_progress" });
-    const retiring = path.join(session.root, `.retiring-${randomUUID()}`);
+    const retiring = path.join(session.root, "provider-home-retiring");
     await fs.rename(session.current, retiring);
 
     await service().tick();
@@ -593,7 +595,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
 
   it("finishes removing a local provider home left over from an interrupted expiry", async () => {
     const session = await seedSession({ localHome: true, issueStatus: "in_progress" });
-    const trash = path.join(session.root, `.expired-${randomUUID()}`);
+    const trash = path.join(session.root, "provider-home-expired");
     await fs.mkdir(path.join(trash, "skills"), { recursive: true });
 
     await service().tick();
@@ -608,6 +610,72 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
 
     expect(entry).toMatchObject({ companyId: session.companyId, agentId: session.agentId });
     expect(entry?.dueAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("ages a local provider home by its session's last run, not by the home's own mtime", async () => {
+    const session = await seedSession({ localHome: true, runFinishedDaysAgo: 2 });
+
+    const result = await service().tick();
+
+    expect(result).toMatchObject({ candidates: 0, expired: 0, skipped: { recent_run: 1 } });
+    expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+    expect(await taskSessionCount(session.agentId)).toBe(1);
+    const entry = await service().reconcileBackup(session.scope);
+    expect(entry?.dueAt).toBeGreaterThan(now.getTime() + 4 * DAY_MS);
+  });
+
+  it("does not walk a retained local provider home", async () => {
+    const session = await seedSession({ localHome: true, issueStatus: "in_progress" });
+    const readdir = vi.spyOn(fs, "readdir");
+
+    expect((await service().tick()).skipped.issue_open).toBe(1);
+
+    expect(readdir.mock.calls.map(([target]) => String(target)).filter(target => target.startsWith(session.current))).toEqual([]);
+  });
+
+  async function seedCombinedSession() {
+    const session = await seedSession();
+    const home = path.join(session.root, "codex-home");
+    await fs.mkdir(home);
+    await fs.writeFile(path.join(home, "state.sqlite"), "x".repeat(4096));
+    const old = new Date(now.getTime() - 9 * DAY_MS);
+    await fs.utimes(home, old, old);
+    return { ...session, home };
+  }
+
+  async function expectRolledBack(session: Awaited<ReturnType<typeof seedCombinedSession>>) {
+    expect(await exists(path.join(session.current, "manifest.json"))).toBe(true);
+    expect(await exists(path.join(session.home, "state.sqlite"))).toBe(true);
+    expect(await fs.readdir(path.join(session.root, "failover-backups"))).toEqual(["current"]);
+    expect((await fs.readdir(session.root)).filter(name => name.startsWith("provider-home-"))).toEqual([]);
+    expect(await taskSessionCount(session.agentId)).toBe(1);
+  }
+
+  it("moves the first copy back when the second copy cannot be moved aside", async () => {
+    const session = await seedCombinedSession();
+    const rename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (String(to).endsWith("provider-home-retiring")) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+      return rename(from, to);
+    });
+
+    expect(await service().tick()).toMatchObject({ expired: 0, failed: 1 });
+
+    await expectRolledBack(session);
+  });
+
+  it("moves both copies back when the transaction fails after moving them", async () => {
+    const session = await seedCombinedSession();
+    const transaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementationOnce((async (work: Parameters<typeof db.transaction>[0]) =>
+      transaction(async (tx) => {
+        await work(tx);
+        throw new Error("commit failed");
+      })) as typeof db.transaction);
+
+    expect(await service().tick()).toMatchObject({ expired: 0, failed: 1 });
+
+    await expectRolledBack(session);
   });
 
   it("drops an unconfirmed retired backup once a newer backup exists", async () => {

@@ -47,6 +47,10 @@ export const NATIVE_SESSION_ROOT_HELD_ENTRIES: readonly string[] = [
   "plugin-runner-state.json",
   "cleanup-activation.json",
   "cursor-cloud",
+  // Harness retention: a local provider home moved aside for expiration. The
+  // retention sweep restores it or finishes its removal.
+  "provider-home-retiring",
+  "provider-home-expired",
 ];
 
 /** Holds archived continuity state; never an owner claim by itself. */

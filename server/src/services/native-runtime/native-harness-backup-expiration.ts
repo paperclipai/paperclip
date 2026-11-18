@@ -50,6 +50,11 @@ const MAX_CONTROL_PLANE_STATE_BYTES = 4 * 1024 * 1024;
 // session can only resume by reopening closed work, it is as disposable as a
 // failover copy: a reopened issue starts a fresh provider session elsewhere.
 const LOCAL_PROVIDER_HOME = "codex-home";
+// Fixed, classified journal names (native-session-root-entries.ts), so
+// admission holds a root with an unsettled retirement instead of treating it
+// as writer drift.
+const LOCAL_PROVIDER_HOME_RETIRING = "provider-home-retiring";
+const LOCAL_PROVIDER_HOME_EXPIRED = "provider-home-expired";
 const CHECKPOINT_EXPIRATION_MAX_FAILED_PASSES = 3;
 
 export type NativeHarnessBackupExpirationOptions = {
@@ -154,19 +159,34 @@ async function allocatedBytes(target: string): Promise<number> {
   return bytes;
 }
 
-type RetentionTarget = { path: string; parent: string };
+type RetentionTarget = { path: string; retiring: string; trash: string; local: boolean };
 
 /** The disposable session copies in a root: a remote failover copy and a local provider home. */
 async function retentionTargets(root: string): Promise<RetentionTarget[]> {
   const backupRoot = path.join(root, "failover-backups");
+  const id = randomUUID();
   const targets: RetentionTarget[] = [];
   for (const target of [
-    { path: path.join(backupRoot, "current"), parent: backupRoot },
-    { path: path.join(root, LOCAL_PROVIDER_HOME), parent: root },
+    { path: path.join(backupRoot, "current"), retiring: path.join(backupRoot, `${RETIRING_PREFIX}${id}`),
+      trash: path.join(backupRoot, `${EXPIRED_PREFIX}${id}`), local: false },
+    { path: path.join(root, LOCAL_PROVIDER_HOME), retiring: path.join(root, LOCAL_PROVIDER_HOME_RETIRING),
+      trash: path.join(root, LOCAL_PROVIDER_HOME_EXPIRED), local: true },
   ]) {
     if (await isRealDirectory(target.path)) targets.push(target);
   }
   return targets;
+}
+
+/** Restores a local provider home whose retirement never committed, and finishes an interrupted removal. */
+async function settleLocalProviderHome(root: string) {
+  const home = path.join(root, LOCAL_PROVIDER_HOME);
+  const retiring = path.join(root, LOCAL_PROVIDER_HOME_RETIRING);
+  if (await isRealDirectory(retiring)) {
+    if (await fs.lstat(home).catch(missingPath)) await removeBackupTree(retiring);
+    else await fs.rename(retiring, home);
+  }
+  const trash = path.join(root, LOCAL_PROVIDER_HOME_EXPIRED);
+  if (await isRealDirectory(trash)) await removeBackupTree(trash);
 }
 
 async function newestModification(targets: RetentionTarget[]): Promise<number> {
@@ -211,7 +231,7 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 async function sessionRetentionBlocker(
   tx: Tx,
-  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean },
+  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean; runsFinishedBefore?: boolean },
 ): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[]; issueIds: string[]; closedAt: number }> {
   const [owner] = await tx
     .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
@@ -239,7 +259,9 @@ async function sessionRetentionBlocker(
     return { reason: "live_run" };
   }
   if (runs.some(run => run.incompleteRecovery)) return { reason: "native_recovery_incomplete" };
-  if (input.checkpoint && runs.some(run => run.finishedAt! >= input.closedBefore)) return { reason: "recent_run" };
+  if ((input.checkpoint || input.runsFinishedBefore) && runs.some(run => run.finishedAt! >= input.closedBefore)) {
+    return { reason: "recent_run" };
+  }
   const issueIds = [...new Set(runs.map((run) => run.issueId).filter((id): id is string => Boolean(id)))];
   if (issueIds.length === 0) return { reason: "issue_unknown" };
   const issueQuery = tx
@@ -496,9 +518,10 @@ export function nativeHarnessBackupExpirationService(
     checkpointCursor = null;
   }
 
-  async function settleLeftovers(parent: string, current: string) {
-    for (const name of (await fs.readdir(parent).catch(missingPath)) ?? []) {
-      const target = path.join(parent, name);
+  async function settleLeftovers(backupRoot: string) {
+    const current = path.join(backupRoot, "current");
+    for (const name of (await fs.readdir(backupRoot).catch(missingPath)) ?? []) {
+      const target = path.join(backupRoot, name);
       if (name.startsWith(RETIRING_PREFIX) && UUID_PATTERN.test(name.slice(RETIRING_PREFIX.length))) {
         if (!(await isRealDirectory(current))) await fs.rename(target, current);
         else await removeBackupTree(target);
@@ -520,8 +543,8 @@ export function nativeHarnessBackupExpirationService(
       result.skipped[reason] = (result.skipped[reason] ?? 0) + 1;
     };
     if (!options.dryRun) {
-      await settleLeftovers(path.join(root, "failover-backups"), path.join(root, "failover-backups", "current"));
-      await settleLeftovers(root, path.join(root, LOCAL_PROVIDER_HOME));
+      await settleLeftovers(path.join(root, "failover-backups"));
+      await settleLocalProviderHome(root);
     }
     const targets = await retentionTargets(root);
     if (!targets.length) return skip("no_backup");
@@ -533,34 +556,30 @@ export function nativeHarnessBackupExpirationService(
     const identity = await readSessionIdentity(root);
     if (!identity) return skip("identity_unknown");
 
-    let bytes = 0;
-    for (const target of targets) bytes += await allocatedBytes(target.path);
-    const moves = targets.map((target) => {
-      const id = randomUUID();
-      return { current: target.path, retiring: path.join(target.parent, `${RETIRING_PREFIX}${id}`),
-        trash: path.join(target.parent, `${EXPIRED_PREFIX}${id}`) };
-    });
-    const retired: typeof moves = [];
+    const retired: RetentionTarget[] = [];
     const restore = async () => {
       while (retired.length) {
-        const move = retired.pop()!;
-        await fs.rename(move.retiring, move.current);
+        const target = retired.pop()!;
+        await fs.rename(target.retiring, target.path);
       }
     };
-    let decision: { reason: string } | { cleared: number; bytes: number };
+    let decision: { reason: string } | { cleared: number };
     try {
       decision = await db.transaction(async (tx) => {
+        // Codex writes inside its home without touching the home's own mtime,
+        // so a local home is as recent as the session's last run.
         const blocker = await sessionRetentionBlocker(tx, {
           scopeDigest, identity, closedBefore: options.closedBefore,
+          runsFinishedBefore: targets.some(target => target.local),
         });
         if ("reason" in blocker) return blocker;
         if (await newestModification(targets) >= options.closedBefore.getTime()) return { reason: "recent_backup" };
-        if (options.dryRun) return { cleared: 0, bytes };
+        if (options.dryRun) return { cleared: 0 };
         if (options.isSessionBusy(scopeDigest)) return { reason: "session_active" };
         await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
-        for (const move of moves) {
-          await fs.rename(move.current, move.retiring);
-          retired.push(move);
+        for (const target of targets) {
+          await fs.rename(target.path, target.retiring);
+          retired.push(target);
         }
         if (await hasLiveRun(tx as unknown as Db, blocker, identity.normalizedSessionId)) {
           await restore();
@@ -571,21 +590,24 @@ export function nativeHarnessBackupExpirationService(
           eq(agentTaskSessions.agentId, blocker.agentId),
           sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${identity.normalizedSessionId}`,
         )).returning({ id: agentTaskSessions.id });
-        return { cleared: cleared.length, bytes };
+        return { cleared: cleared.length };
       });
     } catch (error) {
       await restore();
       throw error;
     }
     if ("reason" in decision) return skip(decision.reason);
+    // Count bytes only for an eligible copy, so a retained tree is never walked.
+    let bytes = 0;
+    for (const target of targets) bytes += await allocatedBytes(options.dryRun ? target.path : target.retiring);
     result.candidates++;
-    result.candidateBytes += decision.bytes;
+    result.candidateBytes += bytes;
     if (options.dryRun) return;
     result.clearedTaskSessions += decision.cleared;
-    for (const move of moves) await fs.rename(move.retiring, move.trash);
-    for (const move of moves) await removeBackupTree(move.trash);
+    for (const target of targets) await fs.rename(target.retiring, target.trash);
+    for (const target of targets) await removeBackupTree(target.trash);
     result.expired++;
-    result.reclaimedBytes += decision.bytes;
+    result.reclaimedBytes += bytes;
   }
 
   async function removeExpiredLeftovers(parent: string, context: EvidenceContext, result: NativeHarnessBackupExpirationResult) {
@@ -934,8 +956,8 @@ export function nativeHarnessBackupExpirationService(
     const root = path.join(base, scopeDigest);
     if (!SCOPE_PATTERN.test(scopeDigest) || !(await isRealDirectory(root))) return null;
     if (!defaults.dryRun) {
-      await settleLeftovers(path.join(root, "failover-backups"), path.join(root, "failover-backups", "current"));
-      await settleLeftovers(root, path.join(root, LOCAL_PROVIDER_HOME));
+      await settleLeftovers(path.join(root, "failover-backups"));
+      await settleLocalProviderHome(root);
     }
     const targets = await retentionTargets(root);
     if (!targets.length) return null;
@@ -954,7 +976,8 @@ export function nativeHarnessBackupExpirationService(
     }
     if (assessment.reason || assessment.closedAt === null) return { ...source, dueAt: null };
     const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
-    return { ...source, dueAt: Math.max(await newestModification(targets), assessment.closedAt) + retentionMs + 1 };
+    const lastRun = targets.some(target => target.local) ? assessment.lastFinishedAt ?? Number.NEGATIVE_INFINITY : Number.NEGATIVE_INFINITY;
+    return { ...source, dueAt: Math.max(await newestModification(targets), assessment.closedAt, lastRun) + retentionMs + 1 };
   }
 
   async function backupScopes(after?: string, limit = 100) {
