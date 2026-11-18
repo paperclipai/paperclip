@@ -51,6 +51,7 @@ import { DecisionResolver } from "./DecisionResolver";
 import { StalledReviewActions } from "./StalledReviewActions";
 import { readIssueReviewPolicyMetadata } from "../lib/review-policy";
 import { attentionOtherAudienceUserId } from "../lib/attention-close";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 // Decision-action buttons: a comfortable tap target when the row is narrow
 // (h-9 / text-sm), shrinking back to the dense pill (h-6 / text-xs) once the
@@ -334,10 +335,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             }
           : {})}
       >
-        <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
+        <span className={cn("line-clamp-2 text-sm font-medium text-foreground", ANALYTICS_MASK_CLASS)} title={item.subject.title ?? undefined}>
           {item.subject.title ?? meta.label}
         </span>
-        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
+        <p className={cn("mt-0.5 line-clamp-2 text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>{detailLine}</p>
       </div>
 
       {/* Why this card is here (PAP-749 plan §1, Rule 4): "Why me?", "For

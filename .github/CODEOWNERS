@@ -1,6 +1,6 @@
 # Replace @cryppadotta if a different maintainer or team should own release infrastructure.
 
-.github/** @cryppadotta @devinfoley @nickyleach @forgottendev
+.github/** @cryppadotta @devinfoley @nickyleach @forgottendev @tonio-alucema @scotttong @lucktastic @nguyenm7
 scripts/ci-profile/** @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/release*.sh @cryppadotta @devinfoley @nickyleach @forgottendev
 scripts/release-*.mjs @cryppadotta @devinfoley @nickyleach @forgottendev

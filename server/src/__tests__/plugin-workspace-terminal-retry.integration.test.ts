@@ -204,6 +204,8 @@ function providerRefusal() {
     await svc.sweepTerminalWorkspaces(100);
     expect(s.callsFor(workspace.id, "inspect")).toHaveLength(4);
     expect(await retryAfter()).toBeUndefined();
+    // The successful inspection kept the dirty workspace on hold; a change notice ends the hold.
+    svc.terminalWorkspaceWorkSettled(new Set([`workspace:${workspace.id}`]), { targeted: true });
     s.failures.inspect = true;
     clock += MINUTE;
     await svc.sweepTerminalWorkspaces(100);

@@ -1370,6 +1370,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
+  it.each(["before_adapter", "adapter_entered", "untrusted", "native"] as const)("names a remote preparation timeout raised %s during execution", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "native" ? "native" : "legacy" });
+    const cause = new RemoteWorkspaceOperationTimeoutError("prepare", 30_000);
+    const message = "Could not exclude agent files from task Git staging (reason=timed_out)";
+    const error = scenario === "untrusted" ? new Error(message) : new RemoteWorkspacePreparationTimeoutError(cause, message);
+    await f.completion.failRun({ ...f.failure(error), requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: scenario === "adapter_entered" });
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", error: message,
+      errorCode: scenario === "before_adapter" ? "remote_workspace_prepare_timeout" : expect.not.stringMatching(/^remote_workspace_prepare_timeout$/) });
+    if (scenario === "before_adapter") expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+  });
+
   it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s preserved sandbox resume failure through bounded bootstrap recovery", async scenario => {
     const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy" });
     const providerError = Object.assign(new Error("Sandbox abc is not in a valid state: stopping /home/daytona/secret"), { statusCode: 400 });

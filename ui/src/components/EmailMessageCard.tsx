@@ -8,6 +8,8 @@ import type {
 } from "@paperclipai/shared";
 import { useEmailThread } from "@/hooks/useEmailThread";
 import { issuesApi } from "@/api/issues";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 const EmailContext = createContext<EmailThreadSummary | null>(null);
 export function EmailThreadProvider({
   companyId,
@@ -59,7 +61,7 @@ export function EmailMessageCard({
       aria-label={
         message.direction === "inbound" ? "Email received" : "Email sent"
       }
-      className={contextNotice ? "task-context-notice space-y-3" : "space-y-4 rounded-xl border border-border bg-card p-5"}
+      className={cn(contextNotice ? "task-context-notice space-y-3" : "space-y-4 rounded-xl border border-border bg-card p-5", ANALYTICS_MASK_CLASS)}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="flex items-center gap-2 text-sm font-semibold">

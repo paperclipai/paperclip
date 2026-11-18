@@ -4,6 +4,8 @@ import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, N
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE,
   NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
+import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE,
+  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS } from "./native-agent-blocker.js";
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
@@ -262,6 +264,7 @@ export function arbitrateNativeStatus(input: {
   toolReceiptLimitStopped?: boolean;
   /** The current owner's blocked report names a system-owned environment or tool outage. */
   environmentBlocker?: boolean;
+  agentBlockerRecoverable?: boolean;
   failureRetryCount?: number;
   /**
    * This run was itself the automatic continuation of an earlier failed turn.
@@ -651,6 +654,33 @@ export function arbitrateNativeStatus(input: {
       blockerOwnerKind: input.assessment.blocker.ownerKind,
       unblockDescriptor: { owner: "board", action: NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION },
       effects: [{ kind: "bind_blocker", owner: "board", action: NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION }],
+    };
+  }
+  if (
+    input.assessment.reportedDisposition === "blocked" &&
+    input.assessment.blocker?.scope === "task_wide" &&
+    !input.assessment.blocker.boardOwned &&
+    input.agentBlockerRecoverable &&
+    !input.isConversation
+  ) {
+    if (input.assessment.blocker.ownerKind === "agent" && !input.hasActivePauseHold &&
+        (input.failureRetryCount ?? 0) < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve", toStatus: input.priorIssueStatus,
+        reasonCode: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, unblockDescriptor: null,
+        effects: [{ kind: "schedule_retry", cause: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
+          summary: "Continue the task once in a fresh session.", agentId: input.agentId }],
+      };
+    }
+    const action = input.assessment.blocker.unblockAction;
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "blocked", toStatus: "blocked",
+      reasonCode: NATIVE_AGENT_BLOCKER_HANDOFF_CODE,
+      blockerOwnerKind: input.assessment.blocker.ownerKind,
+      unblockDescriptor: { owner: "board", action },
+      effects: [{ kind: "bind_blocker", owner: "board", action }],
     };
   }
   if (

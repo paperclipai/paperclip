@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubscriptionCostReport } from "@paperclipai/shared";
 import { SubscriptionCostCard } from "./SubscriptionCostCard";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const mocks = vi.hoisted(() => ({ update: vi.fn(), link: vi.fn() }));
 vi.mock("../api/subscriptions", () => ({ subscriptionsApi: mocks }));
@@ -131,5 +132,15 @@ describe("subscription costs", () => {
     await act(async () => { const select = document.querySelector<HTMLSelectElement>("#subscription-link")!; select.value = "account-2"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await click("Link accounts");
     await vi.waitFor(() => expect(mocks.link).toHaveBeenCalledWith("company", "account-1", "account-2", 0, 3));
+  });
+  it("masks subscription account and owner names in session replay", async () => {
+    const report = fixture();
+    report.accounts[0] = { ...report.accounts[0], name: "Thistlewood Claude", ownerName: "Marisol Quenby" };
+    report.accounts.push({ ...report.accounts[0], id: "account-2", name: "Larkspur Claude seat", price: { ...report.accounts[0].price, revision: 3 } });
+    await render(report); await click("View details");
+    expect(replayLeaks("Thistlewood Claude", document.body)).toEqual({ rendered: true, recorded: false });
+    expect(replayLeaks("Marisol Quenby", document.body)).toEqual({ rendered: true, recorded: false });
+    await click("Edit price");
+    expect(replayLeaks("Larkspur Claude seat", document.body)).toEqual({ rendered: true, recorded: false });
   });
 });

@@ -4,7 +4,7 @@ import type { ServerProcessWindow } from "./multi-server.js";
 import { unshiftJson, unshiftMs, type AgingShift } from "./time-faults.js";
 import { ISSUE_STATUSES } from "../../packages/shared/src/constants.js";
 import type { CompletionEvidence } from "./staging-mix.js";
-import { laterAnswers, rejectedDoneRuns, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
+import { followUpAnsweringRuns, rejectedDoneRuns, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
 import { AGENT_SLOTS_FILE, agentSlotsFromRows } from "./agent-slots.js";
 import { agents, createDb, type Db } from "../../packages/db/src/index.js";
 import { maxConcurrentRunsSql } from "../../server/src/services/heartbeat/timer-policy.js";
@@ -78,7 +78,7 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
     runs: runs.map(run => {
       const owner = controllerByBoot.get(String(run.controllerBootId ?? ""));
       return { runId: text(run.id), status: text(run.status), invocationSource: text(run.invocationSource), triggerDetail: text(run.triggerDetail),
-        wakeupRequestId: text(run.wakeupRequestId), createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
+        wakeupRequestId: text(run.wakeupRequestId), retryOfRunId: text(run.retryOfRunId), createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
         acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,
         providerTurnStarted: run.providerTurnStarted == null ? null : Boolean(run.providerTurnStarted),        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
         servingAtCreate: servingAt(ms(run.createdAt), controllers, input.windows) };
@@ -97,7 +97,7 @@ async function readRows(db: Pick<Db, "$client" | "select">, companyId: string, s
   const client = db.$client;
   const runs = await client.unsafe(
     `select r.id::text as id, r.agent_id::text as "agentId", r.issue_id::text as "issueId", r.status, r.invocation_source as "invocationSource", r.trigger_detail as "triggerDetail",
-            r.wakeup_request_id::text as "wakeupRequestId", r.context_snapshot as "contextSnapshot", r.controller_boot_id::text as "controllerBootId",
+            r.wakeup_request_id::text as "wakeupRequestId", r.retry_of_run_id::text as "retryOfRunId", r.context_snapshot as "contextSnapshot", r.controller_boot_id::text as "controllerBootId",
             floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
             floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", accepted.disposition as "acceptedDisposition",
             floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt",
@@ -170,8 +170,8 @@ export interface EvidenceObserver {
 
 export function completionEvidence(evidence: { completedAt: number | null; wakes?: readonly DeliveryWake[];
   runs: ReadonlyArray<DeliveryRun & { acceptedDisposition: string | null; acceptedAt: number | null }> }): CompletionEvidence {
-  const answers = laterAnswers(evidence);
   const rejected = rejectedDoneRuns(evidence);
+  const answers = followUpAnsweringRuns(evidence, rejected);
   return { completedAt: evidence.completedAt, runs: evidence.runs.map(run => ({ runId: run.runId, startedAt: run.startedAt ?? null,
     acceptedDisposition: run.acceptedDisposition, acceptedAt: run.acceptedAt, answersFollowUp: Boolean(run.runId && answers.has(run.runId)),
     doneRejected: Boolean(run.runId && rejected.has(run.runId)) })) };

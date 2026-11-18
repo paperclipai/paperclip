@@ -9,13 +9,12 @@ completion feedback.
 Dot supports a self-hosted instance with a local Runner controller and a stable
 public HTTPS origin, or a Cloud instance with a managed sandbox Runner and the
 tenant Dot ingress. The feature is off by default. Cloud requires the native
-Runner setting in addition to Dot and Assistant connections (MCP).
+Runner setting in addition to Dot.
 
 ## Enable and pair
 
 1. Configure `PAPERCLIP_PUBLIC_URL` to the instance's stable HTTPS origin and
-   enable **Assistant connections (MCP)** and **OpenAI Dot**
-   in **Instance settings → Experimental**. The instance must use authenticated
+   enable **OpenAI Dot** in **Instance settings → Experimental**. The instance must use authenticated
    sign-in. These settings are saved and take effect without a restart; the old
    `PAPERCLIP_ENABLE_OPENAI_DOT` environment flag no longer enables the provider.
 2. In **Add agent**, choose the standalone **OpenAI Dot** option.
@@ -431,7 +430,7 @@ status `paused` does not require an operator resume in these states. The live
 checks continue until the binding and agent lifecycle are both ready. A manual
 pause or pending hire approval still blocks setup.
 
-Enable **OpenAI Dot** and **Assistant connections (MCP)**, then choose **New Agent → Invite an external agent → Dot**. Copy the setup prompt into your Dot. Paperclip creates a scoped Runner agent and watches connection, event subscription, and a harmless event round trip. If your company requires hire approval, approve the agent before copying its pairing prompt. The test event is sent automatically after the callback is verified; Retry test event remains available if confirmation times out.
+Enable **OpenAI Dot**, then choose **New Agent → Invite an external agent → Dot**. Copy the setup prompt into your Dot. Paperclip creates a scoped Runner agent and watches connection, event subscription, and a harmless event round trip. If your company requires hire approval, approve the agent before copying its pairing prompt. The test event is sent automatically after the callback is verified; Retry test event remains available if confirmation times out.
 
 Reopening setup resumes the operator's unfinished invitation. Pairing codes are not stored in browser persistence. After refreshing or when an open prompt expires, setup automatically prepares a fresh prompt to copy. It first checks current connection state and replaces only the pending capability, without revoking an established connection. A failed renewal offers a retry rather than looping. If another browser window replaces the prompt, the current window asks before replacing it again. Hermes and Other continue to use the ordinary external-agent invitation flow.
 

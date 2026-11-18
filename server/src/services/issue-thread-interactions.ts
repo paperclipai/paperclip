@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { completionReviewStageEntry } from "./issue-execution-policy.js";
 import { agentConfigurationChangeTargetId } from "./change-consent-gate.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -88,6 +89,18 @@ import type {
   RejectIssueThreadInteraction,
   SkipIssueThreadInteraction,
   RespondIssueThreadInteraction,
+  SuggestRoutineInteraction,
+  SuggestRoutinePayload,
+  SuggestRoutineResult,
+  ProposeResponsibilityBarInteraction,
+  ProposeResponsibilityBarPayload,
+  ProposeResponsibilityBarResult,
+  ProposeAutomationInteraction,
+  ProposeAutomationPayload,
+  ProposeAutomationResult,
+  ProposeDashboardChangesInteraction,
+  ProposeDashboardChangesPayload,
+  ProposeDashboardChangesResult,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
@@ -114,6 +127,17 @@ import {
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultSchema,
   skipIssueThreadInteractionSchema,
+  suggestRoutinePayloadSchema,
+  suggestRoutineResultSchema,
+  proposeResponsibilityBarPayloadSchema,
+  proposeResponsibilityBarResultSchema,
+  proposeAutomationPayloadSchema,
+  proposeAutomationResultSchema,
+  proposeDashboardChangesPayloadSchema,
+  proposeDashboardChangesResultSchema,
+  RESPONSIBILITY_BAR_ORIGIN_KIND,
+  RESPONSIBILITY_DASHBOARD_ORIGIN_KIND,
+  AUTOMATION_CONVERSATION_ORIGIN_KIND,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
@@ -428,6 +452,10 @@ export const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<
   request_checkbox_confirmation: "anyone",
   request_item_verdicts: "anyone",
   connection_intent: "human_only",
+  suggest_routine: "human_only",
+  propose_responsibility_bar: "human_only",
+  propose_automation: "human_only",
+  propose_dashboard_changes: "human_only",
 };
 
 const RESOLVER_POLICY_RESTRICTION_RANK: Record<
@@ -838,6 +866,50 @@ function hydrateInteraction(
           row,
         ),
       } satisfies ConnectionIntentInteraction;
+    case "suggest_routine":
+      return {
+        ...base,
+        kind: "suggest_routine",
+        payload: suggestRoutinePayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          suggestRoutineResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies SuggestRoutineInteraction;
+    case "propose_responsibility_bar":
+      return {
+        ...base,
+        kind: "propose_responsibility_bar",
+        payload: proposeResponsibilityBarPayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          proposeResponsibilityBarResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies ProposeResponsibilityBarInteraction;
+    case "propose_automation":
+      return {
+        ...base,
+        kind: "propose_automation",
+        payload: proposeAutomationPayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          proposeAutomationResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies ProposeAutomationInteraction;
+    case "propose_dashboard_changes":
+      return {
+        ...base,
+        kind: "propose_dashboard_changes",
+        payload: proposeDashboardChangesPayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          proposeDashboardChangesResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies ProposeDashboardChangesInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -920,6 +992,54 @@ export async function assertInteractionRoutingRecipientAllowed(
   await assertRequestConfirmationResolutionAllowedUnderLock(db, issue, {
     ...interaction, addresseeUserId: userId, addresseeAgentId: null,
   }, { userId });
+}
+
+/**
+ * A routine offer belongs to finished work. It is actionable (and stays
+ * pending) only while its task is done; an offer made before the agent's
+ * completion lands is held out of the conversation until then.
+ */
+function isRoutineSuggestionOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "suggest_routine" && issueStatus === "done";
+}
+
+/**
+ * A bar proposal is an optional card in a bar conversation: it never holds the
+ * conversation open, and it stays actionable after the conversation task is
+ * done (the agent may finish right after proposing). Only cancelling the
+ * conversation withdraws it.
+ */
+function isBarProposalOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "propose_responsibility_bar" && issueStatus !== "cancelled";
+}
+
+/**
+ * An automation proposal is, like a bar proposal, an optional card in its
+ * conversation: it never holds the conversation open and stays actionable
+ * after the conversation task is done. Only cancelling it withdraws it.
+ */
+function isAutomationProposalOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "propose_automation" && issueStatus !== "cancelled";
+}
+
+/**
+ * Proposed dashboard changes are, like a bar proposal, an optional card in
+ * their conversation: they never hold it open and stay actionable after the
+ * conversation task is done. Only cancelling it withdraws them.
+ */
+function isDashboardChangesOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "propose_dashboard_changes" && issueStatus !== "cancelled";
+}
+
+/** Cards that stay pending on a finished task instead of reading as expired. */
+function staysOpenOnTerminalIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return isRoutineSuggestionOpenOnIssue(row, issueStatus) || isBarProposalOpenOnIssue(row, issueStatus)
+    || isAutomationProposalOpenOnIssue(row, issueStatus) || isDashboardChangesOpenOnIssue(row, issueStatus);
+}
+
+function isHeldRoutineSuggestion(row: Pick<IssueThreadInteractionRow, "kind" | "status">, issueStatus: string | undefined) {
+  return row.kind === "suggest_routine" && row.status === "pending"
+    && issueStatus !== undefined && !isTerminalIssueStatus(issueStatus);
 }
 
 function interactionNotFoundError() {
@@ -1679,7 +1799,9 @@ async function emitInteractionResolvedTelemetry(
 
     trackInteractionResolved(telemetryClient, {
       interactionKind:
-        interaction.kind === "connection_intent" ? "other" : interaction.kind,
+        interaction.kind === "connection_intent" || interaction.kind === "suggest_routine"
+          || interaction.kind === "propose_responsibility_bar" || interaction.kind === "propose_automation"
+          || interaction.kind === "propose_dashboard_changes" ? "other" : interaction.kind,
       status: interaction.status,
       resolvedByKind: resolveActorKind(interaction),
       resolutionReason: deriveResolutionReason(interaction),
@@ -1712,7 +1834,9 @@ function emitInteractionCreatedTelemetry(args: {
     trackInteractionCreated(telemetryClient, {
       ...args,
       interactionKind:
-        args.interactionKind === "connection_intent"
+        args.interactionKind === "connection_intent" || args.interactionKind === "suggest_routine"
+          || args.interactionKind === "propose_responsibility_bar" || args.interactionKind === "propose_automation"
+          || args.interactionKind === "propose_dashboard_changes"
           ? "other"
           : args.interactionKind,
     });
@@ -2261,6 +2385,57 @@ async function expireStaleRequestConfirmationTarget(
       : await expireInTransaction(db);
   await emitInteractionResolvedTelemetry(db, expired);
   return expired;
+}
+
+/**
+ * An accept claim on a routine offer or automation proposal holds the card
+ * while its routine is made. When the routine was never recorded (the server
+ * stopped midway), another accept may take the claim over after this long.
+ */
+export const STRANDED_ACCEPT_CLAIM_MS = 2 * 60_000;
+
+function strandedAcceptClaim(
+  current: Pick<IssueThreadInteractionRow, "status" | "result" | "updatedAt">,
+  outcome: "accepted" | "declined",
+  at: Date,
+): boolean {
+  if (outcome !== "accepted" || current.status !== "accepted") return false;
+  const result = current.result as { routineId?: unknown } | null;
+  if (result && typeof result.routineId === "string") return false;
+  return at.getTime() - new Date(current.updatedAt).getTime() >= STRANDED_ACCEPT_CLAIM_MS;
+}
+
+/**
+ * Who holds an accept claim. Each accept gets its own `claimId`, written on
+ * the card; recording, releasing and noting its routine all require it, so a
+ * slow accept that was taken over can no longer change the card.
+ * `strandedRoutineId` is the routine the taken-over accept had made, if any.
+ */
+export interface AcceptClaim {
+  claimId: string;
+  tookOver: boolean;
+  strandedRoutineId: string | null;
+}
+
+function pendingRoutineIdOf(result: unknown): string | null {
+  const value = (result as { pendingRoutineId?: unknown } | null)?.pendingRoutineId;
+  return typeof value === "string" ? value : null;
+}
+
+const ACCEPT_CLAIM_LOST_CODE = "accept_claim_taken_over";
+
+/** The accept no longer holds its claim: another accept took the card over. */
+function acceptClaimLostError() {
+  return conflict("Another accept took this over", { code: ACCEPT_CLAIM_LOST_CODE });
+}
+
+export function isAcceptClaimLost(error: unknown): boolean {
+  const details = (error as { details?: { code?: unknown } } | null)?.details;
+  return (error as { status?: unknown } | null)?.status === 409 && details?.code === ACCEPT_CLAIM_LOST_CODE;
+}
+
+function claimIdMatches(claimId: string) {
+  return sql`${issueThreadInteractions.result} ->> 'claimId' = ${claimId}`;
 }
 
 export function issueThreadInteractionService(
@@ -3295,6 +3470,902 @@ export function issueThreadInteractionService(
       await emitInteractionResolvedTelemetry(db, interaction);
       return interaction;
     },
+    /**
+     * Insert the one routine offer a finished task may carry. The routines
+     * module validates the offer and its product guardrails; this method owns
+     * the card row and the invariants that need the task lock: the task is
+     * done, the offering agent is its assignee, and the task has never carried
+     * an offer before (whatever became of it).
+     */
+    createRoutineSuggestion: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: SuggestRoutinePayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<SuggestRoutineInteraction> => {
+      const payload = suggestRoutinePayloadSchema.parse(input.payload);
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        // An offer made while the agent's completion is still settling is held
+        // until the task is done; a cancelled task never gets one.
+        if (issueRow.status === "cancelled") {
+          throw conflict("A routine cannot be offered for a cancelled task", {
+            code: "routine_suggestion_task_not_done",
+          });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent assigned to the task can offer a routine for it");
+        }
+        const [existing] = await tx
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "suggest_routine"),
+          ))
+          .limit(1);
+        if (existing) {
+          throw conflict("This task already has a routine offer", {
+            code: "routine_suggestion_exists",
+            interactionId: existing.id,
+          });
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "suggest_routine",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        await touchIssue(tx, issue.id, issue.companyId);
+        return row!;
+      });
+      emitInteractionCreatedTelemetry({
+        interactionKind: "suggest_routine",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return hydrateInteraction(created) as SuggestRoutineInteraction;
+    },
+
+    /**
+     * Settle a pending routine offer for a person. Accepting claims the card
+     * (pending -> accepted) before the routine exists, so concurrent accepts
+     * create one routine; the caller then records the routine with
+     * `recordAcceptedRoutineSuggestion`, or `releaseRoutineSuggestionClaim`
+     * when creating it failed. Declining is final.
+     */
+    claimRoutineSuggestion: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+    ): Promise<SuggestRoutineInteraction & { claim: AcceptClaim | null }> => {
+      let claim: string | null = null;
+      let tookOver = false;
+      let strandedRoutineId: string | null = null;
+      const updated = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ));
+        if (!current || current.kind !== "suggest_routine") throw interactionNotFoundError();
+        const claimedAt = now();
+        const stranded = strandedAcceptClaim(current, outcome, claimedAt);
+        if (current.status !== "pending" && !stranded) throw interactionTerminalError(current);
+        if (issueRow.status === "cancelled") throw interactionIssueClosedError();
+        if (!isRoutineSuggestionOpenOnIssue(current, issueRow.status)) {
+          throw conflict("This offer opens once the task is done", { code: "routine_suggestion_task_not_done" });
+        }
+        assertInteractionResolutionAllowed(current, actor);
+        const claimId = outcome === "accepted" ? randomUUID() : null;
+        const result = { version: 1, outcome, ...(claimId ? { claimId } : {}) } as SuggestRoutineResult;
+        strandedRoutineId = stranded ? pendingRoutineIdOf(current.result) : null;
+        tookOver = stranded;
+        claim = claimId;
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set(stranded
+            ? { result, resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            : {
+              status: outcome === "accepted" ? "accepted" : "rejected",
+              result,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedByAgentId: null,
+              resolvedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            stranded
+              ? and(eq(issueThreadInteractions.status, "accepted"), eq(issueThreadInteractions.updatedAt, current.updatedAt))
+              : eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        return row;
+      });
+      await touchIssue(db, issue.id, issue.companyId);
+      const interaction = hydrateInteraction(updated) as SuggestRoutineInteraction;
+      if (outcome === "declined") await emitInteractionResolvedTelemetry(db, interaction);
+      const accepted: SuggestRoutineInteraction & { claim: AcceptClaim | null } = Object.assign(interaction, {
+        claim: claim ? { claimId: claim, tookOver, strandedRoutineId } : null,
+      });
+      return accepted;
+    },
+
+    recordAcceptedRoutineSuggestion: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+      result: Omit<SuggestRoutineResult, "version" | "outcome">,
+    ): Promise<SuggestRoutineInteraction> => {
+      const parsed = suggestRoutineResultSchema.parse({ version: 1, outcome: "accepted", ...result });
+      const [row] = await db
+        .update(issueThreadInteractions)
+        .set({ result: parsed, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "suggest_routine"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ))
+        .returning();
+      if (!row) throw acceptClaimLostError();
+      const interaction = hydrateInteraction(row) as SuggestRoutineInteraction;
+      // The acceptance is saved: what follows must not undo it.
+      try {
+        await touchIssue(db, issue.id, issue.companyId);
+        await emitInteractionResolvedTelemetry(db, interaction);
+      } catch (error) {
+        logger.warn({ err: error, interactionId }, "Saved an accepted card but could not refresh its task");
+      }
+      return interaction;
+    },
+
+    /**
+     * The routine offers on many tasks in one query, for the responsibilities
+     * automation read: pending ones (open only once the task is done, which
+     * the caller checks) and accepted ones (the task already repeats).
+     * Declined, withdrawn and expired offers are left out.
+     */
+    routineSuggestionsForIssues: async (
+      companyId: string,
+      issueIds: readonly string[],
+    ): Promise<Array<{
+      id: string;
+      issueId: string;
+      status: "pending" | "accepted";
+      createdByAgentId: string | null;
+      payload: SuggestRoutinePayload;
+    }>> => {
+      if (issueIds.length === 0) return [];
+      const rows = await db
+        .select({
+          id: issueThreadInteractions.id,
+          issueId: issueThreadInteractions.issueId,
+          status: issueThreadInteractions.status,
+          createdByAgentId: issueThreadInteractions.createdByAgentId,
+          payload: issueThreadInteractions.payload,
+        })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          inArray(issueThreadInteractions.issueId, [...new Set(issueIds)]),
+          eq(issueThreadInteractions.kind, "suggest_routine"),
+          inArray(issueThreadInteractions.status, ["pending", "accepted"]),
+        ))
+        .orderBy(desc(issueThreadInteractions.createdAt));
+      return rows.flatMap((row) => {
+        const payload = suggestRoutinePayloadSchema.safeParse(row.payload);
+        if (!payload.success) return [];
+        return [{
+          id: row.id,
+          issueId: row.issueId,
+          status: row.status as "pending" | "accepted",
+          createdByAgentId: row.createdByAgentId,
+          payload: payload.data,
+        }];
+      });
+    },
+
+    /**
+     * Note on the card the routine an accept claim just made, before its
+     * trigger and filing, so an accept that takes the claim over can archive
+     * it. False when the claim is no longer this accept's.
+     */
+    noteAcceptClaimRoutine: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+      routineId: string,
+    ): Promise<boolean> => {
+      const rows = await db
+        .update(issueThreadInteractions)
+        .set({
+          result: sql`jsonb_set(${issueThreadInteractions.result}, '{pendingRoutineId}', to_jsonb(${routineId}::text))`,
+          updatedAt: now(),
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          inArray(issueThreadInteractions.kind, ["suggest_routine", "propose_automation"]),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ))
+        .returning({ id: issueThreadInteractions.id });
+      return rows.length > 0;
+    },
+
+    /** Close an accept claim that has nothing left to do: the task already repeats. */
+    expireAcceptClaim: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+    ) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "expired", result: null, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          inArray(issueThreadInteractions.kind, ["suggest_routine", "propose_automation"]),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ));
+      await touchIssue(db, issue.id, issue.companyId);
+    },
+
+    /** Reopen an accepted offer whose routine could not be created. */
+    releaseRoutineSuggestionClaim: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+    ) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "pending", result: null, resolvedByUserId: null, resolvedAt: null, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "suggest_routine"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+          sql`${issueThreadInteractions.result} ->> 'routineId' is null`,
+        ));
+      await touchIssue(db, issue.id, issue.companyId);
+    },
+    /**
+     * Insert a bar proposal in a responsibility's bar conversation. The
+     * responsibility-bars module validates the bar and derives its plain
+     * words; this method owns the card row and the invariants that need the
+     * task lock: the task is a bar conversation that is not cancelled, the
+     * proposing agent is its assignee, and only one proposal is pending (a
+     * new one replaces the old, which reads as `replaced`).
+     */
+    createBarProposal: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: ProposeResponsibilityBarPayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<{ interaction: ProposeResponsibilityBarInteraction; replacedIds: string[] }> => {
+      const payload = proposeResponsibilityBarPayloadSchema.parse(input.payload);
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            originId: issues.originId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        if (issueRow.originKind !== RESPONSIBILITY_BAR_ORIGIN_KIND || issueRow.originId !== payload.responsibilityId) {
+          throw unprocessable("A bar can only be proposed in that responsibility's bar conversation", {
+            code: "responsibility_bar_not_bar_conversation",
+          });
+        }
+        if (issueRow.status === "cancelled") {
+          throw conflict("This bar conversation was cancelled", { code: "responsibility_bar_conversation_cancelled" });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent in this bar conversation can propose a bar");
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "propose_responsibility_bar",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        const resolvedAt = now();
+        const replaced = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "replaced",
+              replacedByInteractionId: row!.id,
+            } satisfies ProposeResponsibilityBarResult,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "propose_responsibility_bar"),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row!.id),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row: row!, replacedIds: replaced.map((entry) => entry.id) };
+      });
+      emitInteractionCreatedTelemetry({
+        interactionKind: "propose_responsibility_bar",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return {
+        interaction: hydrateInteraction(created.row) as ProposeResponsibilityBarInteraction,
+        replacedIds: created.replacedIds,
+      };
+    },
+
+    /**
+     * Settle a pending bar proposal for a person. `applyInTransaction` runs in
+     * the same transaction, after the card is locked as pending and before it
+     * is marked accepted, so applying the bar and settling the card commit or
+     * fail together. Declining is quiet: the conversation simply continues.
+     */
+    resolveBarProposal: async <T>(
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+      applyInTransaction?: (tx: DbTransaction, interaction: ProposeResponsibilityBarInteraction) => Promise<T>,
+      /** What an accepted card records beyond its outcome (the supporting metrics the person dropped). */
+      acceptedDetails?: (interaction: ProposeResponsibilityBarInteraction) => Pick<ProposeResponsibilityBarResult, "droppedMetrics">,
+    ): Promise<{ interaction: ProposeResponsibilityBarInteraction; applied: T | null }> => {
+      const settled = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ))
+          .for("update");
+        if (!current || current.kind !== "propose_responsibility_bar") throw interactionNotFoundError();
+        if (current.status !== "pending") throw interactionTerminalError(current);
+        if (!isBarProposalOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
+        assertInteractionResolutionAllowed(current, actor);
+        const hydrated = hydrateInteraction(current) as ProposeResponsibilityBarInteraction;
+        const applied = outcome === "accepted" && applyInTransaction
+          ? await applyInTransaction(tx as unknown as DbTransaction, hydrated)
+          : null;
+        const resolvedAt = now();
+        const result: ProposeResponsibilityBarResult = outcome === "accepted"
+          ? { version: 1, outcome, responsibilityId: hydrated.payload.responsibilityId, ...acceptedDetails?.(hydrated) }
+          : { version: 1, outcome };
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: outcome === "accepted" ? "accepted" : "rejected",
+            result,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedByAgentId: null,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row, applied };
+      });
+      const interaction = hydrateInteraction(settled.row) as ProposeResponsibilityBarInteraction;
+      await emitInteractionResolvedTelemetry(db, interaction);
+      return { interaction, applied: settled.applied };
+    },
+
+    /**
+     * Insert proposed dashboard changes in a person's dashboard conversation.
+     * The responsibility-dashboard module validates the change set and
+     * derives its plain words; this method owns the card row and the
+     * invariants that need the task lock: the task is that person's dashboard
+     * conversation and not cancelled, the proposing agent is its assignee, and
+     * only one proposal is pending (a new one replaces the old, which reads as
+     * `replaced`).
+     */
+    createDashboardChangesProposal: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: ProposeDashboardChangesPayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<{ interaction: ProposeDashboardChangesInteraction; replacedIds: string[] }> => {
+      const payload = proposeDashboardChangesPayloadSchema.parse(input.payload) as ProposeDashboardChangesPayload;
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            originId: issues.originId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        if (issueRow.originKind !== RESPONSIBILITY_DASHBOARD_ORIGIN_KIND || issueRow.originId !== payload.ownerUserId) {
+          throw unprocessable("Dashboard changes can only be proposed in that person's dashboard conversation", {
+            code: "responsibility_dashboard_not_dashboard_conversation",
+          });
+        }
+        if (issueRow.status === "cancelled") {
+          throw conflict("This dashboard conversation was cancelled", { code: "responsibility_dashboard_conversation_cancelled" });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent in this dashboard conversation can propose changes");
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "propose_dashboard_changes",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        const resolvedAt = now();
+        const replaced = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "replaced",
+              replacedByInteractionId: row!.id,
+            } satisfies ProposeDashboardChangesResult,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "propose_dashboard_changes"),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row!.id),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row: row!, replacedIds: replaced.map((entry) => entry.id) };
+      });
+      emitInteractionCreatedTelemetry({
+        interactionKind: "propose_dashboard_changes",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return {
+        interaction: hydrateInteraction(created.row) as ProposeDashboardChangesInteraction,
+        replacedIds: created.replacedIds,
+      };
+    },
+
+    /**
+     * Settle pending dashboard changes for a person. `applyInTransaction`
+     * runs in the same transaction, after the card is locked as pending and
+     * before it is marked accepted, so applying the changes, saving the
+     * versions and settling the card commit or fail together. Declining is
+     * quiet: the conversation simply continues.
+     */
+    resolveDashboardChangesProposal: async <T>(
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+      applyInTransaction?: (tx: DbTransaction, interaction: ProposeDashboardChangesInteraction) => Promise<T>,
+      /** What an accepted card records beyond its outcome. */
+      acceptedDetails?: (applied: T) => Omit<ProposeDashboardChangesResult, "version" | "outcome">,
+    ): Promise<{ interaction: ProposeDashboardChangesInteraction; applied: T | null }> => {
+      const settled = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ))
+          .for("update");
+        if (!current || current.kind !== "propose_dashboard_changes") throw interactionNotFoundError();
+        if (current.status !== "pending") throw interactionTerminalError(current);
+        if (!isDashboardChangesOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
+        assertInteractionResolutionAllowed(current, actor);
+        const hydrated = hydrateInteraction(current) as ProposeDashboardChangesInteraction;
+        const applied = outcome === "accepted" && applyInTransaction
+          ? await applyInTransaction(tx as unknown as DbTransaction, hydrated)
+          : null;
+        const resolvedAt = now();
+        const result: ProposeDashboardChangesResult = outcome === "accepted"
+          ? { version: 1, outcome, ...(applied !== null && acceptedDetails ? acceptedDetails(applied) : {}) }
+          : { version: 1, outcome };
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: outcome === "accepted" ? "accepted" : "rejected",
+            result,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedByAgentId: null,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row, applied };
+      });
+      const interaction = hydrateInteraction(settled.row) as ProposeDashboardChangesInteraction;
+      await emitInteractionResolvedTelemetry(db, interaction);
+      return { interaction, applied: settled.applied };
+    },
+
+    /**
+     * Insert an automation proposal in a task's automation conversation. The
+     * automation-conversations module validates it and derives its plain
+     * words; this method owns the card row and the invariants that need the
+     * task lock: the task is that automation conversation and not cancelled,
+     * the proposing agent is its assignee, and only one proposal is pending (a
+     * new one replaces the old, which reads as `replaced`).
+     */
+    createAutomationProposal: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: ProposeAutomationPayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<{ interaction: ProposeAutomationInteraction; replacedIds: string[] }> => {
+      const payload = proposeAutomationPayloadSchema.parse(input.payload);
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            originId: issues.originId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        if (issueRow.originKind !== AUTOMATION_CONVERSATION_ORIGIN_KIND || issueRow.originId !== payload.sourceIssueId) {
+          throw unprocessable("An automation can only be proposed in that task's automation conversation", {
+            code: "automation_not_automation_conversation",
+          });
+        }
+        if (issueRow.status === "cancelled") {
+          throw conflict("This automation conversation was cancelled", { code: "automation_conversation_cancelled" });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent in this automation conversation can propose an automation");
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "propose_automation",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        const resolvedAt = now();
+        const replaced = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "replaced",
+              replacedByInteractionId: row!.id,
+            } satisfies ProposeAutomationResult,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "propose_automation"),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row!.id),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row: row!, replacedIds: replaced.map((entry) => entry.id) };
+      });
+      emitInteractionCreatedTelemetry({
+        interactionKind: "propose_automation",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return {
+        interaction: hydrateInteraction(created.row) as ProposeAutomationInteraction,
+        replacedIds: created.replacedIds,
+      };
+    },
+
+    /**
+     * Settle a pending automation proposal for a person. Accepting claims the
+     * card (pending -> accepted) before the automation exists, so concurrent
+     * accepts create one; the caller then records it with
+     * `recordAcceptedAutomationProposal`, or `releaseAutomationProposalClaim`
+     * when creating it failed. Declining is quiet: the conversation continues.
+     */
+    claimAutomationProposal: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+    ): Promise<ProposeAutomationInteraction & { claim: AcceptClaim | null }> => {
+      let claim: string | null = null;
+      let tookOver = false;
+      let strandedRoutineId: string | null = null;
+      const updated = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ))
+          .for("update");
+        if (!current || current.kind !== "propose_automation") throw interactionNotFoundError();
+        const claimedAt = now();
+        const stranded = strandedAcceptClaim(current, outcome, claimedAt);
+        if (current.status !== "pending" && !stranded) throw interactionTerminalError(current);
+        if (!isAutomationProposalOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
+        assertInteractionResolutionAllowed(current, actor);
+        const claimId = outcome === "accepted" ? randomUUID() : null;
+        const result = { version: 1, outcome, ...(claimId ? { claimId } : {}) } as ProposeAutomationResult;
+        strandedRoutineId = stranded ? pendingRoutineIdOf(current.result) : null;
+        tookOver = stranded;
+        claim = claimId;
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set(stranded
+            ? { result, resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            : {
+              status: outcome === "accepted" ? "accepted" : "rejected",
+              result,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedByAgentId: null,
+              resolvedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            stranded
+              ? and(eq(issueThreadInteractions.status, "accepted"), eq(issueThreadInteractions.updatedAt, current.updatedAt))
+              : eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        return row;
+      });
+      await touchIssue(db, issue.id, issue.companyId);
+      const interaction = hydrateInteraction(updated) as ProposeAutomationInteraction;
+      if (outcome === "declined") await emitInteractionResolvedTelemetry(db, interaction);
+      const accepted: ProposeAutomationInteraction & { claim: AcceptClaim | null } = Object.assign(interaction, {
+        claim: claim ? { claimId: claim, tookOver, strandedRoutineId } : null,
+      });
+      return accepted;
+    },
+
+    recordAcceptedAutomationProposal: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+      result: Omit<ProposeAutomationResult, "version" | "outcome">,
+    ): Promise<ProposeAutomationInteraction> => {
+      const parsed = proposeAutomationResultSchema.parse({ version: 1, outcome: "accepted", ...result });
+      const [row] = await db
+        .update(issueThreadInteractions)
+        .set({ result: parsed, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "propose_automation"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ))
+        .returning();
+      if (!row) throw acceptClaimLostError();
+      const interaction = hydrateInteraction(row) as ProposeAutomationInteraction;
+      // The acceptance is saved: what follows must not undo it.
+      try {
+        await touchIssue(db, issue.id, issue.companyId);
+        await emitInteractionResolvedTelemetry(db, interaction);
+      } catch (error) {
+        logger.warn({ err: error, interactionId }, "Saved an accepted card but could not refresh its task");
+      }
+      return interaction;
+    },
+
+    /** Reopen an accepted proposal whose automation could not be created. */
+    releaseAutomationProposalClaim: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+    ) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "pending", result: null, resolvedByUserId: null, resolvedAt: null, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "propose_automation"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+          sql`${issueThreadInteractions.result} ->> 'routineId' is null`,
+        ));
+      await touchIssue(db, issue.id, issue.companyId);
+    },
+
     mergedPullRequestConfirmationPage,
     mergedPullRequestConfirmationCandidates,
     sweepMergedPullRequestConfirmations: async (
@@ -3489,11 +4560,12 @@ export function issueThreadInteractionService(
           .then((issueRows) => issueRows[0]),
       ]);
 
-      const interactions = rows.map((row) =>
+      const interactions = rows.filter((row) => !isHeldRoutineSuggestion(row, issue?.status)).map((row) =>
         hydrateInteraction(
           issue &&
             isTerminalIssueStatus(issue.status) &&
-            row.status === "pending"
+            row.status === "pending" &&
+            !staysOpenOnTerminalIssue(row, issue.status)
             ? {
                 ...row,
                 status: "expired",
@@ -5452,6 +6524,15 @@ export function issueThreadInteractionService(
             // Completed work retains ordinary historical questions for later
             // human answers. Cancellation and governed requests still expire.
             issue.status === "done" ? sql`not ${historicalQuestionCondition()}` : undefined,
+            // A routine offer is made after the task is done and stays open;
+            // cancelling the task still withdraws it.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "suggest_routine") : undefined,
+            // A bar proposal stays open after its conversation is done.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "propose_responsibility_bar") : undefined,
+            // So does an automation proposal.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "propose_automation") : undefined,
+            // And proposed dashboard changes.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "propose_dashboard_changes") : undefined,
           ),
         );
       if (rows.length === 0) return [];

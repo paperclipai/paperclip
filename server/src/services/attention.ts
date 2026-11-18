@@ -1,6 +1,6 @@
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
-import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -30,7 +30,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { ATTENTION_CLAIMABLE_SOURCE_KINDS, ATTENTION_PERSONAL_VIEWS, deriveProjectUrlKey } from "@paperclipai/shared";
+import { ATTENTION_CLAIMABLE_SOURCE_KINDS, ATTENTION_PERSONAL_VIEWS, RESPONSIBILITY_DASHBOARD_ORIGIN_KIND, deriveProjectUrlKey } from "@paperclipai/shared";
 import { normalizedContentHash } from "@paperclipai/shared/portability-hash";
 import type {
   AttentionAudience,
@@ -1859,6 +1859,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          // Routine offers are optional follow-ups shown on the finished task, not inbox decisions.
+          ne(issueThreadInteractions.kind, "suggest_routine"),
+          // A bar proposal is answered in its bar conversation or on the responsibility page.
+          ne(issueThreadInteractions.kind, "propose_responsibility_bar"),
+          // So is an automation proposal, in its automation conversation or on the Dashboard.
+          ne(issueThreadInteractions.kind, "propose_automation"),
+          // A dashboard conversation is held from the Dashboard: none of its cards are inbox decisions.
+          ne(issueThreadInteractions.kind, "propose_dashboard_changes"),
+          sql`not exists (select 1 from ${issues} dashboard_issue where dashboard_issue.id = ${issueThreadInteractions.issueId} and dashboard_issue.origin_kind = ${RESPONSIBILITY_DASHBOARD_ORIGIN_KIND})`,
           questionIssueIds ? inArray(issueThreadInteractions.issueId, [...questionIssueIds]) : undefined,
           questionIssueIds ? eq(issueThreadInteractions.kind, "ask_user_questions") : undefined,
         ))

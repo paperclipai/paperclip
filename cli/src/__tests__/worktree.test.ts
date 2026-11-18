@@ -539,8 +539,9 @@ describe("worktree helpers", () => {
     expect(minimal.excludedTables).toContain("agent_task_sessions");
     expect(minimal.nullifyColumns.issues).toEqual(["checkout_run_id", "execution_run_id"]);
 
-    expect(full.excludedTables).toEqual(["agent_identity_keys"]);
+    expect(full.excludedTables).toEqual(["agent_identity_keys", "company_workload_identity_keys"]);
     expect(minimal.excludedTables).toContain("agent_identity_keys");
+    expect(minimal.excludedTables).toContain("company_workload_identity_keys");
     expect(full.nullifyColumns).toEqual({});
   });
 
