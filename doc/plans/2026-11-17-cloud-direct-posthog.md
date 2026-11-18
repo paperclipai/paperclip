@@ -19,7 +19,9 @@ Production enablement is gated on the Phase 0 compliance checklist owner.
 | Phase 2: browser analytics | subagent | merged 8172d27; live on staging | https://github.com/paperclipai/paperclip/pull/22012 |
 | Phase 2b: visitor IP through the proxy | coordinator | merged fa8bc78 | https://github.com/paperclipai/paperclip/pull/22052 |
 | Phase 2c: replay shows text, masks marked content (Dotta's decision) | subagent | merged b56f240; live on staging | https://github.com/paperclipai/paperclip/pull/22057 |
-| Phase 2d: `company_id` on background events | subagent | in progress | |
+| Phase 2d: `company_id` on background events | subagent | merged 2a43fe3; verified on staging | https://github.com/paperclipai/paperclip/pull/22183 |
+| Phase 2e: EU/EEA/UK/Swiss consent banner | subagent | merged 3c460f2 | https://github.com/paperclipai/paperclip/pull/22186 |
+| Policy and terms update (Phase 0 B gate) | subagent | done 2026-11-17: live at https://paperclip.ing/terms/ and https://paperclip.ing/privacy/ (self-hosted telemetry scoped as anonymized; Cloud usage data with real IDs disclosed) | https://github.com/paperclipai/paperclip-website/pull/200 |
 | Phase 3a: workspace-delete cleanup (paperclip-cloud) | coordinator | REVERTED by Dotta's decision (no automatic deletion): https://github.com/paperclipai/paperclip-cloud/pull/1604. It never ran. Original notes: merged b4ddeff; inert until `CLOUD_HARNESS_POSTHOG_PERSONAL_API_KEY_SECRET_REF` is set (scopes group:read, group:write, data_deletion:write; no person scopes). Limits: PostHog has no per-group delete (properties are cleared instead); event deletion uses the alpha Data Deletion API, which PostHog must enable for 483530, needs approval per request, max 5 active; no durable retry (2 in-process retries + audit record) | https://github.com/paperclipai/paperclip-cloud/pull/1603 |
 | Phase 3b: legacy link backfill script (telemetry-backend) | subagent | merged 9c9aaae, pagination fix a2c123d; staging run: 38 of 44 stacks linked | https://github.com/paperclipai/telemetry-backend/pull/148 |
 | Phase 4: staging rollout + verification | coordinator | done 2026-11-18. Staging fleet has the token, `environment=staging`, browser analytics and `TRUST_PROXY=100.64.0.0/10`. 24 h: 5,326 server events from 58 stacks, 0 duplicate uuids; 4,620 browser events, 91% with geo; browser and server events join on one person; replay shows chrome text and masks content | paperclip.staging.paperclip.app |
@@ -43,9 +45,10 @@ environment switch is set, and the switches must be set in a safe order:
    on production → browser switch on production after consent approach is in
    place.
 
-Production gate (Phase 0 B): the current Terms §8 and Privacy §2 promise
-anonymized telemetry. Even the server-side token (real user IDs) must wait
-for the updated policy and terms to be live.
+Production gate (Phase 0 B): the old Terms §8 and Privacy §2 promised
+anonymized telemetry, so the server-side token (real user IDs) had to wait for
+updated policy and terms. Done 2026-11-17: paperclip-website#200 is live at
+https://paperclip.ing/terms/ and https://paperclip.ing/privacy/.
 
 ### No automatic deletion (Dotta, 2026-11-17)
 
@@ -307,9 +310,8 @@ each step is verified before the next one starts.
 
 #### Prerequisites
 
-- [ ] Production runs a release that contains #22006, #22012, #22052 and
-      #22057 (and the Phase 2d `company_id` PR if merged by then). Check the running app
-      version of the canary stack before each step.
+- [ ] Production release gate: see the release gate table in "Revised plan"
+      below (the single list of required PRs and what each enables).
 - [ ] Dotta signs in to `admin.paperclip.app` in the coordinator's browser
       pane (the coordinator has no production admin access).
 - [x] Decision: consent approach for browser analytics (Step 4). Dotta chose
@@ -357,7 +359,7 @@ admin sign-in.
 Sequence:
 
 1. Stage A, server events (gate: harness check OK; policy and terms updated,
-   done 2026-11-17). Variables: `PAPERCLIP_POSTHOG_PROJECT_TOKEN`,
+   done 2026-11-17 in paperclip-website#200, live on paperclip.ing). Variables: `PAPERCLIP_POSTHOG_PROJECT_TOKEN`,
    `PAPERCLIP_POSTHOG_ENVIRONMENT=production`. Server events carry real IDs for
    every Cloud user, in every region; this is disclosed in Terms §8 and
    Privacy §2. Turns on with the first production release that contains
@@ -368,11 +370,16 @@ Sequence:
    and the canary's `stack_id`; `count() = uniq(uuid)` for production server
    events. If it fails, stage `PAPERCLIP_POSTHOG_DIRECT=0` before the rest of
    the fleet restarts.
-3. Stage B, browser analytics (gate: the production release that is live, or
-   about to deploy, contains #22186; check the canary's running app version).
-   Variable: `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`. Never stage it earlier: a
-   stack that restarts onto a build with #22012 but without #22186 would load
-   browser analytics and replay for EU/UK visitors with no banner.
+3. Stage B, browser analytics (gate: a production app deploy that contains
+   #22186 has finished on every production stack, so no stack can restart onto
+   an older build; confirm in the deploy campaign that all targets succeeded and
+   that no stack is pinned to an older release).
+   Variable: `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`, staged with
+   `applyOnNextDeploy` after that deploy, so it turns on at the following
+   deploy. Never stage it earlier: a stack that restarts onto a build with
+   #22012 but without #22186 would load browser analytics and replay for EU/UK
+   visitors with no banner. Stacks pinned to an older release must be excluded
+   from the campaign with explicit targets.
 4. Verify Stage B on the next deploy's canary: a sign-in outside EU time zones
    produces `$pageview` with the user's `paperclip-id:` distinct id and a masked
    replay; an EU time zone shows the banner and makes no `/_ph` requests until
@@ -392,7 +399,8 @@ with staged settings start sending analytics on their new deployment:
 - Stage A: server events go straight to PostHog with real IDs
   (`environment=production`) instead of through the collector. Self-hosted
   installs are unaffected.
-- Stage B (only once staged, after #22186 is in production): browser analytics
+- Stage B (only once staged, after a deploy containing #22186 has finished on
+  every production stack): browser analytics
   and session replay load after the page settles. Visitors in EU, EEA, UK and
   Swiss time zones see a consent banner, and browser analytics and replay do
   not load until they accept. Replay shows interface text and masks customer
