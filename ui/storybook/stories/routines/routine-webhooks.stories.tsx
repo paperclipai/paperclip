@@ -15,7 +15,8 @@ const meta = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "Runs and Activity mount RoutineDetail with fixture execution tasks/events and play assertions. Scheduler execution, delivery and audit persistence are not live."
+      "status": "current",
+      "notes": "Mounts the app shell with the shipped Routines and RoutineDetail routes on an in-memory routines API. Webhooks open from the Repeats list on the routine page and are added from the Edit dialog; the History list and the /activity audit log use fixture tasks and events. Scheduler execution, delivery and audit persistence are not live."
     },
   },
   args: { signingMode: "bearer", state: "configured" },
@@ -23,14 +24,15 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-const openWebhookForm: NonNullable<Story["play"]> = async ({ canvasElement }) => {
-  const canvas = within(canvasElement);
-  await userEvent.click(await canvas.findByRole("button", { name: "Add trigger" }));
-  await userEvent.click(canvas.getByText("When another app sends a webhook", { exact: true }));
-  await expect(canvas.getByRole("button", { name: "Continue" })).toBeEnabled();
+const openWebhookForm: NonNullable<Story["play"]> = async () => {
+  const body = within(document.body);
+  await userEvent.click(await body.findByRole("button", { name: "Edit routine" }));
+  await userEvent.click(await body.findByRole("button", { name: "Add webhook" }));
+  await expect(await body.findByRole("radiogroup", { name: "What’s sending the webhook?" })).toBeVisible();
+  await expect(body.getByRole("button", { name: "Create webhook" })).toBeEnabled();
 };
-const openSavedWebhook: NonNullable<Story["play"]> = async ({ canvasElement }) => {
-  await userEvent.click(await within(canvasElement).findByRole("button", { name: "Edit webhook" }));
+const openSavedWebhook: NonNullable<Story["play"]> = async () => {
+  await userEvent.click(await within(document.body).findByRole("button", { name: /^Open (GitHub webhook|Webhook) · Deployment completed$/ }));
 };
 
 export const RoutineList: Story = { name: "00 · Routines page", args: { state: "list" } };
@@ -39,9 +41,10 @@ export const Credentials: Story = {
   name: "02 · Save the new secret", args: { state: "credentials" },
   play: async (context) => {
     await openWebhookForm(context);
-    const canvas = within(context.canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "Continue" }));
-    await expect(await canvas.findByRole("button", { name: "Copy Secret key" })).toBeVisible();
+    const body = within(document.body);
+    await userEvent.click(body.getByRole("button", { name: "Create webhook" }));
+    await expect(await body.findByRole("button", { name: "Copy Secret key" })).toBeVisible();
+    await expect(body.getByText("Waiting for a test event")).toBeVisible();
   },
 };
 export const Bearer: Story = { name: "03 · Bearer · After delivery", play: openSavedWebhook };
@@ -52,27 +55,25 @@ export const FailedDelivery: Story = { name: "07 · Failed delivery", args: { st
 export const Overview: Story = { name: "08 · Webhook routine overview", args: { state: "overview" } };
 
 export const Runs: Story = {
-  name: "09 · Runs · Issue list", args: { state: "runs" },
+  name: "09 · History · Tasks on the routine page", args: { state: "runs" },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("Verify production deployment v2.8.4")).toBeVisible();
-    await expect(canvas.getByRole("navigation", { name: "Routine navigation" })).toBeVisible();
+    await expect(canvas.queryByRole("navigation", { name: "Routine navigation" })).not.toBeInTheDocument();
   },
 };
 export const Activity: Story = {
-  name: "10 · Activity · Routine timeline", args: { state: "activity" },
+  name: "10 · Audit log · Routine timeline", args: { state: "activity" },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("heading", { name: "Audit log" })).toBeVisible();
     await expect(await canvas.findByText("Routine started")).toBeVisible();
-    await expect(canvas.getByRole("navigation", { name: "Routine navigation" })).toBeVisible();
   },
 };
 
 const warningSetup: NonNullable<Story["play"]> = async (context) => {
   await Credentials.play!(context);
-  const canvas = within(context.canvasElement);
-  await expect(canvas.getByRole("link", { name: "Learn how to set up HTTPS and public access" })).toBeVisible();
-  await expect(canvas.getByRole("button", { name: "Check connection" })).toBeEnabled();
+  await expect(within(document.body).getByRole("link", { name: "Learn how to set up HTTPS and public access" })).toBeVisible();
 };
 const deliveryPath = "/api/routine-triggers/public/0123456789abcdef01234567/fire";
 export const LocalhostWarning: Story = { name: "11 · Localhost warning", args: { state: "credentials", webhookUrl: `http://localhost:3100${deliveryPath}` }, play: warningSetup };

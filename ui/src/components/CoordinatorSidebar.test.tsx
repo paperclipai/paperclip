@@ -3,7 +3,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionFeed, AttentionItem, IssueSummary, Project } from "@paperclipai/shared";
 import { buildPinnedNavigationItems, CoordinatorSidebar } from "./CoordinatorSidebar";
 import { TooltipProvider } from "./ui/tooltip";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
@@ -12,14 +12,16 @@ import { formatDateTime } from "@/lib/utils";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const fixture = vi.hoisted(() => ({ attention: vi.fn(), summary: vi.fn(), openNewIssue: vi.fn(), openNewChat: vi.fn(), pathname: "/COO/issues", search: "", userId: "reviewer" as string | null, agents: [] as any[], chats: [] as any[],
-  recentTasks: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, enableResponsibilities: false }));
+  recentTasks: [] as Array<Record<string, unknown>>, taskSummaries: [] as Array<Record<string, unknown>>, projects: [] as Array<Record<string, unknown>>, projectTasks: vi.fn(), enableCases: false, enableResponsibilities: false }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ enabled: true, userId: fixture.userId }) }));
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: fixture.userId, enabled: true, agents: { data: fixture.agents }, chats: { data: fixture.chats }, session: { isSuccess: true },
 }), useOpenAgentChat: () => fixture.openNewChat }));
 vi.mock("./AgentChatPicker", () => ({ AgentChatPicker: ({ open, onSelect, agents }: any) => open ? <button onClick={() => onSelect(agents[0])}>Choose agent</button> : null }));
 vi.mock("./AgentConversationsSidebar", () => ({ AgentConversationsSidebar: ({ onConversationOpened }: { onConversationOpened?: () => void }) => <><a href="/chats/alex/old">Old conversation</a><button onClick={onConversationOpened}>Create from history</button></> }));
-vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: () => ({ entries: fixture.recentTasks }) }));
+vi.mock("@/hooks/useRecentTasks", () => ({ useRecentTasks: ({ pinnedTaskIds }: { pinnedTaskIds: string[] }) => ({
+  entries: fixture.recentTasks, pinnedTasks: fixture.taskSummaries.filter(task => pinnedTaskIds.includes(String(task.id))),
+}) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: fixture.projectTasks } }));
 const taskPrefetch = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 vi.mock("@/lib/issueDetailCache", async (importOriginal) => ({
@@ -55,7 +57,7 @@ function summary(items: AttentionItem[], mineCount = items.length) {
 let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); fixture.userId = "reviewer"; fixture.pathname = "/COO/issues"; fixture.search = "";
-  fixture.chats = []; fixture.recentTasks = []; fixture.projects = []; fixture.enableCases = false; fixture.enableResponsibilities = false; fixture.agents = [];
+  fixture.chats = []; fixture.recentTasks = []; fixture.taskSummaries = []; fixture.projects = []; fixture.enableCases = false; fixture.enableResponsibilities = false; fixture.agents = [];
   fixture.summary.mockResolvedValue(summary([pending("question"), pending("review")]));
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -163,6 +165,20 @@ describe("Coordinator task creation", () => {
     expect(region.textContent).not.toContain("Recents");
     expect(region.querySelector('a[href="/issues/TASK-0"]')).not.toBeNull();
   });
+  it("moves the recent parent group ahead of newer rows after opening its child", async () => {
+    const parent = { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 1 };
+    const child = { id: "child", companyId: "company", identifier: "TASK-2", title: "Child", status: "todo", recordedAt: 2, parentId: parent.id };
+    const other = { id: "other", companyId: "company", identifier: "TASK-3", title: "Other", status: "todo", recordedAt: 3 };
+    fixture.recentTasks = [other, child, parent];
+    fixture.projectTasks.mockResolvedValue([child]);
+    await renderSidebar();
+    const order = () => Array.from(container.querySelectorAll('[aria-label="Recents"] a'), link => link.getAttribute("href"));
+    expect(order()).toEqual(["/issues/TASK-3", "/issues/TASK-1", "/issues/TASK-2"]);
+    fixture.pathname = "/COO/issues/TASK-2";
+    fixture.recentTasks = [{ ...child, recordedAt: 4 }, other, parent];
+    await renderSidebar();
+    expect(order()).toEqual(["/issues/TASK-1", "/issues/TASK-2", "/issues/TASK-3"]);
+  });
   it("opens global search from the organization header", async () => {
     await renderSidebar();
     const listener = vi.fn();
@@ -188,6 +204,38 @@ describe("Coordinator task creation", () => {
 });
 
 describe("Coordinator pinned pages", () => {
+  it("pins tasks, chats, and projects from Recents and restores them above More in saved order", async () => {
+    const task = { id: "e4acf42d-422f-44b8-84b8-9d678f8b7c7c", companyId: "company", identifier: "TASK-1", title: "Release task", status: "todo", recordedAt: 1 };
+    fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
+    fixture.chats = [{ id: "chat", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", isUnreadForMe: false }];
+    fixture.projects = [{ id: "project", companyId: "company", name: "Launch", urlKey: "launch" }];
+    fixture.pathname = "/COO/projects/launch";
+    fixture.taskSummaries = [task];
+    fixture.recentTasks = [task];
+    await renderSidebar();
+    const recents = container.querySelector('[aria-label="Recents"]')!;
+    const pinnedLinks = () => Array.from(navigation().querySelectorAll(".group\\/coordinator-pin a"), link => link.getAttribute("href"));
+    for (const label of ["Release task", "CTO", "Launch"]) {
+      const button = recents.querySelector<HTMLButtonElement>(`button[aria-label="Pin ${label}"]`)!;
+      expect(button).not.toBeNull();
+      expect(button.closest("a")).toBeNull();
+      await act(async () => button.click());
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+    }
+    expect(pinnedLinks()).toEqual(["/issues/TASK-1", "/chats/cto", "/projects/launch"]);
+    fixture.pathname = "/COO/issues";
+    fixture.recentTasks = [];
+    fixture.chats = [];
+    fixture.taskSummaries = [{ ...task, title: "Renamed release task" }];
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderSidebar();
+    expect(container.querySelector('[aria-label="Recents"]')).toBeNull();
+    expect(pinnedLinks()).toEqual(["/issues/TASK-1", "/chats/cto", "/projects/launch"]);
+    expect(pinnedPage("/issues/TASK-1")?.textContent).toContain("Renamed release task");
+    await click("Unpin Renamed release task");
+    expect(pinnedLinks()).toEqual(["/chats/cto", "/projects/launch"]);
+  });
   it("matches pinned and recent agent avatar dimensions to task status icons", async () => {
     fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
     const chat = { id: "chat-cto", conversationAgentId: "cto", updatedAt: "2026-11-11T12:00:00Z", title: "CTO chat", createdAt: "2026-11-11T12:00:00Z", isUnreadForMe: false };
@@ -210,20 +258,22 @@ describe("Coordinator pinned pages", () => {
       expect(avatar.height).toBe(height);
     }
   });
-  it("builds hundreds of agent pins with input reads proportional to list size", () => {
-    const agents = Array.from({ length: 500 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
-    const pins = agents.map(agent => `agent-chat:company:${agent.id}`).reverse();
+  it("builds hundreds of mixed pins with input reads proportional to list size", () => {
+    const agents = Array.from({ length: 200 }, (_, index) => ({ id: `agent-${index}`, companyId: "company", name: `Agent ${index}`, urlKey: `agent-${index}` } as Agent));
+    const tasks = Array.from({ length: 200 }, (_, index): IssueSummary => ({ id: `task-${index}`, companyId: "company", title: `Task ${index}`, identifier: `TASK-${index}`, status: "todo", updatedAt: new Date(0), externalConversationState: null }));
+    const projects = Array.from({ length: 200 }, (_, index) => ({ id: `project-${index}`, companyId: "company", name: `Project ${index}`, urlKey: `project-${index}` } as Project));
+    const pins = agents.flatMap((agent, index) => [`agent-chat:company:${agent.id}`, `project:company:${projects[index]!.id}`, `task:company:${tasks[index]!.id}`]).reverse();
     let reads = 0;
     function bounded<T>(items: T[]) {
       return new Proxy(items, { get(target, property, receiver) {
-        if (typeof property === "string" && /^\d+$/.test(property) && ++reads > 4 * agents.length) throw new Error("Pin construction scans growing lists repeatedly");
+        if (typeof property === "string" && /^\d+$/.test(property) && ++reads > 4 * pins.length) throw new Error("Pin construction scans growing lists repeatedly");
         return Reflect.get(target, property, receiver);
       } });
     }
-    const items = buildPinnedNavigationItems(bounded(pins), bounded(agents), []);
+    const items = buildPinnedNavigationItems(bounded(pins), bounded(agents), [], bounded(tasks), bounded(projects));
     expect(items.map(item => item.key)).toEqual(pins);
-    expect(reads).toBeLessThanOrEqual(4 * agents.length);
-    expect(items[0].to).toBe("/chats/agent-499");
+    expect(reads).toBeLessThanOrEqual(4 * pins.length);
+    expect(items.slice(0, 3).map(item => item.to)).toEqual(["/issues/TASK-199", "/projects/project-199", "/chats/agent-199"]);
   });
   it("keeps mixed pins above More in stored order and prevents native link dragging", async () => {
     fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];

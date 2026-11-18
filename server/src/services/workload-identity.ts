@@ -272,7 +272,9 @@ export function workloadIdentityService(db: Db, options: { now?: () => Date } = 
         ));
       if (!connection) throw notFound("Connection not found");
       // Disabling a connection must stop new cloud credentials at once.
-      if (!connection.enabled || connection.status !== "active") {
+      // A draft is being set up and tested; a disabled, archived or switched-off connection gets nothing.
+      const usable = connection.status === "draft" || (connection.status === "active" && connection.enabled);
+      if (!usable) {
         throw unprocessable("This connection is not active.", { code: "workload_identity_connection_inactive" });
       }
 

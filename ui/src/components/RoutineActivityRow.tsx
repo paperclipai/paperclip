@@ -47,7 +47,7 @@ const actionLabels: Record<string, string> = {
   "routine.webhook_rejected": "Webhook authentication failed",
   "routine.created": "Routine created", "routine.updated": "Routine updated",
   "routine.trigger_created": "Trigger added", "routine.trigger_updated": "Trigger updated",
-  "routine.trigger_deleted": "Trigger removed", "routine.trigger_removed": "Trigger removed", "routine.trigger_restored": "Trigger restored", "routine.trigger_setup_finished": "Webhook setup finished", "routine.trigger_secret_rotated": "Webhook key replaced",
+  "routine.trigger_deleted": "Trigger removed", "routine.trigger_removed": "Trigger removed", "routine.trigger_restored": "Trigger restored", "routine.trigger_setup_finished": "Webhook setup finished", "routine.trigger_test_started": "Started testing a webhook", "routine.trigger_secret_rotated": "Webhook key replaced",
   "routine.run_triggered": "Routine started", "routine.run_created": "Run created",
 };
 function actionLabel(action: string) {

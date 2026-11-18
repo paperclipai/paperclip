@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_DEFINITIONS } from "./app-definitions.generated.js";
+import { connectionMethodDefSchema } from "./validators/app-definition.js";
 import {
   APP_STORE_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
@@ -905,7 +906,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(89);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(90);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -1471,6 +1472,21 @@ describe("AppDefinition catalog", () => {
       expect.stringContaining("consume organization credits"),
     ]);
   });
+  it("mints AWS credentials instead of placing stored keys in headers", () => {
+    const aws = APP_DEFINITIONS.find((app) => app.slug === "aws")!;
+    expect(aws.experimentalFeatureKey).toBe("enableAwsConnector");
+    for (const method of aws.methods) {
+      expect(method).toMatchObject({ transport: "mcp_remote", auth: "api_key", credentialMinter: "aws_mcp" });
+      expect(method.keyPlacement).toBeUndefined();
+    }
+    const base = aws.methods[1]!;
+    expect(connectionMethodDefSchema.safeParse(base).success).toBe(true);
+    expect(connectionMethodDefSchema.safeParse({ ...base, keyPlacement: { location: "header", name: "Authorization" } }).success).toBe(false);
+    expect(connectionMethodDefSchema.safeParse({ ...base, auth: "oauth" }).success).toBe(false);
+    expect(connectionMethodDefSchema.safeParse({ ...base, transport: "local_stdio" }).success).toBe(false);
+    const { credentialMinter: _minter, ...withoutMinter } = base;
+    expect(connectionMethodDefSchema.safeParse(withoutMinter).success).toBe(false);
+  });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
     const required = APP_DEFINITIONS.flatMap((app) =>
       app.methods.flatMap((method) =>
@@ -1483,6 +1499,11 @@ describe("AppDefinition catalog", () => {
       ),
     ).sort();
     expect(required).toEqual([
+      "aws:aws-access-key:accessLevel",
+      "aws:aws-access-key:endpointRegion",
+      "aws:aws-role:accessLevel",
+      "aws:aws-role:endpointRegion",
+      "aws:aws-role:roleArn",
       "clickhouse:mcp-oauth:serviceId",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",
