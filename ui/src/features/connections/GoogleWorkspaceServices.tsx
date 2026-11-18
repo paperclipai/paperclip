@@ -1,5 +1,5 @@
 import { useQueryView } from "@/components/QueryView";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_SERVICE_GROUPS, googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectionForScopes, type GoogleWorkspaceServiceSelection, type ToolConnection } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
@@ -8,6 +8,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { NativeSelect } from "@/components/ui/select";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { AppLogo } from "@/pages/apps/AppLogo";
+import { GOOGLE_WORKSPACE_PRIVACY_POLICY_URL, googleWorkspaceDataUseDisclosure } from "./googleWorkspaceDisclosure";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function GoogleWorkspaceServiceFields({ value, onChange }: {
   value: GoogleWorkspaceServiceSelection;
@@ -36,6 +39,26 @@ export function GoogleWorkspaceServiceFields({ value, onChange }: {
   </div>;
 }
 
+export function isGoogleWorkspaceConnection(connection: Pick<ToolConnection, "config">): boolean {
+  return connection.config?.sourceTemplateKey === "google-workspace";
+}
+
+export function useGoogleWorkspaceServiceGate(): {
+  dialog: ReactNode;
+  run: (connection: ToolConnection, start: (selection?: GoogleWorkspaceServiceSelection) => void) => void;
+} {
+  const [pending, setPending] = useState<{ connection: ToolConnection; start: (selection: GoogleWorkspaceServiceSelection) => void } | null>(null);
+  return {
+    dialog: pending ? <GoogleWorkspaceServicesDialog connection={pending.connection}
+      onCancel={() => setPending(null)}
+      onContinue={selection => { setPending(null); pending.start(selection); }} /> : null,
+    run: (connection, start) => {
+      if (isGoogleWorkspaceConnection(connection)) setPending({ connection, start });
+      else start();
+    },
+  };
+}
+
 type DialogProps = {
   onContinue: (value: GoogleWorkspaceServiceSelection) => void;
   onCancel: (selection?: GoogleWorkspaceServiceSelection) => void;
@@ -49,7 +72,7 @@ export function GoogleWorkspaceServicesDialog(props: DialogProps) {
   const pendingRequests = oauth?.pendingWorkspaceServiceRequests;
   const grants = useQuery({ queryKey: ["workspace-service-consent", existing?.id], queryFn: () => toolsApi.listConnectionGrants(existing!.id), enabled: Boolean(existing) });
   const grantsView = useQueryView(grants);
-  if (existing && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent>
+  if (existing && !grants.data) return <Dialog open onOpenChange={open => { if (!open) props.onCancel(); }}><DialogContent className={ANALYTICS_MASK_CLASS}>
     <DialogTitle>Connect Google Workspace</DialogTitle><DialogDescription>{(grantsView.kind === "error") ? "Could not load your saved service access. Your connection has not changed." : "Loading your saved service access…"}</DialogDescription>
     <footer className="flex items-center justify-between gap-3"><Button variant="ghost" onClick={() => props.onCancel()}>Cancel</Button>{(grantsView.kind === "error") && <Button onClick={() => void grants.refetch()}>Try again</Button>}</footer>
   </DialogContent></Dialog>;
@@ -77,17 +100,38 @@ export function GoogleWorkspaceServicesDialog(props: DialogProps) {
   return <ServicePicker {...props} initial={props.initial ?? (pendingScopes ? googleWorkspaceSelectionForScopes(pendingScopes) : existing ? googleWorkspaceSelectionForScopes(savedScopes) : undefined)} />;
 }
 
+function DataUseDisclosure({ selection }: { selection: GoogleWorkspaceServiceSelection }) {
+  const { access, use } = googleWorkspaceDataUseDisclosure(selection);
+  return <section aria-label="How Paperclip uses your Google data" className="space-y-3 text-sm">
+    <div className="space-y-1">
+      <h3 className="font-medium">What agents can do</h3>
+      <ul className="list-disc space-y-1 pl-5 text-muted-foreground">{access.map(line => <li key={line}>{line}</li>)}</ul>
+    </div>
+    <div className="space-y-1">
+      <h3 className="font-medium">How your data is used</h3>
+      <ul className="list-disc space-y-1 pl-5 text-muted-foreground">{use.map(line => <li key={line}>{line}</li>)}</ul>
+    </div>
+    <p className="text-muted-foreground">
+      <a href={GOOGLE_WORKSPACE_PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer" className="underline">
+        Read our privacy policy, including how we meet Google's Limited Use requirements<span className="sr-only"> (opens in a new tab)</span>
+      </a>
+    </p>
+  </section>;
+}
+
 function ServicePicker({ onContinue, onCancel, initial = GOOGLE_WORKSPACE_DEFAULT_SELECTION }: DialogProps) {
   const [selection, setSelection] = useState(initial);
   const empty = Object.keys(selection).length === 0;
   return <Dialog open onOpenChange={open => { if (!open) onCancel(selection); }}>
-    <DialogContent className="sm:max-w-3xl">
+    <DialogContent className={cn("max-h-(--sz-85vh) overflow-y-auto sm:max-w-3xl", ANALYTICS_MASK_CLASS)}>
       <DialogHeader className="text-left">
         <div className="flex items-center gap-3"><AppLogo name="Google Workspace" brandKey="google" size={40} /><DialogTitle>Connect Google Workspace</DialogTitle></div>
         <DialogDescription className="sr-only">Choose the Google services to connect.</DialogDescription>
       </DialogHeader>
       <GoogleWorkspaceServiceFields value={selection} onChange={setSelection} />
-      {empty && <p role="status" className="text-xs text-muted-foreground">Select at least one service to continue.</p>}
+      {empty
+        ? <p role="status" className="text-xs text-muted-foreground">Select at least one service to continue.</p>
+        : <DataUseDisclosure selection={selection} />}
       <footer className="flex items-center justify-between gap-3 pt-4">
         <Button variant="ghost" onClick={() => onCancel(selection)}>Cancel</Button>
         <Button disabled={empty} onClick={() => onContinue(selection)}>Continue</Button>

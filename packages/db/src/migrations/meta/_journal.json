@@ -3417,6 +3417,20 @@
       "when": 1794841384470,
       "tag": "0489_real_sage",
       "breakpoints": true
+    },
+    {
+      "idx": 490,
+      "version": "7",
+      "when": 1794923393849,
+      "tag": "0490_nappy_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 491,
+      "version": "7",
+      "when": 1794935383823,
+      "tag": "0491_common_gambit",
+      "breakpoints": true
     }
   ]
 }

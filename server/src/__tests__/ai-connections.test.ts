@@ -1556,11 +1556,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { fetchSpy.mockRestore(); }
   });
 
-  it("reads provider identity only for an authorized credential and preserves connected state when profile access is denied", async () => {
-    const owner = "identity-owner";
+  it.each(["anthropic", "openai"] as const)("reads %s identity only for an authorized credential and preserves connected state when profile access is denied", async provider => {
+    const owner = `identity-owner-${provider}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
-    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "identity-selected-secret");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } }));
+    const credential = provider === "openai" ? JSON.stringify({ tokens: { access_token: "identity-selected-secret", account_id: "private-account-id" } }) : "identity-selected-secret";
+    const account = await service.save(companyId, owner, { provider, method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, credential);
+    const profile = provider === "openai" ? { accounts: [{ id: "private-account-id", name: "Example team", structure: "workspace" }] }
+      : { account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(profile));
     const app = express();
     app.use((req, _res, next) => {
       req.actor = req.header("x-test-anonymous") ? { type: "none" }
@@ -1575,8 +1578,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const result = await request(app).get(url);
       expect(result.status).toBe(200);
       expect(result.headers["cache-control"]).toBe("no-store");
-      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" });
-      expect(fetchSpy).toHaveBeenCalledWith("https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
+      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: provider === "openai" ? null : "avery@example.test", organizationLabel: "Example team" });
+      expect(fetchSpy).toHaveBeenCalledWith(provider === "openai" ? "https://chatgpt.com/backend-api/wham/accounts/check" : "https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
       for (const value of ["identity-selected-secret", "private-account-id", "private-org-id"]) expect(JSON.stringify(result.body)).not.toContain(value);
       fetchSpy.mockReset();
       expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
@@ -1899,6 +1902,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await create(userId, "Another API");
     await expect(service.select({ ...input, userId })).rejects.toThrow("Reconnect");
     await service.setDefault(companyId, userId, subscription.grantId);
+    expect(await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId))).toEqual([]);
     expect((await service.select({ ...input, userId })).attribution).toMatchObject({ method: "subscription", grantId: subscription.grantId });
     expect((await service.list(companyId, userId)).filter(account => account.isDefault)).toHaveLength(1);
     await expect(service.select({ ...input, userId, binding: { ...binding, mode: "delegated", ...subscription } })).rejects.toThrow("incompatible");
@@ -1910,7 +1914,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Migration API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Migration subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-migration-subscription");
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, api.grantId));
-    await db.update(aiConnectionDefaults).set({ updatedAt: new Date("2030-01-01") }).where(eq(aiConnectionDefaults.grantId, api.grantId));
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId, updatedAt: new Date("2030-01-01") },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     await db.delete(aiProviderDefaults).where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId)));
     const legacyRows = await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId));
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0277_uneven_lady_deathstrike.sql", import.meta.url), "utf8");
@@ -1927,6 +1934,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Rolling API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Rolling subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-rolling-subscription");
     expect((await service.select({ ...input, userId })).grant.id).toBe(api.grantId);
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     // An older server updates only the legacy per-method row on Make default.
     await db.update(aiConnectionDefaults).set({ grantId: subscription.grantId, updatedAt: new Date() })
       .where(and(eq(aiConnectionDefaults.userId, userId), eq(aiConnectionDefaults.method, "subscription")));

@@ -648,7 +648,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
       trackRecentProject(issue.projectId ?? "", companyId);
       if (issue.assigneeAgentId) trackRecentAssignee(issue.assigneeAgentId, companyId);
       if (issue.assigneeUserId) trackRecentAssigneeUser(issue.assigneeUserId, companyId);
-      if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId);
+      if (streamlinedUiEnabled) recordRecentTask(issue, currentUserId, Date.now());
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });

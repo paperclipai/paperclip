@@ -57,7 +57,7 @@ suite("case handoff through the assembled native runner", () => {
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const apiUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     process.env.PAPERCLIP_API_URL = apiUrl;
-    setupRunnerPrpWebSocketServer(server, { apiUrl });
+    setupRunnerPrpWebSocketServer(server);
   }, 30_000);
   afterAll(async () => {
     if (db) {

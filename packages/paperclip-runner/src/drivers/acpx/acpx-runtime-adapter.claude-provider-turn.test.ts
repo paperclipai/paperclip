@@ -9,7 +9,7 @@ import type { AcpRuntimeEvent } from "acpx/runtime";
 import { expect, it, vi } from "vitest";
 
 import { startRunnerToolBridge } from "../runner-tool-bridge.js";
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "./claude-tool-use-admission.js";
 import type { ClaudeProviderTurnResult } from "./claude-provider-turns.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
@@ -124,9 +124,9 @@ it("adopts Claude's own task-notification cycle as a provider-started turn throu
     body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call",
       params: { name: "probe", arguments: { tag }, _meta: { [CLAUDE_TOOL_USE_META_KEY]: toolUseId } } }) })
     .then(response => response.json() as Promise<{ result: { isError?: boolean; content: Array<{ text: string }> } }>);
-  let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+  let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
   try {
-    port = await openCodexAcpxRuntime(options, {
+    port = await openQualifiedAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
     });

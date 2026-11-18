@@ -24,7 +24,7 @@
         "https://www.googleapis.com/auth/calendar.events"
       ],
       "capability": "write",
-      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request ten scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
       "evidence": [
         "https://developers.google.com/workspace/guides/configure-mcp-servers",
         "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
@@ -54,7 +54,7 @@
         "https://www.googleapis.com/auth/calendar.events"
       ],
       "capability": "write",
-      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request ten scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
       "evidence": [
         "https://developers.google.com/workspace/guides/configure-mcp-servers",
         "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"

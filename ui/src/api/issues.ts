@@ -614,7 +614,7 @@ export const issuesApi = {
       data,
     ),
   listInteractions: (id: string) =>
-    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`, { fresh: true, cache: "no-store" }),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(
       `/issues/${id}/accepted-plan-decompositions`,

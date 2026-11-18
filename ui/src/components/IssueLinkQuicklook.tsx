@@ -16,6 +16,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { StatusGlyph } from "@/components/StatusGlyph";
 import { ProjectTile } from "@/components/ProjectTile";
 import { useFlyoutAppearance } from "@/components/ui/flyout-appearance";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /* ------------------------------------------------------------------ */
 /*  Single-flight quicklook store                                      */
@@ -211,7 +212,7 @@ export function IssueQuicklookCard({
       </RouterDom.Link>
 
       {description ? (
-        <p data-slot="task-preview-description" className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
+        <p data-slot="task-preview-description" className={cn("text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden", ANALYTICS_MASK_CLASS)}>
           {description}
         </p>
       ) : null}

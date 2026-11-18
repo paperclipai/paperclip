@@ -372,6 +372,7 @@ export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug"
 // Marks the single onboarding "first task" so surfaces can special-case it
 // (e.g. suppress the seeded-description bubble and rely on a seeded greeting).
 export const ONBOARDING_FIRST_TASK_ORIGIN_KIND = "onboarding_first_task";
+export const ONBOARDING_CHAT_ORIGIN_KIND = "onboarding_chat";
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
@@ -384,6 +385,7 @@ export const ISSUE_ORIGIN_KINDS = [
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  ONBOARDING_CHAT_ORIGIN_KIND,
   "chat_channel",
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
@@ -1446,6 +1448,8 @@ export const PLUGIN_CAPABILITIES = [
   "local.folders",
   // Agent Tools
   "agent.tools.register",
+  // Connectors
+  "connectors.provide",
   // UI
   "instance.settings.register",
   "ui.sidebar.register",

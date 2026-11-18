@@ -1323,6 +1323,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? { ...exactResumeCause, originalMessage: redactFailureText(exactResumeCause.originalMessage) }
       : null;
     const storageUnavailable = isStorageUnavailableError(err);
+    const remoteWorkspacePreparationTimeout = !legacyAdapterEntered && run.runtimeMode === "legacy"
+      && run.nativeSessionId === null && run.runnerInstanceId === null && err instanceof RemoteWorkspacePreparationTimeoutError
+      ? err : null;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
       configurationIncompleteFailure?.code ??
@@ -1330,6 +1333,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       recordedResponsibleUserDenialCode ??
       nativeTerminalFailureCode ??
       (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
+      remoteWorkspacePreparationTimeout?.code ??
       "adapter_failed";
     // Only a `storage_unavailable` run gets a storage wait. Under any other code
     // (for example a native recovery hold that keeps the files without

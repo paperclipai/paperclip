@@ -275,6 +275,47 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   return true;
 }
 
+function quarantinedRemoteCleanupScope(
+  entry: QuarantinedSessionCleanup,
+  input: { companyId: string; issueId: string },
+): string | null {
+  const [companyId, , , remoteCleanupScope] = JSON.parse(entry.domain.key) as string[];
+  return companyId === input.companyId && remoteCleanupScope &&
+    entry.domain.resources.includes(JSON.stringify(["issue", input.issueId]))
+    ? remoteCleanupScope : null;
+}
+
+export function nativeSessionCleanupRemoteScopes(input: {
+  companyId: string;
+  issueId: string;
+}): string[] {
+  const scopes = new Set<string>();
+  for (const entry of quarantinedSessionCleanups) {
+    const scope = quarantinedRemoteCleanupScope(entry, input);
+    if (scope) scopes.add(scope);
+  }
+  return [...scopes];
+}
+
+export function completeTerminatedRemoteNativeSessionCleanupForTask(input: {
+  companyId: string;
+  issueId: string;
+  remoteCleanupScope: string;
+}): number {
+  if (!input.remoteCleanupScope) return 0;
+  let retired = 0;
+  for (const entry of [...quarantinedSessionCleanups]) {
+    if (quarantinedRemoteCleanupScope(entry, input) !== input.remoteCleanupScope) continue;
+    if (entry.attempt || entry.recovery) continue;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
+    retired += 1;
+  }
+  return retired;
+}
+
 /** Host-only counterpart of remote resource termination. The caller has verified
  * both exact local process identities and durably fenced their run. This removes
  * only cleanup ownership; the retained checkpoint is never made resumable.
