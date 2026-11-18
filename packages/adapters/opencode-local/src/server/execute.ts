@@ -729,6 +729,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // configured execution deadline. The boolean does not prove which
           // timer fired, and provider stderr is not safe exception text.
           errorMessage: "OpenCode execution timed out",
+          errorCode: attempt.proc.errorCode ?? null,
           resultJson: { adapterExecutionTimeout },
           clearSession: clearSessionOnMissingSession,
         };
