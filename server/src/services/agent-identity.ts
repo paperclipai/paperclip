@@ -41,15 +41,9 @@ export function agentIdentityService(db: Db) {
     },
 
     async ensureAgentIdentity(companyId: string, agentId: string) {
-      // Every managed run setup reuses the key. Read it without an agent row
-      // lock: queued-run claims share-lock that row, and an exclusive waiter
-      // there joins their deadlock cycles as the non-retried victim.
       const [existing] = await db.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
-      // Fail closed on corruption or a wrong master key; never replace a key.
       if (existing) return resolveIdentity(existing);
       return db.transaction(async (tx) => {
-        // KEY SHARE is the lock the identity foreign key takes anyway. It still
-        // fences deletion and works inside the agent-creation transaction.
         const [owner] = await tx.select({ id: agents.id }).from(agents)
           .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("key share");
         if (!owner) throw notFound("Agent not found");
@@ -63,7 +57,6 @@ export function agentIdentityService(db: Db) {
           privateKeyMaterial: encrypted.material,
         }).onConflictDoNothing({ target: agentIdentityKeys.agentId }).returning();
         if (!created) {
-          // A concurrent first run committed its key; adopt it.
           const [winner] = await tx.select().from(agentIdentityKeys).where(ownership(companyId, agentId));
           if (!winner) throw new Error("Agent identity key belongs to another owner");
           return resolveIdentity(winner);

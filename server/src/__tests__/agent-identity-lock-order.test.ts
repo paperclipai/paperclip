@@ -14,7 +14,6 @@ let directory: string;
 let companyId: string;
 const gate = () => { let open!: () => void; const opened = new Promise<void>(resolve => { open = resolve; }); return { opened, open }; };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-// Counts backends blocked on a heavyweight lock while running a query that matches the pattern.
 const lockWaiters = async (pattern: string) => (await db.execute<{ count: number }>(sql`select count(*)::int as count
   from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like ${pattern}`))[0]?.count;
 const company = (issuePrefix: string) => db.insert(companies).values({ name: issuePrefix, issuePrefix, defaultResponsibleUserId: "identity-test-owner" }).returning();
@@ -40,8 +39,6 @@ it("run setup reuses a key without queuing behind run claims or joining their de
   const [other] = await company("KLK");
   const lockOther = (tx: Db) => tx.select({ id: companies.id }).from(companies).where(eq(companies.id, other.id)).for("update");
   const claimLocked = gate(), workerLocked = gate(), claimContinues = gate(), workerContinues = gate();
-  // A queued-run claim share-locks the agent before its issue/run locks. A
-  // concurrent writer holds one of those and then updates the agent row.
   const claim = db.transaction(async tx => {
     await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agent.id)).for("share");
     claimLocked.open(); await claimContinues.opened;
@@ -57,7 +54,6 @@ it("run setup reuses a key without queuing behind run claims or joining their de
   let setupSettled = false;
   const setup = agentIdentityService(db).ensureAgentIdentity(companyId, agent.id).finally(() => { setupSettled = true; });
   void setup.catch(() => undefined);
-  // Release the worker only once setup either finished or is queued on the agent row.
   await vi.waitFor(async () => {
     expect(setupSettled || await lockWaiters('select %"agents"%') === 1).toBe(true);
   }, { timeout: 10_000, interval: 25 });
@@ -65,8 +61,6 @@ it("run setup reuses a key without queuing behind run claims or joining their de
   await vi.waitFor(async () => expect(await lockWaiters('update "agents"%')).toBe(1), { timeout: 10_000, interval: 25 });
   claimContinues.open();
   const [setupResult, ...cycle] = await Promise.allSettled([setup, claim, worker]);
-  // The identity read stays out of the cycle; the claim/worker pair resolves
-  // it themselves (accounting claims retry 40P01).
   expect(setupResult).toEqual({ status: "fulfilled", value: identity });
   expect(cycle.filter(result => result.status === "rejected")).toHaveLength(1);
 }, 30_000);
