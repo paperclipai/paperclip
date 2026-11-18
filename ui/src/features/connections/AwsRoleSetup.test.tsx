@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AwsConnectionSetup } from "@paperclipai/shared";
-import { AwsRoleSetup, awsSetupErrorMessage, type AwsRoleSetupClient } from "./AwsRoleSetup";
+import { AwsRoleSetup, awsAgentSetupPrompt, awsSetupErrorMessage, type AwsRoleSetupClient } from "./AwsRoleSetup";
 import { ApiError } from "@/api/client";
 
 vi.mock("@/api/tools", () => ({ toolsApi: {} }));
@@ -73,6 +73,21 @@ describe("AwsRoleSetup", () => {
     expect(cli).toContain("--path /agents/ --role-name paperclip-ops");
     expect(cli).toContain("AWSMCPSignInOAuthAccessPolicy");
     expect(cli).toContain("arn:aws:iam::aws:policy/ReadOnlyAccess");
+  });
+
+  it("offers a prompt for the user's own agent that deploys this connection's template", async () => {
+    await render(READY);
+    expect(container.querySelector('button[aria-label="Set it up with your agent"]')).not.toBeNull();
+    const prompt = awsAgentSetupPrompt(READY as Extract<AwsConnectionSetup, { available: true }>);
+    expect(prompt).toContain("confirm the account is 123456789012");
+    expect(prompt).toContain("--stack-name paperclip-paperclip-agents");
+    expect(prompt).toContain("CAPABILITY_NAMED_IAM");
+    expect(prompt).toContain("connection:conn-1");
+    expect(prompt).toContain(READY.available ? READY.cloudFormationTemplate.trimEnd() : "");
+    expect(prompt).not.toContain("AccessPolicyArn=<policy ARN>");
+    const full = awsAgentSetupPrompt({ ...READY, accessLevel: "full" } as Extract<AwsConnectionSetup, { available: true }>);
+    expect(full).toContain("ask me which managed policy");
+    expect(full).toContain("AccessPolicyArn=<policy ARN>");
   });
 
   it("asks for the access policy when the connection has full access", async () => {

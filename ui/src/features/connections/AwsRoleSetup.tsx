@@ -4,6 +4,7 @@ import type { AwsConnectionSetup } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { describeError } from "@/api/errors";
+import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
 import { InlineBanner } from "@/components/InlineBanner";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -110,6 +111,13 @@ export function AwsRoleSetup({
 
       {ready ? (
         <>
+          <AgentSetupPrompt
+            prompt={awsAgentSetupPrompt(ready)}
+            label="Set it up with your agent"
+            title="Set up AWS with your agent"
+            description="Paste this into an agent on a computer signed in to this AWS account, such as Claude Code or Codex. It creates the role with the AWS CLI."
+            side="bottom"
+          />
           <section className="space-y-3" aria-labelledby="aws-role-cloudformation">
             <h3 id="aws-role-cloudformation" className="text-sm font-medium text-foreground">Create it with CloudFormation</h3>
             <ol className="list-decimal space-y-2 pl-5 text-sm text-muted-foreground">
@@ -199,6 +207,37 @@ export function awsCliCommands(setup: Extract<AwsConnectionSetup, { available: t
     `aws iam create-role --path ${setup.rolePath} --role-name ${setup.roleName} --assume-role-policy-document '${policy}'`,
     `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn arn:aws:iam::aws:policy/AWSMCPSignInOAuthAccessPolicy`,
     `aws iam attach-role-policy --role-name ${setup.roleName} --policy-arn ${setup.accessLevel === "read_only" ? "arn:aws:iam::aws:policy/ReadOnlyAccess" : "<the managed policy agents should have>"}`,
+  ].join("\n");
+}
+
+/**
+ * A prompt for the user's own agent (on a machine already signed in to AWS) to
+ * deploy this connection's template. It holds no secrets: AWS trusts the
+ * connection's signed identity, so the values are safe to paste anywhere.
+ */
+export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { available: true }>): string {
+  const stack = `paperclip-${setup.roleName}`.replace(/[^A-Za-z0-9-]/g, "-").slice(0, 128);
+  const policyStep = setup.accessLevel === "read_only"
+    ? "The connection is read only, so keep the template's default AccessPolicyArn (ReadOnlyAccess)."
+    : "The connection has full access, so ask me which managed policy agents should have, then pass it as AccessPolicyArn. Do not pick one yourself.";
+  return [
+    `Set up an AWS IAM role so Paperclip can connect to AWS account ${setup.accountId}. Use the AWS CLI on this computer.`,
+    "",
+    "Steps:",
+    `1. Run \`aws sts get-caller-identity\` and confirm the account is ${setup.accountId}. If it is not, or the CLI is not signed in, stop and tell me which profile or sign-in to use.`,
+    `2. Run \`aws iam list-open-id-connect-providers\`. If one already ends with ${setup.providerHost}, pass CreateIdentityProvider=false; otherwise pass true.`,
+    `3. ${policyStep}`,
+    "4. Save the CloudFormation template below to a file and deploy it:",
+    `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
+    `5. Confirm the stack output RoleArn is ${setup.roleArn}. If it differs, tell me the new ARN.`,
+    "6. Tell me when it is done, so I can press Test connection in Paperclip.",
+    "",
+    "The role trusts only this one Paperclip connection, and no AWS keys are created or shared:",
+    `- Identity provider: ${setup.issuer} (audience ${setup.audience})`,
+    `- Connection subject: ${setup.subject}`,
+    "",
+    "CloudFormation template:",
+    setup.cloudFormationTemplate.trimEnd(),
   ].join("\n");
 }
 

@@ -95,7 +95,12 @@ already exists. The setup screen walks through them:
    role name), the endpoint region and the access level, then click
    **Connect**.
 3. Paperclip saves a draft without contacting AWS and publishes the company's
-   issuer. The screen then shows two ways to create the role:
+   issuer. The screen then shows three ways to create the role:
+   - **With your agent.** **Set it up with your agent** copies a prompt for an
+     agent (Claude Code, Codex) on a computer signed in to that AWS account. The
+     agent checks the account, checks for an existing identity provider and
+     deploys the template with `aws cloudformation deploy`. For full access it
+     asks which policy to attach. The prompt holds no secret.
    - **CloudFormation (recommended).** Download the template. It is generated
      for this connection, so it needs no edits. In the CloudFormation console,
      create a stack in that account from the downloaded file. Set
