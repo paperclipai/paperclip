@@ -6,6 +6,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -103,6 +104,20 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
         expect.objectContaining({ agentId, state }),
       );
     }
+  });
+
+  it("tracks agent.task_run in the run's company scope", async () => {
+    await seedCompanyAndAgent();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
+    const scopedCompanies: Array<string | undefined> = [];
+    const recordScope = () => scopedCompanies.push(scopedTelemetryCompanyId());
+    mockTrackAgentTaskRun.mockImplementationOnce(recordScope).mockImplementationOnce(recordScope);
+
+    await emitAgentTaskRun(db, run);
+    await emitAgentTaskRunById(db, { runId: run.id, companyId });
+
+    expect(scopedCompanies).toEqual([companyId, companyId]);
+    expect(scopedTelemetryCompanyId()).toBeUndefined();
   });
 
   it("emits the same event from a small scoped run read without loading execution payloads", async () => {

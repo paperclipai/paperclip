@@ -143,6 +143,13 @@ exposes the `TelemetryTransport` seam on `TelemetryClient`:
   `source_ref_hashed` stays `true` for them.
 - The transport can capture per-event context at track time. That context is
   never added to the collector envelope.
+- Background work (heartbeat runs, routine runs, connection invocations, and
+  interactions) has no request. The server emit site wraps the track call in
+  `withTelemetryCompany(companyId, fn)` from
+  `server/src/telemetry-company-scope.ts`, with the company of the entity it
+  reports on. Only the direct transport reads this scope, and it uses it only
+  when no live request supplies a company. The collector envelope and the
+  dimensions do not change.
 
 Cloud is Paperclip's own service under the Cloud terms, so its events carry
 real identifiers: raw agent and task ids, the stack id, and the company and
