@@ -268,6 +268,7 @@ export { agentCommentary } from "./agent_commentary.js";
 
 
 export { agentIdentityKeys } from "./agent_identity_keys.js";
+export { companyWorkloadIdentityKeys, type CompanyWorkloadIdentityKeyStatus } from "./company_workload_identity_keys.js";
 
 export { chatVoiceReports } from "./chat_voice_reports.js";
 

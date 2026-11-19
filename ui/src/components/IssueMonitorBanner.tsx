@@ -105,6 +105,17 @@ export function buildMonitorSurfaceCopy(
     };
   }
 
+  if (derived.source === "scheduled-retry" && scheduledRetryReason === "environment_provider_wait") {
+    return {
+      bannerTitle: "Waiting for the sandbox provider",
+      stripTitle: "Waiting for the sandbox provider",
+      bannerMeta: ["The sandbox provider is unavailable. Work continues automatically when it is back."],
+      stripMeta: ["Work continues automatically when the sandbox provider is back."],
+      tone: "info",
+      workspaceWait: true,
+    };
+  }
+
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "workspace_busy") {
     return {
       bannerTitle: "Waiting for workspace",

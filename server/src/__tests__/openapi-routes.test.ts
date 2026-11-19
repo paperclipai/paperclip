@@ -118,6 +118,7 @@ const apiPrefixes: Record<string, string> = {
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
+  "workload-identity.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -141,6 +142,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   "POST /api/instance/connector-events/wake",
   "POST /api/instance/ephemeral-enrollment/prepare",
   "GET /api/instance/ephemeral-enrollment/eligibility",
+  "POST /api/instance/ephemeral-enrollment/migrate",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -213,6 +215,7 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "connection-event-wake.ts") return routePath;
+  if (file === "workload-identity.ts" && routePath.startsWith("/oidc/")) return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&

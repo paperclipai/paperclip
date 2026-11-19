@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, describeRunnerCommandStall, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, describeRunnerCommandStall, isSettledReleasedRunnerCut, revertUnattachedRelaunchRotation, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -2148,6 +2148,90 @@ it.each(["before", "after"] as const)(
     }
   },
 );
+
+describe("a rotation for a released Runner that the host starts again", () => {
+  const priorIdentity = {
+    runnerInstanceId: "runner-relaunch-rotation", environmentLeaseId: "lease-relaunch-rotation",
+    runId: "run-relaunch-prior", normalizedSessionId: "session-relaunch-rotation",
+    turnId: "turn-relaunch-prior", itemId: "item-relaunch-prior",
+  };
+  const desiredIdentity = { ...priorIdentity, runId: "run-relaunch-next", turnId: "turn-relaunch-next", itemId: "item-relaunch-next" };
+  const settled = {
+    schema: "paperclip.runner.durable.state.v1", ...priorIdentity, lifecycle: "ready", nextSourceSeq: 8, ackedSourceSeq: 7,
+    outbox: [], pendingTerminalDelivery: null, processedCommands: { "command-a": { status: "completed" } },
+  };
+
+  it("moves only the control plane, and resumes the same archive on a retry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-relaunch-rotation-"));
+    const controlPlaneState = { schema: "paperclip.runner.durable.control-plane-state.v1", identity: priorIdentity };
+    const unavailable = vi.fn(async () => { throw new Error("the host archives this state"); });
+    try {
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(controlPlaneState));
+      const archive = { archivedByLaunch: true as const, read: unavailable, archive: unavailable };
+      await expect(runnerdRecoveryInternals.rotateAuthorityEpoch(root, controlPlaneState, desiredIdentity, archive))
+        .resolves.toEqual(controlPlaneState);
+      await expect(stat(join(root, "control-plane"))).rejects.toMatchObject({ code: "ENOENT" });
+      const epochs = await readdir(join(root, "authority-epochs"));
+      expect(epochs).toHaveLength(1);
+      expect(await readdir(join(root, "authority-epochs", epochs[0]!))).toEqual(["control-plane"]);
+      await expect(runnerdRecoveryInternals.rotateAuthorityEpoch(root, controlPlaneState, desiredIdentity, archive))
+        .resolves.toEqual(controlPlaneState);
+      expect(unavailable).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("puts the source authority back only when no Runner attached to the rotated run", async () => {
+    for (const target of [
+      { state: { schema: "paperclip.runner.external-control-plane-state.v1", identity: desiredIdentity }, reverted: true },
+      { state: { schema: "paperclip.runner.durable.control-plane-state.v1", identity: desiredIdentity, connectionCount: 0, ackedSourceSeq: 0,
+        committedEvents: [], leases: {}, tickets: { ticket: { usedAt: null } } }, reverted: true },
+      { state: { schema: "paperclip.runner.durable.control-plane-state.v1", identity: desiredIdentity, connectionCount: 1, ackedSourceSeq: 3,
+        committedEvents: [], leases: {}, tickets: { ticket: { usedAt: "2099-01-01T00:00:00.000Z" } } }, reverted: false },
+      { state: { schema: "paperclip.runner.external-control-plane-state.v1", identity: priorIdentity }, reverted: false },
+    ]) {
+      const root = await mkdtemp(join(tmpdir(), "paperclip-relaunch-revert-"));
+      const source = { schema: "paperclip.runner.durable.control-plane-state.v1", identity: priorIdentity };
+      try {
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(source));
+        const unavailable = async () => { throw new Error("the host archives this state"); };
+        await runnerdRecoveryInternals.rotateAuthorityEpoch(root, source, desiredIdentity,
+          { archivedByLaunch: true, read: unavailable, archive: unavailable });
+        await mkdir(join(root, "control-plane"), { recursive: true });
+        await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(target.state));
+        expect(revertUnattachedRelaunchRotation(root, priorIdentity)).toBe(target.reverted);
+        const active = JSON.parse(await readFile(join(root, "control-plane", "control-plane-state.json"), "utf8"));
+        expect(active.identity).toEqual(target.reverted ? priorIdentity : target.state.identity);
+        expect(await readdir(join(root, "authority-epochs"))).toHaveLength(target.reverted ? 0 : 1);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("accepts a stopped Runner's ready cut only when nothing is left in flight", () => {
+    expect(isSettledReleasedRunnerCut(settled, priorIdentity)).toBe(true);
+    expect(isSettledReleasedRunnerCut({ schema: settled.schema, ...priorIdentity, lifecycle: "suspended" }, priorIdentity)).toBe(true);
+    for (const changed of [
+      { outbox: [{ sourceSeq: 8 }] },
+      { ackedSourceSeq: 6 },
+      { nextSourceSeq: undefined },
+      { processedCommands: { "command-a": { status: "pending" } } },
+      { processedCommands: { "command-a": { status: "indeterminate" } } },
+      { warmTransition: { transitionId: "transition" } },
+      { pendingTerminalDelivery: { turnId: "turn" } },
+      { pendingProviderCleanup: { turnId: "turn" } },
+      { lifecycle: "connecting" },
+      { schema: "paperclip.runner.durable.state.v0" },
+      { runId: desiredIdentity.runId },
+    ]) {
+      expect(isSettledReleasedRunnerCut({ ...settled, ...changed }, priorIdentity)).toBe(false);
+    }
+  });
+});
 
 describe("authority rotation after the prior controller state is restored", () => {
   const priorIdentity = {

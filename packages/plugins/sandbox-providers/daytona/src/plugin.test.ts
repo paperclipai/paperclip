@@ -39,7 +39,7 @@ import plugin, {
   STUCK_STOPPING_FORCE_AFTER_MS,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
-import { environmentAcquireErrorData, environmentResumeErrorData, readEnvironmentAcquireErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
+import { PluginEnvironmentAcquisitionError, environmentAcquireErrorData, environmentResumeErrorData, readEnvironmentAcquireErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
 import manifest from "./manifest.js";
 import { parseTarVerboseListingLine, splitLinkEntryOnce } from "./file-sync.js";
 import * as duplexCommands from "./duplex-command-stream.js";
@@ -1727,6 +1727,33 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledWith(mockCreate.mock.calls[0][0].name);
       expect(orphan!.delete).toHaveBeenCalledWith(10, true);
       expect(orphan!.process.executeCommand).not.toHaveBeenCalled();
+    });
+
+    it("reports a sandbox that failed to start as a removed allocation with its observed step", async () => {
+      const startError = new Error("Sandbox private-sandbox-id failed to start with status: error, error reason: null");
+      mockCreate.mockRejectedValue(startError);
+      let orphan: ReturnType<typeof ownedSandbox>;
+      mockGet.mockImplementation(async () => {
+        orphan = { ...ownedSandbox(), state: "error" };
+        orphan.delete.mockImplementation(async () => { orphan.state = "destroyed"; });
+        return orphan;
+      });
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(orphan!.delete).toHaveBeenCalledWith(10, true);
+      expect(failure).toBeInstanceOf(PluginEnvironmentAcquisitionError);
+      expect(failure.message).not.toContain("private-sandbox-id");
+      expect(failure.cause).toBe(startError);
+      expect(readEnvironmentCreationCleanupError(failure)).toBeNull();
+      expect(readEnvironmentAcquisitionDiagnostic(failure)).toMatchObject({ phase: "create", providerState: "error" });
+      expect(environmentAcquireErrorData(failure)).toMatchObject({
+        schema: "paperclip/environment-acquire-error/v1", acquisitionDiagnostic: { phase: "create", providerState: "error" } });
+    });
+
+    it.each(["build_failed", "started"])("keeps the create error when the removed sandbox was %s", async (state) => {
+      const startError = new Error("Sandbox failed to start");
+      mockCreate.mockRejectedValue(startError);
+      mockGet.mockImplementation(async () => ({ ...ownedSandbox(), state }));
+      await expect(plugin.definition.onEnvironmentAcquireLease!(params)).rejects.toBe(startError);
     });
 
     it.each(["paperclip-company-id", "paperclip-environment-id", "paperclip-run-id", "paperclip-create-attempt", "paperclip-provider"])("never deletes a sandbox with a mismatched %s", async (label) => {

@@ -1,5 +1,8 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
+import { writeDeferredExecutionWait } from "../../../services/deferred-execution-wait.js";
+import { recordExecutionWait } from "../../../services/execution-wait.js";
+import type { ActivityPublication } from "../../../services/activity-log.js";
 import { notifyQueuedRunDispatch, notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
@@ -13,10 +16,13 @@ import { readRunCancellation } from "../../../services/run-cancellation.js";
 import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
 import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
 import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
-import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
-import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
+import { currentConversationCommentCondition, isConversation, isConversationReset } from "../../../services/agent-conversations.js";
+import { getExecutionBlocker, getExecutionOwnershipBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
+import { preserveTaskRemoteWorkspaceWriter } from "../../../services/native-runtime/native-failed-workspace-recovery.js";
+import type { WakeRecoveryAdmissionStore } from "../application/recovery-admission.js";
+import { createWakeRecoveryDeferral } from "../application/recovery-deferral.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
 import { agentRunSupersededByFreshContinuation } from "../../../agent-run-cancellation.js";
@@ -42,7 +48,10 @@ import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../service
 import {
   authorizeFailedChatRunRetryWake,
   FailedChatRunRetryAuthorizationError,
+  withDurableChatAdmission,
+  type DurableChatWakeupRequest,
 } from "../../../services/durable-chat-wakeup.js";
+import { isExternalChatWaitAuthorizationContention } from "../../../services/native-runtime/chat-attachment-reuse.js";
 import { isRetiredExternalChatQuestionSource } from "../../../services/question-response-delivery.js";
 import { HttpError } from "../../../errors.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
@@ -53,13 +62,15 @@ import { executionRetryAccounting } from "../../../services/execution-recovery-a
 import { issueService } from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
+import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "../../../services/explicit-native-continuation.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import {
-  queuedCommentIdsFromWakePayload,
+  DEFERRED_WAKE_CONTEXT_KEY,
   queuedCommentIdsFromRunContext,
+  queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
-} from "../../../services/issue-queued-comment-queue.js";
+} from "../../../lib/queued-comment-context.js";
 import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds, readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { deferredWakeHoldsNoOtherConversation, otherConversationCommentIds, splitOtherConversationMessages } from "./chat-conversation-batch.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
@@ -71,7 +82,6 @@ import {
   parseObject,
   readNonEmptyString,
 } from "../domain/values.js";
-import { requireTransactionScopeTx, TransactionScope } from "../application/ports.js";
 import type {
   DeferredWakeCandidate,
   InvokableAgentSnapshot,
@@ -85,16 +95,23 @@ import type {
   WakeQueueHost,
   WakeQueueTransaction,
 } from "../application/ports.js";
+import type { FreshIssueRunStore } from "../application/fresh-issue-run.js";
+import type { IssueWakeAdmissionOutcome } from "../application/issue-wake-admission.js";
 import type { RunSummary } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 /** Wake outcome for a deferred chat wake whose news an earlier reply already gave. */
 export const ALREADY_REPORTED_WAKE_REASON = "Already reported by an earlier reply in this conversation";
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
+export type IssueAdmissionDbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type IssueAdmissionTarget = {
+  companyId: string;
+  issueId: string;
+  durableChatRequest?: DurableChatWakeupRequest;
+};
 
 function normalizeAgentNameKey(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
@@ -969,23 +986,17 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
   return true;
 }
 
-/**
- * Builds the temporary transaction-scope handle the admission port needs.
- * `heartbeat.ts` calls this through `createWakeQueue`'s own wrapper; it
- * never builds a `TransactionScope` itself.
- */
-export function createAdmissionTransactionScope(companyId: string, tx: Db): TransactionScope {
-  return TransactionScope.create(companyId, tx);
+function assertAdmissionCompany(admittedCompanyId: string, companyId: string) {
+  if (companyId !== admittedCompanyId) {
+    throw new Error("wake-queue: admission is locked for a different company");
+  }
 }
 
-function requireAdmissionTx(scope: TransactionScope | null | undefined, companyId: string): Db {
-  return requireTransactionScopeTx(scope, companyId) as Db;
-}
-
-export function createWakeAdmissionReader(): WakeAdmissionReader {
+export function createWakeAdmissionReader(rawTx: IssueAdmissionDbTransaction, admittedCompanyId: string): WakeAdmissionReader {
+  const tx = rawTx as unknown as Db;
   return {
-    async matchesActiveWakeActor(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async matchesActiveWakeActor(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       if (!input.wakeupRequestId) return false;
       const actor = await tx
         .select({
@@ -1008,7 +1019,6 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
       );
     },
     async isSameExecutionAgent(
-      scope,
       {
         companyId,
         activeExecutionRunAgentId,
@@ -1016,7 +1026,9 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
         agentNameKey,
       },
     ) {
-      const tx = requireAdmissionTx(scope, companyId);
+      assertAdmissionCompany(admittedCompanyId, companyId);
+      const storedNameKey = normalizeAgentNameKey(issueExecutionAgentNameKey);
+      if (storedNameKey !== null) return storedNameKey === agentNameKey;
       const executionAgent = await tx
         .select({ name: agents.name })
         .from(agents)
@@ -1027,19 +1039,14 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
           ),
         )
         .then((rows) => rows[0] ?? null);
-      const executionAgentNameKey =
-        normalizeAgentNameKey(issueExecutionAgentNameKey) ??
-        normalizeAgentNameKey(executionAgent?.name);
-      return (
-        Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey
-      );
+      const executionAgentNameKey = normalizeAgentNameKey(executionAgent?.name);
+      return executionAgentNameKey !== null && executionAgentNameKey === agentNameKey;
     },
 
     async findExistingDeferredWake(
-      scope,
       { companyId, agentId, issueId, chatConversationId, durableActor },
     ) {
-      const tx = requireAdmissionTx(scope, companyId);
+      assertAdmissionCompany(admittedCompanyId, companyId);
       const row = await tx
         .select()
         .from(agentWakeupRequests)
@@ -1096,10 +1103,11 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
   };
 }
 
-export function createWakeAdmissionWriter(): WakeAdmissionWriter {
+export function createWakeAdmissionWriter(rawTx: IssueAdmissionDbTransaction, admittedCompanyId: string): WakeAdmissionWriter {
+  const tx = rawTx as unknown as Db;
   return {
-    async coalesceIntoActiveExecutionRun(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async coalesceIntoActiveExecutionRun(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       const now = new Date();
       const [candidate] = await tx.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, input.activeExecutionRunId), eq(heartbeatRuns.companyId, input.companyId),
@@ -1171,8 +1179,8 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       return mergedRun as unknown as Record<string, unknown>;
     },
 
-    async mergeIntoExistingDeferredWake(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async mergeIntoExistingDeferredWake(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       if (input.manualUserWakeActorId) await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
       const [prior] = await tx.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.existingDeferredWakeId),
@@ -1254,8 +1262,8 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       }
     },
 
-    async insertNewDeferredWake(scope, input) {
-      const tx = requireAdmissionTx(scope, input.companyId);
+    async insertNewDeferredWake(input) {
+      assertAdmissionCompany(admittedCompanyId, input.companyId);
       await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
       await tx.insert(agentWakeupRequests).values({
         ...input.durableReceipt,
@@ -1271,6 +1279,145 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         idempotencyKey: input.idempotencyKey,
       });
     },
+  };
+}
+
+export function createIssueWakePreflightReader(db: Db) {
+  return async (companyId: string, issueId: string) => {
+    const [issue] = await db.select({
+      conversationAgentId: issues.conversationAgentId,
+      conversationUserId: issues.conversationUserId,
+      conversationState: issues.conversationState,
+      status: issues.status,
+      originKind: issues.originKind,
+    }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+    return issue ?? null;
+  };
+}
+
+const issueAdmissionFields = {
+  id: issues.id,
+  companyId: issues.companyId,
+  identifier: issues.identifier,
+  conversationBoundaryCommentId: issues.conversationBoundaryCommentId,
+  conversationAgentId: issues.conversationAgentId,
+  conversationUserId: issues.conversationUserId,
+  conversationState: issues.conversationState,
+  status: issues.status,
+  statusVersion: issues.statusVersion,
+  projectId: issues.projectId,
+  projectWorkspaceId: issues.projectWorkspaceId,
+  executionWorkspaceId: issues.executionWorkspaceId,
+  executionWorkspacePreference: issues.executionWorkspacePreference,
+  executionWorkspaceSettings: issues.executionWorkspaceSettings,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+  monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
+  checkoutRunId: issues.checkoutRunId,
+  executionRunId: issues.executionRunId,
+  executionAgentNameKey: issues.executionAgentNameKey,
+  responsibleUserId: issues.responsibleUserId,
+  parentId: issues.parentId,
+  originKind: issues.originKind,
+  originId: issues.originId,
+  originRunId: issues.originRunId,
+  createdAt: issues.createdAt,
+};
+
+export type IssueAdmissionRow = Pick<IssueRow, keyof typeof issueAdmissionFields>;
+export type IssueWakeContinuationInput = Omit<Parameters<typeof admitExplicitNativeContinuation>[0], "db" | "companyId" | "issueId" | "dryRun" | "onBlocked">;
+export type IssueWakeContinuationResult = NonNullable<Awaited<ReturnType<typeof admitExplicitNativeContinuation>>>;
+
+export function createPostgresIssueWakeAdmission(db: Db) {
+  return async function withIssueAdmission(
+    { companyId, issueId, durableChatRequest }: IssueAdmissionTarget,
+    evaluate: (tx: IssueAdmissionDbTransaction, stores: {
+      lockedIssue: IssueAdmissionRow | null;
+      lockIssue: () => Promise<IssueAdmissionRow | null>;
+      recovery: WakeRecoveryAdmissionStore<IssueWakeContinuationInput, IssueWakeContinuationResult>;
+      deferBlockedWake: ReturnType<typeof createWakeRecoveryDeferral<ActivityPublication>>;
+      reader: WakeAdmissionReader;
+      writer: WakeAdmissionWriter;
+      fresh: FreshIssueRunStore<HeartbeatRunRow>;
+    }) => Promise<IssueWakeAdmissionOutcome<HeartbeatRunRow>>,
+  ): Promise<IssueWakeAdmissionOutcome<HeartbeatRunRow> | null> {
+    try {
+      return await db.transaction(withDurableChatAdmission(durableChatRequest, async (tx) => {
+        // Mentions may target another agent, but every admission must share the issue lock.
+        let lockedIssue: IssueAdmissionRow | null = null;
+        const lockIssue = async () => {
+          const [issue] = await tx.select(issueAdmissionFields).from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId))).for("update");
+          lockedIssue = issue ?? null;
+          return lockedIssue;
+        };
+        await lockIssue();
+        const deferBlockedWake = createWakeRecoveryDeferral<ActivityPublication>(issueId, Boolean(durableChatRequest), {
+          updateWait({ requestId, agentId, condition, publications }) {
+            return writeDeferredExecutionWait(tx as unknown as Db, {
+              companyId, issueId, agentId, requestId,
+            }, condition, { replace: true, publications });
+          },
+          async insertDeferred(request) {
+            await notifyDeferredExecutionWork(tx, { companyId });
+            await tx.insert(agentWakeupRequests).values({ ...request, companyId, status: DEFERRED_WAKE_STATUS });
+          },
+          async recordWait({ request, condition, nextAction, coalesce }) {
+            await recordExecutionWait(tx as unknown as Db, {
+              issueId, condition, coalesce,
+              request: { ...request, companyId, reason: "execution_reconciliation_required", error: nextAction },
+            });
+          },
+        });
+        return evaluate(tx, {
+          lockedIssue,
+          lockIssue,
+          recovery: {
+            async readBlocker({ commentId, requestedByActorType, requestedByActorId }) {
+              const issue = lockedIssue;
+              const userComment = requestedByActorType === "user" ? commentId : null;
+              const [resetComment] = isConversation(issue) && userComment && requestedByActorId
+                ? await tx.select({ body: issueComments.body }).from(issueComments).where(and(
+                    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+                    eq(issueComments.id, userComment), eq(issueComments.authorUserId, requestedByActorId),
+                    eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
+                  )).limit(1)
+                : [];
+              const verifiedReset = Boolean(resetComment && isConversationReset(resetComment.body));
+              const preserveWorkspace = userComment && issue?.executionWorkspaceId;
+              if (preserveWorkspace) await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, companyId, issueId);
+              if (!preserveWorkspace && issue?.conversationAgentId === null) {
+                const [recovery] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+                  .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId))).limit(1);
+                if (!recovery) return {
+                  blocker: await getExecutionOwnershipBlocker(tx as unknown as Db, companyId, issueId),
+                  verifiedReset,
+                };
+              }
+              const blocker = await getExecutionBlocker(tx as unknown as Db, companyId, issueId, {
+                conversationResetCommentId: verifiedReset ? userComment : null,
+                lockedIssue: preserveWorkspace ? undefined : issue ?? undefined,
+              });
+              return { blocker, verifiedReset };
+            },
+            admitExplicit(input, dryRun, onBlocked) {
+              return admitExplicitNativeContinuation({ ...input, db: tx as unknown as Db, companyId, issueId, dryRun, onBlocked });
+            },
+          },
+          deferBlockedWake: async input => {
+            if (!lockedIssue) throw new Error("wake-queue: recovery deferral requires a locked issue");
+            return deferBlockedWake(input);
+          },
+          reader: createWakeAdmissionReader(tx, companyId),
+          writer: createWakeAdmissionWriter(tx, companyId),
+          fresh: createFreshIssueRunStore(tx, companyId),
+        });
+      }));
+    } catch (error) {
+      if (isExternalChatWaitAuthorizationContention(error)) return null;
+      throw error;
+    }
   };
 }
 
@@ -1532,6 +1679,88 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
         return { ...result, run: runSnapshot };
       });
+    },
+  };
+}
+
+export function createFreshIssueRunStore(
+  rawTx: IssueAdmissionDbTransaction,
+  companyId: string,
+): FreshIssueRunStore<HeartbeatRunRow> {
+  const tx = rawTx as unknown as Db;
+  return {
+    async saveReceipt(input) {
+      if (input.kind === "insert") {
+        const [receipt] = await tx.insert(agentWakeupRequests).values({
+          ...input.seed, companyId, status: "queued",
+        }).returning();
+        return receipt;
+      }
+      const [receipt] = await tx.update(agentWakeupRequests).set({
+        payload: input.payload, status: "queued", error: null, finishedAt: null, updatedAt: new Date(),
+      }).where(and(
+        eq(agentWakeupRequests.id, input.wakeId),
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        isNull(agentWakeupRequests.runId),
+      )).returning();
+      return receipt;
+    },
+    async readCommentCandidates({ issueId, agentId, handoffRunId, receiptScope, checkExecutionBlocker }) {
+      const [handoff] = handoffRunId ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, handoffRunId), eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, "issue_reassigned"),
+        ne(heartbeatRuns.agentId, agentId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issueId)),
+      )) : [];
+      const candidates = receiptScope
+        ? await tx.select({
+            id: agentWakeupRequests.id,
+            reason: agentWakeupRequests.reason,
+            idempotencyKey: agentWakeupRequests.idempotencyKey,
+            payload: agentWakeupRequests.payload,
+          }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.agentId, handoff ? [agentId, handoff.agentId] : [agentId]),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+            receiptScope.kind === "exact" ? eq(agentWakeupRequests.id, receiptScope.wakeId) : undefined,
+          )).orderBy(asc(agentWakeupRequests.requestedAt))
+        : [];
+      const blocked = candidates.length > 0 && checkExecutionBlocker && await getExecutionBlocker(tx, companyId, issueId);
+      return { handoffAgentId: handoff?.agentId ?? null, candidates: blocked ? [] : candidates };
+    },
+    readUndeliveredLegacyCommentIds(issueId, agentId, commentIds) {
+      return undeliveredLegacyUserCommentIds(tx, companyId, issueId, agentId, commentIds);
+    },
+    notifyRunMilestones(issueId) {
+      return notifyChatRunMilestones(tx, { companyId, issueId });
+    },
+    async insertQueuedRun(seed) {
+      const [run] = await tx.insert(heartbeatRuns).values({
+        ...seed, companyId, status: "queued",
+      }).returning();
+      return run;
+    },
+    async bindReceipts({ wakeId, runId, failedChatRetryReceiptId, adopted }) {
+      const inCompany = eq(agentWakeupRequests.companyId, companyId);
+      const primaryReceipt = and(inCompany, eq(agentWakeupRequests.id, wakeId));
+      await tx.update(agentWakeupRequests).set({ runId, updatedAt: new Date() })
+        .where(primaryReceipt);
+      if (failedChatRetryReceiptId) {
+        await tx.update(agentWakeupRequests).set({
+          status: "coalesced", runId, finishedAt: new Date(), updatedAt: new Date(),
+        }).where(and(inCompany, eq(agentWakeupRequests.id, failedChatRetryReceiptId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      }
+      if (adopted) {
+        await tx.update(agentWakeupRequests).set({
+          status: "coalesced", runId, finishedAt: new Date(), updatedAt: new Date(),
+        }).where(and(inCompany, inArray(agentWakeupRequests.id, adopted.wakeIds)));
+        await tx.update(agentWakeupRequests).set({ payload: adopted.payload }).where(primaryReceipt);
+      }
     },
   };
 }

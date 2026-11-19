@@ -34,6 +34,8 @@ import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.j
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, cancelStoppedRunContinuation, nativeRunHasStopRequest, readPersistedNativeToolReceiptLimitStop } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE, isNativeEnvironmentBlocker } from "./native-environment-blocker.js";
+import { hasQueuedChatRequest } from "./first-turn-queued-input.js";
+import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-agent-blocker.js";
 import { explainFailedRun, explainNativeTurnFailure, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
@@ -1701,7 +1703,7 @@ export async function finalizeNativeRun(input: {
         issueId: authoritativeIssue.id,
         runId: run.id,
       }),
-      (terminalState === "failed" || (terminalState === "succeeded" && isNativeEnvironmentBlocker(result)) ||
+      (terminalState === "failed" || (terminalState === "succeeded" && result.reportedWorkDisposition === "blocked") ||
       (assessment.reportedDisposition === "yielded" &&
       assessment.continuation?.kind === "response_wake" &&
       assessment.hasBlockingRemainingWork))
@@ -1773,6 +1775,10 @@ export async function finalizeNativeRun(input: {
         && !stopRequested && await readPersistedNativeToolReceiptLimitStop(input.db, run, resultRow.turnId),
       environmentBlocker: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
         && isNativeEnvironmentBlocker(result),
+      agentBlockerRecoverable: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
+        && result.reportedWorkDisposition === "blocked",
+      hasQueuedChatRequest: terminalState === "succeeded" && result.reportedWorkDisposition === "blocked"
+        && await hasQueuedChatRequest(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId }),
       failureRetryCount: executionFailureRetryCount(run),
       // Only the task's current owner may turn its own failed continuation
       // into a blocker; the committer rechecks that under the issue lock.
@@ -1842,7 +1848,8 @@ export async function finalizeNativeRun(input: {
         : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
       try {
         await validateNativeDeliverableEvidence(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id,
-          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts,
+          enteringConfiguredReview: proposedDecision.reasonCode === COMPLETION_REVIEW_STAGE_REASON }, result);
       } catch (error) {
         if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
         const incomplete = resolveNativeFinalizerStatus({ ...statusInput,
@@ -1938,6 +1945,8 @@ export async function finalizeNativeRun(input: {
           || decision.reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE
           || decision.reasonCode === NATIVE_ENVIRONMENT_BLOCKER_CODE
           || decision.reasonCode === NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE
+          || decision.reasonCode === NATIVE_AGENT_BLOCKER_CONTINUATION_CODE
+          || decision.reasonCode === NATIVE_AGENT_BLOCKER_HANDOFF_CODE
           ? { agentId: run.agentId, reviewContext } : undefined,
         requireBoardResponseWaitSource:
           decision.reasonCode === "board_response_waiting" || repairBoardResponseWait

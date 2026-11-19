@@ -40,6 +40,7 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { TaskCancellationProvider } from "../context/TaskCancellationContext";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
@@ -2093,6 +2094,37 @@ describe("IssueDetail", () => {
 
   });
 
+  it("uses task breadcrumbs for a conversation's unnumbered backing task", async () => {
+    coordinatorPreference.enabled = true;
+    const agent = createAgent();
+    const task = createIssue({
+      id: "12345678-1234-4abc-8abc-0123456789ab",
+      identifier: null,
+      issueNumber: null,
+      title: "Chat with Demo Planner",
+      status: "in_review",
+      conversationAgentId: agent.id,
+      conversationUserId: "user-1",
+    });
+    mockRouteParams.issueId = task.id;
+    mockLocation.pathname = `/PAP/issues/${task.id}`;
+    mockIssuesApi.get.mockResolvedValue(task);
+    mockAgentsApi.list.mockResolvedValue([agent]);
+
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(queryClient.getQueryData(queryKeys.agents.list(task.companyId))).toEqual([agent]));
+    await flushReact();
+
+    expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
+      { label: "Tasks", href: "/issues" },
+      expect.objectContaining({
+        label: task.title,
+        identifier: "12345678",
+        leading: expect.objectContaining({ props: expect.objectContaining({ status: "in_review" }) }),
+      }),
+    ]);
+  });
+
   it.each(["message", "attachment", "plain HTTP message"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
     if (kind === "plain HTTP message") vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
     mockIssuesApi.markRead.mockClear();
@@ -3145,7 +3177,7 @@ describe("IssueDetail", () => {
     expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
   });
 
-  it("refreshes task snapshots without promoting background activity or passive revisits", async () => {
+  it.each(["first open", "reopen"])("moves the task to the top on %s and keeps snapshot refreshes from changing the order", async (visit) => {
     const authRequest = createDeferred<{
       session: { userId: string };
       user: { id: string };
@@ -3155,6 +3187,10 @@ describe("IssueDetail", () => {
       status: "todo",
       updatedAt: new Date(100),
     });
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    const other = createIssue({ id: "other-task" });
+    if (visit === "reopen") recordRecentTask(issue, "user-1", 10);
+    recordRecentTask(other, "user-1", 20);
     mockAuthApi.getSession.mockReturnValue(authRequest.promise);
     mockIssuesApi.get.mockResolvedValue(issue);
 
@@ -3176,19 +3212,12 @@ describe("IssueDetail", () => {
     });
     await waitForAssertion(() => {
       expect(
-        readRecentTasks(
-          getRecentTasksStorageKey("company-1", "user-1"),
-          "company-1",
-        ),
-      ).toEqual([
-        expect.objectContaining({
-          id: "issue-1",
-          title: "Initial recent title",
-          status: "todo",
-          recordedAt: 0,
-        }),
-      ]);
+        readRecentTasks(storageKey, "company-1").map((task) => task.id),
+      ).toEqual([issue.id, other.id]);
     });
+    const openedAt = readRecentTasks(storageKey, "company-1")[0]!.recordedAt;
+    expect(openedAt).toBeGreaterThan(20);
+    await act(async () => recordRecentTask(other, "user-1", openedAt + 1));
 
     act(() => {
       queryClient.setQueryData(queryKeys.issues.detail("PAP-1"), {
@@ -3200,21 +3229,14 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(
-      readRecentTasks(
-        getRecentTasksStorageKey("company-1", "user-1"),
-        "company-1",
-      )[0],
-    ).toMatchObject({
-      title: "Snapshot refresh title",
-      status: "in_progress",
-      recordedAt: 0,
-    });
+    expect(readRecentTasks(storageKey, "company-1")).toMatchObject([
+      { id: other.id },
+      { id: issue.id, title: "Snapshot refresh title", status: "in_progress", recordedAt: openedAt },
+    ]);
   });
 
   it.each(["reassignment", "run settings"])("advances recency only after a comment with %s saves", async (mode) => {
     const issue = createIssue({ updatedAt: new Date(10) });
-    const comment = createIssueComment({ createdAt: new Date(30) });
     const save = createDeferred<Issue & { comment: IssueComment }>();
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAgentsApi.list.mockResolvedValue([createAgent()]);
@@ -3225,6 +3247,11 @@ describe("IssueDetail", () => {
     recordRecentTask(createIssue({ id: "newer-work" }), "user-1", 20);
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+    const entries = () => readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
+    await waitForAssertion(() => expect(entries()[0]?.id).toBe(issue.id));
+    const openedAt = entries()[0]!.recordedAt;
+    recordRecentTask(createIssue({ id: "newer-work" }), "user-1", openedAt + 1);
+    const comment = createIssueComment({ createdAt: new Date(openedAt + 2) });
     const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
     let pending!: Promise<void>;
     await act(async () => {
@@ -3234,14 +3261,13 @@ describe("IssueDetail", () => {
         mode === "run settings" ? { model: "gpt-6-astra", effort: "high", fast: false } : undefined);
     });
     await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalled());
-    const entries = () => readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
     expect(entries().map(entry => entry.id)).toEqual(["newer-work", issue.id]);
     await act(async () => {
       save.resolve({ ...issue, updatedAt: new Date(15), comment });
       await pending;
     });
     expect(entries().map(entry => entry.id)).toEqual([issue.id, "newer-work"]);
-    expect(entries()[0]?.recordedAt).toBe(30);
+    expect(entries()[0]?.recordedAt).toBe(openedAt + 2);
   });
 
   it.each([false, true])("renders a linked Decisions-v1 record in task context (Coordinator %s)", async (enabled) => {
@@ -3389,6 +3415,46 @@ describe("IssueDetail", () => {
       state: { from: "inbox", taskDocumentScrollEntry: { key: "task-entry", hash: "", pathname: "/PAP/issues/PAP-1" } },
     });
     expect(mockIssuesApi.get).toHaveBeenCalledTimes(getCalls);
+  });
+
+  it.each([
+    ["issue-1", "#document-plan&revision=saved-revision"],
+    ["PAP-2", "#document-plan&revision=saved-revision&documentIssue=PAP-2"],
+  ])("opens the saved plan from %s in the current agent chat", async (sourceTask, hash) => {
+    const pathname = "/PAP/chats/codex";
+    mockLocation.pathname = pathname;
+    mockPanelState.panelVisible = false;
+    coordinatorPreference.enabled = true;
+    const agent = createAgent();
+    const issue = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    const conversation = { agent, issue, ensureIssue: async () => issue };
+    const renderChat = () => renderIssueView(<TaskDetailSurface conversation={conversation} />);
+    await act(async () => renderChat());
+    await waitForAssertion(() => expect(mockOpenPanel).toHaveBeenCalled());
+
+    const link = document.createElement("a");
+    link.href = `/PAP/issues/${sourceTask}#document-plan&revision=saved-revision`;
+    link.dataset.sidebarDocumentLink = "true";
+    container.appendChild(link);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    link.addEventListener("click", (click) => click.preventDefault(), { once: true });
+    await act(async () => { link.dispatchEvent(event); });
+    expect(mockNavigate).toHaveBeenCalledWith(`${pathname}${hash}`, {
+      preventScrollReset: true,
+      state: { taskDocumentScrollEntry: { key: "task-entry", hash: "", pathname } },
+    });
+
+    mockLocation.hash = hash;
+    await act(async () => renderChat());
+    await waitForAssertion(() => {
+      expect(mockSetPanelVisible).toHaveBeenCalledWith(true);
+      expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children.props).toMatchObject({
+        documentDeepLink: { documentKey: "plan", tab: "document" },
+        showDocumentSourceTask: true,
+      });
+    });
+    expect(mockLocation.pathname).toBe(pathname);
   });
 
   it.each(["modifier", "new-tab", "download"])("preserves native document-link behavior for %s", async (kind) => {
@@ -5906,7 +5972,9 @@ describe("IssueDetail", () => {
     expect(optimisticComment).toMatchObject({ clientStatus: "pending" });
     expect(optimisticComment?.queueState).toBeUndefined();
 
-    const postedAt = new Date("2026-04-21T00:00:10.000Z");
+    const storageKey = getRecentTasksStorageKey("company-1", null);
+    const openedAt = readRecentTasks(storageKey, "company-1")[0]!.recordedAt;
+    const postedAt = new Date(openedAt + 10_000);
     await act(async () => {
       postedComment.resolve(
         createIssueComment({
@@ -5918,12 +5986,7 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    expect(
-      readRecentTasks(
-        getRecentTasksStorageKey("company-1", null),
-        "company-1",
-      )[0],
-    ).toMatchObject({
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({
       id: "issue-1",
       recordedAt: postedAt.getTime(),
     });
@@ -6578,6 +6641,36 @@ describe("IssueDetail", () => {
     expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[1]).toBeLessThan(
       mockIssuesApi.update.mock.invocationCallOrder[1],
     );
+  });
+
+  it.each(["Cancel task only", "Cancel task and subtasks"])("waits for the subtask choice before Stop and cancel: %s", async (choice) => {
+    const parent = createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" });
+    const child = createIssue({ id: "child-1", identifier: "PAP-2", title: "Active child", status: "todo", parentId: parent.id });
+    mockHeartbeatsApi.cancel.mockClear().mockResolvedValue(undefined);
+    mockIssuesApi.get.mockResolvedValue(parent);
+    mockIssuesApi.getCore.mockImplementation(async id => id === child.id ? child : parent);
+    mockIssuesApi.listAll.mockResolvedValue([child]);
+    mockIssuesApi.update.mockImplementation(async (id, data) => ({ ...(id === child.id ? child : parent), status: data.status }));
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    await act(async () => renderIssueView(<TaskCancellationProvider><IssueDetail /></TaskCancellationProvider>));
+    await flushReact();
+    const stop = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Stop and cancel");
+    expect(stop).toBeTruthy();
+    await act(async () => stop!.click());
+    await flushReact();
+    const dialog = container.querySelector('[data-slot="dialog-content"]')!;
+    expect(dialog.textContent).toContain("Cancel 1 active subtask?");
+    expect(dialog.textContent).toContain(child.title);
+    expect(dialog.querySelector("a")).toBeNull();
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    const confirm = Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === choice)!;
+    await act(async () => confirm.click());
+    await flushReact();
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledExactlyOnceWith("run-active-1");
+    expect(mockIssuesApi.update.mock.calls.map(call => call[0])).toEqual(choice === "Cancel task only" ? ["PAP-1"] : ["PAP-1", child.id]);
+    expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[0]).toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[0]!);
   });
 
   it("reports partial success when run finalization stops the run but task status update fails", async () => {
