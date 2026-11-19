@@ -328,9 +328,12 @@ company and issue lock, the admission transaction, and the handoff after commit
 for both fresh task runs and wakes arriving behind an active execution. Wake-queue
 checks conversation eligibility before locking the task. The locked task supplies
 the attribution fields used to select the responsible user for a fresh run.
-Heartbeat uses the transaction for its specialized eligibility gates and
-continuation writes. Wake-queue selects eligible saved comment receipts in request order and
-binds them to the new run. Chat authorization and its admission callback run in
+Wake-queue reads recovery state inside the admission transaction. It checks
+continuation eligibility before allowing a wake to join active work, then
+settles any explicit continuation before allowing a fresh run. Heartbeat
+uses the same transaction for its other eligibility gates and specialized
+receipt handling. Wake-queue selects eligible saved comment receipts in request
+order and binds them to the new run. Chat authorization and its admission callback run in
 the same transaction. Authorization contention defers the wake and rolls back
 without publishing buffered effects.
 `createHeartbeatQueue` binds these operations without querying or starting work.

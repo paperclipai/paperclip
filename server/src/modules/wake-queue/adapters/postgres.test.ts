@@ -257,6 +257,32 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     }
   });
 
+  it("checks conversation reset eligibility using the row refreshed under the admission lock", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const userId = randomUUID();
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorType: "user", authorUserId: userId, body: "/new",
+    }).returning();
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation",
+      fingerprint: randomUUID(), nextAction: "Inspect the stopped run.",
+    });
+
+    await createPostgresIssueWakeAdmission(db)({ companyId, issueId }, async (tx, { lockedIssue, lockIssue, recovery }) => {
+      const input = { commentId: comment.id, requestedByActorType: "user", requestedByActorId: userId };
+      expect(lockedIssue?.conversationAgentId).toBeNull();
+      await expect(recovery.readBlocker(input)).resolves.toMatchObject({ verifiedReset: false, blocker: { cause: "legacy_execution_requires_reconciliation" } });
+      // Durable chat authorization can write through this transaction before relock.
+      await tx.update(issues).set({ conversationAgentId: agentId, conversationUserId: userId, conversationState: "active" })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      await expect(lockIssue()).resolves.toMatchObject({ conversationAgentId: agentId });
+      await expect(recovery.readBlocker(input)).resolves.toEqual({ verifiedReset: true, blocker: null });
+      return { kind: "skipped" };
+    });
+  });
+
   it("locks an issue added after the initial admission lock missed", async () => {
     const companyId = await seedCompany();
     const issueId = randomUUID();

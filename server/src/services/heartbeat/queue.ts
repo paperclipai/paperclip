@@ -55,14 +55,12 @@ import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { isVerifiedDependencyInteractionResponse, readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isConversation,
-  isConversationReset,
   isWaitingConversation,
 } from "../agent-conversations.js";
 import { onboardingGreetingNeeded } from "../onboarding-chat.js";
 import { ONBOARDING_CHAT_GREETING_REASON } from "../onboarding-chat-prompt.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
 import {
-  admitExplicitNativeContinuation,
   undeliveredLegacyUserCommentIds,
 } from "../explicit-native-continuation.js";
 import { canRetryStoppedRun } from "../cancelled-native-startup.js";
@@ -79,7 +77,6 @@ import {
 import { claimQueuedNativeReviewRun } from "../native-runtime/native-review-dispatch.js";
 import { nativeCleanupHoldsAdmission } from "../native-runtime/native-cleanup-admission-hold.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
-import { preserveTaskRemoteWorkspaceWriter } from "../native-runtime/native-failed-workspace-recovery.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import {
   slackMentionAllowsRunStart,
@@ -3520,7 +3517,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
       return wakeQueue.admitIssueWake(
         { companyId: agent.companyId, issueId, durableChatRequest: durableRequest },
-        async (tx, { lockedIssue, lockIssue, admitWakeBehindIssueExecution, admitFreshIssueRun }) => {
+        async (tx, { lockedIssue, lockIssue, prepareRecovery }) => {
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
@@ -3870,6 +3867,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           }
 
           let reconciledSourceRunId: string | null = null;
+          let reconciledRecoveryActionId: string | null = null;
           let reconciledRestoreRetryCount: number | null = null;
           if (executionReconciliationWake) {
             const actionId = readNonEmptyString(
@@ -4012,10 +4010,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               reconciledRestoreRetryCount = executionFailureRetryCount(reconciledRun!);
             }
             reconciledSourceRunId = sourceRunId;
+            if (enrichedContextSnapshot.recoveryActionId === action.id) reconciledRecoveryActionId = action.id;
           }
 
           let continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
-          let continuationBlocked = false;
           const deferBlockedExecution = async (
             executionBlocker: Pick<NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, "recoveryActionId" | "cause" | "nextAction">,
           ) => {
@@ -4066,32 +4064,21 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "deferred" as const, admitted: true };
           };
           const explicitContinuationRunId = randomUUID();
-          const [resetComment] = isConversation(issue) && opts.requestedByActorType === "user" && opts.requestedByActorId && wakeCommentId
-            ? await tx.select({ body: issueComments.body }).from(issueComments).where(and(
-                eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
-                eq(issueComments.id, wakeCommentId), eq(issueComments.authorUserId, opts.requestedByActorId),
-                eq(issueComments.authorType, "user"), isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
-              )).limit(1)
-            : [];
-          const verifiedConversationReset = Boolean(resetComment && isConversationReset(resetComment.body));
-          const preserveWorkspace = wakeCommentId && opts.requestedByActorType === "user"
-            && issue.executionWorkspaceId !== null;
-          if (preserveWorkspace)
-            await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, issue.companyId, issue.id);
-          const executionBlocker = await getExecutionBlocker(
-            tx as unknown as Db, issue.companyId, issue.id,
-            {
-              conversationResetCommentId: verifiedConversationReset ? wakeCommentId : null,
-              lockedIssue: preserveWorkspace ? undefined : issue,
-            },
-          );
-          // Prove eligibility without retiring the hold. Later gates can still
-          // decline this wake; hold retirement and successor creation stay atomic.
-          // A bound chat request has already rechecked its current principal
-          // above. Treat its new user message like a board comment, but keep
-          // failed-run retry actions on their separate exact-request path.
-          const ownsReconstructionContinuation = reconciledSourceRunId && executionBlocker?.runId === reconciledSourceRunId
-            && executionBlocker.recoveryActionId === enrichedContextSnapshot.recoveryActionId;
+          const recovery = await prepareRecovery({
+            agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
+            requestedByActorType: opts.requestedByActorType, requestedByActorId: opts.requestedByActorId,
+            reason: taskRetryActorId ? "task_retry" : durableRequest && !failedChatRetry ? "issue_commented" : reason,
+            commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            queuedCommentInterruptId: opts.queuedCommentInterruptId,
+            queuedCommentRequestId: opts.queuedCommentRequestId,
+            taskRetryRequestId: opts.taskRetryRequestId,
+            ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
+            interactionPayload: payload,
+            reconciliation: reconciledSourceRunId && reconciledRecoveryActionId ? {
+              sourceRunId: reconciledSourceRunId, actionId: reconciledRecoveryActionId,
+            } : undefined,
+          });
+          const { blocker: executionBlocker, ownsReconstruction: ownsReconstructionContinuation } = recovery;
           const continuationHold = () => executionBlocker ?? {
             recoveryActionId: null, cause: "native_continuation_requires_reconciliation" as const, nextAction: continuationWait.message,
           };
@@ -4118,19 +4105,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             ? await undeliveredContinuation(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id }) : null;
           if (continuationToDeliver)
             Object.assign(enrichedContextSnapshot, undeliveredContinuationContext(continuationToDeliver, enrichedContextSnapshot));
-          if ((executionBlocker || opts.queuedCommentInterruptId) && !ownsReconstructionContinuation && !(await admitExplicitNativeContinuation({
-            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
-            agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
-            reason: taskRetryActorId ? "task_retry" : durableRequest && !failedChatRetry ? "issue_commented" : reason,
-            commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
-            queuedCommentInterruptId: opts.queuedCommentInterruptId,
-            queuedCommentRequestId: opts.queuedCommentRequestId,
-            taskRetryRequestId: opts.taskRetryRequestId,
-            ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
-            interactionPayload: payload,
-            dryRun: true,
-            onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
-          })) && (executionBlocker || (continuationBlocked && !verifiedConversationReset))) {
+          const busyRecovery = await recovery.checkBusyAdmission();
+          if (busyRecovery.wait) continuationWait = busyRecovery.wait;
+          if (busyRecovery.kind === "blocked") {
             // A hold left by an unfinished run never refuses an ordinary
             // continuation: unless its cause is the person's, the fallback
             // settles it in this transaction and this wake becomes the fresh
@@ -4764,7 +4741,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               return { kind: "coalesced" as const, run: activeExecutionRun };
             }
 
-            const admission = await admitWakeBehindIssueExecution({
+            const admission = await busyRecovery.admitBusy({
               companyId: agent.companyId,
               issueId: issue.id,
               agentId,
@@ -4999,20 +4976,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "skipped" as const };
           }
 
-          const explicitContinuation = await admitExplicitNativeContinuation({
-            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
-            agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
-            reason: taskRetryActorId ? "task_retry" : durableRequest && !failedChatRetry ? "issue_commented" : reason,
-            commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
-            queuedCommentInterruptId: opts.queuedCommentInterruptId,
-            queuedCommentRequestId: opts.queuedCommentRequestId,
-            taskRetryRequestId: opts.taskRetryRequestId,
-            ...(durableRequest?.resumeDeferred && !failedChatRetry ? { durableChatRequest: durableRequest } : {}),
-            interactionPayload: payload,
-            onBlocked: (reason, message) => { continuationBlocked = true; continuationWait = { reason, message }; },
-          });
-          if (!explicitContinuation && (executionBlocker || (continuationBlocked && !verifiedConversationReset)) && !ownsReconstructionContinuation)
-            return deferBlockedExecution(continuationHold());
+          const freshRecovery = await busyRecovery.checkFreshAdmission();
+          if (freshRecovery.wait) continuationWait = freshRecovery.wait;
+          if (freshRecovery.kind === "blocked") return deferBlockedExecution(continuationHold());
+          const { explicitContinuation } = freshRecovery;
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
@@ -5030,7 +4997,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             }, issueActivityPublications);
           }
 
-          const newRun = await admitFreshIssueRun({
+          const newRun = await freshRecovery.admitFresh({
             receipt: {
               agentId,
               source,
