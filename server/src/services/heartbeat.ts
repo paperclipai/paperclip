@@ -40,6 +40,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness, verifyRetryWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
+import { responsibilitySummaryModelGenerator } from "./responsibility-summary-generator.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { consumeLegacyQuotaPrestartFence } from "./heartbeat/quota-prestart-fence.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
@@ -1034,6 +1035,7 @@ export function heartbeatService(
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
       promptInjectionPreventionService(db, { budgetHooks }).recoverInterrupted(),
+      responsibilitySummaryModelGenerator(db).recoverInterrupted(),
     ]);
     const failed = outcomes.find(outcome => outcome.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
@@ -2237,13 +2239,6 @@ export function heartbeatService(
         ? await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
           .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, dispatchIssueId))).then(rows => rows[0] ?? null)
         : null;
-      if (isConversation(conversationIdentity) && !(await instanceSettings.getExperimental()).enableAgentChat) {
-        await setRunStatus(run.id, "cancelled", { finishedAt: new Date(), error: "Agent Chat is disabled", errorCode: "agent_chat_disabled" });
-        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date() });
-        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
-        await finalizeAgentStatus(agent.id, "cancelled");
-        return;
-      }
       if (await deferRunForProviderLimit(run, agent, {
         resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
         conversation: isConversation(conversationIdentity),
@@ -3165,7 +3160,7 @@ export function heartbeatService(
         }
         const enforceContinuationOwnership = Boolean(issueId && (isFailedChatRunRetry || isResolvedInteractionContinuationWakeContext(context) ||
           typeof context.workspaceReconstructionActionId === "string" ||
-          ["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? "")));
+          ["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker", "native_agent_blocker_continuation"].includes(run.scheduledRetryReason ?? "")));
         if (issueId && enforceContinuationOwnership) {
           await options.beforeResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
           await options.afterResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
@@ -3617,9 +3612,8 @@ export function heartbeatService(
           enabled:
             resolvedInstanceSettings.experimental.enableNativeRunner === true,
           museEnabled: resolvedInstanceSettings.experimental.enableMuse === true,
-          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true && resolvedInstanceSettings.experimental.enablePublicMcp === true,
-          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true
-            && resolvedInstanceSettings.experimental.enablePublicMcp === true,
+          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true,
+          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true,
           runtimeConfig: agent.runtimeConfig,
           adapterConfig: agent.adapterConfig,
           agent: {

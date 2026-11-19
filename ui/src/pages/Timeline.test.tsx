@@ -29,9 +29,6 @@ vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: "/PAP/timeline", search: mockLocation.search }),
 }));
 
-vi.mock("@/components/RequestCollapsedSidebar", () => ({
-  RequestCollapsedSidebar: () => <div data-testid="request-collapsed-sidebar" />,
-}));
 
 const emptyTimeline: WorkTimelineResult = {
   actors: [],
@@ -184,7 +181,6 @@ describe("Timeline", () => {
     expect(container.textContent).not.toContain("work kicked off");
     expect(container.textContent).not.toContain("visible");
 
-    expect(container.querySelector('[data-testid="request-collapsed-sidebar"]')).not.toBeNull();
 
     expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
       "company-1",

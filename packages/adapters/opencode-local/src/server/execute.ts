@@ -17,6 +17,7 @@ import {
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetLocalWorkspace,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
   adapterExecutionTargetDuplexObservabilityRecorder,
@@ -38,7 +39,6 @@ import {
   buildRuntimeToolsEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
-  ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -266,7 +266,7 @@ async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<Adapter
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  await ensureAdapterExecutionTargetLocalWorkspace(executionTarget, cwd);
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredOpenCodeSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, openCodeSkillEntries);
   if (!executionTargetIsRemote) {

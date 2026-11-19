@@ -113,6 +113,7 @@ import {
   paperclipRunnerTransitionConfig,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 /* ---- Props ---- */
 
@@ -3022,7 +3023,7 @@ function DisplayedCodeLoginPanel({
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
                 1. Code
               </div>
-              <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
+              <span className={cn("font-mono text-xs text-foreground break-all", ANALYTICS_NO_CAPTURE_CLASS)}>{prompt.code}</span>
             </div>
             <AdapterLoginCopyButton value={prompt.code} label="Copy code" />
           </div>

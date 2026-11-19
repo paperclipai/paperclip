@@ -67,7 +67,7 @@ vi.mock("@/lib/router", () => ({
   useSearchParams: () => [state.params],
 }));
 vi.mock("@/components/AgentConfigForm", () => ({
-  ModelDropdown: ({
+  ModelDropdown: vi.fn(({
     value,
     onChange,
     onRefreshModels,
@@ -86,7 +86,7 @@ vi.mock("@/components/AgentConfigForm", () => ({
       />
       {onRefreshModels && <button type="button" disabled={refreshingModels} onClick={() => void onRefreshModels()}>Refresh models</button>}
     </>
-  ),
+  )),
   AdapterLoginPanel: ({ onConnected }: { onConnected: (id: string) => void }) => (
     <button onClick={() => onConnected("login-session")}>
       Complete subscription login

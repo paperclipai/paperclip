@@ -9,7 +9,7 @@ import type { AcpRuntimeEvent } from "acpx/runtime";
 import { expect, it, vi } from "vitest";
 
 import { ACP_SESSION_UPDATE_EVENT_KINDS, createAcpSessionUpdateEventConverter } from "./acp-session-update-event.js";
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -151,7 +151,7 @@ it("converts the real Claude ACP stream exactly as ACPX does for every update ki
   } as unknown as AcpxRuntimePortOpenOptions;
   const converter = createAcpSessionUpdateEventConverter();
   const seen = new Map<string, { acpx: number; paperclip: number }>();
-  let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+  let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
   const runTurn = async (turnId: string, text: string) => {
     capture = [];
     promptAnswered = false;
@@ -178,7 +178,7 @@ it("converts the real Claude ACP stream exactly as ACPX does for every update ki
     return yielded;
   };
   try {
-    port = await openCodexAcpxRuntime(options, {
+    port = await openQualifiedAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
     });

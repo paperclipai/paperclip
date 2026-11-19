@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { AcpRuntimeEvent } from "acpx/runtime";
 import { expect, it, vi } from "vitest";
 
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -79,9 +79,9 @@ async function runTurn() {
     mcpServers: [],
     retainFailedAdmissionCleanup: vi.fn(),
   } as AcpxRuntimePortOpenOptions;
-  let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+  let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
   try {
-    port = await openCodexAcpxRuntime(options, {
+    port = await openQualifiedAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
     });

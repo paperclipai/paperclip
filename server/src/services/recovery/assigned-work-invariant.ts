@@ -91,6 +91,7 @@ const PERSON_ACTIONS: Readonly<Record<string, WaitingReason>> = {
   resume: "agent_paused",
   confirm_owner_stop: "board_confirmation",
   confirm_run_stopped: "board_confirmation",
+  unblock: "assignee_declared_block",
 };
 
 /** Active recovery-action causes that name a person's move. Every other cause

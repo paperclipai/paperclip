@@ -17,6 +17,7 @@ import {
   adapterExecutionTargetUsesPaperclipBridge,
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetLocalWorkspace,
   ensureAdapterExecutionTargetFile,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   prepareAdapterExecutionTargetRuntime,
@@ -38,7 +39,6 @@ import {
   buildRuntimeToolsEnv,
   joinPromptSections,
   buildInvocationEnvForLogs,
-  ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -160,9 +160,9 @@ function buildSessionPath(agentId: string, timestamp: string): string {
   return path.join(PAPERCLIP_SESSIONS_DIR, `${safeTimestamp}-${agentId}.jsonl`);
 }
 
-function buildRemoteSessionPath(runtimeRootDir: string, agentId: string, timestamp: string): string {
+function buildRemoteSessionPath(sessionRootDir: string, agentId: string, timestamp: string): string {
   const safeTimestamp = timestamp.replace(/[:.]/g, "-");
-  return path.posix.join(runtimeRootDir, "sessions", `${safeTimestamp}-${agentId}.jsonl`);
+  return path.posix.join(sessionRootDir, "sessions", `${safeTimestamp}-${agentId}.jsonl`);
 }
 
 function normalizeExecutionCwd(candidate: string, remote: boolean): string {
@@ -273,7 +273,7 @@ async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<Adapter
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  await ensureAdapterExecutionTargetLocalWorkspace(executionTarget, cwd);
 
   if (!executionTargetIsRemote) {
     await ensureSessionsDir();
@@ -503,6 +503,9 @@ async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<Adapter
         }
       }
       const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+      const remoteSessionRootDir = executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+        && executionTarget.workspaceRealization?.mode === "in_place"
+        ? path.posix.join(effectiveExecutionCwd, ".paperclip", "pi") : remoteRuntimeRootDir;
       if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
         paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
           runId,
@@ -560,8 +563,8 @@ async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<Adapter
         sessionHeaderCwdMatches;
       const sessionPath = canResumeSession
         ? runtimeSessionId
-        : executionTargetIsRemote && remoteRuntimeRootDir
-          ? buildRemoteSessionPath(remoteRuntimeRootDir, agent.id, new Date().toISOString())
+        : executionTargetIsRemote && remoteSessionRootDir
+          ? buildRemoteSessionPath(remoteSessionRootDir, agent.id, new Date().toISOString())
           : buildSessionPath(agent.id, new Date().toISOString());
 
       if (runtimeSessionId && !canResumeSession) {
@@ -896,8 +899,8 @@ async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<Adapter
           "stdout",
           `[paperclip] Pi session "${runtimeSessionId}" is unavailable; retrying with a fresh session.\n`,
         );
-        const newSessionPath = executionTargetIsRemote && remoteRuntimeRootDir
-          ? buildRemoteSessionPath(remoteRuntimeRootDir, agent.id, new Date().toISOString())
+        const newSessionPath = executionTargetIsRemote && remoteSessionRootDir
+          ? buildRemoteSessionPath(remoteSessionRootDir, agent.id, new Date().toISOString())
           : buildSessionPath(agent.id, new Date().toISOString());
         if (executionTargetIsRemote) {
           await ensureAdapterExecutionTargetFile(runId, executionTarget, newSessionPath, {

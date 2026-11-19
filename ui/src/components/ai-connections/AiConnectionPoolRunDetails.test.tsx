@@ -1,6 +1,10 @@
+// @vitest-environment jsdom
 import { renderToStaticMarkup } from "react-dom/server";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { AiConnectionPoolRunDetails } from "./AiConnectionPoolRunDetails";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
+
+afterEach(() => { document.body.innerHTML = ""; });
 
 const selection = {
   poolId: "pool", memberId: "codex-member", adapterType: "codex_local",
@@ -39,4 +43,13 @@ it("does not label the successor with a previous account or an expired wait", ()
   expect(html).toContain("account authentication failed");
   expect(html).not.toContain("Previous Claude");
   expect(html).not.toContain("Waiting");
+});
+
+it("masks the pinned pool account name in session replay", () => {
+  document.body.innerHTML = renderToStaticMarkup(<AiConnectionPoolRunDetails context={{
+    aiRouterSelection: { binding: { provider: "anthropic", connectionId: "connection" }, runtimeConfig: { model: "claude-sonnet" }, notes: [] },
+    aiConnection: { accountName: "Juniper Ops Pool Account", connectionId: "connection" },
+  }} />);
+  expect(replayLeaks("Juniper Ops Pool Account")).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("claude-sonnet")).toEqual({ rendered: true, recorded: true });
 });

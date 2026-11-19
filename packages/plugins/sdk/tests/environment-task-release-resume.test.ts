@@ -61,6 +61,18 @@ describe("release and resume task contract", () => {
     expect(environmentTaskResultSchema.safeParse({ ...description, releaseResumeVersion: 2 }).success).toBe(false);
     expect(environmentTaskResultSchema.parse({ ...description, resumeLaunchInputsVersion: 1 })).toEqual({ ...description, resumeLaunchInputsVersion: 1 });
     expect(environmentTaskResultSchema.safeParse({ ...description, resumeLaunchInputsVersion: 2 }).success).toBe(false);
+    expect(environmentTaskResultSchema.parse({ ...description, resumeRelaunchedRunnerVersion: 1 })).toEqual({ ...description, resumeRelaunchedRunnerVersion: 1 });
+    expect(environmentTaskResultSchema.safeParse({ ...description, resumeRelaunchedRunnerVersion: 2 }).success).toBe(false);
+  });
+
+  it("reports the Runner build a resume relaunched on only when asked", () => {
+    expect(environmentTaskOperationSchema.parse({ ...resume, relaunchedRunnerVersion: 1 })).toEqual({ ...resume, relaunchedRunnerVersion: 1 });
+    expect(environmentTaskOperationSchema.safeParse({ ...resume, relaunchedRunnerVersion: 2 }).success).toBe(false);
+    const runner = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
+    const result = { kind: "resume", taskId: "task", outcome: "resumed", runner };
+    expect(parseEnvironmentTaskResult(resume, "task", result)).toEqual(result);
+    expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, digest: "sha256:short" } }).success).toBe(false);
+    expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, extra: true } }).success).toBe(false);
   });
 
   it.each(credentials)("validates %s on resume as on submit", (_label, credential, valid) => {

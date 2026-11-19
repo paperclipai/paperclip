@@ -4,6 +4,8 @@ import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
+import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { actorBinding, connectionActorUserId } from "../actor.js";
 import { stageSlackCloudEnrollmentIntent } from "../../chat-channels/slack/cloud-enrollment.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
@@ -82,10 +84,12 @@ type RemovalDependencies = {
   secrets: ReturnType<typeof secretService>;
   runtimeSupervisor: Pick<ReturnType<typeof createToolRuntimeSupervisor>, "stopSlot">;
   vercelConnect: VercelConnectClient | null;
+  currentCloudConnector: () => PaperclipCloudConnector | null;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
 };
 
-export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow }: RemovalDependencies) {
+export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow }: RemovalDependencies) {
+  const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
   /**
    * Split the secrets a connection points at into the ones it owns outright and
    * the ones another consumer still depends on.
@@ -263,10 +267,14 @@ async function removeConnection(
     const grantRows = await db
       .select({
         id: connectionGrants.id,
+        companyId: connectionGrants.companyId,
+        connectionId: connectionGrants.connectionId,
         status: connectionGrants.status,
         kind: connectionGrants.kind,
         subjectUserId: connectionGrants.subjectUserId,
+        subjectAgentId: connectionGrants.subjectAgentId,
         credentialSecretRefs: connectionGrants.credentialSecretRefs,
+        providerTenant: connectionGrants.providerTenant,
         externalCredential: connectionGrants.externalCredential,
       })
       .from(connectionGrants)
@@ -277,6 +285,14 @@ async function removeConnection(
         ),
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
+    let secretsRevoked = 0;
+    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantRows, actor, {
+      removingConnection: true,
+      canRemoveSecret: async (secretId) => (await classifyConnectionSecrets(connection, [secretId])).owned.includes(secretId),
+      removeSecret: async (secretId, expectedVersion) => {
+        if (await secrets.remove(secretId, { expectedVersion })) secretsRevoked += 1;
+      },
+    });
     if (grantsToRevoke.length > 0) {
       await db.transaction(async (tx) => {
         if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
@@ -600,6 +616,8 @@ async function removeConnection(
       await browserUseService(db, options.remoteHttpRequest).stopBeforeCredentialRemoval(connection.companyId, connection.id);
     }
 
+    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
+
     // Only now, with every access path closed, revoke the credentials. Each
     // `secrets.remove` marks the row deleted before it calls the provider, so a
     // provider error leaves an unresolvable secret and a resumable removal
@@ -616,7 +634,6 @@ async function removeConnection(
       connection,
       candidateSecretIds,
     );
-    let secretsRevoked = 0;
     for (const secretId of owned) {
       const removed = await secrets.remove(secretId);
       if (removed) secretsRevoked += 1;
@@ -669,6 +686,7 @@ async function removeConnection(
         gatewaySessionsRevoked,
         applicationArchived: archived.applicationArchived,
         externalCredentialCleanup,
+        ...(providerAccess ? { providerAccess } : {}),
       },
     };
   }

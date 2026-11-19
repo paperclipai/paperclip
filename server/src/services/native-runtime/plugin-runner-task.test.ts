@@ -598,6 +598,36 @@ describe("plugin Runner release/resume facade", () => {
     }, { expectedTaskId: "task" });
   });
 
+  it.each([
+    ["reports a relaunched build when the provider supports it", 1 as const, true],
+    ["ignores a reported build when the provider never advertised support", undefined, false],
+  ])("%s", async (_label, resumeRelaunchedRunnerVersion, reported) => {
+    const runner = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
+    const task = vi.fn(async (): Promise<unknown> => ({ kind: "resume", taskId: "task", outcome: "resumed", runner }));
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, resumeRelaunchedRunnerVersion });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toEqual(reported ? { outcome: "resumed", runner } : "resumed");
+    expect(task).toHaveBeenCalledExactlyOnceWith({
+      kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket",
+      ...(reported ? { relaunchedRunnerVersion: 1 } : {}),
+    }, { expectedTaskId: "task" });
+  });
+
+  it.each([
+    ["the parked build", undefined],
+    ["a relaunched build", { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` }],
+  ])("clears the released Runner proof after a resume on %s, once Core saved a relaunched build", async (_label, runner) => {
+    const task = vi.fn(async (): Promise<unknown> => ({ kind: "resume", taskId: "task", outcome: "resumed", ...(runner ? { runner } : {}) }));
+    const onResumed = vi.fn(async () => {});
+    const owner = createPluginRunnerTaskOwner({ ...input("codex"), task, onResumed, resumeRelaunchedRunnerVersion: 1 });
+    const outcome = await owner.driver.releaseResume!.resume(requirements.identity, "transient-ticket");
+    if (runner) {
+      expect(outcome).toEqual({ outcome: "resumed", runner, settled: expect.any(Function) });
+      expect(onResumed).not.toHaveBeenCalled();
+      if (typeof outcome === "object") await outcome.settled?.();
+    } else expect(outcome).toBe("resumed");
+    expect(onResumed).toHaveBeenCalledExactlyOnceWith(requirements.identity);
+  });
+
   it("resumes with the credential resolved for the rebound claimant run", async () => {
     const task = lifecycleTask();
     const owner = createPluginRunnerTaskOwner({ ...input("claude"), task, resumeLaunchInputsVersion: 1,

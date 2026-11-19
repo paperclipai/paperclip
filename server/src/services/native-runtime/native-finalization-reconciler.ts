@@ -1,4 +1,5 @@
 import { sameRunResumeClaimEntry } from "./scheduled-resume-continuation.js";
+import { liveNativeFinalizationReserved } from "./live-native-finalization.js";
 import { appendBoundedRecoveryHistory } from "./native-restart-recovery.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { currentControllerProcessStamp } from "../controller-process-identity.js";
@@ -697,6 +698,8 @@ async function reconcileNativeFinalizationsPass(
       const { operation } = outcome;
       const workspaceFinalizeStatus = "succeeded" as const;
       if (options.skipNativeResultCommit && row.coordinatorPhase !== "committed") continue;
+      // The run's live heartbeat commits it; its release wakes the result worker.
+      if (row.coordinatorPhase !== "committed" && liveNativeFinalizationReserved(row.runId)) continue;
       try {
         const finalized = await finalizeNativeRun({
           db,
@@ -754,6 +757,8 @@ async function reconcileNativeFinalizationsPass(
       continue;
     }
     if (options.skipNativeResultCommit && row.coordinatorPhase !== "committed") continue;
+    // The run's live heartbeat commits it; its release wakes the result worker.
+    if (row.coordinatorPhase !== "committed" && liveNativeFinalizationReserved(row.runId)) continue;
     const replayDecision = resolveNativeReconciliationStatus({
       facts: { canonicalReplay: true },
       priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,

@@ -125,7 +125,7 @@ export interface HeartbeatRuntimeSelectionInput {
     getFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   };
   workspace: {
-    persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
+    persistedExecutionWorkspace: { id: string; companyId?: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
     activeEnvironmentLease: (Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease"> & {
@@ -325,7 +325,18 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   const { runtimeConfig, runtimeSkillEntries, runScopedMentionedSkillKeys, instructionCopy, agentIdentity, issueAssigneeOverrides, resolvedConfig, managedAiRuntime } = input.config;
   const runOptions = input.recovery;
   const { providerTraceRequested, providerTraceCapture } = input.trace;
-  if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native");
+  const sshAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
+  if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native", {
+    adapterType: agent.adapterType,
+    environmentDriver: executionTarget?.kind === "remote" ? executionTarget.transport : null,
+    remoteAuthority: Boolean(sshAuthority?.location && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+      && persistedExecutionWorkspace?.companyId === agent.companyId && sshAuthority.writerRunId === run.id
+      && executionTarget.spec.remoteCwd === executionTarget.remoteCwd
+      && sshAuthority.location.environmentId === executionTarget.environmentId
+      && sshAuthority.location.leaseId === executionTarget.leaseId),
+    remoteCwd: executionTarget?.kind === "remote" ? executionTarget.remoteCwd : null,
+    authorityCwd: sshAuthority?.location?.remoteCwd ?? null,
+  });
   if (nativeRuntimeResolution.kind !== "native" && readNativeReviewAssignmentContext(context))
     throw new Error("native_review_requires_paperclip_runner: a completion review can only be resolved on the Paperclip Runner. Assign a Paperclip Runner pool member to the reviewer, then retry.");
   let nativeExecution: NativeExecutionInput | null = null;
@@ -1189,6 +1200,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 else '{}'::jsonb end)
               || (case when ${heartbeatRuns.runnerProfileJson} ? 'legacyQuotaPrestartFence'
                 then jsonb_build_object('legacyQuotaPrestartFence', ${heartbeatRuns.runnerProfileJson}->'legacyQuotaPrestartFence')
+                else '{}'::jsonb end)
+              || (case when ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace-run.v1'
+                then jsonb_build_object('remoteWorkspace', ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace')
                 else '{}'::jsonb end) || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
         updatedAt: new Date(),
       })

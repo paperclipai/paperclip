@@ -1,4 +1,6 @@
 import type { AiConnectionRouterSelection } from "@paperclipai/shared";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function AiConnectionPoolRunDetails({ context }: { context: Record<string, unknown> | null }) {
   const selection = context?.aiRouterSelection as AiConnectionRouterSelection | undefined;
@@ -15,7 +17,7 @@ export function AiConnectionPoolRunDetails({ context }: { context: Record<string
   const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? config.variant;
   return <div className="rounded-lg border p-4 text-sm space-y-1">
     {pool?.poolName && <p className="font-medium">{pool.poolName} · revision {pool.poolRevision}</p>}
-    <p className="font-medium">{failover?.sourceRunId ? "Backup pool account" : "Pool account"} · {accountName ?? connectionId ?? "Selected account"}</p>
+    <p className={cn("font-medium", ANALYTICS_MASK_CLASS)}>{failover?.sourceRunId ? "Backup pool account" : "Pool account"} · {accountName ?? connectionId ?? "Selected account"}</p>
     <p>{[selection.binding.provider, selection.adapterType, config.provider, config.acpxAgent, config.model, effort].filter(Boolean).map(String).join(" · ")}</p>
     {failover?.sourceRunId && reason && <p className="text-muted-foreground">Backup selected: {reason}.</p>}
     {waitingUntil && <p role="status" className="text-muted-foreground">{failover?.reason === "quota" ? "Waiting for account usage to reset." : "Waiting to retry on this account."} Retry scheduled for <time dateTime={waitingUntil}>{new Date(waitingUntil).toLocaleString()}</time>.</p>}

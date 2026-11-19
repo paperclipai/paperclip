@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { attentionApi } from "@/api/attention";
+import { useCoordinatorWorkspaceEnabled } from "./useCoordinatorWorkspaceEnabled";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
 import { useCoordinatorWorkspaceEnabled } from "./useCoordinatorWorkspaceEnabled";
 import { useLocation } from "@/lib/router";
@@ -7,19 +8,21 @@ import { useLocation } from "@/lib/router";
 /** Navigation never starts a full-feed read. Reuse it on pages that own one;
  * elsewhere desktop and mobile navigation share the same count-only read. */
 export function useCoordinatorAttentionCount(companyId: string | null | undefined, enabled = true) {
-  const location = useLocation();
   const { userId } = useCoordinatorWorkspaceEnabled();
+  const location = useLocation();
+  const canRead = enabled && !!companyId && !!userId;
   const feedPage = location.pathname.endsWith("/decisions");
   const taskPage = location.pathname.endsWith("/issues") && new URLSearchParams(location.search).get("view") === "needs_attention";
   const attention = useQuery({ queryKey: coordinatorAttentionQueryKey(companyId!, userId, "mine"),
     queryFn: () => attentionApi.list(companyId!, { all: true, view: "mine" }), enabled: false });
   const summary = useQuery({ queryKey: coordinatorAttentionSummaryQueryKey(companyId!, userId),
-    queryFn: () => attentionApi.summary(companyId!), enabled: enabled && !!userId && !!companyId && !feedPage && !taskPage });
+    queryFn: () => attentionApi.summary(companyId!), enabled: canRead && !feedPage && !taskPage });
   const tasks = useQuery({ queryKey: coordinatorAttentionTasksQueryKey(companyId!, userId),
     queryFn: () => attentionApi.taskIndex(companyId!), enabled: false });
   // These are three projections of the same company/person count. Keep the
   // newest known count during route changes, including an explicit fresh zero.
   // Server generation time wins over a delayed older response arriving later.
+  if (!canRead) return 0;
   const snapshots = feedPage ? [attention, tasks, summary] : taskPage ? [tasks, attention, summary] : [summary, attention, tasks];
   if (!enabled || !userId || !companyId) return 0;
   return snapshots.filter(snapshot => snapshot.data !== undefined)

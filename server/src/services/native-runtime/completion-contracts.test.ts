@@ -11,6 +11,16 @@ import {
 } from "./completion-contracts.js";
 
 describe("buildNativeCompletionContract", () => {
+  it("keeps PR delivery obligations when the follow-up only asks to push a PR", () => {
+    const contract = buildNativeCompletionContract(
+      { title: "Fix task history", description: "Implement and deliver the fix." },
+      { immediateRequest: "Push a PR" },
+    );
+    expect(contract.objective).toContain("merged");
+    expect(contract.objective).toContain("register");
+    expect(contract.objective).toContain("original task");
+  });
+
   it("scopes standing-chat criteria to the response while preserving every current request and source", () => {
     const issue = { id: "chat", title: "Chat with CEO", description: null, conversationAgentId: "ceo", conversationUserId: "operator" };
     const comments = [
@@ -65,7 +75,7 @@ describe("buildNativeCompletionContract", () => {
       description: "Prove the Codex vertical slice.",
     })).toEqual({
       revision: "1",
-      objective: "Ship the runner",
+      objective: expect.stringContaining("Ship the runner"),
       criteria: [{ id: "objective", requirement: "Prove the Codex vertical slice." }],
     });
   });

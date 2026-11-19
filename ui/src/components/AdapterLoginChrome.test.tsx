@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type React from "react";
 import {
+  LocalProviderLoginInstructions,
   OnboardingLoginCard,
   OnboardingCardField,
   OnboardingLoginCodeRow,
   onboardingCardInputClass,
 } from "./AdapterLoginChrome";
+import { isBlockedFromReplay, replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 /**
  * The connect step's canvas holds one of two cards, and the credential switch
@@ -251,5 +253,29 @@ describe("the displayed code's auto-copy", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("session replay", () => {
+  const login = { preparing: false, error: null, retry: vi.fn() };
+
+  it("blocks the one-time login code", async () => {
+    await render(<OnboardingLoginCodeRow code="QZRT-77XKV" />);
+    expect(isBlockedFromReplay("QZRT-77XKV", document.body)).toBe(true);
+  });
+
+  it("blocks the displayed device code in the provider sign-in card", async () => {
+    await render(<LocalProviderLoginInstructions adapterType="codex_local" login={{ ...login, authorizationUrl: "https://auth.example.test/device", code: "MNPL-48WQD" }} />);
+    expect(isBlockedFromReplay("MNPL-48WQD", document.body)).toBe(true);
+  });
+
+  it("blocks the terminal sign-in command", async () => {
+    await render(<LocalProviderLoginInstructions adapterType="grok_local" login={{ ...login, command: "grok login --token-hint vexmoor-9182" }} />);
+    expect(isBlockedFromReplay("grok login --token-hint vexmoor-9182", document.body)).toBe(true);
+  });
+
+  it("masks the signed-in account label", async () => {
+    await render(<LocalProviderLoginInstructions adapterType="claude_local" login={{ ...login, status: "ready", accountLabel: "hollis.brennan@example.test" }} />);
+    expect(replayLeaks("hollis.brennan@example.test", document.body)).toEqual({ rendered: true, recorded: false });
   });
 });
