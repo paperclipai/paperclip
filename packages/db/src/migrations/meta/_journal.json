@@ -3480,6 +3480,13 @@
       "when": 1794977210244,
       "tag": "0498_quiet_hardball",
       "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1795083287641,
+      "tag": "0507_project_repository_checkout",
+      "breakpoints": true
     }
   ]
 }
