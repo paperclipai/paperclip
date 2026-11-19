@@ -6,6 +6,10 @@ export function githubLauncherSource(options: { brokerFile?: boolean; interprete
     || !isAbsolute(options.interpreterPath) || /[\s\0]/u.test(options.interpreterPath))) {
     throw new Error("GitHub launcher interpreter must be an absolute path without whitespace");
   }
+  // A controller restart stops a task's broker while its provider keeps running,
+  // then publishes a replacement to broker.json. Only that file can change, so
+  // only broker-file launchers wait for it; an inherited URL never recovers.
+  const brokerRecoveryMs = options.brokerFile ? 60_000 : 0;
   return String.raw`#!${options.interpreterPath ?? "/usr/bin/env node"}
 const fs = require('node:fs');
 const path = require('node:path');
@@ -43,6 +47,13 @@ function isLocalGit(args) {
   }
   return false;
 }
+// With a Paperclip GitHub connection, repositories are created and forked
+// through its tools so access rules, approvals, owner defaults and audit apply.
+const connectorRepositoryTools = new Map([['create', 'create_repository'], ['new', 'create_repository'], ['fork', 'fork_repository']]);
+function connectorRepositoryTool(args) {
+  if (program !== 'gh' || args[0] !== 'repo' || args.includes('--help') || args.includes('-h')) return null;
+  return connectorRepositoryTools.get(args[1]) || null;
+}
 async function main() {
   let env = { ...process.env };
 ${options.brokerFile ? String.raw`
@@ -51,15 +62,24 @@ ${options.brokerFile ? String.raw`
   delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
   env.PAPERCLIP_GITHUB_BROKER_URL = '';
   env.PAPERCLIP_GITHUB_BROKER_TOKEN = '';
-  try {
-    const broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8'));
-    if (typeof broker.url === 'string' && typeof broker.token === 'string') {
-      env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
-      env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
-    }
-  } catch {}
-` : ''}
+  // An unreadable file (for example during a rewrite) keeps the last location.
+  // Only a missing file, or one without a usable broker, means the task's access ended.
+  const readBroker = () => {
+    let broker;
+    try { broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8')); }
+    catch (error) { return error && error.code === 'ENOENT' ? 'absent' : 'unreadable'; }
+    // A failed replacement bridge publishes empty values, which also means no broker.
+    if (!broker || typeof broker.url !== 'string' || typeof broker.token !== 'string' || !broker.url || !broker.token) return 'absent';
+    env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
+    env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
+    return 'present';
+  };
+  readBroker();
+` : String.raw`
+  const readBroker = () => 'present';
+`}
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
+  let connected = false;
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
   // A missing/unwritable scratch directory must not break local Git. The
   // fallback deliberately cannot load the host's gh authentication files.
@@ -94,20 +114,30 @@ ${options.brokerFile ? String.raw`
     try {
     let response;
     if (askBroker && base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {
-      const url = base.replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
       // A slow or restarting control plane must not cost the operation its
       // managed identity, so a failed request is retried before giving up.
       // Busy (409) responses and transport failures keep separate budgets, and
       // the body is read inside the retry so a failed read is retried too.
+      // Transport failures and 503 responses retry until the recovery deadline,
+      // reading the broker location again so a replacement is used once published.
+      // Authentication denials (401/403) still end the request at once.
+      const recoveryDeadline = Date.now() + ${brokerRecoveryMs};
       let transportFailures = 0, conflicts = 0, result;
       for (;;) {
         try {
+          const url = (env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL).replace(/\/+$/, '').replace(/\/api$/, '') + '/runtime-tools/github/credentials';
           response = await fetch(url, {
             method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
             headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
               'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
             body: '{}',
           });
+          // A sandbox gateway that outlived its controller answers 503 until
+          // the replacement broker is published, so it waits like a refusal.
+          if (response.status === 503 && Date.now() < recoveryDeadline) {
+            await response.arrayBuffer().catch(() => {});
+            throw new Error('broker unavailable');
+          }
           if (response.status === 409 && conflicts < 29) {
             conflicts += 1;
             await response.arrayBuffer();
@@ -118,8 +148,14 @@ ${options.brokerFile ? String.raw`
           break;
         } catch (error) {
           transportFailures += 1;
-          if (transportFailures >= 3) throw error;
-          await new Promise(resolve => setTimeout(resolve, 500 * transportFailures));
+          if (transportFailures >= 3 && Date.now() >= recoveryDeadline) throw error;
+          if (transportFailures === 3) {
+            process.stderr.write('Paperclip: GitHub credential service is not reachable; waiting up to ' +
+              Math.ceil((recoveryDeadline - Date.now()) / 1000) + ' seconds for it to return.\n');
+          }
+          await new Promise(resolve => setTimeout(resolve, Math.min(500 * transportFailures, 2000)));
+          // A removed broker file means the task's access ended; nothing will return.
+          if (readBroker() === 'absent') throw error;
         }
       }
       if (!response.ok) {
@@ -131,6 +167,7 @@ ${options.brokerFile ? String.raw`
           : 'Check the GitHub connection in Paperclip';
         process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
+      connected = result.status === 'available';
       if (result.status === 'available' && configReady) {
         for (const [key, value] of Object.entries(result.env || {})) {
           if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
@@ -139,6 +176,14 @@ ${options.brokerFile ? String.raw`
       }
     } else if (askBroker) { diagnostic('capability_missing'); }
     } catch { diagnostic('broker_transport_unavailable'); }
+  }
+  const connectorTool = connected ? connectorRepositoryTool(process.argv.slice(2)) : null;
+  if (connectorTool) {
+    process.stderr.write("Paperclip: use the GitHub connection's " + connectorTool + " tool instead of gh repo " + process.argv[3] +
+      ", so the connection's access rules apply. " + (connectorTool === 'fork_repository'
+        ? 'Then clone the fork or add it as a git remote.' : 'Then add the repository as a git remote and push.') + '\n');
+    process.exitCode = 1;
+    return;
   }
   // Only this invocation and its children inherit the captured credential.
   env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';

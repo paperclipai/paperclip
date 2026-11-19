@@ -113,13 +113,14 @@ export function buildNativeCompletionContract(
   // follow-up contract. Keep this guidance stable across comments and resumes.
   const followUpObjective = "Complete the current authorized stage using the task brief and current user direction in the supplied context. Later human direction replaces conflicting scope; preserve other requirements, assigned-skill instructions, and approval gates. Apply authenticated humanResponses only to their question or decision. Clarification is not approval. If acceptance is required, propose or save the requested plan and wait before executing.";
   const conversationObjective = "Complete the current conversation response using the supplied context and current user direction. Carry out requested chat actions within current authority and verify their results before claiming success. For delegated work, verify the saved handoff and report it without waiting for or performing the worker's task. For an unavailable action, explain the specific limitation and supported handoff without claiming the action occurred. Finishing this response leaves underlying delegated or unavailable work incomplete until separately verified. Later human direction replaces conflicting scope; preserve other requirements, assigned-skill instructions, and approval gates. Apply authenticated humanResponses only to their question or decision. Clarification is not approval.";
+  const deliveryGuidance = " Preserve the original task's delivery obligations on follow-ups. For implementation work delivered by PR, register the PR as a pull_request work product and cite it in artifacts. Keep the task active through CI and review until the PR is verified merged; a local commit or opened PR is not delivery. Review-only requests retain their stated scope.";
   return {
     revision: String(options.revision ?? 1),
     objective: conversation
       ? conversationObjective
       : hasFollowUp
-        ? followUpObjective
-        : issue.title,
+        ? followUpObjective + deliveryGuidance
+        : issue.title + deliveryGuidance,
     criteria: hasFollowUp
       ? [
           ...immediateRequests.map((request, index) => ({

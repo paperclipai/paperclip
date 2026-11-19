@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -32,7 +32,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, isAiConnectionIncompatible, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -49,6 +49,7 @@ import * as copilotProbe from "../services/copilot-connection-probe.js";
 import * as settingsModule from "../services/instance-settings.js";
 import { agentRoutes } from "../routes/agents.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
 }));
@@ -717,8 +718,10 @@ describe("managed AI connections", () => {
     try {
       const first = await fetchCompanyQuotaWindows(db, companyId, owner);
       const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
-      expect(after.lastResolvedAt).not.toBeNull();
-      expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+      // A read is recorded as an access event, never written to the row that
+      // admissions share-lock to fence rotation.
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+      expect(await db.select().from(secretAccessEvents).where(and(eq(secretAccessEvents.secretId, secretId), eq(secretAccessEvents.outcome, "success")))).not.toHaveLength(0);
       expect(first[0].ok).toBe(true);
       expect(await fetchCompanyQuotaWindows(db, companyId, owner)).toEqual(first);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -1553,11 +1556,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     } finally { fetchSpy.mockRestore(); }
   });
 
-  it("reads provider identity only for an authorized credential and preserves connected state when profile access is denied", async () => {
-    const owner = "identity-owner";
+  it.each(["anthropic", "openai"] as const)("reads %s identity only for an authorized credential and preserves connected state when profile access is denied", async provider => {
+    const owner = `identity-owner-${provider}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
-    const account = await service.save(companyId, owner, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, "identity-selected-secret");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } }));
+    const credential = provider === "openai" ? JSON.stringify({ tokens: { access_token: "identity-selected-secret", account_id: "private-account-id" } }) : "identity-selected-secret";
+    const account = await service.save(companyId, owner, { provider, method: "subscription", ownership: "personal", name: "Identity account", loginSessionId: "fixture", agentIds: [], allAgents: true }, credential);
+    const profile = provider === "openai" ? { accounts: [{ id: "private-account-id", name: "Example team", structure: "workspace" }] }
+      : { account: { email: "avery@example.test", uuid: "private-account-id" }, organization: { name: "Example team", uuid: "private-org-id" } };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(profile));
     const app = express();
     app.use((req, _res, next) => {
       req.actor = req.header("x-test-anonymous") ? { type: "none" }
@@ -1572,8 +1578,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const result = await request(app).get(url);
       expect(result.status).toBe(200);
       expect(result.headers["cache-control"]).toBe("no-store");
-      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" });
-      expect(fetchSpy).toHaveBeenCalledWith("https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
+      expect(result.body).toMatchObject({ ...account, status: "available", accountLabel: provider === "openai" ? null : "avery@example.test", organizationLabel: "Example team" });
+      expect(fetchSpy).toHaveBeenCalledWith(provider === "openai" ? "https://chatgpt.com/backend-api/wham/accounts/check" : "https://api.anthropic.com/api/oauth/profile", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer identity-selected-secret" }) }));
       for (const value of ["identity-selected-secret", "private-account-id", "private-org-id"]) expect(JSON.stringify(result.body)).not.toContain(value);
       fetchSpy.mockReset();
       expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
@@ -1896,6 +1902,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await create(userId, "Another API");
     await expect(service.select({ ...input, userId })).rejects.toThrow("Reconnect");
     await service.setDefault(companyId, userId, subscription.grantId);
+    expect(await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId))).toEqual([]);
     expect((await service.select({ ...input, userId })).attribution).toMatchObject({ method: "subscription", grantId: subscription.grantId });
     expect((await service.list(companyId, userId)).filter(account => account.isDefault)).toHaveLength(1);
     await expect(service.select({ ...input, userId, binding: { ...binding, mode: "delegated", ...subscription } })).rejects.toThrow("incompatible");
@@ -1907,7 +1914,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Migration API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Migration subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-migration-subscription");
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, api.grantId));
-    await db.update(aiConnectionDefaults).set({ updatedAt: new Date("2030-01-01") }).where(eq(aiConnectionDefaults.grantId, api.grantId));
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId, updatedAt: new Date("2030-01-01") },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     await db.delete(aiProviderDefaults).where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId)));
     const legacyRows = await db.select().from(aiConnectionDefaults).where(eq(aiConnectionDefaults.userId, userId));
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0277_uneven_lady_deathstrike.sql", import.meta.url), "utf8");
@@ -1924,6 +1934,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const api = await create(userId, "Rolling API");
     const subscription = await service.save(companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Rolling subscription", loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-rolling-subscription");
     expect((await service.select({ ...input, userId })).grant.id).toBe(api.grantId);
+    await db.insert(aiConnectionDefaults).values([
+      { companyId, userId, provider: "anthropic", method: "api_key", grantId: api.grantId },
+      { companyId, userId, provider: "anthropic", method: "subscription", grantId: subscription.grantId },
+    ]);
     // An older server updates only the legacy per-method row on Make default.
     await db.update(aiConnectionDefaults).set({ grantId: subscription.grantId, updatedAt: new Date() })
       .where(and(eq(aiConnectionDefaults.userId, userId), eq(aiConnectionDefaults.method, "subscription")));
@@ -1949,6 +1963,26 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("reports only a found conflict as configuration, naming the files to fix", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace/project" } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    const outcome = (exitCode: number | null, timedOut = false) =>
+      ({ exitCode, stdout: "", stderr: "", signal: null, timedOut }) as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>;
+    try {
+      execute.mockResolvedValue(outcome(42));
+      const conflict = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+      expect(isAiConnectionIncompatible(conflict)).toBe(true);
+      expect(String((conflict as Error).message)).toContain(".claude/settings.json");
+      // A check that could not complete is not proof of a configuration conflict.
+      for (const failed of [outcome(43), outcome(null, true), outcome(127)]) {
+        execute.mockResolvedValue(failed);
+        const unavailable = await assertManagedAiProjectAuth({}, "anthropic", target).catch((error: unknown) => error);
+        expect(unavailable).toBeInstanceOf(Error);
+        expect(isAiConnectionIncompatible(unavailable)).toBe(false);
+      }
+      expect(isAiConnectionIncompatible(await assertManagedAiProjectAuth({ args: ["--settings=x"] }, "anthropic", target).catch((error: unknown) => error))).toBe(true);
+    } finally { execute.mockRestore(); }
+  });
   it("requires a typed project authentication capability for task-only environments", async () => {
     const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
     const description = { kind: "description", taskId: "task", projectAuthCheckVersion: 1,
@@ -1963,6 +1997,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({}, "openai", target)).rejects.toThrow("cannot validate");
       expect(execute).not.toHaveBeenCalled();
     } finally { execute.mockRestore(); }
+  });
+  it("defers new and retained plugin task capability checks to native launch", async () => {
+    const runnerTask = vi.fn().mockResolvedValue({ kind: "description", taskId: "task", projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+    const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", remoteCwd: ".", runnerTask,
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "task" } } as const;
+    const options = { deferRunnerTaskCapabilityCheck: true };
+
+    await expect(assertManagedAiProjectAuth({}, "openai", target, options)).resolves.toBeUndefined();
+    await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "openai", target, options)).rejects.toThrow("overrides");
+    expect(runnerTask).not.toHaveBeenCalled();
+
+    const retained = { ...target, sandboxLeaseAcquisition: { ...target.sandboxLeaseAcquisition, outcome: "resumed" as const } };
+    await expect(assertManagedAiProjectAuth({}, "openai", retained, options)).resolves.toBeUndefined();
+    expect(runnerTask).not.toHaveBeenCalled();
+    await expect(assertManagedAiProjectAuth({}, "openai", retained)).resolves.toBeUndefined();
+    expect(runnerTask).toHaveBeenCalledExactlyOnceWith({ kind: "describe" });
   });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
@@ -2193,6 +2244,33 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent.runtimeConfig.aiConnection).toBeUndefined();
   });
+  it("keeps account summaries ordered across sequential scans and repeat migration", async () => {
+    const orderedCompanyId = randomUUID(), userId = "stable-list-owner";
+    await db.insert(companies).values({ id: orderedCompanyId, name: "Stable account list", issuePrefix: `O${orderedCompanyId.slice(0, 5)}` });
+    await db.insert(companyMemberships).values({ companyId: orderedCompanyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+    const accounts = [];
+    for (const name of ["First account", "Second account", "Third account"]) {
+      accounts.push(await service.save(orderedCompanyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name, apiKey: "fixture-stable-list", agentIds: [], allAgents: false }, "fixture-stable-list"));
+    }
+    const expected = accounts.map(({ connectionId: id, grantId }) => ({ id, grantId }))
+      .sort((a, b) => a.id.localeCompare(b.id) || a.grantId.localeCompare(b.grantId));
+    await db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL enable_indexscan = off`);
+      await tx.execute(sql`SET LOCAL enable_bitmapscan = off`);
+      await tx.execute(sql`SET LOCAL enable_hashjoin = off`);
+      await tx.execute(sql`SET LOCAL enable_mergejoin = off`);
+      for (const account of [...expected].reverse()) {
+        await tx.update(toolConnections).set({ name: sql`${toolConnections.name}` }).where(eq(toolConnections.id, account.id));
+        await tx.update(connectionGrants).set({ status: sql`${connectionGrants.status}` }).where(eq(connectionGrants.id, account.grantId));
+      }
+      const transactionalService = aiConnectionService(tx as unknown as Db);
+      const before = await transactionalService.list(orderedCompanyId, userId);
+      expect(before.map(({ id, grantId }) => ({ id, grantId }))).toEqual(expected);
+      const migration = await readFile(new URL("../../../packages/db/src/migrations/0276_hard_mandroid.sql", import.meta.url), "utf8");
+      for (const statement of migration.split("--> statement-breakpoint").filter(value => value.trim())) await tx.execute(sql.raw(statement));
+      expect(await transactionalService.list(orderedCompanyId, userId)).toEqual(before);
+    });
+  });
   it("runs two Claude subscription executions for the same grant at the same time", async () => {
     // Claude writes no auth file back to the grant, so two runs share no
     // mutable state and must not wait for each other.
@@ -2408,6 +2486,15 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
     const personal = await service.select({ ...input, userId: "alice" });
     const base = `/api/companies/${companyId}/ai-connections`;
+    const ownerList = await request(app).get(base);
+    expect(ownerList.status).toBe(200);
+    expect(ownerList.body.connections.find((account: { grantId: string }) => account.grantId === personal.grant.id)?.canSetDefault).toBe(true);
+    const viewerList = await request(app).get(base).set("x-test-role", "viewer");
+    expect(viewerList.status).toBe(200);
+    expect(viewerList.body.connections.every((account: { canSetDefault: boolean }) => account.canSetDefault === false)).toBe(true);
+    const otherUserList = await request(app).get(base).set("x-test-user", "bob");
+    expect(otherUserList.status).toBe(200);
+    expect(otherUserList.body.connections.some((account: { grantId: string; canSetDefault: boolean }) => account.grantId === personal.grant.id && account.canSetDefault)).toBe(false);
     expect((await request(app).get(`/api/companies/${otherCompanyId}/ai-connections`)).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-user", "bob").send({ grantId: personal.grant.id })).status).toBe(403);
     expect((await request(app).put(`${base}/default`).set("x-test-role", "viewer").send({ grantId: personal.grant.id })).status).toBe(403);
@@ -2420,6 +2507,61 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(network).not.toHaveBeenCalled();
     } finally { network.mockRestore(); }
   });
+  it("keeps personal-default list queries constant and other reads responsive with a blocked membership read", async () => {
+    const testCompany = randomUUID(), owner = "default-list-cost";
+    await db.insert(companies).values({ id: testCompany, name: "Default list cost", issuePrefix: "DLC" });
+    await db.insert(companyMemberships).values({ companyId: testCompany, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const first = await service.save(testCompany, owner, { provider: "openai", method: "api_key", ownership: "personal", name: "Default cost", agentIds: [], allAgents: false }, "fixture-cost");
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: owner, companyIds: [testCompany], memberships: [{ companyId: testCompany, membershipRole: "member", status: "active" }] };
+      next();
+    });
+    app.get("/probe", async (_req, res) => { await db.execute(sql`select 1`); res.sendStatus(200); });
+    app.use("/api", aiConnectionRoutes(db));
+    const url = `/api/companies/${testCompany}/ai-connections`;
+    const selects = vi.spyOn(db, "select");
+    let smallQueries: number, largeQueries: number;
+    try {
+      expect((await request(app).get(url)).status).toBe(200);
+      smallQueries = selects.mock.calls.length;
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, first.connectionId));
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, first.grantId));
+      const ids = Array.from({ length: 199 }, () => randomUUID());
+      await db.insert(toolConnections).values(ids.map(id => ({ ...connection, id, uid: id, name: `Cost ${id}` })));
+      await db.insert(connectionGrants).values(ids.map(connectionId => ({ ...grant, id: randomUUID(), connectionId })));
+      selects.mockClear();
+      invalidateInstanceSettingsCache();
+      const large = await request(app).get(url);
+      largeQueries = selects.mock.calls.length;
+      expect(large.status).toBe(200);
+      expect(large.body.connections).toHaveLength(200);
+      expect(large.body.connections.every((account: { canSetDefault: boolean }) => account.canSetDefault)).toBe(true);
+      expect(largeQueries).toBe(smallQueries);
+      expect(largeQueries).toBeLessThan(30);
+    } finally { selects.mockRestore(); }
+
+    const held = deferredSignal(), release = deferredSignal();
+    const holder = db.transaction(async tx => {
+      await tx.execute(sql`lock table company_memberships in access exclusive mode`);
+      held.resolve(); await release.promise;
+    });
+    await held.promise;
+    const pending = request(app).get(url).then(response => response);
+    try {
+      let blocked = false;
+      const deadline = Date.now() + 5_000;
+      while (!blocked && Date.now() < deadline) {
+        const rows = await db.execute(sql`select pid from pg_stat_activity where wait_event_type = 'Lock' and query like '%company_memberships%'`);
+        blocked = rows.length > 0;
+        if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+      expect((await request(app).get("/probe").timeout(2_000)).status).toBe(200);
+    } finally { release.resolve(); await holder; }
+    expect((await pending).status).toBe(200);
+  });
+
   it.each(["anthropic", "openai"] as const)("reports a missing %s browser process after a server restart", async provider => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
     const id = randomUUID();

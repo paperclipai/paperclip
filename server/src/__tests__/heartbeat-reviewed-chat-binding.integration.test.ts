@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   heartbeatRuns,
@@ -19,6 +20,11 @@ import {
   companyMemberships,
   chatDeliveries,
   chatMessageLinks,
+  completionContracts,
+  nativeRunFinalizations,
+  nativeRunResults,
+  statusDecisionEffects,
+  workAssessments,
 } from "@paperclipai/db";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -30,8 +36,15 @@ import {
   listAuthorizedChatAttachments,
   resolveExternalChatResponseWaitAuthorization,
 } from "../services/native-runtime/chat-attachment-reuse.js";
+import * as chatAttachmentReuse from "../services/native-runtime/chat-attachment-reuse.js";
 import { decideIssueReviewPathRecovery } from "../services/recovery/review-path-recovery.js";
 import { resolveCurrentWakeCommentsBinding } from "../services/native-runtime/current-wake-comments.js";
+import { commitNativeStatusDecision } from "../services/native-runtime/status-decision-committer.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "../services/native-runtime/status-arbiter.js";
+import { recoveryService } from "../services/recovery/service.js";
+
+import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
+import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 
 describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (provider) => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -269,6 +282,88 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
     await temporary?.cleanup();
   });
 
+  it("names exhausted lock contention without accepting authority, then rechecks access after release", async () => {
+    let release!: () => void;
+    let acquired!: () => void;
+    const held = new Promise<void>((resolve) => { acquired = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const lock = db.transaction(async (tx) => {
+      await tx.select().from(issues).where(eq(issues.id, issueId)).for("update");
+      acquired();
+      await gate;
+    });
+    await held;
+    const onDenied = vi.fn();
+    try {
+      await expect(attestReviewedExternalChatRun({
+        db, ...binding, contextSnapshot: context, onDenied,
+      })).rejects.toMatchObject({
+        message: "reviewed_chat_execution_binding_not_ready",
+        code: "reviewed_chat_execution_binding_not_ready",
+      });
+      expect(onDenied).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await lock;
+    }
+    await expect(attest()).resolves.toBe(true);
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, userId));
+    try {
+      await expect(attest()).resolves.toBe(false);
+    } finally {
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, userId));
+    }
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+      .toMatchObject({ status: "in_review", executionRunId: runId, checkoutRunId: null });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]?.status)
+      .toBe("pending");
+  }, 30_000);
+
+  it("attests a resolved card after queue promotion even when its chat message was already delivered", async () => {
+    const [previousIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    const finishingRunId = randomUUID(), wakeId = randomUUID();
+    const continuation = { ...context, interactionId, interactionKind: "request_confirmation", interactionStatus: "accepted" };
+    await db.insert(heartbeatRuns).values({ id: finishingRunId, companyId, agentId,
+      status: "succeeded", invocationSource: "assignment", triggerDetail: "system",
+      startedAt: new Date(Date.now() + 1_000), finishedAt: new Date(Date.now() + 2_000),
+      contextSnapshot: context });
+    await db.update(issues).set({ executionRunId: finishingRunId }).where(eq(issues.id, issueId));
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: userId, resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, interactionId));
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId,
+      source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId, mutation: "interaction", interactionId, interactionKind: "request_confirmation",
+        interactionStatus: "accepted", wakeCommentId: commentId, _paperclipWakeContext: continuation } });
+    try {
+      const release = createReleaseIssueExecution({
+        issueLock: createPostgresWakeQueueAdapter(db, {
+          resolveResponsibleUserId: async () => userId,
+          getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+          resolveSessionBeforeForWakeup: async () => null,
+        }), recovery: {} as never,
+      });
+      const released = await release({ companyId, runId: finishingRunId, now: new Date() });
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+      expect(released.outcome.kind, JSON.stringify(wake)).toBe("promoted");
+      const [promoted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, promoted.id));
+      const authorize = () => attestReviewedExternalChatRun({ db, companyId, agentId, issueId,
+        runId: promoted.id, contextSnapshot: promoted.contextSnapshot! });
+      await expect(authorize()).resolves.toBe(true);
+      await db.update(chatEndpointResources).set({ enabled: false }).where(eq(chatEndpointResources.id, resourceId));
+      await expect(authorize()).resolves.toBe(false);
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, promoted.id));
+    } finally {
+      await db.update(chatEndpointResources).set({ enabled: true }).where(eq(chatEndpointResources.id, resourceId));
+      await db.update(issueThreadInteractions).set({ status: "pending", resolvedByUserId: null, resolvedAt: null })
+        .where(eq(issueThreadInteractions.id, interactionId));
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+      await restoreSuccessorLock(previousIssue);
+    }
+  });
+
   it("attests existing execution ownership while preserving real pending governance and checkout state", async () => {
     const [before] = await db
       .select()
@@ -432,6 +527,33 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
     }
   });
 
+  it("names the first failed check with a closed label", async () => {
+    const denial = async (overrides: Partial<Parameters<typeof attestReviewedExternalChatRun>[0]> = {}) => {
+      const reasons: string[] = [];
+      const attested = await attestReviewedExternalChatRun({
+        db, ...binding, contextSnapshot: context, ...overrides, onDenied: (reason) => reasons.push(reason),
+      });
+      return { attested, reasons };
+    };
+    await expect(denial()).resolves.toEqual({ attested: true, reasons: [] });
+    await expect(denial({ issueId: otherIssueId })).resolves.toEqual({ attested: false, reasons: ["owner_mismatch"] });
+    await expect(denial({ runId: randomUUID() })).resolves.toEqual({ attested: false, reasons: ["binding_missing"] });
+    await expect(denial({ contextSnapshot: { ...context, wakeCommentIds: [randomUUID()] } }))
+      .resolves.toEqual({ attested: false, reasons: ["context_mismatch"] });
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, userId));
+    try {
+      await expect(denial()).resolves.toEqual({ attested: false, reasons: ["principal_denied"] });
+    } finally {
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, userId));
+    }
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    try {
+      await expect(denial()).resolves.toEqual({ attested: false, reasons: ["run_not_running"] });
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
   it("rejects wrong or revoked principals and disabled provider reach", async () => {
     await db
       .update(chatExternalPrincipals)
@@ -518,6 +640,146 @@ describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (p
       }
     }
   });
+
+  // The prior native run commits its status decision before its run row is
+  // terminal. A preserve decision does not bump statusVersion, and neither does
+  // the successor's claim, so its version check passes after the claim.
+  let predecessorContractRevision = 0;
+  async function finalizingPredecessor() {
+    const predecessorRunId = randomUUID(), contractId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID();
+    await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: ++predecessorContractRevision,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: {}, canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+    await db.insert(heartbeatRuns).values({ id: predecessorRunId, companyId, agentId, status: "running",
+      runtimeMode: "native", nativeIssueId: issueId, invocationSource: "automation", triggerDetail: "system",
+      completionContractId: contractId, contextSnapshot: { issueId, source: "github.pull_request_review" } });
+    await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId: predecessorRunId,
+      completionContractId: contractId, serverFingerprint: resultId, schemaStatus: "accepted", resultJson: {}, canonicalSha256: resultId });
+    const [snapshot] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId, runId: predecessorRunId,
+      contractId, resultId, triggerKind: "native_result", triggerActorCompanyId: companyId,
+      priorIssueStatus: snapshot.status, priorStatusVersion: snapshot.statusVersion,
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, assessmentJson: {}, inputDigest: assessmentId });
+    await db.insert(nativeRunFinalizations).values({ runId: predecessorRunId, companyId, issueId, phase: "arbitrating", resultId, assessmentId });
+    const commit = () => commitNativeStatusDecision({
+      db, companyId, issueId, runId: predecessorRunId, assessmentId,
+      priorStatus: snapshot.status, priorStatusVersion: Number(snapshot.statusVersion), priorDecisionId: snapshot.lastStatusDecisionId,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "preserve", toStatus: "in_review",
+        reasonCode: "native_review_action_finished", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] },
+    });
+    return { predecessorRunId, commit };
+  }
+
+  async function restoreSuccessorLock(previous: typeof issues.$inferSelect) {
+    await db.update(issues).set({
+      checkoutRunId: previous.checkoutRunId, executionRunId: previous.executionRunId,
+      executionAgentNameKey: previous.executionAgentNameKey, executionLockedAt: previous.executionLockedAt,
+      lastStatusDecisionId: previous.lastStatusDecisionId,
+    }).where(eq(issues.id, issueId));
+  }
+
+  it("keeps the successor's claim when the finalizing predecessor releases its checkout", async () => {
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const { predecessorRunId, commit } = await finalizingPredecessor();
+    const lockedAt = new Date();
+    // The successor holds execution; the predecessor still holds its own checkout.
+    await db.update(issues).set({ checkoutRunId: predecessorRunId, executionRunId: runId,
+      executionAgentNameKey: "chat runner", executionLockedAt: lockedAt }).where(eq(issues.id, issueId));
+    try {
+      const committed = await commit();
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after).toMatchObject({ status: "in_review", statusVersion: before.statusVersion,
+        checkoutRunId: null, executionRunId: runId, executionAgentNameKey: "chat runner" });
+      expect(after.executionLockedAt?.getTime()).toBe(lockedAt.getTime());
+      const [effect] = await db.select().from(statusDecisionEffects)
+        .where(eq(statusDecisionEffects.decisionId, committed.decision.id));
+      expect(effect).toMatchObject({ effectKind: "release_checkout", targetType: "issue_checkout",
+        payload: { checkoutRunId: null, executionRunId: runId } });
+      await expect(attest()).resolves.toBe(true);
+    } finally {
+      await restoreSuccessorLock(before);
+    }
+  });
+
+  it("still releases the predecessor's own execution lock and checkout", async () => {
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const { predecessorRunId, commit } = await finalizingPredecessor();
+    await db.update(issues).set({ checkoutRunId: predecessorRunId, executionRunId: predecessorRunId,
+      executionAgentNameKey: "chat runner", executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+    try {
+      await commit();
+      const [after] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(after).toMatchObject({ status: "in_review", checkoutRunId: null, executionRunId: null,
+        executionAgentNameKey: null, executionLockedAt: null });
+    } finally {
+      await restoreSuccessorLock(before);
+    }
+  });
+
+  it("leaves a cancelled successor's lock to the stale-lock sweep", async () => {
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const { predecessorRunId, commit } = await finalizingPredecessor();
+    const cancelledRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: cancelledRunId, companyId, agentId, status: "cancelled",
+      finishedAt: new Date(), invocationSource: "automation", triggerDetail: "system", contextSnapshot: context });
+    await db.update(issues).set({ checkoutRunId: predecessorRunId, executionRunId: cancelledRunId,
+      executionAgentNameKey: "chat runner", executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+    try {
+      await commit();
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+        .toMatchObject({ checkoutRunId: null, executionRunId: cancelledRunId });
+      const swept = await recoveryService(db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks();
+      expect(swept.issueIds).toEqual([issueId]);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0])
+        .toMatchObject({ checkoutRunId: null, executionRunId: null, executionAgentNameKey: null, executionLockedAt: null });
+    } finally {
+      await restoreSuccessorLock(before);
+    }
+  });
+
+  it.each(["authorized", "principal_denied", "binding_denied"] as const)(
+    "rechecks full authorization when inbound processing commits between reads: %s",
+    async (outcome) => {
+      await db.update(chatDeliveries)
+        .set({ state: "processing", processedAt: null })
+        .where(eq(chatDeliveries.id, deliveryId));
+      const authorize = chatAttachmentReuse.authorizeChatConversationForBoundRun;
+      const observed = vi.spyOn(chatAttachmentReuse, "authorizeChatConversationForBoundRun")
+        .mockImplementationOnce(async (...args) => {
+          try {
+            return await authorize(...args);
+          } catch (error) {
+            expect(error).toMatchObject({ message: "paperclip_runner_chat_attachment_binding_denied" });
+            await db.update(chatDeliveries)
+              .set({ state: "processed", processedAt: new Date() })
+              .where(eq(chatDeliveries.id, deliveryId));
+            throw error;
+          }
+        });
+      try {
+        if (outcome === "principal_denied") {
+          await db.update(companyMemberships).set({ status: "suspended" })
+            .where(eq(companyMemberships.principalId, userId));
+        }
+        if (outcome === "binding_denied") {
+          await db.update(chatConversations).set({ issueId: otherIssueId })
+            .where(eq(chatConversations.id, conversationId));
+        }
+        await expect(attest()).resolves.toBe(outcome === "authorized");
+        if (outcome === "authorized") expect(observed).toHaveBeenCalledTimes(2);
+      } finally {
+        observed.mockRestore();
+        await db.update(companyMemberships).set({ status: "active" })
+          .where(eq(companyMemberships.principalId, userId));
+        await db.update(chatConversations).set({ issueId })
+          .where(eq(chatConversations.id, conversationId));
+        await db.update(chatDeliveries)
+          .set({ state: "processed", processedAt: new Date() })
+          .where(eq(chatDeliveries.id, deliveryId));
+      }
+    },
+  );
 
   it("waits for exact inbound delivery processing to commit before attesting", async () => {
     await db

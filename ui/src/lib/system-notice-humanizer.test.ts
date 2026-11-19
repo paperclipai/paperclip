@@ -74,7 +74,15 @@ describe("humanizeSystemNotice", () => {
         "Paperclip automatically retried dispatch, but it still has no live execution path. " +
         "Moving it to `blocked` so it is visible for intervention.",
     });
-    expect(result.title).toBe("Task paused — waiting on a recovery owner");
+    expect(result.title).toBe("Task could not continue");
+  });
+
+  it("humanizes the current recovery notice saved without a presentation title", () => {
+    const result = humanizeSystemNotice({
+      body: "Paperclip tried to continue this task again, but it still could not continue. "
+        + "Press Retry to start it again from the saved work.",
+    });
+    expect(result).toEqual({ title: "Task could not continue", tone: "warning" });
   });
 
   it("falls back to System update plus a truncated first sentence", () => {

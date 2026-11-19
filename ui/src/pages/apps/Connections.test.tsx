@@ -425,6 +425,31 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
   });
 
 
+  it("adds the Google outcome to the deletion message", async () => {
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "app-github", name: "GitHub" })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ id: "c-github-primary", applicationId: "app-github", name: "GitHub" })] });
+    archiveConnectionMock.mockResolvedValueOnce({
+      ...connection({ id: "c-github-primary", status: "archived" }),
+      removal: { providerAccess: { provider: "google", result: "ended_unconfirmed", outcomes: ["other_connections_remain", "revoked"] } },
+    });
+    await renderApps();
+    const deleteButton = container.querySelector<HTMLButtonElement>('button[aria-label="Delete GitHub for the organization connection"]');
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Delete connection");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Connection deleted",
+      tone: "info",
+      body: expect.stringContaining("If more than one Google account was connected here"),
+      action: expect.objectContaining({ label: "Open Google account connections" }),
+    }));
+  });
+
   it("reports the remaining active connections after deleting one", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [application({ id: "app-github", name: "GitHub" })],

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { emitOnlyTscArgs, lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
 import { STEPS, typecheckLowMemory } from "../../scripts/typecheck-low-memory.mjs";
 import { findServerSource, PREPARE_STEPS, PROJECTS, typecheckTestProjects } from "../../scripts/typecheck-test-projects.mjs";
-import { declarationsConfig, layerConfig, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
+import { declarationsConfig, layerConfig, listLayers, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourcesOf = (layers, name) => layers.find((layer) => layer.name === name)?.sourceFiles;
@@ -286,6 +286,38 @@ describe("typecheckLayers", () => {
     ]);
   });
 
+  it("checks one layer against the configs a declarations run left, without writing them again", () => {
+    const root = serverFixture();
+    const silent = { log: () => {}, logError: () => {}, run: () => ({ status: 0, signal: null }) };
+    expect(typecheckLayers({ serverRoot: root, layer: "tests", ...silent })).toBe(2);
+
+    expect(typecheckLayers({ serverRoot: root, declarationsOnly: true, ...silent })).toBe(0);
+    const output = path.join(root, "node_modules", ".cache", "paperclip-typecheck");
+    const marker = path.join(output, "dts", "marker.d.ts");
+    mkdirSync(path.dirname(marker), { recursive: true });
+    writeFileSync(marker, "");
+    const configs = [];
+    const status = typecheckLayers({
+      serverRoot: root,
+      layer: "tests",
+      log: () => {},
+      run: (args, { cwd }) => {
+        configs.push({ config: args[1], cwd });
+        return { status: 3, signal: null };
+      },
+    });
+
+    expect(status).toBe(3);
+    expect(configs).toEqual([{ config: path.join("node_modules", ".cache", "paperclip-typecheck", "tsconfig.tests.json"), cwd: root }]);
+    expect(existsSync(marker)).toBe(true);
+    expect(listLayers(root)).toEqual([
+      { name: "below", emitsDeclarations: true },
+      { name: "cycle", emitsDeclarations: true },
+      { name: "above", emitsDeclarations: true },
+      { name: "tests", emitsDeclarations: false },
+    ]);
+  });
+
   it("reports type errors from every layer", () => {
     const root = serverFixture();
     const configs = [];
@@ -318,6 +350,38 @@ describe("typecheckLayers", () => {
 
     expect(status).toBe(1);
     expect(configs).toHaveLength(1);
+  });
+
+  it.each([
+    ["SIGTERM", "below"],
+    ["SIGKILL", "cycle"],
+  ])("reports %s and the affected %s layer from a real compiler child", (signal, layer) => {
+    const root = serverFixture();
+    const bin = path.join(root, "node_modules", "typescript", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(path.join(bin, "tsc"), `
+      const fs = require("node:fs");
+      fs.writeSync(1, "compiler stdout\\n");
+      fs.writeSync(2, "compiler stderr\\n");
+      if (process.argv[3].endsWith("tsconfig.${layer}.json")) {
+        process.kill(process.pid, ${JSON.stringify(signal)});
+      }
+    `);
+    const wrapper = new URL("./typecheck-layers.mjs", import.meta.url).href;
+
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { typecheckLayers } from ${JSON.stringify(wrapper)};
+      process.exitCode = typecheckLayers({ serverRoot: ${JSON.stringify(root)} });
+    `], { encoding: "utf8", timeout: 10_000 });
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("compiler stdout");
+    expect(result.stderr).toContain("compiler stderr");
+    expect(result.stderr).toContain(`typecheck:layers: ${layer}: compiler terminated by ${signal}`);
+    expect(result.stderr).toContain(`tsconfig.${layer}.json`);
+    expect(result.stdout).not.toContain("typecheck:layers: above");
   });
 });
 

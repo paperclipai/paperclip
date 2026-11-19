@@ -1,7 +1,8 @@
 import { randomUUID, createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -105,4 +106,71 @@ describe.skipIf(process.platform !== "linux")("native authenticated artifact ins
 
     } finally { await rm(root, { recursive: true, force: true }); }
   });
+
+  it("fails fast with a retryable error when the artifact storage read stalls", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), artifactId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Stalled transfer", issuePrefix: `S${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Transfer", role: "ceo", status: "active", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Transfer stalled bytes", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const bytes = Buffer.from("synthetic stalled transfer\n");
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    await db.insert(assets).values({ id: artifactId, companyId, provider: "local_disk", objectKey: `${companyId}/synthetic/${artifactId}`, contentType: "application/octet-stream", byteSize: bytes.length, sha256, createdByAgentId: agentId });
+    const signals: AbortSignal[] = [];
+    // One provider never answers; the other sends a first chunk and then stops.
+    const stalledResponse = vi.fn(async (_companyId: string, _key: string, options?: { signal?: AbortSignal }) => {
+      if (options?.signal) signals.push(options.signal);
+      return new Promise<never>(() => undefined);
+    });
+    const stalledStream = vi.fn(async (_companyId: string, _key: string, options?: { signal?: AbortSignal }) => {
+      if (options?.signal) signals.push(options.signal);
+      const stream = new Readable({ read() {} });
+      stream.push(bytes.subarray(0, 4));
+      return { stream };
+    });
+    const root = await mkdtemp(join(tmpdir(), "native-artifact-stall-"));
+    try {
+      for (const getObject of [stalledResponse, stalledStream]) {
+        const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workspaceRoot: root, apiToolsEnabled: true,
+          storage: { getObject } as unknown as StorageService, storageReadTimeoutMs: 50 });
+        const started = Date.now();
+        await expect(authority.execute({ tool: "download_artifact", callId: `stall-${getObject === stalledResponse ? "response" : "stream"}`,
+          arguments: { artifactId, destination: "stalled.bin", byteSize: bytes.length, sha256 } })).rejects.toThrow(/did not finish.*retry/i);
+        expect(Date.now() - started).toBeLessThan(5_000);
+        expect(getObject).toHaveBeenCalledOnce();
+      }
+      expect(signals).toHaveLength(2);
+      expect(signals.every(signal => signal.aborted)).toBe(true);
+      expect(await readdir(root)).toEqual([]);
+
+      // Local disk opens its stream with the request signal. A reply that
+      // arrives after the deadline gets an aborted stream, which emits AbortError.
+      const source = join(await mkdtemp(join(tmpdir(), "native-artifact-late-source-")), "late.bin");
+      await writeFile(source, bytes);
+      const lateReply = vi.fn(async (_companyId: string, _key: string, options?: { signal?: AbortSignal }) => {
+        await new Promise(resolve => options!.signal!.addEventListener("abort", resolve, { once: true }));
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return { stream: createReadStream(source, { signal: options!.signal }) };
+      });
+      const uncaught: unknown[] = [];
+      const onUncaught = (error: unknown) => { uncaught.push(error); };
+      process.on("uncaughtException", onUncaught);
+      try {
+        const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workspaceRoot: root, apiToolsEnabled: true,
+          storage: { getObject: lateReply } as unknown as StorageService, storageReadTimeoutMs: 50 });
+        await expect(authority.execute({ tool: "download_artifact", callId: "stall-late-reply",
+          arguments: { artifactId, destination: "stalled.bin", byteSize: bytes.length, sha256 } })).rejects.toThrow(/did not finish.*retry/i);
+        expect(lateReply).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(lateReply.mock.results[0]?.type).toBe("return"));
+        await lateReply.mock.results[0]!.value;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      } finally {
+        process.off("uncaughtException", onUncaught);
+        await rm(dirname(source), { recursive: true, force: true });
+      }
+      expect(uncaught).toEqual([]);
+      expect(await readdir(root)).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 15_000);
 });

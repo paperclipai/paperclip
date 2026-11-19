@@ -6,8 +6,11 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AiConnectionAccountIdentity, AiManagedConnectionSummary, ConnectionGrant, ToolConnection } from "@paperclipai/shared";
 import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@/api/auth", () => ({ authApi: { getSession: vi.fn(async () => ({ user: { id: "user" } })) } }));
 
 const account: AiManagedConnectionSummary = {
   id: "connection", grantId: "grant", companyId: "company", provider: "anthropic", method: "subscription",
@@ -59,9 +62,9 @@ afterEach(async () => {
 
 async function render(value = account, selectedGrant = grant, completePanel = false) {
   await act(async () => {
-    root.render(<QueryClientProvider client={client}>{completePanel
+    root.render(<QueryClientProvider client={client}><TooltipProvider>{completePanel
       ? <ManagedAiConnectionDetails connection={{ id: value.id, companyId: value.companyId } as ToolConnection} />
-      : <AiConnectionAccountDetails account={value} grant={selectedGrant} />}</QueryClientProvider>);
+      : <AiConnectionAccountDetails account={value} grant={selectedGrant} />}</TooltipProvider></QueryClientProvider>);
   });
   await act(async () => { await vi.advanceTimersByTimeAsync(10); });
   await act(async () => { await vi.advanceTimersByTimeAsync(10); });
@@ -76,10 +79,29 @@ it("shows the provider email and organization separately from the Paperclip owne
   expect(identityCalls()[0][0]).toBe("/api/companies/company/ai-connections/connection/identity?grantId=grant");
 });
 
+it.each(["Example business", "Personal workspace"])("shows the selected OpenAI workspace %s with the saved email", async workspace => {
+  observation = { ...known, accountLabel: null, organizationLabel: workspace };
+  await render({ ...account, provider: "openai", accountLabel: "avery@example.test" });
+  expect(host.textContent).toContain("avery@example.test");
+  expect(host.textContent).toContain(workspace);
+  expect(host.textContent).toContain("ChatGPT workspace");
+  expect(host.textContent).toContain("Personal · Sam");
+  expect(identityCalls()).toHaveLength(1);
+});
+
+it("explains an unavailable OpenAI workspace without guessing from the email or Paperclip access", async () => {
+  observation = { ...known, status: "unavailable", accountLabel: null, organizationLabel: null,
+    errorCode: "invalid_response", message: "OpenAI did not return the selected workspace name." };
+  await render({ ...account, provider: "openai", accountLabel: "avery@example.test" });
+  expect(host.textContent).toContain("avery@example.test");
+  expect(host.textContent).toContain("ChatGPT workspaceNot available");
+  expect(host.textContent).toContain("OpenAI did not return the selected workspace name.");
+});
+
 it("explains profile permission denial while preserving connected account controls", async () => {
   observation = { ...known, status: "unavailable", accountLabel: null, organizationLabel: null, errorCode: "permission_denied", message: "Anthropic did not permit this connection to read the account email." };
   await render(account, grant, true);
-  expect(host.textContent).toContain("Personal default");
+  expect(host.textContent).toContain("Default for Claude");
   expect(host.textContent).toContain("Reconnect");
   expect(host.textContent).toContain("did not permit");
   expect(host.textContent).not.toContain("avery@example.test");
@@ -91,12 +113,12 @@ it("explains profile permission denial while preserving connected account contro
 it("keeps maintenance controls visible during a stalled lookup and recovers only the identity request", async () => {
   blocked = true;
   await render(account, grant, true);
-  expect(host.textContent).toContain("Personal default");
+  expect(host.textContent).toContain("Default for Claude");
   expect(host.textContent).toContain("Reconnect");
   expect(host.textContent).toContain("Checking account details…");
   await act(async () => { await vi.advanceTimersByTimeAsync(20_001); });
   expect(signals[0].aborted).toBe(true);
-  expect(host.textContent).toContain("Personal default");
+  expect(host.textContent).toContain("Default for Claude");
   expect(host.textContent).not.toContain("Checking account details…");
   const ordinaryCalls = fetchMock.mock.calls.length - identityCalls().length;
   blocked = false;
@@ -108,17 +130,17 @@ it("keeps maintenance controls visible during a stalled lookup and recovers only
   expect(fetchMock.mock.calls.length - identityCalls().length).toBe(ordinaryCalls);
 });
 
-it("does not show the previous credential's identity after the selected grant changes", async () => {
-  await render();
+it.each(["anthropic", "openai"] as const)("does not show the previous %s credential's identity after the selected grant changes", async provider => {
+  await render({ ...account, provider });
   expect(host.textContent).toContain("avery@example.test");
   blocked = true;
-  await render({ ...account, grantId: "other-grant" }, { ...grant, id: "other-grant" });
+  await render({ ...account, provider, grantId: "other-grant" }, { ...grant, id: "other-grant" });
   expect(host.textContent).not.toContain("avery@example.test");
   expect(host.textContent).toContain("Checking account details…");
 });
 
-it("uses saved labels for unsupported methods without opening an identity request", async () => {
-  await render({ ...account, method: "api_key", accountLabel: "billing@example.test", ownership: "shared" });
+it.each(["anthropic", "openai"] as const)("uses saved labels for %s API keys without opening an identity request", async provider => {
+  await render({ ...account, provider, method: "api_key", accountLabel: "billing@example.test", ownership: "shared" });
   expect(host.textContent).toContain("billing@example.test");
   expect(host.textContent).toContain("Company shared");
   expect(identityCalls()).toHaveLength(0);
@@ -134,4 +156,11 @@ it("reuses recent identity observations and invalidates them after reconnect", a
   expect(identityCalls()).toHaveLength(2);
   expect(host.textContent).toContain("new-account@example.test");
   expect(host.textContent).not.toContain("avery@example.test");
+});
+
+it("masks the provider account and organization labels in session replay", async () => {
+  observation = { ...known, accountLabel: "perrin.ashdown@example.test", organizationLabel: "Brackenridge Analytics" };
+  await render();
+  expect(replayLeaks("perrin.ashdown@example.test", document.body)).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("Brackenridge Analytics", document.body)).toEqual({ rendered: true, recorded: false });
 });

@@ -1713,6 +1713,62 @@ describe("effective run execution workspace config freshness", () => {
     expect(decision.changedCategories).toContain(category);
   });
 
+  describe("provider-owned storage", () => {
+    const pluginEnvironment = (template: string) => ({
+      selectedEnvironmentId: "environment-1",
+      driver: "plugin",
+      config: { pluginKey: "example.sandbox", driverKey: "tasks", driverConfig: { template } },
+    });
+
+    it("records environment drift as a refresh that persists the new fingerprint", () => {
+      const base = buildWorkspaceConfigMetadata({ environment: pluginEnvironment("template-a") });
+      const next = buildWorkspaceConfigMetadata({ environment: pluginEnvironment("template-b") });
+
+      const decision = resolveExecutionWorkspaceConfigFreshness({
+        hasExistingWorkspace: true,
+        existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+        nextMetadata: next,
+        providerOwnedStorage: true,
+      });
+      const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
+        requestedShouldReuseExisting: true,
+        workspaceConfigFreshness: decision,
+      });
+
+      expect(decision).toMatchObject({ action: "refresh", shouldReuseExisting: true, changedCategories: ["environment"] });
+      expect(policy).toMatchObject({ shouldRestoreExistingWorkspace: true, shouldPersistLatestWorkspaceConfigMetadata: true });
+    });
+
+    it("still replaces on environment drift when Core owns the workspace", () => {
+      const decision = resolveExecutionWorkspaceConfigFreshness({
+        hasExistingWorkspace: true,
+        existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(
+          buildWorkspaceConfigMetadata({ environment: pluginEnvironment("template-a") }),
+        ),
+        nextMetadata: buildWorkspaceConfigMetadata({ environment: pluginEnvironment("template-b") }),
+      });
+
+      expect(decision.action).toBe("replace");
+    });
+
+    it("still replaces when another replacement-class category drifts alongside the environment", () => {
+      const decision = resolveExecutionWorkspaceConfigFreshness({
+        hasExistingWorkspace: true,
+        existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(
+          buildWorkspaceConfigMetadata({ environment: pluginEnvironment("template-a") }),
+        ),
+        nextMetadata: buildWorkspaceConfigMetadata({
+          environment: pluginEnvironment("template-b"),
+          repoRef: "origin/release",
+        }),
+        providerOwnedStorage: true,
+      });
+
+      expect(decision.action).toBe("replace");
+      expect(decision.changedCategories).toEqual(expect.arrayContaining(["environment", "repo"]));
+    });
+  });
+
   it("keeps replacement-class drift visible when explicit reuse restores the old workspace", () => {
     const base = buildWorkspaceConfigMetadata();
     const next = buildWorkspaceConfigMetadata({
@@ -1980,6 +2036,22 @@ describe("effective run execution workspace config freshness", () => {
     expect(serialized).toContain("runtime services");
     expect(serialized).not.toContain("pnpm dev");
     expect(serialized).not.toContain("0.0.0.0");
+  });
+
+  it("reports actual reuse when freshness policy requested replacement", () => {
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: {},
+      nextMetadata: buildWorkspaceConfigMetadata(),
+    });
+    const operation = buildWorkspaceConfigFreshnessOperation({
+      decision, hasExistingWorkspace: true, reuseRequested: true,
+      workspaceReused: true, configSnapshotRefreshed: true,
+      previousWorkspaceId: "same", activeWorkspaceId: "same",
+    });
+    expect(operation?.metadata.action).toBe("replace");
+    expect(operation?.system).toContain("reused execution workspace");
+    expect(operation?.system).not.toContain("replaced execution workspace");
   });
 
   it("does not record a freshness operation when an unchanged workspace is simply reused", () => {
@@ -3385,6 +3457,23 @@ describe("isWorkspaceSyncConflictFailure", () => {
     expect(isWorkspaceSyncConflictFailure("no Codex credentials provisioned for managed home")).toBe(false);
     expect(isWorkspaceSyncConflictFailure(null)).toBe(false);
     expect(isWorkspaceSyncConflictFailure("")).toBe(false);
+  });
+});
+
+describe("native lifecycle default and saved task sessions", () => {
+  const native = (lifecycle: Record<string, unknown>) => buildSessionConfigMetadata({
+    adapterType: "paperclip_runner",
+    effectiveAdapterConfig: { provider: "codex", model: "gpt-6.1-sol", codexPermissionMode: "never", ...lifecycle },
+  });
+
+  it("keeps a session saved before migration 0443 cleared the stored per_turn default", async () => {
+    // Before the migration the agent stored per_turn; afterwards it stores nothing.
+    expect((await native({})).fingerprint).toBe((await native({ lifecycleMode: "per_turn" })).fingerprint);
+  });
+
+  it("still starts a new session for an explicit change to warm", async () => {
+    expect((await native({ lifecycleMode: "warm", idleTimeoutMs: 300_000 })).fingerprint)
+      .not.toBe((await native({ lifecycleMode: "per_turn" })).fingerprint);
   });
 });
 

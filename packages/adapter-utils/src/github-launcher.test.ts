@@ -189,6 +189,42 @@ process.exit(result.status ?? 98);
     expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
     expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
   });
+  it("sends repository creation and forks to the connection's tools when a connection is in use", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-repository-tools-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), realBin = path.join(root, "real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(realBin, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({args:process.argv.slice(2),token:process.env.GH_TOKEN ?? null}));', { mode: 0o700 });
+    let status = "available";
+    const server = createServer((_req, res) => {
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ status, env: { GH_TOKEN: "managed-token" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    const env = { ...process.env, ...githubBrokerEnvironment({}, { url: `http://127.0.0.1:${port}`, token: "run-capability" }),
+      PATH: `${bin}:${realBin}:${process.env.PATH}` };
+    const gh = (...args: string[]) => exec(path.join(bin, "gh"), args, { env });
+    for (const [args, tool] of [
+      [["repo", "create", "demo", "--private"], "create_repository"],
+      [["repo", "new", "demo"], "create_repository"],
+      [["repo", "fork", "octo-org/tools", "--org", "acme"], "fork_repository"],
+    ] as const) {
+      const failure = await gh(...args).catch((error: { code?: number; stdout?: string; stderr?: string }) => error);
+      expect(failure).toMatchObject({ code: 1, stdout: "" });
+      expect(failure.stderr).toContain(`GitHub connection's ${tool} tool`);
+      expect(failure.stderr).not.toContain("managed-token");
+    }
+    expect(JSON.parse((await gh("repo", "create", "--help")).stdout))
+      .toEqual({ args: ["repo", "create", "--help"], token: "managed-token" });
+    expect(JSON.parse((await gh("repo", "view", "octo-org/tools")).stdout))
+      .toEqual({ args: ["repo", "view", "octo-org/tools"], token: "managed-token" });
+    // Without a connection there are no connection tools; gh runs unchanged.
+    status = "absent";
+    expect(JSON.parse((await gh("repo", "create", "demo")).stdout)).toEqual({ args: ["repo", "create", "demo"], token: null });
+  });
   it.each(["before-write", "partial-write"])("keeps Git and managed credentials available after a %s failure", async (failure) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-default-write-failure-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -403,4 +439,90 @@ it("captures the current task broker file once per invocation and never falls ba
   await rm(path.join(bin, "broker.json"));
   expect((await run()).stdout).toBe("anonymous");
   expect(captured).toEqual(["Bearer first-run", "Bearer next-run"]);
+});
+
+// A control-plane restart stops the task's broker while its provider keeps
+// running. The replacement broker is published to broker.json a few seconds later.
+// An HTTP/2 gateway can outlive its controller and answer 503 instead of refusing.
+// The replacement file can also be read while it is only partly written.
+it.each(["closed port", "bridge unavailable", "partly written broker file"])(
+  "waits for a replacement task broker instead of running without credentials (%s)", async (outage) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-outage-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const stopped = createServer((_req, res) => {
+    res.writeHead(503, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "bridge_unavailable" }));
+  });
+  await new Promise<void>(resolve => stopped.listen(0, "127.0.0.1", resolve));
+  const stoppedUrl = `http://127.0.0.1:${(stopped.address() as { port: number }).port}`;
+  if (outage === "bridge unavailable") cleanups.push(() => new Promise<void>(resolve => stopped.close(() => resolve())));
+  else await new Promise<void>(resolve => stopped.close(() => resolve()));
+  const replacement = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: req.headers.authorization!.slice(7) + "-credential" } }));
+  });
+  await new Promise<void>(resolve => replacement.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => new Promise<void>(resolve => replacement.close(() => resolve())));
+  const replacementUrl = `http://127.0.0.1:${(replacement.address() as { port: number }).port}`;
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: stoppedUrl, token: "stopped-run" }));
+  const operation = exec(path.join(bin, "gh"), [], { env: { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}` } });
+  if (outage === "partly written broker file") {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await writeFile(path.join(bin, "broker.json"), '{"url":');
+  }
+  await new Promise(resolve => setTimeout(resolve, outage === "partly written broker file" ? 2000 : 3000));
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: replacementUrl, token: "reattached-run" }));
+  const result = await operation;
+  expect(result.stdout).toBe("reattached-run-credential");
+  expect(result.stderr).not.toContain("continuing without managed credentials");
+  expect(result.stderr).not.toMatch(/stopped-run|reattached-run/);
+}, 20_000);
+
+// A failed replacement bridge publishes empty broker values instead of removing the file.
+it.each(["removed", "emptied"])("stops waiting for an unreachable task broker once its broker file is %s", async (ending) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-ended-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const stopped = createServer();
+  await new Promise<void>(resolve => stopped.listen(0, "127.0.0.1", resolve));
+  const stoppedUrl = `http://127.0.0.1:${(stopped.address() as { port: number }).port}`;
+  await new Promise<void>(resolve => stopped.close(() => resolve()));
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: stoppedUrl, token: "ended-run" }));
+  const started = Date.now();
+  const operation = exec(path.join(bin, "gh"), [], { env: { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}` } });
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  if (ending === "removed") await rm(path.join(bin, "broker.json"));
+  else await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: "", token: "" }));
+  const result = await operation;
+  expect(result.stdout).toBe("anonymous");
+  expect(result.stderr).toContain("broker_transport_unavailable");
+  expect(Date.now() - started).toBeLessThan(10_000);
+}, 20_000);
+
+it.each([401, 403])("does not wait when the task broker denies the capability (%s)", async (status) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-denied-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  let requests = 0;
+  const server = createServer((_req, res) => { requests++; res.writeHead(status); res.end(); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url, token: "denied-run" }));
+  const started = Date.now();
+  const result = await exec(path.join(bin, "gh"), [], { env: { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}` } });
+  expect(result.stdout).toBe("anonymous");
+  expect(result.stderr).toContain("capability_rejected");
+  expect(requests).toBe(1);
+  expect(Date.now() - started).toBeLessThan(3000);
 });

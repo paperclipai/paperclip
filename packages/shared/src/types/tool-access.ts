@@ -1,3 +1,4 @@
+import type { McpAppToolUi, McpIcon } from "../mcp-apps.js";
 import type {
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
@@ -68,7 +69,7 @@ export type {
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport =
-  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice";
+  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice" | "plugin";
 export type ToolConnectionPurpose = "tool" | "channel" | "ai";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership =
@@ -112,6 +113,7 @@ export interface ToolRedactedValueSummary {
   sha256?: string | null;
   redactedFields?: string[];
   artifactId?: string | null;
+  contentDeletedAt?: string;
 }
 
 export type VercelConnectPrincipalMode = "app" | "user";
@@ -425,11 +427,69 @@ export interface ToolConnectionRemovalSummary {
     appSubjectCleanup: "not_applicable" | "manage_in_vercel";
     manageUrl: string;
   } | null;
+  providerAccess?: ManagedGoogleAccessRemoval | null;
 }
+
+export type ManagedGoogleRevocationOutcome =
+  | "revoked"
+  | "other_connections_remain"
+  | "provider_revocation_failed"
+  | "binding_not_known"
+  | "provider_revocation_disabled"
+  | "revocation_in_progress"
+  | "revocation_not_available"
+  | "broker_unavailable"
+  | "broker_error"
+  | "credential_unavailable"
+  | "unexpected_error";
+
+export interface ManagedGoogleAccessRemoval {
+  provider: "google";
+  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "not_ended";
+  outcomes: ManagedGoogleRevocationOutcome[];
+}
+
+export type ConnectionGrantRevocationResult = ConnectionGrant & {
+  providerAccess?: ManagedGoogleAccessRemoval | null;
+};
 
 export interface ToolConnectionRemovalResult {
   connection: ToolConnection;
   removal: ToolConnectionRemovalSummary;
+}
+
+export interface ToolConnectionStoredContentCounts {
+  toolCalls: number;
+  approvals: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+}
+
+export interface ToolConnectionContentDeletionCounts {
+  toolCalls: number;
+  approvals: number;
+  auditEvents: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+  itemsInProgress: number;
+}
+
+export type ToolConnectionContentDeletionStatus = "pending" | "completed";
+
+export interface ToolConnectionContentDeletion {
+  id: string;
+  status: ToolConnectionContentDeletionStatus;
+  requestedAt: string;
+  completedAt: string | null;
+  retrying: boolean;
+  counts: ToolConnectionContentDeletionCounts;
+}
+
+export interface ToolConnectionStoredContent {
+  stored: ToolConnectionStoredContentCounts;
+  deletion: ToolConnectionContentDeletion | null;
 }
 
 export type ConnectionTokenScope = string | string[];
@@ -568,6 +628,10 @@ export interface ToolCatalogEntry {
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
   annotations: Record<string, unknown> | null;
+  /** MCP Apps view declaration (`_meta.ui`), when the tool renders one. */
+  uiMeta?: McpAppToolUi | null;
+  /** Sanitized provider icons (SEP-973), when the tool declares any. */
+  icons?: McpIcon[] | null;
   riskLevel: ToolRiskLevel;
   isReadOnly: boolean;
   isWrite: boolean;
@@ -754,6 +818,8 @@ export interface ToolMcpGatewayToken {
   createdByUserId: string | null;
   /** Agent client delegation. Null with an issuing agent identifies an unbound legacy client. */
   responsibleUserId?: string | null;
+  /** True for an agent-created client token whose value has not yet been revealed to its responsible person. */
+  pendingReveal?: boolean;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -1202,7 +1268,7 @@ export interface ToolOAuthHandoff {
  * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
  * branch without re-probing. `manualClientRequired` means discovery succeeded but
  * the authorization server supports neither CIMD nor DCR, so the operator has to
- * supply a preregistered client under Advanced authentication.
+ * supply a preregistered client in the sign-in options on the connect screen.
  */
 export interface ConnectToolAppAuthChallenge {
   kind: "oauth";
@@ -1212,6 +1278,39 @@ export interface ConnectToolAppAuthChallenge {
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
   manualClientRequired?: boolean;
+}
+
+/** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
+export interface MachineSignInPublicKey {
+  keyId: string;
+  algorithm: "RS256" | "ES256";
+  /** PEM (SPKI) for providers that take a certificate-style key. */
+  pem: string;
+  /** JWK for providers that take a JSON key. */
+  jwk: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
+export interface MachineSignInStatus {
+  connectionId: string;
+  method: "paperclip_key" | "client_secret";
+  clientId: string | null;
+  /** The sign-in service this connection's credentials are bound to. */
+  issuer: string | null;
+  tokenUrl: string;
+  scopes: string[];
+  publicKey: MachineSignInPublicKey | null;
+  /** A replacement key waiting to be registered with the provider. */
+  pendingPublicKey: MachineSignInPublicKey | null;
+  hasClientSecret: boolean;
+  lastTokenAt: string | null;
+}
+
+export interface MachineSignInSetupResult {
+  connectionId: string;
+  connection: ToolConnection;
+  machineSignIn: MachineSignInStatus;
 }
 
 export interface ConnectToolAppResult {
@@ -1439,6 +1538,7 @@ export type ToolAccessReasonCode =
   | "deny_default"
   | "deny_company_boundary"
   | "deny_disabled_connection"
+  | "deny_connection_not_installed"
   | "deny_disabled_application"
   | "deny_archived_application"
   | "deny_missing_tool"
@@ -1755,4 +1855,18 @@ export interface ToolConnectionTestCallStatus {
   requestedAt: string;
   /** ISO timestamp the request was resolved (approved/denied/cancelled), when applicable. */
   resolvedAt?: string | null;
+}
+
+/** A connected tool's provider icons, keyed by its tool gateway name. */
+export interface ProviderToolIconEntry {
+  /** `mcp.<app>-<connection>:<tool>`, as agents see the tool. */
+  gatewayToolName: string;
+  /** `app_<name>_<digest>`, the name native runners (and so their transcripts) use. */
+  nativeToolName?: string;
+  icons: McpIcon[];
+}
+
+/** `GET /api/companies/:companyId/tool-icons` */
+export interface ProviderToolIconsResponse {
+  icons: ProviderToolIconEntry[];
 }

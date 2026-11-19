@@ -1,3 +1,4 @@
+import { notifyMuseContactVerification } from "./modules/external-agents/index.js";
 import { randomBytes } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -126,6 +127,7 @@ export async function claimBoardOwnership(
 
       if (!existing) {
         await notifyChatCompanyAuthorityChange(tx, { companyId: company.id });
+        await notifyMuseContactVerification(tx,{companyId:company.id,operatorId:opts.userId});
         await tx.insert(companyMemberships).values({
           companyId: company.id,
           principalType: "user",
@@ -138,6 +140,7 @@ export async function claimBoardOwnership(
 
       if (existing.status !== "active") {
         await notifyChatCompanyAuthorityChange(tx, { companyId: company.id });
+        await notifyMuseContactVerification(tx,{companyId:company.id,operatorId:opts.userId});
         await tx
           .update(companyMemberships)
           .set({ status: "active", membershipRole: "owner", updatedAt: new Date() })

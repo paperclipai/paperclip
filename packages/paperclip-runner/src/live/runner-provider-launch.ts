@@ -93,11 +93,61 @@ export function bindRunnerLaunchResources(
   };
 }
 
-export function runnerLaunchRequirementsDigest(requirements: RunnerProviderLaunchRequirements): string {
-  const canonical = JSON.stringify(requirements, (_key, value: unknown) =>
-    value && typeof value === "object" && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
+function canonicalDigest(value: unknown): string {
+  const canonical = JSON.stringify(value, (_key, entry: unknown) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+export function runnerLaunchRequirementsDigest(requirements: RunnerProviderLaunchRequirements): string {
+  return canonicalDigest(requirements);
+}
+
+/**
+ * The launch requirements an environment reconciles when it prepares a Runner: the runner, lease and session identity,
+ * provider, model and settings, the prompt and instruction text, and the runtime context's instruction and skill
+ * bundles, working copy and connection instructions. It leaves out what names one run (the run, turn and item ids) and
+ * the runtime context's MCP assignment and binding: MCP reaches the Runner through Core's tool authority on every run
+ * attachment, never through files the environment publishes, and Core already continues a warm session across an
+ * MCP-only change (`nativeRuntimeContextsMatch` with tool refresh). The context's `aggregateDigest` is left out with it,
+ * since it hashes the MCP assignment and every other field it covers is in this digest directly.
+ */
+export function runnerLaunchPreparationDigest(requirements: RunnerProviderLaunchRequirements): string {
+  const { runId: _runId, turnId: _turnId, itemId: _itemId, ...identity } = requirements.identity;
+  let runtimeContext: Omit<NativeRuntimeContextSnapshot, "mcp" | "aggregateDigest"> | null = null;
+  if (requirements.runtimeContext) {
+    const { mcp: _mcp, aggregateDigest: _aggregateDigest, ...prepared } = requirements.runtimeContext;
+    runtimeContext = prepared;
+  }
+  return canonicalDigest({ schema: "paperclip.runner.launch-preparation-digest.v1", requirements: { ...requirements, identity, runtimeContext } });
+}
+
+/**
+ * The preparation digest plus everything it leaves out: the run, turn and item ids, and the MCP assignment and binding.
+ * It is unique to one run's launch.
+ */
+export function runnerLaunchRunDigest(preparationDigest: string, requirements: {
+  identity: Pick<DurableRecoveryIdentity, "runId" | "turnId" | "itemId">;
+  runtimeContext: Pick<NativeRuntimeContextSnapshot, "mcp"> | null;
+}): string {
+  const { identity } = requirements;
+  const mcp = requirements.runtimeContext?.mcp;
+  return canonicalDigest({ schema: "paperclip.runner.launch-run-digest.v1", preparationDigest,
+    runId: identity.runId, turnId: identity.turnId, itemId: identity.itemId,
+    mcp: mcp ? { assignmentSetId: mcp.assignmentSetId, digest: mcp.digest, bindingId: mcp.bindingId } : null });
+}
+
+function runnerLaunchPolicy(requirements: RunnerProviderLaunchRequirements): Record<string, unknown> {
+  return createRunnerProviderLaunch(requirements, {
+    options: { codexArgs: [] }, root: "/", cwd: "/", codexHome: "/",
+    providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
+  });
+}
+
+/** Compare effective provider policy, including the factory's defaults. */
+export function runnerLaunchSettingsMatch(requirements: RunnerProviderLaunchRequirements, settings: RunnerProviderLaunchRequirements["settings"]): boolean {
+  return JSON.stringify(runnerLaunchPolicy(requirements)) === JSON.stringify(runnerLaunchPolicy({ ...requirements, settings }));
 }
 
 /** The environment may resolve paths, but it cannot change Core's selected policy. */
@@ -138,10 +188,7 @@ export function validatePreparedRunnerLaunch(
       || descriptor.runId !== requirements.identity.runId
       || descriptor.normalizedSessionId !== requirements.identity.normalizedSessionId) reject();
   }
-  const expected = createRunnerProviderLaunch(requirements, {
-    options: { codexArgs: [] }, root: "/", cwd: "/", codexHome: "/",
-    providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
-  });
+  const expected = runnerLaunchPolicy(requirements);
   const hostFields = new Set(["command", "args", "sidecarCommand", "sidecarArgs", "runtimeDirectory", "cwd",
     "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions"]);
   for (const [key, value] of Object.entries(expected)) {

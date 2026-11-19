@@ -7,6 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
 import { ApiError } from "@/api/client";
+import { tailscaleApi } from "@/api/tailscale";
+
+vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: async () => ({ source: "local_implicit", isInstanceAdmin: false }) } }));
+vi.mock("@/api/tailscale", () => ({ tailscaleApi: {
+  list: vi.fn(async () => [{ id: "tailnet-connection", companyId: "company-1", name: "Home tailnet", status: "connected" }]),
+  devices: vi.fn(async () => [{ id: "stable-device", name: "Home Mac", address: "100.64.0.1", os: "macOS", online: true }]),
+  connect: vi.fn(),
+} }));
 
 const xtermMocks = vi.hoisted(() => {
   class MockTerminal {
@@ -696,6 +704,32 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttons[1].disabled).toBe(true);
   });
 
+  it("defaults new SSH environments to the agent's Paperclip account", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`)); });
+    await waitForAssertion(() => {
+      const toggle = getEnvironmentFormPage()?.querySelector('[aria-label="Use authentication configured on the remote machine"]');
+      expect(toggle?.getAttribute("aria-checked")).toBe("false");
+      expect(toggle?.closest("details")?.open).toBe(false);
+    });
+  });
+
+  it.each([undefined, true, false])("preserves the remote-auth option when editing an existing SSH environment (saved=%s)", async useHostAuth => {
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-existing-ssh", name: "Existing SSH", driver: "ssh", description: null, envVars: {},
+      config: { ...(useHostAuth !== undefined ? { useHostAuth } : {}), host: "ssh.example.test", username: "developer", port: 22, remoteWorkspacePath: "/workspace", strictHostKeyChecking: true } }]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-existing-ssh/edit`)); });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.querySelector('[aria-label="Use authentication configured on the remote machine"]')?.getAttribute("aria-checked")).toBe(String(useHostAuth !== false));
+    });
+    await act(async () => { click(findButton(getEnvironmentFormPage()!, "Save environment")); });
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.update).toHaveBeenCalledWith("env-existing-ssh", expect.objectContaining({ config: expect.objectContaining({ useHostAuth: useHostAuth !== false }) }), "company-1");
+    });
+  });
+
   it("opens the add-environment form on a standalone page and closes it on cancel", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -722,6 +756,135 @@ describe("CompanyEnvironments — test provider button", () => {
     await flushReact();
 
     expect(getEnvironmentFormPage()).toBeNull();
+  });
+
+  it("defaults new SSH environments to the agent's Paperclip account", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`)); });
+    await waitForAssertion(() => {
+      const toggle = getEnvironmentFormPage()?.querySelector('[aria-label="Use authentication configured on the remote machine"]');
+      expect(toggle?.getAttribute("aria-checked")).toBe("false");
+      expect(toggle?.closest("details")?.open).toBe(false);
+    });
+  });
+
+  it.each([undefined, true, false])("preserves the remote-auth option when editing an existing SSH environment (saved=%s)", async useHostAuth => {
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-existing-ssh", name: "Existing SSH", driver: "ssh", description: null, envVars: {},
+      config: { ...(useHostAuth !== undefined ? { useHostAuth } : {}), host: "ssh.example.test", username: "developer", port: 22, remoteWorkspacePath: "/workspace", strictHostKeyChecking: true } }]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-existing-ssh/edit`)); });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.querySelector('[aria-label="Use authentication configured on the remote machine"]')?.getAttribute("aria-checked")).toBe(String(useHostAuth !== false));
+    });
+    await act(async () => { click(findButton(getEnvironmentFormPage()!, "Save environment")); });
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.update).toHaveBeenCalledWith("env-existing-ssh", expect.objectContaining({ config: expect.objectContaining({ useHostAuth: useHostAuth !== false }) }), "company-1");
+    });
+  });
+
+  it("offers tailnet setup through Connectors and hides the SSH network option until connected", async () => {
+    vi.mocked(tailscaleApi.list).mockResolvedValueOnce([]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`)); });
+    await waitForAssertion(() => { expect(getEnvironmentFormPage()?.querySelector('a[href="/apps/tailscale"]')).not.toBeNull(); });
+    expect(getEnvironmentFormPage()!.querySelector('select[aria-label="SSH network"]')).toBeNull();
+    expect(findButton(getEnvironmentFormPage()!, "Connect Tailscale Network")).toBeUndefined();
+  });
+
+  it("keeps cached tailnet setup available when a background refresh fails", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = ["tailscale-connections", "company-1"];
+    queryClient.setQueryData(key, []);
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`)); });
+    await waitForAssertion(() => { expect(getEnvironmentFormPage()?.querySelector('a[href="/apps/tailscale"]')).not.toBeNull(); });
+    vi.mocked(tailscaleApi.list).mockRejectedValueOnce(new ApiError("Network unavailable", 503, {}));
+    await act(async () => { await queryClient.refetchQueries({ queryKey: key }); });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.querySelector('[role="alert"]')).not.toBeNull();
+      expect(getEnvironmentFormPage()?.querySelector('a[href="/apps/tailscale"]')).not.toBeNull();
+    });
+  });
+
+  it("automatically uses the sole connected tailnet without showing a connection selector", async () => {
+    vi.mocked(tailscaleApi.list).mockResolvedValueOnce([
+      { id: "tailnet-connection", companyId: "company-1", name: "Home tailnet", status: "connected" },
+      { id: "unfinished", companyId: "company-1", name: "Unfinished connection", status: "pending" },
+    ]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`)); });
+    await waitForAssertion(() => {
+      const network = getEnvironmentFormPage()!.querySelector<HTMLSelectElement>('select[aria-label="SSH network"]')!;
+      expect([...network.options].map(option => option.value)).toEqual(["direct", "tailscale"]);
+    });
+    await act(async () => setSelectValue(getEnvironmentFormPage()!.querySelector('select[aria-label="SSH network"]')!, "tailscale"));
+    await waitForAssertion(() => {
+      const page = getEnvironmentFormPage()!;
+      expect(page.textContent).toContain("Home Mac");
+      expect(page.textContent).not.toContain("Tailnet connection");
+      expect(vi.mocked(tailscaleApi.devices)).toHaveBeenCalledWith("company-1", "tailnet-connection");
+    });
+  });
+
+  it("retains the tailnet selector when multiple connected networks are available", async () => {
+    vi.mocked(tailscaleApi.list).mockResolvedValueOnce([
+      { id: "tailnet-connection", companyId: "company-1", name: "Home tailnet", status: "connected" },
+      { id: "work-tailnet", companyId: "company-1", name: "Work tailnet", status: "connected" },
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-tailnet", name: "My workstation", driver: "ssh", description: null, envVars: {},
+      config: { network: "tailscale", host: "100.64.0.1", port: 22, username: "developer", remoteWorkspacePath: "/workspace",
+        tailscaleConnectionId: "tailnet-connection", tailscaleDeviceId: "stable-device", strictHostKeyChecking: true } }]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-tailnet/edit`)); });
+    await waitForAssertion(() => {
+      const page = getEnvironmentFormPage()!;
+      expect(page.textContent).toContain("Tailnet connection");
+      expect(page.textContent).toContain("Home tailnet");
+      expect(page.textContent).toContain("Work tailnet");
+    });
+  });
+
+  it("saves a connected Tailscale machine as an SSH environment without a separate driver or harness restriction", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-tailnet", name: "My workstation", driver: "ssh", description: null, envVars: {},
+      config: { network: "tailscale", host: "100.64.0.1", port: 22, username: "developer", remoteWorkspacePath: "/workspace",
+        tailscaleConnectionId: "tailnet-connection", tailscaleDeviceId: "stable-device", strictHostKeyChecking: true } }]);
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-tailnet/edit`)); });
+    await waitForAssertion(() => { expect(getEnvironmentFormPage()?.textContent).toContain("Home Mac"); });
+    const page = getEnvironmentFormPage()!;
+    expect(page.textContent).not.toContain("Tailnet connection");
+    const driver = Array.from(page.querySelectorAll("select")).find(select => select.querySelector('option[value="ssh"]'))!;
+    expect(driver.value).toBe("ssh");
+    expect(driver.querySelector('option[value="tailscale"]')).toBeNull();
+    expect(findButton(page, "Connect Tailscale Network")).toBeUndefined();
+    expect(page.textContent).not.toContain("Claude");
+    expect(page.querySelector('input[aria-label="Tailscale connection key"]')).toBeNull();
+    await act(async () => { click(findButton(page, "Save environment")); });
+    await waitForAssertion(() => { expect(mockEnvironmentsApi.update).toHaveBeenCalledWith("env-tailnet", expect.objectContaining({ driver: "ssh", config: expect.objectContaining({
+      network: "tailscale", host: "100.64.0.1", username: "developer", remoteWorkspacePath: "/workspace", tailscaleConnectionId: "tailnet-connection", tailscaleDeviceId: "stable-device",
+    }) }), "company-1"); });
+  });
+
+  it("sends an explicit Direct selection when switching away from a saved tailnet", async () => {
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-tailnet", name: "My workstation", driver: "ssh", description: null, envVars: {},
+      config: { network: "tailscale", host: "100.64.0.1", port: 22, username: "developer", remoteWorkspacePath: "/workspace",
+        tailscaleConnectionId: "tailnet-connection", tailscaleDeviceId: "stable-device", strictHostKeyChecking: true } }]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-tailnet/edit`)); });
+    await waitForAssertion(() => { expect(getEnvironmentFormPage()?.textContent).toContain("Home Mac"); });
+    const page = getEnvironmentFormPage()!;
+    const host = Array.from(page.querySelectorAll<HTMLInputElement>("input")).find(input => input.value === "100.64.0.1")!;
+    await act(async () => setSelectValue(page.querySelector('select[aria-label="SSH network"]')!, "direct"));
+    await act(async () => setInputValue(host, "direct.example.test"));
+    await act(async () => click(findButton(page, "Save environment")));
+    await waitForAssertion(() => { expect(mockEnvironmentsApi.update).toHaveBeenCalledWith("env-tailnet", expect.objectContaining({ driver: "ssh", config: expect.objectContaining({ network: "direct", host: "direct.example.test" }) }), "company-1"); });
   });
 
   it("opens the edit form on a standalone page with existing values and closes after save", async () => {

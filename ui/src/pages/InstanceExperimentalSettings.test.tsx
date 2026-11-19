@@ -23,7 +23,7 @@ vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
-vi.mock("@/components/CoordinatorWorkspaceSetting", () => ({ CoordinatorWorkspaceSetting: () => null }));
+vi.mock("@/components/ClassicWorkspaceSetting", () => ({ ClassicWorkspaceSetting: () => null }));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: { id: "butter", issuePrefix: "BUT" } }),
@@ -96,6 +96,8 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableChatConnectors: false,
     enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
+    enableGoogleWorkspaceConnector: false,
+    enableAwsConnector: false,
     enablePaperclipNotebook: false,
     enableCases: false,
     enableAgentChat: false,
@@ -103,6 +105,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableArtifactsV1: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
+    enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -110,6 +113,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableBetaSkills: false,
     enableSummaries: false,
     enableStatusCards: false,
+    enableResponsibilities: false,
     enableDecisions: false,
     enableFastResponses: false,
     enableGoalsSidebarLink: false,
@@ -123,6 +127,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableMcpTasks: false,
     enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
@@ -245,6 +250,18 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     }
   });
 
+  it("defaults the Paperclip Google Workspace connector off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle Paperclip Google Workspace connector experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableGoogleWorkspaceConnector: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
   it("defaults Combined Inbox + Task List off and persists an explicit toggle in both directions", async () => {
     await renderPage();
     const selector = 'button[aria-label="Toggle combined inbox and task list experimental setting"]';
@@ -265,18 +282,10 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(container.textContent).not.toContain("MCP aggregators");
   });
 
-  it("defaults assistant connections off and persists an explicit toggle in both directions", async () => {
+  it("does not offer an assistant connections toggle now that the feature is always on", async () => {
     await renderPage();
-    const selector = 'button[aria-label="Toggle assistant connections experimental setting"]';
-    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("work already delegated continues");
-    for (const enabled of [true, false]) {
-      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
-      await flushReact();
-      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enablePublicMcp: enabled });
-      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
-      expect(Boolean(container.querySelector('a[href="/BUT/apps/assistant-connection"]'))).toBe(enabled);
-    }
+    expect(container.querySelector('button[aria-label="Toggle assistant connections experimental setting"]')).toBeNull();
+    expect(container.textContent).not.toContain("Assistant connections (MCP)");
   });
 
   it("saves the personal Muse opt-in separately and names independent readiness evidence", async () => {
@@ -294,7 +303,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
     const selector = 'button[aria-label="Toggle OpenAI Dot experimental setting"]';
     expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL");
+    expect(container.textContent).toContain("Requires an authenticated instance with a public HTTPS URL");
     for (const enabled of [true, false]) {
       await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
       await flushReact();
@@ -462,6 +471,25 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableClassicTaskInterface: false,
     });
+  });
+
+  it("saves and restores the legacy composer shortcut", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle Command/Ctrl+Enter to submit"]';
+    const toggle = container.querySelector<HTMLButtonElement>(selector)!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableLegacyComposerSubmit: true });
+
+    flushSync(() => { root?.unmount(); });
+    root = null;
+    await renderPage();
+    const restored = container.querySelector<HTMLButtonElement>(selector)!;
+    expect(restored.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { restored.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableLegacyComposerSubmit: false });
   });
 
   it("renders and patches the Decisions experimental toggle", async () => {
@@ -1174,6 +1202,12 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     expect(container.textContent).not.toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("offers no Artifacts V1 toggle", async () => {
+    await renderPage([]);
+    expect(container.textContent).toContain("Beta skills");
+    expect(container.textContent).not.toContain("Artifacts V1");
   });
 
   it("keeps only permitted controls in alphabetical order, including when hidden features are enabled", async () => {

@@ -1,3 +1,4 @@
+import { currentControllerProcess } from "../services/controller-process-identity.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
@@ -25,6 +26,9 @@ import { hasVerifiedWorkspaceRepair } from "../services/workspace-recovery-recei
 import { pinFailedObservedWorkspace, settleStoppedObservedWorkspace, ObservedWorkspacePreservationBusyError } from "../services/native-runtime/native-observed-workspace-preservation.js";
 import { claimNativeRestartRecoveries } from "../services/native-runtime/native-restart-recovery.js";
 import { hasRemoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { hasConfirmedSandboxStopAndRetain } from "../services/sandbox-stop-and-retain.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind } from "../services/recovery/ownership-invariant-report.js";
+import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
 
 const execute = promisify(execFile);
@@ -310,8 +314,15 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
 
   it.each(["before_pin", "after_pin"] as const)("serializes the real ephemeral checkpoint claim %s", async order => {
     const f = await seedSource(`CLAIM-${order}`);
-    if (order === "before_pin") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
-    else expect(await pinFailedObservedWorkspace(f.db, companyId, f.runId)).toBe(true);
+    if (order === "before_pin") {
+      // This branch exercises a same-host checkpoint claim, not a legacy or
+      // foreign namespace. Keep every other historical preservation fixture unchanged.
+      const controller = await currentControllerProcess();
+      expect(controller.hostHash).not.toBe("unknown");
+      await f.db.update(nativeRunFinalizations).set({ controllerHostHash: controller.hostHash })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    } else expect(await pinFailedObservedWorkspace(f.db, companyId, f.runId)).toBe(true);
     const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], controller: fixture.current.successor });
     if (order === "before_pin") {
       expect(dispositions).toMatchObject([{ kind: "reattach_remote_runner", runId: f.runId }]);
@@ -324,6 +335,35 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
       expect(dispositions).toMatchObject([{ kind: "blocked", runId: f.runId, reason: "issue_execution_lock_changed" }]);
       expect((await readSource(f)).owner).toMatchObject({ phase: "observed", leaseOwner: "old-observed-controller", controllerGeneration: 3 });
     }
+  });
+
+  it("settles the fence from the shared reconciler once the provider stop is proven, never before", async () => {
+    const f = await seedSource("SHARED-RECONCILER");
+    const kind = OWNABLE_KINDS.find(entry => entry.id === "observed_workspace_preservation_fence")!;
+    const pass = (record = true) => runOwnershipReconciliationPass(f.db, { state: createOwnershipReportState(), kinds: [kind], record });
+    const settleThis = () => settleOwnableKind(f.db, kind.id, { runIds: [f.runId] });
+    const fenceOf = async () => (await f.db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
+      eq(issueRecoveryActions.fingerprint, `native-workspace:${f.runId}`))))[0].evidence.observedWorkspacePreservation as { state: string };
+    expect(await pinFailedObservedWorkspace(f.db, companyId, f.runId)).toBe(true);
+    const held = await pass(false);
+    expect(held.kinds[0]!.reasons.fence_expired_without_provider_proof).toBeGreaterThanOrEqual(1);
+    expect(await settleThis()).toEqual([]);
+    expect(await fenceOf()).toMatchObject({ state: "stop_pending" });
+
+    const heartbeat = heartbeatService(f.db);
+    try {
+      await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
+      const { lease } = await readSource(f);
+      expect(hasRemoteTerminationReceipt(lease) && hasConfirmedSandboxStopAndRetain(lease)).toBe(true);
+      const readOnly = await pass(false);
+      expect(readOnly.kinds[0]!.reasons.provider_stopped).toBeGreaterThanOrEqual(1);
+      expect(await fenceOf()).toMatchObject({ state: "stop_pending" });
+
+      expect(await settleThis()).toMatchObject([{ kind: kind.id, runId: f.runId, reason: "provider_stopped" }]);
+      expect(await fenceOf()).toMatchObject({ state: "stopped" });
+      expect((await readSource(f)).owner).toMatchObject({ phase: "terminal_failure", leaseOwner: null });
+      expect(await readFile(path.join(f.remoteCwd, "saved.txt"), "utf8")).toBe("unfinished work with an unknown provider effect\n");
+    } finally { await heartbeat.drainActiveRunExecutions(); }
   });
 
   it("rechecks a new physical allocation owner after pin before the actual Stop dispatch", async () => {

@@ -64,10 +64,14 @@ import {
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
+  googleWorkspaceProfileWithinSubmittedScopes,
   googleWorkspaceSelectedScopes,
+  googleWorkspaceGrantedScopes,
+  googleWorkspaceSelectionForScopes,
   GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   getAvailableConnectionMethod,
   getConnectableAppDefinition,
+  createToolConnectionSchema,
   type CreateToolConnection,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -90,6 +94,7 @@ import { createOAuthClientRegistration } from "../services/tool-access/oauth/cli
 import { createPersonalConnectionIdentity } from "../services/tool-access/connections/personal-identity.js";
 import { createConnectionSetupPolicy } from "../services/tool-access/connections/setup-policy.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
+import { connectionIntentService } from "../services/connection-intents.js";
 import { secretService } from "../services/secrets.js";
 import {
   canonicalToolArguments,
@@ -189,7 +194,7 @@ function fakeGoogleWorkspaceConnector(
     })),
     claim: vi.fn(async () => credentials),
     refresh: vi.fn(async () => credentials),
-    revoke: vi.fn(async () => undefined),
+    revoke: vi.fn(async () => ({})),
   } satisfies Partial<PaperclipCloudConnector> as unknown as PaperclipCloudConnector;
 }
 
@@ -228,7 +233,7 @@ function fakeGitHubConnector(
     })),
     claim: vi.fn(async () => credentials),
     refresh: vi.fn(async () => credentials),
-    revoke: vi.fn(async () => undefined),
+    revoke: vi.fn(async () => ({})),
     setWebhookBinding: vi.fn(async () => undefined),
     leaseEvents: vi.fn(async () => null),
     acknowledgeEvents: vi.fn(async () => 0),
@@ -954,14 +959,14 @@ describeEmbeddedPostgres("tool access service", () => {
     if (externalDatabaseUrl) {
       await applyPendingMigrations(externalDatabaseUrl);
       db = createDb(externalDatabaseUrl, { maxConnections: 4 });
-      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+      await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
       return;
     }
     tempDb = await startEmbeddedPostgresTestDatabase(
       "paperclip-tool-access-service-",
     );
     db = createDb(tempDb.connectionString, { maxConnections: 4 });
-    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true });
+    await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
   }, 20_000);
 
   afterEach(async () => {
@@ -2154,6 +2159,15 @@ describeEmbeddedPostgres("tool access service", () => {
       let replacementFinished: Promise<unknown> | undefined;
       try {
         await waitForFirstReplacementLock(cleanupPid);
+        releaseFirstReplacement();
+        await firstReplacement;
+        await membershipIsLocked;
+
+        // Start the empty replacement only once cleanup owns the membership
+        // row. Had it queued behind the first replacement too, both waiters
+        // would wake on that commit and race for the row; a replacement that
+        // wins it legitimately widens before cleanup, which made the
+        // fail-closed outcome below depend on scheduling.
         let replacementSettled = false;
         const replacement = replacementService
           .replaceConnectionGrantMembers(connection.id, grant.id, [])
@@ -2165,12 +2179,10 @@ describeEmbeddedPostgres("tool access service", () => {
             replacementSettled = true;
           });
         replacementFinished = replacement;
-        await waitForFirstReplacementLock(replacementPid);
-        expect(replacementSettled).toBe(false);
-
-        releaseFirstReplacement();
-        await firstReplacement;
-        await membershipIsLocked;
+        await vi.waitFor(async () => {
+          const [waiting] = await db.execute<{ blockers: number[] }>(sql`select pg_blocking_pids(${replacementPid}) as blockers`);
+          expect(waiting!.blockers).toContain(cleanupPid);
+        }, { timeout: 5000 });
         expect(replacementSettled).toBe(false);
         releaseCleanup();
         await cleanup;
@@ -2983,6 +2995,42 @@ describeEmbeddedPostgres("tool access service", () => {
     })).rejects.toMatchObject({ status: 400 });
   });
 
+  it.each([
+    ["with", ["calendar.calendarlist.readonly", "calendar.events", "calendar.events.freebusy"]],
+    ["without", ["calendar.calendarlist.readonly", "calendar.events"]],
+  ] as const)("asks for free/busy with read and write Calendar and keeps Calendar working %s it", async (_label, granted) => {
+    const company = await createCompany(db);
+    const userId = `workspace-calendar-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const actor = { actorType: "user" as const, actorId: userId };
+    const service = createTestToolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "google-workspace", connectionMethodKey: "customer-workspace-oauth", grantKind: "user",
+      oauthClient: { clientId: "test-workspace-client", clientSecret: "test-workspace-secret" },
+    }, actor);
+    const redirectUri = "https://paperclip.example.test/api/tools/oauth/callback";
+    const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri, actor, workspaceServices: { calendar: "write" } });
+    const authorization = new URL(started.authorizationUrl);
+    const google = (value: string) => `https://www.googleapis.com/auth/${value}`;
+    expect(authorization.searchParams.get("scope")?.split(" "))
+      .toEqual(["calendar.calendarlist.readonly", "calendar.events", "calendar.events.freebusy"].map(google));
+    const tools = ["list_calendars", "list_events", "suggest_time", "create_event"];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "https://oauth2.googleapis.com/token") return Response.json({
+        access_token: "fixture-calendar-access", refresh_token: "fixture-calendar-refresh", expires_in: 3600, token_type: "Bearer",
+        scope: granted.map(google).join(" "),
+      });
+      expect(String(url)).toBe("https://calendarmcp.googleapis.com/mcp/v1");
+      return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: tools.map(name => ({ name })) } });
+    });
+    const completed = await service.completeOAuthCallback({ state: authorization.searchParams.get("state")!, code: "fixture-code", redirectUri, actor });
+    expect(completed.connection.status).toBe("active");
+    expect(completed.catalog.map((entry) => entry.toolName).sort()).toEqual(tools.map(name => `calendar__${name}`).sort());
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(googleWorkspaceGrantedScopes(grant!)).toEqual([...granted].map(google).sort());
+    expect(googleWorkspaceSelectionForScopes(googleWorkspaceGrantedScopes(grant!))).toEqual({ calendar: "write" });
+  });
+
   it.each(["https://www.googleapis.com/auth/documents.readonly", undefined, "", "https://www.googleapis.com/auth/gmail.send"])(
     "requires explicit reviewed partial consent for customer Workspace OAuth (%s)", async (scope) => {
       const company = await createCompany(db);
@@ -3353,6 +3401,42 @@ describeEmbeddedPostgres("tool access service", () => {
       .where(eq(toolConnections.companyId, company.id))).toEqual([]);
     expect(await db.select().from(companySecrets)
       .where(eq(companySecrets.companyId, company.id))).toEqual([]);
+  });
+
+  it.each([
+    { name: "channel purpose", input: { connectionPurpose: "channel" as const, transport: "local_stdio" as const } },
+    { name: "chat transport", input: { transport: "chat_sdk" as const } },
+    { name: "voice transport", input: { transport: "voice" as const } },
+  ])("rejects a $name before it writes any row", async ({ input }) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    await expect(service.createConnection(company.id, connectionInput({
+      name: "Not a tool",
+      config: { templateId: "paperclip.echo-calculator-time" },
+      ...input,
+    }))).rejects.toMatchObject({ status: 422 });
+
+    expect(await db.select().from(toolConnections)
+      .where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(toolApplications)
+      .where(eq(toolApplications.companyId, company.id))).toEqual([]);
+  });
+
+  it("stores config as transportConfig when the request leaves transportConfig out", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const body = createToolConnectionSchema.parse({
+      name: "Local echo config only",
+      transport: "local_stdio",
+      config: { templateId: "paperclip.echo-calculator-time" },
+    });
+
+    const connection = await service.createConnection(company.id, body);
+
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(stored?.config).toMatchObject({ templateId: "paperclip.echo-calculator-time" });
+    expect(stored?.transportConfig).toEqual(stored?.config);
   });
 
   it("registers an approved local stdio template and exposes its runtime slot", async () => {
@@ -5968,13 +6052,12 @@ describeEmbeddedPostgres("tool access service", () => {
     const archivePilotGmail = archivePilot.body.apps.find(
       (app: { slug: string }) => app.slug === "gmail",
     );
-    expect(archivePilotGmail.ownershipAvailability.platform_shared).toBe(true);
+    expect(archivePilotGmail.ownershipAvailability.platform_shared).toBe(false);
     expect(
       archivePilotGmail.methods.map((method: { key: string }) => method.key),
     ).toEqual([
       "customer-read-oauth",
       "customer-draft-oauth",
-      "paperclip-archive",
       "customer-archive-oauth",
     ]);
   });
@@ -6337,7 +6420,9 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(result.actions.readOnly).toEqual([
       expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
     ]);
-    expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
+    // One version probe, then the plain listing that reveals the session need.
+    expect(requests[0]).toEqual({ method: "server/discover", sessionId: null });
+    expect(requests[1]).toEqual({ method: "tools/list", sessionId: null });
     expect(
       requests.filter(({ method }) => method === "initialize").length,
     ).toBeGreaterThanOrEqual(1);
@@ -7930,7 +8015,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(updated.transportConfig).toEqual(updated.config);
   });
 
-  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.flatMap((profile) => [
+  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.filter(googleWorkspaceProfileWithinSubmittedScopes).flatMap((profile) => [
     ["local_trusted", "private", "http://127.0.0.1:3102"] as const,
     ["authenticated", "public", "https://tenant.paperclip.app"] as const,
   ].map(([deploymentMode, deploymentExposure, origin]) => ({ profile, deploymentMode, deploymentExposure, origin }))))(
@@ -7972,7 +8057,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(JSON.stringify(getConnectableAppDefinition(slug))).toBe(definitionBefore);
   });
 
-  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS)("connects advertised Workspace %s with a Cloud-delivered environment identity", async (profile) => {
+  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.filter(googleWorkspaceProfileWithinSubmittedScopes))("connects advertised Workspace %s with a Cloud-delivered environment identity", async (profile) => {
     const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
     const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;
     const company = await createCompany(db);
@@ -8042,6 +8127,59 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(response.status).toBe(422);
     expect(connector.startAuthorization).not.toHaveBeenCalled();
     expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
+  });
+
+  it.each(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS.filter((profile) => !googleWorkspaceProfileWithinSubmittedScopes(profile)))(
+    "refuses new managed setup for advertised %s, whose scopes were not submitted for verification", async (profile) => {
+      const slug = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[profile].appSlug;
+      const methodKey = getConnectableAppDefinition(slug)!.methods.find((method) => method.connectorProfile === profile)!.key;
+      const company = await createCompany(db);
+      const userId = "board-user";
+      await grantBoardUser(db, company.id, userId, [], "owner");
+      const connector = fakeGoogleWorkspaceConnector(company.id, userId, profile);
+      const app = createRouteApp(db, boardSessionActor(company.id, "owner", userId), undefined, { paperclipCloudConnector: connector });
+      const gallery = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
+      expect(gallery.body.apps.find((entry: { slug: string }) => entry.slug === slug)?.methods
+        .map((method: { key: string }) => method.key) ?? []).not.toContain(methodKey);
+      const response = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`).send({
+        galleryKey: slug, connectionMethodKey: methodKey, grantKind: "user", name: `Legacy ${slug}`,
+      });
+      expect(response.status).toBe(422);
+      expect(connector.startAuthorization).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    },
+  );
+
+  it("keeps a saved Paperclip-managed Gmail archive connection refreshing but never asks Google to consent again", async () => {
+    const company = await createCompany(db);
+    const userId = `gmail-archive-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const connector = fakeGoogleWorkspaceConnector(company.id, userId, "gmail.draft");
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const actor = { actorType: "user" as const, actorId: userId };
+    mockToolsList([]);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "Gmail archive",
+    }, actor);
+    const started = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
+    });
+    await service.completePaperclipCloudConnectorCallback({
+      state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "archive-claim", actor,
+    });
+    const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    const config = { ...row.config, connectionMethodKey: "paperclip-archive",
+      oauth: { ...(row.config.oauth as Record<string, unknown>), connectorProfile: "gmail.archive" } };
+    await db.update(toolConnections).set({ config, transportConfig: config }).where(eq(toolConnections.id, row.id));
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, row.id));
+    vi.mocked(connector.startAuthorization).mockClear();
+
+    await service.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: row.id, grantId: grant.id, forceRefresh: true, actor });
+    expect(connector.refresh).toHaveBeenCalledWith(expect.objectContaining({ profile: "gmail.archive" }));
+    await expect(service.startOAuth(company.id, row.id, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor,
+    })).rejects.toMatchObject({ status: 422, details: { code: "paperclip_cloud_connector_scope_not_offered" } });
+    expect(connector.startAuthorization).not.toHaveBeenCalled();
   });
 
   it("completes brokered Gmail OAuth with a single database connection", async () => {
@@ -8126,7 +8264,10 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(
         service.revokeConnectionGrant(connected.connectionId, grant!.id, actor),
       ).resolves.toMatchObject({ status: "revoked" });
-      expect(connector.revoke).not.toHaveBeenCalled();
+      expect(connector.revoke).toHaveBeenCalledTimes(1);
+      expect(connector.revoke).toHaveBeenCalledWith(expect.objectContaining({
+        subject: userId, profile: "gmail.draft", token: "gmail-refresh-token",
+      }));
     } finally {
       if (deadline) clearTimeout(deadline);
       await callbackDb.$client.end({ timeout: 0 }).catch(() => undefined);
@@ -8822,6 +8963,52 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(gmail.status).toBe("disabled");
     });
 
+    it.each(["managed", "customer"] as const)("caps a %s callback that also reports an unrequested legacy scope", async (mode) => {
+      const fixture = await connectWorkspace(mode, ["documents.readonly", "gmail.readonly", "chat.messages.readonly", "calendar.readonly"]);
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.status, "active")));
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.map((tool) => tool.upstreamToolName).sort()).toEqual(["docs__read_doc", "gmail__get_message"]);
+    });
+
+    it.each(["managed", "customer"] as const)("keeps a %s grant on its submitted scopes when refresh also reports a legacy scope", async (mode) => {
+      const fixture = await connectWorkspace(mode);
+      const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+      fixture.expireNextCall(["https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/chat.messages.readonly", "https://www.googleapis.com/auth/calendar.readonly"]);
+      await fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} }).catch(() => undefined);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fixture.connected.connectionId));
+      expect(grant.status).toBe("active");
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+      const tools = await fixture.gateway.listToolsForSession(fixture.session.token);
+      expect(tools.map((item) => item.upstreamToolName).sort()).toEqual(["docs__read_doc", "gmail__get_message"]);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
+    });
+
+    it.each(["managed", "customer"] as const)("reconnects a %s grant whose refresh reported only legacy scopes", async (mode) => {
+      const fixture = await connectWorkspace(mode);
+      const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
+      fixture.expireNextCall(["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/chat.messages.readonly"]);
+      await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: tool.name, parameters: {} })).rejects.toMatchObject({ reasonCode: "oauth_reauthorization_required" });
+      const [stale] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, fixture.connected.connectionId));
+      expect(stale.status).toBe("needs_reauthorization");
+      const redirectUri = mode === "managed" ? "https://paperclip.example/api/tools/oauth/cloud-connector/callback" : "https://paperclip.example/api/tools/oauth/callback";
+      const started = await fixture.service.startOAuth(fixture.company.id, fixture.connected.connectionId, {
+        redirectUri, actor: fixture.actor, workspaceServices: GOOGLE_WORKSPACE_DEFAULT_SELECTION,
+      });
+      const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+      if (mode === "managed") await fixture.service.completePaperclipCloudConnectorCallback({ state, claimId: "reconnect", actor: fixture.actor });
+      else await fixture.service.completeOAuthCallback({ state, code: "reconnect", redirectUri, actor: fixture.actor });
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, fixture.connected.connectionId), eq(connectionGrants.status, "active")));
+      expect(grant.providerTenant?.oauth?.scopes).toEqual([
+        "https://www.googleapis.com/auth/documents.readonly", "https://www.googleapis.com/auth/gmail.readonly",
+      ]);
+    });
+
     it("keeps healthy service tools visible during a partial outage and restores recovered services", async () => {
       const fixture = await connectWorkspace("managed");
       fixture.unavailable.add("gmailmcp.googleapis.com");
@@ -8878,7 +9065,8 @@ describeEmbeddedPostgres("tool access service", () => {
       await expect(fixture.gateway.executeTool({ sessionToken: fixture.session.token, tool: gmail.name, parameters: {} })).resolves.toMatchObject({ status: "completed" });
     });
 
-    it.each((["managed", "customer"] as const).flatMap((mode) => [undefined, [], ["https://www.googleapis.com/auth/gmail.send"]].map((scopes) => ({ mode, scopes }))))(
+    it.each((["managed", "customer"] as const).flatMap((mode) => [undefined, [], ["https://www.googleapis.com/auth/gmail.send"],
+      ["https://www.googleapis.com/auth/calendar.readonly", "https://www.googleapis.com/auth/chat.messages.readonly"]].map((scopes) => ({ mode, scopes }))))(
       "fails closed on invalid refreshed permissions ($mode, $scopes)", async ({ mode, scopes }) => {
         const fixture = await connectWorkspace(mode);
         const tool = (await fixture.gateway.listToolsForSession(fixture.session.token)).find((item) => item.upstreamToolName === "docs__read_doc")!;
@@ -10813,8 +11001,8 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe(versionCountBeforeAccessRevocation);
   });
 
-  it.each(["page", "task"] as const)(
-    "activates and discovers actions for a fresh personal OAuth callback from %s without widening task access",
+  it.each(["page", "task", "task-all-agents"] as const)(
+    "activates personal OAuth from %s with the selected audience only after finalization",
     async (host) => {
       vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
       vi.stubEnv(
@@ -10828,7 +11016,7 @@ describeEmbeddedPostgres("tool access service", () => {
       const otherAgent = await createAgent(db, company.id);
       const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
       const interaction =
-        host === "task"
+        host !== "page"
           ? (
               await db
                 .insert(issueThreadInteractions)
@@ -10965,12 +11153,12 @@ describeEmbeddedPostgres("tool access service", () => {
         });
       for (const entry of [searchMessagesEntry, sendMessageEntry]) {
         await expect(decide(entry)).resolves.toMatchObject(
-          host === "task"
+          host !== "page"
             ? { decision: "deny" }
             : { decision: "allow", reasonCode: "allow_profile" },
         );
       }
-      if (host === "task") {
+      if (host !== "page") {
         await expect(
           db
             .select()
@@ -11008,14 +11196,26 @@ describeEmbeddedPostgres("tool access service", () => {
         personalGrant.credentialSecretRefs.map((ref) => ref.configPath).sort(),
       ).toEqual(["oauth.access_token", "oauth.refresh_token"]);
 
-      const finished = await service.finalizeOAuthAccess(
+      if (host === "task-all-agents") {
+        const intents = connectionIntentService(db);
+        await intents.updatePhase(interaction!.id, "authorizing", userId, {
+          setupAccess: { connectionId: connected.connectionId, access: "all_agents" },
+          canManageOrganizationGrant: true,
+        });
+        await expect(intents.complete(interaction!.id, connected.connectionId, userId, { canManageOrganizationGrant: true, oauthCompletion: true }))
+          .resolves.toMatchObject({ status: "accepted" });
+      }
+      const finished = host === "task-all-agents" ? {
+        profileEntries: await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, callbackProfile!.id)),
+        profileBindings: await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.profileId, callbackProfile!.id)),
+      } : await service.finalizeOAuthAccess(
         company.id,
         connected.connectionId,
         {
           grantKind: "user",
         },
         { actorType: "user", actorId: userId },
-        host === "task" ? agent.id : undefined,
+        host !== "page" ? agent.id : undefined,
       );
       expect(finished.profileEntries).toHaveLength(2);
       expect(finished.profileBindings).toEqual([
@@ -11036,6 +11236,11 @@ describeEmbeddedPostgres("tool access service", () => {
             ),
           ),
       ).resolves.toHaveLength(host === "task" ? 0 : 1);
+      if (host === "task-all-agents") {
+        await expect(decide(searchMessagesEntry, otherAgent.id)).resolves.toMatchObject({ decision: "allow" });
+        expect((await service.getEffectiveToolAssignmentsForAgent(company.id, otherAgent.id)).installedConnections)
+          .toEqual(expect.arrayContaining([expect.objectContaining({ id: connected.connectionId })]));
+      }
       if (host === "task") {
         await expect(decide(searchMessagesEntry)).resolves.toMatchObject({
           decision: "allow",
@@ -11131,7 +11336,7 @@ describeEmbeddedPostgres("tool access service", () => {
         {
           redirectUri: "https://paperclip.example/api/tools/oauth/callback",
           actor: { actorType: "user", actorId: userId },
-          interactionId: interaction?.id,
+          interactionId: host === "task-all-agents" ? undefined : interaction?.id,
         },
       );
       await expect(
@@ -12455,7 +12660,8 @@ describeEmbeddedPostgres("tool access service", () => {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
-      application_type: "web",
+      // A localhost callback is a native client under OIDC registration rules.
+      application_type: "native",
     });
     expect(registrationBody?.client_name).toMatch(/^[A-Za-z0-9 -]+$/);
     expect(new URL(result.authorizationUrl).searchParams.get("client_id")).toBe("calendly-public-client");
@@ -12768,7 +12974,8 @@ describeEmbeddedPostgres("tool access service", () => {
         .query({ state, code: "oauth-code" });
 
       expect(callbackRes.status).toBe(200);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // Token exchange, the one-time MCP version probe, and the catalog listing.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(callbackRes.body.connection).toMatchObject({
         id: connectRes.body.connectionId,
         status: "active",
@@ -12817,7 +13024,8 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(redirectCallbackRes.headers.location).toBe(
         `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/permissions?success=1`,
       );
-      expect(fetchMock).toHaveBeenCalledTimes(6);
+      // Each of the two connections is probed once for its MCP version.
+      expect(fetchMock).toHaveBeenCalledTimes(8);
       await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
       await expect(
         db.select().from(companySecretBindings),
@@ -14194,7 +14402,7 @@ describeEmbeddedPostgres("tool access service", () => {
         expiresAt: new Date(Date.now() + 600_000).toISOString(),
       })),
       claim: vi.fn(async () => credentials), refresh: vi.fn(async () => credentials),
-      revoke: vi.fn(async () => undefined),
+      revoke: vi.fn(async () => ({})),
     } satisfies Partial<PaperclipCloudConnector> as unknown as PaperclipCloudConnector;
     const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
     const custom = await service.connectGalleryApp(company.id, {
@@ -15045,7 +15253,8 @@ describeEmbeddedPostgres("tool access service", () => {
       actorId: "health-check",
     });
     expect(health.connection.healthStatus).toBe("ok");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Token request, the one-time MCP version probe, and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const [updated] = await db
       .select()
       .from(toolConnections)
@@ -16563,6 +16772,76 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
+  it("asks for a key when a pasted link answers 401 without a challenge header", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp",
+        name: "Key app",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
+  it("keeps the raw rejection when a pasted link's own URL token is refused", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?token=expired-url-token",
+        name: "URL token app",
+      });
+
+    expect(res.body?.details?.code).not.toBe("oauth_challenge");
+    expect(res.status).not.toBe(422);
+  });
+
+  it("still asks for a key when a pasted link carries only plain settings", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?region=us",
+        name: "Regional key app",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
   it.each(["catalog", "catalog/refresh", "health-check"])(
     "explains disabled Slack MCP access on %s without reporting a server error",
     async (path) => {
@@ -17355,7 +17634,8 @@ describeEmbeddedPostgres("tool access service", () => {
       "mcp-key",
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The one-time MCP version probe and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock).toHaveBeenCalledWith(
       PUBLIC_MCP_FIXTURE_URL,
       expect.objectContaining({

@@ -8,7 +8,7 @@ import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
 import { mergeDiff } from "../../.github/scripts/ci-diff.mjs";
 import { selectProjects } from "./select-projects.mjs";
 
-export function selectionEligibility(plan) {
+export function selectionEligibility(plan, root = process.cwd()) {
   if (plan?.version !== 1 || plan.mode !== "enabled" || plan.forceReason) return "Full/shadow/forced task plan";
   if (!Array.isArray(plan.changed) || !plan.changed.length) return "Incomplete comparison";
   const changed = productInputs(plan.changed);
@@ -20,7 +20,7 @@ export function selectionEligibility(plan) {
       || /(?:^|\/)(?:vite|vitest)\.(?:config|setup)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$/i.test(file)
       || file.split("/").includes("..")) return `Broad input: ${file}`;
     try {
-      if (!lstatSync(file).isFile()) return `Non-regular source: ${file}`;
+      if (!lstatSync(path.join(root, file)).isFile()) return `Non-regular source: ${file}`;
     } catch { return `Deleted or missing source: ${file}`; }
   }
   return null;
