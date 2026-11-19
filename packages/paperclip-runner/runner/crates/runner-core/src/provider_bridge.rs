@@ -324,6 +324,15 @@ impl ProviderBridgeError {
         self.message == TOOL_CALLS_IN_FLIGHT_MESSAGE
     }
 
+    /// Result capacity backpressure is master's retryable in-flight rejection.
+    pub(crate) fn result_backpressure() -> Self {
+        Self::tool_calls_in_flight()
+    }
+
+    pub fn is_result_backpressure(&self) -> bool {
+        self.is_retryable()
+    }
+
     pub fn safe_provider_message(&self) -> Option<&str> {
         self.safe_provider_message.as_deref()
     }
