@@ -3961,6 +3961,20 @@ async function listIssueBlockerAttentionMap(dbOrTx: any, companyId: string, issu
   return (await readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows)).attention;
 }
 
+function createIssueBlockerAttentionReader(dbOrTx: any, companyId: string, issueRows: IssueBlockerAttentionInputNode[]) {
+  let batch: ReturnType<typeof readIssueBlockerAttentionBatch> | undefined;
+  const read = () => batch ??= readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows);
+  return {
+    all: async () => (await read()).attention,
+    forIssue: async (row: IssueBlockerAttentionInputNode) => {
+      if (row.status !== "blocked") return createIssueBlockerAttention();
+      const result = await read();
+      if (result.completeRootIds.has(row.id)) return result.attention.get(row.id);
+      return (await readIssueBlockerAttentionBatch(dbOrTx, companyId, [row])).attention.get(row.id);
+    },
+  };
+}
+
 async function readIssueBlockerAttentionBatch(
   dbOrTx: any,
   companyId: string,
@@ -3977,8 +3991,10 @@ async function readIssueBlockerAttentionBatch(
   }
   const deferredRootIds = new Set<string>(roots.slice(BLOCKER_ATTENTION_MAX_NODES).map(root => root.id));
   let edgeCount = 0, fetchedRows = 0;
-  const result = () => ({ attention: attentionMap, deferredRootIds, nodeCount: nodesById.size, edgeCount, fetchedRows });
-  if (roots.length === 0) return { attention: attentionMap, deferredRootIds, nodeCount: 0, edgeCount, fetchedRows };
+  const result = () => ({ attention: attentionMap, deferredRootIds, nodeCount: nodesById.size, edgeCount, fetchedRows,
+    completeRootIds: new Set([...traversals.values()].filter(traversal => !traversal.truncated).map(traversal => traversal.rootId)),
+  });
+  if (roots.length === 0) return { attention: attentionMap, deferredRootIds, nodeCount: 0, edgeCount, fetchedRows, completeRootIds: new Set<string>() };
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
@@ -6022,11 +6038,39 @@ export function blockedInboxReviewWaitIssueIds(
   return [...reached].filter((issueId) => statusById.get(issueId) === "in_review");
 }
 
+const blockedInboxGraphIssueSelect = {
+  id: issues.id,
+  companyId: issues.companyId,
+  identifier: issues.identifier,
+  title: issues.title,
+  status: issues.status,
+  priority: issues.priority,
+  projectId: issues.projectId,
+  goalId: issues.goalId,
+  parentId: issues.parentId,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  createdByAgentId: issues.createdByAgentId,
+  createdByUserId: issues.createdByUserId,
+  conversationAgentId: issues.conversationAgentId,
+  conversationUserId: issues.conversationUserId,
+  conversationState: issues.conversationState,
+  executionPolicy: issues.executionPolicy,
+  executionState: issues.executionState,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+  monitorAttemptCount: issues.monitorAttemptCount,
+  originKind: issues.originKind,
+  originId: issues.originId,
+  updatedAt: issues.updatedAt,
+};
+type BlockedInboxGraphIssue = Pick<IssueRow, keyof typeof blockedInboxGraphIssueSelect>;
+
 async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
   issueRows: BlockedInboxIssueRow[],
   readExternalReviewWaits: ExternalReviewWaitReader = createExternalReviewWaitReader(dbOrTx, companyId),
+  readBlockerAttention = createIssueBlockerAttentionReader(dbOrTx, companyId, issueRows).forIssue,
 ): Promise<Map<string, IssueBlockedInboxAttention>> {
   const rowIssueIds = [...new Set(issueRows.map((row) => row.id))];
   const result = new Map<string, IssueBlockedInboxAttention>();
@@ -6035,7 +6079,7 @@ async function listIssueBlockedInboxAttentionMap(
   const [graphIssueRows, graphRelationRows, companyAgentRows] =
     await Promise.all([
       dbOrTx
-        .select()
+        .select(blockedInboxGraphIssueSelect)
         .from(issues)
         .where(
           and(
@@ -6071,7 +6115,7 @@ async function listIssueBlockedInboxAttentionMap(
         .where(eq(agents.companyId, companyId)),
     ]);
 
-  const graphIssues = graphIssueRows as IssueRow[];
+  const graphIssues = graphIssueRows as BlockedInboxGraphIssue[];
   const graphRelations = graphRelationRows as Array<{
     companyId: string;
     blockerIssueId: string;
@@ -6087,7 +6131,7 @@ async function listIssueBlockedInboxAttentionMap(
     reportsTo: string | null;
   }>;
   const graphIssueIds = graphIssues.map((issue) => issue.id);
-  const issuesById = new Map<string, IssueRow>(
+  const issuesById = new Map<string, BlockedInboxGraphIssue>(
     graphIssues.map((issue) => [issue.id, issue]),
   );
 
@@ -6635,12 +6679,7 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
-    const blockerAttention = await listIssueBlockerAttentionMap(
-      dbOrTx,
-      companyId,
-      [row],
-    );
-    const blockerState = blockerAttention.get(row.id);
+    const blockerState = await readBlockerAttention(row);
     if (
       row.status === "blocked" &&
       (blockerState?.state === "needs_attention" ||
@@ -8868,6 +8907,7 @@ export function issueService(db: Db) {
       );
       // Both attention maps read external review waits for overlapping issues.
       const readExternalReviewWaits = createExternalReviewWaitReader(db, companyId);
+      const readBlockerAttention = createIssueBlockerAttentionReader(db, companyId, withRuns);
       const [
         blockerAttentionByIssueId,
         reviewAttentionByIssueId,
@@ -8875,10 +8915,10 @@ export function issueService(db: Db) {
       ] = filters?.listProjection === "index" && !includeBlockedInboxAttention
         ? [new Map<string, IssueBlockerAttention>(), new Map<string, IssueReviewAttention>(), new Map<string, IssueBlockedInboxAttention>()]
         : await timePhase("attention", () => Promise.all([
-          filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
+          filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : readBlockerAttention.all(),
           filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns, readExternalReviewWaits),
           includeBlockedInboxAttention
-            ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns, readExternalReviewWaits)
+            ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns, readExternalReviewWaits, readBlockerAttention.forIssue)
             : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
         ]));
 
