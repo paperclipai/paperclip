@@ -493,6 +493,10 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
         payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"fresh_isolated_workspace"'::jsonb)`,
       }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.runId, run.id),
         sql`${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' in ('evaluate', 'continue')`)).returning({ id: agentWakeupRequests.id });
+      // A fresh isolated attempt is not a retry of the source run; drop the
+      // retry lineage admission stamped when the run was created.
+      await tx.update(heartbeatRuns).set({ retryOfRunId: null })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.retryOfRunId, readiness.sourceRunId)));
       if (changed.length) await persistActivity(tx as unknown as Db, { companyId: run.companyId,
         actorType: "system", actorId: "task-recovery", action: "issue.fresh_workspace_selected",
         entityType: "issue", entityId: issueId, runId: run.id, details: { ...readiness } });

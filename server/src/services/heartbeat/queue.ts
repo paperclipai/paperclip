@@ -32,7 +32,7 @@ import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellatio
 import { notifyChatResponseAvailability } from "../chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
-import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
+import { assertTaskRetryConversationAllowed, readRefusedTaskChatRetry, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
@@ -2859,7 +2859,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       enrichedContextSnapshot.forceFreshSession = true;
       enrichedContextSnapshot.previousRunId = retry.sourceRunId;
       enrichedContextSnapshot.taskRetryRequestId = receipt.id;
-      enrichedContextSnapshot.explicitRetryOfRunId = retry.sourceRunId;
+      // A refused chat Retry continues the task from saved work; it is not a
+      // retry of the source run and must not carry its retry lineage.
+      if (!readRefusedTaskChatRetry(receipt.payload))
+        enrichedContextSnapshot.explicitRetryOfRunId = retry.sourceRunId;
       if (retry.boardMessageOrigin) enrichedContextSnapshot.boardMessageRetry = true;
     }
 
@@ -5028,6 +5031,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
             enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+            // A fresh-workspace Retry starts a new isolated attempt from the
+            // recorded work; it is not a retry of the source run.
+            if (explicitContinuation.readiness?.mode === "fresh_isolated_workspace")
+              delete enrichedContextSnapshot.explicitRetryOfRunId;
           }
 
           if (opts.queuedCommentInterruptId && issue.status === "done") {

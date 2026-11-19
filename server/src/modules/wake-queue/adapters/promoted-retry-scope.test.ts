@@ -74,5 +74,21 @@ describe.skipIf(!support.supported)("promoted Retry receipt scope", () => {
     expect(second.outcome.kind).toBe("promoted");
     const [secondPromoted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, otherWake.id));
     expect(secondPromoted.retryOfRunId).toBeNull();
+
+    // A Retry the connected conversation refused to replay continues the task
+    // from saved work; it must not link the source run as its retry target.
+    const [refusedWake] = await db.insert(agentWakeupRequests).values({
+      companyId: company.id, agentId: agent.id, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId: issue.id,
+        taskRetry: { schema: "paperclip.task-retry.v1", generationId: crypto.randomUUID(), sourceRunId: finished.id,
+          actorId: "responsible-user", strategy: "continue" },
+        refusedChatRetry: { chatActionId: null, code: "chat_failed_run_retry_not_authorized" } },
+    }).returning();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, secondPromoted.id));
+    const third = await release({ companyId: company.id, runId: secondPromoted.id, now: new Date(), suppressImmediateRecovery: true });
+    expect(third.outcome.kind).toBe("promoted");
+    const [thirdPromoted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, refusedWake.id));
+    expect(thirdPromoted.retryOfRunId).toBeNull();
   });
 });

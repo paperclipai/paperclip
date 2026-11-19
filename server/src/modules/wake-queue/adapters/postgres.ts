@@ -10,7 +10,7 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
-import { readTaskRetryIntent } from "../../../services/task-retry.js";
+import { readRefusedTaskChatRetry, readTaskRetryIntent } from "../../../services/task-retry.js";
 import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
 import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
 import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
@@ -613,8 +613,10 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async finalizePromotedWake(input) {
       await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issue.id });
-      const explicitRetrySourceId = readTaskRetryIntent(input.payload)?.sourceRunId
-        ?? readNonEmptyString(input.contextSnapshot.explicitRetryOfRunId);
+      const explicitRetrySourceId = readRefusedTaskChatRetry(input.payload)
+        ? null
+        : readTaskRetryIntent(input.payload)?.sourceRunId
+          ?? readNonEmptyString(input.contextSnapshot.explicitRetryOfRunId);
       const explicitRetryOfRunId = explicitRetrySourceId
         ? (await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
             eq(heartbeatRuns.companyId, input.companyId),
