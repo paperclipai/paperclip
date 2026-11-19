@@ -131,15 +131,16 @@ export function responsibilityAreaRoutes(db: Db) {
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
     const writer = await assertAreaWriter(req, row.companyId);
-    // Undo never renames, re-describes, reorders or un-archives an area other people's proposed or
-    // active responsibilities share (the same test restore uses). Such a change saves no version,
-    // so no Dashboard offers an Undo that would do nothing; it stays in the activity log.
+    // On an area other people's proposed or active responsibilities share (the same test restore
+    // uses), Undo never changes the name, description or order, and of status changes only brings
+    // an archived area back. A change it cannot reverse saves no version, so no Dashboard offers an
+    // Undo that would do nothing; it stays in the activity log.
     const sharedChange = Boolean(writer)
       && (await svc.ownersInArea(row.companyId, row.id, ["proposed", "active"])).some((owner) => owner !== writer!.personUserId)
       && ((req.body.title !== undefined && req.body.title !== row.title)
         || (req.body.description !== undefined && req.body.description !== row.description)
         || (req.body.sortOrder !== undefined && req.body.sortOrder !== row.sortOrder)
-        || (req.body.status !== undefined && req.body.status !== "archived" && row.status === "archived"));
+        || (req.body.status !== undefined && req.body.status !== row.status && !(row.status === "active" && req.body.status === "archived")));
     // Otherwise everyone whose Dashboard shows the area gets a version.
     const updated = writer && !sharedChange
       ? await agentChanges.record({
