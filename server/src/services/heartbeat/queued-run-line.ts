@@ -3,6 +3,8 @@ import { agentWakeupRequests, agents, heartbeatRuns, issues, type Db } from "@pa
 import type { ExecutionAgentQueue } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import {
+  CLEAN_CONTINUATION_CAUSES,
+  CLEAN_CONTINUATION_WAKE_REASON,
   OLDEST_DISPATCH_SHARE,
   PERSON_WAKE_REASONS,
   RECOVERY_DISPATCH_SHARE,
@@ -63,6 +65,25 @@ export function personOriginRunSql(companyId: SQL, runId: SQL) {
       or origin_run.context_snapshot->>'taskRetryRequestId' is not null
       or exists (select 1 from agent_wakeup_requests origin_wake where origin_wake.company_id = ${companyId}
         and origin_wake.requested_by_actor_type = 'user' and (origin_wake.run_id = origin_run.id or origin_wake.id = origin_run.wakeup_request_id)))`;
+}
+
+function cleanContinuationSourceRunId(run: QueuedRunDispatchRun) {
+  const context = parseObject(run.contextSnapshot);
+  const sourceRunId = readNonEmptyString(context.livenessContinuationSourceRunId);
+  const cause = readNonEmptyString(context.livenessContinuationReason);
+  if (context.wakeReason !== CLEAN_CONTINUATION_WAKE_REASON || !cause || !CLEAN_CONTINUATION_CAUSES.has(cause)) return null;
+  if (run.retryOfRunId || context.retryOfRunId || context.retryReason || context.previousRunId) return null;
+  return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? sourceRunId : null;
+}
+
+async function listCleanContinuationSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {
+  if (!sourceRunIds.length) return new Set<string>();
+  const rows = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status,
+    cause: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'livenessContinuationReason'` })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, sourceRunIds)));
+  return new Set(rows.filter(row => row.status === "succeeded" && !(row.cause && CLEAN_CONTINUATION_CAUSES.has(row.cause)))
+    .map(row => row.id));
 }
 
 export async function listPersonOriginSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {
@@ -175,8 +196,13 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       return issueId && issueById.has(issueId) && !issueById.get(issueId)?.createdByUserId ? [issueId] : [];
     }))
     : new Set<string>();
+  const cleanSources = personOriginChecked
+    ? await listCleanContinuationSourceRunIds(db, agent.companyId,
+      [...new Set(queuedRuns.flatMap(run => cleanContinuationSourceRunId(run) ?? []))])
+    : new Set<string>();
   const facts = queuedRuns.map(run => {
     const issueId = issueIdOf(run);
+    const cleanSourceRunId = cleanContinuationSourceRunId(run);
     const ready = issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
     const issue = issueId ? issueById.get(issueId) : null;
     const sourceRunId = sourceRunIdOf(run);
@@ -191,6 +217,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       priorityRank: issueRunPriorityRank(issue?.priority),
       shareDeferred: input.shareDeferred?.(run.id) ?? false,
       personTask: Boolean(issue?.createdByUserId) || Boolean(issueId && personTreeIssueIds.has(issueId)),
+      cleanContinuation: Boolean(cleanSourceRunId && cleanSources.has(cleanSourceRunId)),
     };
   });
   const since = dispatchHistoryStart(facts, now);
@@ -285,7 +312,11 @@ export async function agentQueuedRunLine(
     contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
       'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
       'wakeReason', ${heartbeatRuns.contextSnapshot}->'wakeReason',
-      'previousRunId', ${heartbeatRuns.contextSnapshot}->'previousRunId')`,
+      'previousRunId', ${heartbeatRuns.contextSnapshot}->'previousRunId',
+      'retryOfRunId', ${heartbeatRuns.contextSnapshot}->'retryOfRunId',
+      'retryReason', ${heartbeatRuns.contextSnapshot}->'retryReason',
+      'livenessContinuationReason', ${heartbeatRuns.contextSnapshot}->'livenessContinuationReason',
+      'livenessContinuationSourceRunId', ${heartbeatRuns.contextSnapshot}->'livenessContinuationSourceRunId')`,
   }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
       eq(heartbeatRuns.status, "queued"), cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined))

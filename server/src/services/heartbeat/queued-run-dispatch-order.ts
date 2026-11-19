@@ -1,4 +1,5 @@
 import { EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../queued-comment-delivery.js";
+import { AGENT_TOOL_CALL_LOOP } from "../native-runtime/repeated-tool-failure-guard.js";
 
 export const RECOVERY_WAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_recovery_action_restored",
@@ -9,6 +10,10 @@ export const PERSON_WAKE_REASONS: ReadonlySet<string> = new Set([
   "task_retry",
   EXTERNAL_CHAT_MESSAGE_WAKE_REASON,
 ]);
+
+export const CLEAN_CONTINUATION_WAKE_REASON = "issue_continuation_needed";
+
+export const CLEAN_CONTINUATION_CAUSES: ReadonlySet<string> = new Set([AGENT_TOOL_CALL_LOOP]);
 
 export const RECOVERY_BACKLOG_AGE_MS = 30 * 60_000;
 
@@ -32,6 +37,7 @@ export type QueuedRunDispatchFacts = {
    * whole tree's outcome whichever wake moves it.
    */
   personTask?: boolean;
+  cleanContinuation?: boolean;
 };
 
 export type QueuedRunDispatchClass = "person" | "work" | "recovery" | "recovery_backlog";
@@ -40,7 +46,11 @@ export function isRecoveryWakeReason(reason: string | null | undefined) {
   return Boolean(reason && RECOVERY_WAKE_REASONS.has(reason));
 }
 
-export function isSystemRecoveryRun(run: Pick<QueuedRunDispatchFacts, "wakeReason" | "requestedByUser">) {
+export function isSystemRecoveryRun(run: Pick<QueuedRunDispatchFacts, "wakeReason" | "requestedByUser" | "cleanContinuation">) {
+  return isRecoveryWakeReason(run.wakeReason) && !run.requestedByUser && !run.cleanContinuation;
+}
+
+function countsAsRecoveryStart(run: Pick<QueuedRunDispatchFacts, "wakeReason" | "requestedByUser">) {
   return isRecoveryWakeReason(run.wakeReason) && !run.requestedByUser;
 }
 
@@ -204,7 +214,7 @@ export function createQueuedRunDispatcher<T extends QueuedRunDispatchFacts>(
       return remaining.splice(recoveryIndex < 0 ? 0 : recoveryIndex, 1)[0]!;
     },
     claimed(run: T) {
-      sinceRecovery = isSystemRecoveryRun(run) ? 0 : sinceRecovery + 1;
+      sinceRecovery = countsAsRecoveryStart(run) ? 0 : sinceRecovery + 1;
       // The same rule dispatchCountersFromStarts reads from the start history.
       const oldest = oldestShareCandidate([...remaining, run], input.now);
       sinceOldest = !oldest || servesOldestShare({ createdAt: run.createdAt, personWaiting: isPersonWaitingRun(run, input.now) },
@@ -278,7 +288,7 @@ export function queuedRunDispatchLine<T extends QueuedRunDispatchFacts>(
     const run = order[pick]!;
     if (holdsRecoveryShare(run)) readyPeople -= 1;
     result.push(run);
-    sinceRecovery = isSystemRecoveryRun(run) ? 0 : sinceRecovery + 1;
+    sinceRecovery = countsAsRecoveryStart(run) ? 0 : sinceRecovery + 1;
     sinceOldest = candidate < 0 || servesOldestShare({ createdAt: run.createdAt, personWaiting: isPersonWaitingRun(run, now) },
       order[candidate]!, now) ? 0 : sinceOldest + 1;
   }
