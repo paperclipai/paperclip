@@ -167,3 +167,54 @@ for (const available of [true, false]) {
     await expect(links.nth(1)).toHaveAttribute("data-link-state", available ? "open" : "unknown");
   });
 }
+
+test("page load restores stored status and refreshes stale data on idle without hover", async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.addInitScript(() => {
+    const realFetch = window.fetch.bind(window);
+    let activeFetch = realFetch;
+    Object.defineProperty(window, "fetch", {
+      configurable: true, get: () => activeFetch,
+      set: (fixtureFetch: typeof fetch) => {
+        activeFetch = (input, init) => {
+          const url = input instanceof Request ? input.url : String(input);
+          return url.includes("/link-preview?") || url.includes("/link-previews/cached") ? realFetch(input, init) : fixtureFetch(input, init);
+        };
+      },
+    });
+  });
+  const canonicalUrl = "https://github.com/acme/web/pull/241";
+  const preview = { target: { provider: "github", kind: "pull_request", canonicalUrl, label: "acme/web#241" },
+    title: "Status from the database", state: "merged", author: "octocat", updatedAt: null };
+  let cached = 0, resolved = 0;
+  let release!: () => void;
+  const refresh = new Promise<void>(done => { release = done; });
+  await page.route("**/api/companies/company-storybook/link-previews/cached?*", async route => {
+    cached++;
+    expect(new URL(route.request().url()).searchParams.getAll("url")).toEqual([canonicalUrl]);
+    await route.fulfill({ json: { results: { [canonicalUrl]: { preview, maxAgeMs: 0 } } } });
+  });
+  await page.route("**/api/companies/company-storybook/link-preview?*", async route => {
+    resolved++;
+    await refresh;
+    await route.fulfill({ json: { preview: { ...preview, state: "closed" }, maxAgeMs: 60_000 } });
+  });
+  await page.goto("/iframe.html?id=tasks-link-previews--page-load&viewMode=story&globals=theme:dark");
+  await finished(page);
+  const links = page.locator("a[data-link-state]");
+  await expect(links).toHaveCount(2);
+  await expect(links.first()).toHaveAttribute("data-link-state", "merged");
+  await expect(links.last()).toHaveAttribute("data-link-state", "merged");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect.poll(() => resolved).toBe(1);
+  expect(cached).toBe(1);
+  release();
+  await expect(links.first()).toHaveAttribute("data-link-state", "closed");
+  await expect(links.last()).toHaveAttribute("data-link-state", "closed");
+  await links.first().focus();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  expect(resolved).toBe(1);
+  await page.screenshot({ path: testInfo.outputPath("pr-status-from-database-after-idle.png"), fullPage: true });
+  expect(errors).toEqual([]);
+});

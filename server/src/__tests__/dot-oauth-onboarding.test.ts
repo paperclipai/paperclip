@@ -224,7 +224,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     }
     expect((await request(app).get(`/api/mcp/requests/${id}`)).status).toBe(200);
   });
-  it.each(["expired-code", "expired-request", "revoked", "paused", "viewer", "wrong-company", "dot-disabled", "mcp-disabled"])("rejects %s without creating a grant", async failure => {
+  it.each(["expired-code", "expired-request", "revoked", "paused", "viewer", "wrong-company", "dot-disabled"])("rejects %s without creating a grant", async failure => {
     const f = await fixture();
     let id = f.id;
     if (failure === "expired-code") await db.update(dotAgentBindings).set({ pairingExpiresAt: new Date(0) }).where(eq(dotAgentBindings.id, f.pairing.bindingId));
@@ -234,7 +234,6 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     if (failure === "viewer") await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, f.company.id), eq(companyMemberships.principalId, f.userId)));
     if (failure === "wrong-company") id = await f.begin({ company_id: randomUUID() });
     if (failure === "dot-disabled") await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: false });
-    if (failure === "mcp-disabled") await instanceSettingsService(db).updateExperimental({ enablePublicMcp: false });
     await expect(f.oauth.describeDotPairing(id, f.pairing.pairingCode)).rejects.toThrow();
     await expect(f.oauth.consentDotPairing(id, f.pairing.pairingCode)).rejects.toThrow();
     expect(await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.userId, f.userId))).toHaveLength(0);

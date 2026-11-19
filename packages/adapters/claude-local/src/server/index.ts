@@ -5,7 +5,10 @@ export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
 export {
+  claudeCliVersionAtLeast,
+  claudeCodeVersionForAgentSdk,
   claudeCommandSupportsEffortFlag,
+  minimumClaudeCliVersionForModel,
   resetClaudeCliCapabilitiesCacheForTests,
 } from "./cli-capabilities.js";
 export {

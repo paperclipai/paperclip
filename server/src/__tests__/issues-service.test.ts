@@ -4773,13 +4773,23 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     });
   });
 
-  it.each(["covered", "foreign-run", "unfinished", "failed-finalize", "late-finish", "later-operation"])(
-    "requires a successful owning finalize to cover a nested snapshot: %s", async kind => {
+  it.each([
+    ["covered", "succeeded", true],
+    ["foreign-run", "succeeded", false],
+    ["unfinished", "succeeded", false],
+    ["failed-finalize", "succeeded", false],
+    ["late-finish", "running", false],
+    ["later-operation", "running", false],
+    ["late-finish", "succeeded", true],
+    ["later-operation", "succeeded", true],
+  ] as const)(
+    "requires a successful owning finalize to cover a nested snapshot: %s (run %s)", async (kind, runStatus, ready) => {
       const f = await seedSharedWorkspaceDependency();
       const runId = randomUUID(), foreignRunId = randomUUID();
-      await db.insert(heartbeatRuns).values([runId, foreignRunId].map(id => ({
-        id, companyId: f.companyId, agentId: f.assigneeAgentId, status: "succeeded",
-      })));
+      await db.insert(heartbeatRuns).values([
+        { id: runId, companyId: f.companyId, agentId: f.assigneeAgentId, status: runStatus },
+        { id: foreignRunId, companyId: f.companyId, agentId: f.assigneeAgentId, status: "succeeded" },
+      ]);
       const started = new Date("2026-05-23T22:00:00.000Z");
       const finished = new Date("2026-05-23T22:00:02.000Z");
       await db.insert(workspaceOperations).values([
@@ -4797,7 +4807,6 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
           startedAt: new Date(finished.getTime() + 100), finishedAt: new Date(finished.getTime() + 200),
         }] : []),
       ]);
-      const ready = kind === "covered";
       expect((await svc.listWakeableBlockedDependents(f.blockerId)).map(issue => issue.id))
         .toEqual(ready ? [f.dependentId] : []);
       await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({

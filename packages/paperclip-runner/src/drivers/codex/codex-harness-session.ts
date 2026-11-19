@@ -980,6 +980,11 @@ export class CodexHarnessSession
     return this.transport.release?.() ?? false;
   }
 
+  async retireReleasedController(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null> {
+    this.assertProtocolIntegrity();
+    return this.transport.retireReleasedController?.() ?? null;
+  }
+
   async detachControllerForRestart(): Promise<void> {
     if (this.transport.detachControllerForRestart === undefined) return;
     await this.transport.detachControllerForRestart();

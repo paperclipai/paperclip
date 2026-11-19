@@ -8,7 +8,7 @@ import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from ".
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -154,12 +154,9 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       code: input.code,
       resource: endpoints.resource,
     });
-    if (sourceTemplateKey === "google-workspace" && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
-      throw unprocessable("Google did not return a supported permission grant. Reconnect and choose the Google services you want to use.", { code: "oauth_scope_grant_invalid" });
-    }
     if (sourceTemplateKey === "google-workspace") {
-      token.scope = googleWorkspaceEffectiveScopes(authorizedScopes, normalizeOauthScopes(token.scope)).join(" ");
-      if (!token.scope) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
+      token.scope = googleWorkspaceEffectiveScopes(googleWorkspaceSubmittedScopesIn(authorizedScopes), googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(token.scope))).join(" ");
+      if (!isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
     }
     const connectedAt = now();
     const expiresAt = token.expiresIn
