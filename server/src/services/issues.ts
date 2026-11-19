@@ -12373,6 +12373,7 @@ export function issueService(db: Db) {
           await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);
         }
         if (existing.status !== updated.status) {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.managedClaudeTranscriptCleanup, id);
           if (
             (existing.status === "done" || existing.status === "cancelled") &&
             updated.status !== "done" &&
@@ -12772,6 +12773,7 @@ export function issueService(db: Db) {
             await notifyActiveRunSilence(tx, { companyId: owner.companyId, issueId: id });
           }
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.managedClaudeTranscriptCleanup, id);
           await notifyRoutineExecutionStatus(tx, id);
           removedIssue = await tx
             .delete(issues)
