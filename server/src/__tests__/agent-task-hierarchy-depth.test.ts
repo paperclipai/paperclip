@@ -481,4 +481,66 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
     expect(source?.sourceIssue.id).toBe(childId);
     expect(source?.run).toBeNull();
   });
+
+  describe("parent cycle validation", () => {
+    it("rejects a self-parent move and leaves the edge untouched", async () => {
+      const { companyId } = await seedCompany();
+      const id = await seedIssue(companyId, { identifier: "SELF-1" });
+
+      await expect(issueService(db).update(id, { parentId: id }))
+        .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+      const [row] = await db.select({ parentId: issues.parentId }).from(issues).where(eq(issues.id, id));
+      expect(row!.parentId).toBeNull();
+    });
+
+    it("rejects moving an issue under its own descendant, even for board users", async () => {
+      const { companyId } = await seedCompany();
+      const { rootId, childId } = await seedTree(companyId);
+      await seedIssue(companyId, { parentId: childId, identifier: "GRAND-1" });
+
+      await expect(issueService(db).update(rootId, { parentId: childId, parentDepthPolicy: "allow_nested" }))
+        .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+      const [row] = await db.select({ parentId: issues.parentId }).from(issues).where(eq(issues.id, rootId));
+      expect(row!.parentId).toBeNull();
+    });
+
+    it("rejects both cycles for direct planIssueParentChange callers", async () => {
+      const { companyId } = await seedCompany();
+      const { rootId, childId } = await seedTree(companyId);
+
+      await expect(planIssueParentChange(db, { id: rootId, companyId, parentId: null }, rootId))
+        .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+      // A write that re-affirms a poisoned edge already in the data is
+      // rejected too, so legacy corruption surfaces instead of persisting.
+      await expect(planIssueParentChange(db, { id: rootId, companyId, parentId: childId }, childId))
+        .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+    });
+
+    it("keeps legal moves working: detach, reattach, and a no-op parent patch", async () => {
+      const { companyId } = await seedCompany();
+      const { rootId, childId } = await seedTree(companyId);
+
+      const detached = await issueService(db).update(childId, { parentId: null });
+      expect(detached.parentId).toBeNull();
+
+      const reattached = await issueService(db).update(childId, { parentId: rootId });
+      expect(reattached.parentId).toBe(rootId);
+
+      const noop = await issueService(db).update(childId, { parentId: rootId, title: "Renamed" });
+      expect(noop.parentId).toBe(rootId);
+      expect(noop.title).toBe("Renamed");
+    });
+
+    it("keeps rejecting a cross-company parent on update", async () => {
+      const first = await seedCompany();
+      const second = await seedCompany();
+      const id = await seedIssue(first.companyId);
+      const foreignId = await seedIssue(second.companyId);
+
+      await expect(issueService(db).update(id, { parentId: foreignId }))
+        .rejects.toMatchObject({ status: 404 });
+      const [row] = await db.select({ parentId: issues.parentId }).from(issues).where(eq(issues.id, id));
+      expect(row!.parentId).toBeNull();
+    });
+  });
 });

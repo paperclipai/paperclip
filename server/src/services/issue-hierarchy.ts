@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { issues, type Db } from "@paperclipai/db";
 import { MAX_AGENT_TASK_HIERARCHY_DEPTH, type IssueParentAdjustment } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
 
 /**
  * `flatten` (the default) applies the agent hierarchy limit: a new parent edge
@@ -184,17 +185,45 @@ export function planParentChange(
   return { parentId: placement.effectiveParentId, adjustment: placement.adjustment };
 }
 
-/** Database-backed {@link planParentChange} for the issue service. */
+/**
+ * Database-backed {@link planParentChange} for the issue service. Rejects a
+ * self-parent request and any explicit parent write whose proposed parent is
+ * the issue's own descendant (a cycle, including re-affirming a poisoned edge
+ * already in the data) with a 422 `issue_parent_cycle` error; cross-company and
+ * unknown parents are rejected downstream by the caller's company check.
+ */
 export async function planIssueParentChange(
   db: Pick<Db, "execute" | "select">,
   existing: { id: string; companyId: string; parentId: string | null },
   requestedParentId: string,
   policy: IssueParentDepthPolicy = "flatten",
 ) {
-  if (policy === "allow_nested" || requestedParentId === existing.parentId) {
+  // A poisoned self-edge (`parent_id = id`) once made every subtree walk over
+  // the tree recurse forever, so no policy accepts one, and a write whose
+  // proposed parent already has the moving issue as an ancestor would close
+  // (or perpetuate) the same kind of cycle. Both checks run before the cheap
+  // early returns, so a re-affirming update surfaces the corruption instead of
+  // silently keeping it.
+  if (requestedParentId === existing.id) {
+    throw unprocessable("An issue cannot be its own parent", { code: "issue_parent_cycle" });
+  }
+  // `loadParentChain` stops on cycles, so a healthy walk cannot contain the
+  // moving issue; seeing it here means the proposed parent sits below the
+  // issue in the tree.
+  const chain = await loadParentChain(db, existing.companyId, requestedParentId);
+  if (chain.some(row => row.id === existing.id)) {
+    const labels = chain.map(row => row.identifier ?? row.id).join(" → ");
+    throw unprocessable(
+      `Moving this task under ${chain[0]?.identifier ?? requestedParentId} would create a parent cycle: it is already an ancestor of the new parent (${labels})`,
+      { code: "issue_parent_cycle" },
+    );
+  }
+  if (requestedParentId === existing.parentId) {
     return { parentId: requestedParentId as string | null | undefined, adjustment: null as IssueParentAdjustment | null };
   }
-  const chain = await loadParentChain(db, existing.companyId, requestedParentId);
+  if (policy === "allow_nested") {
+    return { parentId: requestedParentId as string | null | undefined, adjustment: null as IssueParentAdjustment | null };
+  }
   const [child] = await db
     .select({ id: issues.id })
     .from(issues)
