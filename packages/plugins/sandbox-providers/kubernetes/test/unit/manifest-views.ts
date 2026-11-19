@@ -16,6 +16,7 @@ export interface PodTemplateView {
     };
     containers: {
       command: string[];
+      imagePullPolicy?: string;
       envFrom: { secretRef: { name: string } }[];
       securityContext: {
         runAsNonRoot: boolean;
