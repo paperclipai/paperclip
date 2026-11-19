@@ -253,6 +253,34 @@ describe("issue telemetry routes", () => {
     await vi.waitFor(() => expect(people).toEqual([expected]));
   }, 10_000);
 
+  it("emits a Paperclip runner agent's underlying harness as the adapter type", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "22222222-2222-4222-8222-222222222222",
+    });
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockTrackAgentTaskCompleted).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ adapterType: "claude_local", model: "claude-sonnet-4-6" }),
+      );
+    });
+  }, 10_000);
+
   it("does not emit agent task-completed telemetry for board-driven completions", async () => {
     const app = await createApp({
       type: "board",

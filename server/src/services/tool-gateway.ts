@@ -7,6 +7,7 @@ import {
   type AwsMcpClients,
 } from "./connectors/aws/mcp-credentials.js";
 import { workloadIdentityService } from "./workload-identity.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
   approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
@@ -2666,7 +2667,7 @@ export function createToolGatewayService(
     tool?: ToolGatewayDescriptor | null;
   }) {
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
-    await db.insert(toolCallEvents).values({
+    await retryTransientLockContention(() => db.insert(toolCallEvents).values({
       companyId: input.session.companyId,
       invocationId: input.invocationId ?? null,
       actionRequestId: input.actionRequestId ?? null,
@@ -2709,7 +2710,7 @@ export function createToolGatewayService(
               ...(input.detectorMetadata ? { promptInjection: input.detectorMetadata } : {}),
             }
           : null,
-    });
+    }));
   }
 
   async function reflectToolActionInteractionLifecycle(input: {

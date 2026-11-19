@@ -2877,6 +2877,10 @@ export class DurablePrpControlPlane {
     );
   }
 
+  expectedRunner(): { version: string; digest: string } {
+    return { version: this.#expectedRunnerVersion, digest: this.#expectedRunnerDigest };
+  }
+
   acceptRelaunchedRunner(
     bootstrapTicket: string,
     runner: { version: string; digest: string },
