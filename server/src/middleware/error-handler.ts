@@ -21,7 +21,7 @@ import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 import { isOpenRouterCatalogUnavailable } from "../services/openrouter-models.js";
-import { isEndedDbPoolError } from "../database-retry.js";
+import { isEndedDbPoolError, isSchemaDriftError } from "../database-retry.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 export interface ErrorContext {
@@ -359,8 +359,18 @@ export function errorHandler(
 
   reportCrash(reportableError, req);
 
+  // An undefined-column/undefined-table SQLSTATE means the deployed code
+  // selected schema the live database does not have — the exact failure that
+  // took down company settings, the dashboard, and attachment uploads in
+  // AGE-759 (production migration drift). Tag the 500 with a stable `code` so
+  // a recurrence is self-diagnosing from the HTTP response alone, without
+  // server-log access. The constant is non-sensitive; the drifted
+  // column/relation name stays in the crash report, never in the response.
+  const schemaDrift = isSchemaDriftError(rootError);
+
   res.status(500).json({
     error: "Internal server error",
+    ...(schemaDrift ? { code: "schema_drift" } : {}),
     ...(shouldExposeTrustedCloudTenantImportError(req)
       ? { message: rootError.message }
       : {}),

@@ -3623,6 +3623,35 @@ async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: strin
 /** How long a Retry answer waits for admission before it reports the saved request as accepted. */
 const TASK_RETRY_ANSWER_ADMISSION_WAIT_MS = 5_000;
 
+/**
+ * Wrap a route handler so that any unexpected (non-HttpError) failure is logged
+ * with a stable `code` and surfaced to the client as a structured
+ * `{ error, code }` 500 instead of a bare `{"error":"Internal server error"}`.
+ *
+ * This makes a recurrence of schema-drift style failures (e.g. AGE-759, where a
+ * missing control-plane column made `companies`/attachment reads throw) self-
+ * diagnosing from the HTTP response alone, without needing server-log access.
+ * HttpErrors (and anything thrown after the response has started) are rethrown
+ * untouched so existing structured 4xx/5xx responses are preserved.
+ */
+function withStableErrorCode(
+  code: string,
+  handler: (req: Request, res: Response) => Promise<void>,
+): (req: Request, res: Response) => Promise<void> {
+  return async (req, res) => {
+    try {
+      await handler(req, res);
+    } catch (err) {
+      if (err instanceof HttpError || res.headersSent) throw err;
+      logger.error(
+        { err, code, method: req.method, url: req.originalUrl },
+        "route handler failed with unhandled error",
+      );
+      throw new HttpError(500, "Internal server error", { code });
+    }
+  };
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -20473,7 +20502,7 @@ export function issueRoutes(
 
   router.post(
     "/companies/:companyId/issues/:issueId/attachments",
-    async (req, res) => {
+    withStableErrorCode("attachment_upload_failed", async (req, res) => {
       const companyId = req.params.companyId as string;
       const issueId = req.params.issueId as string;
       assertCompanyAccess(req, companyId);
@@ -20626,7 +20655,7 @@ export function issueRoutes(
         ...attachmentResponse
       } = attachment;
       res.status(201).json(withContentPath(attachmentResponse));
-    },
+    }),
   );
 
   router.get("/attachments/:attachmentId/content", async (req, res, next) => {
