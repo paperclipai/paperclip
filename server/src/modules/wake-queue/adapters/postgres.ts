@@ -1366,9 +1366,6 @@ export function createPostgresIssueWakeAdmission(db: Db) {
               const preserveWorkspace = userComment && issue?.executionWorkspaceId;
               if (preserveWorkspace) await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, companyId, issueId);
               if (!preserveWorkspace && issue?.conversationAgentId === null) {
-                // Read after locking to see writers that committed while we waited.
-                // FOR UPDATE conflicts with the FK's key-share lock on inserts and
-                // reparenting. Writers preserve company identity, so a miss stays valid.
                 const [recovery] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
                   .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId))).limit(1);
                 if (!recovery) return {
