@@ -38,12 +38,11 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector("a, details, input, textarea")).toBeNull();
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
-  it("asks the person to help a blocked agent and offers Retry", async () => {
+  it("does not report a failed attempt for a task the agent handed to a person", async () => {
+    // Like any person-owned blocker: the Blocked status, the agent's comment
+    // and a reply carry it. Nothing failed, so there is no error notice.
     await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "unblock" });
-    expect(container.textContent).toContain("needs your help to continue");
-    expect(container.textContent).not.toMatch(/blocker_|native|owner kind/i);
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-execution-retry"]')!.click());
-    expect(retry).toHaveBeenCalledOnce();
+    expect(container.textContent).toBe("");
   });
 
   it("keeps the failure visible and names the gate while a saved Retry waits on the budget", async () => {

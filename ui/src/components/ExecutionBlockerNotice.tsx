@@ -109,22 +109,15 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   // Other person-owned decisions have their own card on the task (approval,
   // project access, ...). A budget hold has none, so name it here and keep the
   // failure visible. The saved attempt starts by itself once the budget allows.
+  // A blocker the agent hands to a person ("unblock") is not a failed attempt:
+  // like any person-owned blocker, the Blocked status, the agent's comment and
+  // a reply carry it, so it falls through to no notice.
   if (!optimistic && presentation && isBudgetWait(presentation)) return (
     <div className={cn("pt-4", className)}>
       <div role="status" aria-label="Task status" data-testid="task-execution-waiting"
         className="flex items-center gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
         <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
         <span className="min-w-0 flex-1">{budgetWaitText(presentation)}</span>
-      </div>
-    </div>
-  );
-  if (!optimistic && presentation?.userAction === "unblock") return (
-    <div className={cn("pt-4", className)}>
-      <div role="status" aria-label="Task status" data-testid="task-execution-waiting"
-        className="flex items-center justify-between gap-3 rounded-lg bg-destructive/10 p-4 text-sm text-foreground">
-        <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />
-        <span className="min-w-0 flex-1">The agent stopped and needs your help to continue. Read its last comment, do what it asks, then Retry.</span>
-        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry} data-testid="task-execution-retry">Retry</Button>}
       </div>
     </div>
   );
