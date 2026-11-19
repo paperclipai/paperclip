@@ -33,8 +33,6 @@ export function createWakeRecoveryAdmission<ExplicitInput extends ExplicitContin
     const ownsReconstruction = Boolean(input.reconciliation && blocker &&
       blocker.runId === input.reconciliation.sourceRunId && blocker.recoveryActionId === input.reconciliation.actionId);
 
-    // Eligibility runs before busy handling. Retirement waits until a fresh run
-    // can be admitted and is committed in the same transaction as that run.
     return {
       blocker,
       ownsReconstruction,

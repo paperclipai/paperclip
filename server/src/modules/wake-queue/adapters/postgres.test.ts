@@ -274,7 +274,6 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       const input = { commentId: comment.id, requestedByActorType: "user", requestedByActorId: userId };
       expect(lockedIssue?.conversationAgentId).toBeNull();
       await expect(recovery.readBlocker(input)).resolves.toMatchObject({ verifiedReset: false, blocker: { cause: "legacy_execution_requires_reconciliation" } });
-      // Durable chat authorization can write through this transaction before relock.
       await tx.update(issues).set({ conversationAgentId: agentId, conversationUserId: userId, conversationState: "active" })
         .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
       await expect(lockIssue()).resolves.toMatchObject({ conversationAgentId: agentId });
