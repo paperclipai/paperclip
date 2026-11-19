@@ -250,6 +250,7 @@ import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
 import {
+  createAutomaticGoalCommentSteering,
   createQueuedCommentQueue,
   requireQueuedCommentMutationTarget,
   QueuedCommentMutationError,
@@ -3752,6 +3753,14 @@ export function issueRoutes(
         );
       }
     },
+  });
+  const steerAutomaticGoalComment = createAutomaticGoalCommentSteering({
+    readGoal: runnerGoals.projection,
+    queueCommand: queueLiveRunnerPrpCommand,
+    reportCommandFailure: (details) => logger.warn(
+      details,
+      "failed to steer an active session goal; falling back to a boundary wake",
+    ),
   });
   const stopRunnerGoalForOwnershipChange = async (input: {
     companyId: string;
@@ -16394,49 +16403,7 @@ export function issueRoutes(
           : await addCommentAndReceipt(db);
         await issueReferencesSvc.syncComment(comment.id);
         await externalObjectsSvc.syncCommentSafely(comment.id);
-        if (
-          issue.assigneeAgentId &&
-          !issue.externalConversationState &&
-          !(
-            actor.actorType === "agent" &&
-            actor.actorId === issue.assigneeAgentId
-          )
-        ) {
-          const goalProjection = await runnerGoals.projection(
-            issue.companyId,
-            issue.id,
-            issue.assigneeAgentId,
-          );
-          if (
-            goalProjection?.goal?.status === "active" &&
-            goalProjection.workingNow
-          ) {
-            const steer = queueLiveRunnerPrpCommand({
-              companyId: issue.companyId,
-              issueId: issue.id,
-              agentId: issue.assigneeAgentId,
-              type: "turn.steer",
-              payload: { text: comment.body },
-              commandId: `goal_comment_${comment.id}`,
-            });
-            if (steer) {
-              try {
-                await steer.completion;
-                goalCommentSteered = true;
-              } catch (err) {
-                logger.warn(
-                  {
-                    err,
-                    issueId: issue.id,
-                    commentId: comment.id,
-                    runId: steer.runId,
-                  },
-                  "failed to steer an active session goal; falling back to a boundary wake",
-                );
-              }
-            }
-          }
-        }
+        goalCommentSteered = await steerAutomaticGoalComment(issue, actor, comment);
         const commentReferenceSummaryAfter =
           await issueReferencesSvc.listIssueReferenceSummary(issue.id);
         const commentReferenceDiff =
@@ -19719,7 +19686,6 @@ export function issueRoutes(
       // Without a single transaction, a 422 (or any error) thrown by the status update after the
       // comment is inserted would leave an orphan comment without the corresponding state change.
       let comment: Awaited<ReturnType<typeof svc.addComment>>;
-      let goalCommentSteered = false;
       let fastResponseEnqueued = false;
       if (shouldAutoApproveReviewComment) {
         const transition = applyIssueExecutionPolicyTransition({
@@ -19979,51 +19945,7 @@ export function issueRoutes(
       });
       else await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
-      if (
-        currentIssue.assigneeAgentId &&
-        // Slack-linked messages need the normal attributed wake boundary so
-        // the accepted requester and return-thread receipt travel with the run.
-        !currentIssue.externalConversationState &&
-        !(
-          actor.actorType === "agent" &&
-          actor.actorId === currentIssue.assigneeAgentId
-        )
-      ) {
-        const goalProjection = await runnerGoals.projection(
-          currentIssue.companyId,
-          currentIssue.id,
-          currentIssue.assigneeAgentId,
-        );
-        if (
-          goalProjection?.goal?.status === "active" &&
-          goalProjection.workingNow
-        ) {
-          const steer = queueLiveRunnerPrpCommand({
-            companyId: currentIssue.companyId,
-            issueId: currentIssue.id,
-            agentId: currentIssue.assigneeAgentId,
-            type: "turn.steer",
-            payload: { text: comment.body },
-            commandId: `goal_comment_${comment.id}`,
-          });
-          if (steer) {
-            try {
-              await steer.completion;
-              goalCommentSteered = true;
-            } catch (err) {
-              logger.warn(
-                {
-                  err,
-                  issueId: currentIssue.id,
-                  commentId: comment.id,
-                  runId: steer.runId,
-                },
-                "failed to steer an active session goal; falling back to a boundary wake",
-              );
-            }
-          }
-        }
-      }
+      const goalCommentSteered = await steerAutomaticGoalComment(currentIssue, actor, comment);
 
       if (actor.runId) {
         await heartbeat

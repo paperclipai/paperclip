@@ -60,8 +60,16 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
 const mockRunnerGoalService = vi.hoisted(() => ({
-  projection: vi.fn(async () => null),
+  projection: vi.fn(async (): Promise<{ goal: { status: "active" }; workingNow: boolean } | null> => null),
   act: vi.fn(),
+}));
+
+const mockQueueLiveRunnerPrpCommand = vi.hoisted(() => vi.fn<
+  typeof import("../realtime/runner-prp-ws.js").queueLiveRunnerPrpCommand
+>());
+vi.mock("../realtime/runner-prp-ws.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../realtime/runner-prp-ws.js")>(),
+  queueLiveRunnerPrpCommand: mockQueueLiveRunnerPrpCommand,
 }));
 
 vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
@@ -903,6 +911,47 @@ describe("issue update comment wakeups", () => {
       }));
     }
     expect(mockIssueService.update.mock.calls.every(([id]) => id === existing.id)).toBe(true);
+  });
+
+  it.each((["post", "patch"] as const).flatMap((method) =>
+    (["acknowledged", "rejected", "timeout", "unavailable"] as const).map((delivery) => ({ method, delivery })),
+  ))("uses automatic goal steering for $method comments with $delivery delivery", async ({ method, delivery }) => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
+    const body = "Use a darker shade of blue.";
+    const comment = { id: "goal-steering-comment", issueId: existing.id, companyId: existing.companyId, body };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue(comment);
+    mockRunnerGoalService.projection.mockResolvedValue({ goal: { status: "active" }, workingNow: true });
+    const commandId = `goal_comment_${comment.id}`;
+    mockQueueLiveRunnerPrpCommand.mockImplementation(() => delivery === "unavailable" ? null : {
+      runId: SOURCE_RUN_ID,
+      commandId,
+      controllerSeq: 1,
+      completion: delivery === "acknowledged" ? Promise.resolve(null) : Promise.reject(new Error(delivery)),
+    });
+
+    const app = await createApp();
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${existing.id}/comments`).send({ body })
+      : await request(app).patch(`/api/issues/${existing.id}`).send({ comment: body });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockIssueService.addComment).toHaveBeenCalledOnce();
+    expect(mockRunnerGoalService.projection).toHaveBeenCalledExactlyOnceWith(existing.companyId, existing.id, ASSIGNEE_AGENT_ID);
+    expect(mockQueueLiveRunnerPrpCommand).toHaveBeenCalledExactlyOnceWith({
+      companyId: existing.companyId, issueId: existing.id, agentId: ASSIGNEE_AGENT_ID,
+      type: "turn.steer", payload: { text: body }, commandId,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (delivery === "acknowledged") {
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    } else {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledExactlyOnceWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+        reason: "issue_commented",
+        payload: expect.objectContaining({ issueId: existing.id, commentId: comment.id }),
+      }));
+    }
   });
 
   it("preserves an explicit resume on a run-authenticated top-level comment", async () => {

@@ -249,6 +249,11 @@ They read only the queued run's runtime mode. Mutation locks retain complete
 wake and run rows, so edits, ordering, interruption, and saved execution inputs
 keep their existing write contract.
 
+Wake-queue also handles automatic steering for a saved task comment when an
+active session goal is working. It suppresses the assignee's comment wake after
+the live runner acknowledges delivery. When the live command cannot deliver the
+comment, the comment follows the route's normal wake rules.
+
 The task composer offers Steer when the native session has an active provider
 turn that accepts steering. Wake-queue locks the task and receipt for the click,
 then locks and rereads the run after the provider acknowledges delivery. It
