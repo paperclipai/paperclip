@@ -8,18 +8,7 @@ import {
 } from "../../../lib/queued-comment-context.js";
 import { hasInteractionContinuationWakeContext, isInteractionResolutionWakePayload } from "../domain/context.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
-import type { DurableWakeAdmissionReceipt } from "./ports.js";
-
-type WakeReceiptSeed = {
-  agentId: string;
-  source: string;
-  triggerDetail: string | null;
-  reason: string | null;
-  payload: Record<string, unknown> | null;
-  requestedByActorType: string | null;
-  requestedByActorId: string | null;
-  idempotencyKey: string | null;
-};
+import type { DurableWakeAdmissionReceipt, WakeReceiptSeed } from "./ports.js";
 
 type QueuedRunSeed = {
   id?: string;
