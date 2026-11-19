@@ -57,8 +57,8 @@ describe("buildCiliumNetworkPolicyManifest", () => {
     const cnp = buildCiliumNetworkPolicyManifest({ ...baseInput, paperclipServerPodSelector: { app: "paperclip" } });
     const cb = cnp.spec.egress.find((e: { toEndpoints?: { matchLabels: Record<string, string> }[] }) =>
       e.toEndpoints?.some((ep) => ep.matchLabels.app === "paperclip"));
-    expect(cb.toEndpoints[0].matchLabels).toEqual({ "k8s:io.kubernetes.pod.namespace": "paperclip", app: "paperclip" });
-    expect(cb.toPorts[0].ports).toEqual([{ port: "3100", protocol: "TCP" }]);
+    expect(cb?.toEndpoints?.[0]?.matchLabels).toEqual({ "k8s:io.kubernetes.pod.namespace": "paperclip", app: "paperclip" });
+    expect(cb?.toPorts?.[0]?.ports).toEqual([{ port: "3100", protocol: "TCP" }]);
   });
 
   it("does not let a callback selector override the server namespace", () => {
@@ -66,7 +66,7 @@ describe("buildCiliumNetworkPolicyManifest", () => {
       ...baseInput,
       paperclipServerPodSelector: { app: "paperclip", "k8s:io.kubernetes.pod.namespace": "other" },
     });
-    expect(cnp.spec.egress[2].toEndpoints[0].matchLabels["k8s:io.kubernetes.pod.namespace"]).toBe("paperclip");
+    expect(cnp.spec.egress[2]?.toEndpoints?.[0]?.matchLabels["k8s:io.kubernetes.pod.namespace"]).toBe("paperclip");
   });
 
   it("includes user-supplied CIDRs in toCIDRSet rule", () => {

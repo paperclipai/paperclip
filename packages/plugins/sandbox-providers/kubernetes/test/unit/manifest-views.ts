@@ -6,6 +6,7 @@ export interface PodTemplateView {
   spec: {
     automountServiceAccountToken: boolean;
     restartPolicy: string;
+    activeDeadlineSeconds?: number;
     runtimeClassName?: string;
     imagePullSecrets?: { name: string }[];
     securityContext: {

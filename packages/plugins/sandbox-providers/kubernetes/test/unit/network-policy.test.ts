@@ -42,7 +42,7 @@ describe("buildNetworkPolicyManifests", () => {
 
   it("targets a configured callback pod selector instead of the default", () => {
     const [, egress] = buildNetworkPolicyManifests({ ...baseInput, paperclipServerPodSelector: { app: "paperclip" } });
-    expect(egress.spec.egress[1].to[0].podSelector.matchLabels).toEqual({ app: "paperclip" });
+    expect(egress.spec.egress[1]?.to[0]?.podSelector?.matchLabels).toEqual({ app: "paperclip" });
     expect(egress.spec.egress[1].ports).toEqual([{ protocol: "TCP", port: 3100 }]);
   });
 

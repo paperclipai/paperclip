@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 let capture: { command: string[]; stdout: PassThrough; stdin: PassThrough; tty: boolean; callback: (status: { status: string; details?: { causes?: { reason: string; message: string }[] } }) => void; socket: EventEmitter & { close: ReturnType<typeof vi.fn>; bufferedAmount: number } } | undefined;
 vi.mock("@kubernetes/client-node", () => ({
   Exec: class {
-    async exec(_ns: string, _pod: string, _container: string, command: string[], stdout: PassThrough, _stderr: PassThrough, stdin: PassThrough, tty: boolean, callback: typeof capture.callback) {
+    async exec(_ns: string, _pod: string, _container: string, command: string[], stdout: PassThrough, _stderr: PassThrough, stdin: PassThrough, tty: boolean, callback: NonNullable<typeof capture>["callback"]) {
       const socket = Object.assign(new EventEmitter(), { close: vi.fn(), bufferedAmount: 0 });
       stdin.on("data", (chunk: Buffer) => { socket.bufferedAmount += chunk.length + 1; });
       capture = { command, stdout, stdin, tty, callback, socket };
