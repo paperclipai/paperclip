@@ -43,7 +43,7 @@ import path from "node:path";
 import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "../workspace-host-provision.js";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { type ExecutionWorkspace } from "@paperclipai/shared";
-import { environmentLeases, executionWorkspaces as executionWorkspacesTable, heartbeatRuns, issues, projectWorkspaces } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces as executionWorkspacesTable, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { getStartupTracer } from "../../instrumentation.js";
 import { createHostDuplexObservabilityRecorder } from "../duplex-observability-recorder.js";
 import { incrementToolRuntimeMetricCounter } from "../tool-runtime-metrics.js";
@@ -67,6 +67,7 @@ import {
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
 } from "../workspace-instance-cleanup.js";
 import { isRuntimeOwnedGitBranch } from "../execution-workspace-branch-ownership.js";
+import { readProjectRepositoryCheckout, readRequestedProjectRepositoryIds } from "../project-repository-requests.js";
 import {
   resolveSharedWorkspaceConcurrency,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -1404,19 +1405,28 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         inheritRepositorySelections: createdExecutionWorkspaceThisRun && !resolvedProjectWorkspaceId }));
     projectRepositoryPaths.push(...taskRepositories.map(repository => repository.relativePath));
   }
-  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && executionWorkspace.projectId
-    && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId))
+  const projectRootRepositories = Boolean(executionWorkspace.projectId)
+    && (resolvedWorkspace.source === "project_primary" || Boolean(reusableExistingExecutionWorkspace?.projectWorkspaceId));
+  const taskDirectoryProjectId = !executionWorkspace.projectId && persistedExecutionWorkspace && issueId
+    && input.task.workspaceSelection?.selection.kind === "task_directory" ? issueRef?.projectId ?? null : null;
+  const repositoryProjectId = projectRootRepositories ? executionWorkspace.projectId : taskDirectoryProjectId;
+  if (!pluginPrepared && !pluginTaskWorkspace && !remoteAuthority && repositoryProjectId
     && !resolvedWorkspace.baseCwdFallback && !persistedNativeExecutionInput && !nativeRecoveryExecutionWorkspaceId) {
     const repositoryRows = await db.select().from(projectWorkspaces).where(and(
       eq(projectWorkspaces.companyId, agent.companyId),
-      eq(projectWorkspaces.projectId, executionWorkspace.projectId),
+      eq(projectWorkspaces.projectId, repositoryProjectId),
     )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+    const [repositoryProject] = await db.select({ repositoryCheckout: projects.repositoryCheckout }).from(projects)
+      .where(and(eq(projects.companyId, agent.companyId), eq(projects.id, repositoryProjectId)));
+    const repositoryCheckout = projectRootRepositories ? readProjectRepositoryCheckout(repositoryProject?.repositoryCheckout) : "none";
     const repositories = await timeWorkspace("workspace_project_repositories", () => prepareProjectRepositoryWorkspaces({
       cwd: executionWorkspace.cwd,
-      anchorRepoUrl: executionWorkspace.repoUrl,
+      anchorRepoUrl: projectRootRepositories ? executionWorkspace.repoUrl : null,
       workspaces: repositoryRows,
+      repositoryCheckout,
+      keepWorkspaceIds: readRequestedProjectRepositoryIds(persistedExecutionWorkspace?.metadata),
       restoredContents: persistedExecutionWorkspace ? readGitCacheRestoration(persistedExecutionWorkspace)?.contents : undefined,
-      sharedBase: { companyId: agent.companyId, projectId: executionWorkspace.projectId! },
+      sharedBase: { companyId: agent.companyId, projectId: repositoryProjectId },
       resolveGitAuth: workspaceGitAuthProvider,
       prepareLocalSource: persistedExecutionWorkspace && issueId
         ? (sourceCwd, projectWorkspaceId) => executionWorkspacesSvc.prepareConfiguredRepositoryCopy({
@@ -1435,7 +1445,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     if (resolvedWorkspace.workspaceId) paths.set(resolvedWorkspace.workspaceId, executionWorkspace.cwd);
     resolvedWorkspace.workspaceHints = repositoryRows.map((source) => ({
       workspaceId: source.id,
-      cwd: paths.get(source.id) ?? readNonEmptyString(source.cwd),
+      cwd: paths.get(source.id) ?? (repositoryCheckout === "all" ? readNonEmptyString(source.cwd) : null),
       repoUrl: readNonEmptyString(source.repoUrl),
       repoRef: preparedRefs.has(source.id) ? preparedRefs.get(source.id)! : readNonEmptyString(source.repoRef),
     }));

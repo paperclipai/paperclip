@@ -47,6 +47,7 @@ export type ProjectConfigFieldKey =
   | "status"
   | "visibility"
   | "decision_owner"
+  | "repository_checkout"
   | "goals"
   | "env"
   | "execution_workspace_enabled"
@@ -280,6 +281,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
   const projectEnvironmentView = useQueryView(projectEnvironments);
 
   const workspaces = project.workspaces ?? [];
+  const repositoryWorkspaceCount = new Set(workspaces.flatMap((workspace) => workspace.repoUrl ? [workspace.repoUrl.toLowerCase()] : [])).size;
   const codebase = project.codebase;
   const primaryCodebaseWorkspace = project.primaryWorkspace ?? null;
   const hasAdditionalLegacyWorkspaces = workspaces.some((workspace) => workspace.id !== primaryCodebaseWorkspace?.id && !workspace.metadata?.githubRepositoryId);
@@ -535,6 +537,32 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
           </div>
         </PropertyRow>
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}
+        {repositoryWorkspaceCount > 0 ? (
+          <PropertyRow label={<FieldLabel label="Repository checkout" state={fieldState("repository_checkout")} />} alignStart>
+            <div className="space-y-1">
+              <NativeSelect
+                aria-label="Repository checkout"
+                data-testid="project-repository-checkout"
+                value={project.repositoryCheckout ?? "all"}
+                disabled={!onUpdate && !onFieldUpdate}
+                onChange={(event) =>
+                  commitField("repository_checkout", { repositoryCheckout: event.target.value })
+                }
+              >
+                <option value="all">All project repositories</option>
+                {repositoryWorkspaceCount > 1 ? <option value="primary">Primary repository only</option> : null}
+                <option value="none">Only when a task requests one</option>
+              </NativeSelect>
+              <p className="text-(length:--text-micro) text-muted-foreground">
+                {project.repositoryCheckout === "none"
+                  ? "New tasks start in an empty task directory. Agents request a repository when a task needs code."
+                  : project.repositoryCheckout === "primary"
+                    ? "New task workspaces check out only the primary repository. Agents request the other repositories when a task needs them."
+                    : "Every task workspace checks out all of this project's repositories."}
+              </p>
+            </div>
+          </PropertyRow>
+        ) : null}
         <ProjectGitAuthorization key={`git-${project.id}`} project={project} />
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}

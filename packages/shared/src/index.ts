@@ -512,6 +512,7 @@ export {
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_STATUSES,
+  PROJECT_REPOSITORY_CHECKOUTS,
   RESPONSIBILITY_STATUSES,
   RESPONSIBILITY_SOURCES,
   RESPONSIBILITY_HEALTH,
@@ -721,6 +722,7 @@ export {
   type GoalLevel,
   type GoalStatus,
   type ProjectStatus,
+  type ProjectRepositoryCheckout,
   type ResponsibilityStatus,
   type ResponsibilitySource,
   type ResponsibilityHealth,
@@ -3083,7 +3085,7 @@ export type { AgentLifecycleRequest, AgentLifecycleResult } from "./types/agent-
 export * from "./types/task-workspace.js";
 export * from "./validators/task-workspace.js";
 
-export { prepareWorkspaceRepositorySchema, type PrepareWorkspaceRepository } from "./validators/workspace-repository.js";
+export { prepareWorkspaceRepositorySchema, requestProjectRepositorySchema, type PrepareWorkspaceRepository, type RequestProjectRepository } from "./validators/workspace-repository.js";
 
 export * from "./muse-protocol.js";
 export * from "./muse-invitations.js";
