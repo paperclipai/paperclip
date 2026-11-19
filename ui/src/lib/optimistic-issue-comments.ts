@@ -130,25 +130,26 @@ export function applyLocalQueuedIssueCommentState<T extends IssueComment>(
   };
 }
 
+function commentReceiptId(comment: Pick<IssueComment, "clientRequestId">): string | null {
+  const requestId = comment.clientRequestId;
+  return typeof requestId === "string" && requestId.length > 0 ? requestId : null;
+}
+
 function matchesOptimisticCommentReceipt(
   persisted: IssueComment,
   optimistic: OptimisticIssueComment,
 ): boolean {
-  const requestId = optimistic.clientRequestId;
-  if (
-    typeof requestId === "string" &&
-    requestId.length > 0 &&
-    persisted.issueId === optimistic.issueId &&
-    persisted.authorUserId === optimistic.authorUserId &&
-    persisted.clientRequestId === requestId
-  ) {
-    return true;
+  if (persisted.issueId !== optimistic.issueId) return false;
+  if (persisted.authorUserId !== optimistic.authorUserId) return false;
+
+  const optimisticReceipt = commentReceiptId(optimistic);
+  const persistedReceipt = commentReceiptId(persisted);
+  if (optimisticReceipt && persistedReceipt) {
+    return optimisticReceipt === persistedReceipt;
   }
 
   return (
-    persisted.issueId === optimistic.issueId &&
     persisted.authorType === optimistic.authorType &&
-    persisted.authorUserId === optimistic.authorUserId &&
     persisted.body === optimistic.body &&
     Math.abs(toTimestamp(persisted.createdAt) - toTimestamp(optimistic.createdAt)) <= 60_000
   );

@@ -217,6 +217,44 @@ describe("optimistic issue comments", () => {
     expect(merged.map((comment) => comment.id).sort()).toEqual(["comment-1", optimistic.id].sort());
   });
 
+  it("keeps a second identical send mounted until its own receipt lands", () => {
+    const first = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same text",
+      authorUserId: "board-1",
+      clientRequestId: "55555555-5555-4555-8555-555555555555",
+    });
+    const second = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same text",
+      authorUserId: "board-1",
+      clientRequestId: "66666666-6666-4666-8666-666666666666",
+    });
+
+    const merged = mergeIssueComments(
+      [{
+        id: "comment-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        authorAgentId: null,
+        authorUserId: "board-1",
+        body: "Same text",
+        authorType: "user",
+        presentation: null,
+        metadata: null,
+        clientRequestId: first.clientRequestId,
+        createdAt: first.createdAt,
+        updatedAt: first.updatedAt,
+      }],
+      [first, second],
+    );
+
+    expect(merged.map((comment) => comment.id).sort()).toEqual(["comment-1", second.id].sort());
+    expect(merged.find((comment) => comment.id === "comment-1")).toMatchObject({ clientId: first.clientId });
+  });
+
   it("reconciles repeated identical comments one-for-one", () => {
     const first = createOptimisticIssueComment({
       companyId: "company-1",
