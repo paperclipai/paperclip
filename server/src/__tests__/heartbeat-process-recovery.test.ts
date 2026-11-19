@@ -3645,6 +3645,92 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  // A sandbox run has no host process and (for hermes/pi/claude/... legacy adapters) no adapter Stop
+  // handle, so an interrupt used to only rewrite the run row: the sandbox kept running, no stop proof
+  // existed when the terminal row was written, a recovery hold was created and settled "blocked" in
+  // the same second, and the user's queued message never started. Local runs got their proof from the
+  // killed process. The sandbox must be stopped first so the terminal write carries the proof.
+  describe("interrupting a sandbox conversation run (user queued message)", () => {
+    async function interruptSandboxRun(grantReceipt: boolean, adapterReturnsOnStop = false) {
+      const f = await seedQueuedIssueRunFixture();
+      const originalFactory = environmentOrchestrator.environmentRunOrchestrator;
+      let sandboxStopped!: () => void;
+      const sandboxStoppedPromise = new Promise<void>(resolve => { sandboxStopped = resolve; });
+      const release = vi.fn(async (input: { heartbeatRunId: string }) => {
+        const [lease] = await db.select().from(environmentLeases)
+          .where(eq(environmentLeases.heartbeatRunId, input.heartbeatRunId));
+        await db.update(environmentLeases).set({
+          status: "expired", releasedAt: new Date(), cleanupStatus: "success",
+          metadata: { ...lease!.metadata, ...(grantReceipt ? { remoteExecutionTermination:
+            remoteTerminationReceipt(lease!, { providerLeaseId: lease!.providerLeaseId!, state: "destroyed" }) } : {}) },
+        }).where(eq(environmentLeases.id, lease!.id));
+        // The sandbox exec fails the instant the sandbox is destroyed.
+        sandboxStopped();
+        return { released: [], errors: [] };
+      });
+      const factory = vi.spyOn(environmentOrchestrator, "environmentRunOrchestrator").mockImplementation((...args) => ({
+        ...originalFactory(...args), releaseForRun: release as never,
+      }));
+      let cancelling: Promise<unknown> | undefined;
+      try {
+        const heartbeat = heartbeatService(db);
+        mockAdapterExecute.mockImplementationOnce(async () => {
+          // The adapter is in a sandbox exec: its only lease is the remote one (the harness's default
+          // local lease is replaced) and nothing registered a Stop handle.
+          await db.delete(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.runId));
+          await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+            heartbeatRunId: f.runId, provider: "kubernetes", providerLeaseId: "pc-sandbox-1", status: "active",
+            leasePolicy: "ephemeral", metadata: { driver: "sandbox", sandboxProviderPlugin: true,
+              pluginId: randomUUID(), remoteCwd: "/workspace" } });
+          cancelling = heartbeat.cancelRun(f.runId, "Interrupted to send queued messages", {
+            errorCode: "operator_interrupted", suppressImmediateRecovery: true,
+            resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt" },
+          }).catch(error => error);
+          if (adapterReturnsOnStop) await sandboxStoppedPromise;
+          else await new Promise(resolve => setTimeout(resolve, 50));
+          return { exitCode: null, signal: "SIGTERM", timedOut: false, errorMessage: "sandbox stopped" };
+        });
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        await cancelling;
+        return { f, release, run: await heartbeat.getRun(f.runId) };
+      } finally { factory.mockRestore(); }
+    }
+
+    it("stops the sandbox first and commits the terminal row with stop proof, so no recovery hold blocks the queued message", async () => {
+      await withTempPaperclipHome(async () => {
+        const { f, release, run } = await interruptSandboxRun(true);
+        expect(release).toHaveBeenCalledWith(expect.objectContaining({ heartbeatRunId: f.runId, status: "expired" }));
+        expect(run).toMatchObject({ status: "cancelled", errorCode: "operator_interrupted",
+          resultJson: { executionCancellation: { state: "acknowledged", proof: "provider_termination_receipt" },
+            conversationContinuation: "continue_conversation_v1" } });
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
+        const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+        expect(task.status).not.toBe("blocked");
+      });
+    });
+
+    it("still records the interrupt (not a failure) when the adapter returns the instant the sandbox is destroyed", async () => {
+      await withTempPaperclipHome(async () => {
+        const { f, run } = await interruptSandboxRun(true, true);
+        expect(run).toMatchObject({ status: "cancelled", errorCode: "operator_interrupted",
+          resultJson: { executionCancellation: { state: "acknowledged" }, conversationContinuation: "continue_conversation_v1" } });
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId))).toEqual([]);
+      });
+    });
+
+    it("keeps the conservative hold when the provider returns no termination receipt", async () => {
+      await withTempPaperclipHome(async () => {
+        const { f, run } = await interruptSandboxRun(false);
+        expect(run?.status).toBe("cancelled");
+        expect(run?.resultJson?.executionCancellation).not.toMatchObject({ state: "acknowledged" });
+        expect(run?.resultJson).not.toHaveProperty("conversationContinuation");
+        expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
+          .toEqual([expect.objectContaining({ cause: "legacy_execution_requires_reconciliation" })]);
+      });
+    });
+  });
+
   it("does not record the not-entered receipt once the adapter was entered", async () => {
     await withTempPaperclipHome(async () => {
       const { runId } = await seedQueuedIssueRunFixture();

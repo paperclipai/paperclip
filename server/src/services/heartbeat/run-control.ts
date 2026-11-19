@@ -501,6 +501,45 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     }
   }
 
+  /**
+   * A conversation-adapter run in a remote sandbox has neither a host process to kill nor an adapter
+   * Stop handle (only the ACP and Grok adapters register one), so cancelling it used to only rewrite
+   * the run row while the sandbox kept running. The terminal row then carried no stop proof, the
+   * recovery hold was created and settled "blocked" in the same second, and the user's queued message
+   * never started; the provider's termination receipt arrived only when the sandbox command finished.
+   * Stop the remote work first. Returns true only when every lease of the run is remote and the
+   * provider confirmed termination, which is the same proof a killed local process gives.
+   */
+  async function stopRemoteConversationExecution(
+    run: typeof heartbeatRuns.$inferSelect,
+    reason: string,
+  ): Promise<boolean> {
+    if (run.runtimeMode !== "legacy" || !(await runUsedConversationAdapter(db, run))) return false;
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    if (leases.length === 0 || !leases.every(lease => lease.provider && lease.provider !== "local")
+        || !leases.some(lease => lease.status === "active")) return false;
+    try {
+      const release = await envOrchestrator.releaseForRun({
+        heartbeatRunId: run.id,
+        companyId: run.companyId,
+        agentId: run.agentId,
+        status: leaseReleaseStatusForRunStatus("cancelled"),
+        failureReason: reason,
+      });
+      if (release.errors.length > 0) {
+        logger.warn({ runId: run.id, errors: release.errors.length },
+          "remote execution of a cancelled conversation run could not be stopped; keeping the recovery hold");
+        return false;
+      }
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "failed to stop remote execution of a cancelled conversation run");
+      return false;
+    }
+    return await remoteExecutionHasStopped(db, run.companyId, run.id);
+  }
+
   async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
     const [preparationCoordinator] = run.runtimeMode === "legacy" && run.status === "cancelled" && !run.runtimeModeResolvedAt
@@ -1370,6 +1409,11 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
             }
           }
 
+          // No Stop handle and no host process: stop the sandbox now, so the terminal write below
+          // carries the provider's termination receipt (see stopRemoteConversationExecution).
+          const remoteStopProven = !control && !running
+            ? await stopRemoteConversationExecution(run, reason)
+            : false;
           const finishedAt = new Date();
           const persistedCancellationResult =
             run.runtimeMode === "native"
@@ -1408,6 +1452,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                             errorCode, errorMessage: reason,
                           })
                         : {}),
+                      ...(remoteStopProven ? {
+                        executionCancellation: {
+                          state: "acknowledged", acknowledgedAt: finishedAt.toISOString(),
+                          proof: "provider_termination_receipt",
+                        },
+                        conversationContinuation: CONVERSATION_CONTINUATION_POLICY,
+                      } : {}),
                       // Commit this receipt with the terminal transition. A
                       // crash after provider Stop cannot strand an undispatched
                       // queued run whose normal path needs no process receipt.
