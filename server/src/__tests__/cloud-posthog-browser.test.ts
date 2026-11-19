@@ -2,7 +2,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   posthogAssetsOrigin,
   posthogUiHost,
@@ -10,10 +10,15 @@ import {
 } from "../services/cloud-posthog-browser.js";
 import { resolveCloudPostHogConfig } from "../services/cloud-posthog-config.js";
 import {
+  createPostHogProxyLimitReporter,
+  DEFAULT_POSTHOG_PROXY_LIMITS,
+  posthogProxyClientKey,
   posthogProxyRoutes,
   posthogUpstreamUrl,
   posthogVisitorIp,
+  resolvePostHogProxyLimits,
   resolvePostHogProxyMount,
+  type PostHogProxyLimits,
 } from "../routes/posthog-proxy.js";
 
 const CLOUD = { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token", PAPERCLIP_CLOUD_STACK_ID: "stack-1" };
@@ -44,7 +49,22 @@ describe("browser analytics config exposure", () => {
       environment: "production",
       stackId: "stack-1",
       replayEnabled,
+      consentRequired: null,
     });
+  });
+
+  it("decides consent from the configured edge country header, and leaves it to the browser otherwise", () => {
+    const on = { ...CLOUD, ...TOKEN, ...BROWSER };
+    const withHeader = { ...on, PAPERCLIP_POSTHOG_COUNTRY_HEADER: "CF-IPCountry" };
+    expect(resolveBrowserAnalyticsConfig(on, { "cf-ipcountry": "DE" })?.consentRequired).toBeNull();
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "DE" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "gb" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "CH" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "NO" })?.consentRequired).toBe(true);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "US" })?.consentRequired).toBe(false);
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": "XX" })?.consentRequired).toBeNull();
+    expect(resolveBrowserAnalyticsConfig(withHeader, {})?.consentRequired).toBeNull();
+    expect(resolveBrowserAnalyticsConfig(withHeader, { "cf-ipcountry": ["FR", "US"] })?.consentRequired).toBe(true);
   });
 
   it("always sends an environment: the explicit variable, else staging or production from the host", () => {
@@ -197,7 +217,7 @@ describe("PostHog proxy forwarding", () => {
 
   it("refuses a declared body over the limit without contacting PostHog", async () => {
     const app = express();
-    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256 }));
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256, requestDeadlineMs: 60_000 }));
     const res = await request(app).post("/_ph/e/").set("Content-Type", "text/plain").send("x".repeat(11));
     expect(res.status).toBe(413);
     expect(seen).toHaveLength(0);
@@ -205,7 +225,7 @@ describe("PostHog proxy forwarding", () => {
 
   it("cuts off a streamed body that grows past the limit", async () => {
     const app = express();
-    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256 }));
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 10, maxInFlightPerClient: 16, maxInFlight: 256, requestDeadlineMs: 60_000 }));
     const server = app.listen(0, "127.0.0.1");
     await new Promise<void>((resolve) => server.once("listening", () => resolve()));
     const port = (server.address() as AddressInfo).port;
@@ -227,29 +247,188 @@ describe("PostHog proxy forwarding", () => {
     }
   });
 
-  it("limits requests in flight from one client", async () => {
+  async function withHeldUpstream(
+    limits: PostHogProxyLimits,
+    run: (send: (ip?: string) => Promise<number>, release: () => void, arrived: (count: number) => Promise<void>) => Promise<void>,
+    options: { trustProxy?: boolean; reportLimit?: Parameters<typeof posthogProxyRoutes>[2] } = {},
+  ) {
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => { release = resolve; });
-    const slow = http.createServer(async (_req, res) => { await held; res.end("ok"); });
+    let arrivals = 0;
+    const waiters: Array<{ count: number; resolve: () => void }> = [];
+    const slow = http.createServer(async (_req, res) => {
+      arrivals += 1;
+      for (const waiter of waiters.filter((entry) => entry.count <= arrivals)) {
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve();
+      }
+      await held;
+      res.end("ok");
+    });
+    const arrived = (count: number) =>
+      count <= arrivals ? Promise.resolve() : new Promise<void>((resolve) => { waiters.push({ count, resolve }); });
     await new Promise<void>((resolve) => slow.listen(0, "127.0.0.1", resolve));
     const app = express();
-    app.use("/_ph", posthogProxyRoutes(`http://127.0.0.1:${(slow.address() as AddressInfo).port}`, { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 256 }));
+    if (options.trustProxy) app.set("trust proxy", "loopback");
+    app.use("/_ph", posthogProxyRoutes(`http://127.0.0.1:${(slow.address() as AddressInfo).port}`, limits, options.reportLimit));
     const server = app.listen(0, "127.0.0.1");
     await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const send = (ip?: string) => {
+      const req = request(server).get("/_ph/static/array.js");
+      if (ip) req.set("X-Forwarded-For", ip);
+      return req.then((res) => res.status);
+    };
     try {
-      const first = request(server).get("/_ph/static/array.js").then((res) => res.status);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      const second = await request(server).get("/_ph/static/array.js");
-      expect(second.status).toBe(429);
-      release();
-      expect(await first).toBe(200);
-      // The slot frees up once the first request finishes.
-      expect((await request(server).get("/_ph/static/array.js")).status).toBe(200);
+      await run(send, release, arrived);
     } finally {
       release();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await new Promise<void>((resolve) => slow.close(() => resolve()));
     }
+  }
+
+  it("limits requests in flight from one public client address", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 256, requestDeadlineMs: 60_000 };
+    await withHeldUpstream(limits, async (send, release, arrived) => {
+      const first = send("8.8.8.8");
+      await arrived(1);
+      expect(await send("8.8.8.8")).toBe(429);
+      const other = send("9.9.9.9");
+      await arrived(2);
+      release();
+      expect(await first).toBe(200);
+      expect(await other).toBe(200);
+      expect(await send("8.8.8.8")).toBe(200);
+    }, { trustProxy: true });
+  });
+
+  it("applies only the total limit when the client address is a shared private hop", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 3, requestDeadlineMs: 60_000 };
+    await withHeldUpstream(limits, async (send, release, arrived) => {
+      const held = [send(), send(), send()];
+      await arrived(3);
+      expect(await send()).toBe(429);
+      release();
+      expect(await Promise.all(held)).toEqual([200, 200, 200]);
+      expect(await send()).toBe(200);
+    });
+  });
+
+  it("does not key the per-client limit on a forged X-Forwarded-For when no proxy is trusted", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 8, requestDeadlineMs: 60_000 };
+    await withHeldUpstream(limits, async (send, release, arrived) => {
+      const held = [send("8.8.8.8"), send("8.8.8.8"), send("8.8.8.8")];
+      await arrived(3);
+      release();
+      expect(await Promise.all(held)).toEqual([200, 200, 200]);
+    });
+  });
+
+  it("frees a slot when PostHog holds a request past the request deadline", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 1, requestDeadlineMs: 200 };
+    await withHeldUpstream(limits, async (send, _release, arrived) => {
+      const startedAt = Date.now();
+      const first = send();
+      await arrived(1);
+      expect(await send()).toBe(429);
+      expect(await first).toBe(502);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      const second = send();
+      await arrived(2);
+      expect(await second).toBe(502);
+    });
+  });
+
+  it("closes a response the browser does not read by the request deadline", async () => {
+    const big = Buffer.alloc(16 * 1024 * 1024, 120);
+    const finished: string[] = [];
+    const fast = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/javascript", "content-length": String(big.length) });
+      res.end(big, () => finished.push("upstream"));
+    });
+    await new Promise<void>((resolve) => fast.listen(0, "127.0.0.1", resolve));
+    const app = express();
+    app.use("/_ph", posthogProxyRoutes(`http://127.0.0.1:${(fast.address() as AddressInfo).port}`, { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 1, requestDeadlineMs: 300 }, () => {}));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      let browserRequest: http.ClientRequest | undefined;
+      const headers = await new Promise<number>((resolve) => {
+        browserRequest = http.get({ host: "127.0.0.1", port, path: "/_ph/static/recorder.js" }, (res) => {
+          res.on("error", () => {});
+          res.pause();
+          resolve(res.statusCode ?? 0);
+        });
+        browserRequest.on("error", () => {});
+      });
+      expect(headers).toBe(200);
+      expect((await request(server).get("/_ph/static/array.js")).status).toBe(429);
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      expect(finished).toEqual(["upstream"]);
+      const next = await request(server).get("/_ph/static/array.js");
+      browserRequest?.destroy();
+      expect(next.status).toBe(200);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fast.closeAllConnections();
+      await new Promise<void>((resolve) => fast.close(() => resolve()));
+    }
+  });
+
+  it("cuts off a body that trickles in past the request deadline", async () => {
+    const app = express();
+    app.use("/_ph", posthogProxyRoutes(upstreamUrl, { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 1, requestDeadlineMs: 200 }, () => {}));
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+    let drip: ReturnType<typeof setInterval> | undefined;
+    try {
+      const startedAt = Date.now();
+      const outcome = await new Promise<number | string>((resolve) => {
+        const req = http.request({ host: "127.0.0.1", port, path: "/_ph/e/", method: "POST", headers: { "content-type": "text/plain", "transfer-encoding": "chunked" } }, (res) => {
+          res.on("error", () => {});
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", () => resolve("error"));
+        req.on("close", () => resolve("closed"));
+        drip = setInterval(() => req.write("x"), 20);
+      });
+      expect([502, "error", "closed"]).toContain(outcome);
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+      expect((await request(server).get("/_ph/static/array.js")).status).not.toBe(429);
+    } finally {
+      clearInterval(drip);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("limits requests in flight in total across public clients and reports each refusal", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 8, maxInFlight: 2, requestDeadlineMs: 60_000 };
+    const reported: Array<[string, number]> = [];
+    await withHeldUpstream(limits, async (send, release, arrived) => {
+      const held = [send("8.8.8.8"), send("9.9.9.9")];
+      await arrived(2);
+      expect(await send("1.1.1.1")).toBe(429);
+      release();
+      expect(await Promise.all(held)).toEqual([200, 200]);
+    }, { trustProxy: true, reportLimit: (reason, inFlight) => reported.push([reason, inFlight]) });
+    expect(reported).toEqual([["total", 2]]);
+  });
+
+  it("reports a per-client refusal with its reason", async () => {
+    const limits = { maxBodyBytes: 1024, maxInFlightPerClient: 1, maxInFlight: 8, requestDeadlineMs: 60_000 };
+    const reported: Array<[string, number]> = [];
+    await withHeldUpstream(limits, async (send, release, arrived) => {
+      const first = send("8.8.8.8");
+      await arrived(1);
+      expect(await send("8.8.8.8")).toBe(429);
+      release();
+      expect(await first).toBe(200);
+    }, { trustProxy: true, reportLimit: (reason, inFlight) => reported.push([reason, inFlight]) });
+    expect(reported).toEqual([["per_client", 1]]);
   });
 
   it("never forwards the inbound Host header", async () => {
@@ -327,5 +506,125 @@ describe("posthogVisitorIp", () => {
     expect(posthogVisitorIp("100.64.0.11", {})).toBe("100.64.0.11");
     expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "not-an-ip" })).toBe("100.64.0.11");
     expect(posthogVisitorIp("100.64.0.11", { "x-forwarded-for": "10.0.0.1, 100.64.0.3" })).toBe("100.64.0.11");
+  });
+});
+
+describe("PostHog proxy limits", () => {
+  const ON = { ...CLOUD, ...TOKEN, ...BROWSER };
+
+  it("fits many tabs per user and many users per stack by default", () => {
+    expect(DEFAULT_POSTHOG_PROXY_LIMITS).toEqual({
+      maxBodyBytes: 64 * 1024 * 1024,
+      maxInFlightPerClient: 128,
+      maxInFlight: 1024,
+      requestDeadlineMs: 60_000,
+    });
+    const warn = vi.fn();
+    expect(resolvePostHogProxyLimits({}, warn)).toEqual(DEFAULT_POSTHOG_PROXY_LIMITS);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("reads both limits from the environment", () => {
+    const warn = vi.fn();
+    const limits = resolvePostHogProxyLimits(
+      {
+        PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: "65536",
+        PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT: " 256 ",
+      },
+      warn,
+    );
+    expect(limits).toEqual({ ...DEFAULT_POSTHOG_PROXY_LIMITS, maxInFlight: 65536, maxInFlightPerClient: 256 });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(["0", "-5", "1.5", "1e3", "12abc", "abc", "0x10", "+8", "65537", "1024000", "99999999999999999999"])(
+    "keeps the default and warns for the invalid value %s",
+    (value) => {
+      const warn = vi.fn();
+      const limits = resolvePostHogProxyLimits(
+        { PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: value, PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT: value },
+        warn,
+      );
+      expect(limits).toEqual(DEFAULT_POSTHOG_PROXY_LIMITS);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn.mock.calls.map(([fields]) => fields.variable)).toEqual([
+        "PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT",
+        "PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT",
+      ]);
+    },
+  );
+
+  it("treats an empty value as unset", () => {
+    const warn = vi.fn();
+    expect(resolvePostHogProxyLimits({ PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: " " }, warn)).toEqual(DEFAULT_POSTHOG_PROXY_LIMITS);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("passes the configured limits to the mounted proxy", () => {
+    const mount = resolvePostHogProxyMount({
+      ...ON,
+      PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: "2048",
+      PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT: "64",
+    });
+    expect(mount?.limits).toEqual({ ...DEFAULT_POSTHOG_PROXY_LIMITS, maxInFlight: 2048, maxInFlightPerClient: 64 });
+    expect(resolvePostHogProxyMount({ ...ON, PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT: "lots" })?.limits).toEqual(
+      DEFAULT_POSTHOG_PROXY_LIMITS,
+    );
+  });
+
+  it.each([
+    ["8.8.8.8", "8.8.8.8"],
+    ["2001:4860:4860::8888", "2001:4860:4860::8888"],
+    ["100.64.0.11", null],
+    ["10.0.0.2", null],
+    ["127.0.0.1", null],
+    ["::1", null],
+    ["::ffff:127.0.0.1", null],
+    ["fd00::1", null],
+    [undefined, null],
+  ])("uses %s as a per-client bucket only when it is public", (ip, key) => {
+    expect(posthogProxyClientKey(ip)).toBe(key);
+  });
+
+  it("warns at most once a minute and counts the refusals in between", () => {
+    let now = 1_000;
+    const warn = vi.fn();
+    const report = createPostHogProxyLimitReporter(DEFAULT_POSTHOG_PROXY_LIMITS, { now: () => now, warn });
+
+    report("total", 1024);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toEqual({
+      refusedAtTotalLimit: 1,
+      refusedAtPerClientLimit: 0,
+      inFlight: 1024,
+      maxInFlight: 1024,
+      maxInFlightPerClient: 128,
+      sinceMs: null,
+    });
+
+    for (let index = 0; index < 50; index += 1) {
+      now += 1_000;
+      report(index % 2 === 0 ? "per_client" : "total", 900);
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    now = 61_000;
+    report("per_client", 700);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls[1]![0]).toMatchObject({
+      refusedAtTotalLimit: 25,
+      refusedAtPerClientLimit: 26,
+      inFlight: 700,
+      sinceMs: 60_000,
+    });
+
+    now += 59_999;
+    report("total", 1024);
+    expect(warn).toHaveBeenCalledTimes(2);
+    now += 1;
+    report("total", 1024);
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn.mock.calls[2]![0]).toMatchObject({ refusedAtTotalLimit: 2, refusedAtPerClientLimit: 0 });
+    expect(JSON.stringify(warn.mock.calls)).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
   });
 });

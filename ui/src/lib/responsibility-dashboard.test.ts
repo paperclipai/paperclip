@@ -22,6 +22,25 @@ describe("dashboard change groups", () => {
     expect(dashboardChangeGroups(smallEditChanges).find((group) => group.name === "Team")!.changes.map((change) => change.op))
       .toEqual(["rename_area", "remove_responsibility"]);
   });
+
+  it("separates area edits from responsibility edits and identifies existing parents", () => {
+    const groups = dashboardChangeGroups([
+      ...createSizedChanges.slice(0, 3),
+      smallEditChanges[2]!,
+      smallEditChanges[3]!,
+      { ...smallEditChanges[0]!, index: 10, groupAreaId: null, groupName: "No area" },
+    ]);
+    expect(groups.map((group) => ({
+      name: group.name,
+      existing: group.hasExistingArea,
+      areaEdits: group.areaChanges.map((change) => change.op),
+      responsibilityEdits: group.responsibilityChanges.map((change) => change.op),
+    }))).toEqual([
+      { name: "Fundraising", existing: false, areaEdits: ["add_area"], responsibilityEdits: ["add_responsibility", "add_responsibility"] },
+      { name: "Team", existing: true, areaEdits: ["rename_area"], responsibilityEdits: ["remove_responsibility"] },
+      { name: "No area", existing: false, areaEdits: [], responsibilityEdits: ["reword_responsibility"] },
+    ]);
+  });
 });
 
 describe("dropping and keeping", () => {

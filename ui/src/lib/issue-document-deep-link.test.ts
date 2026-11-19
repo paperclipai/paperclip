@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "./issue-document-deep-link";
+import { chatSidebarDocumentHash, resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "./issue-document-deep-link";
 
 describe("resolveIssueDocumentDeepLink", () => {
   it("preserves continuation-summary routing", () => {
@@ -56,5 +56,25 @@ describe("sameIssueDocumentHash", () => {
   });
   it.each(["https://other.example/PAP/issues/PAP-1#document-plan", "/OTHER/issues/issue-uuid#document-plan", "/PAP/issues/PAP-2#document-plan", "/PAP/issues/PAP-1?file=other#document-plan", "/PAP/issues/PAP-1#comment-1", "/PAP/issues/%E0%A4%A#document-plan"])("leaves other navigation alone: %s", (href) => {
     expect(sameIssueDocumentHash(href, current, references)).toBeNull();
+  });
+});
+
+describe("chatSidebarDocumentHash", () => {
+  const current = new URL("https://paperclip.example/PAP/chats/codex?from=inbox");
+  const references = ["PAP-1", "issue-uuid"];
+
+  it("keeps the revision and annotation target when opening a linked task document", () => {
+    expect(chatSidebarDocumentHash("/PAP/issues/PAP-2#document-plan&thread=note&revision=rev&documentIssue=PAP-3", current, references))
+      .toBe("#document-plan&thread=note&revision=rev&documentIssue=PAP-3");
+  });
+
+  it.each([
+    "https://other.example/PAP/issues/PAP-1#document-plan",
+    "/OTHER/issues/OTHER-1#document-plan",
+    "/PAP/issues/PAP-2?file=other#document-plan",
+    "/PAP/issues/PAP-2#comment-1",
+    "/PAP/issues/%E0%A4%A#document-plan",
+  ])("preserves normal navigation to %s", (href) => {
+    expect(chatSidebarDocumentHash(href, current, references)).toBeNull();
   });
 });

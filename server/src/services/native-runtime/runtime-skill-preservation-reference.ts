@@ -49,14 +49,17 @@ export function readRuntimeSkillPreservation(row: Parameters<typeof admittedRunt
 }
 
 /** Ordinary admission has no input yet. Only a concrete admitted local asset is
- * a durability obligation; missing transient version pins alone are not one. */
+ * a durability obligation; missing transient version pins alone are not one.
+ * A local asset is exactly what admittedRuntimeSkills captures: a null pin.
+ * A non-null pin names a version; preservation cannot copy it, so it must not
+ * become an obligation nothing can settle. */
 export function hasUnversionedRuntimeSkillInputSql() {
   const skills = sql`${heartbeatRuns.runnerProfileJson} #> '{nativeExecutionInput,runtimeContext,skills}'`;
   return sql`${heartbeatRuns.runtimeMode} = 'native'
     and ${heartbeatRuns.runnerProfileJson} #> '{nativeExecutionInput,runtimeContext}' is not null
     and (jsonb_typeof(${skills}) is distinct from 'array' or exists (
       select 1 from jsonb_array_elements(case when jsonb_typeof(${skills}) = 'array' then ${skills} else '[]'::jsonb end) s
-      where s->>'versionId' is null or s->>'versionId' !~* '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$'))`;
+      where s->>'versionId' is null))`;
 }
 
 /** JSON receipts are references just like version FKs. Unknown receipt shapes

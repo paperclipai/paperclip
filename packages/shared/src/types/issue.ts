@@ -913,6 +913,7 @@ export type IssueSummary = Pick<
   parentId?: string | null;
   /** Viewer participates under the Mine rule, regardless of inbox archive state. Navigation only. */
   isParticipantForMe?: boolean;
+  isArchivedForMe?: boolean;
   isUnreadForMe?: boolean;
   subtaskCount?: number;
   unreadSubtaskCount?: number;

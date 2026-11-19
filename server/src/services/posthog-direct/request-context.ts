@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Request, RequestHandler } from "express";
 import { isPostHogDirectDeliveryEnabled, resolveCloudPostHogConfig } from "../cloud-posthog-config.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../../telemetry-company-scope.js";
 
 /**
  * Request-scoped analytics context for Paperclip Cloud direct delivery.
@@ -20,8 +21,11 @@ type PostHogRequestStore = {
   active: boolean;
 };
 
+export type PostHogAttribution = "request" | "task_creator" | "task_assigner" | "run_owner" | "none";
+
 export type PostHogEventContext = {
   userId?: string;
+  attributedVia?: PostHogAttribution;
   companyId?: string;
   sessionId?: string;
   windowId?: string;
@@ -98,13 +102,28 @@ function knownCompanyId(req: Request): string | undefined {
 /** Snapshot of the current request's analytics context, taken at track time. */
 export function capturePostHogEventContext(): PostHogEventContext | undefined {
   const store = storage.getStore();
-  if (!store || !store.active) return undefined;
   const context: PostHogEventContext = {};
-  const userId = actingUserId(store.req);
-  const companyId = knownCompanyId(store.req);
-  if (userId) context.userId = userId;
-  if (companyId) context.companyId = companyId;
-  if (store.sessionId) context.sessionId = store.sessionId;
-  if (store.windowId) context.windowId = store.windowId;
+  if (store?.active) {
+    const userId = actingUserId(store.req);
+    const companyId = knownCompanyId(store.req);
+    if (userId) {
+      context.userId = userId;
+      context.attributedVia = "request";
+    }
+    if (companyId) context.companyId = companyId;
+    if (store.sessionId) context.sessionId = store.sessionId;
+    if (store.windowId) context.windowId = store.windowId;
+  }
+  if (!context.userId) {
+    const person = scopedTelemetryPerson();
+    if (person) {
+      context.userId = person.userId;
+      context.attributedVia = person.attributedVia;
+    }
+  }
+  if (!context.companyId) {
+    const scopedCompanyId = scopedTelemetryCompanyId();
+    if (scopedCompanyId) context.companyId = scopedCompanyId;
+  }
   return Object.keys(context).length > 0 ? context : undefined;
 }

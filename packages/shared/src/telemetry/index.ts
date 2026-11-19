@@ -23,6 +23,13 @@ export {
   trackConnectionUpdated,
   trackConnectionInvoked,
   trackServerStarted,
+  trackModelConnected,
+  trackTaskCreated,
+  trackTaskCompleted,
+  trackTaskBlocked,
+  trackPlanCreated,
+  trackPlanApproved,
+  trackArtifactCreated,
 } from "./events.js";
 export type {
   TelemetryConfig,

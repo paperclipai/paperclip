@@ -102,7 +102,7 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
     env: { ...process.env, PAPERCLIP_OPENCODE_RUNTIME_DIR: runtime, OPENROUTER_API_KEY: "fixture-key",
       PAPERCLIP_RUN_ID: "stale-launch-run", PAPERCLIP_OBSERVABILITY_OPENCODE: "1",
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/v1/traces`,
-      OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=fixture-company" },
+      OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=fixture-company", OTEL_LOG_USER_PROMPTS: "1" },
     stdio: fd === undefined ? ["pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe", fd],
     detached: process.platform !== "win32",
   });
@@ -125,7 +125,7 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
     await response(1);
     send({ id: 2, method: "thread/start", params: { cwd: root, model: "openrouter/deepseek/deepseek-v4-flash-0731", completionContract: { revision: "proxy-v1", criterionIds: ["objective"] }, conversationMode: "prepared" } });
     await response(2);
-    send({ id: 3, method: "turn/start", params: { paperclipRunId: "current-run-1", input: [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: "invalid-tool-feedback completion-feedback" }, completionContract: { revision: "proxy-v1", criteria: [{ id: "objective", requirement: "Complete the fixture." }] } }) }] } });
+    send({ id: 3, method: "turn/start", params: { paperclipRunId: "current-run-1", input: [{ type: "text", text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: `## Fresh session handoff\nGuidance.\n${JSON.stringify({ schema: "paperclip.native-session-handoff.v1", entries: [{ body: "old history ".repeat(2000) }] })}\n\ninvalid-tool-feedback completion-feedback current-request-canary` }, completionContract: { revision: "proxy-v1", criteria: [{ id: "objective", requirement: "Complete the fixture." }] } }) }] } });
     await response(3);
     await expect.poll(() => messages.find(message => message.method === "item/tool/call"), { timeout: 5_000 }).toBeDefined();
     const call = messages.find(message => message.method === "item/tool/call")!;
@@ -147,7 +147,7 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
     }
     expect(await response(4)).toBe(true);
     if (respond) {
-      const sessions = (await readdir(runtime, { withFileTypes: true })).filter(entry => entry.isDirectory());
+      const sessions = (await readdir(runtime, { withFileTypes: true })).filter(entry => entry.isDirectory() && entry.name !== "output-custody");
       await expect.poll(async () => JSON.parse(await readFile(join(runtime, sessions[0]!.name, "data/fake-completion-feedback.json"), "utf8"))).toMatchObject([
         { result: { content: [{ text: expect.stringContaining(feedback) }] } },
       ]);
@@ -164,6 +164,10 @@ it.each([true, false])("settles a real proxy interrupt with controller feedback 
       await expect.poll(() => bodies.length, { timeout: 5_000 }).toBe(2);
       expect(bodies.map(body => body.resourceSpans[0]!.scopeSpans[0]!.spans[0]!.attributes
         .find(attribute => attribute.key === "paperclip.run.id")?.value.stringValue)).toEqual(["current-run-1", "current-run-2"]);
+      const attrs = Object.fromEntries(bodies[0]!.resourceSpans[0]!.scopeSpans[0]!.spans[0]!.attributes.map(attribute => [attribute.key, attribute.value.stringValue]));
+      expect(attrs["braintrust.input"]).toContain("current-request-canary");
+      expect(attrs["braintrust.input"]).not.toContain("old history");
+      expect(attrs["paperclip.observability.input.events"]).toBe("/api/heartbeat-runs/current-run-1/events");
       child.stdin!.end();
     }
     await expect.poll(() => exited, { timeout: 5_000 }).toBe(true);

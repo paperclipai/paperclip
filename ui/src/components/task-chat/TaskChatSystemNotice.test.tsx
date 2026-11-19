@@ -21,6 +21,7 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     flushSync(() => root?.unmount());
     root = null;
     container.remove();
+    vi.useRealTimers();
   });
 
   const recoveryBody =
@@ -56,6 +57,19 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
       '[data-testid="task-chat-system-notice"] button[aria-expanded]',
     )!;
   }
+
+  it("shows a provider reset in the viewer's timezone when its saved notice is opened", () => {
+    const resetAt = new Date(2099, 10, 18, 12, 17, 34, 353);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(resetAt.getTime() - 44 * 60_000));
+    renderNotice({ text: `The provider usage limit for this agent is expected to reset at ${resetAt.toISOString()}. Paperclip will start this work then.` });
+    flushSync(() => toggleButton().click());
+    const details = container.querySelector('[data-testid="task-chat-system-notice-details"]');
+    expect(details?.textContent).toContain("in 44 minutes (Nov 18, 2099, 12:17 PM");
+    expect(details?.textContent).not.toContain(resetAt.toISOString());
+    flushSync(() => vi.advanceTimersByTime(60_000));
+    expect(details?.textContent).toContain("in 43 minutes (Nov 18, 2099, 12:17 PM");
+  });
 
   it("collapses to a humanized one-liner with relative time and hides the raw body", () => {
     renderNotice();

@@ -48,7 +48,7 @@ function StorybookRoutineFixtures({
 
 const meta: Meta = {
   id: "product-routines-·-secrets-tab",
-  title: "Automation and structured work/Routines, schedules, and triggers/Product/Routines · Secrets tab",
+  title: "Automation and structured work/Routines, schedules, and triggers/Product/Routines · Secrets",
   parameters: {
     layout: "fullscreen",
     a11y: { test: "off" },
@@ -57,8 +57,10 @@ const meta: Meta = {
         "routines/definition",
         "secrets/runtime-delivery"
       ],
-      "implementation": "production",
-      "boundary": "fixtures"
+      "status": "current",
+      "implementation": "mixed",
+      "boundary": "fixtures",
+      "notes": "The secrets editor stories frame the shipped EnvironmentVariablesEditor in a story-only card; on the routine page it is the Secrets block of the Edit dialog (see Routine page/Edit dialog). There is no Secrets tab any more; the export names are kept so story links stay valid. HistoryDiffWithEnv mounts the shipped RoutineHistoryTab, which is the Version history sub-view."
     },
   },
 };
@@ -83,7 +85,7 @@ function SecretsTabSurface({
           {title}
         </CardTitle>
         <CardDescription className="text-xs">
-          The Secrets tab on a routine reuses the env-var editor and adds a one-line precedence helper.
+          The Secrets block in the routine's Edit dialog reuses this env-var editor.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

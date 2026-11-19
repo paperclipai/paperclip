@@ -114,14 +114,14 @@ test("canonical toolbars share control geometry and keep the requested keyboard 
     const controls = [...toolbar.querySelectorAll<HTMLElement>("button:not([data-toolbar-clear], .canonical-tab), [data-toolbar-control]")].filter(button => !button.closest(".design-view-toggle"));
     const style = getComputedStyle(search);
     return { name: toolbar.getAttribute("data-canonical-toolbar"), searchHeight: search.getBoundingClientRect().height, gap: getComputedStyle(toolbar).columnGap,
-      border: style.borderColor, radius: style.borderRadius, first: first.getAttribute("aria-label"),
+      border: style.borderColor, radius: style.borderRadius, first: first.getAttribute("aria-label") ?? first.textContent,
       controls: controls.map(button => ({ height: button.getBoundingClientRect().height, border: getComputedStyle(button).borderColor, radius: getComputedStyle(button).borderRadius })) };
   }));
   expect(geometry).toHaveLength(6);
   for (const toolbar of geometry) {
     expect(toolbar.searchHeight).toBe(44);
     expect(toolbar.gap).toBe("8px");
-    expect(toolbar.first).toBe(toolbar.name === "tasks" ? "Task view: All tasks" : toolbar.name === "skills" ? "Search installed skills" : `Search ${toolbar.name}`);
+    expect(toolbar.first).toBe(toolbar.name === "tasks" ? "Task view: All tasks" : toolbar.name === "skills" ? "Search installed skills" : toolbar.name === "routines" ? "New routine" : `Search ${toolbar.name}`);
     for (const control of toolbar.controls) {
       expect(control.height).toBe(toolbar.searchHeight);
       expect(control.border).toBe(toolbar.border);
@@ -166,6 +166,6 @@ test("routines toolbar updates search, sort, group and creation intent", async (
   await page.getByRole("button", { name: "Agent", exact: true }).click();
   await expect(preview.locator("output")).toContainText("Group: assignee");
   await expect(preview.getByRole("button", { name: "New folder" })).toHaveCount(0);
-  await preview.getByRole("button", { name: "Create routine" }).click();
+  await preview.getByRole("button", { name: "New routine" }).click();
   await expect(preview.locator("output")).toContainText("Create routine requested");
 });

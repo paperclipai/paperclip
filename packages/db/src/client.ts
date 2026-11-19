@@ -301,7 +301,8 @@ export type DedicatedDbConnectionStats = { limit: number; inUse: number; peakInU
 const dedicatedConnectionSets = new WeakMap<object, DedicatedConnectionSet>();
 type DedicatedConnectionHold = { set: DedicatedConnectionSet; active: boolean };
 const heldDedicatedConnections = new AsyncLocalStorage<readonly DedicatedConnectionHold[]>();
-const openTransactions = new AsyncLocalStorage<{ active: boolean }>();
+type OpenTransaction = { active: boolean; afterCommit: Array<() => void> };
+const openTransactions = new AsyncLocalStorage<OpenTransaction>();
 
 function dedicatedConnectionSet(create: DedicatedConnectionSet["create"], resolved: DatabaseClientOptions): DedicatedConnectionSet {
   const limit = resolved.dedicatedConnectionMax ?? DEFAULT_DEDICATED_CONNECTION_MAX;
@@ -353,13 +354,54 @@ async function admitDedicatedConnection(set: DedicatedConnectionSet, nested: boo
   });
 }
 
-function markOpenTransactions(db: Db) {
-  const transaction = db.transaction.bind(db) as (...args: unknown[]) => Promise<unknown>;
-  db.transaction = ((fn: (tx: unknown) => Promise<unknown>, ...rest: unknown[]) => transaction(async (tx: unknown) => {
-    const open = { active: true };
+export function afterTransactionCommit(callback: () => void): void {
+  const open = openTransactions.getStore();
+  if (open?.active) open.afterCommit.push(callback);
+  else runAfterCommitCallback(callback);
+}
+
+function runAfterCommitCallback(callback: () => void) {
+  try { callback(); } catch (error) { void error; }
+}
+
+type TransactionRunner = { transaction: (...args: unknown[]) => Promise<unknown> };
+
+function runInOpenTransaction(
+  transaction: (...args: unknown[]) => Promise<unknown>,
+  fn: (tx: unknown) => Promise<unknown>,
+  rest: unknown[],
+  settle: (open: OpenTransaction) => void,
+) {
+  const open: OpenTransaction = { active: true, afterCommit: [] };
+  return transaction(async (tx: unknown) => {
+    bufferSavepointCallbacks(tx);
     try { return await openTransactions.run(open, () => fn(tx)); }
     finally { open.active = false; }
-  }, ...rest)) as Db["transaction"];
+  }, ...rest).then((result) => {
+    settle(open);
+    return result;
+  });
+}
+
+function bufferSavepointCallbacks(tx: unknown) {
+  const runner = tx as TransactionRunner;
+  if (typeof runner?.transaction !== "function") return;
+  const savepoint = runner.transaction.bind(runner);
+  runner.transaction = (fn, ...rest) => {
+    const parent = openTransactions.getStore();
+    return runInOpenTransaction(savepoint, fn as (tx: unknown) => Promise<unknown>, rest, (open) => {
+      if (parent?.active) parent.afterCommit.push(...open.afterCommit);
+      else for (const callback of open.afterCommit) runAfterCommitCallback(callback);
+    });
+  };
+}
+
+function markOpenTransactions(db: Db) {
+  const transaction = db.transaction.bind(db) as (...args: unknown[]) => Promise<unknown>;
+  db.transaction = ((fn: (tx: unknown) => Promise<unknown>, ...rest: unknown[]) =>
+    runInOpenTransaction(transaction, fn, rest, (open) => {
+      for (const callback of open.afterCommit) runAfterCommitCallback(callback);
+    })) as Db["transaction"];
 }
 
 export const DRIVER_DEFAULT_POOL_MAX_CONNECTIONS = 10;

@@ -10,6 +10,7 @@ import { conflict, notFound, payloadTooLarge, unprocessable } from "../errors.js
 import { isUniqueViolation } from "../db-errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
 import type { ImportIssueDocumentRow } from "./import-write-types.js";
+import { emitPlanCreatedAfterCommit } from "./product-telemetry.js";
 
 // Stay below download_artifact's 10 MiB limit, including JSON escaping and metadata.
 export const ISSUE_DOCUMENT_BATCH_MAX_BYTES = 8 * 1024 * 1024;
@@ -263,7 +264,8 @@ export function documentService(db: Db) {
     }, options: { initialTaskCreation?: boolean } = {}) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
+        .select({ id: issues.id, companyId: issues.companyId, createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
@@ -539,6 +541,15 @@ export function documentService(db: Db) {
             createdAt: now,
             updatedAt: now,
           });
+          if (key === "plan") {
+            emitPlanCreatedAfterCommit({
+              companyId: issue.companyId,
+              createdByAgentId: input.createdByAgentId,
+              createdByUserId: input.createdByUserId,
+              atTaskCreation: options.initialTaskCreation === true,
+              task: issue,
+            });
+          }
 
           return {
             created: true as const,

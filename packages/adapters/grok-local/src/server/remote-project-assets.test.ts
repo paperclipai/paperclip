@@ -42,3 +42,21 @@ it.each(["existing", "new", "unsafe", "changed"])("keeps %s project files safe w
     }
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
+
+it("copies a skill's nested files into the folder it creates", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "grok-project-assets-"));
+  try {
+    const cwd = path.join(root, "workspace"), assets = path.join(root, "assets");
+    const stagedSkill = path.join(assets, ".claude/skills/nested");
+    await fs.mkdir(cwd);
+    await fs.mkdir(path.join(stagedSkill, "references/deep"), { recursive: true });
+    await fs.writeFile(path.join(stagedSkill, "SKILL.md"), "nested skill");
+    await fs.writeFile(path.join(stagedSkill, "references/deep/notes.md"), "deep notes");
+    const prepared = await prepareGrokRemoteProjectAssets({ runId: "fixture", target: { kind: "local" as const }, cwd, assets });
+    const copied = path.join(cwd, ".claude/skills/nested");
+    expect(await fs.readFile(path.join(copied, "SKILL.md"), "utf8")).toBe("nested skill");
+    expect(await fs.readFile(path.join(copied, "references/deep/notes.md"), "utf8")).toBe("deep notes");
+    await prepared.cleanup();
+    await expect(fs.stat(path.join(cwd, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

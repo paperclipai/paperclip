@@ -38,6 +38,7 @@ import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { PROVIDER_LIMIT_RESUME_KEY_PREFIX, registerProviderLimitResumeWork, requestProviderLimitResumeRetry } from "./provider-limit-resume.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 
 describe("native provider capacity failure persistence", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -395,6 +396,32 @@ describe("native provider capacity failure persistence", () => {
       eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry"),
       eq(agentWakeupRequests.agentId, agentId)));
     expect(receipts.filter(row => (row.payload as Record<string, unknown>).issueId === issueId)).toHaveLength(1);
+  });
+
+  it("backs off and retries a Claude account rate limit that reports no reset", async () => {
+    // Claude's account-level 429 says only "try again later": no window, no reset.
+    const payload = { status: "failed", error: { code: "RUNTIME", message: "ACP agent reported a terminal request failure.",
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn", category: "rate_limit",
+        httpStatus: 429, retryability: "unknown",
+        message: "API error: 429 This request would exceed your account's rate limit. Please try again later" } } };
+    const userId = `user-${randomUUID()}`;
+    const failedAt = Date.now();
+    const { runId, issueId } = await failTurn({ payload, responsibleUserId: userId });
+    const hold = await holdFor(issueId);
+    // The hold waits the default cooldown that also holds the agent's new work.
+    const resetAt = new Date(String(hold.evidence.providerLimitResetAt));
+    expect(resetAt.getTime()).toBeGreaterThanOrEqual(failedAt + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS);
+    expect(resetAt.getTime()).toBeLessThanOrEqual(Date.now() + PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS);
+    expect(hold.nextAction).toBe(`The provider did not report when its rate limit resets. Paperclip will retry this task at ${
+      resetAt.toISOString()}; Retry starts it sooner if usage capacity is already restored.`);
+    await expect(requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }))
+      .resolves.toEqual({ requested: false, waitUntil: resetAt });
+    // After the wait Paperclip asks for the Retry once; saved work resumes through Retry admission.
+    const outcome = await requestProviderLimitResumeRetry(db, { companyId, actionId: hold.id }, new Date(resetAt.getTime() + 1000));
+    expect(outcome).toMatchObject({ requested: true });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.idempotencyKey, `task-retry:${PROVIDER_LIMIT_RESUME_KEY_PREFIX}${runId}`)));
+    expect(receipt).toMatchObject({ reason: "task_retry", requestedByActorId: userId });
   });
 
   it("starts the Retry from the hold's own deadline after a restart rebuilds it", async () => {

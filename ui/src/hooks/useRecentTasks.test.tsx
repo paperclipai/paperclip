@@ -35,12 +35,12 @@ describe("recent task synchronization", () => {
   let clients: QueryClient[];
   let renders: number;
 
-  function RecentTasks({ name, companyId = "company-1", userId = "user-1" }: { name: string; companyId?: string; userId?: string }) {
-    const { entries } = useRecentTasks({ companyId, userId });
+  function RecentTasks({ name, companyId = "company-1", userId = "user-1", pinnedTaskIds }: { name: string; companyId?: string; userId?: string; pinnedTaskIds?: string[] }) {
+    const { entries, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds });
     renders += 1;
     // Fail promptly if a regression restores the cross-cache render loop.
     if (renders > 100) throw new Error("Recent Tasks did not settle");
-    return <div data-tab={name}>{entries.map((entry) => `${entry.title}:${entry.status}`).join(",")}</div>;
+    return <div data-tab={name} data-pins={pinnedTasks.map(task => task.title).join(",")}>{entries.map((entry) => `${entry.title}:${entry.status}`).join(",")}</div>;
   }
 
   function client(snapshot?: ReturnType<typeof task>) {
@@ -75,6 +75,37 @@ describe("recent task synchronization", () => {
     clients.forEach((value) => value.clear());
     container.remove();
     vi.restoreAllMocks();
+  });
+
+  it("restores readable task pins independently of participation and drops tasks omitted by authorization", async () => {
+    const recent = task(10, "Recent task");
+    const pinned = { ...task(20, "Pinned task"), id: "pinned", isParticipantForMe: false };
+    const otherCompany = { ...task(20, "Other company"), id: "foreign", companyId: "company-2" };
+    recordRecentTask(recent, "user-1");
+    const pins = [pinned.id, otherCompany.id, "missing"];
+    const cache = client();
+    summaries.mockResolvedValue([recent, pinned, otherCompany]);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="pinned" pinnedTaskIds={pins} /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(1);
+    expect(summaries.mock.calls[0]?.[1]).toEqual(["foreign", "issue-1", "missing", "pinned"]);
+    expect(container.textContent).toBe("Recent task:todo");
+    const visiblePins = () => container.querySelector("[data-pins]")?.getAttribute("data-pins");
+    expect(visiblePins()).toBe("Pinned task");
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual([recent.id]);
+
+    summaries.mockResolvedValue([recent]);
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.issues.summaries("company-1") }); });
+    await flush();
+    expect(visiblePins()).toBe("");
+
+    const revisited = { ...pinned, isParticipantForMe: true };
+    summaries.mockResolvedValue([recent, revisited]);
+    await act(async () => recordRecentTask(revisited, "user-1", 30));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(3);
+    expect(visiblePins()).toBe("Pinned task");
+    expect(container.textContent).toBe("Pinned task:todo,Recent task:todo");
   });
 
   it("settles independent stale and fresh query caches and displays the newer snapshot in both", async () => {
@@ -176,6 +207,36 @@ describe("recent task synchronization", () => {
     expect(getIssue).not.toHaveBeenCalled();
     expect(cache.getQueryCache().findAll({ queryKey: ["issues", "detail"] })).toEqual([]);
   });
+  it("keeps a canceled task in Recents and removes it on archive without dropping its pin", async () => {
+    const opened = task(10, "Recent task");
+    const cancelled = { ...opened, status: "cancelled" as const, updatedAt: new Date(20) };
+    recordRecentTask(opened, "user-1", 10);
+    summaries.mockResolvedValue([opened]);
+    const cache = client();
+    const pins = [opened.id];
+    const refresh = async () => {
+      await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.issues.summaries("company-1") }); });
+      await flush();
+    };
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="status" pinnedTaskIds={pins} /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("Recent task:todo");
+
+    summaries.mockResolvedValue([cancelled]);
+    await refresh();
+    expect(container.textContent).toBe("Recent task:cancelled");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.recordedAt).toBe(10);
+
+    await act(async () => recordRecentTask(cancelled, "user-1", 30));
+    expect(readRecentTasks(storageKey, "company-1")[0]?.recordedAt).toBe(30);
+
+    summaries.mockResolvedValue([{ ...cancelled, isArchivedForMe: true }]);
+    await refresh();
+    expect(container.textContent).toBe("");
+    expect(container.querySelector("[data-pins]")?.getAttribute("data-pins")).toBe("Recent task");
+    expect(readRecentTasks(storageKey, "company-1")).toEqual([]);
+  });
+
   it("keeps loaded navigation state on a failed refresh without storing personal unread projections", async () => {
     const parent = { ...task(10, "Parent"), parentId: null, subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: true };
     recordRecentTask(parent, "user-1");
@@ -185,16 +246,16 @@ describe("recent task synchronization", () => {
     function State() { entries = useRecentTasks({ companyId: "company-1", userId: "user-1" }).entries; return null; }
     await act(async () => root.render(<QueryClientProvider client={cache}><State /></QueryClientProvider>));
     await flush();
-    expect(entries[0]).toMatchObject({ subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: true });
+    expect(entries[0]).toMatchObject({ isUnreadForMe: true });
     expect(readRecentTasks(storageKey, "company-1")[0]).not.toHaveProperty("isUnreadForMe");
-    expect(readRecentTasks(storageKey, "company-1")[0]).not.toHaveProperty("subtaskCount");
+    expect(entries[0]).not.toHaveProperty("subtaskCount");
     const stable = entries;
     await act(async () => root.render(<QueryClientProvider client={cache}><State /></QueryClientProvider>));
     expect(entries).toBe(stable);
     summaries.mockRejectedValue(new ApiError("Unavailable", 503, null));
     await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.issues.summaries("company-1") }); });
     await flush();
-    expect(entries[0]).toMatchObject({ subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: true });
+    expect(entries[0]).toMatchObject({ isUnreadForMe: true });
   });
 
   it("does not fetch empty history", async () => {
