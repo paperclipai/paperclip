@@ -8,6 +8,11 @@ import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
  * Provider preparation can be owned by the execution environment. Process
  * specifications stay private to the driver; plugins receive versioned requirements.
  */
+export type RunnerReleaseResumeOutcome =
+  | "resumed"
+  | "unavailable"
+  | { outcome: "resumed"; runner: { version: string; digest: string }; settled?: () => Promise<void> };
+
 export interface RunnerExecutionDriver {
   /** The driver verifies a stopped, idle Codex App Server source before launch. */
   codexSourceRecoveryVersion?: 1;
@@ -17,10 +22,12 @@ export interface RunnerExecutionDriver {
    * Release and released-source adoption require the registration checkpoint cleanup hook. */
   releaseResume?: {
     release(identity: DurableRecoveryIdentity): Promise<void>;
-    resume(identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<"resumed" | "unavailable">;
+    resume(identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<RunnerReleaseResumeOutcome>;
     /** Confirmed Core-owned completed-session proof, used only for cache adoption. */
     releasedSource?: DurableRecoveryIdentity;
+    releasedSourceRunner?: { version: string; digest: string };
   };
+  relaunchReleasedRunner?: DurableRecoveryIdentity;
   /** Current authenticated lease/checkpoint-writer owner; may change during warm reuse. */
   authorityRunId?: string;
   /** Own provider configuration and file preparation in the execution environment. */

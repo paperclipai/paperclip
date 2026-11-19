@@ -5,6 +5,7 @@ import request from "supertest";
 import { agents, heartbeatRuns, issueComments, issueRecoveryActions, issueRelations, issueThreadInteractions, issues, statusCards } from "@paperclipai/db";
 import { companySearchQuerySchema, createIssueSchema, defaultStatusCardRefreshPolicy, PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "../services/issue-display-status.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { issueService } from "../services/issues.js";
 import { companySearchService } from "../services/company-search.js";
 import { statusCardService } from "../services/status-cards.js";
@@ -187,5 +188,24 @@ describeEmbeddedPostgres("Execution-backed task presentation", () => {
     expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
     await ctx.db.update(issues).set({ executionState: { status: "pending", currentStageId: "review", currentStageType: "review", currentParticipant: { type: "user", userId: "reviewer" } } }).where(eq(issues.id, f.issueId));
     expect((await displayStatus(f.issueId)).displayStatus).toBe("in_review");
+  });
+
+  it("shows an overdue monitor behind a resolved no-replay execution hold as Blocked, not Monitoring", async () => {
+    const f = await fixture();
+    await ctx.db.update(issues).set({ monitorNextCheckAt: new Date(Date.now() - 60 * 60_000) }).where(eq(issues.id, f.issueId));
+    const [hold] = await ctx.db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", status: "resolved", ownerType: "board", returnOwnerAgentId: f.agentId,
+      cause: "provider_failure_meaning_unverified", fingerprint: randomUUID(), outcome: "blocked",
+      evidence: { runId: randomUUID(), automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked" } },
+      nextAction: "Verify safe staging or repair before continuing." }).returning();
+    expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: hold!.id });
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
+    expect(await issueService(ctx.db).count(f.companyId, { displayStatus: "blocked" })).toBe(1);
+    await ctx.db.update(issueRecoveryActions).set({ status: "cancelled" }).where(eq(issueRecoveryActions.id, hold!.id));
+    expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: hold!.id });
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("blocked");
+    await ctx.db.update(issueRecoveryActions).set({ evidence: { automaticRecovery: { replay: "allowed" } } }).where(eq(issueRecoveryActions.id, hold!.id));
+    expect(await getExecutionBlocker(ctx.db, f.companyId, f.issueId)).toBeNull();
+    expect((await displayStatus(f.issueId)).displayStatus).toBe("monitoring");
   });
 });

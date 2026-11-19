@@ -14,7 +14,7 @@ import { useDialogActions } from "@/context/DialogContext";
 import { AgentChatPin, agentChatPinKey, useAgentChatPins } from "./AgentChatPin";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
-export function AgentConversationsSidebar() {
+export function AgentConversationsSidebar({ compact = false }: { compact?: boolean } = {}) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const departments = useQuery({
     queryKey: queryKeys.departments.list(companyId ?? ""),
@@ -33,13 +33,13 @@ export function AgentConversationsSidebar() {
   const { pathname } = useLocation();
   const activeRef = pathname.split("/chats/")[1]?.split("/")[0];
   const roster = agents.data ?? [];
+  const byId = new Map(roster.map(agent => [agent.id, agent]));
   // The active roster excludes terminated agents, but their history remains readable.
   const missingIds = agents.isSuccess ? [...new Set((chats.data ?? [])
-    .flatMap(chat => chat.conversationAgentId && !roster.some(agent => agent.id === chat.conversationAgentId) ? [chat.conversationAgentId] : []))] : [];
+    .flatMap(chat => chat.conversationAgentId && !byId.has(chat.conversationAgentId) ? [chat.conversationAgentId] : []))] : [];
   const historyAgents = useQueries({ queries: missingIds.map(id => ({
     queryKey: queryKeys.agents.detail(id), queryFn: () => agentsApi.get(id, companyId!),
   })) });
-  const byId = new Map(roster.map(agent => [agent.id, agent]));
   for (const result of historyAgents) if (result.data) byId.set(result.data.id, result.data);
   const active = [...byId.values()].find(agent => agent.id === activeRef || (agent.status !== "terminated" && encodeURIComponent(agentRouteRef(agent)) === activeRef));
   const activeId = active?.id;
@@ -71,6 +71,7 @@ export function AgentConversationsSidebar() {
     return agentChatPins.orderedKeys.filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length));
   }, [companyId, agentChatPins.orderedKeys]);
   return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...conversations, ...teammates]} availableAgents={roster}
+    compact={compact}
     existingChatAgentIds={existingChatAgentIds}
     activeId={active?.id} previews={previews}
     unreadAgentIds={unreadAgentIds}
@@ -87,7 +88,7 @@ export function AgentConversationsSidebar() {
     historyLoading={historyAgents.some(result => result.isPending)}
     historyError={historyAgents.find(result => queryViewKind(result) === "error")?.error}
     onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
-    onAddChat={openChat}
+    onAddChat={compact ? undefined : openChat}
     departments={departments.data}
     departmentError={departments.error}
     onRetryDepartments={() => void departments.refetch()}
