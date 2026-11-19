@@ -182,11 +182,11 @@ export function responsibilityAreaService(db: Db) {
     },
 
     /** The people with an active responsibility in the area, whose Dashboards show it. */
-    async ownersInArea(companyId: string, areaId: string): Promise<string[]> {
+    async ownersInArea(companyId: string, areaId: string, statuses: readonly string[] = ["active"]): Promise<string[]> {
       const rows = await db.selectDistinct({ ownerUserId: responsibilities.ownerUserId }).from(responsibilities).where(and(
         eq(responsibilities.companyId, companyId),
         eq(responsibilities.areaId, areaId),
-        eq(responsibilities.status, "active"),
+        inArray(responsibilities.status, [...statuses]),
       ));
       return rows.map((row) => row.ownerUserId);
     },

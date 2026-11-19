@@ -1120,6 +1120,16 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       const off = await request(app).patch(`/api/routines/${routineId}`).send({ schedule: null });
       expect(off.status).toBe(200);
       expect((await schedules()).every((trigger) => !trigger.enabled)).toBe(true);
+
+      // Handing the routine to another person with a new time: the time is in the new person's zone.
+      const nextPerson = randomUUID();
+      await accessService(db).ensureMembership(companyId, "user", nextPerson, "operator", "active");
+      await db.insert(userWorkspacePreferences).values({ userId: nextPerson, timeZone: "Asia/Tokyo" });
+      await db.delete(routineTriggers).where(eq(routineTriggers.routineId, routineId));
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const handed = await request(board).patch(`/api/routines/${routineId}`).send({ responsibleUserId: nextPerson, schedule: { cronExpression: "0 9 * * *" } });
+      expect(handed.status, JSON.stringify(handed.body)).toBe(200);
+      expect(await schedules()).toMatchObject([{ enabled: true, timezone: "Asia/Tokyo" }]);
     });
 
     it("refuses another person's routine, and needs the person's tasks:assign to take, turn on or reschedule one it does not run", async () => {
@@ -1152,14 +1162,23 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ status: "active" })).status).toBe(403);
       expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ schedule: { cronExpression: "0 9 * * 1", timezone: "UTC" } })).status).toBe(403);
       expect((await request(forMember).post(`/api/routines/${membersRoutine}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "UTC" })).status).toBe(403);
+      // Nor change an existing trigger, start the routine, or restore a revision of it.
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const trigger = await request(board).post(`/api/routines/${membersRoutine}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "UTC", enabled: false });
+      expect(trigger.status, JSON.stringify(trigger.body)).toBe(201);
+      expect((await request(forMember).patch(`/api/routine-triggers/${trigger.body.trigger.id}`).send({ enabled: true })).status).toBe(403);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/run`).send({})).status).toBe(403);
+      const [revision] = await db.select().from(routineRevisions).where(eq(routineRevisions.routineId, membersRoutine)).limit(1);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/revisions/${revision!.id}/restore`).send({})).status).toBe(403);
 
       // The owner may assign tasks, so an agent acting for them may take the routine.
       const { app: forOwner, helperId: ownersHelper } = await helperFor(companyId, userId);
       const taken = await request(forOwner).patch(`/api/routines/${ownersRoutine}`).send({ assigneeAgentId: ownersHelper });
       expect(taken.status, JSON.stringify(taken.body)).toBe(200);
-      // The agent that runs a routine still reschedules its own.
+      // The agent that runs a routine still reschedules its own, also through its trigger.
       const runner = await createApp({ type: "agent", agentId, companyId });
       expect((await request(runner).patch(`/api/routines/${membersRoutine}`).send({ schedule: { cronExpression: "0 9 * * 1", timezone: "UTC" } })).status).toBe(200);
+      expect((await request(runner).patch(`/api/routine-triggers/${trigger.body.trigger.id}`).send({ cronExpression: "0 10 * * 1" })).status).toBe(200);
     });
 
     it("filters the list in the query: words, status and routines filed under no responsibility", async () => {

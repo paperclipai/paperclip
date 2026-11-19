@@ -495,6 +495,13 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    if (req.actor.type === "agent") {
+      // A restore can change who runs the routine and turn it on: on a routine the agent does not run,
+      // or back to another agent, the person it acts for must be allowed to assign.
+      const runsIt = routine.assigneeAgentId === req.actor.agentId;
+      const target = runsIt ? (await svc.listRevisions(routine.id)).find((revision) => revision.id === req.params.revisionId) : undefined;
+      await assertAgentCanAssign(req, routine, runsIt && target?.snapshot.routine.assigneeAgentId === req.actor.agentId);
+    }
     const result = await svc.restoreRevision(routine.id, req.params.revisionId as string, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -710,6 +717,8 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    // Starting another agent's routine starts that agent's work, as an assignment does.
+    await assertAgentCanAssign(req, routine, routine.assigneeAgentId === req.actor.agentId);
     const input = req.actor.type === "agent" ? { ...req.body, source: "manual" as const } : req.body;
     const run = await svc.runRoutine(routine.id, input, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
