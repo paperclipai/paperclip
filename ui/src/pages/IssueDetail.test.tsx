@@ -41,6 +41,7 @@ import {
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
 import { loadDraft, saveDraft, loadDraftSubmission, saveDraftSubmission } from "../lib/composer-draft";
+import { TaskCancellationProvider } from "../context/TaskCancellationContext";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
@@ -6674,6 +6675,36 @@ describe("IssueDetail", () => {
     expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[1]).toBeLessThan(
       mockIssuesApi.update.mock.invocationCallOrder[1],
     );
+  });
+
+  it.each(["Cancel task only", "Cancel task and subtasks"])("waits for the subtask choice before Stop and cancel: %s", async (choice) => {
+    const parent = createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1" });
+    const child = createIssue({ id: "child-1", identifier: "PAP-2", title: "Active child", status: "todo", parentId: parent.id });
+    mockHeartbeatsApi.cancel.mockClear().mockResolvedValue(undefined);
+    mockIssuesApi.get.mockResolvedValue(parent);
+    mockIssuesApi.getCore.mockImplementation(async id => id === child.id ? child : parent);
+    mockIssuesApi.listAll.mockResolvedValue([child]);
+    mockIssuesApi.update.mockImplementation(async (id, data) => ({ ...(id === child.id ? child : parent), status: data.status }));
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    await act(async () => renderIssueView(<TaskCancellationProvider><IssueDetail /></TaskCancellationProvider>));
+    await flushReact();
+    const stop = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Stop and cancel");
+    expect(stop).toBeTruthy();
+    await act(async () => stop!.click());
+    await flushReact();
+    const dialog = container.querySelector('[data-slot="dialog-content"]')!;
+    expect(dialog.textContent).toContain("Cancel 1 active subtask?");
+    expect(dialog.textContent).toContain(child.title);
+    expect(dialog.querySelector("a")).toBeNull();
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    const confirm = Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === choice)!;
+    await act(async () => confirm.click());
+    await flushReact();
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledExactlyOnceWith("run-active-1");
+    expect(mockIssuesApi.update.mock.calls.map(call => call[0])).toEqual(choice === "Cancel task only" ? ["PAP-1"] : ["PAP-1", child.id]);
+    expect(mockHeartbeatsApi.cancel.mock.invocationCallOrder[0]).toBeLessThan(mockIssuesApi.update.mock.invocationCallOrder[0]!);
   });
 
   it("reports partial success when run finalization stops the run but task status update fails", async () => {

@@ -86,8 +86,7 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
         mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
       recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
     });
-    callbacks.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
-    callbacks.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    callbacks.wakeQueue.admitIssueWake.mockImplementation(admission.admitIssueWake);
     const queue = createHeartbeatQueue(db, callbacks);
     const cancel = createStalledQueuedRunCancel(callbacks);
     const sweep = (beforeCancel?: () => Promise<void>) => assignedWorkSweep(db, {

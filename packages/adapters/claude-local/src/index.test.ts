@@ -50,6 +50,7 @@ describe("Claude model defaults", () => {
 
   it("maps an Agent SDK 0.3.N release to the Claude Code 2.1.N it bundles", () => {
     expect(claudeCodeVersionForAgentSdk("0.3.286")).toBe("2.1.286");
+    expect(claudeCodeVersionForAgentSdk("0.3.328")).toBe("2.1.328");
     expect(claudeCodeVersionForAgentSdk(" 0.3.321 ")).toBe("2.1.321");
     for (const version of ["0.4.1", "0.3.286-beta.1", "", null, undefined]) {
       expect(claudeCodeVersionForAgentSdk(version)).toBeNull();
