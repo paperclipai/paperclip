@@ -343,6 +343,10 @@ describe("claude remote execution", () => {
     await symlink(nestedAssets, path.join(source, "references"), "junction");
     await writeFile(path.join(source, "SKILL.md"), "---\nname: remote-probe\ndescription: SSH skill\n---\nSSH skill contents\n", "utf8");
     const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
+    // A managed account stages its Claude runtime in a private temporary directory.
+    const runtimeRoot = managedAiConnection
+      ? "/tmp/paperclip-ssh-runtime.claude"
+      : `${managedRemoteWorkspace}/.paperclip-runtime/claude`;
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
     await writeFile(instructionsPath, "Use the remote workspace.\n", "utf8");
@@ -426,11 +430,11 @@ describe("claude remote execution", () => {
     // One sync per registered runtime asset: skills and mcp-config.
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`,
+      remoteDir: `${runtimeRoot}/skills`,
       followSymlinks: true,
     }));
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/mcp-config`,
+      remoteDir: `${runtimeRoot}/mcp-config`,
       followSymlinks: true,
     }));
     expect(runChildProcess.mock.calls.filter(call => !call[2].includes("--version"))).toHaveLength(1);
@@ -442,10 +446,10 @@ describe("claude remote execution", () => {
     expect(call?.[2]).not.toContain("--allowedTools");
     expect(call?.[2]).toContain("--append-system-prompt-file");
     expect(call?.[2]).toContain(
-      `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills/agent-instructions.md`,
+      `${runtimeRoot}/skills/agent-instructions.md`,
     );
     expect(call?.[2]).toContain("--add-dir");
-    expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`);
+    expect(call?.[2]).toContain(`${runtimeRoot}/skills`);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
