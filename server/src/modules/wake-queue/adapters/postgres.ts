@@ -14,7 +14,7 @@ import { withRunRedactionHistory } from "../../../services/run-secret-redaction.
 import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
 import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
 import { currentConversationCommentCondition, isConversation, isConversationReset } from "../../../services/agent-conversations.js";
-import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
+import { getExecutionBlocker, getExecutionOwnershipBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
 import { preserveTaskRemoteWorkspaceWriter } from "../../../services/native-runtime/native-failed-workspace-recovery.js";
 import type { WakeRecoveryAdmissionStore } from "../application/recovery-admission.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
@@ -1365,6 +1365,17 @@ export function createPostgresIssueWakeAdmission(db: Db) {
               const verifiedReset = Boolean(resetComment && isConversationReset(resetComment.body));
               const preserveWorkspace = userComment && issue?.executionWorkspaceId;
               if (preserveWorkspace) await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, companyId, issueId);
+              if (!preserveWorkspace && issue?.conversationAgentId === null) {
+                // Read after locking to see writers that committed while we waited.
+                // FOR UPDATE conflicts with the FK's key-share lock on inserts and
+                // reparenting. Writers preserve company identity, so a miss stays valid.
+                const [recovery] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+                  .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId))).limit(1);
+                if (!recovery) return {
+                  blocker: await getExecutionOwnershipBlocker(tx as unknown as Db, companyId, issueId),
+                  verifiedReset,
+                };
+              }
               const blocker = await getExecutionBlocker(tx as unknown as Db, companyId, issueId, {
                 conversationResetCommentId: verifiedReset ? userComment : null,
                 lockedIssue: preserveWorkspace ? undefined : issue ?? undefined,
