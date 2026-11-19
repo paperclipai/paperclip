@@ -63,6 +63,16 @@ export function activeIssueInteractionCondition(input: {
   return and(
     sql`not ${historicalQuestionCondition()}`,
     sql`not ${deferredInteractionCondition()}`,
+    // A routine offer is an optional follow-up on finished work; it never
+    // holds a task in a waiting posture or gates its completion.
+    sql`${issueThreadInteractions.kind} <> 'suggest_routine'`,
+    // A bar proposal is likewise optional: it never holds its bar
+    // conversation open, and it stays acceptable after the conversation ends.
+    sql`${issueThreadInteractions.kind} <> 'propose_responsibility_bar'`,
+    // So is an automation proposal in its automation conversation.
+    sql`${issueThreadInteractions.kind} <> 'propose_automation'`,
+    // And proposed dashboard changes in a dashboard conversation.
+    sql`${issueThreadInteractions.kind} <> 'propose_dashboard_changes'`,
     // AI authentication belongs to the user starting this turn. Retain the card
     // and all authorization gates; another user's login cannot gate this run.
     responsibleUser ? sql`not (

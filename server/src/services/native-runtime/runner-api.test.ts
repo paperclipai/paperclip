@@ -274,7 +274,7 @@ describe("runner API catalog", () => {
       searchRunnerApi({ query: "GET /api/companies/{companyId}/issues" })
         .results[0].dedicatedTools,
     ).toContain("search_tasks");
-    expect(searchRunnerApi({ query: "nothing-zzzzzzzzzz" }).total).toBe(0);
+    expect(searchRunnerApi({ query: "qqqqqqqq-zzzzzzzzzz" }).total).toBe(0);
   });
   it("finds the actual instance-restart operation and explains its authority boundary", () => {
     const operation = searchRunnerApi({ query: "restart instance", limit: 1 }).results[0]!;

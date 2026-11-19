@@ -48,6 +48,7 @@ import { buildEffectiveRunWorkspaceConfigMetadata, heartbeatService } from "../s
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/index.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import * as productTelemetry from "../services/product-telemetry.ts";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -1178,11 +1179,15 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
     const routineEvents: string[] = [];
     const unsubscribeRoutine = subscribeDatabaseWork(db, DELIVERY_QUEUES.routineExecutionStatus, event => routineEvents.push(event));
     const heartbeat = heartbeatService(db);
+    const blockedTelemetry = vi.spyOn(productTelemetry, "emitSystemTaskBlockedAfterCommit");
     let run;
     try {
       run = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system", reason: "issue_assigned",
         payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
     } finally { unsubscribeRoutine(); }
+    expect(blockedTelemetry.mock.calls.map(([, task, previousStatus]) => [task.id, task.companyId, previousStatus]))
+      .toEqual([[issueId, companyId, "todo"]]);
+    blockedTelemetry.mockRestore();
     expect(routineEvents).toContain("intent"); expect(routineEvents).toContain("settled");
     expect(run).toBeNull();
     expect(adapterExecute).not.toHaveBeenCalled();

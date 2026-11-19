@@ -10,10 +10,11 @@ import { nativeSha256 } from "./canonical.js";
 import { NATIVE_WORKSPACE_OWNER_UNVERIFIED, NATIVE_WORKSPACE_OWNER_WAIT_NEXT_ACTION } from "./native-workspace-finalization-recovery-state.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, withDedicatedDbConnection, type Db } from "@paperclipai/db";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { currentNativeWorkspaceRecoveryResult } from "./native-workspace-recovery-binding.js";
 import { withWorkspaceLockKeepalive } from "./native-workspace-lock-keepalive.js";
+import { liveNativeFinalizationReserved } from "./live-native-finalization.js";
 import {
   currentNativeControllerIdentity,
   type NativeControllerIdentity,
@@ -105,9 +106,13 @@ export function nativeWorkspaceFinalizationOwnerCanUpgrade(profile: Record<strin
  * There is deliberately no wall-clock timeout that can steal a slow export.
  */
 export async function withNativeWorkspaceFinalizationOwnership<T>(
-  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string },
+  input: { db: Db; companyId: string; runId: string; retainedRepairActionId?: string; remoteWorkspaceId?: string;
+    /** The run's own live heartbeat; every other caller yields to it. */
+    liveHeartbeat?: boolean },
   action: (ownership: NativeWorkspaceFinalizationOwnership) => Promise<T>,
 ): Promise<{ acquired: false; reason: NativeWorkspaceFinalizationWaitReason } | { acquired: true; value: T }> {
+  // Its release wakes the workers again.
+  if (!input.liveHeartbeat && liveNativeFinalizationReserved(input.runId)) return { acquired: false, reason: "owner_active" };
   const identity = await currentNativeControllerIdentity();
   const processGroupId = await currentProcessGroupId();
   const deployment = currentDeploymentIdentity();
@@ -120,9 +125,22 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
     ...(deployment ? { exclusiveVolume: deployment.exclusiveVolume } : {}),
     ...(deployment?.exclusiveVolume && deployment.volumeId ? { volumeId: deployment.volumeId } : {}),
   };
-  const scope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-    input.retainedRepairActionId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"]) : eq(heartbeatRuns.runtimeMode, "native"));
-  const owned = and(scope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
+  const remoteLegacy = input.remoteWorkspaceId ? and(eq(heartbeatRuns.runtimeMode, "legacy"),
+    sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace-run.v1'`,
+    sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,workspaceId}' = ${input.remoteWorkspaceId}`,
+    sql`exists (select 1 from ${executionWorkspaces} where ${executionWorkspaces.id} = ${input.remoteWorkspaceId}::uuid
+      and ${executionWorkspaces.companyId} = ${heartbeatRuns.companyId}
+      and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace.v1'
+      and (${executionWorkspaces.metadata}#>>'{remoteWorkspace,writerRunId}' = ${heartbeatRuns.id}::text
+        or (${executionWorkspaces.metadata}#>>'{remoteWorkspace,writerRunId}' is null
+          and ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,state}' = 'saved'))
+      and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,epoch}' = ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,epoch}'
+      and ${executionWorkspaces.metadata}#>>'{remoteWorkspace,location,leaseId}' = ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,leaseId}')`) : undefined;
+  const runScope = and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+    input.retainedRepairActionId || input.remoteWorkspaceId ? inArray(heartbeatRuns.runtimeMode, ["native", "legacy"])
+      : eq(heartbeatRuns.runtimeMode, "native"));
+  const claimScope = and(runScope, input.retainedRepairActionId ? undefined : or(eq(heartbeatRuns.runtimeMode, "native"), remoteLegacy));
+  const owned = and(runScope, sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY}->>'token' = ${owner.token}`);
   const runKey = nativeWorkspaceFinalizationLockKey(input.companyId, input.runId);
   let claimed = false;
   let actionPromise: Promise<T> | undefined;
@@ -139,7 +157,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
         // Reads and durable progress use the ordinary pool, not the lock transaction.
         const [run] = await input.db.select({ profile: heartbeatRuns.runnerProfileJson,
           issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
-          agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(scope).limit(1);
+          agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(claimScope).limit(1);
         if (!run) throw new Error("native_workspace_finalization_binding_missing");
         const rawPrior = run.profile?.[OWNER_KEY];
         const prior = readOwner(rawPrior);
@@ -154,7 +172,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           const [issue] = await db.select().from(issues).where(and(
             eq(issues.companyId, input.companyId), eq(issues.id, run.issueId),
           )).for("update");
-          const [currentRun] = await db.select().from(heartbeatRuns).where(scope).for("update");
+          const [currentRun] = await db.select().from(heartbeatRuns).where(claimScope).for("update");
           if (input.retainedRepairActionId) {
             const [repair] = await db.select().from(issueRecoveryActions).where(and(
               eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, run.issueId),
@@ -276,7 +294,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
           claimed = true;
           const [claimedRun] = await db.update(heartbeatRuns).set({
             runnerProfileJson: sql`jsonb_set(coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb), array[${OWNER_KEY}], ${JSON.stringify(owner)}::jsonb) || ${JSON.stringify(platformProof ? { nativeWorkspaceOwnerStopProof: platformProof } : {})}::jsonb`,
-          }).where(and(scope, prior
+          }).where(and(claimScope, prior
             ? sql`${heartbeatRuns.runnerProfileJson}->${OWNER_KEY} = ${JSON.stringify(rawPrior)}::jsonb`
             : sql`${heartbeatRuns.runnerProfileJson}->>${OWNER_KEY} is null`
           )).returning({ id: heartbeatRuns.id });

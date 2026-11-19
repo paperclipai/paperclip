@@ -275,6 +275,47 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   return true;
 }
 
+function quarantinedRemoteCleanupScope(
+  entry: QuarantinedSessionCleanup,
+  input: { companyId: string; issueId: string },
+): string | null {
+  const [companyId, , , remoteCleanupScope] = JSON.parse(entry.domain.key) as string[];
+  return companyId === input.companyId && remoteCleanupScope &&
+    entry.domain.resources.includes(JSON.stringify(["issue", input.issueId]))
+    ? remoteCleanupScope : null;
+}
+
+export function nativeSessionCleanupRemoteScopes(input: {
+  companyId: string;
+  issueId: string;
+}): string[] {
+  const scopes = new Set<string>();
+  for (const entry of quarantinedSessionCleanups) {
+    const scope = quarantinedRemoteCleanupScope(entry, input);
+    if (scope) scopes.add(scope);
+  }
+  return [...scopes];
+}
+
+export function completeTerminatedRemoteNativeSessionCleanupForTask(input: {
+  companyId: string;
+  issueId: string;
+  remoteCleanupScope: string;
+}): number {
+  if (!input.remoteCleanupScope) return 0;
+  let retired = 0;
+  for (const entry of [...quarantinedSessionCleanups]) {
+    if (quarantinedRemoteCleanupScope(entry, input) !== input.remoteCleanupScope) continue;
+    if (entry.attempt || entry.recovery) continue;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
+    retired += 1;
+  }
+  return retired;
+}
+
 /** Host-only counterpart of remote resource termination. The caller has verified
  * both exact local process identities and durably fenced their run. This removes
  * only cleanup ownership; the retained checkpoint is never made resumable.
@@ -1265,6 +1306,7 @@ async function consumeTurn(
     // delta's receipt settles. Every other event, and every result, waits for
     // the receipts of the deltas before it.
     const pipelinesDeltas = controlPlane.pipelinesStreamingEvents === true;
+    const pipelinedEventTypes: ReadonlySet<string> = controlPlane.pipelinedEventTypes ?? new Set(["item.delta"]);
     let pendingDeltas: Promise<AppendedEventReceipt>[] = [];
     let deltaFailure = null as { error: unknown } | null;
     const settlePendingDeltas = async () => {
@@ -1450,7 +1492,7 @@ async function consumeTurn(
       // A failed delta stops the turn before any later event is appended.
       if (deltaFailure) throw deltaFailure.error;
       let receipt: AppendedEventReceipt | null = null;
-      if (pipelinesDeltas && event.eventType === "item.delta") {
+      if (pipelinesDeltas && pipelinedEventTypes.has(event.eventType)) {
         const pending = controlPlane.appendEvent(event, { signal: appendAbort.signal, streaming: true });
         const settled = pending.then(() => undefined, (error: unknown) => { deltaFailure ??= { error }; });
         outstandingDeltas.add(settled);
@@ -2998,6 +3040,7 @@ export async function executeNativeSession(
       };
     };
     let restartContinuationStarted = false;
+    let ownTurnId: string | null = null;
     let borrowedContinuationTurnId: string | null = null;
     let restartContinuationTurnId: string | null = null;
     let settleStartupDecision: () => void = () => undefined;
@@ -3058,14 +3101,16 @@ export async function executeNativeSession(
     };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
-      if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
+      const restoredAtStartup = recovered && options.resumeInterruptedTurn === true &&
+        event.turnId === persistedSession?.activeTurnId;
+      const restoredInThisExecution = !recovered && ownTurnId !== null && event.turnId === ownTurnId;
+      if (restartContinuationStarted || !(restoredAtStartup || restoredInThisExecution) ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
           // proving the old process ended and restoring the same conversation.
           !["codex", "acpx", "opencode"].includes(input.provider.kind) || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
           recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
-          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
-          event.turnId !== persistedSession?.activeTurnId) return false;
+          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error)) return false;
       const snapshot = await session.snapshot();
       signal.throwIfAborted();
       if (nativeRestartInterruptedTurnId(snapshot) !== event.turnId || snapshot.pendingRuntimeRequests?.length) return false;
@@ -3383,7 +3428,7 @@ export async function executeNativeSession(
           // the fenced checkpoint right before the submit. A new session's
           // normal path adds nothing before turn.start.
           if (recovered) await checkpoint();
-          await session.startTurn({
+          ({ turnId: ownTurnId } = await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
@@ -3393,7 +3438,7 @@ export async function executeNativeSession(
               input.provider.kind === "cursor_cloud"
                 ? "default"
                 : "executionMode" in input ? input.executionMode : "default",
-          });
+          }));
           await checkpoint();
         }
         settleStartupDecision();

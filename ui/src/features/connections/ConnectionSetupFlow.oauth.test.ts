@@ -6,6 +6,10 @@ import { getConnectableAppDefinition } from "@paperclipai/shared";
 import {
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
+  isMissingOAuthStateMessage,
+  oauthFailureMessage,
+  readConnectionIntentGitHubRecovery,
+  readConnectionIntentOAuthFailureCode,
   readConnectionIntentOAuthOutcome,
   retainedResumeMatches,
   retainedReconnectMatches,
@@ -262,5 +266,80 @@ describe("retained reconnect target matching", () => {
       reconnectConnection: connection,
       reconnectApplication: curated,
     })).toBe(false);
+  });
+});
+
+describe("connection intent OAuth failure reasons", () => {
+  it("explains an expired sign-in instead of a generic failure", () => {
+    const code = readConnectionIntentOAuthFailureCode({
+      type: "paperclip.connection-intent.oauth",
+      interactionId,
+      outcome: "failed",
+      code: "oauth_state_expired",
+    });
+    expect(code).toBe("oauth_state_expired");
+    expect(oauthFailureMessage(code)).toMatch(/took too long/);
+  });
+
+  it("explains a sign-in finished in another Paperclip session", () => {
+    expect(oauthFailureMessage("oauth_session_mismatch")).toMatch(/different Paperclip session/);
+  });
+
+  it("ignores malformed codes and never shows a raw code", () => {
+    expect(readConnectionIntentOAuthFailureCode({ code: "<script>" })).toBeNull();
+    expect(readConnectionIntentOAuthFailureCode(null)).toBeNull();
+    const fallback = oauthFailureMessage("oauth_callback_http_500");
+    expect(fallback).toBe("Authorization did not complete. Try again when you’re ready.");
+    expect(fallback).not.toContain("oauth_");
+  });
+});
+
+describe("missing sign-in state messages", () => {
+  const missing = { type: "paperclip.connection-intent.oauth", outcome: "failed", code: "oauth_state_missing" };
+  const activePopup = {} as Window;
+  const oldPopup = {} as Window;
+  const from = (data: unknown, source: Window | null, eventOrigin = origin) => ({ origin: eventOrigin, data, source });
+
+  it("accepts a missing-state failure from this setup's active sign-in window", () => {
+    expect(isMissingOAuthStateMessage(from(missing, activePopup), origin, activePopup)).toBe(true);
+  });
+
+  it("ignores a missing-state failure from an old sign-in window", () => {
+    expect(isMissingOAuthStateMessage(from(missing, oldPopup), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from(missing, oldPopup), origin, null)).toBe(false);
+  });
+
+  it("rejects other origins, other codes, and messages bound to an interaction", () => {
+    expect(isMissingOAuthStateMessage(from(missing, activePopup, "https://evil.test"), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from({ ...missing, code: "oauth_state_expired" }, activePopup), origin, activePopup)).toBe(false);
+    expect(isMissingOAuthStateMessage(from({ ...missing, interactionId }, activePopup), origin, activePopup)).toBe(false);
+  });
+});
+
+describe("GitHub installation recovery from the sign-in window", () => {
+  it("offers the install and manage links GitHub returned", () => {
+    expect(readConnectionIntentGitHubRecovery({
+      outcome: "failed",
+      code: "github_installation_required",
+      recovery: {
+        installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+        managementUrl: "https://github.com/settings/installations",
+      },
+    })).toEqual({
+      installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+      managementUrl: "https://github.com/settings/installations",
+    });
+    expect(oauthFailureMessage("github_installation_required")).toMatch(/Paperclip for GitHub app isn’t installed/);
+  });
+
+  it("drops links that are not on github.com or belong to another failure", () => {
+    expect(readConnectionIntentGitHubRecovery({
+      code: "github_installation_required",
+      recovery: { installationUrl: "https://evil.test/install", managementUrl: "javascript:alert(1)" },
+    })).toBeNull();
+    expect(readConnectionIntentGitHubRecovery({
+      code: "oauth_state_expired",
+      recovery: { installationUrl: "https://github.com/apps/paperclip-for-github/installations/new" },
+    })).toBeNull();
   });
 });

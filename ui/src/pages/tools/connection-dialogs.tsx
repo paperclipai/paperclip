@@ -38,6 +38,7 @@ import {
   QuarantineBadge,
 } from "./shared";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export const TRANSPORT_LABEL: Record<string, string> = {
   mcp_remote: "remote http",
@@ -78,7 +79,7 @@ export function CatalogDialog({ connection, onClose }: { connection: ToolConnect
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Tool catalog — {connection.name}</DialogTitle>
+          <DialogTitle>Tool catalog — <span className={ANALYTICS_MASK_CLASS}>{connection.name}</span></DialogTitle>
         </DialogHeader>
         {catalog.isLoading || catalogView.kind === "reconnecting" ? (
           <LoadingState />
