@@ -35,7 +35,9 @@ vi.mock("../../api/heartbeats", () => ({
 
 vi.mock("../../adapters", () => ({
   buildTranscript: buildTranscriptMock,
-  getUIAdapter: () => null,
+  // No adapter registered in these tests: the hook must fall back to the
+  // generic streaming-delta check instead of crashing on a null adapter.
+  getUIAdapter: () => ({}),
   onAdapterChange: () => () => {},
 }));
 
@@ -682,7 +684,7 @@ describe("useLiveRunTranscripts", () => {
     expect(buildTranscriptMock).toHaveBeenCalledTimes(1);
     expect(buildTranscriptMock).toHaveBeenCalledWith(
       [{ ts: "2026-04-20T00:00:00.000Z", stream: "stdout", chunk: "hello from run 1\n" }],
-      null,
+      {},
       { censorUsernameInLogs: false },
     );
 

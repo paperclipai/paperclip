@@ -31,12 +31,12 @@ describe("readChunkSeq", () => {
 });
 
 describe("isStructuredStreamingTextDelta", () => {
-  it("matches only the provider-agnostic text record", () => {
-    // Provider-specific shapes (Antigravity's acpx.text_delta and
-    // step_update/text_delta) belong to the owning adapter, which supplies
-    // its own classifier to mergeRunLogChunks; the shared helper must not
-    // parse them.
-    expect(isStructuredStreamingTextDelta('{"type":"acpx.text_delta","text":"x"}')).toBe(false);
+  it("matches the provider-agnostic text record and the shared ACP delta", () => {
+    // acpx.text_delta is the shared ACP streaming format (five adapters),
+    // so it stays in the shared helper. A single adapter's own event
+    // shapes (Antigravity's step_update) belong to that adapter's
+    // classifier and must not be parsed here.
+    expect(isStructuredStreamingTextDelta('{"type":"acpx.text_delta","text":"x"}')).toBe(true);
     expect(isStructuredStreamingTextDelta('{"type":"text"}')).toBe(true);
     expect(isStructuredStreamingTextDelta('{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}')).toBe(false);
     expect(isStructuredStreamingTextDelta('{"type":"acpx.tool_call"}')).toBe(false);

@@ -139,13 +139,16 @@ export function readChunkSeq(value: unknown): number | undefined {
 }
 
 /**
- * Whether a raw log chunk is a provider-agnostic structured streaming text
- * delta. Provider-specific wire formats (e.g. Antigravity's acpx events)
- * are NOT matched here: the owning adapter supplies its own classifier to
- * mergeRunLogChunks, and shared code must not parse provider payloads.
+ * Whether a raw log chunk is a structured streaming text delta. Matches the
+ * provider-agnostic text record and the shared ACP `acpx.text_delta`
+ * format, which five adapters' CLIs emit (agy, claude, codex, gemini,
+ * kimi) via the shared ACP engine — it is a shared protocol, not one
+ * provider's. A single adapter's own event shapes (e.g. Antigravity's
+ * `step_update`) are NOT matched here: the owning adapter supplies its own
+ * classifier to mergeRunLogChunks, and shared code must not parse those.
  */
 export function isStructuredStreamingTextDelta(chunk: string): boolean {
-  return /"type"\s*:\s*"text"/.test(chunk);
+  return /"type"\s*:\s*"(?:acpx\.text_delta|text)"/.test(chunk);
 }
 
 /**
