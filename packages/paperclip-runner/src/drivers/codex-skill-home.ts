@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { NativeProviderStateIncompatibleError } from "../contracts/native-session-backend.js";
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
@@ -320,6 +320,68 @@ export function usesCodexSkillHome(
     && !options.runnerFilesystemRoot
     && Boolean(options.codexSkillHomeStoreRoot)
     && platform !== "win32";
+}
+
+/** A legacy isolated home can share its skills only when the complete assigned
+ * tree still matches. A mismatch keeps the existing launch layout. */
+export async function resolveLegacyCodexSkillHome(input: {
+  codexHome: string;
+  storeRoot: string;
+  context: NativeRuntimeContextSnapshot;
+  retire?: boolean;
+  expectedHome?: string;
+}): Promise<string | null> {
+  const oldSkills = join(input.codexHome, "skills");
+  try {
+    if (!lstatSync(oldSkills).isDirectory()) return null;
+    const entries = readdirSync(oldSkills).filter(name => name !== ".system").sort();
+    const home = (await ensureCodexSkillHome(input)).home;
+    if (input.retire && home !== input.expectedHome) return null;
+    const sharedSkills = join(home, ".agents", "skills");
+    const sharedEntries = readdirSync(sharedSkills).sort();
+    if (input.retire ? entries.some(entry => !sharedEntries.includes(entry))
+      : JSON.stringify(entries) !== JSON.stringify(sharedEntries)) return null;
+    const legacyFiles: string[] = [];
+    const sharedFiles: string[] = [];
+    for (const entry of entries) {
+      for (const [root, files] of [[oldSkills, legacyFiles], [sharedSkills, sharedFiles]] as const) {
+        const info = lstatSync(join(root, entry));
+        if (!info.isDirectory()) return null;
+        files.push(...await regularFiles(root, entry));
+      }
+    }
+    if (JSON.stringify(legacyFiles) !== JSON.stringify(sharedFiles)) return null;
+    const legacy = await hashAll(oldSkills, legacyFiles);
+    const shared = await hashAll(sharedSkills, sharedFiles);
+    if (JSON.stringify(legacy) !== JSON.stringify(shared)) return null;
+    if (legacyFiles.some(file => {
+      const privateFile = lstatSync(join(oldSkills, file));
+      const sharedFile = lstatSync(join(sharedSkills, file));
+      return privateFile.nlink !== 1 || (privateFile.mode & 0o111) !== (sharedFile.mode & 0o111);
+    })) return null;
+    if (input.retire) {
+      await recordRecoveredCodexSkillHome({ ...input, home });
+      for (const entry of entries) {
+        await releaseMaterializedNativeRuntimeSkills(join(oldSkills, entry));
+      }
+    }
+    return home;
+  } catch {
+    // Old snapshots can outlive their source bundle. Keep their private copy.
+    return null;
+  }
+}
+
+/** Commit the reference only once the recovery launch has been recorded. */
+export async function recordRecoveredCodexSkillHome(input: {
+  codexHome: string;
+  storeRoot: string;
+  home: string;
+}): Promise<void> {
+  const digest = basename(input.home);
+  if (dirname(input.home) !== input.storeRoot) throw integrityFailure();
+  await touchCodexSkillHome(input.storeRoot, digest);
+  await writeCodexSkillHomeMarker(input.codexHome, digest);
 }
 
 /** Recovery keeps the skill set a session launched with, or fails before launch. */

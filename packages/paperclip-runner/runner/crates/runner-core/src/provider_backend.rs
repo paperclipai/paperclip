@@ -1,7 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
 use std::fs::File;
@@ -492,6 +492,84 @@ fn local_process_definitely_gone(id: u32, group: bool) -> bool {
 #[cfg(not(unix))]
 fn local_process_definitely_gone(_id: u32, _group: bool) -> bool {
     false
+}
+
+fn codex_shared_skills_path(state_dir: &Path, home: &Path, codex_home: &Path) -> Option<PathBuf> {
+    let session = state_dir.parent()?;
+    let store = session.parent()?.parent()?.join("skill-homes");
+    let digest = home.file_name()?.to_str()?;
+    if !store.is_absolute()
+        || home.parent()? != store
+        || digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || codex_home != session.join("codex-home")
+    {
+        return None;
+    }
+    let skills = home.join(".agents").join("skills");
+    (skills.canonicalize().ok().as_ref() == Some(&skills)).then_some(skills)
+}
+
+fn codex_recovery_read_args(args: &[String], state_dir: &Path) -> Vec<String> {
+    // The controller's sealed HOME adds only its assigned skills to the
+    // saved filesystem policy. Credentials and other state stay private.
+    if std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() != Ok("preconfigured") {
+        if let (Some(home), Some(codex_home)) =
+            (std::env::var_os("HOME"), std::env::var_os("CODEX_HOME"))
+        {
+            if let Some(skills) =
+                codex_shared_skills_path(state_dir, Path::new(&home), Path::new(&codex_home))
+            {
+                return crate::attachment_download::codex_runtime_read_args(
+                    args,
+                    &[state_dir.join("attachment-downloads"), skills],
+                );
+            }
+        }
+    }
+    crate::attachment_download::codex_attachment_read_args(args, state_dir)
+}
+
+#[cfg(test)]
+#[test]
+fn codex_recovery_reads_only_the_sealed_skills_of_a_local_session() {
+    let root = std::env::temp_dir().canonicalize().unwrap()
+        .join(format!("paperclip-shared-recovery-{}", uuid::Uuid::new_v4()));
+    let scope = root.join("durable-sessions").join("session");
+    let state = scope.join("runner");
+    let private_home = scope.join("codex-home");
+    let shared = root.join("skill-homes").join("a".repeat(64));
+    let skills = shared.join(".agents").join("skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    assert_eq!(
+        codex_shared_skills_path(&state, &shared, &private_home),
+        Some(skills.clone())
+    );
+    assert!(codex_shared_skills_path(&state, &shared, &root.join("other-home")).is_none());
+    assert!(codex_shared_skills_path(&state, &root, &private_home).is_none());
+
+    let args = vec![
+        "-c".to_owned(),
+        "permissions.paperclip-runner-workspace-only.filesystem={\"/private\"=\"none\"}"
+            .to_owned(),
+        "app-server".to_owned(),
+    ];
+    let extra = crate::attachment_download::codex_runtime_read_args(&args, &[skills.clone()]);
+    assert_eq!(extra.len(), 2);
+    let (_, raw) = extra[1].split_once('=').unwrap();
+    let config = format!("filesystem={raw}")
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    let filesystem = config["filesystem"].as_inline_table().unwrap();
+    assert_eq!(filesystem.get("/private").unwrap().as_str(), Some("none"));
+    assert_eq!(
+        filesystem.get(skills.to_str().unwrap()).unwrap().as_str(),
+        Some("read")
+    );
+    assert_eq!(filesystem.len(), 2);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 fn facade_provider_name(provider: &str) -> &'static str {
@@ -2315,8 +2393,7 @@ impl CodexCommandExecutor {
         let cursor_cloud_profile = self.cursor_cloud_launch_profile.clone();
         if state.config.provider == "codex" {
             let args = &mut state.config.args;
-            let attachment_args =
-                crate::attachment_download::codex_attachment_read_args(args, &self.state_dir);
+            let attachment_args = codex_recovery_read_args(args, &self.state_dir);
             let position = args
                 .iter()
                 .position(|arg| arg == "app-server")

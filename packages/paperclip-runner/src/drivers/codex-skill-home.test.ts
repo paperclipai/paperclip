@@ -28,9 +28,13 @@ import {
   codexSkillHomeDigest,
   ensureCodexSkillHome,
   readCodexSkillHomeMarker,
+  resolveLegacyCodexSkillHome,
+  recordRecoveredCodexSkillHome,
   verifyCodexSkillHome,
   writeCodexSkillHomeMarker,
 } from "./codex-skill-home.js";
+
+import { materializeNativeRuntimeSkills } from "./runtime-context-materializer.js";
 
 const roots: string[] = [];
 
@@ -116,6 +120,39 @@ async function homeEntries(storeRoot: string): Promise<string[]> {
 }
 
 describe("Codex skill home store", () => {
+  it("binds an old unmarked Codex session to identical shared skills", async () => {
+    const { root, storeRoot, assigned } = await fixture();
+    const codexHome = join(root, "old-session");
+    const oldSkills = join(codexHome, "skills");
+    await materializeNativeRuntimeSkills(assigned, oldSkills);
+    await mkdir(join(oldSkills, ".system"));
+    await writeFile(join(oldSkills, ".system", "keep"), "Codex-owned");
+    const home = await resolveLegacyCodexSkillHome({ codexHome, storeRoot, context: assigned });
+    expect(home).toBe(join(storeRoot, codexSkillHomeDigest(assigned)));
+    await expect(readCodexSkillHomeMarker(codexHome)).resolves.toBeNull();
+    await recordRecoveredCodexSkillHome({ codexHome, storeRoot, home: home! });
+    await expect(readCodexSkillHomeMarker(codexHome)).resolves.toBe(codexSkillHomeDigest(assigned));
+    const previouslyRetired = join(oldSkills, "beta");
+    await makeWritable(previouslyRetired);
+    await rm(previouslyRetired, { recursive: true });
+    await expect(resolveLegacyCodexSkillHome({
+      codexHome, storeRoot, context: assigned, retire: true, expectedHome: home!,
+    })).resolves.toBe(home);
+    await expect(readdir(oldSkills)).resolves.toEqual([".system"]);
+    await expect(readFile(join(oldSkills, ".system", "keep"), "utf8")).resolves.toBe("Codex-owned");
+  });
+
+  it("leaves an old unmarked skill in place if the assigned bytes differ", async () => {
+    const { root, storeRoot, assigned } = await fixture();
+    const codexHome = join(root, "old-session");
+    const oldSkills = join(codexHome, "skills");
+    await materializeNativeRuntimeSkills(assigned, oldSkills);
+    await writeFile(join(assigned.skills[0]!.bundle.rootPath, "SKILL.md"), "changed allocation");
+    await expect(resolveLegacyCodexSkillHome({ codexHome, storeRoot, context: assigned })).resolves.toBeNull();
+    await expect(readCodexSkillHomeMarker(codexHome)).resolves.toBeNull();
+    await expect(readFile(join(oldSkills, "alpha", "SKILL.md"), "utf8")).resolves.toBe("# alpha\n");
+  });
+
   it("publishes one home for the same skills", async () => {
     const { storeRoot, assigned } = await fixture();
     const first = await ensureCodexSkillHome({ storeRoot, context: assigned });

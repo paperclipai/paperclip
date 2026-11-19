@@ -1,3 +1,4 @@
+import { removeCodexSkillHomeTree } from "../drivers/codex-skill-home.js";
 import {
   bindRunnerLaunchResources,
   createRunnerProviderLaunch,
@@ -79,6 +80,58 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+it.skipIf(process.platform === "win32")("resumes the same old Codex thread with a shared skill home and retires duplicates on the next cold start", async () => {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-legacy-skills-"));
+  const stateDirectory = join(root, "durable-sessions", "saved-session");
+  const codexHome = join(stateDirectory, "codex-home");
+  const storeRoot = join(root, "skill-homes");
+  const skillSource = join(root, "assigned");
+  await mkdir(skillSource, { recursive: true });
+  await writeFile(join(skillSource, "SKILL.md"), "# Assigned");
+  await writeFile(join(root, "AGENTS.md"), "# Workspace");
+  const identity = {
+    runnerInstanceId: "runner-shared-skills", environmentLeaseId: "lease-shared-skills",
+    runId: "run-shared-skills", normalizedSessionId: "session-shared-skills",
+    turnId: "turn-shared-skills", itemId: "item-shared-skills",
+  };
+  const options = {
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex, sourceCodexHome: "",
+    stateDirectory, prpIdentity: identity, runtimeContext: assignedRuntimeContext(skillSource, root),
+  };
+  const first = createCapabilityRunnerdCodexTransport({
+    ...options, codexArgs: fakeCodexArgs(root),
+  });
+  const threadId = (await first.transport.request("thread/start", { cwd: root })).thread as { id: string };
+  try {
+    await first.transport.close();
+    const privateSkill = join(codexHome, "skills", "assigned", "SKILL.md");
+    await expect(readFile(privateSkill, "utf8")).resolves.toBe("# Assigned");
+    const marker = join(codexHome, "paperclip-skill-home.json");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const resumed = createCapabilityRunnerdCodexTransport({ ...options, codexSkillHomeStoreRoot: storeRoot });
+      try {
+        await expect(resumed.transport.request("thread/read", { threadId: threadId.id })).resolves.toMatchObject({ thread: { id: threadId.id } });
+        const { digest } = JSON.parse(await readFile(marker, "utf8"));
+        if (process.platform === "linux") {
+          const pid = resumed.evidence().runnerPid;
+          expect(pid).toBeTruthy();
+          const environment = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
+          expect(environment).toContain(`HOME=${join(storeRoot, digest)}`);
+          expect(environment).toContain(`CODEX_HOME=${codexHome}`);
+        }
+        await expect(readFile(join(storeRoot, digest, ".agents", "skills", "assigned", "SKILL.md"), "utf8")).resolves.toBe("# Assigned");
+        if (attempt === 0) await expect(readFile(privateSkill, "utf8")).resolves.toBe("# Assigned");
+        else await expect(stat(privateSkill)).rejects.toHaveProperty("code", "ENOENT");
+      } finally {
+        await resumed.transport.close();
+      }
+    }
+  } finally {
+    await first.transport.close().catch(() => undefined);
+    await removeCodexSkillHomeTree(root);
+  }
+}, 60_000);
 
 describe("committedEventWindowComplete", () => {
   const events = (...seqs: number[]) => seqs.map(sourceSeq => ({ sourceSeq }));

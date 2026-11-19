@@ -110,6 +110,8 @@ import {
   codexSkillHomeDigest,
   readCodexSkillHomeMarker,
   resolveRecordedCodexSkillHome,
+  resolveLegacyCodexSkillHome,
+  recordRecoveredCodexSkillHome,
   usesCodexSkillHome,
 } from "../drivers/codex-skill-home.js";
 import { resolvePackagedRunnerBinary, resolvePackagedRunnerBinaryAsync } from "./runner-binary.js";
@@ -7076,7 +7078,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ? resolve(this.options.runnerFilesystemRoot, "codex-home")
         : localCodexHome;
     const skillHomeStoreRoot = usesCodexSkillHome({ ...this.options, provider }) ? this.options.codexSkillHomeStoreRoot! : null;
-    const freshSkillPreparation = preparesProviderLaunch && this.#sourceRecoveryIdentity === null && sourceRuntimeContext !== null;
+    const freshSkillPreparation = preparesProviderLaunch && !exactAuthority && this.#sourceRecoveryIdentity === null && sourceRuntimeContext !== null;
+    const canMigrateLegacySkills = skillHomeStoreRoot && localStateOwner && preparesProviderLaunch
+      && !freshSkillPreparation && warmRecovery === null && sourceRuntimeContext
+      && !this.options.codexArgs && this.options.recoveryPurpose !== "stop_cleanup"
+      && skillHomeStoreRoot === resolve(this.#root, "..", "..", "skill-homes");
+    let migratedSkillHome: string | null = null;
     if (skillHomeStoreRoot && freshSkillPreparation) {
       // The home is content-addressed, so its path is known before it is
       // published below; launch arguments built earlier already point at it.
@@ -7085,6 +7092,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#skillHome = await resolveRecordedCodexSkillHome({
         codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, context: sourceRuntimeContext,
       });
+    } else if (canMigrateLegacySkills && skillHomeStoreRoot && sourceRuntimeContext) {
+      const preparationStartedAt = Date.now();
+      migratedSkillHome = await resolveLegacyCodexSkillHome({
+        codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, context: sourceRuntimeContext,
+      });
+      this.#assertStartupOpen();
+      if (this.#sourceAttachmentDeadline !== null) {
+        this.#sourceAttachmentDeadline += Date.now() - preparationStartedAt;
+      }
+      this.#skillHome = migratedSkillHome;
     }
     const opencodeProxyPath =
       (preparesProviderLaunch ? undefined : "") ?? this.options.opencodeProxyPath ??
@@ -7463,11 +7480,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         sourceCodexHome: this.options.sourceCodexHome ?? resolveSourceCodexHome(this.options.environment),
         apiKey: this.options.environment?.CODEX_API_KEY ?? this.options.environment?.OPENAI_API_KEY,
       };
-      if (this.#sourceRecoveryIdentity !== null) {
+      if (this.#sourceRecoveryIdentity !== null || (exactAuthority && skillHomeStoreRoot !== null)) {
         await prepareIsolatedCodexRecoveryHome({
           ...auth,
           observability: this.options.observability,
         });
+        if (canMigrateLegacySkills && !migratedSkillHome && this.#skillHome && skillHomeStoreRoot && sourceRuntimeContext) {
+          this.#assertStartupOpen();
+          const preparationStartedAt = Date.now();
+          await resolveLegacyCodexSkillHome({
+            codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, context: sourceRuntimeContext,
+            retire: true, expectedHome: this.#skillHome,
+          });
+          if (this.#sourceAttachmentDeadline !== null) {
+            this.#sourceAttachmentDeadline += Date.now() - preparationStartedAt;
+          }
+        }
       } else {
         await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
         this.#assertStartupOpen();
@@ -7734,6 +7762,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#attachRunWork(sourceAttachmentTarget);
       this.#sourceRecoveryIdentity = null;
       this.#sourceAttachmentDeadline = null;
+    }
+    if (migratedSkillHome && skillHomeStoreRoot && sourceRuntimeContext) {
+      // Keep the old paths for this process. Its next cold launch can retire
+      // them before any provider discovers the skills.
+      await recordRecoveredCodexSkillHome({ codexHome: localCodexHome, storeRoot: skillHomeStoreRoot, home: migratedSkillHome })
+        .catch(() => this.#diagnostic("retained legacy Codex skills after shared-home recovery"));
     }
     this.#diagnostic(
       rotatedAuthority || sourceAttachmentTarget
