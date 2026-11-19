@@ -6,6 +6,7 @@ import {
   type IssueAdmissionTarget,
 } from "./adapters/postgres.js";
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
+import { lockBoardQueuedComments, readBoardQueuedComments } from "./adapters/queued-comment-board-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 import { createFreshIssueRunAdmission } from "./application/fresh-issue-run.js";
 import { admitIssueWake, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./application/issue-wake-admission.js";
@@ -135,6 +136,8 @@ export type WakeQueue = ReturnType<typeof createWakeQueue>;
 export function createQueuedCommentQueue(db: Db, deps: QueuedCommentQueuePostgresAdapterDeps) {
   const issueLock = createQueuedCommentIssueLockWriter(db, deps);
   return {
+    readBoardQueue: readBoardQueuedComments,
+    lockBoardQueue: lockBoardQueuedComments,
     editQueuedComment: createEditQueuedComment({ issueLock }),
     reorderQueuedComments: createReorderQueuedComments({ issueLock }),
     discardQueuedComment: createDiscardQueuedComment({ issueLock }),
