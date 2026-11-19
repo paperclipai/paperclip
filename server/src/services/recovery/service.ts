@@ -2,6 +2,11 @@ import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-s
 import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
+import {
+  evaluateReviewStageCurrency,
+  readLatestStageDecisionOutcome,
+  readPolicyStageIds,
+} from "./review-stage-currency.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -244,6 +249,7 @@ export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND =
   RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const EXECUTION_REVIEW_STAGE_SETTLED_REASON = "execution_review_stage_settled";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON =
   "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
@@ -1974,6 +1980,27 @@ export function recoveryService(
           eq(agentWakeupRequests.status, "queued"),
           sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
           agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasSettledStageWake(
+    issue: RecoveryIssue,
+    agentId: string,
+    stageId: string,
+  ) {
+    return db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, issue.companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, EXECUTION_REVIEW_STAGE_SETTLED_REASON),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+          sql`${agentWakeupRequests.payload} ->> 'stageId' = ${stageId}`,
         ),
       )
       .limit(1)
@@ -5492,6 +5519,74 @@ export function recoveryService(
           continue;
         }
         const participantLatestRun = participantLatestRunForRecovery;
+
+        const reviewStageObsoleteReason = evaluateReviewStageCurrency({
+          state: pendingExecutionState,
+          policyStageIds: readPolicyStageIds(issue.executionPolicy),
+          latestDecisionOutcome: await readLatestStageDecisionOutcome(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            stageId: pendingExecutionState.currentStageId ?? null,
+          }),
+          monitorNextCheckAt: issue.monitorNextCheckAt ?? null,
+          now: recoveryNow,
+        });
+        if (reviewStageObsoleteReason === "waiting_on_monitor") {
+          result.skipped += 1;
+          continue;
+        }
+        if (reviewStageObsoleteReason) {
+          const executorAgentId =
+            pendingExecutionState.returnAssignee?.type === "agent"
+              ? pendingExecutionState.returnAssignee.agentId ?? null
+              : null;
+          const stageId = pendingExecutionState.currentStageId ?? null;
+          if (executorAgentId && stageId) {
+            if (
+              await hasQueuedIssueWake(issue.companyId, issue.id, executorAgentId)
+            ) {
+              result.skipped += 1;
+              continue;
+            }
+            if (!(await hasSettledStageWake(issue, executorAgentId, stageId))) {
+              const queued = await deps.enqueueWakeup(executorAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: EXECUTION_REVIEW_STAGE_SETTLED_REASON,
+                payload: withRecoveryContext(
+                  {
+                    issueId: issue.id,
+                    stageId,
+                    staleStageReason: reviewStageObsoleteReason,
+                  },
+                  "normal_model",
+                ),
+                requestedByActorType: "system",
+                requestedByActorId: null,
+                contextSnapshot: withRecoveryContext(
+                  {
+                    issueId: issue.id,
+                    taskId: issue.id,
+                    wakeReason: EXECUTION_REVIEW_STAGE_SETTLED_REASON,
+                    source: "issue.execution_review_stage_settled",
+                    currentStageId: stageId,
+                    staleStageReason: reviewStageObsoleteReason,
+                    reviewStageInstruction:
+                      "The review stage for this issue is already decided or no longer part of its review policy. Finish the issue or close it, or mark it blocked with the exact unblock action.",
+                  },
+                  "normal_model",
+                ),
+              });
+              if (queued) {
+                result.continuationRequeued += 1;
+                result.issueIds.push(issue.id);
+              } else {
+                result.skipped += 1;
+              }
+              continue;
+            }
+          }
+        }
 
         if (
           !participantLatestRun ||

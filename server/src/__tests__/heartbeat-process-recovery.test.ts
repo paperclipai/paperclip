@@ -104,6 +104,7 @@ import {
   issueTreeHoldMembers,
   issueTreeHolds,
   issueWorkProducts,
+  issueExecutionDecisions,
   issues,
   nativeRunFinalizations,
   nativeRunResults,
@@ -11230,6 +11231,134 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const again = await heartbeat.reconcileStrandedAssignedIssues();
     expect(again.escalated).toBe(0);
+  });
+
+  async function endReviewerRunWithSpentRetries(fixture: {
+    runId: string;
+    wakeupRequestId: string;
+    issueId: string;
+  }) {
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+        error: "Interrupted by graceful server shutdown (SIGTERM)",
+        scheduledRetryAttempt: 2,
+        scheduledRetryReason: "transient_failure",
+        resultJson: {
+          stopReason: "interrupted",
+          conversationContinuation: "continue_conversation_v1",
+        },
+        contextSnapshot: {
+          issueId: fixture.issueId,
+          taskId: fixture.issueId,
+          wakeReason: "transient_failure_retry",
+          executionRetryAccounting: spentRestartRetryAccounting(),
+        },
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "cancelled", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
+  }
+
+  async function selectSettledStageWakes(issueId: string) {
+    return db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.reason, "execution_review_stage_settled"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      );
+  }
+
+  it("wakes the executor once instead of raising review recovery when the pending review stage was already approved", async () => {
+    const fixture = await seedInReviewParticipantRunFixture();
+    await endReviewerRunWithSpentRetries(fixture);
+    await db.insert(issueExecutionDecisions).values({
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      stageId: fixture.stageId,
+      stageType: "review",
+      actorAgentId: fixture.agentId,
+      outcome: "approved",
+      body: "Approved.",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    const settledWakes = await selectSettledStageWakes(fixture.issueId);
+    expect(settledWakes).toHaveLength(1);
+    expect(settledWakes[0]).toMatchObject({
+      agentId: fixture.agentId,
+      payload: expect.objectContaining({ stageId: expect.any(String) }),
+    });
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await selectSettledStageWakes(fixture.issueId)).toHaveLength(1);
+    expect((await selectRecoveryIssueById(fixture.issueId))?.status).toBe("in_review");
+    expect(await selectRecoveryActionsForIssue(fixture.issueId)).toEqual([]);
+  });
+
+  it("wakes the executor once instead of raising review recovery when the pending review stage is no longer in the policy", async () => {
+    const fixture = await seedInReviewParticipantRunFixture();
+    await endReviewerRunWithSpentRetries(fixture);
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [
+            {
+              id: randomUUID(),
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: randomUUID(), type: "agent", agentId: fixture.agentId, userId: null }],
+            },
+          ],
+        },
+      })
+      .where(eq(issues.id, fixture.issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    const settledWakes = await selectSettledStageWakes(fixture.issueId);
+    expect(settledWakes).toHaveLength(1);
+    expect(settledWakes[0]).toMatchObject({
+      agentId: fixture.agentId,
+      payload: expect.objectContaining({ stageId: expect.any(String) }),
+    });
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await selectSettledStageWakes(fixture.issueId)).toHaveLength(1);
+    expect(await selectRecoveryActionsForIssue(fixture.issueId)).toEqual([]);
+  });
+
+  it("does not raise review recovery while the issue waits on a scheduled monitor check", async () => {
+    const fixture = await seedInReviewParticipantRunFixture();
+    await endReviewerRunWithSpentRetries(fixture);
+    await db
+      .update(issues)
+      .set({ monitorNextCheckAt: new Date(Date.now() + 3_600_000) })
+      .where(eq(issues.id, fixture.issueId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(await selectRecoveryActionsForIssue(fixture.issueId)).toEqual([]);
   });
 
   it("does not block an issue whose review participant spent its retry budget while another agent is still working it", async () => {
