@@ -78,7 +78,7 @@ function sessionLimitCategory(failure: AcpxTerminalSessionFailure | undefined): 
   if (failure?.category !== "limit") return undefined;
   const text = [failure.title, failure.details].filter(value => typeof value === "string").join("\n");
   if (/\brate[- ]limit/i.test(text)) return "rate_limit";
-  if (/no available quota|usage limit|you(?:'|’)ve hit your (?:\w+ )?limit|out of (?:extra )?usage|quota (?:limit )?exceeded/i.test(text)) {
+  if (/no available quota|usage limit|you(?:'|’)ve hit your (?:[\w-]+ )?limit|out of (?:extra )?usage|quota (?:limit )?exceeded/i.test(text)) {
     return "quota_exhausted";
   }
   return undefined;

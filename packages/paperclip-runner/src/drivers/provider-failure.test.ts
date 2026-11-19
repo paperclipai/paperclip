@@ -79,6 +79,21 @@ describe("provider failure boundary", () => {
       .toMatchObject({ category: "rate_limit", message: `${generic}\nClaude is temporarily rate limited.` });
   });
 
+  it.each(["5-hour", "7-day"])("classifies a typed Claude %s allowance as quota in result and thrown paths", duration => {
+    const message = "ACP agent reported a terminal limit failure.";
+    const title = `You've hit your ${duration} limit · resets 5pm (Europe/Amsterdam)`;
+    const sessionFailure = { category: "limit", title };
+    const expected = { provider: "anthropic", phase: "turn", category: "quota_exhausted",
+      retryability: "requires_action", message: `${message}\n${title}` };
+    expect(acpxTerminalResult({ status: "failed", error: { code: "RUNTIME", message } }, "claude", {}, sessionFailure))
+      .toMatchObject({ error: { providerFailure: expected } });
+    expect(acpxProviderFailure(new Error(message), "claude", "turn", {}, false, sessionFailure)).toMatchObject(expected);
+    expect(acpxTerminalResult({ status: "failed", error: { code: "RUNTIME", message: title } }, "claude"))
+      .toMatchObject({ error: { providerFailure: { category: "unknown" } } });
+    expect(acpxProviderFailure(new Error(message), "claude", "turn", {}, false, { category: "request", title }))
+      .toMatchObject({ category: "unknown" });
+  });
+
   it("classifies Claude's rejection of the selected model as an unavailable model", () => {
     const generic = "ACP agent reported a terminal request failure.";
     const failed = { status: "failed", error: { code: "RUNTIME", message: generic } };
