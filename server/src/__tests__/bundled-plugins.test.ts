@@ -432,7 +432,7 @@ describe("ensureBundledPlugins", () => {
     expect(installPlugin).not.toHaveBeenCalled();
   });
 
-  it.each(["capability", "entrypoint", "schema", "default", "pending-approval"] as const)("does not treat a %s change as description-only", async (change) => {
+  it.each(["capability", "entrypoint", "schema", "default", "pending-approval", "uninstalled"] as const)("does not treat a %s change as description-only", async (change) => {
     const previous = { ...makeManifest(DAYTONA.pluginKey, "0.1.0"), description: "Old description",
       entrypoints: { worker: "dist/worker.js" },
       environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider" as const, displayName: "Daytona",
@@ -443,7 +443,7 @@ describe("ensureBundledPlugins", () => {
     if (change === "schema") manifest.environmentDrivers[0]!.configSchema.properties.config.type = "string";
     if (change === "default") manifest.environmentDrivers[0]!.configSchema.properties.config.default.description = "new runtime value";
     const { deps, loadManifest, update } = makeDeps({ rows: { [DAYTONA.pluginKey]: {
-      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: change === "pending-approval" ? "upgrade_pending" : "ready",
+      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: change === "pending-approval" ? "upgrade_pending" : change === "uninstalled" ? "uninstalled" : "ready",
       version: "0.1.0", manifestJson: previous,
     } } });
     loadManifest.mockResolvedValue(manifest);

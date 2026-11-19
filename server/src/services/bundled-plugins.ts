@@ -283,8 +283,7 @@ function withoutDisplayDescriptions(manifest: PaperclipPluginManifestV1): unknow
  * source of truth. When the bundle declares a version that differs from the
  * persisted version, update the stored manifest and version. Distribution
  * entries also adopt the image's package path, including same-version installs.
- * Core entries also refresh known display descriptions at the same version
- * when every behavioral field is unchanged. This propagates
+ * This propagates
  * a manifest change (for example a new driver capability) to an existing
  * install that the auto-install path skips.
  *
@@ -315,10 +314,6 @@ async function reconcileBundledPluginManifest(
     }
     const rebindPackage = !preservePackagePath && install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
     const refreshDistribution = install.distribution && !isDeepStrictEqual(bundleManifest, existing.manifestJson);
-    // Core bundles can change help text without a version bump. Refresh only
-    // known display descriptions: capabilities, schemas, defaults, entrypoints
-    // and driver behavior must remain identical. Qualification still compares
-    // the complete approved manifest against the image after this update.
     const refreshDescriptions = !install.distribution && !["uninstalled", "upgrade_pending"].includes(existing.status) &&
       !isDeepStrictEqual(bundleManifest, existing.manifestJson) &&
       isDeepStrictEqual(withoutDisplayDescriptions(bundleManifest), withoutDisplayDescriptions(existing.manifestJson));
