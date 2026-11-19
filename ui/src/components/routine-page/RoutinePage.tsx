@@ -668,8 +668,8 @@ export function RoutinePage({
           </Field>
         ) : null}
 
-        {secretNames.length > 0 ? (
-          <Field label="Secrets">
+        <Field label="Secrets">
+          {secretNames.length > 0 ? (
             <ul className="flex min-w-0 flex-wrap gap-x-4 gap-y-1.5 py-1.5">
               {secretNames.map((name) => (
                 <li key={name} className="flex min-w-0 items-center gap-1.5 font-mono text-xs">
@@ -678,8 +678,10 @@ export function RoutinePage({
                 </li>
               ))}
             </ul>
-          </Field>
-        ) : null}
+          ) : (
+            <p className="py-1.5 text-sm text-muted-foreground">No secrets. The agent gets no API keys or passwords from this routine.</p>
+          )}
+        </Field>
 
         {runRules.length > 0 ? (
           <Field label="Run rules">

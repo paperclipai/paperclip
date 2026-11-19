@@ -403,6 +403,12 @@ describe("RoutineDetail (routed routine page)", () => {
     expect(section("Webhooks")?.textContent).toContain("No webhooks");
   });
 
+  it("shows an empty Secrets section", async () => {
+    vi.mocked(routinesApi.get).mockResolvedValue(routine({ env: null }));
+    await render();
+    expect(section("Secrets")?.textContent).toContain("No secrets");
+  });
+
   it("shows an API trigger in its own section", async () => {
     vi.mocked(routinesApi.get).mockResolvedValue(routine({
       triggers: [trigger({ id: "api-1", kind: "api", cronExpression: null, timezone: null, nextRunAt: null })],
