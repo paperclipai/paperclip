@@ -2924,6 +2924,25 @@ export function createHeartbeatRunPreparation(db: Db) {
     return byCompany;
   }
 
+  async function getIssueAdmissionContext(companyId: string, issueId: string) {
+    const [issue] = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        conversationAgentId: issues.conversationAgentId,
+        conversationUserId: issues.conversationUserId,
+        conversationState: issues.conversationState,
+        responsibleUserId: issues.responsibleUserId,
+        parentId: issues.parentId,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        originRunId: issues.originRunId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+    return issue ?? null;
+  }
+
   async function getIssueExecutionContext(companyId: string, issueId: string) {
     return db
       .select({
@@ -3344,6 +3363,7 @@ export function createHeartbeatRunPreparation(db: Db) {
     listCompanyAgentOrgRows,
     groupAgentOrgRowsByCompany,
     getIssueExecutionContext,
+    getIssueAdmissionContext,
     getPinnedSkillTestContext,
     getRoutineEnvForExecutionIssue,
     resolveResponsibleUserIdForRunSeed,

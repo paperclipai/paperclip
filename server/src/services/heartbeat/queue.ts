@@ -235,7 +235,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   "setWakeupStatus" | "appendRunEvent" | "finalizeAgentStatus" |
   "getAgentInvokability" | "getWorktreeExecutionCutoff" | "applyRunDispatchPostCommitEffects">,
   Pick<RunPreparation, "toAgentOrgRow" | "listCompanyAgentOrgRows" |
-    "resolveResponsibleUserIdForRun" | "getIssueExecutionContext" |
+    "resolveResponsibleUserIdForRun" | "getIssueExecutionContext" | "getIssueAdmissionContext" |
     "getRoutineEnvForExecutionIssue" | "resolveResponsibleUserIdForRunSeed">,
   Pick<HeartbeatRunState, "getAgent" | "getRun" | "resolveExplicitResumeSessionOverride" |
     "resolveSessionBeforeForWakeup" | "hasResolvablePriorSessionWorkspaceForWake">,
@@ -477,6 +477,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     applyRunDispatchPostCommitEffects,
     resolveResponsibleUserIdForRun,
     getIssueExecutionContext,
+    getIssueAdmissionContext,
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
@@ -2877,7 +2878,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // a run or deferred request; assignment and review have their own wakes.
     if (reason === "issue_comment_mentioned" || enrichedContextSnapshot.wakeReason === "issue_comment_mentioned") return null;
     if (issueId) {
-      const conversation = await getIssueExecutionContext(agent.companyId, issueId);
+      const conversation = await getIssueAdmissionContext(agent.companyId, issueId);
       if (taskRetryActorId && conversation) assertTaskRetryConversationAllowed(conversation, taskRetryActorId);
       if (reason === "issue_children_completed" && conversation?.originKind === "onboarding_first_task") enrichedContextSnapshot.onboardingCompletion = true;
       if (isConversation(conversation)) {
@@ -3355,7 +3356,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       if (operatorResponsibleUserId) return Promise.resolve(operatorResponsibleUserId);
       queuedResponsibleUserIdPromise ??= (async () => {
         const queuedIssueContext = issueId
-          ? await getIssueExecutionContext(agent.companyId, issueId)
+          ? await getIssueAdmissionContext(agent.companyId, issueId)
           : null;
         const queuedRoutineEnvContext = await getRoutineEnvForExecutionIssue(
           agent.companyId,
