@@ -55,6 +55,8 @@ export type IssueSnapshot = {
   originRunId: string | null;
 };
 
+export type IssueAttributionSnapshot = Pick<IssueSnapshot, "id" | "responsibleUserId" | "parentId" | "originKind" | "originId" | "originRunId">;
+
 export type InvokableAgentSnapshot = {
   id: string;
   companyId: string;
