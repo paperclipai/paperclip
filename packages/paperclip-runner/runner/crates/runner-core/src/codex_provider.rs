@@ -101,6 +101,8 @@ const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_OPENCODE_PERMISSION_MODE",
     "PAPERCLIP_OPENCODE_RUNTIME_DIR",
     "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
+    // Store of sealed skill homes OpenCode lists in `skills.paths`.
+    "PAPERCLIP_SKILL_HOME_STORE_ROOT",
     "PAPERCLIP_RUNNER_INSTANCE_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -6357,6 +6359,11 @@ done
     #[test]
     fn does_not_forward_an_ambient_opencode_command_override() {
         assert!(!OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_OPENCODE_COMMAND"));
+    }
+
+    #[test]
+    fn forwards_the_shared_skill_home_store_to_opencode() {
+        assert!(OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_SKILL_HOME_STORE_ROOT"));
     }
 
     #[test]

@@ -510,6 +510,11 @@ export async function prepareAcpxRuntimeSandbox(input: {
         ...(input.environment?.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG ? [codexObservabilityToml(JSON.parse(input.environment.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG))] : []),
         "[features]",
         "shell_snapshot = false",
+        // Same as native Codex: no remote plugin catalog or plugin bundles
+        // (~120 MB) downloaded into every session home at app-server startup.
+        "plugins = false",
+        "remote_plugin = false",
+        "apps = false",
         ...(input.environment?.PAPERCLIP_AGENT_KEY_ID || taskEnvironmentKeys.length > 0 ? [
           "[shell_environment_policy]", 'inherit = "all"', "ignore_default_excludes = true",
           `include_only = ${JSON.stringify([...new Set([

@@ -662,3 +662,61 @@ fn managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials(
     }
     transport.shutdown().unwrap();
 }
+
+#[test]
+#[cfg(unix)]
+fn only_claude_sidecars_receive_the_shared_skill_home_store() {
+    const CHILD: &str = "PAPERCLIP_TEST_SKILL_HOME_STORE_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for agent in ["claude", "codex", "grok"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "only_claude_sidecars_receive_the_shared_skill_home_store",
+                ])
+                .env_clear()
+                .env(CHILD, agent)
+                .env("PATH", "/usr/bin:/bin")
+                .env("PAPERCLIP_SKILL_HOME_STORE_ROOT", "/state/skill-homes")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "agent={agent}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+        return;
+    }
+    let agent = std::env::var(CHILD).unwrap();
+    let response = json!({
+        "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+        "id": 1, "ok": true, "result": { "store": "%s" },
+    });
+    let config = AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!("IFS= read -r request; printf '{response}\n' \"$PAPERCLIP_SKILL_HOME_STORE_ROOT\"; IFS= read -r next"),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(1),
+        shutdown_grace: Duration::from_millis(100),
+    };
+    let mut transport = AcpxSidecarTransport::start_for_agent(&config, &agent).unwrap();
+    let response = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("sidecar should report its launch environment");
+    let expected = if agent == "claude" {
+        "/state/skill-homes"
+    } else {
+        ""
+    };
+    assert_eq!(
+        response["store"].as_str().unwrap(),
+        expected,
+        "agent={agent}"
+    );
+    transport.shutdown().unwrap();
+}

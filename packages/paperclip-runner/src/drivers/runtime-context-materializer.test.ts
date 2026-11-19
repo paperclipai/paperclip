@@ -8,6 +8,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +27,7 @@ import {
 } from "../contracts/runtime-context.js";
 import {
   materializeNativeRuntimeSkills,
+  removeAbandonedSkillStaging,
   prepareIsolatedCodexRecoveryHome,
   prepareIsolatedCodexHome,
 } from "./runtime-context-materializer.js";
@@ -145,6 +147,48 @@ describe("runtime context materialization", () => {
     expect(parse(config).mcp_servers).toBeUndefined();
     expect(config).not.toContain("Bearer ");
     expect(config).not.toContain("unassigned");
+  });
+
+  it.each(["copy", "skill home"] as const)("removes skill staging an interrupted launch left behind (%s)", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-abandoned-staging-"));
+    roots.push(root);
+    const assigned = join(root, "assigned");
+    await mkdir(assigned);
+    await writeFile(join(assigned, "SKILL.md"), "# Assigned\n");
+    const codexHome = join(root, "codex-home");
+    const old = join(codexHome, ".paperclip-skills-staging-old");
+    const fresh = join(codexHome, ".paperclip-skills-staging-fresh");
+    await mkdir(join(old, "half-copied"), { recursive: true });
+    await writeFile(join(old, "half-copied", "SKILL.md"), "partial");
+    await chmod(join(old, "half-copied", "SKILL.md"), 0o444);
+    await chmod(join(old, "half-copied"), 0o555);
+    await mkdir(fresh);
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(old, twoHoursAgo, twoHoursAgo);
+    await prepareIsolatedCodexHome({
+      context: context(assigned, root),
+      codexHome,
+      ...(mode === "skill home" ? { skillHomeStoreRoot: join(root, "skill-homes") } : {}),
+    });
+    await expect(stat(old)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(fresh)).isDirectory()).toBe(true);
+  });
+
+  it("reports and removes only staging older than the threshold", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-abandoned-staging-"));
+    roots.push(root);
+    await mkdir(join(root, ".paperclip-skills-staging-a", "x"), { recursive: true });
+    await writeFile(join(root, ".paperclip-skills-staging-a", "x", "f"), "1234");
+    await mkdir(join(root, "skills"));
+    const old = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    await utimes(join(root, ".paperclip-skills-staging-a"), old, old);
+    await expect(removeAbandonedSkillStaging(root, { olderThanMs: 24 * 60 * 60 * 1000, dryRun: true }))
+      .resolves.toEqual({ removed: 0, candidates: 1, bytes: 4 });
+    await expect(removeAbandonedSkillStaging(root, { olderThanMs: 24 * 60 * 60 * 1000 }))
+      .resolves.toEqual({ removed: 1, candidates: 1, bytes: 4 });
+    expect(await readdir(root)).toEqual(["skills"]);
+    await expect(removeAbandonedSkillStaging(join(root, "missing"), { olderThanMs: 0 }))
+      .resolves.toEqual({ removed: 0, candidates: 0, bytes: 0 });
   });
 
   it("preserves a managed provider while excluding ambient auth, hooks, and tool configuration", async () => {

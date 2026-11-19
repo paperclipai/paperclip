@@ -101,6 +101,7 @@ import {
   materializeNativeRuntimeSkills,
   releaseMaterializedNativeRuntimeSkills,
 } from "../runtime-context-materializer.js";
+import { prepareSharedSkillHome } from "../codex-skill-home.js";
 
 export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
 export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
@@ -2680,11 +2681,22 @@ async function startRuntime(input: {
   await mkdir(homesRoot, { recursive: true, mode: 0o700 });
   const isolatedHome = await mkdtemp(join(homesRoot, "home-"));
   await chmod(isolatedHome, 0o700);
+  // With a skill home store (Mac/Linux), OpenCode reads the shared, sealed
+  // skill home through `skills.paths`; the session state root holds its marker.
+  const skillHomeStoreRoot = input.options.environment?.PAPERCLIP_SKILL_HOME_STORE_ROOT;
+  let sharedSkillsPath: string | null = null;
   try {
-    await materializeNativeRuntimeSkills(
-      input.options.runtimeContext ?? null,
-      join(isolatedHome, ".claude", "skills"),
-    );
+    if (input.options.runtimeContext && skillHomeStoreRoot && isAbsolute(skillHomeStoreRoot) && process.platform !== "win32") {
+      const { home } = await prepareSharedSkillHome({
+        providerHome: input.root, storeRoot: skillHomeStoreRoot, context: input.options.runtimeContext,
+      });
+      sharedSkillsPath = join(home, ".agents", "skills");
+    } else {
+      await materializeNativeRuntimeSkills(
+        input.options.runtimeContext ?? null,
+        join(isolatedHome, ".claude", "skills"),
+      );
+    }
   } catch (error) {
     await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
@@ -2740,6 +2752,8 @@ async function startRuntime(input: {
     externalDirectories[`${root}/**`] = "allow";
   }
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
+  // Sealed read-only on disk; the agent may read a skill's supporting files.
+  if (sharedSkillsPath) externalDirectories[`${sharedSkillsPath}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
   const providerRoute = modelProvider === "openrouter"
@@ -2785,6 +2799,7 @@ async function startRuntime(input: {
       small_model: input.options.model,
       share: "disabled",
       autoupdate: false,
+      ...(sharedSkillsPath ? { skills: { paths: [sharedSkillsPath] } } : {}),
       ...(performanceDiagnostics ? { experimental: { openTelemetry: true } } : {}),
       // The configured entry is already composed exactly once into the session
       // system prompt; siblings remain available through the read-only root.

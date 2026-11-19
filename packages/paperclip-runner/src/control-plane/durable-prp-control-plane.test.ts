@@ -2677,6 +2677,7 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
       ANTHROPIC_BASE_URL: "https://gateway.example",
       PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
       PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
+      PAPERCLIP_SKILL_HOME_STORE_ROOT: "/runner/skill-homes",
       PAPERCLIP_NATIVE_MCP_STDIO: "[]",
       PAPERCLIP_NATIVE_MCP_PROXY: "/runner/paperclip-runnerd",
       DATABASE_URL: "must-not-reach-runnerd",
@@ -2714,6 +2715,7 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
     ANTHROPIC_BASE_URL: "https://gateway.example",
     PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
+    PAPERCLIP_SKILL_HOME_STORE_ROOT: "/runner/skill-homes",
     PAPERCLIP_NATIVE_MCP_STDIO: "[]",
     PAPERCLIP_NATIVE_MCP_PROXY: "/runner/paperclip-runnerd",
   });

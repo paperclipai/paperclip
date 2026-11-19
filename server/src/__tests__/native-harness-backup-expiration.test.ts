@@ -393,6 +393,44 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(await expiration.tickCheckpoints({ maxEntries: 2 })).toMatchObject({ expiredCheckpoints: 1, truncated: false });
   });
 
+  it("removes an unreferenced, expired Codex skill home in the same pass", async () => {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    const skillHomeStoreRoot = path.join(stateBase, "store-for-test");
+    const home = path.join(skillHomeStoreRoot, "a".repeat(64));
+    await fs.mkdir(path.join(home, ".agents", "skills", "alpha"), { recursive: true });
+    await fs.writeFile(path.join(home, ".agents", "skills", "alpha", "SKILL.md"), "skill");
+    const old = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    await fs.utimes(home, old, old);
+    // Production runs tick() only from the evidence worker (duty "evidence").
+    const evidence = nativeHarnessBackupExpirationService(db, {
+      duty: "evidence", stateBase, skillHomeStoreRoot, closedForDays: 7, now, isSessionBusy: () => false,
+    });
+    const result = await evidence.tick();
+    expect(result).toMatchObject({ skillHomesRemoved: 1, failed: 0 });
+    expect(result.skillHomeReclaimedBytes).toBeGreaterThan(0);
+    expect(await exists(home)).toBe(false);
+    // The worker comes back for skill homes even when no other evidence is due.
+    const next = evidence.nextEvidenceAt();
+    expect(next).not.toBeNull();
+    expect(next!).toBeLessThanOrEqual(now.getTime() + 24 * 60 * 60 * 1000);
+  });
+
+  it("removes skill staging an interrupted launch left in a provider home in the same pass", async () => {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    const acpxSessions = path.join(stateBase, "acpx-for-test");
+    const staging = path.join(acpxSessions, "session-1", "claude-home", ".paperclip-skills-staging-old");
+    await fs.mkdir(path.join(staging, "skill"), { recursive: true });
+    await fs.writeFile(path.join(staging, "skill", "SKILL.md"), "partial");
+    const old = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+    await fs.utimes(staging, old, old);
+    const result = await nativeHarnessBackupExpirationService(db, {
+      duty: "evidence", stateBase, skillStagingRoots: [acpxSessions], closedForDays: 7, now, isSessionBusy: () => false,
+    }).tick();
+    expect(result).toMatchObject({ abandonedSkillStagingRemoved: 1, failed: 0 });
+    expect(result.abandonedSkillStagingBytes).toBeGreaterThan(0);
+    expect(await exists(staging)).toBe(false);
+  });
+
   it("expires the backup of a session whose issue closed before the window and clears its resume pointer", async () => {
     const session = await seedSession();
     const result = await service().tick();

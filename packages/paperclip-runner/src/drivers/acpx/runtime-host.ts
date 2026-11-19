@@ -14,7 +14,7 @@ import type { ClaudeProviderCycleItem } from "./claude-provider-turns.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { createAcpxRuntimeSkillLease } from "./runtime-skill-lease.js";
@@ -35,6 +35,7 @@ import {
   materializeNativeRuntimeSkills,
   releaseMaterializedNativeRuntimeSkills,
 } from "../runtime-context-materializer.js";
+import { CLAUDE_SKILL_PLUGIN_NAME, claudeSkillPluginDirectory, prepareSharedSkillHome } from "../codex-skill-home.js";
 import {
   startRunnerToolBridge,
   type RunnerToolBridge,
@@ -346,6 +347,7 @@ export class AcpxRuntimeHost {
   readonly #command: VerifiedAcpxCommandLease;
   readonly #toolBridge: RunnerToolBridge | null;
   readonly #claudeSkillNames: readonly string[];
+  readonly #claudeSkillNamespace: string | undefined;
   readonly #assertAgentFilesHeld: (() => void) | undefined;
   readonly #candidateAdmission: AcpxCandidateStartupAdmission | undefined;
   #activeTurn: AcpxRuntimeTurn | null = null;
@@ -363,6 +365,7 @@ export class AcpxRuntimeHost {
     command: VerifiedAcpxCommandLease;
     toolBridge: RunnerToolBridge | null;
     claudeSkillNames: readonly string[];
+    claudeSkillNamespace?: string;
     assertAgentFilesHeld?: () => void;
     candidateAdmission?: AcpxCandidateStartupAdmission;
   }) {
@@ -374,6 +377,7 @@ export class AcpxRuntimeHost {
     this.#command = input.command;
     this.#toolBridge = input.toolBridge;
     this.#claudeSkillNames = [...input.claudeSkillNames];
+    this.#claudeSkillNamespace = input.claudeSkillNamespace;
     this.#assertAgentFilesHeld = input.assertAgentFilesHeld;
     this.#candidateAdmission = input.candidateAdmission ? structuredClone(input.candidateAdmission) : undefined;
   }
@@ -589,6 +593,7 @@ export class AcpxRuntimeHost {
       if (options.agent !== "antigravity") assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
       admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
+      let claudeSkillNamespace: string | undefined;
       // This copy is registered by the authenticated controller for its company,
       // agent and run. Environment/config values cannot widen the grant. Each
       // resumed process receives the newly registered copy; collection already
@@ -636,7 +641,20 @@ export class AcpxRuntimeHost {
           PAPERCLIP_PI_READ_ROOTS: JSON.stringify([...(options.providerPolicy?.readRoots ?? []), ...skills.readRoots]),
         });
       }
-      if (!preconfigured && !preparedHome && (options.agent === "claude" || options.agent === "grok" || options.agent === "kimi")) {
+      const skillHomeStoreRoot = options.environment?.PAPERCLIP_SKILL_HOME_STORE_ROOT;
+      if (!preconfigured && !preparedHome && options.agent === "claude" && options.runtimeContext
+        && skillHomeStoreRoot && isAbsolute(skillHomeStoreRoot) && process.platform !== "win32") {
+        // Claude loads the shared, sealed skill home as a local plugin, so
+        // sessions with the same skills keep one copy and launch without copying.
+        const { home } = await prepareSharedSkillHome({
+          providerHome: sandbox.agentHomeDirectory, storeRoot: skillHomeStoreRoot, context: options.runtimeContext,
+        });
+        claudeSkillNamespace = CLAUDE_SKILL_PLUGIN_NAME;
+        launchEnvironment = Object.freeze({ ...launchEnvironment,
+          PAPERCLIP_CLAUDE_SKILL_PLUGIN_DIR: claudeSkillPluginDirectory(home),
+        });
+        options.signal?.throwIfAborted();
+      } else if (!preconfigured && !preparedHome && (options.agent === "claude" || options.agent === "grok" || options.agent === "kimi")) {
         // The lifetime lease proves the previous provider has stopped. Refresh
         // the assigned snapshot before every launch, including durable resume;
         // Claude discovers user skills beneath its isolated CLAUDE_CONFIG_DIR.
@@ -800,6 +818,7 @@ export class AcpxRuntimeHost {
         claudeSkillNames: options.agent === "claude"
           ? (options.runtimeContext?.skills.map((skill) => skill.runtimeName) ?? [])
           : [],
+        claudeSkillNamespace,
       });
     } catch (error) {
       error = classifyAcpxProfileError(options.agent, error) ?? error;
@@ -946,7 +965,7 @@ export class AcpxRuntimeHost {
     // The command is internal framing; it must not consume the envelope's
     // allowance or cause an otherwise valid envelope to be truncated/rejected.
     const text = claudeNativeSkillPrompt(
-      boundedTurnText(input.text), this.#claudeSkillNames,
+      boundedTurnText(input.text), this.#claudeSkillNames, this.#claudeSkillNamespace,
     );
     const turn = this.#runtime.startTurn({
       text,

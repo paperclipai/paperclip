@@ -15,6 +15,9 @@ import {
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
+import {
+  prepareSharedSkillHome,
+} from "./codex-skill-home.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 
@@ -194,6 +197,48 @@ async function removeMaterializedTree(
   await removeTree(skillsHome);
 }
 
+const SKILL_STAGING_PREFIX = ".paperclip-skills-staging-";
+/** A launch copies skills in minutes; older staging was left by an interrupted launch. */
+const ABANDONED_STAGING_AT_LAUNCH_MS = 60 * 60 * 1000;
+
+async function treeBytes(path: string): Promise<number> {
+  const info = await lstat(path).catch(() => null);
+  if (!info || info.isSymbolicLink()) return 0;
+  if (!info.isDirectory()) return info.isFile() ? info.size : 0;
+  let total = 0;
+  for (const name of await readdir(path)) total += await treeBytes(join(path, name));
+  return total;
+}
+
+/**
+ * Removes `.paperclip-skills-staging-*` directories in `parent` that are older
+ * than `olderThanMs`. An interrupted launch (cancellation, a killed process)
+ * leaves a partly sealed copy there that no later launch reuses.
+ */
+export async function removeAbandonedSkillStaging(
+  parent: string,
+  options: { olderThanMs: number; now?: number; dryRun?: boolean },
+): Promise<{ removed: number; candidates: number; bytes: number }> {
+  const result = { removed: 0, candidates: 0, bytes: 0 };
+  const names = await readdir(parent).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return [] as string[];
+    throw error;
+  });
+  const before = (options.now ?? Date.now()) - options.olderThanMs;
+  for (const name of names) {
+    if (!name.startsWith(SKILL_STAGING_PREFIX)) continue;
+    const path = join(parent, name);
+    const info = await lstat(path).catch(() => null);
+    if (!info?.isDirectory() || info.mtimeMs >= before) continue;
+    result.candidates++;
+    result.bytes += await treeBytes(path);
+    if (options.dryRun) continue;
+    await removeMaterializedTree(path, (target) => rm(target, { recursive: true, force: true }));
+    result.removed++;
+  }
+  return result;
+}
+
 /** Removes a previously sealed skills snapshot at an explicit lifecycle boundary. */
 export async function releaseMaterializedNativeRuntimeSkills(
   skillsHome: string,
@@ -256,7 +301,8 @@ export async function materializeNativeRuntimeSkills(
 
   const parent = dirname(skillsHome);
   const nonce = randomUUID();
-  const stagingHome = join(parent, `.paperclip-skills-staging-${nonce}`);
+  const stagingHome = join(parent, `${SKILL_STAGING_PREFIX}${nonce}`);
+  await removeAbandonedSkillStaging(parent, { olderThanMs: ABANDONED_STAGING_AT_LAUNCH_MS });
   await mkdir(parent, { recursive: true, mode: 0o700 });
   await chmod(parent, 0o700);
   await mkdir(stagingHome, { mode: 0o700 });
@@ -337,15 +383,26 @@ export async function prepareIsolatedCodexHome(input: {
   codexHome: string;
   sourceCodexHome?: string | null;
   apiKey?: string | null;
-}): Promise<void> {
-  await materializeNativeRuntimeSkills(
-    input.context,
-    join(input.codexHome, "skills"),
-  );
+  /** Shared skill home store; when set, skills are not copied into this home. */
+  skillHomeStoreRoot?: string;
+}): Promise<{ skillHome: string | null }> {
+  let skillHome: string | null = null;
+  if (input.skillHomeStoreRoot && input.context) {
+    // Also migrates sessions that still carry a per-session skills copy.
+    ({ home: skillHome } = await prepareSharedSkillHome({
+      providerHome: input.codexHome, storeRoot: input.skillHomeStoreRoot, context: input.context,
+    }));
+  } else {
+    await materializeNativeRuntimeSkills(
+      input.context,
+      join(input.codexHome, "skills"),
+    );
+  }
 
   const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, providerConfig);
+  return { skillHome };
 }
 
 async function writeIsolatedCodexConfig(input: CodexAuthInput, providerConfig: string): Promise<void> {
