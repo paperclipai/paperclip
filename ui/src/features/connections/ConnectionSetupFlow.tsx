@@ -89,7 +89,7 @@ import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { askFirstCatalogEntryIdsFor } from "./connection-defaults";
 import { AppLogo } from "@/pages/apps/AppLogo";
-import { appApplicationSourceSlug, appConnectionSourceSlug } from "@/pages/apps/app-definition-display";
+import { aiConnectionSourceSlug, appApplicationSourceSlug, appConnectionSourceSlug } from "@/pages/apps/app-definition-display";
 import { UnverifiedServerBadge } from "@/pages/apps/UnverifiedServerBadge";
 import {
   appSourceConnectHref,
@@ -235,6 +235,13 @@ export function requestedConnectionEntry(input: {
   return getConnectableAppDefinition(input.requestedAppKey);
 }
 
+// AI accounts saved before their provider had its own catalog entry stay on
+// the earlier application, so their AI metadata also identifies the source.
+function retainedApplicationMatches(application: ToolApplication, connection: ToolConnection, requestedAppKey: string) {
+  return appApplicationSourceSlug(application) === requestedAppKey
+    || aiConnectionSourceSlug(connection) === requestedAppKey;
+}
+
 export function retainedResumeMatches(input: {
   requestedAppKey: string;
   resumeConnection: ToolConnection | null;
@@ -251,7 +258,7 @@ export function retainedResumeMatches(input: {
     && resumeApplication
     && resumeConnection.applicationId === resumeApplication.id
     && resumeConnection.companyId === resumeApplication.companyId
-    && appApplicationSourceSlug(resumeApplication) === requestedAppKey
+    && retainedApplicationMatches(resumeApplication, resumeConnection, requestedAppKey)
     && appConnectionSourceSlug(resumeConnection) === requestedAppKey,
   );
 }
@@ -269,7 +276,7 @@ export function retainedReconnectMatches(input: {
     || input.reconnectConnection.applicationId !== input.reconnectApplication.id
   ) return false;
   if (input.requestedAppKey) {
-    return appApplicationSourceSlug(input.reconnectApplication) === input.requestedAppKey;
+    return retainedApplicationMatches(input.reconnectApplication, input.reconnectConnection, input.requestedAppKey);
   }
   // Generic MCP applications intentionally have no provider slug. Their
   // reconnect URL instead carries the exact retained application identity.
@@ -2333,7 +2340,7 @@ function StandardConnectionSetupFlow({
       setInstallAgentIds={setInstallAgentIds}
       lockedAgentId={requestedAgentId}
       capabilities={galleryQuery.data?.capabilities}
-      githubIdentity={entry?.slug === "github"}
+      githubIdentity={entry?.slug === "github" || entry?.slug === "github-copilot"}
       identityLoading={Boolean(automaticOAuthEntry) && directOAuthLookupPending}
       preserveAgentAccess={preservesAgentAccess}
       disabled={connectMutation.isPending || oauthStartMutation.isPending}

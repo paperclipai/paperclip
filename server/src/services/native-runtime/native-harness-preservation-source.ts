@@ -37,22 +37,23 @@ const fail = (): never => { throw new Error("native_harness_preservation_source_
 export async function settledNativeHarnessBackupOwner(db: Db, input: {
   companyId: string; issueId: string; runId: string; sessionId: string; runnerInstanceId: string;
   scopeDigest: string; root: string; manifestSha256: string; providerLeaseId: string; signal: AbortSignal;
-}): Promise<SettledNativeHarnessBackupOwner | null> {
+}): Promise<{ owner: SettledNativeHarnessBackupOwner; reason?: never }
+  | { owner: null; reason: "coordinator_missing" | "coordinator_unsettled" | "session_not_selected" | "lease_missing" }> {
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
   const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
     eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId)));
-  if (!run || !coordinator || !settled(coordinator)) return null;
+  if (!run || !coordinator || !settled(coordinator)) return { owner: null, reason: run && coordinator ? "coordinator_unsettled" : "coordinator_missing" };
   const selected = await db.select({ id: agentTaskSessions.id, lastRunId: agentTaskSessions.lastRunId }).from(agentTaskSessions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, agentTaskSessions.companyId), eq(heartbeatRuns.agentId, agentTaskSessions.agentId),
       eq(heartbeatRuns.id, agentTaskSessions.lastRunId))).where(and(eq(agentTaskSessions.companyId, input.companyId),
       eq(agentTaskSessions.agentId, run.agentId), eq(agentTaskSessions.adapterType, "paperclip_runner"),
       eq(heartbeatRuns.nativeIssueId, input.issueId), eq(heartbeatRuns.nativeSessionId, input.sessionId))).limit(2);
-  if (selected.length !== 1 || !selected[0]!.lastRunId) return null;
+  if (selected.length !== 1 || !selected[0]!.lastRunId) return { owner: null, reason: "session_not_selected" };
   const leases = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
     eq(environmentLeases.issueId, input.issueId), eq(environmentLeases.providerLeaseId, input.providerLeaseId),
     sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'manifestSha256' = ${input.manifestSha256}`));
   const lease = leases.find(row => readNativeHarnessBackupStamp(row.metadata?.nativeHarnessBackup, input.providerLeaseId)?.sessionScopeSha256 === input.scopeDigest);
-  if (!lease) return null;
+  if (!lease) return { owner: null, reason: "lease_missing" };
   const owner: SettledNativeHarnessBackupOwner = { kind: "settled_native_harness_backup", companyId: input.companyId,
     issueId: input.issueId, agentId: run.agentId, runId: input.runId, sessionId: input.sessionId, runnerInstanceId: input.runnerInstanceId,
     scopeDigest: input.scopeDigest, root: input.root, manifestSha256: input.manifestSha256,
@@ -60,7 +61,7 @@ export async function settledNativeHarnessBackupOwner(db: Db, input: {
     sourceLeaseId: lease.id, providerLeaseId: input.providerLeaseId,
     runDigest: runDigest(run), coordinatorDigest: coordinatorDigest(coordinator), leaseDigest: leaseDigest(lease) };
   await db.transaction(tx => assertSettledNativeHarnessBackupSource(tx as unknown as Db, owner, input.signal));
-  return owner;
+  return { owner };
 }
 
 export async function assertSettledNativeHarnessBackupSource(db: Db, owner: SettledNativeHarnessBackupOwner,
