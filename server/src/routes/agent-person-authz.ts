@@ -1,11 +1,8 @@
 import type { Request } from "express";
 import { and, eq, inArray } from "drizzle-orm";
-import { heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { loadRunBoundIssue } from "../services/issue-creation-source.js";
-
-/** How far up a task's parents to look for the person who made it. */
-const ANCESTOR_LIMIT = 10;
 
 const directedRuns = new WeakMap<Request, Promise<boolean>>();
 
@@ -48,26 +45,19 @@ async function resolveDirectedByPerson(db: Db, req: Request): Promise<boolean> {
     if (byPerson) return true;
   }
 
-  // The run's task, or the nearest parent a person made, is the person's own (their chat, or a task they made).
-  let issue: { createdByUserId: string | null; parentId: string | null } | null = await loadRunBoundIssue(db, run);
-  for (let depth = 0; issue && depth < ANCESTOR_LIMIT; depth += 1) {
-    if (issue.createdByUserId) return issue.createdByUserId === personUserId;
-    if (!issue.parentId) return false;
-    issue = await db
-      .select({ createdByUserId: issues.createdByUserId, parentId: issues.parentId })
-      .from(issues)
-      .where(and(eq(issues.id, issue.parentId), eq(issues.companyId, run.companyId)))
-      .then((rows) => rows[0] ?? null);
-  }
-  return false;
+  // The run's own task is one the person made (their chat, or a task they made). Parents do not count:
+  // an agent can move a task it made under someone's task, and the task tree is not evidence of who asked.
+  const issue = await loadRunBoundIssue(db, run);
+  return issue?.createdByUserId === personUserId;
 }
 
 /**
  * Whether the person an agent's run works for directed that run: they wrote a
- * message that woke it, or its task (or the nearest parent a person made) is
- * their own, such as their chat. A run also works for a person another member
- * named as a task's responsible person, a routine's person, or the company
- * default; those runs do not borrow that person's authority.
+ * message that woke it, or its own task is one they made, such as their chat.
+ * Both are recorded by the server, not by the agent. A run also works for a
+ * person another member named as a task's responsible person, a routine's
+ * person, or the company default, and for the person of a subtask an agent
+ * made; those runs do not borrow that person's authority.
  */
 export function agentRunDirectedByPerson(db: Db, req: Request): Promise<boolean> {
   let directed = directedRuns.get(req);

@@ -131,20 +131,21 @@ export function responsibilityAreaRoutes(db: Db) {
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
     const writer = await assertAreaWriter(req, row.companyId);
-    const owners = writer ? await svc.ownersInArea(row.companyId, row.id) : [];
-    // Undo never renames, re-describes, reorders or un-archives an area other people's responsibilities
-    // share (only their own Dashboards say so), so such a change is not reported as undoable.
-    const sharedChange = Boolean(writer) && owners.some((owner) => owner !== writer!.personUserId) && (
-      (req.body.title !== undefined && req.body.title !== row.title)
-      || (req.body.description !== undefined && req.body.description !== row.description)
-      || (req.body.sortOrder !== undefined && req.body.sortOrder !== row.sortOrder)
-      || (req.body.status !== undefined && req.body.status !== "archived" && row.status === "archived"));
-    // Everyone whose Dashboard shows the area gets a version.
-    const updated = writer
+    // Undo never renames, re-describes, reorders or un-archives an area other people's proposed or
+    // active responsibilities share (the same test restore uses). Such a change saves no version,
+    // so no Dashboard offers an Undo that would do nothing; it stays in the activity log.
+    const sharedChange = Boolean(writer)
+      && (await svc.ownersInArea(row.companyId, row.id, ["proposed", "active"])).some((owner) => owner !== writer!.personUserId)
+      && ((req.body.title !== undefined && req.body.title !== row.title)
+        || (req.body.description !== undefined && req.body.description !== row.description)
+        || (req.body.sortOrder !== undefined && req.body.sortOrder !== row.sortOrder)
+        || (req.body.status !== undefined && req.body.status !== "archived" && row.status === "archived"));
+    // Otherwise everyone whose Dashboard shows the area gets a version.
+    const updated = writer && !sharedChange
       ? await agentChanges.record({
-        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...owners],
+        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...await svc.ownersInArea(row.companyId, row.id)],
         agentId: writer.agentId, touchedAreaIds: [row.id],
-        onVersion: sharedChange ? undefined : reportVersionOf(res, writer.personUserId),
+        onVersion: reportVersionOf(res, writer.personUserId),
       }, (tx) => responsibilityAreaService(tx).update(row, req.body))
       : await svc.update(row, req.body);
     await logAreaMutation(req, row.companyId, "responsibility_area.updated", row.id, {

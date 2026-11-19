@@ -1048,9 +1048,11 @@ describeEmbeddedPostgres("responsibility routes", () => {
       const area = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "People" });
 
       // An operator makes a task naming the owner (an admin) as its responsible person. The run works for the
-      // owner, but the owner did not direct it, so the agent may only propose, also from a subtask under it.
+      // owner, but the owner did not direct it, so the agent may only propose. A task an agent made does not
+      // count either, even under the owner's own task: an agent can move its task there.
       const named = await seedTask(company.id, { title: "Clean up", createdByUserId: "other-user", responsibleUserId: OWNER });
-      const subtask = await seedTask(company.id, { title: "Part", createdByAgentId: agent.id, parentId: named.id, responsibleUserId: OWNER });
+      const own = await seedTask(company.id, { title: "Plan", createdByUserId: OWNER, responsibleUserId: OWNER });
+      const subtask = await seedTask(company.id, { title: "Part", createdByAgentId: agent.id, parentId: own.id, responsibleUserId: OWNER });
       const noTask = await agentRunFor(company.id, agent.id, null);
       for (const app of [await agentRunFor(company.id, agent.id, named.id), await agentRunFor(company.id, agent.id, subtask.id), noTask]) {
         expect((await request(app).patch(`/api/responsibilities/${mine.id}`).send({ status: "let_go" })).status).toBe(403);
@@ -1064,7 +1066,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect(row?.status).toBe("active");
     });
 
-    it("acts for the person whose message woke the run, and under a subtask of their own task", async () => {
+    it("acts for the person whose message woke the run, or on a task they made", async () => {
       await enable();
       const company = await seedCompany();
       const agent = await seedAgent(company.id);
@@ -1076,8 +1078,7 @@ describeEmbeddedPostgres("responsibility routes", () => {
       expect((await request(woken).patch(`/api/responsibilities/${mine.id}`).send({ title: "Hire well" })).status).toBe(200);
 
       const own = await seedTask(company.id, { title: "Plan", createdByUserId: OWNER, responsibleUserId: OWNER });
-      const subtask = await seedTask(company.id, { title: "Part", createdByAgentId: agent.id, parentId: own.id, responsibleUserId: OWNER });
-      expect((await request(await agentRunFor(company.id, agent.id, subtask.id)).patch(`/api/responsibilities/${mine.id}`).send({ title: "Hire" })).status).toBe(200);
+      expect((await request(await agentRunFor(company.id, agent.id, own.id)).patch(`/api/responsibilities/${mine.id}`).send({ title: "Hire" })).status).toBe(200);
     });
 
     it("deletes only after the person accepts the agent's confirmation card", async () => {
@@ -1147,10 +1148,15 @@ describeEmbeddedPostgres("responsibility routes", () => {
       const board = createApp(db, localBoardActor());
       const shared = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "People", description: "Who we hire" });
       await createResponsibility(board, company.id, { title: "Hiring", areaId: shared.body.id });
-      await createResponsibility(board, company.id, { title: "Onboarding", areaId: shared.body.id, ownerUserId: "other-user" });
+      // The other person's responsibility there is only proposed; the area is still shared.
+      const other = await createResponsibility(board, company.id, { title: "Onboarding", areaId: shared.body.id, ownerUserId: "other-user" });
+      await db.update(responsibilities).set({ status: "proposed" }).where(eq(responsibilities.id, other.id));
+      const before = await latestVersion(company.id);
       const described = await request(app).patch(`/api/responsibility-areas/${shared.body.id}`).send({ description: "Hiring and onboarding" });
       expect(described.status).toBe(200);
       expect(described.headers["x-paperclip-dashboard-version"]).toBeUndefined();
+      // No version is saved, so no Dashboard offers an Undo that would leave the description as it is.
+      expect((await latestVersion(company.id))?.id).toBe(before?.id);
 
       const mine = await request(board).post(`/api/companies/${company.id}/responsibility-areas`).send({ title: "Money", description: "Cash and runway" });
       await createResponsibility(board, company.id, { title: "Runway", areaId: mine.body.id });

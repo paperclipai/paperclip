@@ -282,7 +282,7 @@ A person's responsibilities are saved Paperclip records (experimental): each has
 
 Ask the person what they are responsible for only when the list is empty, and never invent responsibilities. A "turned off" error (code `responsibilities_disabled`) means the feature is off on this instance: say so instead of reporting that they have none. See "Areas and responsibilities" in `references/api-reference.md` for the routes behind these tools.
 
-To change them, you act for the person your run works for when they directed it: it is their own chat or task (or a subtask of one), or their message woke you. You may then do what they could (their own responsibilities, or anyone's when they are a company owner or admin):
+To change them, you act for the person your run works for when they directed it: it is their own chat or a task they made, or their message woke you (a subtask you made does not count). You may then do what they could (their own responsibilities, or anyone's when they are a company owner or admin):
 
 - `create_area`, `update_area` (rename, describe, reorder, archive or restore) and `delete_area`.
 - `create_responsibility` (a title is enough; `areaTitle` reuses or creates the area; `fileItems` files work under it), `update_responsibility` (title, sentence, metric as `bar`, area, the agent that runs it, health override, or status such as `let_go`) and `delete_responsibility`.
