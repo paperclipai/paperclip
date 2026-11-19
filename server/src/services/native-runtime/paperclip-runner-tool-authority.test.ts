@@ -2,6 +2,7 @@ import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { RESPONSIBILITY_TOOL_NAMES } from "../responsibility-tools.js";
 import { createServer } from "node:http";
 import { createPaperclipHttpServer } from "../../http/server.js";
 import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
@@ -191,7 +192,7 @@ describe("PaperclipRunnerToolAuthority", () => {
   });
 
   it("advertises the responsibility tools only while the instance has them on", async () => {
-    const tools = ["list_responsibilities", "get_responsibility", "find_responsibilities_for"];
+    const tools = [...RESPONSIBILITY_TOOL_NAMES];
     const off = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
     expect(off.definitions().map(tool => tool.name)).not.toEqual(expect.arrayContaining([tools[0]]));
     // A hidden tool called by name says the feature is off, so the agent does not report an empty list.

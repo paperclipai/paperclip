@@ -3005,6 +3005,659 @@
   },
   {
     "allowedModes": [
+      "standard"
+    ],
+    "description": "Create an area, a broad heading for responsibilities such as Fundraising. If a live area already has this title (any case), it is returned instead. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "description": "What the area covers.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Rename, describe, reorder, archive or restore an area. Archiving keeps its responsibilities and can be undone. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "description": {
+          "description": "What the area covers.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "archived"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "areaId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Delete an area permanently. This cannot be undone, so the first call posts a confirmation card for the person and returns awaiting_confirmation: tell them, then stop. When they accept, you are woken; call again with the same arguments to delete. Prefer update_area with status archived, which can be undone.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "askAgain": {
+          "description": "Post a new card after the person declined; only when they ask again.",
+          "type": "boolean"
+        },
+        "moveResponsibilitiesTo": {
+          "description": "Another area for its responsibilities. Without one they are left with no area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "areaId"
+      ],
+      "type": "object"
+    },
+    "operationId": "delete_area",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Delete area",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Create a responsibility for a person; a title alone is enough, the bar can come later. Defaults to the person this run works for and to active. A live responsibility of that person with the same title is returned instead of a copy. File it under an area by areaId or areaTitle (an area with that title is reused or created), and file work under it with fileItems. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Area ID. Send areaId or areaTitle, not both.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "areaTitle": {
+          "description": "Area by title; created when no live area has it.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "bar": {
+          "additionalProperties": false,
+          "description": "The metric that measures the bar. volume and percentage need target; range needs low and high; yes_no needs only name (the statement that should be true).",
+          "properties": {
+            "current": {
+              "description": "The latest reading; true or false for yes_no.",
+              "type": [
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "direction": {
+              "enum": [
+                "at_least",
+                "at_most"
+              ],
+              "type": "string"
+            },
+            "high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Default: percentage when unit is %, otherwise volume.",
+              "enum": [
+                "volume",
+                "percentage",
+                "yes_no",
+                "range"
+              ],
+              "type": "string"
+            },
+            "low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "What is measured, e.g. Investors contacted.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unit": {
+              "maxLength": 40,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "description": {
+          "description": "More about it.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "description": "Why you created it, shown to the person on a proposal.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fileItems": {
+          "description": "What to file: each a project, task or routine by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 0,
+          "type": "array"
+        },
+        "ownerUserId": {
+          "description": "Another person's user ID from list_people. Omit for the person this run works for.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "runByAgentId": {
+          "description": "The agent that runs the work and keeps the metric current.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "standard": {
+          "description": "The bar as one sentence: what must be true.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Default active. Use proposed to let the person confirm it.",
+          "enum": [
+            "active",
+            "proposed"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Change a responsibility: its title, description, bar sentence (standard), metric (bar; null clears it), area (areaId, null for none, or areaTitle), the agent that runs it, order, health override and note, or status (active, proposed, let_go to stop it, dismissed for a proposal). When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "areaId": {
+          "description": "Move it to this area; null for no area.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "areaTitle": {
+          "description": "Move it to the area with this title; created when no live area has it.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "bar": {
+          "additionalProperties": false,
+          "description": "The metric that measures the bar. volume and percentage need target; range needs low and high; yes_no needs only name (the statement that should be true).",
+          "properties": {
+            "current": {
+              "description": "The latest reading; true or false for yes_no.",
+              "type": [
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "direction": {
+              "enum": [
+                "at_least",
+                "at_most"
+              ],
+              "type": "string"
+            },
+            "high": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "description": "Default: percentage when unit is %, otherwise volume.",
+              "enum": [
+                "volume",
+                "percentage",
+                "yes_no",
+                "range"
+              ],
+              "type": "string"
+            },
+            "low": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "name": {
+              "description": "What is measured, e.g. Investors contacted.",
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            "target": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "unit": {
+              "maxLength": 40,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "More about it.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "healthNote": {
+          "description": "Why the health is overridden.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "healthOverride": {
+          "description": "Override the computed health; null clears it.",
+          "enum": [
+            "behind",
+            "at_risk",
+            "on_track",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        },
+        "runByAgentId": {
+          "description": "The agent that runs it; null for none.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sortOrder": {
+          "type": "integer"
+        },
+        "standard": {
+          "description": "The bar as one sentence.",
+          "maxLength": 10000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "proposed",
+            "let_go",
+            "dismissed"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "update_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Update responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Delete a responsibility permanently, with its bar and metric history. This cannot be undone, so the first call posts a confirmation card for the person and returns awaiting_confirmation: tell them, then stop. When they accept, you are woken; call again with the same arguments to delete. To stop a responsibility without losing it, use update_responsibility with status let_go.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "askAgain": {
+          "description": "Post a new card after the person declined; only when they ask again.",
+          "type": "boolean"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID from list_responsibilities.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId"
+      ],
+      "type": "object"
+    },
+    "operationId": "delete_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Delete responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "File projects, tasks and routines under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "What to file: each a project, task or routine by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "moveFrom": {
+          "description": "A responsibility ID to move the items from, or all.",
+          "type": "string"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID to file under.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId",
+        "items"
+      ],
+      "type": "object"
+    },
+    "operationId": "file_under_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "File work under responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard"
+    ],
+    "description": "Unfile projects, tasks and routines from a responsibility by what they are; no link IDs needed. The items themselves are not changed. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "description": "What to file: each a project, task or routine by ID. A task can also be an identifier such as PAP-12.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "project",
+                  "task",
+                  "routine"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id"
+            ],
+            "type": "object"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "type": "array"
+        },
+        "responsibilityId": {
+          "description": "Responsibility ID.",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibilityId",
+        "items"
+      ],
+      "type": "object"
+    },
+    "operationId": "remove_from_responsibility",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Remove work from responsibility",
+    "version": 1
+  },
+  {
+    "allowedModes": [
       "standard",
       "skill_test"
     ],

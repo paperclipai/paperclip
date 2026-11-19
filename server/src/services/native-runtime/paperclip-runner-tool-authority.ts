@@ -964,14 +964,23 @@ export class PaperclipRunnerToolAuthority {
       }
       case "list_responsibilities":
       case "get_responsibility":
-      case "find_responsibilities_for": {
+      case "find_responsibilities_for":
+      case "create_area":
+      case "update_area":
+      case "delete_area":
+      case "create_responsibility":
+      case "update_responsibility":
+      case "delete_responsibility":
+      case "file_under_responsibility":
+      case "remove_from_responsibility": {
         // Hidden tools stay refused when called by name; the routes also re-check the live setting.
         if (this.binding.responsibilitiesEnabled !== true) throw responsibilityToolsDisabledError();
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = this.#apiToken(context);
         if (!apiUrl || !token) throw new Error("Responsibility tool authentication is unavailable");
         return callResponsibilityTool({ name: call.tool, arguments: input, apiUrl, token,
-          companyId: this.binding.companyId, companyPrefix: await this.#companyPagePrefix() });
+          companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
+          companyPrefix: await this.#companyPagePrefix() });
       }
       case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {

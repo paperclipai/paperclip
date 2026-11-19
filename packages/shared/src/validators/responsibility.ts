@@ -68,6 +68,11 @@ const createResponsibilityFields = z.object({
   metricDirection: z.enum(RESPONSIBILITY_METRIC_DIRECTIONS).optional(),
   /** An area in the same company. */
   areaId: z.string().uuid().optional().nullable(),
+  /**
+   * An area by title instead of `areaId`: the live area with that title (any
+   * case), or a new one made in the same transaction. Not with `areaId`.
+   */
+  areaTitle: title.optional(),
   /** An agent in the same company that runs the work. */
   runByAgentId: z.string().uuid().optional().nullable(),
   evidence: optionalText,
@@ -147,6 +152,8 @@ export const updateResponsibilitySchema = z.object({
   /** Volume and percentage only. */
   metricDirection: z.enum(RESPONSIBILITY_METRIC_DIRECTIONS).optional().nullable(),
   areaId: z.string().uuid().optional().nullable(),
+  /** Move it to the live area with this title (any case), made in the same transaction when there is none. Not with `areaId`. */
+  areaTitle: title.optional(),
   runByAgentId: z.string().uuid().optional().nullable(),
   evidence: optionalText,
   sortOrder: sortOrder.optional(),
@@ -228,3 +235,42 @@ export const responsibilityLinkLookupQuerySchema = z.object({
 );
 
 export type ResponsibilityLinkLookupQuery = z.infer<typeof responsibilityLinkLookupQuerySchema>;
+
+/** What can be filed under a responsibility by kind and id. */
+export const RESPONSIBILITY_FILE_ITEM_KINDS = ["project", "task", "routine"] as const;
+export type ResponsibilityFileItemKind = (typeof RESPONSIBILITY_FILE_ITEM_KINDS)[number];
+
+const fileItem = z.object({
+  kind: z.enum(RESPONSIBILITY_FILE_ITEM_KINDS),
+  id: z.string().uuid(),
+}).strict();
+
+/**
+ * File items under a responsibility in one step. `moveFrom` makes it a move:
+ * the items are also unfiled from that responsibility, or with `all` from
+ * every other proposed or active responsibility of the same owner.
+ */
+export const fileResponsibilityItemsSchema = z.object({
+  items: z.array(fileItem).min(1).max(50),
+  moveFrom: z.union([z.string().uuid(), z.literal("all")]).optional(),
+}).strict();
+
+export type FileResponsibilityItems = z.infer<typeof fileResponsibilityItemsSchema>;
+
+/** Unfile items from a responsibility by kind and id; no link ids needed. */
+export const unfileResponsibilityItemsSchema = z.object({
+  items: z.array(fileItem).min(1).max(50),
+}).strict();
+
+export type UnfileResponsibilityItems = z.infer<typeof unfileResponsibilityItemsSchema>;
+
+/** An agent deletes only with the id of the confirmation card the person accepted. */
+export const deleteResponsibilityQuerySchema = z.object({
+  confirmationId: z.string().uuid().optional(),
+});
+
+export const deleteResponsibilityAreaQuerySchema = z.object({
+  confirmationId: z.string().uuid().optional(),
+  /** An area for the responsibilities under it; without one they are left with no area. */
+  moveResponsibilitiesTo: z.string().uuid().optional(),
+});

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -102,9 +102,19 @@ export type ResponsibilityLinkTarget =
   | { kind: "issue"; id: string }
   | { kind: "routine"; id: string };
 
+/**
+ * `board` with `viaAgentId`: an agent acting for the person `userId` (the
+ * person its run works for), which may do what that person could. The agent
+ * is kept as the row's `proposedByAgentId` and as the author of readings.
+ */
 export type ResponsibilityCreateActor =
-  | { type: "board"; userId: string }
+  | { type: "board"; userId: string; viaAgentId?: string }
   | { type: "agent"; agentId: string };
+
+/** How a responsibility's update is attributed; see ResponsibilityCreateActor for `viaAgentId`. */
+export type ResponsibilityUpdateActor =
+  | { type: "board"; userId?: string | null; viaAgentId?: string }
+  | { type: "agent"; agentId: string; scope: ResponsibilityReadScope };
 
 const OPEN_TASK = sql`${issues.status} not in ('done', 'cancelled')`;
 const UNFINISHED_PROJECT = sql`${projects.status} not in ('completed', 'cancelled') and ${projects.archivedAt} is null`;
@@ -1311,7 +1321,13 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
       input: CreateResponsibility,
       actor: ResponsibilityCreateActor,
       ownerUserId: string,
-    ): Promise<{ responsibility: ResponsibilityRow; activatedArea: ResponsibilityArea | null }> {
+      /**
+       * `reuseLiveTitle`: return the owner's proposed or active responsibility
+       * with the same title (any case) instead of making a copy, checked under
+       * a lock so concurrent agent retries cannot both create one.
+       */
+      opts: { reuseLiveTitle?: boolean } = {},
+    ): Promise<{ responsibility: ResponsibilityRow; activatedArea: ResponsibilityArea | null; created: boolean }> {
       if (actor.type === "agent") {
         // The route validates agents against `proposeResponsibilitySchema`; this keeps the rule for any other caller.
         assertCanBeActive({
@@ -1365,21 +1381,32 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
             ...common,
             status: input.status ?? "active",
             source: input.source ?? "manual",
-            proposedByAgentId: null,
+            proposedByAgentId: actor.viaAgentId ?? null,
             confirmedAt: (input.status ?? "active") === "active" ? now : null,
           };
       return db.transaction(async (tx) => {
+        if (opts.reuseLiveTitle) {
+          const key = `responsibility-title:${companyId}:${ownerUserId}:${input.title.trim().toLowerCase()}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+          const [existing] = await tx.select().from(responsibilities).where(and(
+            eq(responsibilities.companyId, companyId),
+            eq(responsibilities.ownerUserId, ownerUserId),
+            inArray(responsibilities.status, [...LIVE_STATUSES]),
+            sql`lower(${responsibilities.title}) = lower(${input.title.trim()})`,
+          )).limit(1);
+          if (existing) return { responsibility: existing, activatedArea: null, created: false };
+        }
         const [row] = await tx.insert(responsibilities).values(values).returning();
         // The first reading starts the metric's history.
         if (reading !== null) {
           await recordPrimaryReading(tx, row!, {
             value: reading,
             recordedAt: now,
-            actor: actor.type === "agent" ? { agentId: actor.agentId } : { userId: actor.userId },
+            actor: actor.type === "agent" ? { agentId: actor.agentId } : actor.viaAgentId ? { agentId: actor.viaAgentId } : { userId: actor.userId },
           });
         }
         const activatedArea = await activateAreaFor(tx, row!);
-        return { responsibility: row!, activatedArea };
+        return { responsibility: row!, activatedArea, created: true };
       });
     },
 
@@ -1427,7 +1454,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
     async update(
       existing: ResponsibilityRow,
       patch: UpdateResponsibility,
-      actor: { type: "board"; userId?: string | null } | { type: "agent"; agentId: string; scope: ResponsibilityReadScope },
+      actor: ResponsibilityUpdateActor,
       opts: { readingAt?: Date; readingNote?: string | null; recordHistory?: boolean } = {},
     ): Promise<{ responsibility: ResponsibilityRow; activatedArea: ResponsibilityArea | null; olderReading: boolean }> {
       if (actor.type === "agent") {
@@ -1510,7 +1537,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
           await recordPrimaryReading(tx, row, {
             value: normalizeResponsibilityReading(patch.metricCurrent),
             recordedAt: readingAt,
-            actor: actor.type === "agent" ? { agentId: actor.agentId } : { userId: actor.userId ?? null },
+            actor: actor.type === "agent" ? { agentId: actor.agentId } : actor.viaAgentId ? { agentId: actor.viaAgentId } : { userId: actor.userId ?? null },
             note: opts.readingNote ?? null,
           });
         }
@@ -1587,6 +1614,70 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
     async link(row: ResponsibilityRow, target: ResponsibilityLinkTarget, scope: ResponsibilityReadScope) {
       await assertTargetInCompany(row.companyId, target, scope);
       return db.transaction((tx) => linkInTx(tx, row, target));
+    },
+
+    /**
+     * File items under a responsibility in one transaction, and with
+     * `moveFromIds` unfile the same items from those responsibilities (a
+     * move). Idempotent: an item already filed keeps its link. Every item is
+     * checked against the reader's visibility first; nothing changes when one
+     * is not found.
+     */
+    async fileItems(
+      row: ResponsibilityRow,
+      targets: readonly ResponsibilityLinkTarget[],
+      scope: ResponsibilityReadScope,
+      opts: { moveFromIds?: readonly string[] } = {},
+    ) {
+      for (const target of targets) await assertTargetInCompany(row.companyId, target, scope);
+      const moveFrom = (opts.moveFromIds ?? []).filter((id) => id !== row.id);
+      return db.transaction(async (tx) => {
+        const filed: Array<{ target: ResponsibilityLinkTarget; link: ResponsibilityLink; created: boolean }> = [];
+        for (const target of targets) filed.push({ target, ...await linkInTx(tx, row, target) });
+        const unfiled: ResponsibilityLink[] = [];
+        if (moveFrom.length > 0) {
+          for (const target of targets) {
+            const column = target.kind === "project" ? responsibilityLinks.projectId
+              : target.kind === "issue" ? responsibilityLinks.issueId
+                : responsibilityLinks.routineId;
+            const removed = await tx.delete(responsibilityLinks).where(and(
+              eq(responsibilityLinks.companyId, row.companyId),
+              inArray(responsibilityLinks.responsibilityId, moveFrom),
+              eq(column, target.id),
+            )).returning();
+            unfiled.push(...removed.map(toLink));
+          }
+        }
+        return { filed, unfiled };
+      });
+    },
+
+    /** Unfile items from a responsibility by what they are, without link ids. Items not filed there are skipped. */
+    async unfileItems(row: ResponsibilityRow, targets: readonly ResponsibilityLinkTarget[]) {
+      return db.transaction(async (tx) => {
+        const removed: ResponsibilityLink[] = [];
+        for (const target of targets) {
+          const column = target.kind === "project" ? responsibilityLinks.projectId
+            : target.kind === "issue" ? responsibilityLinks.issueId
+              : responsibilityLinks.routineId;
+          const rows = await tx.delete(responsibilityLinks)
+            .where(and(eq(responsibilityLinks.responsibilityId, row.id), eq(column, target.id)))
+            .returning();
+          removed.push(...rows.map(toLink));
+        }
+        return removed;
+      });
+    },
+
+    /** The proposed and active responsibilities of one owner, other than `exceptId`, as move sources. */
+    async liveIdsOfOwner(companyId: string, ownerUserId: string, exceptId: string) {
+      const rows = await db.select({ id: responsibilities.id }).from(responsibilities).where(and(
+        eq(responsibilities.companyId, companyId),
+        eq(responsibilities.ownerUserId, ownerUserId),
+        inArray(responsibilities.status, [...LIVE_STATUSES]),
+        ne(responsibilities.id, exceptId),
+      ));
+      return rows.map((entry) => entry.id);
     },
 
     async unlink(row: ResponsibilityRow, linkId: string) {
