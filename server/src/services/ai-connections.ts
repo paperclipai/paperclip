@@ -973,6 +973,7 @@ export function aiConnectionService(db: Db) {
           ownership: input.ownership,
           routingKind: routing?.kind,
           firstForCompany: !earlierModel,
+          ownerUserId: userId,
         });
       }
       return { connectionId: id, grantId };

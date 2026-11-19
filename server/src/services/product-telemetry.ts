@@ -16,7 +16,7 @@ import {
 } from "@paperclipai/shared/telemetry";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
-import { withTelemetryCompany } from "../telemetry-company-scope.js";
+import { resolveTelemetryPerson, withTelemetryActor } from "../telemetry-company-scope.js";
 
 export type TelemetryActorKind = "user" | "agent" | "system";
 
@@ -26,11 +26,19 @@ export function telemetryActorKind(actor: { agentId?: string | null; userId?: st
   return "system";
 }
 
-function emitAfterCommit(companyId: string, event: string, emit: (client: TelemetryClient) => void): void {
+export type TelemetryPersonSources = Parameters<typeof resolveTelemetryPerson>[0];
+
+function emitAfterCommit(
+  companyId: string,
+  personSources: TelemetryPersonSources,
+  event: string,
+  emit: (client: TelemetryClient) => void,
+): void {
+  const person = resolveTelemetryPerson(personSources);
   afterTransactionCommit(() => {
     try {
       const client = getTelemetryClient();
-      if (client) withTelemetryCompany(companyId, () => emit(client));
+      if (client) withTelemetryActor({ companyId, person }, () => emit(client));
     } catch (err) {
       logger.warn({ err, event }, "failed to emit product telemetry");
     }
@@ -44,6 +52,7 @@ export function emitTaskCreatedAfterCommit(issue: {
   conversationAgentId: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId: string | null;
 }): void {
   if (issue.conversationAgentId) return;
   const createdByKind = issue.originKind === "routine_execution"
@@ -51,7 +60,8 @@ export function emitTaskCreatedAfterCommit(issue: {
     : issue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND
       ? "onboarding"
       : telemetryActorKind({ agentId: issue.createdByAgentId, userId: issue.createdByUserId });
-  emitAfterCommit(issue.companyId, "task.created", (client) =>
+  const personSources = { taskCreatedByUserId: issue.createdByUserId, taskAssignedByUserId: issue.responsibleUserId };
+  emitAfterCommit(issue.companyId, personSources, "task.created", (client) =>
     trackTaskCreated(client, { createdByKind, isSubtask: Boolean(issue.parentId) }));
 }
 
@@ -79,11 +89,19 @@ export function emitTaskStatusTransitionAfterCommit(input: {
   actorUserId: string | null | undefined;
   hasOpenBlockers: boolean;
   unblockDescriptor: IssueUnblockDescriptor | null | undefined;
+  taskCreatedByUserId: string | null;
+  taskResponsibleUserId: string | null;
+  runOwnerUserId: string | null | undefined;
 }): void {
   if (input.previousStatus === input.nextStatus || input.conversationAgentId) return;
   const actorKind = telemetryActorKind({ agentId: input.actorAgentId, userId: input.actorUserId });
+  const personSources = {
+    taskCreatedByUserId: input.taskCreatedByUserId,
+    taskAssignedByUserId: input.taskResponsibleUserId,
+    runOwnerUserId: input.runOwnerUserId,
+  };
   if (input.nextStatus === "done") {
-    emitAfterCommit(input.companyId, "task.completed", (client) =>
+    emitAfterCommit(input.companyId, personSources, "task.completed", (client) =>
       trackTaskCompleted(client, { completedByKind: actorKind, isSubtask: Boolean(input.parentId) }));
   } else if (input.nextStatus === "blocked") {
     const blockedReason = taskBlockedReason({
@@ -91,7 +109,7 @@ export function emitTaskStatusTransitionAfterCommit(input: {
       unblockDescriptor: input.unblockDescriptor,
       actorKind,
     });
-    emitAfterCommit(input.companyId, "task.blocked", (client) =>
+    emitAfterCommit(input.companyId, personSources, "task.blocked", (client) =>
       trackTaskBlocked(client, { blockedReason, blockedByKind: actorKind }));
   }
 }
@@ -104,6 +122,8 @@ export async function emitSystemTaskBlockedAfterCommit(
     parentId: string | null;
     conversationAgentId: string | null;
     unblockDescriptor: IssueUnblockDescriptor | null;
+    createdByUserId: string | null;
+    responsibleUserId: string | null;
   },
   previousStatus: string,
 ): Promise<void> {
@@ -118,6 +138,9 @@ export async function emitSystemTaskBlockedAfterCommit(
     actorUserId: null,
     hasOpenBlockers: await hasUnfinishedBlockers(tx, task),
     unblockDescriptor: task.unblockDescriptor,
+    taskCreatedByUserId: task.createdByUserId,
+    taskResponsibleUserId: task.responsibleUserId,
+    runOwnerUserId: null,
   });
 }
 
@@ -126,9 +149,15 @@ export function emitPlanCreatedAfterCommit(input: {
   createdByAgentId: string | null | undefined;
   createdByUserId: string | null | undefined;
   atTaskCreation: boolean;
+  task: { createdByUserId: string | null; responsibleUserId: string | null };
 }): void {
   const createdByKind = telemetryActorKind({ agentId: input.createdByAgentId, userId: input.createdByUserId });
-  emitAfterCommit(input.companyId, "plan.created", (client) =>
+  const personSources = {
+    taskCreatedByUserId: input.task.createdByUserId,
+    taskAssignedByUserId: input.task.responsibleUserId,
+    runOwnerUserId: input.createdByUserId,
+  };
+  emitAfterCommit(input.companyId, personSources, "plan.created", (client) =>
     trackPlanCreated(client, { createdByKind, atTaskCreation: input.atTaskCreation }));
 }
 
@@ -136,9 +165,15 @@ export function emitPlanApprovedAfterCommit(input: {
   companyId: string;
   actor: { agentId?: string | null; userId?: string | null };
   startsExecution: boolean;
+  task: { createdByUserId: string | null; responsibleUserId: string | null };
 }): void {
   const approvedByKind = telemetryActorKind(input.actor);
-  emitAfterCommit(input.companyId, "plan.approved", (client) =>
+  const personSources = {
+    taskCreatedByUserId: input.task.createdByUserId,
+    taskAssignedByUserId: input.task.responsibleUserId,
+    runOwnerUserId: input.actor.userId,
+  };
+  emitAfterCommit(input.companyId, personSources, "plan.approved", (client) =>
     trackPlanApproved(client, { approvedByKind, startsExecution: input.startsExecution }));
 }
 
@@ -153,8 +188,13 @@ export function emitArtifactCreatedAfterCommit(input: {
   type: string;
   provider: string;
   creationFlow: "direct" | "promotion" | "run_deliverable";
+  task: { createdByUserId: string | null; responsibleUserId: string | null } | null;
 }): void {
-  emitAfterCommit(input.companyId, "artifact.created", (client) =>
+  const personSources = {
+    taskCreatedByUserId: input.task?.createdByUserId,
+    taskAssignedByUserId: input.task?.responsibleUserId,
+  };
+  emitAfterCommit(input.companyId, personSources, "artifact.created", (client) =>
     trackArtifactCreated(client, {
       artifactType: input.type,
       provider: artifactTelemetryProvider(input.provider),
@@ -169,8 +209,9 @@ export function emitModelConnectedAfterCommit(input: {
   ownership: string;
   routingKind: string | null | undefined;
   firstForCompany: boolean;
+  ownerUserId: string;
 }): void {
-  emitAfterCommit(input.companyId, "model.connected", (client) =>
+  emitAfterCommit(input.companyId, { runOwnerUserId: input.ownerUserId }, "model.connected", (client) =>
     trackModelConnected(client, {
       provider: input.provider,
       connectionMethod: input.method,

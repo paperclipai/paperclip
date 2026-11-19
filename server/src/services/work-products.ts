@@ -314,7 +314,11 @@ export function workProductService(
           })
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (created) emitArtifactCreatedAfterCommit({ companyId, type: created.type, provider: created.provider, creationFlow: "direct" });
+        if (created) {
+          const [task] = await tx.select({ createdByUserId: issues.createdByUserId, responsibleUserId: issues.responsibleUserId })
+            .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+          emitArtifactCreatedAfterCommit({ companyId, type: created.type, provider: created.provider, creationFlow: "direct", task: task ?? null });
+        }
         return created;
       });
       return row ? toIssueWorkProduct(row) : null;

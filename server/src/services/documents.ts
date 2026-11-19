@@ -264,7 +264,8 @@ export function documentService(db: Db) {
     }, options: { initialTaskCreation?: boolean } = {}) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
+        .select({ id: issues.id, companyId: issues.companyId, createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
@@ -546,6 +547,7 @@ export function documentService(db: Db) {
               createdByAgentId: input.createdByAgentId,
               createdByUserId: input.createdByUserId,
               atTaskCreation: options.initialTaskCreation === true,
+              task: issue,
             });
           }
 

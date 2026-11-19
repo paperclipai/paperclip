@@ -9,10 +9,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const calls = vi.hoisted(() => [] as Array<{ event: string; dims: Record<string, unknown>; companyId: string | undefined }>);
+const people = vi.hoisted(() => [] as Array<{ event: string; person: unknown }>);
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => mockTelemetryClient,
@@ -22,6 +23,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>("@paperclipai/shared/telemetry");
   const record = (event: string) => (_client: unknown, dims: Record<string, unknown>) => {
     calls.push({ event, dims, companyId: scopedTelemetryCompanyId() });
+    people.push({ event, person: scopedTelemetryPerson() ?? null });
   };
   return {
     ...actual,
@@ -88,6 +90,7 @@ describeEmbeddedPostgres("product telemetry emit sites", () => {
 
   beforeEach(async () => {
     calls.length = 0;
+    people.length = 0;
     companyId = randomUUID();
     agentId = randomUUID();
     await db.insert(companies).values({
@@ -121,6 +124,27 @@ describeEmbeddedPostgres("product telemetry emit sites", () => {
       { event: "task.created", dims: { createdByKind: "onboarding", isSubtask: false }, companyId },
     ]);
     expect(scopedTelemetryCompanyId()).toBeUndefined();
+    expect(people.map((entry) => entry.person)).toEqual([
+      { userId: "user-1", attributedVia: "task_creator" },
+      { userId: "user-1", attributedVia: "task_assigner" },
+      { userId: "user-1", attributedVia: "task_creator" },
+    ]);
+  });
+
+  it("attributes agent-driven lifecycle events to the task's person on the direct path", async () => {
+    const fromPerson = await seedIssue({ status: "in_progress", createdByUserId: "creator-1", responsibleUserId: "owner-1" });
+    const fromOwner = await seedIssue({ status: "in_progress", responsibleUserId: "owner-1" });
+    const unowned = await seedIssue({ status: "in_progress" });
+    people.length = 0;
+    await issueService(db).update(fromPerson, { status: "done", actorAgentId: agentId });
+    await issueService(db).update(fromOwner, { status: "done", actorAgentId: agentId });
+    await issueService(db).update(unowned, { status: "done", actorAgentId: agentId });
+
+    expect(people).toEqual([
+      { event: "task.completed", person: { userId: "creator-1", attributedVia: "task_creator" } },
+      { event: "task.completed", person: { userId: "owner-1", attributedVia: "task_assigner" } },
+      { event: "task.completed", person: null },
+    ]);
   });
 
   it("emits nothing for a create whose transaction rolls back", async () => {

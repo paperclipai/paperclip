@@ -12532,6 +12532,9 @@ export function issueService(db: Db) {
           actorAgentId,
           actorUserId,
           unblockDescriptor: updated.unblockDescriptor,
+          taskCreatedByUserId: updated.createdByUserId,
+          taskResponsibleUserId: updated.responsibleUserId,
+          runOwnerUserId: actorUserId,
           hasOpenBlockers: enteredBlocked && await hasUnfinishedBlockers(tx, updated),
         });
         if (
@@ -14375,7 +14378,7 @@ export function issueService(db: Db) {
       createdByRunId?: string | null;
     }) => {
       const issue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
+        .select({ id: issues.id, companyId: issues.companyId, createdByUserId: issues.createdByUserId, responsibleUserId: issues.responsibleUserId })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
@@ -14550,7 +14553,8 @@ export function issueService(db: Db) {
               .returning({ id: issueWorkProducts.id })
           : [];
         if (artifactWorkProduct) {
-          emitArtifactCreatedAfterCommit({ companyId: issue.companyId, type: "artifact", provider: "paperclip", creationFlow: "run_deliverable" });
+          emitArtifactCreatedAfterCommit({ companyId: issue.companyId, type: "artifact", provider: "paperclip", creationFlow: "run_deliverable",
+            task: issue });
         }
 
         if (

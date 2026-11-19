@@ -560,6 +560,7 @@ type IssueResolutionContext = {
   reviewPolicy: IssueReviewPolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId?: string | null;
   executionPolicy?: unknown;
   executionState?: unknown;
 };
@@ -2731,6 +2732,7 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
           executionPolicy: issues.executionPolicy,
           executionState: issues.executionState,
         })
@@ -2846,6 +2848,7 @@ export function issueThreadInteractionService(
           companyId: issueContext.companyId,
           actor: args.actor,
           startsExecution: acceptedPlanStartsExecution,
+          task: { createdByUserId: issueContext.createdByUserId ?? null, responsibleUserId: issueContext.responsibleUserId ?? null },
         });
       }
       if (isNativeCompletionReview(lockedCurrent)) {

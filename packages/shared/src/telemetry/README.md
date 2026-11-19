@@ -177,6 +177,12 @@ These rules keep one event per real change:
 The actor kind is `agent` when an agent acts, `user` when a person acts, and
 `system` when neither does.
 
+On Cloud direct delivery, each of these events also names the responsible
+person with `withTelemetryActor()` and `resolveTelemetryPerson()`: the task
+creator, else the task's responsible user, else the run owner (the acting
+person, the plan author, or the user who owns the model connection). A live
+request still wins. The self-hosted collector envelope does not change.
+
 ## Cloud Direct Delivery
 
 Self-hosted installs are unchanged. They post every batch to the collector,

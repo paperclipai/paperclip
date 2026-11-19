@@ -12798,7 +12798,8 @@ export function issueRoutes(
         });
         return;
       }
-      emitArtifactCreatedAfterCommit({ companyId: product.companyId, type: product.type, provider: product.provider, creationFlow: "promotion" });
+      emitArtifactCreatedAfterCommit({ companyId: product.companyId, type: product.type, provider: product.provider, creationFlow: "promotion",
+        task: issue });
 
       await logActivity(db, {
         companyId: issue.companyId,
