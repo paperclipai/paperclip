@@ -134,6 +134,18 @@ describe("AWS connector with minted credentials", () => {
       vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://acme.paperclip.app");
     }
 
+    // A draft never keeps a role ARN AWS has not accepted: the setup steps would tell an AWS
+    // administrator to update that role, so any role named in a draft would be at risk.
+    const unchecked = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
+      galleryKey: "aws", connectionMethodKey: "aws-role", saveDraft: true,
+      configValues: { roleArn: "arn:aws:iam::123456789012:role/OrganizationAccountAccessRole", endpointRegion: "us-east-1", accessLevel: "read_only" },
+    });
+    expect(unchecked.status, JSON.stringify(unchecked.body)).toBeLessThan(300);
+    const [uncheckedRow] = await db.select().from(toolConnections).where(eq(toolConnections.id, unchecked.body.connectionId));
+    expect(JSON.stringify(uncheckedRow!.config)).not.toContain("OrganizationAccountAccessRole");
+    const uncheckedSetup = await request(app).get(`/api/tool-connections/${unchecked.body.connectionId}/aws-setup`).expect(200);
+    expect(uncheckedSetup.body.savedRoleArn).toBeNull();
+
     const keyDraft = await request(app).post(`/api/companies/${org.id}/tools/apps/connect`).send({
       galleryKey: "aws", connectionMethodKey: "aws-access-key", saveDraft: true,
       configValues: { endpointRegion: "us-east-1", accessLevel: "read_only" },

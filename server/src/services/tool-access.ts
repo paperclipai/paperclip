@@ -2272,7 +2272,11 @@ export function toolAccessService(
           ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
-          methodConfig: normalizedMethodConfig?.values ?? {},
+          methodConfig: input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry.slug, method?.key)
+            // A role ARN is only kept once AWS accepted it in a test, so an unchecked ARN never reaches
+            // the setup steps (which tell an AWS administrator to update that role).
+            ? Object.fromEntries(Object.entries(normalizedMethodConfig?.values ?? {}).filter(([key]) => key !== "roleArn"))
+            : normalizedMethodConfig?.values ?? {},
           ...(galleryEntry.slug === "google-workspace" && retainedConnection?.status === "draft"
             ? { workspaceSetup: retainedConnection.config.workspaceSetup }
             : {}),
@@ -4030,7 +4034,9 @@ export function toolAccessService(
     return {
       available: true,
       ...setup,
-      savedRoleArn: typeof methodConfig.roleArn === "string" && methodConfig.roleArn ? methodConfig.roleArn : null,
+      // Only a role AWS accepted for this connection (a finished connection): the setup steps tell an
+      // AWS administrator to update this role, so a draft's unchecked value is never offered.
+      savedRoleArn: row.status !== "draft" && typeof methodConfig.roleArn === "string" && methodConfig.roleArn ? methodConfig.roleArn : null,
       issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
     };
   }
