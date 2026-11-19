@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -71,6 +72,7 @@ const SANDBOX_PROXY_PORT = 31_337;
 const UNIX_SOCKET_PATH_MAX_BYTES = 107;
 const NETWORK_PROXY_TEMP_PREFIX = "paperclip-network-sandbox-";
 const RUN_SCRATCH_MARKER_FILENAME = ".paperclip-run-scratch.json";
+const RUN_SCRATCH_MARKER_MAX_BYTES = 16 * 1024;
 const RUN_SCRATCH_ROOT_DIRNAME = ".pctmp";
 // The deterministic segment is lowercase (run ids are sanitized to lowercase),
 // but the collision fallback appends a `mkdtemp` suffix, which uses both
@@ -369,8 +371,21 @@ export async function resolveRunScratchSandboxMount(
   try {
     const markerPath = path.join(scratchDir, RUN_SCRATCH_MARKER_FILENAME);
     const stats = await fs.lstat(markerPath);
-    if (!stats.isFile()) return null;
-    const parsed = JSON.parse(await fs.readFile(markerPath, "utf8")) as unknown;
+    if (!stats.isFile() || stats.size > RUN_SCRATCH_MARKER_MAX_BYTES) return null;
+    // The confined run can replace this marker. Never follow a replacement
+    // symlink or block opening a FIFO, and read only the verified file handle.
+    const handle = await fs.open(markerPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    let parsed: unknown;
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.dev !== stats.dev || opened.ino !== stats.ino
+        || opened.size > RUN_SCRATCH_MARKER_MAX_BYTES) return null;
+      // Bound the actual read too: the file may grow after fstat.
+      const buffer = Buffer.alloc(RUN_SCRATCH_MARKER_MAX_BYTES + 1);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (bytesRead > RUN_SCRATCH_MARKER_MAX_BYTES) return null;
+      parsed = JSON.parse(buffer.toString("utf8", 0, bytesRead));
+    } finally { await handle.close(); }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const marker = parsed as Record<string, unknown>;
     if (marker.version !== 1 || typeof marker.runId !== "string") return null;

@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildLocalProcessSandboxSpawnTarget,
   parseLocalProcessFilesystemScope,
@@ -28,6 +29,7 @@ async function withTmpDir<T>(tmpDir: string, run: () => Promise<T>): Promise<T> 
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(cleanup.splice(0).map((candidate) => fs.rm(candidate, { recursive: true, force: true })));
 });
 
@@ -77,6 +79,94 @@ describe("local process sandbox", () => {
         { PAPERCLIP_RUN_SCRATCH_DIR: fallback, PAPERCLIP_RUN_ID: "run-1" },
         { homeDir: home },
       )).resolves.toEqual({ path: fallback, access: "rw" });
+    });
+
+    it("rejects a marker swapped to a symlink after lstat", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      const marker = path.join(scratch, ".paperclip-run-scratch.json");
+      const outside = path.join(home, "outside.json");
+      await fs.copyFile(marker, outside);
+      const lstat = fs.lstat.bind(fs);
+      let swapped = false;
+      vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+        const stats = await lstat(...args);
+        if (String(args[0]) === marker && !swapped) {
+          await fs.unlink(marker); await fs.symlink(outside, marker); swapped = true;
+        }
+        return stats;
+      });
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
+      )).resolves.toBeNull();
+      expect(swapped).toBe(true);
+      expect(JSON.parse(await fs.readFile(outside, "utf8")).runId).toBe("run-1");
+    });
+
+    it("rejects a valid JSON marker padded beyond the evidence limit", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      await fs.appendFile(path.join(scratch, ".paperclip-run-scratch.json"), " ".repeat(16 * 1024));
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
+      )).resolves.toBeNull();
+    });
+
+    it("rejects a regular replacement with a different inode after lstat", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      const marker = path.join(scratch, ".paperclip-run-scratch.json");
+      const replacement = path.join(home, "replacement.json");
+      await fs.copyFile(marker, replacement);
+      const lstat = fs.lstat.bind(fs);
+      vi.spyOn(fs, "lstat").mockImplementationOnce(async (...args: Parameters<typeof fs.lstat>) => {
+        const stats = await lstat(...args);
+        await fs.rename(replacement, marker);
+        return stats;
+      });
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
+      )).resolves.toBeNull();
+    });
+
+    it.runIf(process.platform !== "win32")("rejects a FIFO replacement without blocking the open", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      const marker = path.join(scratch, ".paperclip-run-scratch.json");
+      const lstat = fs.lstat.bind(fs);
+      vi.spyOn(fs, "lstat").mockImplementationOnce(async (...args: Parameters<typeof fs.lstat>) => {
+        const stats = await lstat(...args);
+        await fs.unlink(marker); execFileSync("mkfifo", [marker]);
+        return stats;
+      });
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
+      )).resolves.toBeNull();
+    });
+
+    it("bounds a marker that grows after fstat and closes its handle", async () => {
+      const { home, scratch } = await makeScratchRoot();
+      await writeMarker(scratch, "run-1");
+      const marker = path.join(scratch, ".paperclip-run-scratch.json");
+      const open = fs.open.bind(fs);
+      let close: ReturnType<typeof vi.spyOn> | undefined;
+      let grew = false;
+      vi.spyOn(fs, "open").mockImplementationOnce(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await open(...args);
+        const stat = handle.stat.bind(handle);
+        close = vi.spyOn(handle, "close");
+        vi.spyOn(handle, "stat").mockImplementationOnce(async () => {
+          const stats = await stat();
+          await fs.appendFile(marker, " ".repeat(16 * 1024)); grew = true;
+          return stats;
+        });
+        return handle;
+      });
+      await expect(resolveRunScratchSandboxMount(
+        { PAPERCLIP_RUN_SCRATCH_DIR: scratch, PAPERCLIP_RUN_ID: "run-1" }, { homeDir: home },
+      )).resolves.toBeNull();
+      expect(grew).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
     });
 
     it("mounts nothing without a run identity, a scratch value, or a marker", async () => {
