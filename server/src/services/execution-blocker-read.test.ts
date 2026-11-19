@@ -171,4 +171,26 @@ describe.skipIf(!support.supported)("execution blocker PostgreSQL read projectio
     const f = await fixture({ contextSnapshot: context as Record<string, unknown> | null });
     expect(await compare(f)).toMatchObject({ canRetry: true });
   });
+
+  it("a resolved no-replay hold gates automatic wakes but not new human input", async () => {
+    const f = await fixture({ status: "cancelled", errorCode: "operator_interrupted" }, {
+      automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked",
+        actionOutcome: "unknown", recordedAt: "2020-01-01T00:02:00Z" },
+    });
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId))
+      .toMatchObject({ recoveryActionId: expect.any(String) });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId, { userInitiated: true })).toBeNull();
+  });
+
+  it.each(["active", "escalated"])("a live %s no-replay hold still fences user wakes", async status => {
+    const f = await fixture({ status: "cancelled", errorCode: "operator_interrupted" }, {
+      automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked" },
+    });
+    await db.update(issueRecoveryActions).set({ status })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId, { userInitiated: true }))
+      .toMatchObject({ recoveryActionId: expect.any(String) });
+  });
 });
