@@ -13,6 +13,7 @@ import {
 import { logger } from "../middleware/logger.js";
 import { mcpConnectorHub, type McpConnectorHub, type McpConnectorSession } from "../services/mcp-connector-hub.js";
 import { mcpConnectorService } from "../services/mcp-connectors.js";
+import { createInviteRateLimiter, type InviteRateLimiter } from "../services/invite-rate-limit.js";
 
 interface WsSocket {
   readyState: number;
@@ -41,11 +42,14 @@ interface UpgradeRequest extends IncomingMessage {
 }
 
 const HEARTBEAT_INTERVAL_MS = 25_000;
+// Generous enough for every connector behind one NAT to reconnect after a restart.
+const UPGRADE_RATE_LIMIT_PER_MINUTE = 120;
+const MAX_PENDING_AUTHENTICATIONS = 32;
 
-function rejectUpgrade(socket: Duplex, statusLine: string) {
+function rejectUpgrade(socket: Duplex, statusLine: string, extraHeaders = "") {
   if (socket.destroyed) return;
   try {
-    socket.end(`HTTP/1.1 ${statusLine}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    socket.end(`HTTP/1.1 ${statusLine}\r\n${extraHeaders}Connection: close\r\nContent-Length: 0\r\n\r\n`);
   } catch {
     socket.destroy();
   }
@@ -76,13 +80,16 @@ function frameText(data: Buffer | ArrayBuffer | Buffer[]): string {
 export function setupMcpConnectorWebSocketServer(
   server: HttpServer,
   db: Db,
-  options: { hub?: McpConnectorHub; heartbeatIntervalMs?: number } = {},
+  options: { hub?: McpConnectorHub; heartbeatIntervalMs?: number; upgradeRateLimiter?: InviteRateLimiter; maxPendingAuthentications?: number } = {},
 ) {
   const hub = options.hub ?? mcpConnectorHub;
   const connectors = mcpConnectorService(db, { hub });
   hub.setVerifier((input) => connectors.verify(input));
   const wss = new WebSocketServer({ noServer: true, maxPayload: MCP_CONNECTOR_MAX_FRAME_BYTES });
   const heartbeatIntervalMs = options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+  const upgradeRateLimiter = options.upgradeRateLimiter ?? createInviteRateLimiter({ maxRequests: UPGRADE_RATE_LIMIT_PER_MINUTE });
+  const maxPendingAuthentications = options.maxPendingAuthentications ?? MAX_PENDING_AUTHENTICATIONS;
+  let pendingAuthentications = 0;
 
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(req.url ?? "/", "http://paperclip.invalid");
@@ -92,12 +99,25 @@ export function setupMcpConnectorWebSocketServer(
     owned.paperclipWebSocketHandled = true;
     socket.on("error", () => undefined);
 
+    // Bound credential lookups before authentication; the connector retries with backoff.
+    const limit = upgradeRateLimiter.consume(req.socket.remoteAddress ?? "unknown");
+    if (!limit.allowed) {
+      rejectUpgrade(socket, "429 Too Many Requests", `Retry-After: ${limit.retryAfterSeconds}\r\n`);
+      return;
+    }
     const credential = bearerToken(req.headers.authorization);
     if (!credential) {
       rejectUpgrade(socket, "401 Unauthorized");
       return;
     }
-    void connectors.authenticate(credential).then((row) => {
+    if (pendingAuthentications >= maxPendingAuthentications) {
+      rejectUpgrade(socket, "503 Service Unavailable", "Retry-After: 1\r\n");
+      return;
+    }
+    pendingAuthentications += 1;
+    void connectors.authenticate(credential).finally(() => {
+      pendingAuthentications -= 1;
+    }).then((row) => {
       if (!row) {
         rejectUpgrade(socket, "401 Unauthorized");
         return;

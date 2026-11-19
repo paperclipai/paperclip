@@ -40,6 +40,8 @@ export interface ConnectorOptions {
   random?: () => number;
 }
 
+const ENROLL_RATE_LIMIT_RETRIES = 5;
+
 /** Full-jitter exponential backoff: uniform in [0, min(max, base * 2^attempt)]. */
 export function reconnectDelay(attempt: number, bounds: { baseMs: number; maxMs: number }, random = Math.random): number {
   const ceiling = Math.min(bounds.maxMs, bounds.baseMs * 2 ** Math.min(attempt, 20));
@@ -97,12 +99,21 @@ export class McpConnectorClient {
         "No stored credentials for this Paperclip URL. Set PAPERCLIP_MCP_CONNECTOR_ENROLLMENT_TOKEN from Tools & Access to enroll.",
       );
     }
-    const response = await this.doFetch(new URL(MCP_CONNECTOR_ENROLL_PATH, `${this.config.paperclipUrl}/`), {
+    const enroll = () => this.doFetch(new URL(MCP_CONNECTOR_ENROLL_PATH, `${this.config.paperclipUrl}/`), {
       method: "POST",
       redirect: "error",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token: this.config.enrollmentToken, version: CONNECTOR_VERSION }),
     });
+    let response = await enroll();
+    // A throttled token is still valid: wait as told instead of failing a batch rollout.
+    for (let attempt = 0; response.status === 429 && attempt < ENROLL_RATE_LIMIT_RETRIES; attempt += 1) {
+      await response.body?.cancel().catch(() => undefined);
+      const delayMs = Math.min(Number(response.headers.get("retry-after")) || 1, 120) * 1000;
+      this.log("warn", "enrollment rate limited; retrying", { delayMs });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      response = await enroll();
+    }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
       throw new ConnectorFatalError(

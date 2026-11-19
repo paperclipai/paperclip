@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +30,7 @@ import {
   toolProfileBindings,
   toolProfiles,
 } from "@paperclipai/db";
-import { MCP_CONNECTOR_ENROLL_PATH, MCP_CONNECTOR_ROTATE_PATH } from "@paperclipai/shared";
+import { MCP_CONNECTOR_ENROLL_PATH, MCP_CONNECTOR_ROTATE_PATH, MCP_CONNECTOR_WS_PATH } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -362,6 +362,39 @@ describeEmbeddedPostgres("outbound MCP connector", () => {
     await request(app).post(MCP_CONNECTOR_ENROLL_PATH).send({ token }).expect(401);
     const limited = await request(app).post(MCP_CONNECTOR_ENROLL_PATH).send({ token }).expect(429);
     expect(limited.headers["retry-after"]).toBeDefined();
+  });
+
+  it("bounds unauthenticated websocket upgrades before any credential lookup", async () => {
+    const upgradeStatus = (url: string) => new Promise<{ status?: number; retryAfter?: string | string[] }>((resolve, reject) => {
+      const req = httpRequest(`${url}${MCP_CONNECTOR_WS_PATH}`, {
+        headers: { connection: "Upgrade", upgrade: "websocket", authorization: `Bearer pcmcc_${randomUUID()}.${"a".repeat(40)}` },
+      });
+      req.on("response", (res) => {
+        res.resume();
+        resolve({ status: res.statusCode, retryAfter: res.headers["retry-after"] });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    for (const [options, expected] of [
+      [{ upgradeRateLimiter: createInviteRateLimiter({ maxRequests: 1 }) }, [401, 429]],
+      [{ maxPendingAuthentications: 0 }, [503, 503]],
+    ] as const) {
+      const server = createServer();
+      const wss = setupMcpConnectorWebSocketServer(server, db, { hub: new McpConnectorHub(), ...options });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      try {
+        const first = await upgradeStatus(url);
+        const second = await upgradeStatus(url);
+        expect([first.status, second.status]).toEqual(expected);
+        expect(second.retryAfter).toBeDefined();
+      } finally {
+        wss.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }
   });
 
   it("runs health checks and catalog refresh over the connector while the SSRF guard still refuses the same upstream", async () => {
