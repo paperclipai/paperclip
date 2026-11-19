@@ -143,6 +143,10 @@ export function agentRunFailureCause(input: {
   return PLATFORM_FAILURE_CODES.has(code) ? "platform_error" : "unknown";
 }
 
+export function telemetryAdapterType(agent: { adapterType: string; adapterConfig: unknown }): string {
+  return agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig));
+}
+
 function providerFailureCategory(resultJson: unknown): string | null {
   const providerFailure = parseObject(parseObject(resultJson).providerFailure);
   return typeof providerFailure.category === "string" ? providerFailure.category : null;
@@ -243,7 +247,7 @@ export async function emitAgentTaskRun(db: Db, run: TelemetryRun): Promise<void>
       agentId: run.agentId,
       state: run.status,
       ...(agent
-        ? { adapterType: agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig)), agentRole: agent.role }
+        ? { adapterType: telemetryAdapterType(agent), agentRole: agent.role }
         : {}),
       ...(model ? { model } : {}),
       ...(() => {

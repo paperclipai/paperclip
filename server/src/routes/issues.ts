@@ -198,7 +198,6 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
-  agentHarnessType,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -250,7 +249,7 @@ import { ContextCompactionError, contextCompactionService } from "../services/co
 import { issueContextUsage } from "../services/issue-context-usage.js";
 import { queueLiveRunnerPrpCommand } from "../realtime/runner-prp-ws.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
-import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
+import { emitAgentTaskRunById, telemetryAdapterType } from "../services/agent-task-run-telemetry.js";
 import {
   createAutomaticGoalCommentSteering,
   createQueuedCommentQueue,
@@ -16329,7 +16328,7 @@ export function issueRoutes(
             withTelemetryActor({ companyId: issue.companyId, person }, () => trackAgentTaskCompleted(tc, {
               agentRole: actorAgent.role,
               agentId: actorAgent.id,
-              adapterType: agentHarnessType(actorAgent.adapterType, parseObject(actorAgent.adapterConfig)),
+              adapterType: telemetryAdapterType(actorAgent),
               model,
               taskId: issue.id,
             }));

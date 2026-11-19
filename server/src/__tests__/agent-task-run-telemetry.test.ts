@@ -7,7 +7,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
-import { EXECUTION_RECONCILIATION_CAUSES, agentHarnessType } from "@paperclipai/shared";
+import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
 import { PAPERCLIP_ENUM_DESCRIPTIONS } from "@paperclipai/shared/telemetry";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES, PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES } from "@paperclipai/adapter-utils";
 import { PERMANENT_FAILURE_CODES, PERSON_OWNED_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "../services/continuation-cause.ts";
@@ -29,7 +29,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { agentRunFailureCause, emitAgentTaskRun, emitAgentTaskRunById } from "../services/agent-task-run-telemetry.ts";
+import { agentRunFailureCause, emitAgentTaskRun, emitAgentTaskRunById, telemetryAdapterType } from "../services/agent-task-run-telemetry.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -476,8 +476,8 @@ describe("Paperclip runner adapter_type coverage", () => {
     const harnesses = [
       ...Object.keys(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES)
         .filter((provider) => provider !== "acpx")
-        .map((provider) => agentHarnessType("paperclip_runner", { provider })),
-      ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => agentHarnessType("paperclip_runner", { provider: "acpx", acpxAgent: value })),
+        .map((provider) => telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } })),
+      ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: value } })),
     ];
 
     expect(harnesses.filter((harness) => !contract.includes(harness)).sort()).toEqual([
