@@ -131,6 +131,7 @@ export function RoutineEditDialog({
   const secretsRef = useRef<EnvironmentVariablesEditorHandle>(null);
   /** Secrets rows being typed that the secrets editor has not promoted into the draft yet. */
   const [secretsDirty, setSecretsDirty] = useState(false);
+  const [webhookIdsAtOpen, setWebhookIdsAtOpen] = useState(() => webhooks.map((trigger) => trigger.id).join(","));
   const titleId = useId();
 
   useEffect(() => {
@@ -139,6 +140,7 @@ export function RoutineEditDialog({
     setSecretsOpen(Object.keys(initial.env ?? {}).length > 0);
     setConfirmingDiscard(false);
     setSecretsDirty(false);
+    setWebhookIdsAtOpen(webhooks.map((trigger) => trigger.id).join(","));
   }, [initial, open]);
 
   const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(initial), [draft, initial]) || secretsDirty;
@@ -155,6 +157,8 @@ export function RoutineEditDialog({
         (responsibility) => responsibility.id !== draft.responsibilityId && responsibility.projectIds?.includes(draft.projectId),
       ) ?? null
     : null;
+  const webhooksChanged = webhooks.map((trigger) => trigger.id).join(",") !== webhookIdsAtOpen || removedWebhooks.length > 0;
+  const savedAlready = mode === "edit" && !dirty && webhooksChanged && !saving;
   const canSave = draft.title.trim().length > 0 && scheduleValid && !saving && !saveConflict && (mode === "create" || dirty);
 
   /** Saves the draft, including secrets rows still being typed. */
@@ -534,6 +538,11 @@ export function RoutineEditDialog({
                 This routine changed while you were editing. Reload to see the latest version.
               </p>
               <Button variant="outline" onClick={onReloadLatest}>Reload latest</Button>
+            </>
+          ) : savedAlready ? (
+            <>
+              <p className="text-sm text-muted-foreground">Webhooks save right away.</p>
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
             </>
           ) : (
             <>

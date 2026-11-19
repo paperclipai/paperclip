@@ -4,6 +4,7 @@ import { forwardRef, useImperativeHandle } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { RoutineTrigger } from "@paperclipai/shared";
 import { EMPTY_ROUTINE_FORM_DRAFT, RoutineEditDialog, type RoutineFormDraft } from "./RoutineEditDialog";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -52,13 +53,21 @@ describe("RoutineEditDialog", () => {
   let root: Root;
   const onSave = vi.fn();
 
-  async function render(draft: RoutineFormDraft = initial, initialFocus?: "instructions") {
+  const onOpenChange = vi.fn();
+
+  async function render(
+    draft: RoutineFormDraft = initial,
+    initialFocus?: "instructions",
+    webhooks: RoutineTrigger[] = [],
+  ) {
     await act(async () => {
       root.render(
         <RoutineEditDialog
           open
           initialFocus={initialFocus}
-          onOpenChange={() => {}}
+          webhooks={webhooks}
+          onOpenWebhook={() => {}}
+          onOpenChange={onOpenChange}
           initial={draft}
           agents={[]}
           projects={[]}
@@ -74,6 +83,7 @@ describe("RoutineEditDialog", () => {
 
   beforeEach(() => {
     onSave.mockReset();
+    onOpenChange.mockReset();
     focusEditor.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -90,6 +100,17 @@ describe("RoutineEditDialog", () => {
     await render(initial, "instructions");
     expect(focusEditor).toHaveBeenCalled();
     expect(document.activeElement).not.toBe(document.querySelector("input"));
+  });
+
+  it("offers Done after adding a webhook, which saves right away", async () => {
+    await render();
+    expect(button("Save changes")?.disabled).toBe(true);
+    const hook = { id: "webhook-1", kind: "webhook", signingMode: "app_webhook", enabled: true } as RoutineTrigger;
+    await render(initial, undefined, [hook]);
+    expect(button("Save changes")).toBeUndefined();
+    expect(document.body.textContent).toContain("Webhooks save right away.");
+    await act(async () => { button("Done")!.click(); await flush(); });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("saves a change made only to Secrets", async () => {
