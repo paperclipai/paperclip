@@ -21,7 +21,7 @@ export function cleanContinuationSourceRunId(run: { retryOfRunId: string | null;
   if (context.wakeReason !== ISSUE_CONTINUATION_NEEDED_WAKE_REASON || !cause || !CLEAN_CONTINUATION_CAUSES.has(cause)) return null;
   if (run.retryOfRunId || context.retryOfRunId || context.retryReason || context.previousRunId) return null;
   const sourceRunId = text(context.livenessContinuationSourceRunId);
-  return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? sourceRunId : null;
+  return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? sourceRunId.toLowerCase() : null;
 }
 
 export async function listCleanContinuationSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {

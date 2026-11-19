@@ -209,7 +209,7 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
       livenessContinuationReason: "agent_tool_call_loop", livenessContinuationSourceRunId: sourceRunId });
 
     const loopTask = await personTask("in_progress");
-    const continuation = await queued(loopTask, 10, loopContinuation(await sourceRun(loopTask, "succeeded")));
+    const continuation = await queued(loopTask, 10, loopContinuation((await sourceRun(loopTask, "succeeded")).toUpperCase()));
     const [alone] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuation));
     const { facts: [aloneFacts] } = await queuedRunDispatchFacts(db, { agent: { id: f.agentId, companyId: f.companyId },
       queuedRuns: [alone!], dependencyReadiness: new Map(), issueById: new Map([[loopTask, { status: "in_progress", priority: "medium",
