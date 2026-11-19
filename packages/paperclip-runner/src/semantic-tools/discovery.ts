@@ -44,6 +44,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   create_area: "responsibilities", update_area: "responsibilities", delete_area: "responsibilities",
   create_responsibility: "responsibilities", update_responsibility: "responsibilities", delete_responsibility: "responsibilities",
   file_under_responsibility: "responsibilities", remove_from_responsibility: "responsibilities",
+  list_routines: "routines", update_routine: "routines",
   set_dependencies: "delegation", reassign_task: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",

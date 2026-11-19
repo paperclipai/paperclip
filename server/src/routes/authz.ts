@@ -189,6 +189,17 @@ export function assertBoardOrgAccess(req: Request) {
   throw forbidden("Company membership or instance admin access required");
 }
 
+/**
+ * The person an agent's run works for (the person chatting, or the task's
+ * responsible person), while they are an active member of `companyId`. An
+ * agent acting for them may do some of what they could; each route says what.
+ */
+export function agentPersonInCompany(req: Request, companyId: string): { userId: string; role: string | null } | null {
+  if (req.actor.type !== "agent" || !req.actor.onBehalfOfUserId) return null;
+  const membership = req.actor.onBehalfOfMemberships?.find((item) => item.companyId === companyId && item.status === "active");
+  return membership ? { userId: req.actor.onBehalfOfUserId, role: membership.membershipRole ?? null } : null;
+}
+
 export function assertBoardOrAgent(req: Request) {
   if (req.actor.type === "agent") {
     return;

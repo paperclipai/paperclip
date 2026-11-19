@@ -38,7 +38,7 @@ import {
   type ResponsibilityLinkTarget,
   type ResponsibilityReadScope,
 } from "../services/responsibilities.js";
-import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { agentPersonInCompany, assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const NOT_FOUND = "Responsibility not found";
 
@@ -78,16 +78,6 @@ export function boardCanManageResponsibilityOwner(req: Request, companyId: strin
   if (req.actor.userId && req.actor.userId === ownerUserId) return true;
   const membership = req.actor.memberships?.find((item) => item.companyId === companyId && item.status === "active");
   return membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
-}
-
-/**
- * The person an agent's run works for (the person chatting, or the task's
- * responsible person), while they are an active member of `companyId`.
- */
-export function agentPersonInCompany(req: Request, companyId: string): { userId: string; role: string | null } | null {
-  if (req.actor.type !== "agent" || !req.actor.onBehalfOfUserId) return null;
-  const membership = req.actor.onBehalfOfMemberships?.find((item) => item.companyId === companyId && item.status === "active");
-  return membership ? { userId: req.actor.onBehalfOfUserId, role: membership.membershipRole ?? null } : null;
 }
 
 /**

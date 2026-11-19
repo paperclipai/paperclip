@@ -7,7 +7,7 @@
     "src/scenarios/scenario-plan.ts"
   ],
   "counts": {
-    "actions": 81,
+    "actions": 82,
     "legacyRequirements": 106
   },
   "actions": [
@@ -542,6 +542,25 @@
       "legacyRequirementCases": [],
       "deterministicOwners": [
         "src/catalog/protocol-action-contracts.test.ts::remove_from_responsibility has a schema-valid canonical example and every declared projection",
+        "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
+      ]
+    },
+    {
+      "id": "update_routine",
+      "ownership": "optional_agent_tool",
+      "surfaces": [
+        "live"
+      ],
+      "legacyAliases": [],
+      "contractCase": "protocol-action:update_routine",
+      "contractOwner": "src/catalog/protocol-action-contracts.test.ts::update_routine has a schema-valid canonical example and every declared projection",
+      "legacyBehavioralCases": [],
+      "deterministicCases": [
+        "protocol-action:update_routine"
+      ],
+      "legacyRequirementCases": [],
+      "deterministicOwners": [
+        "src/catalog/protocol-action-contracts.test.ts::update_routine has a schema-valid canonical example and every declared projection",
         "src/scenarios/scenario-explorer.test.ts::renders every scenario with exposure, control plane, authorization, diff, and parity"
       ]
     },
@@ -1638,7 +1657,8 @@
       "id": "list_routines",
       "ownership": "optional_agent_tool",
       "surfaces": [
-        "scenario"
+        "scenario",
+        "live"
       ],
       "legacyAliases": [],
       "contractCase": "protocol-action:list_routines",

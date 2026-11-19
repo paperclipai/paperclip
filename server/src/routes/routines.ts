@@ -16,7 +16,7 @@ import {
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, instanceSettingsService, logActivity, routineService } from "../services/index.js";
-import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { agentPersonInCompany, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, unauthorized, unprocessable, unsupportedMediaType } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -118,14 +118,24 @@ export function routineRoutes(
     }
   }
 
+  /**
+   * The person an agent acts for on this routine: the person its run works
+   * for, when that person is responsible for the routine. Null otherwise.
+   */
+  function agentActsForRoutinePerson(req: Request, routine: { companyId: string; responsibleUserId: string | null }) {
+    const person = agentPersonInCompany(req, routine.companyId);
+    return person && routine.responsibleUserId === person.userId ? person.userId : null;
+  }
+
   async function assertCanManageExistingRoutine(req: Request, routineId: string) {
     const routine = await svc.get(routineId);
     if (!routine || !hasCompanyAccess(req, routine.companyId)) return null;
     assertCompanyAccess(req, routine.companyId);
     if (req.actor.type === "board") return routine;
     if (req.actor.type !== "agent" || !req.actor.agentId) throw unauthorized();
-    if (routine.assigneeAgentId !== req.actor.agentId) {
-      throw forbidden("Agents can only manage routines assigned to themselves");
+    // An agent manages its own routines, and those of the person its run works for.
+    if (routine.assigneeAgentId !== req.actor.agentId && !agentActsForRoutinePerson(req, routine)) {
+      throw forbidden("Agents can only manage routines assigned to themselves, or routines the person they work for is responsible for");
     }
     return routine;
   }
@@ -401,12 +411,16 @@ export function routineRoutes(
     if (statusWillActivate) {
       await assertBoardCanAssignTasks(req, routine.companyId);
     }
+    const actsFor = req.actor.type === "agent" ? agentActsForRoutinePerson(req, routine) : null;
     if (
       req.actor.type === "agent" &&
       req.body.assigneeAgentId !== undefined &&
       req.body.assigneeAgentId !== req.actor.agentId
     ) {
-      throw forbidden("Agents can only assign routines to themselves");
+      // Handing a routine to another agent is an assignment the person must be allowed to make.
+      if (!actsFor || !(await access.canUser(routine.companyId, actsFor, "tasks:assign"))) {
+        throw forbidden("Agents can only assign routines to themselves, unless the person they work for may assign tasks");
+      }
     }
     const updated = await svc.update(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
@@ -426,6 +440,7 @@ export function routineRoutes(
       entityId: routine.id,
       details: {
         title: updated?.title ?? routine.title,
+        ...(actsFor ? { onBehalfOfUserId: actsFor } : {}),
         ...(req.body.responsibleUserId !== undefined ? {
           previousResponsibleUserId: updated?.previousResponsibleUserId,
           responsibleUserId: updated?.responsibleUserId,

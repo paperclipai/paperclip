@@ -13,8 +13,7 @@ import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
 import { responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
 import { responsibilityAreaService } from "../services/responsibility-areas.js";
-import { assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { agentPersonInCompany } from "./responsibilities.js";
+import { agentPersonInCompany, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const NOT_FOUND = "Area not found";
 
