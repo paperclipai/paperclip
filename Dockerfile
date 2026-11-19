@@ -190,8 +190,12 @@ WORKDIR /app
 RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
   && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest @moonshot-ai/kimi-code@latest @earendil-works/pi-coding-agent@0.87.1 \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq python3-venv \
-  && rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends openssh-client jq python3-venv postgresql-client-17 \
+  && rm -rf /var/lib/apt/lists/* \
+  # The scheduled DB backup (packages/db/src/backup-lib.ts, engine "auto") shells out to pg_dump. Without it
+  # the backup falls back to the in-process JavaScript engine, which blocks the Node event loop for tens of
+  # seconds and gets the task killed by the container health check. Keep the major >= the RDS server's (17).
+  && pg_dump --version | grep -q '^pg_dump (PostgreSQL) 17\.'
 
 COPY docker/hermes/ /tmp/hermes/
 RUN /usr/bin/python3 -m venv /opt/hermes \
