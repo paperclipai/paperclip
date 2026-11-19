@@ -1,19 +1,16 @@
 import { EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../queued-comment-delivery.js";
-import { AGENT_TOOL_CALL_LOOP } from "../native-runtime/repeated-tool-failure-guard.js";
+
+export const ISSUE_CONTINUATION_NEEDED_WAKE_REASON = "issue_continuation_needed";
 
 export const RECOVERY_WAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_recovery_action_restored",
-  "issue_continuation_needed",
+  ISSUE_CONTINUATION_NEEDED_WAKE_REASON,
 ]);
 
 export const PERSON_WAKE_REASONS: ReadonlySet<string> = new Set([
   "task_retry",
   EXTERNAL_CHAT_MESSAGE_WAKE_REASON,
 ]);
-
-export const CLEAN_CONTINUATION_WAKE_REASON = "issue_continuation_needed";
-
-export const CLEAN_CONTINUATION_CAUSES: ReadonlySet<string> = new Set([AGENT_TOOL_CALL_LOOP]);
 
 export const RECOVERY_BACKLOG_AGE_MS = 30 * 60_000;
 
@@ -46,12 +43,12 @@ export function isRecoveryWakeReason(reason: string | null | undefined) {
   return Boolean(reason && RECOVERY_WAKE_REASONS.has(reason));
 }
 
-export function isSystemRecoveryRun(run: Pick<QueuedRunDispatchFacts, "wakeReason" | "requestedByUser" | "cleanContinuation">) {
-  return isRecoveryWakeReason(run.wakeReason) && !run.requestedByUser && !run.cleanContinuation;
-}
-
 function countsAsRecoveryStart(run: Pick<QueuedRunDispatchFacts, "wakeReason" | "requestedByUser">) {
   return isRecoveryWakeReason(run.wakeReason) && !run.requestedByUser;
+}
+
+export function isSystemRecoveryRun(run: Pick<QueuedRunDispatchFacts, "wakeReason" | "requestedByUser" | "cleanContinuation">) {
+  return countsAsRecoveryStart(run) && !run.cleanContinuation;
 }
 
 export function isPersonRequestedRun(run: Pick<QueuedRunDispatchFacts, "wakeReason" | "requestedByUser">) {
@@ -163,7 +160,7 @@ export function dispatchCountersFromStarts<T extends QueuedRunDispatchFacts>(run
   let startsSinceRecovery = 0;
   if (recovery.length > 0 && recovery.length < runs.length) {
     const starts = startsSince(Math.min(...recovery.map(run => run.createdAt.getTime()))).slice(0, RECOVERY_DISPATCH_SHARE);
-    const last = starts.findIndex(start => isRecoveryWakeReason(start.wakeReason) && !start.personOrigin);
+    const last = starts.findIndex(start => countsAsRecoveryStart({ wakeReason: start.wakeReason, requestedByUser: Boolean(start.personOrigin) }));
     startsSinceRecovery = last < 0 ? starts.length : last;
   }
   let startsSinceOldest = 0;

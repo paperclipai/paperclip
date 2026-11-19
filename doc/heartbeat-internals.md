@@ -84,7 +84,9 @@ succeeded, is not itself such a continuation, and the run is not a failure retry
 so a person's task that continues its own work stays with that person's work.
 Its start still uses up the recovery share, so recovery-reason starts do not
 increase. Later hops of a loop chain and every failure retry stay in the
-recovery tiers.
+recovery tiers. The provenance check is in `queued-run-provenance.ts`. The
+dispatch query and the place-in-line query both read its
+`QUEUED_RUN_ORDER_CONTEXT_KEYS`, so they see the same context fields.
 
 Within a tier, runs are ordered by readiness (in progress first), then task
 priority, then age, oldest first. A newer run on a person's tree never passes
