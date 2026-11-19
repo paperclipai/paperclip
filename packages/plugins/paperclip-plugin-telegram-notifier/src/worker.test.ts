@@ -459,6 +459,99 @@ describe("Telegram replies", () => {
   });
 });
 
+describe("writes from a paired group", () => {
+  async function groupSetup() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { harness, calls, pendingUpdates } = await setup({ "company-a": { botToken: TOKEN_A } });
+    seedCompany(harness, "company-a");
+    harness.seed({
+      agents: [
+        { id: "agent-1", companyId: "company-a", name: "Builder" } as unknown as Agent,
+        { id: "agent-2", companyId: "company-a", name: "Reviewer" } as unknown as Agent,
+      ],
+      issues: [
+        {
+          id: "issue-1",
+          companyId: "company-a",
+          identifier: "ALP-1",
+          title: "T",
+          status: "todo",
+          assigneeAgentId: "agent-1",
+        } as unknown as Issue,
+      ],
+    });
+    await setPairedChat(harness.ctx, "company-a", {
+      chatId: "-500",
+      chatLabel: "Team",
+      pairedAt: "",
+      pairedByTelegramUserId: 42,
+      operateAsAgentId: "agent-1",
+    });
+    const sentTexts = () =>
+      calls.filter((c) => c.method === "sendMessage").map((c) => String(c.body.text));
+    return { harness, calls, pendingUpdates, sentTexts };
+  }
+  const command = (updateId: number, fromId: number, text: string): TelegramUpdate => ({
+    update_id: updateId,
+    message: { message_id: updateId, from: { id: fromId }, chat: { id: -500, type: "group" }, date: 0, text },
+  });
+  const tap = (updateId: number, fromId: number, data: string) =>
+    ({
+      update_id: updateId,
+      callback_query: {
+        id: `cb${updateId}`,
+        from: { id: fromId },
+        message: { message_id: 7, chat: { id: -500, type: "group" }, date: 0 },
+        data,
+      },
+    }) as unknown as TelegramUpdate;
+
+  it("lets only the operator /new, while any member can /inbox", async () => {
+    const { harness, pendingUpdates, sentTexts } = await groupSetup();
+    pendingUpdates.set("111111", [
+      command(1, 99, "/new Member task"),
+      command(2, 99, "/inbox"),
+      command(3, 42, "/new Operator task"),
+    ]);
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    const titles = (await harness.ctx.issues.list({ companyId: "company-a" })).map((i) => i.title);
+    expect(titles).toContain("Operator task");
+    expect(titles).not.toContain("Member task");
+    expect(sentTexts().filter((t) => t.includes("Only the paired operator"))).toHaveLength(1);
+    expect(sentTexts().some((t) => t.includes("Your inbox"))).toBe(true);
+  });
+
+  it("lets only the operator reassign from the picker", async () => {
+    const { harness, calls, pendingUpdates } = await groupSetup();
+    await saveMessageContext(harness.ctx, "-500", 7, {
+      kind: "assign_picker",
+      companyId: "company-a",
+      issueId: "issue-1",
+      identifier: "ALP-1",
+      agents: [{ id: "agent-2", name: "Reviewer" }],
+      createdAt: new Date().toISOString(),
+    });
+    pendingUpdates.set("111111", [tap(1, 99, "ras"), tap(2, 99, "asg:0")]);
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    expect((await harness.ctx.issues.get("issue-1", "company-a"))?.assigneeAgentId).toBe("agent-1");
+    expect(calls.some((c) => c.method === "editMessageReplyMarkup")).toBe(false);
+    const answers = calls.filter((c) => c.method === "answerCallbackQuery").map((c) => c.body.text);
+    expect(answers).toEqual([
+      "Only the paired operator can do this.",
+      "Only the paired operator can do this.",
+    ]);
+
+    pendingUpdates.set("111111", [tap(3, 42, "asg:0")]);
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    expect((await harness.ctx.issues.get("issue-1", "company-a"))?.assigneeAgentId).toBe("agent-2");
+  });
+});
+
 describe("group pairing", () => {
   const groupMessage = (fromId: number): TelegramUpdate => ({
     update_id: 1,

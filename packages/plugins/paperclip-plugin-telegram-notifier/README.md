@@ -46,6 +46,8 @@ Agents for the dropdown are listed via the plugin bridge (`ctx.agents.list({ com
 
 To re-pair: click **Unpair** on the row (or run `/unpair` from the chat), then **Start pairing** again.
 
+**Who can act in a group.** Only the chat's operator, or the company's explicit Telegram approver, can write to Paperclip from a group: `/new`, 👤 *Reassign*, and 💬 *Reply*. Other members still get every notification and can use `/inbox`, `/status`, and 📄 *Show full*; a write attempt from them gets a one-line refusal and changes nothing.
+
 ## Bot commands
 
 The bot publishes these via `setMyCommands` so they show up in the Telegram command menu. The bot infers which company a command applies to from the chat's pairing — no `/use` switching needed:
@@ -57,8 +59,8 @@ The bot publishes these via `setMyCommands` so they show up in the Telegram comm
 | `/start` | Send during a pairing handshake to receive the code | active handshake |
 | `/test` | Send yourself a sample notification | paired |
 | `/unpair` | Disconnect this chat from its company | paired |
-| `/new <title>` (single line) | Create an issue with just a title | paired + operate-as agent set |
-| `/new <title>\n<description…>` (multi-line) | Create an issue with a title and a multi-line description; description is rendered as markdown in Paperclip | paired + operate-as agent set |
+| `/new <title>` (single line) | Create an issue with just a title | paired + operate-as agent set; in a group, the operator |
+| `/new <title>\n<description…>` (multi-line) | Create an issue with a title and a multi-line description; description is rendered as markdown in Paperclip | paired + operate-as agent set; in a group, the operator |
 | `/inbox` | Show the 5 most recent issues assigned to the operate-as agent | paired + operate-as agent set |
 
 After `/new` succeeds the bot replies with a confirmation card that has a 👤 *Reassign* callback button. Tapping it swaps the keyboard to a list of agents in that company — pick one and the issue is reassigned in Paperclip without leaving Telegram.

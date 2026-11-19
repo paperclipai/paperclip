@@ -72,6 +72,7 @@ import {
   buildWakeRequestedMessage,
 } from "./format.js";
 import {
+  canWriteToPaperclip,
   chatLabel,
   clearHandshake,
   codesMatch,
@@ -81,7 +82,6 @@ import {
   getBotState,
   getMessageContext,
   getPaired,
-  isAllowedReplySender,
   isAuthorizedApprover,
   isChatPairedToCompany,
   isPairingOperator,
@@ -1001,6 +1001,36 @@ async function handleHandshakeMessage(
   return false;
 }
 
+const WRITE_DENIED_TEXT = "Only the paired operator can do this.";
+/** Commands that write to Paperclip. `/unpair` has its own, stricter gate. */
+const WRITE_COMMANDS = new Set(["/new"]);
+/** Buttons that write to Paperclip or open a prompt whose answer does. */
+function isWriteCallback(data: string): boolean {
+  return (
+    data === CALLBACK_KIND.reassignShow ||
+    data === CALLBACK_KIND.replyToComment ||
+    data.startsWith(CALLBACK_KIND.assignAgentPrefix)
+  );
+}
+
+/**
+ * The one guard for Telegram actions that write to Paperclip: `/new`,
+ * Reassign, Reply and comment replies. True when the chat is paired and the
+ * sender is neither its operator nor the company's explicit approver.
+ * Read-only actions (`/inbox`, Show full) stay open to every chat member;
+ * plan confirmations and `/unpair` keep their own approver/operator gates.
+ */
+async function writeDenied(
+  ctx: PluginContext,
+  chatId: string,
+  fromUserId: number | undefined,
+): Promise<boolean> {
+  const pairing = await readPairing(ctx);
+  const found = findCompanyForChat(pairing, chatId);
+  if (!found) return false;
+  return !canWriteToPaperclip(getApprovalConfig(pairing, found.companyId), found.chat, fromUserId);
+}
+
 async function handleSlashCommand(
   ctx: PluginContext,
   config: PluginConfig,
@@ -1013,6 +1043,13 @@ async function handleSlashCommand(
   const command = head.split("@")[0]; // strip /command@bot suffix
   const argsText = text.slice(head.length).trim();
   const incomingChatId = String(message.chat.id);
+  if (WRITE_COMMANDS.has(command) && (await writeDenied(ctx, incomingChatId, message.from?.id))) {
+    await replyTo(ctx, config, incomingChatId, {
+      text: escapeMdText(WRITE_DENIED_TEXT),
+      keyboard: [],
+    });
+    return;
+  }
   const state = await readPairing(ctx);
 
   // The chat-to-company mapping is the routing context for every authoring
@@ -1353,7 +1390,7 @@ async function consumeRelayedComment(
  * comment. Agent-attributed plugin comments never wake anyone, so the
  * company's explicit approver (or chats paired before the user id was
  * captured) fall back to the operate-as agent, then to plugin attribution.
- * Callers admit only allowed senders (`isAllowedReplySender`).
+ * Callers admit only allowed senders (`canWriteToPaperclip`).
  */
 export async function postTelegramReplyComment(
   ctx: PluginContext,
@@ -1405,8 +1442,7 @@ async function handleCommentReply(
   if (!found || found.companyId !== context.companyId) return false;
   // Other members of a paired group cannot write to Paperclip: their reply
   // is dropped without a comment or an answer.
-  const approval = getApprovalConfig(pairing, context.companyId);
-  if (!isAllowedReplySender(approval, found.chat, message.from?.id)) return true;
+  if (await writeDenied(ctx, incomingChatId, message.from?.id)) return true;
   const body = (message.text ?? "").trim();
   if (!body) return false;
   try {
@@ -1470,6 +1506,11 @@ async function handleCallbackQuery(
   const data = query.data ?? "";
   const chatId = String(query.message.chat.id);
   try {
+    if (isWriteCallback(data) && (await writeDenied(ctx, chatId, query.from.id))) {
+      // A toast for the presser only, so the group is not spammed.
+      await client.answerCallbackQuery({ callbackQueryId: query.id, text: WRITE_DENIED_TEXT });
+      return;
+    }
     if (data === CALLBACK_KIND.reassignShow) {
       // Tap on 👤 Reassign — switch the message keyboard to a list of agents.
       const context = await getMessageContext(ctx, chatId, query.message.message_id);

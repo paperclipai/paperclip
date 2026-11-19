@@ -416,11 +416,11 @@ export function isPairingOperator(
 }
 
 /**
- * Whether a Telegram reply may be posted as an issue comment: only from the
- * pairing operator or the company's explicit approver. Other chat members
- * are ignored.
+ * Whether a Telegram user may write to Paperclip from a paired chat (create
+ * an issue, reassign, post a reply): only the pairing operator or the
+ * company's explicit approver. In a private chat that is always the owner.
  */
-export function isAllowedReplySender(
+export function canWriteToPaperclip(
   approval: ApprovalConfig | undefined,
   chat: PairedChat | undefined,
   fromUserId: number | undefined,
