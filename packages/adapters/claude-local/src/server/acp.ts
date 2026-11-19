@@ -428,6 +428,21 @@ const ACPX_AUTH_REQUIRED_ERROR_CODE = "acpx_auth_required";
  */
 const CLAUDE_AUTH_REQUIRED_ERROR_CODE = "claude_auth_required";
 
+function replaceClaudeEdgePageText<T>(value: T, description: string): T | string {
+  return typeof value === "string" && detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: value })
+    ? description
+    : value;
+}
+
+function replaceClaudeEdgePageFields(
+  record: Record<string, unknown>,
+  description: string,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [key, replaceClaudeEdgePageText(value, description)]),
+  );
+}
+
 /**
  * Translate the generic acpx auth-required code into the Claude-specific code at
  * the claude-local boundary. The shared acpx engine reports the generic
@@ -441,21 +456,28 @@ function scrubClaudeAcpEdgeFailure(
   result: AdapterExecutionResult,
   evidence: ClaudeEdgeFailureEvidence,
 ): AdapterExecutionResult {
+  const description = describeClaudeEdgeFailure(evidence);
   const resultJson = result.resultJson ?? null;
   const terminal = resultJson?.terminalSessionFailure;
   return {
     ...result,
-    errorMessage: describeClaudeEdgeFailure(evidence),
-    ...(resultJson && terminal && typeof terminal === "object"
+    errorMessage: description,
+    ...(result.summary ? { summary: replaceClaudeEdgePageText(result.summary, description) } : {}),
+    ...(result.errorMeta ? { errorMeta: replaceClaudeEdgePageFields(result.errorMeta, description) } : {}),
+    ...(resultJson
       ? {
           resultJson: {
-            ...resultJson,
-            terminalSessionFailure: {
-              ...(terminal as Record<string, unknown>),
-              title: "Claude API edge rejection",
-              details: evidence.excerpt || null,
-            },
-            edgeFailure: evidence,
+            ...replaceClaudeEdgePageFields(resultJson, description),
+            ...(terminal && typeof terminal === "object"
+              ? {
+                  terminalSessionFailure: {
+                    ...(terminal as Record<string, unknown>),
+                    title: "Claude API edge rejection",
+                    details: evidence.excerpt || null,
+                  },
+                  edgeFailure: evidence,
+                }
+              : {}),
           },
         }
       : {}),
