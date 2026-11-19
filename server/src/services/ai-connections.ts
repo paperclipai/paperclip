@@ -5,7 +5,7 @@ import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-lo
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
   type Db,
   authUsers,
@@ -49,6 +49,7 @@ import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
 import { probeAiAccountIdentity } from "./ai-account-identity.js";
+import { emitModelConnectedAfterCommit } from "./product-telemetry.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -959,6 +960,22 @@ export function aiConnectionService(db: Db) {
         entityId: id,
         details: { provider: input.provider, method: input.method, grantId },
       });
+      if (!reconnect) {
+        const [earlierModel] = await tx
+          .select({ id: toolConnections.id })
+          .from(toolConnections)
+          .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.connectionPurpose, "ai"), ne(toolConnections.id, id)))
+          .limit(1);
+        emitModelConnectedAfterCommit({
+          companyId,
+          provider: input.provider,
+          method: input.method,
+          ownership: input.ownership,
+          routingKind: routing?.kind,
+          firstForCompany: !earlierModel,
+          ownerUserId: userId,
+        });
+      }
       return { connectionId: id, grantId };
     }));
     // Quota refresh can hold this lock through a 60-second token exchange.
