@@ -194,7 +194,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     const wakeId = await seedDeferredWake({ companyId, agentId: formerAgentId, issueId });
     await db.insert(issueRecoveryActions).values({
-      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", status: "pending",
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", status: "active",
       cause: "legacy_execution_requires_reconciliation", fingerprint: handoffRunId,
       nextAction: "Check the stopped execution.",
     });
@@ -203,6 +203,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const admit = createPostgresIssueWakeAdmission(db);
     try {
       await admit({ companyId, issueId }, async (tx, { fresh }) => {
+        await expect(db.execute(sql`select id from issues where id = ${issueId} for update nowait`))
+          .rejects.toMatchObject({ cause: { code: "55P03" } });
         const input = { issueId, agentId, handoffRunId, checkExecutionBlocker: true };
         const receiptScope = { kind: "exact" as const, wakeId };
         await expect(fresh.readCommentCandidates({ ...input, receiptScope: { ...receiptScope, wakeId: randomUUID() } }))
