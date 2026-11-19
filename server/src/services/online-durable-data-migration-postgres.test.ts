@@ -77,6 +77,7 @@ describe.skipIf(!support.supported)("online durable-data migration of local work
     migrateWorkspace: migrateRemoteWorkspace,
     nativeHarnessBackups: async () => undefined,
     nativeControllers: async () => undefined,
+    runEvidenceDeferrals: () => ({}),
     eligibility: async () => ({ eligible: false, blockers: [] }),
     record: async () => undefined,
   }) as never;

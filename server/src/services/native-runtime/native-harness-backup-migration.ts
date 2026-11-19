@@ -211,14 +211,18 @@ export async function prestageNativeHarnessBackups(db: Db, input: { storage: Sto
       return "current";
     }
     if (run.status !== "succeeded" || !run.finishedAt) {
-      if (!run.finishedAt || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) return "source_not_successful";
+      if (!run.finishedAt || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status)) {
+        return ["queued", "scheduled_retry", "running"].includes(run.status) ? "source_run_active" : "source_run_unfinished";
+      }
       const providerLeaseId = await verifiedSourceLease(db, source, run, signal);
       if (!providerLeaseId) return "source_unverified";
       try {
+        let unsettled = "owner_unsettled";
         const owner = await settledNativeHarnessBackupOwner(db, { companyId: run.companyId, issueId: run.issueId,
           runId: source.runId, sessionId: run.sessionId, runnerInstanceId: run.runnerId, scopeDigest: source.scopeDigest,
-          root: source.root, manifestSha256: source.manifestSha256, providerLeaseId, signal });
-        if (!owner) return "source_not_successful";
+          root: source.root, manifestSha256: source.manifestSha256, providerLeaseId, signal,
+          onUnsettled: reason => { unsettled = reason; } });
+        if (!owner) return `source_${unsettled}`;
         await persistNativeHarnessBackup({ db, storage: input.storage, owner, root: source.root,
           scopeDigest: source.scopeDigest, signal, maxArchiveBytes: source.archiveLimit });
         return "published";

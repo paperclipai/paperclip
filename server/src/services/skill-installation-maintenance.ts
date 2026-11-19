@@ -11,6 +11,7 @@ import { skillPackageMaintenance } from "./skill-package-maintenance.js";
 import { skillPackageManifest } from "./skill-package-files.js";
 import { assertSkillSnapshotPath, MAX_SKILL_SNAPSHOT_BYTES, MAX_SKILL_SNAPSHOT_FILES, skillSnapshotHash, snapshotFile } from "./skill-snapshot.js";
 import { protectedVersions, withSkillVersionCacheLock } from "./skill-version-cache.js";
+import { readPinnedCatalogSkillFiles } from "./skills-catalog.js";
 import { getStorageService, type StorageService } from "../storage/index.js";
 
 type Page = { companyId?: string; after?: string; id?: string; limit?: number; signal?: AbortSignal };
@@ -82,6 +83,31 @@ async function legacyFiles(skill: typeof companySkills.$inferSelect, signal?: Ab
   return files;
 }
 
+async function pinnedCatalogFiles(skill: typeof companySkills.$inferSelect) {
+  const catalogId = skill.metadata?.catalogId, originHash = skill.metadata?.originHash;
+  if (skill.sourceType !== "catalog" || typeof catalogId !== "string" || typeof originHash !== "string") return null;
+  const files = await readPinnedCatalogSkillFiles(catalogId, originHash);
+  return files?.map(file => snapshotFile(assertSkillSnapshotPath(file.path), classifyInventoryKind(file.path), file.bytes)) ?? null;
+}
+
+const blockedReasonCodes: Array<[RegExp, string]> = [
+  [/^Neither complete legacy files nor a saved version is available$/, "source_files_unavailable"],
+  [/^Saved version does not cover the installed inventory$/, "saved_version_incomplete"],
+  [/^Catalog reset snapshot is unavailable/, "catalog_origin_unavailable"],
+  [/^Catalog origin is not durably available$/, "catalog_origin_not_durable"],
+  [/^Final snapshot is not independently recoverable/, "snapshot_not_durable"],
+  [/^Legacy skill (root is not a safe directory|contains a symbolic link|contains an unsupported file)$/, "legacy_source_unsafe"],
+  [/^Legacy skill exceeds package limits$/, "legacy_source_too_large"],
+  [/^Legacy skill is missing UTF-8 SKILL\.md$/, "legacy_skill_markdown_missing"],
+  [/^(Legacy skill|Legacy skill files|Legacy skill source|Catalog origin) changed during conversion/, "source_changed"],
+  [/^Legacy (installation has no exact remote source|repository revision is not pinned)\.$/, "remote_source_unpinned"],
+  [/^Pinned catalog file hash mismatch/, "catalog_file_mismatch"],
+];
+
+export function blockedSkillInstallationCode(reason: string | undefined) {
+  return blockedReasonCodes.find(([pattern]) => reason && pattern.test(reason))?.[1] ?? "blocked";
+}
+
 export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
   const store = skillPackageStore(db, storage);
   const content = managedSkillContent(db, db, storage);
@@ -93,7 +119,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
   }
   async function installations(options: Conversion = {}) {
     const skills = await db.select().from(companySkills).where(scope(options)).orderBy(asc(companySkills.id)).limit(limit(options));
-    const results: Array<{ skillId: string; companyId: string; status: string; versionId?: string | null; reason?: string }> = [];
+    const results: Array<{ skillId: string; companyId: string; status: string; versionId?: string | null; reason?: string; code?: string }> = [];
     for (const skill of skills) {
       options.signal?.throwIfAborted();
       const catalogOrigin = skill.sourceType === "catalog" && !skill.metadata?.originVersionId;
@@ -115,12 +141,16 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
           const sourceIdentity = await legacySourceIdentity(skill);
           const local = await legacyFiles(skill, options.signal);
           const completeSaved = saved && coversInstalledInventory(skill, saved) ? saved : null;
+          const unmodifiedCatalog = skill.sourceType === "catalog" && !skill.metadata?.userModifiedAt
+            && typeof skill.metadata?.originHash === "string" && skill.metadata.installedHash === skill.metadata.originHash;
           const files = local ?? completeSaved ?? ((skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url")
-            ? await companySkillService(db).captureLegacyInstallation(skill.companyId, skill.id) : null);
+            ? await companySkillService(db).captureLegacyInstallation(skill.companyId, skill.id)
+            : unmodifiedCatalog ? await pinnedCatalogFiles(skill) : null);
           const originSource = catalogOrigin && typeof skill.metadata?.originSnapshotLocator === "string"
             ? { ...skill, sourceLocator: skill.metadata.originSnapshotLocator } : null;
           const originIdentity = originSource ? await legacySourceIdentity(originSource) : null;
-          const origin = originSource ? await legacyFiles(originSource, options.signal) : null;
+          const localOrigin = originSource ? await legacyFiles(originSource, options.signal) : null;
+          const origin = localOrigin ?? (catalogOrigin && skill.metadata?.userModifiedAt ? await pinnedCatalogFiles(skill) : null);
           if (catalogOrigin && !origin && skill.metadata?.userModifiedAt) {
             throw new Error("Catalog reset snapshot is unavailable; preserve the original installed package before conversion");
           }
@@ -173,7 +203,7 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
                 throw conflict("Legacy skill files changed during conversion. Retry the operation.");
               if (originSource && (JSON.stringify(await legacySourceIdentity(originSource)) !== JSON.stringify(originIdentity)
                 || (await legacyFiles(originSource, options.signal).then(value => value ? skillSnapshotHash(value) : null))
-                  !== (origin ? skillSnapshotHash(origin) : null)))
+                  !== (localOrigin ? skillSnapshotHash(localOrigin) : null)))
                 throw conflict("Catalog origin changed during conversion. Retry the operation.");
               if (origin && originCandidate?.packageSnapshotId) {
                 originVersionId = (await companySkillService(db).createVersion(skill.companyId, skill.id,
@@ -192,7 +222,9 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
         };
         results.push(await convert());
       } catch (error) {
-        results.push({ skillId: skill.id, companyId: skill.companyId, status: "blocked", reason: error instanceof Error ? error.message : "Conversion failed" });
+        if (options.signal?.aborted) throw options.signal.reason;
+        const reason = error instanceof Error ? error.message : "Conversion failed";
+        results.push({ skillId: skill.id, companyId: skill.companyId, status: "blocked", reason, code: blockedSkillInstallationCode(reason) });
       }
     }
     return { inspected: skills.length, after: skills.at(-1)?.id ?? null, results };

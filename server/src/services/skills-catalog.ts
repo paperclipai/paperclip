@@ -346,6 +346,18 @@ export async function copyCatalogSkillFile(reference: string, relativePath: stri
   await fs.writeFile(targetPath, await readCatalogFileBytes(skill, normalizedPath));
 }
 
+export async function readPinnedCatalogSkillFiles(reference: string, contentHash: string) {
+  let skill: CatalogSkill | null;
+  try { skill = resolveCatalogSkillReference(reference).skill; }
+  catch (error) {
+    if (isCatalogManifestUnavailableError(error)) return null;
+    throw error;
+  }
+  if (!skill || skill.contentHash !== contentHash) return null;
+  const pinned = skill;
+  return Promise.all(pinned.files.map(async entry => ({ path: entry.path, bytes: await readCatalogFileBytes(pinned, entry.path) })));
+}
+
 export function getCatalogPackageMetadata() {
   const catalogManifest = getCatalogManifest();
   return {
