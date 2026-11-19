@@ -1,7 +1,8 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { listResponsibilitiesQuerySchema } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import {
   authorizationDeniedDetails,
   issueReadSqlCondition,
@@ -14,6 +15,7 @@ import {
   type ResponsibilitySummaryServiceOptions,
 } from "../services/responsibility-summaries.js";
 import { assertCompanyAccess, getAccessibleResource } from "./authz.js";
+import { defaultResponsibilityOwnerUserId } from "./responsibilities.js";
 
 const NOT_FOUND = "Responsibility not found";
 const summaryQuerySchema = listResponsibilitiesQuerySchema.pick({ ownerUserId: true });
@@ -32,7 +34,7 @@ export function responsibilitySummaryRoutes(db: Db, opts: { summaries?: Responsi
 
   async function assertResponsibilitiesEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   async function assertCompanyRead(req: Request, companyId: string) {
@@ -65,10 +67,10 @@ export function responsibilitySummaryRoutes(db: Db, opts: { summaries?: Responsi
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const query = summaryQuerySchema.parse(req.query);
-    const ownerUserId = query.ownerUserId ?? (req.actor.type === "board" ? req.actor.userId : undefined);
+    const ownerUserId = query.ownerUserId ?? defaultResponsibilityOwnerUserId(req);
     if (!ownerUserId) {
       throw unprocessable(req.actor.type === "agent"
-        ? "ownerUserId is required: name the person whose responsibilities to summarize"
+        ? "ownerUserId is required: this run works for no person, so name the person whose responsibilities to summarize"
         : "ownerUserId is required");
     }
     const overview = await responsibilities.overview(companyId, ownerUserId, {

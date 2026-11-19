@@ -229,3 +229,26 @@ checks the source hash and destination under the agent write lock, then updates
 the file and the configured root path together. A stale source or occupied
 name returns `409`. External bundles must be migrated to managed storage before
 using this operation. A successful response contains the renamed file detail.
+
+### Instruction history
+
+```
+GET /api/agents/{agentId}/instructions-bundle/history?path=AGENTS.md&cursor={id}
+GET /api/agents/{agentId}/instructions-bundle/revision/{revisionId}?path=AGENTS.md
+GET /api/agents/{agentId}/instructions-bundle/diff?from={id}&to={id}&path=AGENTS.md
+```
+
+History lists the saves of one instruction file, newest first, with the writer
+(agent or user), the run and the time of each save. `cursor` is the last `id`
+of the previous page. Each `id` is one of these:
+
+- a legacy revision ID,
+- a save record ID,
+- the ID of the current content, which `GET .../instructions-bundle/file`
+  returns as the revision. This ID is a version-8 UUID.
+
+The revision and diff routes accept all three kinds of ID (UUID versions 1–8).
+Any other value returns `422`. Only the current content is kept for a save
+record. When a save's content is no longer current, a read of that save returns
+`404` with code `INSTRUCTION_REVISION_CONTENT_NOT_RETAINED`. The save stays in
+the history list.

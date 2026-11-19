@@ -37,6 +37,7 @@ export interface ProductAnalyticsClient {
   identify(distinctId: string, personProperties?: Record<string, unknown>): void;
   group(groupType: string, groupKey: string): void;
   reset(): void;
+  capture?(event: string, properties?: Record<string, unknown>, options?: { timestamp?: Date }): unknown;
   opt_out_capturing?(): void;
   opt_in_capturing?(): void;
   has_opted_out_capturing?(): boolean;
@@ -210,7 +211,16 @@ type State = {
   pendingClient: ProductAnalyticsClient | null;
   loading: boolean;
   optedOut: boolean;
+  queued: QueuedProductEvent[];
 };
+
+type QueuedProductEvent = {
+  event: string;
+  properties: Record<string, string>;
+  timestamp: Date;
+};
+
+const MAX_QUEUED_PRODUCT_EVENTS = 50;
 
 let state: State | null = null;
 let wantedUser: ProductAnalyticsUser | null = null;
@@ -236,6 +246,21 @@ function applyIdentity(client: ProductAnalyticsClient, config: BrowserAnalyticsC
   }
 }
 
+function sendProductEvent(client: ProductAnalyticsClient, queued: QueuedProductEvent) {
+  client.capture?.(queued.event, queued.properties, { timestamp: queued.timestamp });
+}
+
+export function captureProductAnalyticsEvent(event: string, properties: Record<string, string> = {}): void {
+  const current = state;
+  if (!current || current.optedOut) return;
+  const queued = { event, properties: { ...properties }, timestamp: new Date() };
+  if (current.client) {
+    sendProductEvent(current.client, queued);
+    return;
+  }
+  if (current.queued.length < MAX_QUEUED_PRODUCT_EVENTS) current.queued.push(queued);
+}
+
 function optOut(client: ProductAnalyticsClient) {
   client.opt_out_capturing?.();
   client.stopSessionRecording?.();
@@ -253,6 +278,9 @@ function initialize(current: State, client: ProductAnalyticsClient) {
   client.register(superProperties(config));
   current.client = client;
   applyIdentity(client, config);
+  const queued = current.queued;
+  current.queued = [];
+  for (const event of queued) sendProductEvent(client, event);
 }
 
 /**
@@ -283,6 +311,7 @@ export function startProductAnalytics(
     cancelSchedule: null,
     loading: false,
     optedOut: false,
+    queued: [],
   };
   state = current;
   const load = options.load ?? loadPostHog;
@@ -309,6 +338,7 @@ export function startProductAnalytics(
 
 /** Set (or clear, on sign-out) the signed-in user. Safe to call before posthog-js loads. */
 export function setProductAnalyticsUser(user: ProductAnalyticsUser | null): void {
+  if (wantedUser && wantedUser.id !== user?.id && state) state.queued = [];
   wantedUser = user;
   if (state?.client) applyIdentity(state.client, state.config);
 }
@@ -341,6 +371,7 @@ function stopProductAnalytics(): void {
     return;
   }
   state.optedOut = true;
+  state.queued = [];
   if (state.client) optOut(state.client);
 }
 

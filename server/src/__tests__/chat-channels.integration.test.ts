@@ -16,7 +16,7 @@ import { settleUnrecoverableExecutions } from "../services/execution-recovery-re
 import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
 import { reconcilePersistedRuntimeServicesOnStartup, readWorkspaceRuntimeIdleWork } from "../services/workspace-runtime.js";
-import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { chatInboundWakeNoticeWork } from "../services/chat-inbound-wake-notice-work.js";
@@ -69831,8 +69831,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } else if (mode === "requester merge") {
         await db.transaction(async tx => {
           await tx.execute(sql`select id from issues where id = ${context.issue.id} for update`);
-          await createWakeAdmissionWriter().mergeIntoExistingDeferredWake(
-            createAdmissionTransactionScope(context.fixture.companyId, tx as unknown as Db), {
+          await createWakeAdmissionWriter(tx, context.fixture.companyId).mergeIntoExistingDeferredWake({
               companyId: context.fixture.companyId, existingDeferredWakeId: originalReceipt.id,
               mergedPayload: originalReceipt.payload ?? {}, nextCoalescedCount: 1,
               manualUserWakeActorId: originalReceipt.requestedByActorId!,

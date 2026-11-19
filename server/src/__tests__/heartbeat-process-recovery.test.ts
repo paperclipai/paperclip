@@ -124,7 +124,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import type { NativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { runningProcesses, type AdapterExecutionContext, type AdapterExecutionResult } from "../adapters/index.ts";
@@ -10040,9 +10040,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: false,
     });
+    await db.update(agents).set({ createdByUserId: "paperclip-id:agent-owner" }).where(eq(agents.id, agentId));
     const heartbeat = heartbeatService(db);
     const scopedCompanies: Array<string | undefined> = [];
-    mockTrackAgentFirstHeartbeat.mockImplementationOnce(() => scopedCompanies.push(scopedTelemetryCompanyId()));
+    const scopedPeople: unknown[] = [];
+    mockTrackAgentFirstHeartbeat.mockImplementationOnce(() => {
+      scopedCompanies.push(scopedTelemetryCompanyId());
+      scopedPeople.push(scopedTelemetryPerson());
+    });
 
     await heartbeat.cancelRun(runId);
 
@@ -10054,6 +10059,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     );
     expect(scopedCompanies).toEqual([companyId]);
+    expect(scopedPeople).toEqual([{ userId: "paperclip-id:agent-owner", attributedVia: "run_owner" }]);
   });
 
   it("preserves first-heartbeat telemetry after a timer interval claim", async () => {
