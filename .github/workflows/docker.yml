@@ -9,8 +9,8 @@ on:
       - "nightly/v*"
       - "beta/v*"
   # Release workflows push lane tags with GITHUB_TOKEN, and GitHub suppresses
-  # push-triggered runs for those, so release.yml dispatches this workflow at
-  # the new tag ref instead. The tag mapping below keys off github.ref either
+  # push-triggered runs for those, so release.yml (canary-finalize.yml for a
+  # canary) dispatches this workflow at the new tag ref instead. The tag mapping below keys off github.ref either
   # way.
   workflow_dispatch:
 

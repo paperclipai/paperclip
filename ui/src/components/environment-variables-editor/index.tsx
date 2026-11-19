@@ -137,6 +137,10 @@ export interface EnvironmentVariablesEditorProps {
   onDirtyChange?: (dirty: boolean) => void;
   /** Parent owns Save/Discard and flushes the editor through its ref. */
   hideDraftActions?: boolean;
+  /** Open with one blank, focused row when there is nothing saved yet. */
+  startWithEmptyRow?: boolean;
+  /** Label for the add-row action. Defaults to "Add variable". */
+  addLabel?: string;
 }
 
 export interface EnvironmentVariablesEditorHandle {
@@ -159,10 +163,15 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   footerHint,
   onDirtyChange,
   hideDraftActions = false,
+  startWithEmptyRow = false,
+  addLabel = "Add variable",
 }: EnvironmentVariablesEditorProps, ref) {
   const toast = useOptionalToastActions();
   const editorRootRef = useRef<HTMLDivElement | null>(null);
-  const [rows, setRows] = useState<EnvRow[]>(() => rowsFromValue(value));
+  const [rows, setRows] = useState<EnvRow[]>(() => {
+    const saved = rowsFromValue(value);
+    return saved.length === 0 && startWithEmptyRow ? [emptyRow()] : saved;
+  });
   const rowsRef = useRef(rows);
   const [committedRows, setCommittedRows] = useState<EnvRow[]>(() => cloneRows(rows));
   const initialValueKey = useMemo(() => normalizedEnvKey(value), []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -175,7 +184,9 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   const [touchedNames, setTouchedNames] = useState<ReadonlySet<string>>(
     () => new Set(rowsFromValue(value).map((row) => row.name.trim()).filter(Boolean)),
   );
-  const [pendingFocus, setPendingFocus] = useState<{ rowId: string; field: "name" | "value" } | null>(null);
+  const [pendingFocus, setPendingFocus] = useState<{ rowId: string; field: "name" | "value" } | null>(
+    () => (startWithEmptyRow && rows.length === 1 && !rows[0]!.name ? { rowId: rows[0]!.id, field: "name" } : null),
+  );
 
   useEffect(() => {
     rowsRef.current = rows;
@@ -496,7 +507,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
           className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
         >
           <Plus className="size-3.5" />
-          Add variable
+          {addLabel}
         </button>
 
         {quickBind.length > 0 && !disabled ? (

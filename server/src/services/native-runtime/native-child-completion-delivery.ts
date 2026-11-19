@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns, statusDecisions, type Db } from "@paperclipai/db";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { appendHeartbeatRunEventBatch } from "../heartbeat-run-events.js";
 
 export interface NativeChildCompletionRecipient {
   companyId: string;
@@ -17,12 +17,25 @@ export async function recordChildTaskRead(db: Db, input: {
   children: ReadonlyArray<{ id: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null }>;
 }): Promise<void> {
   const completed = input.children.filter(child => child.parentId === input.parentIssueId && child.status === "done");
-  if (completed.length === 0) return;
-  await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
-    eventType: CHILD_TASK_READ_EVENT, stream: "system", level: "info",
-    payload: { parentIssueId: input.parentIssueId,
-      children: Object.fromEntries(completed.map(child => [child.id, { status: child.status, updatedAt: child.updatedAt.toISOString(),
-        statusDecisionId: child.lastStatusDecisionId ?? null }])) } });
+  await recordChildTaskReads(db, { ...input, children: completed });
+}
+
+/** Group completed children by parent, then persist the existing receipt shape in one statement. */
+export async function recordChildTaskReads(db: Db, input: {
+  companyId: string; agentId: string; runId: string;
+  children: ReadonlyArray<{ id: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null }>;
+}): Promise<void> {
+  const groups = new Map<string, Record<string, unknown>>();
+  for (const child of input.children) {
+    if (!child.parentId || child.status !== "done") continue;
+    const children = groups.get(child.parentId) ?? {};
+    children[child.id] = { status: child.status, updatedAt: child.updatedAt.toISOString(), statusDecisionId: child.lastStatusDecisionId ?? null };
+    groups.set(child.parentId, children);
+  }
+  await appendHeartbeatRunEventBatch(db, [...groups].map(([parentIssueId, children]) => ({
+    companyId: input.companyId, runId: input.runId, agentId: input.agentId,
+    eventType: CHILD_TASK_READ_EVENT, stream: "system", level: "info", payload: { parentIssueId, children },
+  })));
 }
 
 /** New child results belong to a fresh parent turn, including across a Done claim. */
@@ -34,7 +47,8 @@ export async function hasPendingNativeChildCompletion(db: Db, input: NativeChild
     eq(agentWakeupRequests.agentId, input.agentId),
     or(eq(agentWakeupRequests.reason, "issue_children_completed"),
       and(eq(agentWakeupRequests.reason, "issue_execution_deferred"),
-        sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'wakeReason' = 'issue_children_completed'`)),
+        sql`(${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'wakeReason' = 'issue_children_completed'
+          or ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeReasons' @> '["issue_children_completed"]'::jsonb)`)),
     eq(agentWakeupRequests.requestedByActorType, "system"),
     or(eq(agentWakeupRequests.requestedByActorId, "native-status-committer"),
       sql`${agentWakeupRequests.requestedByActorId} like 'native-status-wake-dispatch:%'`),

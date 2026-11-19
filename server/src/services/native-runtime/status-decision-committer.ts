@@ -1,3 +1,4 @@
+import { NativePullRequestCompletionError, verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
 import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
 import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
@@ -87,8 +88,12 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { materializeNativeProviderCapacityRetry } from "./native-provider-capacity-retry.js";
+import { materializeNativeAgentBlockerContinuation, materializeNativeEnvironmentBlockerRetry, materializeNativeProviderCapacityRetry,
+  materializeNativeToolReceiptLimitContinuation } from "./native-provider-capacity-retry.js";
+import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE } from "./native-environment-blocker.js";
+import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE } from "./native-agent-blocker.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-provider-failure.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE } from "./native-tool-receipt-limit.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 
 export class NativeStatusRaceError extends Error {
@@ -824,6 +829,19 @@ async function materializeDecisionEffect(input: {
             summary: effect.summary,
           },
         };
+      const [stopped] = effect.idempotencyKey === toolCallLoopContinuationKey(input.runId)
+        ? await input.tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, effect.agentId),
+          eq(agentWakeupRequests.idempotencyKey, effect.idempotencyKey), eq(agentWakeupRequests.status, "cancelled"),
+        )).limit(1)
+        : [];
+      if (stopped)
+        return {
+          effectKind: effect.kind,
+          targetType: "agent_wakeup_request",
+          targetId: stopped.id,
+          payload: { continuationKind: effect.continuationKind, summary: effect.summary, cancelled: true },
+        };
     }
     if (effect.continuationKind === "monitor") throw new Error("Monitor delivery belongs to the issue monitor scheduler");
     const wakeId = await enqueueWake({
@@ -895,8 +913,13 @@ async function materializeDecisionEffect(input: {
   }
   if (effect.kind === "schedule_retry") {
     failAt("continuation_materialization", input.failpoint);
-    if (effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE) {
-      const retryId = await materializeNativeProviderCapacityRetry({
+    if (effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE || effect.cause === NATIVE_TOOL_RECEIPT_LIMIT_CODE
+        || effect.cause === NATIVE_ENVIRONMENT_BLOCKER_CODE || effect.cause === NATIVE_AGENT_BLOCKER_CONTINUATION_CODE) {
+      const materialize = effect.cause === NATIVE_PROVIDER_OVERLOADED_CODE ? materializeNativeProviderCapacityRetry
+        : effect.cause === NATIVE_ENVIRONMENT_BLOCKER_CODE ? materializeNativeEnvironmentBlockerRetry
+          : effect.cause === NATIVE_AGENT_BLOCKER_CONTINUATION_CODE ? materializeNativeAgentBlockerContinuation
+            : materializeNativeToolReceiptLimitContinuation;
+      const retryId = await materialize({
         tx: input.tx as unknown as Db, companyId: input.companyId,
         issueId: input.issue.id, runId: input.runId, agentId: effect.agentId,
       });
@@ -1699,9 +1722,19 @@ export async function commitNativeStatusDecision(input: {
   if (reasonCode === "native_provider_model_rejected" && !input.requireModelRejectionOwner) {
     throw new Error("native_model_rejection_owner_required");
   }
-  if ((reasonCode.startsWith("native_provider_overloaded") || reasonCode === "native_run_failed_continuation_exhausted")
-      && !input.requireProviderFailureOwner) {
+  if ((reasonCode.startsWith("native_provider_overloaded") || reasonCode === "native_run_failed_continuation_exhausted"
+      || reasonCode === NATIVE_TOOL_RECEIPT_LIMIT_CODE || reasonCode === NATIVE_ENVIRONMENT_BLOCKER_CODE
+      || reasonCode === NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE || reasonCode === NATIVE_AGENT_BLOCKER_CONTINUATION_CODE
+      || reasonCode === NATIVE_AGENT_BLOCKER_HANDOFF_CODE) && !input.requireProviderFailureOwner) {
     throw new Error("native_provider_failure_owner_required");
+  }
+  let verifiedMergedPullRequests: ReadonlySet<string> | undefined;
+  if (input.decision.statusAction === "done") {
+    try { verifiedMergedPullRequests = await verifyNativePullRequestCompletion(input.db, input); }
+    catch (error) {
+      if (error instanceof NativePullRequestCompletionError) throw new NativeStatusRaceError();
+      throw error;
+    }
   }
   const publications: ActivityPublication[] = [];
   const terminalRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
@@ -1877,7 +1910,7 @@ export async function commitNativeStatusDecision(input: {
           : [issue.title, issue.description].filter(Boolean).join("\n");
         await validateNativeDeliverableEvidence(tx as unknown as Db, { companyId: input.companyId, issueId: input.issueId,
           runId: input.runId, objective, semanticToolReceipts: saved.receipts?.semanticToolReceipts, lockSources: true,
-          authoritativeDone: true }, record(saved.envelope).result);
+          authoritativeDone: true, verifiedMergedPullRequests }, record(saved.envelope).result);
       } catch (error) {
         if (error instanceof NativeDeliverableEvidenceError || record(error).code === "55P03" ||
             record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();

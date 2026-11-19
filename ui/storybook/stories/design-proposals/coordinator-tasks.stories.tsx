@@ -11,7 +11,7 @@ import { storybookIssueLabels } from "../../fixtures/paperclipData";
 
 function CoordinatorTasksPreview() {
   return <DesignProposalAccess><div className="coordinator-workspace"><DesignPageShell title="Tasks"
-    sidebar={<><CoordinatorSidebar /><div className="design-sidebar-account"><SidebarAccountMenu forceExpanded /></div></>}
+    sidebar={<><CoordinatorSidebar /><div className="design-sidebar-account"><SidebarAccountMenu /></div></>}
     sidebarStorageKey="paperclip.storybook.coordinator-sidebar-width"><CoordinatorTasks /></DesignPageShell><NewIssueDialog /></div></DesignProposalAccess>;
 }
 

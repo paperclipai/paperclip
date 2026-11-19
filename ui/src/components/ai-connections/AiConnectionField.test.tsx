@@ -8,6 +8,7 @@ import type { AiManagedConnectionSummary } from "@paperclipai/shared";
 import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
 import { ApiError } from "@/api/client";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), setDefault: vi.fn() }));
 let credentialProps: ComponentProps<typeof AiConnectionCredentialStep> | undefined;
@@ -234,4 +235,22 @@ it("shows readable copy with a retry when connections cannot be loaded", async (
   expect(mocks.list).toHaveBeenCalledTimes(2);
   expect(document.body.textContent).toContain("Reconnect account");
   expect(document.body.textContent).not.toContain("Retry connections");
+});
+
+it("masks the adoption dialog's account label in session replay", async () => {
+  const personal = account({ id: "00000000-0000-4000-8000-000000000011", grantId: "00000000-0000-4000-8000-000000000012", provider: "openai", method: "api_key", name: "OpenAI", accountLabel: "solenne.drake@example.test", status: "connected", isDefault: false });
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [personal], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="codex_local" legacy onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  await click("Choose a managed connection");
+  const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(choice => choice.textContent?.includes("solenne.drake@example.test"))!.click());
+  await settle();
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(replayLeaks("solenne.drake@example.test", dialog)).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("Adopt Connections for Nova", dialog)).toEqual({ rendered: true, recorded: false });
 });

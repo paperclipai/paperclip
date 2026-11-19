@@ -44,7 +44,7 @@ import { matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
 import { redeployWave } from "./redeploy.js";
 import { withT1CrossingCheck } from "./workloads.js";
 import { parseRecoveryStepReceipts, withRecoveryStepCheck } from "./recovery-step-faults.js";
-import { captureWaveRunnerLogs, executeInWaveSandboxes } from "./daytona-runner-logs.js";
+import { captureWaveRunnerLogs, executeInWaveSandboxes, RUNNER_LOG_CAPTURE_DEADLINE_MS } from "./daytona-runner-logs.js";
 import { isClassRFault, killedPidsFromOutput, providerKillCommand, watchLabels, withClassRCheck, type ProviderKillRecord } from "./class-r.js";
 import { TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
@@ -59,7 +59,7 @@ import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import { checkCrossServer, readCrossServerEvidence } from "./multi-server.js";
 import { ReleaseSwapWave, stormRunFor } from "./release-swap-setup.js";
 import { runnerBindFaultServerEnvironment, sessionFaultServerEnvironment } from "./session-faults.js";
-import { controllerLogNames, gradeWarmShutdown, isWarmWave, warmShutdownMarkdown, type WarmShutdownCleanup } from "./warm-shutdown.js";
+import { controllerLogNames, gradeWarmShutdown, isWarmWave, waitBounded, warmShutdownMarkdown, watchFirstIdleCloseFailure, type WarmShutdownCleanup } from "./warm-shutdown.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -318,6 +318,12 @@ async function main(): Promise<number> {
   let storageSection: string | null = null;
   let warmShutdownSection: string | null = null;
   let daytonaCleanup: WarmShutdownCleanup | null = null;
+  let idleCloseCapture: Promise<void> | null = null;
+  const idleCloseCaptures: string[] = [];
+  const waitForIdleCloseCapture = async (phase: string) => {
+    const outcome = await waitBounded(() => idleCloseCapture, RUNNER_LOG_CAPTURE_DEADLINE_MS + 5_000);
+    if (outcome === "timed_out") timeline.add("idle_close_failure_capture_wait_timed_out", { phase });
+  };
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -461,6 +467,12 @@ async function main(): Promise<number> {
         if (sandboxEvidence) {
           runnerLogTarget = { companyId: owned.companyId, environmentId: owned.environmentId };
           if (redeployWave(plan)) supervisor.redeployEvidence = (faultId, phase) => captureRunnerLogs(`${faultId}-${phase}`);
+          if (isWarmWave(plan.options)) supervisor.onServerOutput = watchFirstIdleCloseFailure(failure => {
+            const label = `idle-close-failure-${(failure.runId ?? "unknown").slice(0, 8)}`;
+            idleCloseCaptures.push(label);
+            timeline.add("idle_close_failure_seen", { runId: failure.runId, label, line: failure.line.slice(0, 2_000) });
+            idleCloseCapture = captureRunnerLogs(label).catch(error => { timeline.add("idle_close_failure_capture_failed", { label, error: String(error) }); });
+          });
           // `--sandbox-watch-seconds`: capture on a clock too, for Runner exits that no fault announces (W2 re-wake).
           if (plan.options.sandboxWatchMs) faultWork.push(watchSandboxes(plan.options.sandboxWatchMs));
         }
@@ -919,8 +931,10 @@ async function main(): Promise<number> {
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
     await board?.close().catch(() => undefined);
     await closeJourneyApps();
+    await waitForIdleCloseCapture("before_cleanup");
     try { if (sweeper) try {
-      const outcome = await finishDaytonaCleanup({ sweeper: sweeper as DaytonaWaveSweeper, sweep: sandboxSweep, waveDir, timeline });
+      const outcome = await finishDaytonaCleanup({ sweeper: sweeper as DaytonaWaveSweeper, sweep: sandboxSweep, waveDir, timeline,
+        beforeSandboxDelete: () => waitForIdleCloseCapture("before_sandbox_delete") });
       sandboxSweep = outcome.sweep;
       daytonaCleanup = outcome.cleanup;
       if (outcome.failed) anyFailure = true;
@@ -942,7 +956,8 @@ async function main(): Promise<number> {
       const logDir = path.dirname(supervisor.paths.serverLogPath);
       const controllerLogs = controllerLogNames(await readdir(logDir).catch(() => [] as string[]));
       const serverLog = (await Promise.all(controllerLogs.map(name => readFile(path.join(logDir, name), "utf8").catch(() => "")))).join("\n");
-      const warmShutdown = gradeWarmShutdown({ cleanup: daytonaCleanup, serverLog });
+      await waitForIdleCloseCapture("before_grade");
+      const warmShutdown = gradeWarmShutdown({ cleanup: daytonaCleanup, serverLog, sandboxCaptures: idleCloseCaptures });
       timeline.add("warm_shutdown", { ...warmShutdown });
       if (warmShutdown.verdict === "fail") anyFailure = true;
       warmShutdownSection = warmShutdownMarkdown(warmShutdown);

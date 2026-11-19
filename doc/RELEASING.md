@@ -93,25 +93,33 @@ internal traceability tag.
 
 ### Canary
 
-Every push to `master` runs the canary path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+Every push to `master` runs the canary path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml). Only one canary at a time runs that path. It ends as soon as npm has accepted every package, and [`.github/workflows/canary-finalize.yml`](../.github/workflows/canary-finalize.yml) finishes the canary outside that lock, so the next canary can publish while the previous one is still being confirmed.
 
-It:
+`release.yml` (`publish_canary`):
 
 - verifies the pushed commit
-- computes the canary version for the current UTC date
+- computes the canary version `YYYY.MDD.P-canary.N` for the current UTC date. `N` is 100 × the commit's position on master (`git rev-list --count HEAD`) plus the run attempt minus 1. Each commit owns its own range of 100, so neither a rerun nor an overlapping canary can take another commit's number. A number already published in that range (the same commit published again outside a GitHub rerun) is skipped, without leaving the range. This needs the full history; a publishing canary refuses a shallow checkout, and a dry run falls back to the next registry number. Nightly, beta and stable numbering are unchanged.
 - publishes workspace packages dependency-first under npm dist-tag `canary`
-- waits for each package version to become registry-visible before continuing
 - publishes the user-facing `paperclipai` package last, so `paperclipai@canary` does not advance before the full package set exists
-- verifies that `canary` resolves to the just-published version and that published internal dependencies exist on npm
-- installs `paperclipai@canary` into a clean temporary prefix as the final npm gate
-- starts the exact published canary through a separate fresh npm install for the onboarding smoke; npm `ETARGET` and verified canary tarball availability failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline
+- dispatches `canary-finalize.yml` with the version, the source commit and its own run id (`release.sh canary --defer-registry-confirmation`)
+
+`canary-finalize.yml`, which runs [`scripts/confirm-canary-publication.sh`](../scripts/confirm-canary-publication.sh):
+
+- waits for each package version to become registry-visible
+- requires the source commit to be on master and the canary number to come from it (`N / 100` equals the commit's master position), so a dispatch with invented inputs cannot tag another commit
+- checks npm provenance ([`scripts/verify-canary-provenance.mjs`](../scripts/verify-canary-provenance.mjs)): any package whose provenance names something other than `.github/workflows/release.yml` on `refs/heads/master` at the source commit fails the check. A package with no provenance is accepted, because that is the supported retry after a duplicate transparency-log entry, only the trusted release workflow can publish, and the number check above already ties the version to the commit. Brief npm errors are retried.
+- verifies that `canary` resolves to this version or a newer canary, and that published internal dependencies exist on npm
+- installs the exact `paperclipai@<version>` into a clean temporary prefix, retrying every 30 s within a 20-minute deadline that also stops a stuck install (`NPM_INSTALL_VERIFY_TIMEOUT_SECONDS`, `NPM_INSTALL_VERIFY_DELAY_SECONDS`; nightly, beta and stable use the same retry for their `paperclipai@<dist-tag>` install): npm can expose a large package's metadata minutes before its tarball downloads (on 2026-11-16 `@paperclipai/server`, about 524 MB unpacked, still returned 404 several minutes after its recorded publish time)
 - fails by default if npm leaves `latest` pointing at a canary; use `--allow-canary-latest` only when that state is intentional
-- creates a git tag `canary/vYYYY.MDD.P-canary.N`
+- creates and pushes the git tag `canary/vYYYY.MDD.P-canary.N` (a tag that already points at the same commit is accepted, so a rerun is safe). Nightly still selects only tagged canaries.
+- dispatches `docker.yml` at the tag
+- starts the exact published canary through a separate fresh npm install for the onboarding smoke; npm `ETARGET` and verified canary tarball availability failures retry, up to three attempts within two minutes, before onboarding runs once under the existing five-minute startup deadline. The smoke installs from the publisher run's lockfile artifact.
 
 #### Busy master and lost runners
 
 Master often receives a commit every few minutes, faster than one canary
-publishes (about 60-90 minutes). The release workflow keeps one running canary
+publishes (about 20-25 minutes inside `release.yml`, then its confirmation in
+`canary-finalize.yml`). The release workflow keeps one running canary
 and one pending canary. A newer push replaces the pending one, so the canary
 that runs next is always the newest master commit. Commits in between are not
 published on their own; they ship inside the next canary.
@@ -146,7 +154,7 @@ runs `build:binary`.
 
 After publication, the onboarding smoke checks out the same source SHA and
 installs its test dependencies from the publisher's resolved lockfile with
-`--frozen-lockfile`. The same-run artifact is captured before tracked files are
+`--frozen-lockfile`. The publisher's artifact is captured before tracked files are
 restored or release versions are rewritten. This lets a source commit use its
 current patches and manifests while the separate lockfile-refresh PR is still
 pending, without resolving new dependencies in the smoke job. The smoke still installs and tests

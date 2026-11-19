@@ -2,15 +2,16 @@ import { readNativeCheckpointRetirement } from "./native-runner-checkpoint-retir
 import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { createHash } from "node:crypto";
-import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, exists, gt, isNotNull, isNull, lte, inArray, notExists, or, sql, type SQL } from "drizzle-orm";
 import { checkpointDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, primeDatabaseWorkTransactionId, type Db } from "@paperclipai/db";
 import { inspectDurablePrpCheckpointHeader, inspectUnauthenticatedBootstrapCheckpoint, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
-import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
+import { NATIVE_RETAINED_OWNER_WAIT } from "./native-recovery-wait-codes.js";
 import { OWN_PROCESS_START_EVENT_TYPES } from "../native-process-start-events.js";
+import { SAME_RUN_RESUME_DISPOSITION } from "./same-run-resume-disposition.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
@@ -118,35 +119,74 @@ export async function validateNativeRunnerCheckpointOwner(
           eq(heartbeatRuns.issueId, owner.issueId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
           notExists(tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
             .where(eq(nativeRunFinalizations.runId, heartbeatRuns.id))))) : [];
-    const [parkedSuccessor] = !successor && !preparingSuccessor && !waitingSuccessor && task?.executionRunId && task.executionRunId !== owner.runId
-      ? await parkedSuccessorWaitingForOwner(tx, owner, task.executionRunId) : [];
+    const [unstartedSuccessor] = !successor && !preparingSuccessor && !waitingSuccessor && task?.executionRunId && task.executionRunId !== owner.runId
+      ? await unstartedSuccessorOfOwner(tx, owner, task.executionRunId) : [];
     if (!current.resultId || newWork || !task
-      || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor && !waitingSuccessor && !parkedSuccessor)) {
+      || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor && !waitingSuccessor && !unstartedSuccessor)) {
       throw new Error("native_runner_checkpoint_owner_lost");
     }
   }
 }
 
-function parkedSuccessorWaitingForOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
-  return tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
-    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId)).where(and(
-      eq(nativeRunFinalizations.runId, successorRunId), eq(nativeRunFinalizations.companyId, owner.companyId),
-      eq(nativeRunFinalizations.issueId, owner.issueId), eq(nativeRunFinalizations.phase, "retryable_failure"),
-      eq(nativeRunFinalizations.failureCode, NATIVE_RETAINED_OWNER_WAIT), eq(nativeRunFinalizations.attempt, 0),
-      isNull(nativeRunFinalizations.resultId), isNull(nativeRunFinalizations.leaseOwner),
-      sql`${nativeRunFinalizations.failureDetail}->'waitingForOwner'->>'runId' = ${owner.runId}`,
-      sql`${nativeRunFinalizations.failureDetail}->'waitingForOwner'->>'controllerBootId' = ${owner.bootId}`,
-      eq(heartbeatRuns.companyId, owner.companyId), eq(heartbeatRuns.nativeIssueId, owner.issueId),
-      eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "running"),
-      isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
-      sql`${heartbeatRuns.nativeSessionId} = (select source.native_session_id from heartbeat_runs source
-        where source.id = ${owner.runId} and source.company_id = ${owner.companyId})`,
+class SuccessorCoordinatorCreated extends Error {}
+
+async function lockSuccessorRows(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
+  const coordinatorRow = (db: CheckpointTransaction) => db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .where(and(eq(nativeRunFinalizations.runId, successorRunId), eq(nativeRunFinalizations.companyId, owner.companyId)));
+  for (let pass = 0; ; pass++) {
+    try {
+      return await tx.transaction(async locking => {
+        const [coordinator] = await coordinatorRow(locking).for("share");
+        const [run] = await locking.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, successorRunId), eq(heartbeatRuns.companyId, owner.companyId))).for("share");
+        if (run && !coordinator && pass < 2 && (await coordinatorRow(locking)).length) throw new SuccessorCoordinatorCreated();
+        return { coordinator, run };
+      });
+    } catch (error) {
+      if (!(error instanceof SuccessorCoordinatorCreated)) throw error;
+    }
+  }
+}
+
+async function unstartedSuccessorOfOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner, successorRunId: string) {
+  const { coordinator, run } = await lockSuccessorRows(tx, owner, successorRunId);
+  if (!run) return [];
+  const resumeClaim = sql`${nativeRunFinalizations.recoveryHistory}->-1`;
+  const waitsOnlyForOwner = (waiting: SQL) => sql`(coalesce(${waiting}, 'null'::jsonb) = 'null'::jsonb
+    or (${waiting}->>'runId' = ${owner.runId} and ${waiting}->>'controllerBootId' = ${owner.bootId}))`;
+  const noProcess = and(isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt));
+  const preparing = and(isNull(nativeRunFinalizations.runId), eq(heartbeatRuns.runtimeMode, "legacy"),
+    eq(heartbeatRuns.issueId, owner.issueId), eq(heartbeatRuns.executionStage, "preparing"), isNotNull(heartbeatRuns.controllerBootId),
+    gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`), noProcess);
+  const admitted = and(eq(nativeRunFinalizations.companyId, owner.companyId), eq(nativeRunFinalizations.issueId, owner.issueId),
+    eq(nativeRunFinalizations.attempt, 0), isNull(nativeRunFinalizations.resultId),
+    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativeIssueId, owner.issueId),
+    sql`${heartbeatRuns.nativeSessionId} = (select source.native_session_id from heartbeat_runs source
+      where source.id = ${owner.runId} and source.company_id = ${owner.companyId})`,
+    or(noProcess, sql`${heartbeatRuns.runnerProfileJson}->>'inheritedProcessIdentityRunId' = ${owner.runId}`),
+    or(
+      and(eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.leaseOwner),
+        isNull(nativeRunFinalizations.leaseExpiresAt), isNull(nativeRunFinalizations.failureCode),
+        sql`jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) = 0`),
+      and(eq(nativeRunFinalizations.phase, "retryable_failure"),
+        eq(nativeRunFinalizations.failureCode, NATIVE_RETAINED_OWNER_WAIT), isNull(nativeRunFinalizations.leaseOwner),
+        waitsOnlyForOwner(sql`${nativeRunFinalizations.failureDetail}->'waitingForOwner'`)),
+      and(eq(nativeRunFinalizations.phase, "observed"), isNotNull(nativeRunFinalizations.leaseOwner),
+        gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+        sql`${resumeClaim}->>'disposition' = ${SAME_RUN_RESUME_DISPOSITION}`,
+        sql`${resumeClaim}->>'controllerBootId' = ${nativeRunFinalizations.controllerBootId}`,
+        waitsOnlyForOwner(sql`${resumeClaim}->'evidence'->'waitingForOwner'`)),
+    ));
+  return tx.select({ runId: heartbeatRuns.id }).from(heartbeatRuns)
+    .leftJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id)).where(and(
+      eq(heartbeatRuns.id, successorRunId), eq(heartbeatRuns.companyId, owner.companyId), eq(heartbeatRuns.status, "running"),
       notExists(tx.select({ runId: nativeRunnerCheckpoints.runId }).from(nativeRunnerCheckpoints).where(and(
         eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, successorRunId)))),
       notExists(tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
         eq(heartbeatRunEvents.companyId, owner.companyId), eq(heartbeatRunEvents.runId, successorRunId),
         isNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType, [...OWN_PROCESS_START_EVENT_TYPES])))),
-    )).for("share", { of: nativeRunFinalizations });
+      coordinator ? admitted : preparing,
+    ));
 }
 
 export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransaction, owner: NativeRunnerCheckpointOwner, newWork: boolean) {
