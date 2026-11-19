@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   MCP_CONNECTOR_ENROLL_PATH,
@@ -27,11 +27,21 @@ function bearerToken(req: Request): string | null {
  * Token and credential values appear only in these responses, never in
  * activity details or logs.
  */
-export function mcpConnectorRoutes(db: Db, options: { hub?: McpConnectorHub; enrollRateLimiter?: InviteRateLimiter } = {}) {
+export function mcpConnectorRoutes(
+  db: Db,
+  options: { hub?: McpConnectorHub; enrollRateLimiter?: InviteRateLimiter; rotateRateLimiter?: InviteRateLimiter } = {},
+) {
   const router = Router();
-  // The enroll route is unauthenticated and does a DB write per well-formed
+  // Enroll and rotate are unauthenticated and hit the DB per well-formed
   // token, so bound attempts per client IP (req.ip honors TRUST_PROXY).
+  const limitByIp = (limiter: InviteRateLimiter) => (req: Request, res: Response, next: NextFunction) => {
+    const result = limiter.consume(req.ip || req.socket?.remoteAddress || "unknown");
+    if (result.allowed) return next();
+    res.setHeader("Retry-After", String(result.retryAfterSeconds));
+    next(tooManyRequests("Too many connector attempts", { retryAfterSeconds: result.retryAfterSeconds }));
+  };
   const enrollRateLimiter = options.enrollRateLimiter ?? createInviteRateLimiter();
+  const rotateRateLimiter = options.rotateRateLimiter ?? createInviteRateLimiter();
   const connectors = mcpConnectorService(db, { hub: options.hub });
   const access = accessService(db);
 
@@ -112,12 +122,7 @@ export function mcpConnectorRoutes(db: Db, options: { hub?: McpConnectorHub; enr
     res.json(connector);
   });
 
-  router.post(MCP_CONNECTOR_ENROLL_PATH.replace(/^\/api/, ""), (req, res, next) => {
-    const result = enrollRateLimiter.consume(req.ip || req.socket?.remoteAddress || "unknown");
-    if (result.allowed) return next();
-    res.setHeader("Retry-After", String(result.retryAfterSeconds));
-    next(tooManyRequests("Too many enrollment attempts", { retryAfterSeconds: result.retryAfterSeconds }));
-  }, validate(enrollMcpConnectorSchema), async (req, res) => {
+  router.post(MCP_CONNECTOR_ENROLL_PATH.replace(/^\/api/, ""), limitByIp(enrollRateLimiter), validate(enrollMcpConnectorSchema), async (req, res) => {
     const result = await connectors.enroll(req.body.token, req.body.version);
     await logActivity(db, {
       companyId: result.companyId,
@@ -132,7 +137,7 @@ export function mcpConnectorRoutes(db: Db, options: { hub?: McpConnectorHub; enr
     res.json(result);
   });
 
-  router.post(MCP_CONNECTOR_ROTATE_PATH.replace(/^\/api/, ""), async (req, res) => {
+  router.post(MCP_CONNECTOR_ROTATE_PATH.replace(/^\/api/, ""), limitByIp(rotateRateLimiter), async (req, res) => {
     const credential = bearerToken(req);
     if (!credential) throw unauthorized();
     const current = await connectors.authenticate(credential);
