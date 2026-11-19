@@ -76,6 +76,18 @@ Runs fall into four tiers, started in this order:
 3. **Recovery** and 4. **old recovery backlog.** System recovery wakes, even on
    a person's tree.
 
+A clean continuation is not system recovery. It is an `issue_continuation_needed`
+run queued because its source run hit the tool-call loop limit
+(`livenessContinuationReason: agent_tool_call_loop`), when the source run
+succeeded, is not itself such a continuation, and the run is not a failure retry
+(no `retryOfRunId`, `retryReason` or `previousRunId`). It takes its task's tier,
+so a person's task that continues its own work stays with that person's work.
+Its start still uses up the recovery share, so recovery-reason starts do not
+increase. Later hops of a loop chain and every failure retry stay in the
+recovery tiers. The provenance check is in `queued-run-provenance.ts`. The
+dispatch query and the place-in-line query both read its
+`QUEUED_RUN_ORDER_CONTEXT_KEYS`, so they see the same context fields.
+
 Within a tier, runs are ordered by readiness (in progress first), then task
 priority, then age, oldest first. A newer run on a person's tree never passes
 another person's equally ranked task that has waited longer.
