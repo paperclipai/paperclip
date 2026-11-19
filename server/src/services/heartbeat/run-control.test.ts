@@ -30,6 +30,8 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { acknowledgedNativeApiStopExecutionHasStopped } from "../acknowledged-native-stop.js";
 import { nativeSha256 } from "../native-runtime/canonical.js";
 import { callbacks, runControlPostgresSupport, setupRunControlDatabase } from "./__tests__/run-control-fixtures.js";
+import { LEASE_RELEASE_FAST_ATTEMPTS, LEASE_RELEASE_SLOW_RETRY_MS } from "../environment-lease-release-deferral.js";
+import { agentExecutionStopBlocker } from "../agent-execution-stop.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../acknowledged-native-stop.js", async (importOriginal) => {
@@ -125,7 +127,7 @@ describe("heartbeat run-control module boundary", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
-  it("defers destruction when a warm session remains busy", async () => {
+  it("defers destruction and records a retry when a warm session remains busy", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
     deps.getRunCleanupState.mockResolvedValue({ status: "failed", runtimeMode: "legacy" } as Run);
@@ -133,7 +135,7 @@ describe("heartbeat run-control module boundary", () => {
     await createHeartbeatRunControl(database.db, deps).releaseEnvironmentLeasesForRun({ runId: "busy", companyId: "company", agentId: "agent", status: "failed", providerResourceDisposition: "destroy" });
     expect(deps.options.closeWarmNativeSessionsForRun).toHaveBeenCalledWith({ runId: "busy", reason: "terminal heartbeat run destroyed its environment lease" });
     expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
-    expect(database.access).not.toHaveBeenCalled();
+    expect(database.access).toHaveBeenCalledWith(expect.anything(), "select", expect.anything());
   });
 });
 
@@ -182,6 +184,27 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(
       run.id, undefined, { expectedStatus: "scheduled_retry" },
     )).toMatchObject({ status: "cancelled" });
+  });
+
+  it.each(["queued", "running", "scheduled_retry"] as const)("finishes cancellation settlement for %s when the event append fails", async status => {
+    const { company, agent } = await fixture();
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId: company.id, agentId: agent.id, source: "assignment", status: "claimed",
+    }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id, agentId: agent.id, status, wakeupRequestId: wake.id,
+      runtimeMode: "legacy", runtimeModeResolvedAt: new Date(),
+    }).returning();
+    const deps = callbacks(db);
+    vi.mocked(deps.appendRunEvent).mockRejectedValueOnce(new Error("event storage unavailable"));
+
+    expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id)).toMatchObject({ status: "cancelled" });
+    expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
+    expect(deps.wakeQueue.releaseIssueExecution).toHaveBeenCalledWith(expect.objectContaining({ runId: run.id, companyId: company.id }));
+    expect(deps.finalizeAgentStatus).toHaveBeenCalledWith(agent.id, "cancelled", undefined, expect.any(Object));
+    expect(deps.startNextQueuedRunForAgent).toHaveBeenCalledExactlyOnceWith(agent.id);
   });
 
   it.each([["40P01", 3], ["XX000", 1]] as const)("bounds cancellation transaction attempts for PostgreSQL %s", async (code, attempts) => {
@@ -848,6 +871,8 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     await db.insert(environmentLeases).values({ id: leaseId, companyId: company.id, heartbeatRunId: runId,
       issueId: issue.id, provider: "daytona", providerLeaseId, status: "active", leasePolicy,
       metadata: { driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true, remoteCwd: "/work" } });
+    await db.insert(heartbeatRunEvents).values({ companyId: company.id, runId, agentId: agent.id, seq: 1,
+      eventType: "native.process_start_requested", stream: "system", level: "info", message: "Runner launch requested" });
     const deps = callbacks(db), control = createHeartbeatRunControl(db, deps);
     let ready!: () => void, release!: () => void;
     const acquired = new Promise<void>(resolve => { ready = resolve; });
@@ -862,7 +887,8 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
         status: "cancelled", providerResourceDisposition: "stop_and_retain" });
       expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0])
-        .toMatchObject({ status: "active", leasePolicy });
+        .toMatchObject({ status: "active", leasePolicy, metadata: expect.objectContaining({ releaseDeferral: expect.objectContaining({
+          reason: "workspace_retention_busy", attempts: 1, providerResourceDisposition: "stop_and_retain" }) }) });
     } finally { release(); await holding; }
     await preserveCancelledNativeWorkspaces(db);
     expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0])
@@ -876,6 +902,109 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect((await deps.getRun(runId))?.status).toBe("cancelled");
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].status).toBe("in_progress");
   }, 15_000);
+
+  async function deferralFixture(runtimeMode: "legacy" | "native") {
+    const { company, agent } = await fixture();
+    const runId = randomUUID(), leaseId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: company.id, agentId: agent.id, runtimeMode,
+      status: "cancelled", finishedAt: new Date() });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: company.id, heartbeatRunId: runId,
+      provider: "daytona", providerLeaseId: randomUUID(), status: "active", leasePolicy: "ephemeral",
+      metadata: { driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true } });
+    if (runtimeMode === "native") await db.insert(heartbeatRunEvents).values({ companyId: company.id, runId, agentId: agent.id,
+      seq: 1, eventType: "native.process_start_requested", stream: "system", level: "info", message: "Runner launch requested" });
+    const deferral = async () => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]!
+      .metadata?.releaseDeferral as { reason: string; attempts: number; retryAt: string; providerResourceDisposition: string | null };
+    return { company, agent, runId, deferral };
+  }
+
+  it("records a failed release with its disposition and a growing retry time", async () => {
+    const { company, agent, runId, deferral } = await deferralFixture("legacy");
+    const deps = callbacks(db);
+    vi.mocked(deps.envOrchestrator.releaseForRun).mockResolvedValue({ released: [], errors: [{ leaseId: "*", error: new Error("provider down") }] });
+    const control = createHeartbeatRunControl(db, deps);
+    const before = Date.now();
+    await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+    const first = await deferral();
+    expect(first).toMatchObject({ reason: "release_failed", attempts: 1, providerResourceDisposition: null });
+    expect(Date.parse(first.retryAt) - before).toBeGreaterThanOrEqual(30_000);
+    expect(Date.parse(first.retryAt) - before).toBeLessThan(40_000);
+    await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+    const second = await deferral();
+    expect(second).toMatchObject({ reason: "release_failed", attempts: 2 });
+    expect(Date.parse(second.retryAt) - before).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it("never gives up on a failing release: hourly retries after the fast backoff, then release and wake the stopping agent", async () => {
+    const { company, agent, runId, deferral } = await deferralFixture("legacy");
+    const leaseId = (await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId)))[0]!.id;
+    await db.update(agents).set({ lifecycleState: "terminating", lifecycleOperation: { id: randomUUID(), hostComplete: false,
+      completedPluginIds: [], attempts: 3, retryAt: new Date(Date.now() + 60_000).toISOString() } }).where(eq(agents.id, agent.id));
+    const deps = callbacks(db);
+    let outageCalls = 0;
+    vi.mocked(deps.envOrchestrator.releaseForRun).mockImplementation(async () => {
+      outageCalls += 1;
+      return { released: [], errors: [{ leaseId: "*", error: new Error("provider down") }] };
+    });
+    const control = createHeartbeatRunControl(db, deps);
+    const fastSteps = LEASE_RELEASE_FAST_ATTEMPTS;
+    const dueRetriesInThreeHours = fastSteps + 3;
+    let firstFailure: string | undefined;
+    for (let attempt = 1; attempt <= dueRetriesInThreeHours; attempt++) {
+      const before = Date.now();
+      await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+      const current = await deferral() as Record<string, unknown> & { retryAt: string };
+      firstFailure ??= current.failingSince as string;
+      expect(current).toMatchObject({ reason: "release_failed", attempts: attempt, failingSince: firstFailure });
+      const delay = Date.parse(current.retryAt) - before;
+      if (attempt > fastSteps) expect(delay).toBeGreaterThanOrEqual(LEASE_RELEASE_SLOW_RETRY_MS - 1_000);
+      else expect(delay).toBeLessThanOrEqual(15 * 60_000 + 1_000);
+    }
+    expect(outageCalls).toBe(dueRetriesInThreeHours);
+    expect(await agentExecutionStopBlocker(db, [agent.id])).toBe("environment_lease_release_deferred:release_failed");
+    vi.mocked(deps.envOrchestrator.releaseForRun).mockImplementation(async () => {
+      await db.update(environmentLeases).set({ status: "expired", releasedAt: new Date(), cleanupStatus: "success" })
+        .where(eq(environmentLeases.id, leaseId));
+      return { released: [{} as never], errors: [] };
+    });
+    await control.releaseEnvironmentLeasesForRun({ runId, companyId: company.id, agentId: agent.id, status: "cancelled" });
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0]!.status).toBe("expired");
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]!.lifecycleOperation).not.toHaveProperty("retryAt");
+  });
+
+  it("records a destroy held back by a busy warm session", async () => {
+    const { company, agent, runId, deferral } = await deferralFixture("native");
+    const deps = callbacks(db);
+    deps.options.closeWarmNativeSessionsForRun.mockResolvedValue({ closed: 0, busy: 1, failed: 0 });
+    await createHeartbeatRunControl(db, deps).releaseEnvironmentLeasesForRun({ runId, companyId: company.id,
+      agentId: agent.id, status: "cancelled", providerResourceDisposition: "destroy" });
+    expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
+    expect(await deferral()).toMatchObject({ reason: "warm_session_busy", attempts: 1, providerResourceDisposition: "destroy" });
+  });
+
+  it("stops and retains a launched cancelled run's sandbox when no file retention is owed", async () => {
+    const { company, agent } = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Stopped task",
+      status: "in_progress", assigneeAgentId: agent.id }).returning();
+    const runId = randomUUID(), leaseId = randomUUID(), providerLeaseId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: company.id, agentId: agent.id,
+      issueId: issue.id, nativeIssueId: issue.id, runtimeMode: "native", status: "cancelled", finishedAt: new Date(),
+      runnerProfileJson: { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: randomUUID(), leaseId, providerLeaseId, remoteCwd: "/work", resourceDisposition: "destroy" } } });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId: company.id, issueId: issue.id,
+      phase: "terminal_failure", failureCode: "native_retry_cancelled" });
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: company.id, heartbeatRunId: runId,
+      issueId: null, provider: "daytona", providerLeaseId, status: "active", leasePolicy: "ephemeral",
+      metadata: { driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true, remoteCwd: "/work" } });
+    await db.insert(heartbeatRunEvents).values({ companyId: company.id, runId, agentId: agent.id, seq: 1,
+      eventType: "native.process_start_requested", stream: "system", level: "info", message: "Runner launch requested" });
+    const deps = callbacks(db);
+    await createHeartbeatRunControl(db, deps).releaseEnvironmentLeasesForRun({ runId, companyId: company.id,
+      agentId: agent.id, status: "cancelled", providerResourceDisposition: "destroy" });
+    expect(deps.envOrchestrator.releaseForRun).toHaveBeenCalledWith(expect.objectContaining({
+      heartbeatRunId: runId, providerResourceDisposition: "stop_and_retain" }));
+  });
 
   it("reports a missing run without entering cancellation", async () => {
     const deps = callbacks(db);

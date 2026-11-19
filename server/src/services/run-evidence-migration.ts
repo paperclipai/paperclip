@@ -43,6 +43,7 @@ export async function migrateRunEvidence(
   options: {
     apply: boolean;
     companyId?: string;
+    runId?: string;
     afterRunId?: string;
     afterTraceId?: string;
     limit?: number;
@@ -124,6 +125,7 @@ export async function migrateRunEvidence(
             and(
               eq(heartbeatRuns.logStore, "local_file"),
               options.companyId ? eq(heartbeatRuns.companyId, options.companyId) : undefined,
+              options.runId ? eq(heartbeatRuns.id, options.runId) : undefined,
               options.afterRunId ? gt(heartbeatRuns.id, options.afterRunId) : undefined,
             ),
           )

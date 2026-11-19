@@ -1,8 +1,8 @@
 import type { Db } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 
-const stop = vi.hoisted(() => vi.fn(async () => true));
-vi.mock("../../../services/heartbeat.js", () => ({ heartbeatService: () => ({ stopInvocationsForAgents: stop }) }));
+const stop = vi.hoisted(() => vi.fn(async () => null));
+vi.mock("../../../services/heartbeat.js", () => ({ heartbeatService: () => ({ agentInvocationStopBlocker: stop }) }));
 vi.mock("../../../services/agent-harness-verification.js", () => ({ agentHarnessVerificationService: () => ({ verify: vi.fn() }) }));
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 

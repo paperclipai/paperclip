@@ -69,6 +69,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
     restored?: boolean }>();
   const sequences = new Map<string, number>();
   let currentTurn: string | undefined;
+  let providerRequestId: string | undefined;
   const terminalTypes = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
   const snapshot = () => {
     if (turns.size === 0) return { usage: null, turnId: undefined, complete: false };
@@ -97,7 +98,8 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
       ...(retainCost ? { providerCostUsd: Number(cost) / 1_000_000_000 } : {}) };
     const current = currentTurn ? turns.get(currentTurn) : undefined;
     return { usage: { runDelta, accountingCostIncomplete: costIncomplete, ...(usageLost ? { accountingUsageLost: true } : {}),
-      ...(retainCost ? { accountingCostUsdExact: `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}` } : {}) },
+      ...(retainCost ? { accountingCostUsdExact: `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}` } : {}),
+      ...(providerRequestId ? { providerRequestId } : {}) },
       // A turn closed as lost still names the terminal turn the executor must match.
       turnId: current && (normalizeNativeUsage(current.usage) || (current.lost && current.terminal)) ? currentTurn : undefined, complete };
   };
@@ -133,6 +135,8 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
       } else if (payload.kind === "usage" && (!currentTurn || !turns.has(key))) currentTurn = event.turnId;
       if (payload.kind === "usage") {
         const usage = record(payload.usage);
+        if (!providerRequestId && typeof usage.providerRequestId === "string" && usage.providerRequestId)
+          providerRequestId = usage.providerRequestId.slice(0, 250);
         turn.usage = Object.hasOwn(usage, "runDelta")
           ? { runDelta: record(usage.runDelta), runDeltaComplete: usage.runDeltaComplete } : null;
       }

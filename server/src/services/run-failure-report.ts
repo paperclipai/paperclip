@@ -21,6 +21,7 @@ import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connect
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY } from "./reviewed-chat-binding-diagnostics.js";
+import { readProviderFailure } from "@paperclipai/shared";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -259,6 +260,14 @@ function isProviderQuotaFailure(run: HeartbeatRun, options: RunFailureReportOpti
     options.phase !== "setup" && run.signal == null;
 }
 
+/** A typed native allowance failure stays on the task and its cooldown path. */
+function isNativeProviderUsageLimitFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (run.status !== "failed" || run.runtimeMode !== "native" ||
+      run.errorCode !== "native_provider_usage_limit" || options.phase === "setup" || run.signal != null) return false;
+  const category = readProviderFailure(asRecord(run.resultJson)?.providerFailure)?.category;
+  return category === "quota_exhausted" || category === "rate_limit";
+}
+
 function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const result = asRecord(run.resultJson);
   return run.status === "failed" && run.errorCode === "codex_transient_upstream" &&
@@ -364,6 +373,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isProjectAccessDenialBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
+    isNativeProviderUsageLimitFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
     isAcpProviderAccessFailure(run, options) ||
     isScheduledReviewedChatRetry(run, options) ||

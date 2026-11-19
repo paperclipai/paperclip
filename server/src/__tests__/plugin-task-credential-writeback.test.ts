@@ -83,6 +83,20 @@ suite("durable plugin task credential handoff", () => {
       failExport(value: boolean) { failExport = value; }, credential: () => service.credential(selection!),
       settle: (executionStopObserved = false) => settleDispatchedEnvironmentTask(db, workers, { companyId, id: leaseId }, { executionStopObserved }) };
   }
+  it("completes a moved task's saved credential handoff after confirming stop", async () => {
+    const f = await fixture();
+    await db.update(environmentLeases).set({ metadata:
+      sql`${environmentLeases.metadata} || '{"portableTaskSuccessor":{"targetLeaseId":"replacement"}}'::jsonb`,
+    }).where(eq(environmentLeases.id, f.leaseId));
+    await expect(f.synchronize()).rejects.toThrow("session ownership unavailable");
+    expect(f.calls).toEqual([]);
+    await expect(f.settle()).resolves.toBe("completed");
+    expect(f.calls).toEqual(["stop", "status", "credentials", "complete"]);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
+    await expect(f.synchronize()).resolves.toBeUndefined();
+    expect(f.calls).toHaveLength(4);
+  });
+
   it.each(["codex", "grok"] as const)("writes managed %s refreshes without any plugin or invocation home", async provider => {
     const f = await fixture(true, provider);
     const read = vi.fn(async () => f.accountCredential("fixture-refreshed", 2021));

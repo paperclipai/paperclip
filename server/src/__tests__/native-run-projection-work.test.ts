@@ -365,6 +365,37 @@ describe("committed native run projection lifecycle", () => {
     expect(await work.load({ companyId, runId: binding.runId })).toEqual([]);
   });
 
+  // Staging, 2026-11-12: an earlier release retired a finalizer as superseded
+  // after its workspace export failed, but left the run running. It held the
+  // task and five queued runs for over an hour, through an upgrade.
+  it("ends, at startup, a run an earlier release left running after retiring its finalizer as superseded", async () => {
+    const binding = await seed();
+    await complete(binding, "control_plane");
+    const before = await state(binding.runId);
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,
+      failureCode: "native_finalization_superseded", failureDetail: { workspaceFinalizeAttempt: 1,
+        originalFailureCode: "native_workspace_sync_out_failed", recoveryOwner: { kind: "none", reason: "newer_native_decision" } } })
+      .where(eq(nativeRunFinalizations.runId, binding.runId));
+    await db.update(heartbeatRuns).set({ nativePhase: "terminal_failure" }).where(eq(heartbeatRuns.id, binding.runId));
+    const wake = await claimedWake(binding);
+    const [issueBefore] = await db.select().from(issues).where(eq(issues.id, binding.issueId));
+
+    await start();
+    await flush();
+
+    const ended = await read(binding.runId);
+    expect(ended).toMatchObject({ status: "failed", errorCode: "native_finalization_superseded", finishedAt: expect.any(Date),
+      error: "A newer run already decided this task, so this run's result was kept for reference and not applied." });
+    expect(await readWake(wake.id)).toMatchObject({ status: "failed", finishedAt: ended.finishedAt });
+    // The durable verdict stands: the task and the retired finalizer are unchanged.
+    expect(await state(binding.runId)).toMatchObject({ phase: "terminal_failure",
+      failureCode: "native_finalization_superseded", resultId: before.resultId });
+    const [issueAfter] = await db.select().from(issues).where(eq(issues.id, binding.issueId));
+    expect({ status: issueAfter.status, statusVersion: issueAfter.statusVersion, lastStatusDecisionId: issueAfter.lastStatusDecisionId })
+      .toEqual({ status: issueBefore.status, statusVersion: issueBefore.statusVersion, lastStatusDecisionId: issueBefore.lastStatusDecisionId });
+    expect(await nativeRunProjectionWork(db).load({ companyId, runId: binding.runId })).toEqual([]);
+  });
+
   it.each(["unbound", "newer-run", "queued", "cancelled", "foreign-company", "foreign-agent", "live-owner"] as const)(
     "does not settle a %s wake claim", async fault => {
       const binding = await accepted(), wake = await claimedWake(binding);
@@ -453,6 +484,21 @@ describe("committed native run projection lifecycle", () => {
     expect(run.status).toBe("running");
     await projectCommittedRun({ db, run, coordinator: await state(binding.runId) });
     expect(await read(binding.runId)).toMatchObject({ status: "failed", errorCode: expectedCode, error: expectedError });
+  });
+  it("names a recorded runner turn failure in committed recovery projection", async () => {
+    const binding = await accepted("failed");
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+    const [unfinished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, binding.runId));
+    await db.update(heartbeatRuns).set({ errorCode: null, error: null, resultJson: { ...unfinished.resultJson,
+      nativeTurnFailure: { provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_empty_response", message: "private provider text" } } })
+      .where(eq(heartbeatRuns.id, binding.runId));
+    const run = await read(binding.runId);
+    expect(run.status).toBe("running");
+    await projectCommittedRun({ db, run, coordinator: await state(binding.runId) });
+    const projected = await read(binding.runId);
+    expect(projected).toMatchObject({ status: "failed", errorCode: NATIVE_RUN_FAILED_UNEXPLAINED.errorCode,
+      error: "The OpenCode turn failed (opencode_empty_response). Inspect the run events for the last recorded step." });
+    expect(projected.error).not.toContain("private");
   });
   it("ignores routine company-only finalization hints and still repairs a committed run", async () => {
     await start(); await flush(); await quiet();

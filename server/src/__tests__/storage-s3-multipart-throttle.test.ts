@@ -1,5 +1,6 @@
 import { AbortMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, S3Client } from "@aws-sdk/client-s3";
 import { Readable } from "node:stream";
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -10,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { FILE_PART_CONCURRENCY, THROTTLED_PART_ATTEMPTS, putS3MultipartFile } from "../storage/s3-multipart.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
+import * as fileCrypto from "../storage/file-crypto-pool.js";
 
 const partBytes = 8 * 1024 * 1024;
 
@@ -89,17 +91,24 @@ describe("file-backed S3 multipart uploads under a request-rate limit", () => {
     const client = new S3Client({ region: "us-east-1" });
     const attempts = new Map<number, number>();
     let laterActive = 0, laterPeak = 0;
+    let firstRoundRetries = 0;
+    const firstRoundRetried = Promise.withResolvers<void>();
+    // Keep disk I/O out of the concurrency measurement. The real-client test checks MD5.
+    using digest = vi.spyOn(fileCrypto, "digestFileOffThread").mockResolvedValue({ hex: "0".repeat(32), bytes: partBytes });
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const send = vi.spyOn(client, "send").mockImplementation(async (command: any) => {
       if (command instanceof CreateMultipartUploadCommand) return { UploadId: "upload" };
       if (command instanceof UploadPartCommand) {
         const number = command.input.PartNumber!;
         attempts.set(number, (attempts.get(number) ?? 0) + 1);
-        await drain(command.input.Body);
-        if (number <= FILE_PART_CONCURRENCY && attempts.get(number) === 1) throw slowDown();
-        if (number > FILE_PART_CONCURRENCY) {
+        if (number <= FILE_PART_CONCURRENCY) {
+          if (attempts.get(number) === 1) throw slowDown();
+          // Finish the already-dispatched retries together so every eligible slot can take new work.
+          if (++firstRoundRetries === FILE_PART_CONCURRENCY) firstRoundRetried.resolve();
+          await firstRoundRetried.promise;
+        } else {
           laterActive++; laterPeak = Math.max(laterPeak, laterActive);
-          await new Promise(resolve => setTimeout(resolve, 20));
+          await nextEventLoopTurn();
           laterActive--;
         }
         return { ETag: `part-${number}` };

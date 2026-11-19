@@ -76,6 +76,11 @@ describe("task dependency resume evidence", () => {
     const f = dependencyEvidenceFixture(); mutate(f);
     expect(gradeTaskDependencyResume(f).some(check => !check.passed)).toBe(true);
   });
+  it.each(["issue_graph_liveness.backstop", "workspace.finalize"])("accepts the same automatic resume when the %s dependency wake recorded its source", source => {
+    const f = dependencyEvidenceFixture();
+    for (const p of [f.finished, f.reopened]) for (const r of [...p.dependentRuns, ...p.agentRuns]) r.contextSnapshot.source = source;
+    expect(gradeTaskDependencyResume(f)).toEqual(TASK_DEPENDENCY_RESUME_CHECKS.map(id => ({ id, passed: true })));
+  });
   it("missing input never becomes a pass", () => { expect(gradeTaskDependencyResume(undefined).every(c => !c.passed)).toBe(true); });
   it.each([null, {}, { summary: "Compacted result" }])("accepts the public run projection without duplicate finalization metadata: %j", resultJson => {
     const f = dependencyEvidenceFixture();

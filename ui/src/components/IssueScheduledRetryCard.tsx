@@ -35,7 +35,8 @@ export function IssueScheduledRetryCard({
 
   // Workspace contention is a transient wait with nothing for the user to do.
   // The composer strip and properties row carry the quiet status instead.
-  if (scheduledRetry.scheduledRetryReason === "workspace_busy") return null;
+  if (scheduledRetry.scheduledRetryReason === "workspace_busy"
+    || scheduledRetry.scheduledRetryReason === "environment_provider_wait") return null;
 
   const continuation = isContinuationReason(scheduledRetry.scheduledRetryReason);
   const dueAtIso = scheduledRetry.scheduledRetryAt

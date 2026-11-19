@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
 import { hostname } from "node:os";
+import { databaseClientOptionsFromEnv, type DatabaseClientOptions } from "@paperclipai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
 
@@ -125,6 +126,10 @@ export function resetCurrentProcessStartedAtForTests(): void {
 
 export function currentControllerBootId(): string {
   return bootId;
+}
+
+export function serverDatabaseClientOptions(env: NodeJS.ProcessEnv = process.env): DatabaseClientOptions {
+  return { applicationName: `paperclip:${bootId}`, ...databaseClientOptionsFromEnv(env) };
 }
 
 const stampListeners = new Set<() => void>();

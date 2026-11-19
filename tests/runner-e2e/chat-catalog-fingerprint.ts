@@ -32,6 +32,22 @@ function conservativeSources(directory: string): string[] {
     return entry.isDirectory() ? conservativeSources(child) : /\.(ts|tsx|js|mjs|json|yaml)$/.test(entry.name) ? [child] : [];
   });
 }
+const importScans = new Map<string, { dependencies: readonly string[]; variableImport: boolean }>();
+function scanImports(absolute: string, body: string) {
+  const key = `${absolute}\0${hash(body)}`;
+  const cached = importScans.get(key);
+  if (cached) return cached;
+  const parsed = buildSync({ stdin: { contents: body, sourcefile: absolute,
+    loader: absolute.endsWith(".tsx") ? "tsx" : /\.ts$/.test(absolute) ? "ts" : "js" },
+    bundle: false, metafile: true, write: false, format: "esm", platform: "node", minifyWhitespace: true,
+    legalComments: "none", logLevel: "silent" });
+  const scan = {
+    dependencies: Object.values(parsed.metafile!.outputs).flatMap(output => output.imports.map(item => item.path)),
+    variableImport: /\bimport\s*\(\s*(?!["'])/.test(parsed.outputFiles[0]!.text),
+  };
+  importScans.set(key, scan);
+  return scan;
+}
 /** Compile and inspect actual executable imports, rather than trusting a hand-maintained sourceFiles list. */
 export function fingerprintChatDependencyClosure(input: {
   root: string; entries: readonly string[]; selected: unknown;
@@ -54,12 +70,8 @@ export function fingerprintChatDependencyClosure(input: {
     const body = readFileSync(absolute, "utf8");
     files.set(relative, body);
     if (!/\.[cm]?[jt]sx?$/.test(absolute)) return;
-    const parsed = buildSync({ stdin: { contents: body, sourcefile: absolute,
-      loader: absolute.endsWith(".tsx") ? "tsx" : /\.ts$/.test(absolute) ? "ts" : "js" },
-      bundle: false, metafile: true, write: false, format: "esm", platform: "node", minifyWhitespace: true,
-      legalComments: "none", logLevel: "silent" });
-    const dependencies = Object.values(parsed.metafile!.outputs).flatMap(output => output.imports.map(item => item.path));
-    if (/\bimport\s*\(\s*(?!["'])/.test(parsed.outputFiles[0]!.text) && relative !== input.selectedDispatchFile) {
+    const { dependencies, variableImport } = scanImports(absolute, body);
+    if (variableImport && relative !== input.selectedDispatchFile) {
       const reviewed = input.reviewedDynamicResolutions?.[relative];
       if (reviewed && reviewed.sourceSha256 === hash(body)) {
         resolvedDynamicImports.push({ file: relative, resolution: reviewed.resolution });

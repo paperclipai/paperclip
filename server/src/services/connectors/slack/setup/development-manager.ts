@@ -68,6 +68,7 @@ export function developmentSlackManager(
     async revoke(values) {
       try { await api("auth.revoke", {}, values.token); }
       catch { throw providerFailure("slack_manager_reauthorize"); }
+      return {};
     },
   };
 }

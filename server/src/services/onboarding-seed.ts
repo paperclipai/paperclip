@@ -1,6 +1,6 @@
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companyOnboardingSeeds, goals, issues, projects } from "@paperclipai/db";
+import { agents, companyOnboardingSeeds, goals } from "@paperclipai/db";
 import type { ApplyOnboardingSeed } from "@paperclipai/shared";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
@@ -9,17 +9,8 @@ import { createAgentLifecycle, scheduleAgentLifecycle } from "./agent-lifecycle.
 import { withDedicatedDbConnection } from "@paperclipai/db";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "./company-skills.js";
 import { goalService } from "./goals.js";
-import { projectService } from "./projects.js";
-import { issueService } from "./issues.js";
 import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-
-/**
- * The project the seeded first task lands in, matching the name the tenant's
- * own first-run wizard uses so a later manual run reuses it instead of
- * creating a second "Onboarding" project.
- */
-export const ONBOARDING_SEED_PROJECT_NAME = "Onboarding";
 
 /**
  * Role assigned to the seeded lead agent. The seed's own `agent.role` is
@@ -147,48 +138,13 @@ export function onboardingSeedService(db: Db) {
     return candidates.find((row) => !readBuiltInAgentMarker(row.metadata))?.id ?? null;
   }
 
-  async function issueStillExists(dbx: Db, companyId: string, issueId: string | null) {
-    if (!issueId) return false;
-    return dbx
-      .select({ id: issues.id })
-      .from(issues)
-      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
-      .then((rows) => rows.length > 0);
-  }
-
-  async function resolveOnboardingProjectId(
-    dbx: Db,
-    projectSvc: ReturnType<typeof projectService>,
-    companyId: string,
-    goalId: string | null,
-  ) {
-    const existing = await dbx
-      .select({ id: projects.id, name: projects.name, status: projects.status })
-      .from(projects)
-      .where(eq(projects.companyId, companyId));
-    const reusable = existing.find(
-      (project) =>
-        project.status !== "cancelled"
-        && project.name.trim().toLowerCase() === ONBOARDING_SEED_PROJECT_NAME.toLowerCase(),
-    );
-    if (reusable) return reusable.id;
-
-    const created = await projectSvc.create(companyId, {
-      name: ONBOARDING_SEED_PROJECT_NAME,
-      status: "in_progress",
-      ...(goalId ? { goalIds: [goalId] } : {}),
-    });
-    return created.id;
-  }
-
   async function prepareAgent(dbx: Db, companyId: string, seed: ApplyOnboardingSeed, audit?: OnboardingSeedAuditActor) {
     const existing = await readRecord(dbx, companyId);
     if (existing?.revision === seed.revision) return existing.agentId;
     const agentSvc = agentService(dbx);
     const agentName = seed.agent?.name.trim() || null;
     const agentRole = seed.agent?.role?.trim() || null;
-    // 2. Agent → the customer's first hire, the lead the first task is
-    //    assigned to.
+    // Agent → the customer's first hire and initial chat partner.
     let agentId = await resolveTargetAgentId(dbx, companyId, existing?.agentId ?? null);
     if (agentName) {
       if (agentId) {
@@ -221,8 +177,6 @@ export function onboardingSeedService(db: Db) {
     preparedAgentId: string | null,
   ): Promise<OnboardingSeedApplication> {
     const goalSvc = goalService(dbx);
-    const projectSvc = projectService(dbx);
-    const issueSvc = issueService(dbx);
 
     const existing = await readRecord(dbx, companyId);
     if (existing && existing.revision === seed.revision) {
@@ -267,44 +221,10 @@ export function onboardingSeedService(db: Db) {
 
     const agentId = preparedAgentId;
 
-    // A mission-only seed leaves the first task to the onboarding route.
-    let issueId = existing?.issueId ?? null;
-    if (firstTaskTitle) {
-      if (await issueStillExists(dbx, companyId, issueId)) {
-        await issueSvc.update(
-          issueId as string,
-          {
-            title: firstTaskTitle,
-            description: firstTaskDetails,
-            // Keep the task's relationships in step with a later revision that
-            // supplied the agent or goal after the task already existed —
-            // otherwise the record would report an assignee/goal the issue row
-            // does not actually carry. Only set them when resolved, so an
-            // absent value never clears an assignment the tenant made.
-            ...(agentId ? { assigneeAgentId: agentId } : {}),
-            ...(goalId ? { goalId } : {}),
-          },
-          dbx,
-        );
-      } else {
-        const projectId = await resolveOnboardingProjectId(dbx, projectSvc, companyId, goalId);
-        // The idempotency key is what protects two pushes that arrive at once
-        // — Cloud's reconcile runs off portfolio fetches, which can overlap.
-        // It is deliberately not revision-scoped: if the recorded issue is
-        // lost, a later revision should still dedupe against whatever the
-        // first push created.
-        const created = await issueSvc.create(companyId, {
-          title: firstTaskTitle,
-          ...(firstTaskDetails ? { description: firstTaskDetails } : {}),
-          ...(agentId ? { assigneeAgentId: agentId } : {}),
-          projectId,
-          ...(goalId ? { goalId } : {}),
-          status: "todo",
-          idempotencyKey: `onboarding-seed:${companyId}`,
-        });
-        issueId = created.id;
-      }
-    }
+    // Signup ideas are context for the first chat, never authorization to
+    // create execution work. Preserve old back-references without modifying
+    // historical tasks when Cloud pushes an updated seed.
+    const issueId = existing?.issueId ?? null;
 
     // 4. Record the revision last. Everything above has to have landed before
     //    this row claims the seed is applied.
