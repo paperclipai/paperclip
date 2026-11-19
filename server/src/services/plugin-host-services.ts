@@ -2991,6 +2991,18 @@ export function buildHostServices(
           createdByAgentId: null,
           createdByUserId: null,
         });
+        await logPluginActivity({
+          companyId,
+          action: "issue.attachment_added",
+          entityType: "issue",
+          entityId: params.issueId,
+          details: {
+            attachmentId: created.id,
+            originalFilename: created.originalFilename ?? filename,
+            contentType: created.contentType,
+            byteSize: created.byteSize,
+          },
+        });
         const contentPath = `/api/attachments/${created.id}/content`;
         return {
           id: created.id,

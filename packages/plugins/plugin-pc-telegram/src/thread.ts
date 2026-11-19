@@ -8,6 +8,7 @@ export type ChatBubble = {
   text: string;
   at: string;
   forward?: PublicForward | null;
+  placeholder?: boolean;
 };
 
 export type TelegramHistoryMessage = {
@@ -44,7 +45,8 @@ function clip(text: string): string {
 export function mapTelegramMessage(message: TelegramHistoryMessage | null | undefined): ChatBubble | null {
   if (!message || message.action) return null;
   const text = typeof message.message === "string" ? message.message : "";
-  const body = clip(text || mediaLabel(message.media?.className));
+  const label = mediaLabel(message.media?.className);
+  const body = clip(text || label);
   if (!body) return null;
   const id = message.id == null ? "" : String(message.id);
   if (!id || id.length > 32) return null;
@@ -53,6 +55,7 @@ export function mapTelegramMessage(message: TelegramHistoryMessage | null | unde
     direction: message.out ? "out" : "in",
     text: body,
     at: historyTime(message.date),
+    placeholder: !text.trim() && Boolean(label),
   };
 }
 
@@ -73,7 +76,7 @@ export function customerTextFromStoredBody(body: string): string {
   return clip(lines.join("\n\n"));
 }
 
-export function bubbleFromStoredBody(body: string): { text: string; forward: PublicForward | null } {
+export function bubbleFromStoredBody(body: string): { text: string; forward: PublicForward | null; placeholder: boolean } {
   const parts = body.split(/\n\n/).map((part) => part.trim()).filter(Boolean);
   const content = SPEAKER_LINE.test(parts[0] ?? "") ? parts.slice(1) : parts;
   let forward: PublicForward | null = null;
@@ -86,5 +89,11 @@ export function bubbleFromStoredBody(body: string): { text: string; forward: Pub
     }
     kept.push(part);
   }
-  return { text: customerTextFromStoredBody(kept.join("\n\n")), forward };
+  const authored = kept.some((part) => !ATTACHMENT_LINE.test(part) && !part.startsWith("attachment:"));
+  const media = kept.some((part) => ATTACHMENT_LINE.test(part));
+  return {
+    text: customerTextFromStoredBody(kept.join("\n\n")),
+    forward,
+    placeholder: !authored && media,
+  };
 }

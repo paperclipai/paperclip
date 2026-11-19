@@ -20,6 +20,7 @@ export type DialogCacheRow = {
   photoId: string;
   presence: PeerPresence | null;
   activityAt: string;
+  previewPlaceholder?: boolean;
 };
 
 export type CachedAvatar = {
@@ -33,6 +34,7 @@ export type CachedHistoryMessage = {
   text: string;
   at: string;
   forward: { kind: string | null; name: string | null; author: string | null } | null;
+  placeholder?: boolean;
 };
 
 export type CacheSettings = {
@@ -136,6 +138,7 @@ function sanitizeDialog(value: unknown): DialogCacheRow | null {
     photoId: numericId(record.photoId),
     presence: publicPresence(record.presence),
     activityAt: activityAt(record.activityAt),
+    previewPlaceholder: record.previewPlaceholder === true,
   };
 }
 
@@ -161,6 +164,7 @@ export function sanitizeHistoryMessage(value: unknown): CachedHistoryMessage | n
     text: messageText(record.text, 4000),
     at: activityAt(record.at),
     forward: sanitizeForward(record.forward),
+    placeholder: record.placeholder === true,
   };
 }
 
@@ -339,8 +343,9 @@ export function createDialogCache(options: CacheOptions = {}) {
         maxBytes: typeof patch.maxBytes === "number" ? nearestLimit(patch.maxBytes, allowed) : current.maxBytes,
       };
       await enqueue(companyId, async () => {
-        await writeJson(join(dir, "settings.json"), { v: CACHE_VERSION, ...next });
         settingsMemory.set(dir, next);
+        await writeJson(join(dir, "settings.json"), { v: CACHE_VERSION, ...next });
+        await enforceCap(companyId, "");
       });
       return next;
     },
@@ -437,7 +442,7 @@ export function createDialogCache(options: CacheOptions = {}) {
         const clean = sanitizeHistoryMessage(row);
         if (clean) messages.push(clean);
       }
-      return messages.length > 0 ? messages.slice(-40) : null;
+      return messages.slice(-40);
     },
 
     async writeHistory(companyId: string, accountId: string, peerId: string, rows: readonly unknown[]): Promise<void> {

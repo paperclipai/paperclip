@@ -21,7 +21,7 @@ import {
 } from "./connections.js";
 import { dialogOriginId, ingestInboundMessage, parseDialogOriginId, reopenDialogForInbound } from "./inbound.js";
 import { createDialogCache, preferCachedPhoto } from "./dialog-cache.js";
-import { patchHistoryMessages, removeHistoryMessages } from "./history-slice.js";
+import { boundLatestHistory, historyCacheKey, historyHitIsFresh, patchHistoryMessages, removeHistoryMessages } from "./history-slice.js";
 import { createInboxLive } from "./inbox-live.js";
 import { publicForward } from "./forward.js";
 import type { ChatBubble } from "./thread.js";
@@ -261,7 +261,16 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     }
   }
 
+  function evictStaleHistoryPages(now = Date.now()) {
+    for (const [key, entry] of historyCache) {
+      const marker = key.slice(key.lastIndexOf(":") + 1);
+      if (marker === "latest") continue;
+      if (!historyHitIsFresh(marker, entry.at, now)) historyCache.delete(key);
+    }
+  }
+
   function patchPeerHistory(accountId: string, peerId: string, bubble: ChatBubble, inserted: boolean): boolean {
+    evictStaleHistoryPages();
     const prefix = `${accountId}:${peerId}:`;
     let seen = false;
     let hasLatest = false;
@@ -271,9 +280,10 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       const has = entry.messages.some((message) => message.id === bubble.id);
       if (!has && !key.endsWith(":latest")) continue;
       if (has) seen = true;
+      const patched = patchHistoryMessages(entry.messages, [bubble]);
       historyCache.set(key, {
         at: key.endsWith(":latest") ? entry.at : Date.now(),
-        messages: patchHistoryMessages(entry.messages, [bubble]),
+        messages: key.endsWith(":latest") ? boundLatestHistory(patched) : patched,
       });
       if (key.endsWith(":latest")) slots.scheduleHistoryPersist(accountId, peerId);
     }
@@ -288,7 +298,10 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     const at = update.bubble.at || new Date().toISOString();
     if (!card.activityAt || at >= card.activityAt) {
       const preview = update.bubble.text.replace(/\s+/g, " ").trim().slice(0, 80);
-      if (preview) card.preview = preview;
+      if (preview) {
+        card.preview = preview;
+        card.previewPlaceholder = update.bubble.placeholder === true;
+      }
       card.activityAt = at;
     }
     if (update.inserted && !already && update.bubble.direction === "in") card.unread += 1;
@@ -318,6 +331,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           peerId: update.peerId,
           photo,
           preview: card?.preview ?? "",
+          previewPlaceholder: card?.previewPlaceholder === true,
           unread: card?.unread ?? 0,
           activityAt: card?.activityAt ?? "",
         });
@@ -339,6 +353,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
       stripPending(update.accountId, update.peerId, update.messageIds);
       const targets = update.peerId ? [update.peerId] : [...peers];
       for (const peerId of targets) {
+        void persistDeletedHistory(update.companyId, update.accountId, peerId, update.messageIds).catch(() => undefined);
         void issueRefFor(update.companyId, update.accountId, peerId, knownRef).then((issueRef) => {
           emitInbox(update.companyId, {
             companyId: update.companyId,
@@ -361,6 +376,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         peerId: update.peerId,
         bubble: update.bubble,
         preview: card?.preview ?? update.bubble.text.replace(/\s+/g, " ").trim().slice(0, 80),
+        previewPlaceholder: card?.previewPlaceholder === true,
         unread: card?.unread ?? 0,
         activityAt: card?.activityAt || update.bubble.at,
       });
@@ -475,6 +491,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
           return;
         }
         await attachLiveSession(pending.companyId, live);
+        emitInbox(pending.companyId, { companyId: pending.companyId, kind: "accounts" });
       } catch (error) {
         wrapLogger(ctx).error("Telegram account saved but the live connection failed", {
           companyId: pending.companyId,
@@ -503,6 +520,25 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         if (!isInvocationScopeError(error)) throw error;
       }
     }
+  }
+
+  async function persistDeletedHistory(companyId: string, accountId: string, peerId: string, messageIds: string[]) {
+    const key = historyCacheKey(accountId, peerId, "");
+    let messages = historyCache.get(key)?.messages;
+    if (!messages) {
+      const disk = await dialogCache.readHistory(companyId, accountId, peerId);
+      messages = (disk ?? []).map((message) => ({
+        id: message.id,
+        direction: message.direction,
+        text: message.text,
+        at: message.at,
+        forward: message.forward,
+        placeholder: message.placeholder === true,
+      }));
+    }
+    const next = boundLatestHistory(removeHistoryMessages(messages, messageIds));
+    historyCache.set(key, { at: historyCache.get(key)?.at ?? Date.now(), messages: next });
+    await dialogCache.writeHistory(companyId, accountId, peerId, next);
   }
 
   async function deviceModelForCompany(companyId: string): Promise<string> {
@@ -750,6 +786,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
         flushSignedInAccounts,
         deviceModelForCompany,
         rememberOutbound,
+        persistDeletedHistory,
       });
 
       ctx.tools.register(

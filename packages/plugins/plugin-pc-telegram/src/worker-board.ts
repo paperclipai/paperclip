@@ -19,7 +19,7 @@ import {
 } from "./connections.js";
 import { chatListLabel, parseDialogOriginId } from "./inbound.js";
 import { createDialogCache, type CacheScope } from "./dialog-cache.js";
-import { historyCacheKey, historyContentChanged, historyHitIsFresh, patchHistoryMessages, reconcileFetchedHistory, removeHistoryMessages } from "./history-slice.js";
+import { HISTORY_PAGE_SIZE, boundLatestHistory, historyCacheKey, historyContentChanged, historyHitIsFresh, patchHistoryMessages, reconcileFetchedHistory, removeHistoryMessages } from "./history-slice.js";
 import { createInboxLive } from "./inbox-live.js";
 import { bubbleFromStoredBody, type ChatBubble } from "./thread.js";
 import { idleLoginStatus, reduceLogin } from "./login.js";
@@ -65,6 +65,7 @@ export type DialogCard = {
   photo: string | null;
   presence: ReturnType<typeof publicPresence>;
   activityAt: string;
+  previewPlaceholder?: boolean;
 };
 
 export function isInvocationScopeError(error: unknown): boolean {
@@ -137,6 +138,7 @@ export type TelegramBoardHost = {
   flushSignedInAccounts: (companyId: string) => Promise<void>;
   deviceModelForCompany: (companyId: string) => Promise<string>;
   rememberOutbound: (ctx: PluginContext, issueId: string, text: string) => Promise<void>;
+  persistDeletedHistory: (companyId: string, accountId: string, peerId: string, messageIds: string[]) => Promise<void>;
 };
 
 export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["logger"], host: TelegramBoardHost) {
@@ -174,6 +176,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     flushSignedInAccounts,
     deviceModelForCompany,
     rememberOutbound,
+    persistDeletedHistory,
   } = host;
   async function hydrateDialogCards(companyId: string, accountId: string): Promise<Map<string, DialogCard> | null> {
     const rows = await dialogCache.readDialogs(companyId, accountId);
@@ -195,6 +198,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
         photo: dialogPhotos.get(key) ?? null,
         presence: row.presence,
         activityAt: row.activityAt,
+        previewPlaceholder: row.previewPlaceholder === true,
       });
     }
     return cards;
@@ -209,6 +213,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
       photoId: dialogPhotoIds.get(dialogPhotoKey(companyId, accountId, id)) ?? "",
       presence: card.presence,
       activityAt: card.activityAt,
+      previewPlaceholder: card.previewPlaceholder === true,
     }));
     await dialogCache.writeDialogs(companyId, accountId, rows);
   }
@@ -224,9 +229,13 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
       const photoId = typeof row.photoId === "string" ? row.photoId : "";
       const beforePhoto = dialogPhotos.get(dialogPhotoKey(companyId, accountId, row.id)) ?? null;
       const photo = keepDialogPhoto(companyId, accountId, row.id, publicPhoto(row.photo), true, photoId);
+      const summaryPreview = typeof row.preview === "string" ? row.preview.slice(0, 80) : "";
+      const preview = summaryPreview || prior?.preview || "";
+      const samePreview = Boolean(prior) && preview === prior?.preview;
       const next: DialogCard = {
         name: row.name,
-        preview: typeof row.preview === "string" ? row.preview.slice(0, 80) : prior?.preview ?? "",
+        preview,
+        previewPlaceholder: samePreview ? prior?.previewPlaceholder === true : false,
         unread: unreadCount(row.unread),
         photo,
         presence: publicPresence(row.presence),
@@ -244,6 +253,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
         issueRef,
         peerId: row.id,
         preview: next.preview,
+        previewPlaceholder: next.previewPlaceholder === true,
         unread: next.unread,
         activityAt: next.activityAt,
         ...(photoChanged ? { photo } : {}),
@@ -320,11 +330,11 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
       try {
         const live = liveByAccount.get(accountId);
         if (!live || live.companyId !== companyId) return;
-        const fetched = await live.readHistory(peerId, 40);
+        const fetched = await live.readHistory(peerId, HISTORY_PAGE_SIZE);
         const key = historyCacheKey(accountId, peerId, "");
         const previous = historyCache.get(key)?.messages ?? [];
         const queued = takePendingBubbles(accountId, peerId);
-        const merged = reconcileFetchedHistory(previous, fetched, queued);
+        const merged = boundLatestHistory(reconcileFetchedHistory(previous, fetched, queued));
         historyCache.set(key, { at: Date.now(), messages: merged });
         await dialogCache.writeHistory(companyId, accountId, peerId, merged);
         if (historyContentChanged(previous, merged)) {
@@ -340,21 +350,28 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   }
 
   async function loadHistory(companyId: string, accountId: string, peerId: string, beforeId: string): Promise<ChatBubble[]> {
+    const now = Date.now();
+    for (const [cachedKey, entry] of historyCache) {
+      const marker = cachedKey.slice(cachedKey.lastIndexOf(":") + 1);
+      if (marker === "latest") continue;
+      if (!historyHitIsFresh(marker, entry.at, now)) historyCache.delete(cachedKey);
+    }
     const live = liveByAccount.get(accountId);
     const key = historyCacheKey(accountId, peerId, beforeId);
     const hit = historyCache.get(key);
-    if (hit && historyHitIsFresh(beforeId, hit.at, Date.now())) return hit.messages;
+    if (hit && historyHitIsFresh(beforeId, hit.at, now)) return beforeId ? hit.messages : boundLatestHistory(hit.messages);
     if (!beforeId) {
       try {
         const disk = await dialogCache.readHistory(companyId, accountId, peerId);
-        if (disk && disk.length > 0 && !historyCache.has(key)) {
-          const messages: ChatBubble[] = disk.map((message) => ({
+        if (disk && !historyCache.has(key)) {
+          const messages = boundLatestHistory(disk.map((message) => ({
             id: message.id,
             direction: message.direction,
             text: message.text,
             at: message.at,
             forward: message.forward,
-          }));
+            placeholder: message.placeholder === true,
+          })));
           historyCache.set(key, { at: Date.now(), messages });
           refreshHistory(companyId, accountId, peerId);
           return messages;
@@ -366,12 +383,12 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     if (!live || live.companyId !== companyId) return historyCache.get(key)?.messages ?? [];
     const pending = historyJobs.get(key);
     if (pending) return pending;
-    const task = live.readHistory(peerId, 40, beforeId || undefined).then((messages) => {
+    const task = live.readHistory(peerId, HISTORY_PAGE_SIZE, beforeId || undefined).then((messages) => {
       const current = historyCache.get(key)?.messages ?? [];
       const queued = beforeId ? [] : takePendingBubbles(accountId, peerId);
       const merged = beforeId
         ? patchHistoryMessages(current, messages)
-        : reconcileFetchedHistory(current, messages, queued);
+        : boundLatestHistory(reconcileFetchedHistory(current, messages, queued));
       historyCache.set(key, { at: Date.now(), messages: merged });
       if (!beforeId) void dialogCache.writeHistory(companyId, accountId, peerId, merged).catch(() => undefined);
       return merged;
@@ -461,6 +478,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
         status: issue.status,
         updatedAt: activityAt,
         preview: card?.preview || null,
+        previewPlaceholder: card?.previewPlaceholder === true,
         unread: card?.unread || 0,
         photo: parsed
           ? keepDialogPhoto(companyId, parsed.accountId, parsed.peerId, card?.photo ?? null, false)
@@ -507,7 +525,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   function pushStored(bubbles: ChatBubble[], id: string, body: string, at: string) {
     const parsed = bubbleFromStoredBody(body);
     if (!parsed.text && !parsed.forward) return;
-    bubbles.push({ id, direction: "in", text: parsed.text, at, forward: parsed.forward });
+    bubbles.push({ id, direction: "in", text: parsed.text, at, forward: parsed.forward, placeholder: parsed.placeholder });
   }
 
   async function storedThread(issue: { id: string; description?: string | null; createdAt?: unknown }, companyId: string): Promise<ChatBubble[]> {
@@ -560,7 +578,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
     if (account && parsed && account.companyId === companyId) {
       try {
         const messages = await loadHistory(companyId, parsed.accountId, parsed.peerId, beforeId);
-        return { ...header, ...face, live: true, hasMore: messages.length >= 40, messages };
+        return { ...header, ...face, live: true, hasMore: messages.length >= HISTORY_PAGE_SIZE, messages };
       } catch {
         log.warn("Telegram history is unavailable");
       }
@@ -676,6 +694,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   });
 
   ctx.actions.register("send-chat-reply", async (params, actionCtx) => {
+    assertConnectionManager(actionCtx.actor);
     const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
     const issueRef = readString(params.issueRef);
     const text = readString(params.text);
@@ -701,6 +720,7 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
   });
 
   ctx.actions.register("chat-message-menu", async (params, actionCtx) => {
+    assertConnectionManager(actionCtx.actor);
     const companyId = requireCompanyId(params.companyId, actionCtx.companyId);
     const issueRef = readString(params.issueRef);
     const op = readString(params.op);
@@ -735,16 +755,12 @@ export function registerTelegramBoard(ctx: PluginContext, log: PluginContext["lo
         revoke: params.revoke === true,
       });
       const prefix = `${authorized.accountId}:${authorized.peerId}:`;
-      let latest: ChatBubble[] | null = null;
       for (const [key, entry] of historyCache) {
-        if (!key.startsWith(prefix)) continue;
+        if (!key.startsWith(prefix) || key.endsWith(":latest")) continue;
         const messages = removeHistoryMessages(entry.messages, ids);
         historyCache.set(key, { at: entry.at, messages });
-        if (key === historyCacheKey(authorized.accountId, authorized.peerId, "")) latest = messages;
       }
-      if (latest) {
-        void dialogCache.writeHistory(companyId, authorized.accountId, authorized.peerId, latest).catch(() => undefined);
-      }
+      await persistDeletedHistory(companyId, authorized.accountId, authorized.peerId, ids);
       stripPending(authorized.accountId, authorized.peerId, ids);
     } else {
       const target = await findDialogIssue(companyId, readString(params.targetIssueRef));

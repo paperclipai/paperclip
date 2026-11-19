@@ -44,8 +44,10 @@ export function TelegramChatsNav({
   );
   const refreshOverview = useRef(overview.refresh);
   refreshOverview.current = overview.refresh;
-  const inboxChannel = companyId ? `telegram-inbox:${companyId}` : "telegram-inbox:none";
-  const inboxStream = usePluginStream(inboxChannel, companyId ? { companyId } : undefined);
+  const inboxStream = usePluginStream(
+    companyId ? "telegram-inbox" : "telegram-inbox:none",
+    companyId ? { companyId } : undefined,
+  );
   useEffect(() => {
     if (!inboxStream.lastEvent) return;
     refreshOverview.current();

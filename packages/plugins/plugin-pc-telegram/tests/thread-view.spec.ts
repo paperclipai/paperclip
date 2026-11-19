@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { historyHitIsFresh, patchHistoryMessages, removeHistoryMessages } from "../src/history-slice.js";
+import { boundLatestHistory, historyHitIsFresh, patchHistoryMessages, reconcileFetchedHistory, removeHistoryMessages } from "../src/history-slice.js";
 import {
   issueRefFromPath,
   isNearBottom,
@@ -75,5 +75,23 @@ describe("thread loading", () => {
       { id: "2", direction: "in", text: "edited", at: "2020-01-02T00:00:00.000Z", forward: { name: "Анна" } },
     ]);
     expect(removeHistoryMessages(patched, ["2"])).toEqual([]);
+  });
+
+  it("drops cached ids below a fetched latest page and bounds the slice", () => {
+    const bubble = (id: string, at: string) => ({ id, direction: "in" as const, text: id, at });
+    const previous = [
+      bubble("1", "2020-01-01T00:00:01.000Z"),
+      bubble("40", "2020-01-01T00:00:02.000Z"),
+      bubble("90", "2020-01-01T00:00:03.000Z"),
+      bubble("note", "2020-01-01T00:00:04.000Z"),
+    ];
+    const fetched = [bubble("81", "2020-01-01T00:00:05.000Z"), bubble("82", "2020-01-01T00:00:06.000Z")];
+    expect(reconcileFetchedHistory(previous, fetched).map((message) => message.id)).toEqual(["90", "note", "81", "82"]);
+    expect(reconcileFetchedHistory(previous, [], [bubble("7", "2020-01-01T00:00:07.000Z")]).map((message) => message.id)).toEqual(["7"]);
+    const long = Array.from({ length: 50 }, (_, index) => bubble(String(index + 1), `2020-01-01T00:01:${String(index).padStart(2, "0")}.000Z`));
+    const bounded = boundLatestHistory(long);
+    expect(bounded).toHaveLength(40);
+    expect(bounded[0]?.id).toBe("11");
+    expect(bounded.at(-1)?.id).toBe("50");
   });
 });

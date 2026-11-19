@@ -207,7 +207,7 @@ type GramMessage = {
   peerId?: unknown;
   sender?: { username?: string | null; firstName?: string | null; lastName?: string | null; id?: unknown };
   media?: unknown;
-  downloadMedia?: () => Promise<Buffer | Uint8Array | string | null>;
+  downloadMedia?: (progress?: (downloaded: number, total?: number) => void) => Promise<Buffer | Uint8Array | string | null>;
   fwdFrom?: {
     fromId?: unknown;
     fromName?: string | null;
@@ -299,28 +299,84 @@ async function readInboundForward(message: GramMessage): Promise<InboundForward 
   }) ?? unknownForward();
 }
 
+const MAX_INBOUND_MEDIA_BYTES = 4 * 1024 * 1024;
+const MEDIA_CONCURRENCY = 2;
+let mediaInFlight = 0;
+const mediaQueue: Array<() => void> = [];
+
+function takeMediaSlot(): Promise<void> {
+  if (mediaInFlight < MEDIA_CONCURRENCY) {
+    mediaInFlight += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    mediaQueue.push(() => {
+      mediaInFlight += 1;
+      resolve();
+    });
+  });
+}
+
+function freeMediaSlot(): void {
+  mediaInFlight = Math.max(0, mediaInFlight - 1);
+  const next = mediaQueue.shift();
+  if (next) next();
+}
+
+function asByteCount(value: unknown): number {
+  const count = typeof value === "number" ? value : typeof value === "bigint" ? Number(value) : Number.NaN;
+  return Number.isFinite(count) && count >= 0 ? count : 0;
+}
+
+function declaredMediaBytes(media: unknown): number {
+  if (!media || typeof media !== "object") return 0;
+  const record = media as {
+    size?: unknown;
+    document?: { size?: unknown };
+    photo?: { sizes?: Array<{ size?: unknown }> };
+  };
+  let photo = 0;
+  for (const size of record.photo?.sizes ?? []) photo = Math.max(photo, asByteCount(size?.size));
+  return Math.max(asByteCount(record.size), asByteCount(record.document?.size), photo);
+}
+
 async function collectAttachments(message: NonNullable<ReturnType<typeof readEventMessage>>): Promise<InboundAttachment[]> {
-  if (!message.media || typeof message.downloadMedia !== "function") return [];
-  const downloaded = await message.downloadMedia();
-  if (!downloaded) return [];
-  const bytes = typeof downloaded === "string" ? Buffer.from(downloaded) : Buffer.from(downloaded);
-  const media = message.media as { className?: string; mimeType?: string; fileName?: string };
-  const className = media.className ?? "";
-  const kind = className.includes("Document") && (media.mimeType ?? "").startsWith("audio/")
-    ? "voice"
-    : className.includes("Photo")
-      ? "photo"
-      : className.includes("Document") && (media.mimeType ?? "").startsWith("video/")
-        ? "video"
-        : "file";
-  return [{
-    id: `${String(message.id ?? "media")}-${bytes.byteLength}`,
-    filename: media.fileName ?? (kind === "voice" ? "voice.ogg" : kind === "photo" ? "photo.jpg" : "attachment.bin"),
-    mimeType: media.mimeType ?? "application/octet-stream",
-    byteLength: bytes.byteLength,
-    kind,
-    bytes,
-  }];
+  try {
+    if (!message.media || typeof message.downloadMedia !== "function") return [];
+    if (declaredMediaBytes(message.media) > MAX_INBOUND_MEDIA_BYTES) return [];
+    await takeMediaSlot();
+    try {
+      const downloaded = await message.downloadMedia((loaded) => {
+        if (loaded > MAX_INBOUND_MEDIA_BYTES) {
+          throw new Error(`Attachment exceeds ${MAX_INBOUND_MEDIA_BYTES} bytes`);
+        }
+      });
+      if (!downloaded) return [];
+      const bytes = typeof downloaded === "string" ? Buffer.from(downloaded) : Buffer.from(downloaded);
+      if (bytes.byteLength > MAX_INBOUND_MEDIA_BYTES) return [];
+      const media = message.media as { className?: string; mimeType?: string; fileName?: string };
+      const className = media.className ?? "";
+      const kind = className.includes("Document") && (media.mimeType ?? "").startsWith("audio/")
+        ? "voice"
+        : className.includes("Photo")
+          ? "photo"
+          : className.includes("Document") && (media.mimeType ?? "").startsWith("video/")
+            ? "video"
+            : "file";
+      return [{
+        id: `${String(message.id ?? "media")}-${bytes.byteLength}`,
+        filename: media.fileName ?? (kind === "voice" ? "voice.ogg" : kind === "photo" ? "photo.jpg" : "attachment.bin"),
+        mimeType: media.mimeType ?? "application/octet-stream",
+        byteLength: bytes.byteLength,
+        kind,
+        bytes,
+      }];
+    } finally {
+      freeMediaSlot();
+    }
+  } catch {
+    return [];
+  }
 }
 
 function synchronousForward(message: GramMessage): InboundForward | null {
@@ -659,19 +715,30 @@ export function createGramJsClientFactory(): TelegramClientFactory {
         async readHistory(peerId, limit, beforeId) {
           const bounded = Math.max(1, Math.min(40, Math.floor(limit) || 40));
           const peer = client.getInputEntity ? await client.getInputEntity(peerId) : peerId;
-          const before = typeof beforeId === "string" && /^\d{1,16}$/.test(beforeId) ? Number(beforeId) : 0;
-          const messages = await client.getMessages(peer, before > 0 ? { limit: bounded, maxId: before } : { limit: bounded });
+          let cursor = typeof beforeId === "string" && /^\d{1,16}$/.test(beforeId) ? Number(beforeId) : 0;
           const bubbles: ChatBubble[] = [];
-          for (const message of messages) {
-            if (!message || typeof message !== "object") continue;
-            const gramMessage = message as GramMessage;
-            const bubble = bubbleFromGram(gramMessage);
-            if (!bubble) continue;
-            bubbles.push(bubble);
-            scheduleForward(gramMessage, peerId, bubble, notifyInbox);
+          const seen = new Set<string>();
+          for (let pass = 0; pass < 8 && bubbles.length < bounded; pass += 1) {
+            const raw = await client.getMessages(peer, cursor > 0 ? { limit: bounded, maxId: cursor } : { limit: bounded });
+            const page = Array.isArray(raw) ? raw : [];
+            if (page.length === 0) break;
+            let oldest = 0;
+            for (const message of page) {
+              if (!message || typeof message !== "object") continue;
+              const gramMessage = message as GramMessage;
+              const idNum = Number(gramMessage.id);
+              if (Number.isFinite(idNum) && idNum > 0 && (oldest === 0 || idNum < oldest)) oldest = idNum;
+              const bubble = bubbleFromGram(gramMessage);
+              if (!bubble || seen.has(bubble.id)) continue;
+              seen.add(bubble.id);
+              bubbles.push(bubble);
+              scheduleForward(gramMessage, peerId, bubble, notifyInbox);
+            }
+            if (bubbles.length >= bounded || page.length < bounded || oldest === 0 || oldest === cursor) break;
+            cursor = oldest;
           }
           bubbles.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
-          return bubbles;
+          return bubbles.slice(-bounded);
         },
         async peerNames() {
           if (!client.getDialogs) return [];

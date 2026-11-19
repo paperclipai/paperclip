@@ -29,25 +29,32 @@ export function removeHistoryMessages(messages: ChatBubble[], ids: string[]): Ch
   return messages.filter((message) => !drop.has(message.id));
 }
 
+export const HISTORY_PAGE_SIZE = 40;
+
+/** The latest key is one page. Older messages come back through beforeId. */
+export function boundLatestHistory(messages: ChatBubble[]): ChatBubble[] {
+  if (messages.length <= HISTORY_PAGE_SIZE) return messages;
+  return messages.slice(-HISTORY_PAGE_SIZE);
+}
+
 export function reconcileFetchedHistory(
   previous: ChatBubble[],
   fetched: ChatBubble[],
   queued: ChatBubble[] = [],
 ): ChatBubble[] {
-  if (fetched.length === 0) return patchHistoryMessages([], queued);
+  if (fetched.length === 0) return boundLatestHistory(patchHistoryMessages([], queued));
   const numeric = fetched
     .map((message) => Number(message.id))
     .filter((id) => Number.isFinite(id));
-  const min = Math.min(...numeric);
   const max = Math.max(...numeric);
   const fetchedIds = new Set(fetched.map((message) => message.id));
   const kept = previous.filter((message) => {
     if (fetchedIds.has(message.id)) return true;
     const id = Number(message.id);
     if (!Number.isFinite(id) || numeric.length === 0) return true;
-    return id < min || id > max;
+    return id > max;
   });
-  return patchHistoryMessages(patchHistoryMessages(kept, fetched), queued);
+  return boundLatestHistory(patchHistoryMessages(patchHistoryMessages(kept, fetched), queued));
 }
 
 export function historyContentChanged(previous: ChatBubble[], next: ChatBubble[]): boolean {

@@ -82,6 +82,8 @@ export function TelegramInboxPage({
     companyId && issueRef ? { companyId, issueRef } : undefined,
   );
   const cacheKey = companyId && issueRef ? `${companyId}:${issueRef}` : "";
+  const openCacheKey = useRef(cacheKey);
+  openCacheKey.current = cacheKey;
   const [transcript, setTranscript] = useState<ThreadView | null>(() => (cacheKey ? threadCache.get(cacheKey) ?? null : null));
   const [readyKey, setReadyKey] = useState("");
   const [olderBefore, setOlderBefore] = useState<string | null>(null);
@@ -196,6 +198,9 @@ export function TelegramInboxPage({
         [ref]: {
           ...current[ref],
           preview: event.preview ?? current[ref]?.preview,
+          previewPlaceholder: typeof event.previewPlaceholder === "boolean"
+            ? event.previewPlaceholder
+            : current[ref]?.previewPlaceholder,
           unread: typeof event.unread === "number" ? event.unread : current[ref]?.unread,
           updatedAt: event.activityAt || current[ref]?.updatedAt,
           photo: event.photo === undefined ? current[ref]?.photo : keepShownPhoto(current[ref]?.photo, event.photo),
@@ -206,7 +211,9 @@ export function TelegramInboxPage({
     if (!key) return;
     if (event.kind === "delete" && event.messageIds?.length) {
       const drop = new Set(event.messageIds);
-      for (const id of event.messageIds) hiddenIds.current.add(id);
+      if (key === openCacheKey.current) {
+        for (const id of event.messageIds) hiddenIds.current.add(id);
+      }
       const base = threadCache.get(key);
       if (!base) return;
       const next = { ...base, messages: base.messages.filter((item) => !drop.has(item.id)) };
@@ -221,9 +228,10 @@ export function TelegramInboxPage({
         return;
       }
       const fresh = !base.messages.some((item) => item.id === event.bubble?.id);
+      const merged = absorbStreamAhead(key, mergeThreadMessages(base.messages, [event.bubble]));
       const next = {
         ...base,
-        messages: absorbStreamAhead(key, mergeThreadMessages(base.messages, [event.bubble])).filter((item) => !hiddenIds.current.has(item.id)),
+        messages: key === openCacheKey.current ? merged.filter((item) => !hiddenIds.current.has(item.id)) : merged,
       };
       storeThread(key, next);
       if (key === cacheKey) {
@@ -611,17 +619,20 @@ export function TelegramInboxPage({
     setActing(true);
     setSendError(null);
     try {
+      const targetKey = openCacheKey.current;
       await menuAction({ companyId, issueRef, op, messageIds: ids, ...extra });
       if (op === "delete") {
         const drop = new Set(ids);
-        for (const id of ids) hiddenIds.current.add(id);
-        setTranscript((current) => {
-          const base = current ?? (cacheKey ? threadCache.get(cacheKey) ?? null : null);
-          if (!base) return current;
+        const stillOpen = Boolean(targetKey) && targetKey === openCacheKey.current;
+        if (stillOpen) {
+          for (const id of ids) hiddenIds.current.add(id);
+        }
+        const base = targetKey ? threadCache.get(targetKey) ?? null : null;
+        if (base) {
           const next = { ...base, messages: base.messages.filter((item) => !drop.has(item.id)) };
-          if (cacheKey) storeThread(cacheKey, next);
-          return next;
-        });
+          storeThread(targetKey, next);
+          if (stillOpen) setTranscript(next);
+        }
         setSelecting(false);
         setSelected([]);
       } else if (op === "react") {
@@ -651,6 +662,7 @@ export function TelegramInboxPage({
     return {
       ...chat,
       preview: patch?.preview ?? chat.preview,
+      previewPlaceholder: patch?.previewPlaceholder ?? chat.previewPlaceholder,
       unread: patch?.unread ?? chat.unread,
       updatedAt: patch?.updatedAt || chat.updatedAt,
       photo,
@@ -716,6 +728,7 @@ export function TelegramInboxPage({
                 const selected = !narrow && ref === issueRef;
                 const badge = unreadLabel(chat.unread);
                 const preview = chat.preview?.trim() ?? "";
+                const previewText = preview && chat.previewPlaceholder ? uiText(preview) : preview;
                 return (
                   <div
                     key={chat.issueId}
@@ -745,7 +758,7 @@ export function TelegramInboxPage({
                       </span>
                       {preview || badge ? (
                         <span className="tg-row-bottom">
-                          <span className="tg-row-preview">{preview ? uiText(preview) : ""}</span>
+                          <span className="tg-row-preview">{previewText}</span>
                           {badge ? <span className="tg-badge">{badge}</span> : null}
                         </span>
                       ) : null}
@@ -844,7 +857,7 @@ export function TelegramInboxPage({
                               }}
                             >
                               {message.forward ? <span className="tg-forward">{forwardLine(message.forward)}</span> : null}
-                              {message.text ? uiText(message.text) : null}
+                              {message.text ? (message.placeholder ? uiText(message.text) : message.text) : null}
                               {at ? <span className="tg-bubble-time">{formatClock(at)}</span> : null}
                               {reactions[message.id] ? <span className="tg-react-badge">{reactions[message.id]}</span> : null}
                             </div>

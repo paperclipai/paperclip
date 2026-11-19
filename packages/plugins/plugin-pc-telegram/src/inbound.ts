@@ -41,10 +41,13 @@ function withDialogLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   });
 }
 
+const MAX_INBOUND_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+
 export function formatInboundComment(
   message: InboundDirectMessage,
   storedFiles: Array<Pick<InboundAttachment, "filename" | "mimeType" | "byteLength" | "kind">>,
   attachmentIds: string[] = [],
+  notes: string[] = [],
 ): string {
   const lines: string[] = [];
   const speaker = message.peerName || message.peerId;
@@ -56,6 +59,9 @@ export function formatInboundComment(
   }
   for (const attachmentId of attachmentIds) {
     lines.push(`attachment:${attachmentId}`);
+  }
+  for (const note of notes) {
+    if (note.trim()) lines.push(note.trim());
   }
   return lines.join("\n\n");
 }
@@ -112,19 +118,30 @@ async function attachInboundFiles(
   companyId: string,
   issueId: string,
   attachments: InboundAttachment[],
-): Promise<string[]> {
+): Promise<{ ids: string[]; notes: string[] }> {
   const ids: string[] = [];
+  const notes: string[] = [];
   for (const attachment of attachments) {
-    const created = await ctx.issues.createAttachment({
-      issueId,
-      companyId,
-      filename: attachment.filename,
-      contentType: attachment.mimeType,
-      contentBase64: Buffer.from(attachment.bytes).toString("base64"),
-    });
-    ids.push(created.id);
+    const label = attachment.filename || "attachment";
+    if (attachment.byteLength > MAX_INBOUND_ATTACHMENT_BYTES || attachment.bytes.byteLength > MAX_INBOUND_ATTACHMENT_BYTES) {
+      notes.push(`Could not attach ${label}: Attachment exceeds ${MAX_INBOUND_ATTACHMENT_BYTES} bytes`);
+      continue;
+    }
+    try {
+      const created = await ctx.issues.createAttachment({
+        issueId,
+        companyId,
+        filename: attachment.filename,
+        contentType: attachment.mimeType,
+        contentBase64: Buffer.from(attachment.bytes).toString("base64"),
+      });
+      ids.push(created.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Attachment failed.";
+      notes.push(`Could not attach ${label}: ${message}`);
+    }
   }
-  return ids;
+  return { ids, notes };
 }
 
 export async function ingestInboundMessage(
@@ -174,8 +191,8 @@ async function ingestDialog(
     });
   }
 
-  const attachmentIds = await attachInboundFiles(ctx, connection.companyId, issue.id, message.attachments);
-  const body = formatInboundComment(message, storedFiles, attachmentIds);
+  const attached = await attachInboundFiles(ctx, connection.companyId, issue.id, message.attachments);
+  const body = formatInboundComment(message, storedFiles, attached.ids, attached.notes);
   if (current) {
     await ctx.issues.createComment(issue.id, body, connection.companyId);
   } else if (body !== issue.description) {

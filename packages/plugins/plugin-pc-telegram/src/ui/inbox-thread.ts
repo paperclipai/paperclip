@@ -9,6 +9,7 @@ export type TelegramChatRow = {
   status: string;
   updatedAt: string;
   preview?: string | null;
+  previewPlaceholder?: boolean;
   unread?: number | null;
   photo?: string | null;
   presence?: PresenceView;
@@ -20,6 +21,7 @@ export type ChatBubbleView = {
   text: string;
   at: string;
   forward?: { kind?: string | null; name?: string | null; author?: string | null } | null;
+  placeholder?: boolean;
 };
 
 export type ChatThreadData = {
@@ -92,6 +94,7 @@ export type InboxStreamEvent = {
   bubble?: ChatBubbleView;
   messageIds?: string[];
   preview?: string;
+  previewPlaceholder?: boolean;
   unread?: number;
   activityAt?: string;
   photo?: string | null;
@@ -102,6 +105,7 @@ export const INBOX_ABORT_MS = 28_000;
 
 export type RowPatch = {
   preview?: string | null;
+  previewPlaceholder?: boolean;
   unread?: number;
   updatedAt?: string;
   photo?: string | null;

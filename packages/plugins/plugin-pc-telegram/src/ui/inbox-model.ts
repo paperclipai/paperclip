@@ -1,11 +1,11 @@
 export const AVATAR_PAIRS = [
-  ["#ff845e", "#d45246"],
-  ["#febb5b", "#f68136"],
-  ["#b694f9", "#6c61df"],
-  ["#9ad164", "#46ba43"],
-  ["#53edd6", "#28c9b7"],
-  ["#5caffa", "#408acf"],
-  ["#ff8aac", "#d95574"],
+  ["var(--chart-1)", "var(--primary)"],
+  ["var(--chart-2)", "var(--chart-1)"],
+  ["var(--chart-3)", "var(--accent)"],
+  ["var(--chart-4)", "var(--chart-2)"],
+  ["var(--chart-5)", "var(--primary)"],
+  ["var(--accent)", "var(--chart-3)"],
+  ["var(--primary)", "var(--chart-4)"],
 ] as const;
 
 const MONTHS_RU = [
@@ -52,6 +52,7 @@ export type InboxMessage = {
   text: string;
   at: string;
   forward?: InboxForward | null;
+  placeholder?: boolean;
 };
 
 export type InboxGroup = {

@@ -124,14 +124,16 @@ async function renderInbox() {
 }
 
 describe("telegram inbox page", () => {
-  it("renders the night shell, search, dialog row, date, bubbles and composer in Russian", async () => {
+  it("renders the themed shell, search, dialog row, date, bubbles and composer in Russian", async () => {
     await renderInbox();
     const shell = host?.querySelector(".tg-shell");
     expect(shell).not.toBeNull();
     const css = host?.querySelector("style")?.textContent ?? "";
-    expect(css).toContain("#212121");
-    expect(css).toContain("#181818");
-    expect(css).toContain("#8774e1");
+    expect(css).toContain("var(--card)");
+    expect(css).toContain("var(--background)");
+    expect(css).toContain("var(--primary)");
+    expect(css).not.toContain("#212121");
+    expect(css).not.toContain("#8774e1");
     expect(css).toContain("flex: 0 0 360px");
     expect(css).toContain("max-width: min(480px, 78%)");
     expect(css).toContain("width: 40px");

@@ -123,4 +123,34 @@ describe("dialog cache", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("shrinks an idle cache when the saved byte cap is lowered", async () => {
+    const root = await mkdtemp(join(tmpdir(), "tg-cache-"));
+    try {
+      const cache = createDialogCache({ root, allowedMaxBytes: [360, 800] });
+      await cache.saveSettings(COMPANY, { maxBytes: 800 });
+      await cache.writeAvatar(COMPANY, ACCOUNT, "11", { photoId: "1", dataUrl: photo(180, "old") });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await cache.writeAvatar(COMPANY, ACCOUNT, "12", { photoId: "2", dataUrl: photo(180, "new") });
+      await cache.writeHistory(COMPANY, ACCOUNT, PEER, [{
+        id: "7",
+        direction: "in",
+        text: "Photo",
+        at: "2026-11-15T00:00:00.000Z",
+        forward: null,
+        placeholder: true,
+      }]);
+      expect((await cache.readHistory(COMPANY, ACCOUNT, PEER))?.[0]?.placeholder).toBe(true);
+      const high = await cache.status(COMPANY);
+      expect(high.bytes).toBeGreaterThan(360);
+      await cache.saveSettings(COMPANY, { maxBytes: 360 });
+      const low = await cache.status(COMPANY);
+      expect(low.maxBytes).toBe(360);
+      expect(low.bytes).toBeLessThanOrEqual(360);
+      await cache.writeHistory(COMPANY, ACCOUNT, PEER, []);
+      expect(await cache.readHistory(COMPANY, ACCOUNT, PEER)).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

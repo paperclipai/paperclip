@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import {
   AssigneePicker,
   StatusBadge,
@@ -253,6 +253,19 @@ export function TelegramConnectPage({ context }: PluginCompanySettingsPageProps)
     login.refresh();
     overview.refresh();
   }, [loginStream.lastEvent]);
+
+  const loginRefresh = useRef(login.refresh);
+  loginRefresh.current = login.refresh;
+  useEffect(() => {
+    const waiting = status.state === "qr_pending"
+      || status.state === "password_required"
+      || (Boolean(loginId) && status.state === "idle");
+    if (!waiting) return undefined;
+    const timer = setInterval(() => {
+      loginRefresh.current();
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [status.state, loginId]);
 
   useEffect(() => {
     if (status.state === "connected" || status.state === "error") {
