@@ -230,7 +230,7 @@ export function AwsRoleSetup({
                 </ol>
                 <CopyRow label="Provider URL" value={ready.issuer} />
                 <CopyRow label="Audience" value={ready.audience} />
-                <CopyRow label="Role name" value={ready.roleName} />
+                <CopyRow label="Role name" value={setupRoleName(ready)} />
                 <CopyRow label="Connection subject" value={ready.subject} />
                 <CopyBlock label="Trust policy" value={JSON.stringify(ready.trustPolicy, null, 2)} />
                 <CopyBlock label="AWS CLI commands" value={awsCliCommands(ready)} />

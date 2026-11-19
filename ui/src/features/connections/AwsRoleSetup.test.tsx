@@ -115,6 +115,9 @@ describe("AwsRoleSetup", () => {
     expect(container.textContent).toContain("It updates the existing role");
     await act(async () => { button("Or do it by hand")?.click(); });
     expect(container.textContent).toContain("Update the role");
+    // The copyable role name is the saved role's, not the template's.
+    const roleRow = [...container.querySelectorAll("div")].find((d) => d.firstElementChild?.textContent === "Role name");
+    expect(roleRow?.querySelector("code")?.textContent).toBe("existing-ops");
     const cli = awsCliCommands(setup);
     expect(cli).toContain("if aws iam get-role --role-name existing-ops");
     expect(cli).toContain("aws iam update-assume-role-policy --role-name existing-ops");
