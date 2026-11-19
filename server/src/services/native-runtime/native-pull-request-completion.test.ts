@@ -1,10 +1,13 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectionGrants, createDb, heartbeatRuns, issues, issueWorkProducts } from "@paperclipai/db";
+import { connectionGrants, createDb, heartbeatRuns, issues, issueWorkProducts, runIdentityContexts } from "@paperclipai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { githubCredentialsFixture } from "../../__tests__/helpers/github-credentials-fixture.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import * as githubFetch from "../github-fetch.js";
 import * as gitCredentials from "../git-credentials.js";
+import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
+import { validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
 
 const vault = vi.hoisted(() => ({
@@ -74,6 +77,60 @@ describe("native PR completion GitHub authorization", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fallback).not.toHaveBeenCalled();
     expect((await db.select().from(issues).where(eq(issues.id, binding.issueId)))[0]!.status).toBe("in_progress");
+  });
+
+  it("reassesses merged PR evidence from a succeeded run without permitting command credentials", async () => {
+    const binding = await seed();
+    const grant = await fixture.grant(binding, "A");
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, binding.runId));
+    const fetcher = vi.spyOn(githubFetch, "ghFetch").mockImplementation(async (_url, init) =>
+      new Headers(init?.headers).get("authorization") === "Bearer test-token-A"
+        ? Response.json({ state: "closed", merged: true }) : new Response(null, { status: 404 }));
+    const reassessment = { ...binding, objective: "Merge the implementation PR.", semanticToolReceipts: {}, authoritativeDone: true as const };
+    await expect(validateNativeDeliverableEvidence(db, reassessment, report)).resolves.toBeUndefined();
+    await expect(resolveGitHubOperationCredentials(db, binding)).rejects.toThrow("active run");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
+    await expect(validateNativeDeliverableEvidence(db, reassessment, report)).rejects.toThrow("not been verified as merged");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["failed", "cancelled"])("does not acquire a managed completion credential for a %s run", async status => {
+    const binding = await seed();
+    await fixture.grant(binding, "A");
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, binding.runId));
+    const fetcher = vi.spyOn(githubFetch, "ghFetch");
+    await expect(verifyNativePullRequestCompletion(db, binding, report)).rejects.toThrow("not been verified as merged");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+    expect(vault.getByName).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unaccepted identity during succeeded-run reassessment", async () => {
+    const binding = await seed();
+    await fixture.grant(binding, "A");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, binding.runId));
+    await db.update(runIdentityContexts).set({ status: "rejected" }).where(eq(runIdentityContexts.runId, binding.runId));
+    const fetcher = vi.spyOn(githubFetch, "ghFetch");
+    await expect(verifyNativePullRequestCompletion(db, binding, report)).rejects.toThrow("not been verified as merged");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+  });
+
+  it("rechecks trust restrictions before acquiring a succeeded run's credential", async () => {
+    const binding = await seed();
+    await fixture.grant(binding, "A");
+    await db.update(heartbeatRuns).set({ status: "succeeded", contextSnapshot: { issueId: binding.issueId,
+      executionPolicy: { authorizationPolicy: { trustPreset: LOW_TRUST_REVIEW_PRESET,
+        trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, companyId: binding.companyId, rootIssueId: binding.issueId,
+          issueIds: [binding.issueId], allowedAgentIds: [binding.agentId], allowedToolClasses: ["git.read", "github.pr.read"] } } },
+    } }).where(eq(heartbeatRuns.id, binding.runId));
+    const fetcher = vi.spyOn(githubFetch, "ghFetch");
+    await expect(verifyNativePullRequestCompletion(db, binding, report)).rejects.toThrow("not been verified as merged");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+    expect(vault.getByName).not.toHaveBeenCalled();
   });
 
   it.each([

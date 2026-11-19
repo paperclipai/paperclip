@@ -3,7 +3,7 @@ import { heartbeatRuns, issues, issueWorkProducts, nativeRunFinalizations, nativ
 import { isConversation } from "../agent-conversations.js";
 import { createPullRequestMergeStateResolver, extractGitHubPullRequestReferences } from "../github-pull-request-merge.js";
 import { GIT_CREDENTIAL_TOKEN_ENV_KEY, resolveGitHubApiCredential, type GitHubApiCredential } from "../git-credentials.js";
-import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
+import { resolveGitHubCompletionCredentials } from "../github-operation-credentials.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 
 export class NativePullRequestCompletionError extends Error {}
@@ -63,21 +63,13 @@ export function nativePullRequestCompletionKey(reference: { owner: string; repo:
 }
 
 async function resolveCompletionCredential(db: Db, binding: Binding): Promise<GitHubApiCredential | null> {
-  const [run] = await db.select({ agentId: heartbeatRuns.agentId, identityContextId: heartbeatRuns.activeIdentityContextId })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId),
-      eq(heartbeatRuns.nativeIssueId, binding.issueId))).limit(1);
-  if (!run) throw new NativePullRequestCompletionError("Pull request completion source is unavailable.");
-  if (run.identityContextId) {
-    const credential = await resolveGitHubOperationCredentials(db, {
-      companyId: binding.companyId, agentId: run.agentId, runId: binding.runId,
-    });
-    if (credential.status !== "absent") {
-      const token = credential.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]?.trim();
-      if (credential.status !== "available" || !token) {
-        throw new NativePullRequestCompletionError("The run's GitHub connection is unavailable.");
-      }
-      return { token, source: "managed_connection", secretName: null };
+  const credential = await resolveGitHubCompletionCredentials(db, binding);
+  if (credential.status !== "absent") {
+    const token = credential.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]?.trim();
+    if (credential.status !== "available" || !token) {
+      throw new NativePullRequestCompletionError("The run's GitHub connection is unavailable.");
     }
+    return { token, source: "managed_connection", secretName: null };
   }
   return resolveGitHubApiCredential(db, binding.companyId);
 }

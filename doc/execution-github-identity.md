@@ -85,6 +85,9 @@ revoked or unavailable managed connection cannot fall back to another identity.
 Runs without a managed identity retain the legacy company-token lookup and the
 public-repository restriction on instance-wide tokens. A saved work-product
 status is never proof of a merge; GitHub must confirm it before completion.
+Server-side reassessment may recheck a succeeded run using its persisted accepted
+identity and current grants. That check does not permit command credential
+acquisition after the run ends.
 
 Managed commands disable ambient Git credential helpers, Git global/system configuration, host GitHub CLI configuration, and host SSH identity access. Per-operation GitHub CLI configuration is isolated in a writable configuration directory beneath the managed launcher directory. Missing credentials clear previous author and token values; no teammate, standing delegation, host token, or company-default user's account is substituted. Anonymous/local operations remain available where supported.
 
