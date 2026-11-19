@@ -988,9 +988,11 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent",
         principalId: f.agentId, permissionKey: "tasks:retry", grantedByUserId });
     }
-    function retry(f: { companyId: string; agentId: string; issueId: string; sourceRunId: string; retryRunId: string }) {
-      return request(createApp({ ...agentActor(f.companyId, f.agentId), runId: f.sourceRunId })).post(`/api/issues/${f.issueId}/retry`)
-        .send({ idempotencyKey: randomUUID(), observedRunId: f.retryRunId });
+    function retry(f: { companyId: string; agentId: string; issueId: string; sourceRunId: string; retryRunId: string },
+      opts: { runId?: string; idempotencyKey?: string; actor?: Partial<Express.Request["actor"]> } = {}) {
+      return request(createApp({ ...agentActor(f.companyId, f.agentId), runId: opts.runId ?? f.sourceRunId, ...opts.actor } as Express.Request["actor"]))
+        .post(`/api/issues/${f.issueId}/retry`)
+        .send({ idempotencyKey: opts.idempotencyKey ?? randomUUID(), observedRunId: f.retryRunId });
     }
     async function retryRunStatus(f: { retryRunId: string }) {
       return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)).then(rows => rows[0]!.status);
@@ -1052,6 +1054,38 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
 
       expect(res.status, JSON.stringify(res.body)).toBe(429);
       expect(res.body).toMatchObject({ details: { code: "agent_task_retry_cap_reached" } });
+    });
+
+    it("counts a replayed request once toward the cap", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, "board-user");
+      const idempotencyKey = randomUUID();
+      for (let i = 0; i < 4; i += 1) expect((await retry(f, { idempotencyKey })).status).not.toBe(429);
+
+      const events = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
+        eq(activityLog.action, "issue.retry_requested_by_agent")));
+      expect(events).toHaveLength(1);
+    });
+
+    it("refuses a run id that is not the agent's own run", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, "board-user");
+
+      const res = await retry(f, { runId: randomUUID() });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
+    });
+
+    it("keeps a scoped key within its own limits", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, "board-user");
+
+      const res = await retry(f, { actor: { source: "agent_key", keyId: randomUUID(),
+        keyScope: { kind: "skill_test", issueId: randomUUID() } } as Partial<Express.Request["actor"]> });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
     });
   });
 

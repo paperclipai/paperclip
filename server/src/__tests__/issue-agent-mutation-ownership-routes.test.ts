@@ -185,6 +185,7 @@ function registerRouteMocks() {
     }) };
   });
   vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
+  vi.doMock("../services/agent-task-retry.js", () => ({ agentOwnsRun: async () => false, agentTaskRetryActor: async () => null }));
   vi.doMock("../services/onboarding-first-task-admission.js", async () => ({
     ...await vi.importActual<typeof import("../services/onboarding-first-task-admission.js")>("../services/onboarding-first-task-admission.js"),
     assertOnboardingFirstTaskDependenciesAllowed: mockOnboardingFirstTaskDependenciesAllowed,
@@ -918,7 +919,7 @@ describe("agent issue mutation checkout ownership", () => {
   it("admits ordinary Retry only for a board actor with task mutation permission", async () => {
     const body = { idempotencyKey: recoveryActionId, observedRunId: ownerRunId };
     const deniedAgent = await request(createApp(peerActor())).post(`/api/issues/${issueId}/retry`).send(body);
-    expect(deniedAgent.status).toBe(403);
+    expect(deniedAgent.status, JSON.stringify(deniedAgent.body)).toBe(403);
     expect(mockRequestTaskRetry).not.toHaveBeenCalled();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action !== "issue:mutate", action: input.action, reason: "test_gate", explanation: "Task is read-only.",

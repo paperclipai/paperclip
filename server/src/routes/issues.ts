@@ -10055,12 +10055,19 @@ export function issueRoutes(
     // person, so the person's gates apply, within a per-task daily cap.
     let agentRetry: { companyId: string; agentId: string; runId: string } | null = null;
     if (req.actor.type === "agent" && req.actor.agentId && req.actor.companyId) {
-      const { agentTaskRetryActor } = await import("../services/agent-task-retry.js");
+      const { agentOwnsRun, agentTaskRetryActor } = await import("../services/agent-task-retry.js");
       const grantor = await agentTaskRetryActor(db, { companyId: req.actor.companyId, agentId: req.actor.agentId,
         runId: req.actor.runId });
       if (grantor) {
+        // The agent's own limits apply first: scoped keys never use the grant,
+        // the run must be the agent's, and its trust boundary must reach the task.
+        if (req.actor.keyScope) throw forbidden("Scoped credentials cannot use the Retry grant");
         const runId = requireAgentRunId(req, res);
         if (!runId) return;
+        if (!(await agentOwnsRun(db, { companyId: req.actor.companyId, agentId: req.actor.agentId, runId })))
+          throw forbidden("Run does not belong to this agent");
+        const own = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+        if (!own || !(await assertIssueReadAllowed(req, res, own))) return;
         agentRetry = { companyId: req.actor.companyId, agentId: req.actor.agentId, runId };
         req.actor = grantor;
       }
@@ -10074,7 +10081,8 @@ export function issueRoutes(
     if (agentRetry) {
       if (issue.conversationAgentId) throw forbidden("Only the conversation owner can retry a chat run");
       const { recordAgentTaskRetry } = await import("../services/agent-task-retry.js");
-      await recordAgentTaskRetry(db, { issueId: issue.id, ...agentRetry, grantedByUserId: req.actor.userId! });
+      await recordAgentTaskRetry(db, { issueId: issue.id, ...agentRetry, grantedByUserId: req.actor.userId!,
+        idempotencyKey: req.body.idempotencyKey });
     }
     if (issue.conversationAgentId) {
       if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
