@@ -6,6 +6,7 @@ export interface DeliveryRun {
   startedAt?: number | null;
   wakeupRequestId: string | null;
   contextSnapshot?: unknown;
+  retryOfRunId?: string | null;
   providerTurnStarted?: boolean | null;
 }
 
@@ -69,6 +70,44 @@ export function laterAnswers(evidence: DeliveryEvidence): Map<string, LaterAnswe
 
 export function undeliveredFollowUpRuns(evidence: DeliveryEvidence): Set<string> {
   return followUpDeliveries(evidence).undelivered;
+}
+
+export function continuedRunIds(run: Pick<DeliveryRun, "contextSnapshot" | "retryOfRunId">, wake: DeliveryWake | undefined): string[] {
+  const context = object(run.contextSnapshot);
+  const payload = object(wake?.payload);
+  return [...new Set([run.retryOfRunId, context.retryOfRunId, context.previousRunId, object(context.executionContinuation).interruptedRunId,
+    object(payload._paperclipWakeContext).retryOfRunId, payload.retryOfRunId]
+    .filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+export function committedCompletion(run: { runId: string | null; acceptedDisposition?: string | null } | undefined, rejected: ReadonlySet<string>): boolean {
+  return run?.acceptedDisposition === "done" && !(run.runId && rejected.has(run.runId));
+}
+
+export function followUpAnsweringRuns(evidence: { runs?: ReadonlyArray<DeliveryRun & { acceptedDisposition?: string | null }>;
+  wakes?: readonly DeliveryWake[] } | null, rejected: ReadonlySet<string>): Set<string> {
+  const answering = new Set(laterAnswers(evidence).keys());
+  if (!evidence) return answering;
+  const wakes = new Map((evidence.wakes ?? []).map(wake => [wake.id, wake]));
+  const runs = (evidence.runs ?? []).filter((run): run is typeof run & { runId: string } => Boolean(run.runId));
+  const byId = new Map(runs.map(run => [run.runId, run]));
+  const lineage = new Map(runs.map(run => [run.runId, continuedRunIds(run, run.wakeupRequestId ? wakes.get(run.wakeupRequestId) : undefined)]));
+  const committedAncestor = (runId: string): boolean => {
+    const visited = new Set<string>([runId]);
+    const pending = [...(lineage.get(runId) ?? [])];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      if (committedCompletion(byId.get(id), rejected)) return true;
+      pending.push(...(lineage.get(id) ?? []));
+    }
+    return false;
+  };
+  for (const run of [...runs].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
+    if ((lineage.get(run.runId) ?? []).some(id => answering.has(id)) && !committedAncestor(run.runId)) answering.add(run.runId);
+  }
+  return answering;
 }
 
 export const COMPLETION_INCOMPLETE_KEY = "native-completion-incomplete";

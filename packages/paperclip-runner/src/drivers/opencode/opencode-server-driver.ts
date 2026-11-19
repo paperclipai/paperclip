@@ -44,6 +44,7 @@ import {
 import {
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_TOOL_NAME,
+  prpSemanticResultConflictMessage,
 } from "../../contracts/completion-result.js";
 import type {
   HarnessDriver,
@@ -1325,7 +1326,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         }
         const fingerprint = canonicalJson(validation.result);
         if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
-          throw new Error("A different semantic result was already committed");
+          throw new Error(prpSemanticResultConflictMessage(this.#result));
         // Wait for the bound controller before committing or resolving the
         // provider call. A rejection remains repairable in this same turn.
         const feedback = this.#completionFeedback
@@ -1337,7 +1338,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         if (typeof feedback !== "string" || !feedback.trim())
           throw new Error("Completion feedback omitted its response text");
         if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
-          throw new Error("A different semantic result was already committed");
+          throw new Error(prpSemanticResultConflictMessage(this.#result));
         if (!this.#resultFingerprint) {
           this.#result = structuredClone(validation.result);
           this.#resultFingerprint = fingerprint;

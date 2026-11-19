@@ -1802,7 +1802,7 @@ require('node:module').syncBuiltinESMExports();`);
   it("preserves enrolled workspaces after disabling enrollment and rejects a legacy writer", async () => {
     const reserved = await reserve({ kind: "empty" });
     expect(shouldUseRemoteWorkspaces({ adapterType: "paperclip_runner", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toBe(true);
-    expect(() => shouldUseRemoteWorkspaces({ adapterType: "codex_local", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toThrow("native sandbox");
+    expect(() => shouldUseRemoteWorkspaces({ adapterType: "codex_local", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toThrow("supported remote execution environment");
   });
 
   it("keeps enrollment conditional while enrolled authority fails closed when persistence disappears", async () => {

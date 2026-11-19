@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { RadioCard } from "@/components/ui/radio-card";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
+import { cn } from "@/lib/utils";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { MachineSignInSetup } from "./MachineSignInSetup";
 import {
@@ -330,7 +332,7 @@ export function GenericMcpConnectStep({
   return (
     <div className="mx-auto max-w-xl">
       <div className="flex flex-col gap-6">
-        <p className="min-w-0 truncate font-mono text-sm text-muted-foreground" title={displayedLink}>{displayedLink}</p>
+        <p className={cn("min-w-0 truncate font-mono text-sm text-muted-foreground", ANALYTICS_NO_CAPTURE_CLASS)} title={displayedLink}>{displayedLink}</p>
 
         {matchedEntry && onUseMatchedEntry ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">

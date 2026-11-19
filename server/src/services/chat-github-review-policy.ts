@@ -231,6 +231,38 @@ export function validateGitHubReviewAssessment(
   return assessment;
 }
 
+const COVERAGE_GAP_LISTED_PATHS = 20;
+
+function listedPaths(paths: string[]): string {
+  const shown = paths.slice(0, COVERAGE_GAP_LISTED_PATHS).join(", ");
+  return paths.length > COVERAGE_GAP_LISTED_PATHS ? `${shown}, and ${paths.length - COVERAGE_GAP_LISTED_PATHS} more` : shown;
+}
+
+/**
+ * Why a complete assessment does not cover the PR's allowed changed files, or
+ * null when it does. The message names the files, so the agent can correct the
+ * same submission instead of giving up on publication.
+ */
+export function githubCompleteCoverageGap(
+  allowedChangedPaths: string[],
+  coverage: Pick<GitHubReviewAssessment["coverage"], "reviewedPaths" | "omittedPaths">,
+): string | null {
+  const allowed = new Set(allowedChangedPaths);
+  const reviewed = new Set(coverage.reviewedPaths);
+  const missing = allowedChangedPaths.filter(path => !reviewed.has(path));
+  const omitted = coverage.omittedPaths.filter(path => allowed.has(path));
+  if (missing.length === 0 && omitted.length === 0) return null;
+  return [
+    "A complete assessment must cover every non-excluded changed file in the PR, not only the files changed since a prior review.",
+    missing.length > 0
+      ? `coverage.reviewedPaths is missing ${missing.length} of ${allowedChangedPaths.length} changed files: ${listedPaths(missing)}.`
+      : null,
+    omitted.length > 0 ? `coverage.omittedPaths names changed files: ${listedPaths(omitted)}.` : null,
+    "Review those files, add them to coverage.reviewedPaths, and call submit_review again. "
+      + "If you cannot review them, submit complete: false and list them in coverage.omittedPaths.",
+  ].filter(Boolean).join(" ");
+}
+
 export function githubReviewConclusion(
   assessment: GitHubReviewAssessment,
   threshold: GitHubReviewPolicy["ratingThreshold"],

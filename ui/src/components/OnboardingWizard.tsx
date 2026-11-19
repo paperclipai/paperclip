@@ -78,8 +78,7 @@ import { useCompanyListQuery } from "../api/companies-query";
 import { goalsApi } from "../api/goals";
 import { agentsApi } from "../api/agents";
 import { approvalsApi } from "../api/approvals";
-import { issuesApi } from "../api/issues";
-import { projectsApi } from "../api/projects";
+import { agentChatsApi } from "../api/agentChats";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import {
@@ -110,12 +109,7 @@ import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./envi
 import { defaultCreateValues } from "./agent-config-defaults";
 import { onboardingDraftStorage, restoreOnboardingState } from "../lib/onboarding-state";
 import { createUuid } from "../lib/uuid";
-import {
-  buildOnboardingIssuePayload,
-  buildOnboardingProjectPayload,
-  selectDefaultCompanyGoalId,
-  selectReusableOnboardingProject,
-} from "../lib/onboarding-launch";
+import { selectDefaultCompanyGoalId } from "../lib/onboarding-launch";
 import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
@@ -147,6 +141,7 @@ import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
 import { DEFAULT_AGENT_ROLE } from "../lib/onboarding-agent-role";
 import { capsuleHeroMotion, capsuleRoomEnter, capsuleRoomExit, heroRoomArrival, heroRoomMotion, ledeMotion, stepContentMotion, titleSwapMotion } from "./onboarding/onboarding-motion";
 import { Badge } from "@/components/ui/badge";
+import { captureOnboardingStepCompleted, useOnboardingAnalytics } from "@/lib/analytics/onboarding-analytics";
 import {
   ArrowLeft,
   ArrowRight,
@@ -281,7 +276,6 @@ function ModelSourceMark({
 }
 
 export { ONBOARDING_STORAGE_KEY } from "../lib/onboarding-state";
-const DEFAULT_TASK_TITLE = "Paperclip onboarding";
 
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
@@ -689,6 +683,11 @@ function OnboardingWizardInner({
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
       ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
   );
+  const onboardingAnalytics = useOnboardingAnalytics({
+    open: effectiveOnboardingOpen,
+    step,
+    connectOutcome: credentialMode === "api" ? "api_key" : "subscription",
+  });
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >((draft?.createdCompanyPrefix as string) ?? null);
@@ -702,12 +701,6 @@ function OnboardingWizardInner({
   const setupSave = useRef<Promise<unknown>>(Promise.resolve());
   const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
     (draft?.createdCompanyGoalId as string) ?? null
-  );
-  const [createdProjectId, setCreatedProjectId] = useState<string | null>(
-    (draft?.createdProjectId as string) ?? null
-  );
-  const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(
-    (draft?.createdIssueRef as string) ?? null
   );
 
   // The company the *route* last supplied, so a navigation that stops naming
@@ -819,8 +812,6 @@ function OnboardingWizardInner({
     setCreatedCompanyPrefix(null);
     setCompanyName("");
     setCreatedCompanyGoalId(null);
-    setCreatedProjectId(null);
-    setCreatedIssueRef(null);
     setCreatedAgentId(null);
     setSetupAgentId(null);
     setSetupPrepared(false);
@@ -862,6 +853,9 @@ function OnboardingWizardInner({
       setCommand("");
       setArgs("");
       setUrl("");
+    }
+    if (!previousRequest?.open) {
+      onboardingAnalytics.opened(initialStepRef.current && !resumesRouteDraft ? initialStepRef.current : step, step);
     }
     if (routeCompanyId) {
       // Claim ownership only when the route *introduces* a company. A route
@@ -947,7 +941,7 @@ function OnboardingWizardInner({
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
-      createdCompanyGoalId, createdProjectId, createdIssueRef,
+      createdCompanyGoalId,
     };
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
@@ -955,7 +949,7 @@ function OnboardingWizardInner({
     agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
-    createdCompanyGoalId, createdProjectId, createdIssueRef,
+    createdCompanyGoalId,
   ]);
 
   const getCapabilities = useAdapterCapabilities();
@@ -1474,7 +1468,9 @@ function OnboardingWizardInner({
 
   /** A sign-in is running and has not succeeded. */
   const connectStepLoggingIn =
-    connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting";
+    (connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting") ||
+    (sourcePicked && canUseLocalLogin && credentialMode === "subscription" && !hasSavedSubscription &&
+      !managedBindingForStep() && localLogin.status !== "ready");
 
   // Detecting a credential is enough to start verification once the user has
   // chosen Claude or Codex. A saved-list refresh during that work is not a new
@@ -1589,7 +1585,7 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
+                  !connectStepReady || connectStepLoggingIn || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1868,11 +1864,10 @@ function OnboardingWizardInner({
     setSetupPrepared(false);
     setSetupError(false);
     setCreatedCompanyGoalId(null);
-    setCreatedProjectId(null);
-    setCreatedIssueRef(null);
   }
 
   function handleClose() {
+    onboardingAnalytics.dismissed(step);
     reset();
     closeOnboarding();
     // On the /onboarding route the wizard is also kept open by the route
@@ -1919,79 +1914,29 @@ function OnboardingWizardInner({
     return false;
   }
 
-  async function handleLaunchToDashboard() {
+  async function handleLaunchToChat() {
     if (!createdCompanyId || !createdAgentId) {
       setError(INCOMPLETE_ONBOARDING_STATE_MESSAGE);
       return;
     }
     setLoading(true);
     setError(null);
+    captureOnboardingStepCompleted("review");
     try {
-      let goalId = createdCompanyGoalId;
-      if (!goalId) {
-        const goals = await goalsApi.list(createdCompanyId);
-        goalId = selectDefaultCompanyGoalId(goals);
-        if (stillTheSameCompany(createdCompanyId)) setCreatedCompanyGoalId(goalId);
-      }
-
-      let projectId = createdProjectId;
-      if (!projectId) {
-        const projects = await projectsApi.list(createdCompanyId);
-        const existingOnboardingProject = selectReusableOnboardingProject(projects);
-        if (existingOnboardingProject) {
-          projectId = existingOnboardingProject.id;
-        } else {
-          const project = await projectsApi.create(
-            createdCompanyId,
-            buildOnboardingProjectPayload(goalId)
-          );
-          projectId = project.id;
-          queryClient.invalidateQueries({
-            queryKey: queryKeys.projects.all(createdCompanyId)
-          });
-        }
-        if (stillTheSameCompany(createdCompanyId)) setCreatedProjectId(projectId);
-      }
-
-      let issueRef = createdIssueRef;
-      if (!issueRef) {
-        const issue = await issuesApi.create(
-          createdCompanyId,
-          buildOnboardingIssuePayload({
-            title: DEFAULT_TASK_TITLE,
-            assigneeAgentId: createdAgentId,
-            projectId,
-            goalId
-          })
-        );
-        issueRef = issue.identifier ?? issue.id;
-        if (stillTheSameCompany(createdCompanyId)) setCreatedIssueRef(issueRef);
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.issues.list(createdCompanyId)
-        });
-      }
-
-      // Everything above is server work and stands on its own: the company has
-      // its goal, its onboarding project and its first task. What follows is
-      // this wizard finishing — selecting a company, discarding its own state
-      // and navigating. None of that is right for a customer who has moved to
-      // another company in the meantime: it would take them back, and `reset()`
-      // would discard the progress they had started there.
+      await agentChatsApi.startOnboarding(createdCompanyId, createdAgentId);
+      captureOnboardingStepCompleted("launch", "succeeded");
       if (!stillTheSameCompany(createdCompanyId)) return;
-
+      onboardingAnalytics.finished();
       const prefix = createdCompanyPrefix;
-      // Select the new company as a route sync, not a manual switch: the
-      // explicit navigate below is the intended destination, so page-memory's
-      // "restore last page" (which falls back to /dashboard) must not fire and
-      // clobber the first-task URL. See PAP-404.
+      const agentId = createdAgentId;
+      // Route sync preserves this explicit destination over page memory.
       setSelectedCompanyId(createdCompanyId, { source: "route_sync" });
       reset();
       closeOnboarding();
-      // Drop the user straight into the first task's detail page (not the
-      // dashboard) so they land on the conversation the agent will start in.
-      navigate(prefix ? `/${prefix}/issues/${issueRef}` : `/issues/${issueRef}`);
+      navigate(`${prefix ? `/${prefix}` : ""}/chats/${agentId}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to launch first task");
+      captureOnboardingStepCompleted("launch", "failed");
+      setError(err instanceof Error ? err.message : "Failed to open your chat. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -2780,7 +2725,7 @@ function OnboardingWizardInner({
         (retryLogin || submitLoginCode || !connectStepLoggingIn)
       )
         handleConnectStepPrimary();
-      else if (step === 5) handleLaunchToDashboard();
+      else if (step === 5) handleLaunchToChat();
     }
   }
 
@@ -3136,9 +3081,11 @@ function OnboardingWizardInner({
                         setSourcePicked(true);
                         setAdapterType(id);
                         if (id !== adapterType) setRunner("auto");
-                        if (id !== adapterType) {
+                        // Older drafts may already pair OpenAI with the Claude
+                        // model retained by a previous source switch.
+                        if (id !== adapterType || (id === "codex_local" && credentialMode === "subscription" && model.startsWith("claude-"))) {
                           if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                          else if (id !== "codex_local") setModel("");
+                          else setModel("");
                         }
                         setConnectPhase("collapsing");
                       }}
@@ -3619,7 +3566,7 @@ function OnboardingWizardInner({
                     // Cmd+Enter has to do the same thing. See
                     // `handleConnectStepPrimary`.
                     else if (step === 4) handleConnectStepPrimary();
-                    else handleLaunchToDashboard();
+                    else handleLaunchToChat();
                   }}
                 />
               )}

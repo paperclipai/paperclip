@@ -8,6 +8,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
+import { ProductAnalyticsGate } from "./components/ProductAnalyticsGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
@@ -15,6 +16,7 @@ import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
+import { TaskCancellationProvider } from "./context/TaskCancellationContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
 import { applyLiveEventFreeQueryDefaults } from "./lib/live-reconcile";
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
@@ -130,6 +132,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
     <AppErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <SentryGate />
+        <ProductAnalyticsGate />
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>
@@ -144,7 +147,9 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
+                                <TaskCancellationProvider>
                                 <DesignSandboxProvider><CompanyVoiceCalls><CompanyLinkPreviews><App /></CompanyLinkPreviews></CompanyVoiceCalls></DesignSandboxProvider>
+                                </TaskCancellationProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

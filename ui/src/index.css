@@ -392,7 +392,6 @@
   --folder-color-cyan: #06b6d4;
   --folder-color-amber: #f59e0b;
   --folder-color-slate: #64748b;
-  --gtc-folder-row: 1rem minmax(0, 1fr) auto;
   --gtc-folder-row-actions: 1rem minmax(0, 1fr) auto auto;
   --sz-folder-rail: 13.25rem;
   --sz-folder-sheet-max: 80dvh;
@@ -615,6 +614,31 @@
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+
+  /* Dashboard Board (experimental Responsibilities). Every card is this one
+     height whatever it says, sized to a full card: padding 1.5rem, title
+     2 lines (2.5rem), bar 2 lines (2rem + 0.125rem), number (1.75rem +
+     0.625rem), target and metric (1rem), gap 2 lines (2rem + 0.25rem), two
+     reasons of 2 lines (4.25rem + 0.5rem) and "and N more" (1rem). Narrow
+     boards wrap the cards at this minimum width. */
+  --responsibility-board-card-h: 17.5rem;
+  --responsibility-board-wrap-cols: repeat(auto-fill, minmax(14rem, 1fr));
+
+  /* Dashboard Automation view (experimental Responsibilities): how much of a
+     responsibility runs without its owner, as one hue at rising strength (the
+     in-progress blue: work running without you); Manual is the inert gray.
+     The fills feed the shared .status-chip / .status-fill recipes; the icon
+     hue is the AA-tuned glyph blue. Each responsibility is one full-width row
+     of three parts on wide panes: what it is and how automated (a fixed
+     reading column), what already runs (a medium column), and the manual
+     tasks that could be automated (the rest). Narrow panes stack them. */
+  --responsibility-automation-manual: var(--status-task-backlog);
+  --responsibility-automation-some: color-mix(in srgb, var(--status-task-in_progress) 40%, var(--status-task-backlog));
+  --responsibility-automation-mostly: color-mix(in srgb, var(--status-task-in_progress) 70%, var(--status-task-backlog));
+  --responsibility-automation-automated: var(--status-task-in_progress);
+  --responsibility-automation-icon-manual: var(--status-task-icon-backlog);
+  --responsibility-automation-icon-automated: var(--status-task-icon-in_progress);
+  --responsibility-automation-row-cols: minmax(13rem, 16rem) minmax(15rem, 22rem) minmax(0, 1fr);
 
   /* Agent detail page (Refine-v2). Surfaces mix the theme's own foreground
      into its background, so the same tokens read in light and dark. */
@@ -3137,7 +3161,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-18: calc(100dvh - 2rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (max-h-[calc(100dvh-2rem)]). */
   --sz-calc-19: calc(1rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (pb-[calc(1rem+env(safe-area-inset-bottom))]). */
   --sz-calc-20: min(calc(100dvh - 2rem),42rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.tsx (max-h-[min(calc(100dvh-2rem),42rem)]). */
-  --sz-100dvh: 100dvh; /* Extracted from ui/src/components/RoutineSubSidebar.tsx (max-h-[100dvh]). */
+  --sz-100dvh: 100dvh; /* Originally extracted from the removed RoutineSubSidebar (max-h-[100dvh]). */
   --sz-calc-21: calc(1.5rem + 5rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/ScrollToBottom.tsx (bottom-[calc(1.5rem+5rem+env(safe-area-inset-bottom))]). */
   --sz-calc-22: calc(320px + 1.5rem); /* Extracted from ui/src/components/ScrollToBottom.tsx (right-[calc(320px+1.5rem)]). */
   --sz-calc-23: min(32rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/SearchableSelect.tsx (max-w-[min(32rem,calc(100vw-2rem))]). */
@@ -4788,7 +4812,6 @@ html:has(.design-proposal-theme) [data-slot="card-title"] { color: var(--foregro
    over the app background, matching the main-pane header and pane boundaries. */
 .design-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; border-inline-end: var(--task-row-rule-width) solid var(--design-sidebar-border); background: var(--design-sidebar-surface); background-clip: padding-box; }
 .design-sidebar-brand { display: flex; align-items: center; gap: var(--design-page-control-gap); flex-shrink: 0; height: var(--design-page-header-height); padding-inline: var(--design-sidebar-inset); font-size: var(--design-page-type-size); font-weight: var(--font-weight-semibold); }
-.coordinator-sidebar .design-sidebar-brand[data-collapsed] { height: auto; flex-direction: column; padding-block: var(--design-sidebar-item-inset); }
 .design-sidebar-search { flex-shrink: 0; color: var(--muted-foreground); }
 .design-sidebar-search svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-search:hover { background: var(--muted-highlight); color: var(--foreground); }
@@ -4809,7 +4832,14 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
 }
 .design-sidebar .design-sidebar-item { min-height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); color: var(--design-sidebar-item-foreground); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); }
+.design-sidebar-pin-target > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); }
+.design-sidebar .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
 .design-sidebar .design-sidebar-item:is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+.design-sidebar-pin-target > button { opacity: 0; pointer-events: none; }
+.design-sidebar-pin-target:is(:hover, :has(> [aria-current="page"], > :focus-visible)) {
+  > .design-sidebar-item { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+  > button { opacity: 1; pointer-events: auto; }
+}
 .design-sidebar-new-task { display: flex; justify-content: flex-start; width: calc(100% - var(--design-sidebar-item-inset) * 2); height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); gap: calc(var(--spacing) * 2.5); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); font-weight: var(--font-weight-medium); color: var(--design-sidebar-item-foreground); }
 .design-sidebar-new-task svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-new-task:hover { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
@@ -5787,3 +5817,16 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 .secret-value-masked {
   -webkit-text-security: disc;
 }
+
+:root {
+  --routine-title-min: calc(var(--spacing) * 48);
+  --routine-column-project: calc(var(--spacing) * 36);
+  --routine-column-assignee: calc(var(--spacing) * 36);
+  --routine-column-responsibleUser: calc(var(--spacing) * 36);
+  --routine-column-lastRun: calc(var(--spacing) * 52);
+  --routine-column-enabled: calc(var(--spacing) * 24);
+  --routine-actions-width: calc(var(--spacing) * 20);
+  --routine-select-width: calc(var(--spacing) * 6);
+}
+.routine-table { min-width: max-content; }
+.routine-table-grid { display: grid; align-items: center; gap: calc(var(--spacing) * 3); }

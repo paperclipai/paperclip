@@ -39,11 +39,23 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
 
 export function minimumClaudeCliVersionForModel(model: string): string | null {
   const modelId = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global|jp|au)\.)?anthropic\./, "");
+  // Claude Code 2.1.321 changelog: "Added Claude Fable 5.2 (`claude-fable-5-2`)".
+  if (modelId === "claude-fable-5-2") return "2.1.321";
   if (modelId === "claude-opus-5-5") return "2.1.280";
   if (modelId === "claude-sonnet-5-5") return "2.1.284";
   return modelId === "claude-fable-5-1"
     ? CLAUDE_FABLE_5_1_MIN_CLI_VERSION
     : null;
+}
+
+/**
+ * The Claude Code version an Agent SDK release bundles. SDK 0.3.N ships Claude Code 2.1.N
+ * (its package.json `claudeCodeVersion`); any other SDK line returns null so callers skip the
+ * comparison rather than guess.
+ */
+export function claudeCodeVersionForAgentSdk(sdkVersion: string | null | undefined): string | null {
+  const patch = /^0\.3\.(\d+)$/.exec(sdkVersion?.trim() ?? "")?.[1];
+  return patch ? `2.1.${patch}` : null;
 }
 
 export function parseClaudeCliVersion(output: string): string | null {
