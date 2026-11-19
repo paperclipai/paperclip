@@ -27,9 +27,34 @@ import { secretService } from "../secrets.js";
 import { toolAccessService } from "../tool-access.js";
 import { logActivity } from "../activity-log.js";
 import { object, slackClient } from "./slack-client.js";
+import { logger } from "../../middleware/logger.js";
 
 // Defined in @paperclipai/shared so the app manifest can request the same scopes.
 export const SLACK_SEARCH_USER_SCOPES: string[] = [..._SLACK_SEARCH_USER_SCOPES];
+const SLACK_ERROR_CODE = /^[a-z_]{1,64}$/;
+const SLACK_OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  bad_client_secret:
+    "Slack rejected the Client Secret. Paste the Client Secret from the app's Basic Information page, not the Signing Secret.",
+  invalid_client_id:
+    "Slack does not recognize this Client ID. Copy it from the app's Basic Information page.",
+  bad_redirect_uri:
+    "Slack rejected the redirect URL. Add the redirect URL shown on this page to the Slack app's OAuth & Permissions settings.",
+  invalid_code:
+    "Slack authorization expired or was already used. Start again from Access.",
+  code_already_used:
+    "Slack authorization expired or was already used. Start again from Access.",
+};
+
+/** Maps Slack's oauth.v2.access error code to an actionable message. */
+export function slackOAuthErrorMessage(code: unknown): string {
+  if (typeof code !== "string" || !SLACK_ERROR_CODE.test(code))
+    return "Slack rejected authorization. Check the app credentials and redirect URL.";
+  return (
+    SLACK_OAUTH_ERROR_MESSAGES[code] ??
+    `Slack rejected authorization (${code}). Check the app credentials and redirect URL.`
+  );
+}
+
 const configSchema = z.object({
   clientId: z.string(),
   clientSecretId: z.string().uuid(),
@@ -172,10 +197,25 @@ export function slackSearchOAuthService(
       throw unprocessable("Slack authorization failed");
     }
     const value = object(await response.json());
-    if (value.ok !== true)
-      throw unprocessable(
-        "Slack rejected authorization. Check the app credentials and redirect URL.",
+    if (value.ok !== true) {
+      const code =
+        typeof value.error === "string" && SLACK_ERROR_CODE.test(value.error)
+          ? value.error
+          : undefined;
+      const refresh = body.grant_type === "refresh_token";
+      logger.warn(
+        { slackError: code ?? "unrecognized", grantType: body.grant_type ?? "authorization_code" },
+        "Slack search OAuth exchange rejected",
       );
+      // A background refresh is not an interactive setup step: point at
+      // reconnecting rather than at pasting credentials.
+      throw unprocessable(
+        refresh
+          ? "Slack could not refresh this search authorization. Reconnect Slack search from Access."
+          : slackOAuthErrorMessage(code),
+        { slackError: code },
+      );
+    }
     return value;
   }
   /**
@@ -263,6 +303,8 @@ export function slackSearchOAuthService(
     };
   }
   return {
+    /** @internal exposed for tests */
+    __exchange: exchange,
     status,
     /** Search-only credential acquisition; no caller may use this token for writes. */
     async accessToken(companyId: string, endpointId: string, userId: string) {
