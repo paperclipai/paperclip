@@ -1095,6 +1095,7 @@ export function heartbeatService(
     resolveResponsibleUserIdForRunContext,
     recordPlanApprovalResumeFailureRetry,
     setRunStatusIfRunning,
+    setRunStatusFromLive,
     setWakeupStatus,
     getRun,
     getAgent,
@@ -2945,6 +2946,9 @@ export function heartbeatService(
         environment: workspaceSelection,
         getLatestAgentConfigRevision,
       }));
+      // A source-lock wait can end the run inside workspace preparation, so
+      // the assignee decision must be captured before that point.
+      workspaceWaitWasIssueAssignee = issueContext?.assigneeAgentId === agent.id;
       let preparedSession = await prepareSession();
       const prepareWorkspace = () => timePreparation("workspace", () => prepareHeartbeatWorkspace(db, {
         run, agent, controllerLease, nativeRunnerPreparationSpans, signal: executionControl.controller.signal,
@@ -3042,7 +3046,6 @@ export function heartbeatService(
       } = workspaceSelection;
       let nativeChatExpectedCwd = selectedNativeChatExpectedCwd;
       const { sessionConfigMetadata, configuredModel, resetTaskSession, sessionResetReason, taskSessionForRun, getFreshSessionHandoff, previousSessionParams } = preparedSession;
-      workspaceWaitWasIssueAssignee = issueContext?.assigneeAgentId === agent.id;
       const {
         resolvedWorkspace,
         hostExecutionWorkspaceConfig,

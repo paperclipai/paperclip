@@ -134,6 +134,10 @@ export interface HeartbeatRetryDependencies {
     updated: boolean;
     run: HeartbeatRun | null;
   }>;
+  setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<{
+    updated: boolean;
+    run: HeartbeatRun | null;
+  }>;
   setWakeupStatus: (wakeupRequestId: string | null | undefined, status: string, patch?: Partial<typeof agentWakeupRequests.$inferInsert>) => Promise<void>;
   releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">) => Promise<unknown>;
   finalizeAgentStatus: (
@@ -489,6 +493,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     resolveResponsibleUserIdForRunContext,
     recordPlanApprovalResumeFailureRetry,
     setRunStatusIfRunning,
+    setRunStatusFromLive,
     setWakeupStatus,
     getRun,
     getAgent,
@@ -1998,12 +2003,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
 
     const sqlstate = error.sqlstate ?? "55P03";
-    await db.update(heartbeatRuns).set({
-      status: "failed",
+    await setRunStatusFromLive(run.id, "failed", ["cancelled"], {
       errorCode: "setup_failed",
       error: `${error.message} (last workspace source lock wait ended with SQLSTATE ${sqlstate})`,
-      updatedAt: now,
-    }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
+    });
     if (cancelledRun) {
       await releaseIssueExecutionAndPromote(cancelledRun).catch(
         (releaseErr) => {

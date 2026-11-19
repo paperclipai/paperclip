@@ -30,6 +30,7 @@ function callbacks() {
     escalatePlanApprovalResumeFailureNeedsAttention: vi.fn(async () => null),
     recordPlanApprovalResumeFailureRetry: vi.fn(async () => null),
     setRunStatusIfRunning: vi.fn<HeartbeatRetryDependencies["setRunStatusIfRunning"]>(async () => ({ updated: false, run: null })),
+    setRunStatusFromLive: vi.fn<HeartbeatRetryDependencies["setRunStatusFromLive"]>(async () => ({ updated: false, run: null })),
     setWakeupStatus: vi.fn(async () => undefined),
     releaseIssueExecutionAndPromote: vi.fn(async () => undefined),
     finalizeAgentStatus: vi.fn(async () => undefined),
