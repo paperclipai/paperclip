@@ -374,7 +374,10 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
     nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending && !nativeResumeAt && run.status !== "scheduled_retry",
     ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
-  if (nativeResumeAt && !system && now - nativeResumeAt < NATIVE_RESUME_DISPATCH_GRACE_MS)
+  // A due automatic retry stays `scheduled_retry` until the dispatcher promotes
+  // it, so treat it like a due resume: working while it is being dispatched.
+  const dispatchDueAt = nativeResumeAt ?? (run.status === "scheduled_retry" ? run.scheduledRetryAt?.getTime() : undefined);
+  if (dispatchDueAt && !system && now - dispatchDueAt < NATIVE_RESUME_DISPATCH_GRACE_MS)
     return { ...base, state: "working" };
   if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   const providerRecoveryAt = run.providerRecoveryAt?.getTime();
