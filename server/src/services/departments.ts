@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { agentDepartments, agents, departments, type Db } from "@paperclipai/db";
 import {
   AGENT_DEPARTMENT_MAX_MEMBERSHIPS,
@@ -16,11 +16,20 @@ function requireName(input: string): string {
   return name;
 }
 
-// Fast path before the insert. Postgres `lower()` on the unique index is the
-// authority: a race, or a character this comparison folds differently, comes
-// back as a unique violation and is read again.
-function sameName(left: string, right: string): boolean {
-  return left.toLowerCase() === right.toLowerCase();
+// The unique index is `lower(name)`. Read with that same Postgres function.
+// JavaScript toLowerCase() folds Turkish I differently and then the retry
+// misses the row that the index already rejected.
+async function findDepartmentByFoldedName(db: Db, companyId: string, name: string): Promise<Department | null> {
+  const [row] = await db
+    .select({ id: departments.id })
+    .from(departments)
+    .where(and(
+      eq(departments.companyId, companyId),
+      sql`lower(${departments.name}) = lower(${name})`,
+    ))
+    .limit(1);
+  if (!row) return null;
+  return readDepartment(db, companyId, row.id);
 }
 
 async function membershipsByDepartment(db: Db, companyId: string) {
@@ -69,7 +78,7 @@ export function departmentService(db: Db) {
 
     async create(companyId: string, input: string): Promise<{ department: Department; created: boolean }> {
       const name = requireName(input);
-      const existing = (await listDepartments(db, companyId)).find((row) => sameName(row.name, name));
+      const existing = await findDepartmentByFoldedName(db, companyId, name);
       // The chip control sends a typed name. Reuse the department when the
       // folded name already exists so a second click does not fork the catalog.
       if (existing) return { department: existing, created: false };
@@ -82,7 +91,7 @@ export function departmentService(db: Db) {
         return { department: await readDepartment(db, companyId, inserted.id), created: true };
       } catch (error) {
         if (!isUniqueViolation(error, NAME_CONSTRAINT)) throw error;
-        const raced = (await listDepartments(db, companyId)).find((row) => sameName(row.name, name));
+        const raced = await findDepartmentByFoldedName(db, companyId, name);
         if (!raced) throw error;
         return { department: raced, created: false };
       }

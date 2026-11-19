@@ -27,11 +27,10 @@ async function companyIdForDepartment(db: Db, id: string): Promise<string | null
 async function presentDepartments(db: Db, req: Request, companyId: string, rows: Department[]): Promise<Department[]> {
   const agentIds = [...new Set(rows.flatMap((row) => row.agentIds))];
   if (agentIds.length === 0) return rows;
-  const access = authorizationService(db);
-  const decisions = await Promise.all(agentIds.map((agentId) => access.decide({
+  const decisions = await authorizationService(db).decideMany(agentIds.map((agentId) => ({
     actor: req.actor,
     action: "agent:read",
-    resource: { type: "agent", companyId, agentId },
+    resource: { type: "agent" as const, companyId, agentId },
   })));
   const allowed = new Set(agentIds.filter((_, index) => decisions[index]?.allowed));
   return rows.map((row) => ({
