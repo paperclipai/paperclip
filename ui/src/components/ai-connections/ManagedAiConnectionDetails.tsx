@@ -9,7 +9,7 @@ import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
 import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
 import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
-import type { ToolConnection, AiConnectionMetadata } from "@paperclipai/shared";
+import { aiConnectionCatalogSlug, type ToolConnection, type AiConnectionMetadata } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
 import { queryKeys } from "@/lib/queryKeys";
 import { retryTransientOnly } from "@/lib/query-client";
@@ -157,7 +157,7 @@ export function ManagedAiConnectionDetails({
         }
         onReconnect={() =>
           navigate(
-            `/apps/connect?source=${account.provider}&reconnect=${connection.id}&method=ai-${account.method}`,
+            `/apps/connect?source=${aiConnectionCatalogSlug(account.provider)}&reconnect=${connection.id}&method=ai-${account.method}`,
           )
         }
       />

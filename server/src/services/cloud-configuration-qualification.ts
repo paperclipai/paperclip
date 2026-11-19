@@ -10,9 +10,11 @@ import { pluginLoader } from "./plugin-loader.js";
 export async function qualifyCloudConfigurationForCurrentImage(db: Db, options: {
   runtimeEnv?: CloudInstanceEnv;
   expectedPackageEvidenceDigest?: string;
+  bundledManifestsReady?: Promise<unknown>;
 } = {}) {
   const env = options.runtimeEnv ?? process.env;
   if (!isCloudManagedInstance(env)) return null;
+  await options.bundledManifestsReady;
   const service = cloudConfigurationMigrationService(db, { runtimeEnv: env });
   const catalogRoot = resolveBundledCatalogRoot(env);
   let installs: ResolvedBundledPlugin[];

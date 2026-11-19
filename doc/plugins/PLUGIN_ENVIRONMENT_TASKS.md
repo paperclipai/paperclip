@@ -154,6 +154,39 @@ again only on the parked build, and do not add `runner` to the result. Older
 strict Core schemas reject `resumeRelaunchedRunnerVersion` in a description, so
 advertise it only to a Core version that supports it.
 
+A provider can return `resumeIdentityVersion: 1` from `describe`. Use it only
+for a provider that stops a released Runner, so that every `resume` starts the
+Runner again. Core then rotates the session to the claimant run before it calls
+`resume`, and adds `runner: { runId, turnId, itemId }` to `resume`. These are the
+claimant run's identity fields. The other identity fields do not change. With
+this field, the provider must:
+
+- Move the source Runner state (`runner-state.json`) out of the Runner state
+  directory into an archive, so that the Runner creates new state.
+- Start the Runner as the claimant identity with the fresh `bootstrapTicket`.
+- Return `runner: { version, digest }` and `archivedState` (the archived Runner
+  state) on the `resumed` result.
+
+Core accepts the archived state only when it is the source's settled cut: the
+`suspended` lifecycle, or the `ready` lifecycle with an empty outbox, every
+event acknowledged and no command in progress. Core then sends one ordinary
+`run.attach` with no authority hand-off. A retry with the same source, ticket
+and `runner` must return the original result and must not start a second
+Runner. Without `runner` on `resume`, keep the claimant handover above.
+
+Core prepares the claimant run before this `resume`: its `prepare` has
+`priorIdentity` set to the released source, and the released task is not yet
+claimed. Core also takes this path when it recovers a released task after a
+Core restart, if it recorded the build the task was released on and the
+session's process configuration has not changed. A provider must then accept
+that `prepare` without state it kept in memory before the restart.
+
+While a released task can still be resumed, its `status` must report
+`executionStopped: false`, even when its Runner process is stopped. Core
+replaces a reused task whose `status` reports a stop, and then cannot resume
+the released session on it. Report the stop only when the task can no longer
+resume.
+
 The `resume` result has a closed `outcome`:
 
 - `resumed`: the same logical session is exclusively reserved for this claimant,

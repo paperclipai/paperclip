@@ -76,6 +76,18 @@ Runs fall into four tiers, started in this order:
 3. **Recovery** and 4. **old recovery backlog.** System recovery wakes, even on
    a person's tree.
 
+A clean continuation is not system recovery. It is an `issue_continuation_needed`
+run queued because its source run hit the tool-call loop limit
+(`livenessContinuationReason: agent_tool_call_loop`), when the source run
+succeeded, is not itself such a continuation, and the run is not a failure retry
+(no `retryOfRunId`, `retryReason` or `previousRunId`). It takes its task's tier,
+so a person's task that continues its own work stays with that person's work.
+Its start still uses up the recovery share, so recovery-reason starts do not
+increase. Later hops of a loop chain and every failure retry stay in the
+recovery tiers. The provenance check is in `queued-run-provenance.ts`. The
+dispatch query and the place-in-line query both read its
+`QUEUED_RUN_ORDER_CONTEXT_KEYS`, so they see the same context fields.
+
 Within a tier, runs are ordered by readiness (in progress first), then task
 priority, then age, oldest first. A newer run on a person's tree never passes
 another person's equally ranked task that has waited longer.
@@ -187,6 +199,15 @@ The executor receives credential ownership and failure-redaction updates as soon
 as they are available, so later setup failures still clean up acquired resources.
 Busy-account deferral returns explicitly before session/workspace preparation.
 
+During standing-instruction resolution, the gateway's [OpenTelemetry trace](observability.md)
+separates the catalog transaction and its two reads from availability checks
+and tool descriptor construction. The transaction span carries the number of
+catalog entries and connections returned. With or without an OTLP endpoint,
+native run preparation also buffers phase timings of 50 ms or longer, subject
+to the existing per-run limits. At dispatch, the native executor queues these
+timings for the [instance run log](run-log-events.md). The catalog counts are
+trace attributes only.
+
 On Cloud-managed sandbox connections, an ACPX platform check can defer runtime
 preparation to the normal Runner launch. After the selected account completes
 its provider hello probe or live API-key check, that specific deferred check is
@@ -249,9 +270,17 @@ They read only the queued run's runtime mode. Mutation locks retain complete
 wake and run rows, so edits, ordering, interruption, and saved execution inputs
 keep their existing write contract.
 
+Wake-queue also handles automatic steering for a saved task comment when an
+active session goal is working. It suppresses the assignee's comment wake after
+the live runner acknowledges delivery. When the live command cannot deliver the
+comment, the comment follows the route's normal wake rules.
+
 The task composer offers Steer when the native session has an active provider
-turn that accepts steering. If steering is unavailable or unsupported, it offers
-an explicit Interrupt action instead. Interrupt records the board user's intent,
+turn that accepts steering. Wake-queue locks the task and receipt for the click,
+then locks and rereads the run after the provider acknowledges delivery. It
+records the acknowledgement and removes the queued entry in one transaction.
+If steering is unavailable or unsupported, the composer offers Interrupt.
+Interrupt records the board user's intent,
 requests cancellation, and delivers the saved queue through normal admission after
 the previous execution stops. Preparation and cleanup can keep messages queued;
 the action does not bypass Stop confirmation or execution gates.
@@ -313,9 +342,22 @@ and shared execution sets so separate service instances keep the same ownership
 and shutdown barriers. Cleanup single-flight state stays at module scope.
 Keep recovery policy changes separate from retry scheduling and execution changes.
 
-Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
-It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
-concurrency and priority checks, timer admission, and native status wake intents.
+Heartbeat coordinates wakeup dispatch, queued-run claims, daily heartbeat caps,
+concurrency and priority checks, timer admission, and native status wake intents
+in `server/src/services/heartbeat/queue.ts`. The wake-queue module owns the
+company and issue lock, the admission transaction, and the handoff after commit
+for both fresh task runs and wakes arriving behind an active execution. Wake-queue
+checks conversation eligibility before locking the task. The locked task supplies
+the attribution fields used to select the responsible user for a fresh run.
+Wake-queue reads recovery state inside the admission transaction. It checks
+continuation eligibility before allowing a wake to join active work, then
+settles any explicit continuation before allowing a fresh run. Wake-queue
+saves blocked comments in the admission transaction and updates the same receipt
+if its retry is still blocked. Heartbeat uses the same transaction for its other
+eligibility gates and specialized receipt handling. Wake-queue selects eligible
+saved comment receipts in request order and binds them to the new run. Chat authorization and its admission callback run in
+the same transaction. Authorization contention defers the wake and rolls back
+without publishing buffered effects.
 `createHeartbeatQueue` binds these operations without querying or starting work.
 The service supplies lifecycle effects, execution callbacks, worktree gates, and
 its process-wide execution and wakeup promise sets. Forwarding callbacks preserve

@@ -21,6 +21,7 @@ import {
   type ResponsibilityDashboardState,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "./responsibilities-disabled.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
@@ -73,7 +74,7 @@ export function responsibilityDashboardService(db: Db) {
 
   async function assertEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   /** Empty: no active responsibility and none proposed. One query. */

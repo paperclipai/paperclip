@@ -5,6 +5,14 @@ built-in catalog. The operator owns the image and trusts its plugin code.
 This is packaging and activation policy, not a sandbox or entitlement system.
 Ordinary self-hosted images need no catalog and keep their existing behavior.
 
+Built-in Core plugins also refresh stored display descriptions at startup when
+the installed version matches the image. This covers the plugin description,
+environment-driver descriptions, and direct config-property help text. All other
+manifest fields must match, including permissions, entrypoints, schema rules,
+and default values. Pending approval and uninstall states retain their existing
+behavior. This refresh updates metadata without restarting a worker. Volume-free
+qualification still requires the complete stored manifest to match the image.
+
 ## Image layout
 
 Use `distribution/catalog.json` beneath `PAPERCLIP_BUNDLED_PLUGIN_ROOT`

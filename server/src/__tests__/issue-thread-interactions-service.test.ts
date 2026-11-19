@@ -44,6 +44,7 @@ import {
 } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
+import * as productTelemetry from "../services/product-telemetry.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
 
@@ -3235,8 +3236,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: { version: 1, prompt: "Accept this plan?", target },
     }, { agentId });
 
+    const planApproved = vi.spyOn(productTelemetry, "emitPlanApprovedAfterCommit");
     const accepted = await interactionsSvc.acceptInteraction(acceptIssueScope(issueId, companyId, goalId), created.id, {}, { userId: "local-board" });
 
+    expect(planApproved).toHaveBeenCalledExactlyOnceWith({
+      companyId,
+      actor: { userId: "local-board" },
+      startsExecution: true,
+      task: { createdByUserId: null, responsibleUserId: null },
+    });
+    planApproved.mockRestore();
     expect(accepted.interaction).toMatchObject({
       id: created.id,
       status: "accepted",
@@ -3267,6 +3276,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       assigneeAgentId: agentId,
     }).where(eq(issues.id, issueId));
 
+    const planApproved = vi.spyOn(productTelemetry, "emitPlanApprovedAfterCommit");
     const nonPlan = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
       payload: { version: 1, prompt: "Accept this unrelated decision?" },
@@ -3274,6 +3284,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await interactionsSvc.acceptInteraction(acceptIssueScope(issueId, companyId, goalId), nonPlan.id, {}, {
       userId: "local-board",
     });
+    expect(planApproved).not.toHaveBeenCalled();
+    planApproved.mockRestore();
     await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
       .resolves.toBe("planning");
 

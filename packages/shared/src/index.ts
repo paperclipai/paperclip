@@ -373,6 +373,7 @@ export {
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema, reviewedToolsSchema, pluginMethodToolsSchema, PLUGIN_CONNECTOR_TOOL_NAME } from "./validators/app-definition.js";
+export { PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS, PLUGIN_CONNECTOR_TOOL_TIMEOUT_MAX_MS, PLUGIN_CONNECTOR_TOOL_TIMEOUT_MIN_MS } from "./types/app-definition.js";
 export * from "./types/chat-channels.js";
 export * from "./types/chat-github.js";
 export * from "./validators/chat-github.js";
@@ -1559,6 +1560,7 @@ export type {
   ConnectToolAppResult,
   MachineSignInPublicKey,
   MachineSignInStatus,
+  AwsConnectionSetup,
   MachineSignInSetupResult,
   ToolAppMetadataPreflightAttempt,
   ToolAppMetadataPreflightResult,
@@ -2317,6 +2319,14 @@ export {
   updateResponsibilityAreaSchema,
   listResponsibilityAreasQuerySchema,
   responsibilityLinkLookupQuerySchema,
+  fileResponsibilityItemsSchema,
+  unfileResponsibilityItemsSchema,
+  deleteResponsibilityQuerySchema,
+  deleteResponsibilityAreaQuerySchema,
+  RESPONSIBILITY_FILE_ITEM_KINDS,
+  type ResponsibilityFileItemKind,
+  type FileResponsibilityItems,
+  type UnfileResponsibilityItems,
   type CreateResponsibilityArea,
   type UpdateResponsibilityArea,
   type ListResponsibilityAreasQuery,

@@ -1292,6 +1292,29 @@ export interface MachineSignInPublicKey {
 }
 
 /** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
+/** What to configure in AWS for an AWS role connection (`GET /tool-connections/:id/aws-setup`). */
+export type AwsConnectionSetup =
+  /** address_changed: the instance's address differs from the one this connection was saved with. */
+  | { available: false; reason: "no_public_url" | "not_https" | "has_port" | "loopback" | "address_changed" }
+  | {
+      available: true;
+      issuer: string;
+      audience: string;
+      subject: string;
+      providerHost: string;
+      /** The role the template and agent prompt create; named after the connection. */
+      roleName: string;
+      /** The role ARN saved on the connection, once the customer pasted it back. */
+      savedRoleArn: string | null;
+      /** The connection's access level; the template defaults to ReadOnlyAccess only when it is read_only. */
+      accessLevel: "read_only" | "full";
+      trustPolicy: Record<string, unknown>;
+      cloudFormationTemplate: string;
+      cloudFormationConsoleUrl: string;
+      /** True when the company's issuer has a published key, so AWS can validate it. */
+      issuerPublished: boolean;
+    };
+
 export interface MachineSignInStatus {
   connectionId: string;
   method: "paperclip_key" | "client_secret";
@@ -1538,6 +1561,7 @@ export type ToolAccessReasonCode =
   | "deny_default"
   | "deny_company_boundary"
   | "deny_disabled_connection"
+  | "deny_connection_not_installed"
   | "deny_disabled_application"
   | "deny_archived_application"
   | "deny_missing_tool"

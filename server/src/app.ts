@@ -1451,7 +1451,7 @@ export async function createApp(
   // that must not outrun plugin availability — managed sandbox environments
   // (`applyManagedEnvironments`) run before the heartbeat resumes queued
   // runs — can sequence on it. It never rejects.
-  const bundledPluginsStartup = ensureBundledPlugins(
+  const bundledPluginManifestsReady = ensureBundledPlugins(
     bundledPluginInstalls,
     { registry: pluginRegistry, loader, lifecycle, logger },
     // Managed mode reinstalls soft-uninstalled bundles (the control plane
@@ -1459,7 +1459,9 @@ export async function createApp(
     // Disabled plugins never start automatically. Added distribution permissions
     // still enter upgrade_pending so enabling them requires an operator decision.
     { reinstallUninstalled: managedAutoInstallKeys !== null, preservePackagePath: managedAutoInstallKeys !== null },
-  )
+  );
+  app.locals.bundledPluginManifestsReady = trackIdleWork(bundledPluginManifestsReady);
+  const bundledPluginsStartup = bundledPluginManifestsReady
     .then(() => loader.loadAll())
     .then((result) => {
       if (!result) return;
