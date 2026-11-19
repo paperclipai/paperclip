@@ -306,6 +306,59 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     };
   }
 
+  describe("wake target on ownerless issues", () => {
+    async function ownerless(contextSnapshot: Record<string, unknown>) {
+      const fixture = await seedSourceQuestionFixture(contextSnapshot);
+      await db.update(issues).set({ assigneeAgentId: null, assigneeUserId: null }).where(eq(issues.id, fixture.issueId));
+      return fixture;
+    }
+    const assigneeOf = async (issueId: string) =>
+      (await db.select({ a: issues.assigneeAgentId, u: issues.assigneeUserId }).from(issues).where(eq(issues.id, issueId)))[0]!;
+
+    it("adopts the creating agent as assignee when its run is bound to the issue", async () => {
+      const fixture = await ownerless({});
+      await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId },
+        questionCreateInput(fixture.runId), { agentId: fixture.agentId });
+      expect(await assigneeOf(fixture.issueId)).toEqual({ a: fixture.agentId, u: null });
+    });
+
+    it("rejects an ownerless wake_assignee interaction whose source run is not bound to the issue, leaving nothing behind", async () => {
+      const fixture = await ownerless({ issueId: null });
+      await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, fixture.runId));
+      await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+        kind: "suggest_tasks" as const,
+        sourceRunId: fixture.runId,
+        continuationPolicy: "wake_assignee" as const,
+        payload: { version: 1 as const, tasks: [{ clientKey: "t1", title: "Follow up" }] },
+      }, { agentId: fixture.agentId })).rejects.toMatchObject({ details: { code: "interaction_wake_target_unbound" } });
+      expect(await assigneeOf(fixture.issueId)).toEqual({ a: null, u: null });
+      expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    });
+
+    it("does not let an agent claim an ownerless issue through another agent's run", async () => {
+      const fixture = await ownerless({});
+      const intruderId = randomUUID();
+      await db.insert(agents).values(activeCodexAgentRow(intruderId, fixture.companyId, "Intruder", "engineer"));
+      await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+        kind: "suggest_tasks" as const,
+        sourceRunId: fixture.runId,
+        continuationPolicy: "wake_assignee" as const,
+        payload: { version: 1 as const, tasks: [{ clientKey: "t1", title: "Follow up" }] },
+      }, { agentId: intruderId })).rejects.toMatchObject({ details: { code: "interaction_wake_target_unbound" } });
+      expect(await assigneeOf(fixture.issueId)).toEqual({ a: null, u: null });
+    });
+
+    it("leaves an existing assignee untouched", async () => {
+      const fixture = await seedSourceQuestionFixture({});
+      const other = randomUUID();
+      await db.insert(agents).values(activeCodexAgentRow(other, fixture.companyId, "Owner", "engineer"));
+      await db.update(issues).set({ assigneeAgentId: other }).where(eq(issues.id, fixture.issueId));
+      await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId },
+        questionCreateInput(fixture.runId), { agentId: fixture.agentId });
+      expect((await assigneeOf(fixture.issueId)).a).toBe(other);
+    });
+  });
+
   it("persists and answers a canonical-only mixed question form", async () => {
     const { companyId, issueId } = await seedSourceQuestionFixture({});
     const questionSet = {
@@ -744,6 +797,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     let created: Awaited<ReturnType<typeof interactionsSvc.create>>;
     try {
+      await db.update(issues).set({ assigneeAgentId: fixture.agentId }).where(eq(issues.id, fixture.issueId));
       created = await interactionsSvc.create(
         { id: fixture.issueId, companyId: fixture.companyId },
         {
@@ -986,6 +1040,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         }],
       },
     };
+    await db.update(issues).set({ assigneeAgentId: creatorAgentId }).where(eq(issues.id, issueId));
     const created = await interactionsSvc.create(
       { id: issueId, companyId },
       input,
@@ -1085,6 +1140,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       startedAt: new Date("2026-07-25T12:02:00.000Z"),
     });
 
+    await db.update(issues).set({ assigneeAgentId: creatorAgentId }).where(eq(issues.id, issueId));
     const created = await interactionsSvc.create(
       { id: issueId, companyId },
       {
@@ -2005,6 +2061,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     };
 
+    await db.update(issues).set({ assigneeAgentId: agentId }).where(eq(issues.id, issueId));
     const first = await interactionsSvc.create({
       id: issueId,
       companyId,
@@ -2041,6 +2098,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       idempotencyKey: "confirmation:first:older",
       payload: { version: 1, prompt: "Approve the older draft?" },
     }, { agentId: firstAgentId });
+    await db.update(issues).set({ assigneeAgentId: firstAgentId }).where(eq(issues.id, issueId));
     const otherKind = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_checkbox_confirmation",
       idempotencyKey: "checkbox:first",
@@ -2107,6 +2165,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
     });
 
+    await db.update(issues).set({ assigneeAgentId: probingAgentId }).where(eq(issues.id, issueId));
+    await db.update(issues).set({ assigneeAgentId: probingAgentId }).where(eq(issues.id, otherIssueId));
     const older = await interactionsSvc.create(
       { id: issueId, companyId }, question("Older question"), { agentId: probingAgentId },
     );

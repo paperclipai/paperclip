@@ -268,6 +268,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
   it("emits accepted checkbox telemetry with raw role, target, and counts", async () => {
     const { companyId, goalId, issueId } = await seedIssue("Accept checkbox telemetry");
     const creatorAgentId = await seedAgent(companyId, "Backend Engineer");
+    await db.update(issues).set({ assigneeAgentId: creatorAgentId }).where(eq(issues.id, issueId));
 
     const created = await interactionsSvc.create({
       id: issueId,
@@ -371,6 +372,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
   it("emits answered question telemetry with system resolver and legacy restriction signal", async () => {
     const { companyId, issueId } = await seedIssue("Answer question telemetry");
     const creatorAgentId = await seedAgent(companyId, "Wizard");
+    await db.update(issues).set({ assigneeAgentId: creatorAgentId }).where(eq(issues.id, issueId));
 
     const created = await interactionsSvc.create({
       id: issueId,
