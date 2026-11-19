@@ -419,6 +419,23 @@ describe("automatic retained workspace recovery", () => {
     } finally { await restarted.$client.end(); }
   }, 30_000);
 
+  it.each([["remote_workspace_prepare_timeout", 1], ["adapter_failed", 0]] as const)(
+    "continues a recovered preparation that failed with %s only when its bounded retry owns it", async (errorCode, continuations) => {
+    const f = await interruptedRemotePreparation("process_lost");
+    await db.update(heartbeatRuns).set({ errorCode, error: "Could not exclude agent files from task Git staging (reason=timed_out)" })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await recoverRetainedWorkspace(f.input);
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    const listed = await retainedWorkspaceCandidates(db, undefined, false, true);
+    expect(listed.some(row => row.run.id === f.runId)).toBe(continuations === 1);
+    const heartbeat = heartbeatService(db);
+    await Promise.all([heartbeat.resumeRemoteStopComments(await run(f.runId)),
+      heartbeat.resumeRemoteStopComments(await run(f.runId))]);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toHaveLength(continuations);
+    if (continuations) expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+  }, 30_000);
+
   it.each(["restart", "pause", "claimed", "duplicate"] as const)("retains preparation continuation after settlement before enqueue (%s)", async mode => {
     const f = await interruptedRemotePreparation("process_lost"), withheld = await withheldPreparationRetry(f);
     await recoverRetainedWorkspace(f.input);

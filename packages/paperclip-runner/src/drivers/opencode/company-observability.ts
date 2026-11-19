@@ -40,6 +40,35 @@ function outputText(value: unknown): string {
   try { return JSON.stringify(value) ?? ""; } catch { return ""; }
 }
 
+function requestText(value: unknown): { text: string; omittedHistory: boolean } {
+  const fallback = { text: typeof value === "string" ? value : "", omittedHistory: false };
+  let envelope: Record<string, unknown>;
+  try { envelope = record(JSON.parse(fallback.text)); } catch { return fallback; }
+  if (envelope.schema === "paperclip.native-continuation.v1" && typeof envelope.events === "string") {
+    const steered = Array.isArray(envelope.steeredMessages) ? envelope.steeredMessages.filter((text): text is string => typeof text === "string") : [];
+    return { text: [...steered, envelope.events].join("\n\n"), omittedHistory: false };
+  }
+  if (!["paperclip.native-model-envelope.v1", "paperclip.native-model-envelope.v2", "paperclip.native-model-envelope.v3"].includes(String(envelope.schema))) return fallback;
+  const task = record(envelope.task);
+  if (typeof task.prompt !== "string") return fallback;
+  let prompt = task.prompt, omittedHistory = false;
+  if (prompt.startsWith("## Fresh session handoff\n")) {
+    const boundary = prompt.indexOf("\n\n");
+    if (boundary !== -1) {
+      const history = prompt.slice(0, boundary);
+      try {
+        const packet = record(JSON.parse(history.slice(history.lastIndexOf("\n") + 1)));
+        if (packet.schema === "paperclip.native-session-handoff.v1" && Array.isArray(packet.entries)) {
+          prompt = prompt.slice(boundary + 2);
+          omittedHistory = true;
+        }
+      } catch {}
+    }
+  }
+  const identity = [task.identifier, task.title].filter((text): text is string => typeof text === "string").join(" — ");
+  return { text: [identity, prompt].filter(Boolean).join("\n\n"), omittedHistory };
+}
+
 /** A controller opt-in, not OpenCode's raw OTLP. Projected PRP events never include reasoning or raw provider payloads. */
 export function createOpenCodeCompanyObservability(input: {
   environment: NodeJS.ProcessEnv | undefined; model: string; sensitiveValues: readonly string[];
@@ -135,7 +164,12 @@ export function createOpenCodeCompanyObservability(input: {
         current = { runId: event.runId, turnId: event.turnId, traceId: randomBytes(16).toString("hex"),
           root: makeSpan("paperclip.opencode.turn", time, { "gen_ai.operation.name": "invoke_agent", "gen_ai.request.model": input.model }),
           tools: new Map(), usage: new Map(), truncated: false };
-        if (capture("OTEL_LOG_USER_PROMPTS")) current.root.attributes["braintrust.input"] = clean(record(event.payload).text);
+        if (capture("OTEL_LOG_USER_PROMPTS")) {
+          const request = requestText(record(event.payload).text);
+          current.root.attributes["braintrust.input"] = clean(request.text);
+          current.truncated ||= request.omittedHistory;
+          current.root.attributes["paperclip.observability.input.events"] = `/api/heartbeat-runs/${encodeURIComponent(event.runId)}/events`;
+        }
       }
       const turn = current;
       if (!turn || event.runId !== turn.runId || event.turnId !== turn.turnId) return;

@@ -6,6 +6,8 @@ import type { LinkPreview as Preview, LinkPreviewResult, LinkPreviewState, LinkP
 import { useLinkPreviewContext, type LinkPreviewContextValue } from "@/context/LinkPreviewContext";
 import { timeAgo } from "@/lib/timeAgo";
 import { linkPreviewQueryOptions } from "@/lib/link-preview-query";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export const linkPreviewStateLabel: Record<LinkPreviewState, string> = {
   unknown: "Status unknown", open: "Open", merged: "Merged", conflicts: "Merge conflicts", draft: "Draft", closed: "Closed",
@@ -19,7 +21,7 @@ function PreviewCardContents({ target, preview, loading }: { target: LinkPreview
   const state = preview?.state ?? "unknown";
   const Icon = linkPreviewStateIcon[state] ?? linkPreviewStateIcon.unknown;
   const updated = preview?.updatedAt && Number.isFinite(Date.parse(preview.updatedAt)) ? preview.updatedAt : null;
-  return <div className="flex min-w-0 flex-col gap-3" data-link-preview-state={state}>
+  return <div className={cn("flex min-w-0 flex-col gap-3", ANALYTICS_MASK_CLASS)} data-link-preview-state={state}>
     <div className="flex items-center gap-2 text-xs text-muted-foreground">
       <Icon aria-hidden="true" className="link-preview-status size-4 shrink-0" data-state={state} />
       <span className="min-w-0 break-all font-mono">{target.label}</span>

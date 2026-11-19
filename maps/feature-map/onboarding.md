@@ -4,7 +4,7 @@ navigation: {"section":"Getting started and access","sectionOrder":10,"order":10
 
 # Onboarding and first work
 
-An operator can start an instance, create a company, configure its first agent, and reach a real first task. Instance setup and company onboarding are separate steps.
+An operator can start an instance, create a company, configure its first agent, and start in chat. Execution work begins after an accepted task proposal or an explicit task-creation request. Instance setup and company onboarding are separate steps.
 
 Feature ID: `onboarding`.
 
@@ -17,7 +17,7 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 - `instance`: `onboarding/instance` — choose local instance configuration and start the server.
 - `company`: `onboarding/company` — create a company with its identity and initial agent.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
-- `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+- `first-task`: `onboarding/first-task` — leave setup in chat, clarify the goal and exit criteria, and accept or explicitly request the first task.
 
 - `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
 
@@ -64,8 +64,13 @@ Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cov
 
 Manual: Create a disposable company and first agent. Leave midway, reopen the
 company's onboarding route, and finish; drafts save automatically. Follow the
-created first task, verify the selected agent and company, and inspect its output
-or explicit authentication gate. Reload both company and task.
+agent chat, verify the selected agent and company, and watch the live welcome.
+No execution tasks or projects should exist yet. Request an interview or describe
+a goal and clear exit criteria, then accept the suggested task. Verify one
+standalone task is created. Reload chat and ensure the welcome is not repeated.
+Also verify an explicit task-creation request uses the normal handoff directly.
+See [chat-first onboarding](../../doc/onboarding-chat.md). Legacy first-task asset
+evaluations cover existing task-based onboarding, not this chat landing.
 
 For Codex or Claude, choose the harness to prove automatic first-agent runner
 selection. On a qualified target it saves Paperclip Runner. The wizard has no

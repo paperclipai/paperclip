@@ -756,6 +756,7 @@ jobs:
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Runner support suite
+      PAPERCLIP_CI_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
     # The paid Runner workflows depend on this suite: workflow security
     # policy, evidence oracles, cost receipts and controller recovery. It

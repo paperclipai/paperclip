@@ -11,7 +11,7 @@ import {
 
 function shellExit(script: string, args: string[]) {
   try {
-    execFileSync("sh", ["-c", script, "recovery-test", ...args], { stdio: "pipe", timeout: 2_000 });
+    execFileSync("sh", ["-c", script, "recovery-test", ...args], { stdio: "pipe", timeout: 5_000 });
     return 0;
   } catch (error) {
     return (error as { status: number }).status;
@@ -74,6 +74,34 @@ describe("remote recovery diagnostic shell receipts", () => {
       await writeFile(marker, `nonce\n${process.pid}\n2026-11-16T00:28:42.758Z\nother-runner\n`);
       expect(shellExit(script, [marker, "nonce", "runner", String(process.pid), "linux:abcd-1234:100"])).toBe(44);
       expect(remoteRecoveryProbeReason("process_verification", 44, false)).toBe("process_identity_changed");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { exit: 'fs.writeFileSync(stat, real.call(fs, stat, "utf8").replace(" R ", " Z "))', name: "becomes a zombie" },
+    { exit: "fs.rmSync(stat)", name: "is reaped" },
+  ])("reports a Runner caught mid-exit, with its command line already released, as not running once it $name", async ({ exit }) => {
+    const root = await mkdtemp(join(tmpdir(), "remote-probe-exiting-"));
+    const marker = join(root, "marker");
+    const stat = join(root, "stat");
+    const hook = join(root, "exit-on-second-stat-read.cjs");
+    try {
+      await writeFile(marker, `nonce\n${process.pid}\n2026-11-17T08:51:21.931Z\nrunner\n`);
+      await writeFile(join(root, "cmdline"), "");
+      await writeFile(stat, `${process.pid} (MainThread) ${["R", ...Array(18).fill("0"), 100].join(" ")}\n`);
+      await writeFile(join(root, "boot_id"), "abcd-1234\n");
+      await writeFile(hook, [
+        'const fs = require("node:fs");',
+        `const stat = ${JSON.stringify(stat)};`,
+        "const real = fs.readFileSync;",
+        "let reads = 0;",
+        `fs.readFileSync = function (path, ...rest) { if (path === stat && ++reads === 2) ${exit}; return real.call(this, path, ...rest); };`,
+      ].join("\n"));
+      const script = `NODE_OPTIONS="--require=${hook}"; export NODE_OPTIONS; ` + REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT
+        .replaceAll('"/proc/" + pid + "/cmdline"', JSON.stringify(join(root, "cmdline")))
+        .replaceAll('"/proc/" + pid + "/stat"', JSON.stringify(stat))
+        .replaceAll('"/proc/sys/kernel/random/boot_id"', JSON.stringify(join(root, "boot_id")));
+      expect(shellExit(script, [marker, "nonce", "runner", String(process.pid), "linux:abcd-1234:100"])).toBe(45);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

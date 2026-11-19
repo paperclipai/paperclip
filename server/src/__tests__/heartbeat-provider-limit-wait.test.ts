@@ -11,6 +11,23 @@ import { createProviderLimitWait } from "../services/heartbeat/provider-limit-wa
 import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
+const providerLimitCancellation = vi.hoisted(() => ({ after: null as null | (() => Promise<unknown>) }));
+vi.mock("../services/heartbeat/provider-limit-wait.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/heartbeat/provider-limit-wait.js")>();
+  return {
+    ...actual,
+    createProviderLimitWait: (...[database, deps]: Parameters<typeof actual.createProviderLimitWait>) =>
+      actual.createProviderLimitWait(database, {
+        ...deps,
+        setRunStatusIfRunning: async (...args) => {
+          const result = await deps.setRunStatusIfRunning(...args);
+          await providerLimitCancellation.after?.();
+          return result;
+        },
+      }),
+  };
+});
+
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
 if (!recoveryPostgresSupport.supported) console.warn(`Skipping provider limit wait tests: ${recoveryPostgresSupport.reason}`);
 
@@ -130,6 +147,25 @@ describePostgres("heartbeat provider usage limit wait", () => {
     expect(dispatched.has(retry!.id)).toBe(true);
     const [resumed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retry!.id));
     expect(resumed.status).toBe("succeeded");
+  }, 60_000);
+
+  it("keeps the task lock for its retry when recovery sweeps the task right after the cancellation", async () => {
+    const f = await seed([rateLimited(16)]);
+    const sweeps: Array<Awaited<ReturnType<typeof heartbeat.sweepStaleIssueLocks>>> = [];
+    providerLimitCancellation.after = async () => {
+      sweeps.push(await heartbeat.sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId }));
+    };
+    try {
+      const finished = await wake(f);
+      expect(finished).toMatchObject({ status: "cancelled", errorCode: "provider_limit_wait" });
+      expect(sweeps).toEqual([expect.objectContaining({ cleared: 0 })]);
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, finished.id));
+      expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait" });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(issue.executionRunId).toBe(retry.id);
+    } finally {
+      providerLimitCancellation.after = null;
+    }
   }, 60_000);
 
   it("releases the task when its retry cannot be scheduled, even if diagnostics fail", async () => {

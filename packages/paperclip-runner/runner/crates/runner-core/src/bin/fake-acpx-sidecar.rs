@@ -935,6 +935,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "permissions-wrong-ack"
             | "resolutions"
             | "resolutions-error-redaction"
+            | "resolutions-error-detail"
             | "resolutions-projected-id"
             | "resolutions-wrong-ack"
             | "resolutions-snapshot-wrong-session"
@@ -1614,6 +1615,15 @@ fn bootstrap_success(
                     && params.pointer("/error/message").and_then(Value::as_str)
                         == Some("Paperclip semantic operation failed")
                     && !params.to_string().contains("violet-internal-diagnostic-4821")
+            } else if mode == "resolutions-error-detail" {
+                params.get("callId").and_then(Value::as_str) == Some("call-1")
+                    && params.get("result").is_none()
+                    && params.pointer("/error/message").and_then(Value::as_str)
+                        == Some(
+                            "Paperclip semantic operation failed: invalid input: \
+                             payload.prompt: too_big, string max 1000",
+                        )
+                    && !params.to_string().contains("violet-prompt-value-4821")
             } else {
                 mode != "resolutions-wrong-ack"
             }
