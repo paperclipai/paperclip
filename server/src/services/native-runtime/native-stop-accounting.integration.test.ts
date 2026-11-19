@@ -29,7 +29,7 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
-import { createCostAccountingReconciler } from "../run-cost-accounting.js";
+import { ACCOUNTING_CLOSURE_TIMEOUT_MS, createCostAccountingReconciler, readCostAccountingWork } from "../run-cost-accounting.js";
 import { registerCostAccountingWork } from "../budget-enforcement-worker.js";
 import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 
@@ -118,9 +118,21 @@ describe("native Stop accounting after the last usage receipt", () => {
         .toMatchObject({ phase: "terminal_failure", failureCode: "native_retry_cancelled" });
       await expect.poll(() => reconcile.mock.calls.length).toBeGreaterThan(beforeClosure);
       if (!complete) {
-        expect((await readRun()).costAccountingPending).toBe(true);
+        const waiting = await readRun();
+        expect(waiting).toMatchObject({ costAccountingPending: true, usageJson: { accountingReceiptReady: false } });
+        expect(waiting.finishedAt).not.toBeNull();
+        const closureAt = waiting.finishedAt!.getTime() + ACCOUNTING_CLOSURE_TIMEOUT_MS + 1;
+        expect(await readCostAccountingWork(db)).toEqual({ pending: false, nextRunAt: closureAt });
+        await expect.poll(() => coordinator.nextWakeAt()).toBe(closureAt);
         expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId))).toHaveLength(0);
-        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(closureAt).toBeGreaterThan(Date.now());
+        const debug = db.$client.options.debug, queries: string[] = [];
+        db.$client.options.debug = (_connection, query) => { queries.push(query); };
+        try {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          expect(queries).toEqual([]);
+          expect(coordinator.nextWakeAt()).toBe(closureAt);
+        } finally { db.$client.options.debug = debug; }
         await usage.capture({ complete: true, provider: "openai", model: "test-model", billingType: "metered_api",
           usageBasis: "per_run", usage: { inputTokens: 120, outputTokens: 10 }, costUsd: 0.25 });
       }
@@ -132,7 +144,7 @@ describe("native Stop accounting after the last usage receipt", () => {
       expect(charges).toHaveLength(1);
       expect(charges[0].costCents).toBe(25);
       expect(provider.execute).toHaveBeenCalledOnce();
-      expect(coordinator.nextWakeAt()).toBeNull();
+      await expect.poll(() => coordinator.nextWakeAt(), { timeout: 1500 }).toBeNull();
     } finally { worker.stop(); await coordinator.stop(); }
   }, 30_000);
   it.each([{ actorType: "user", entry: "dispatch" }, { actorType: "system", entry: "dispatch" }, { actorType: "user", entry: "heartbeat" }] as const)("recovers the combined Stop fence through existing-session cleanup without new paid work ($actorType/$entry)", async ({ actorType, entry }) => {

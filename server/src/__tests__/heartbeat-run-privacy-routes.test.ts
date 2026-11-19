@@ -367,6 +367,26 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(recovered.body.map((run: { id: string }) => run.id)).toEqual([timeoutId]);
   });
 
+  it("resolves a long submitted request through paginated run events only for authorized readers", async () => {
+    const fixture = await seedFixture();
+    const text = JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt: `${"earlier context ".repeat(1500)}current request after 8 KiB` } });
+    await db.insert(heartbeatRunEvents).values({
+      companyId: fixture.companyId, runId: fixture.privateRunId, agentId: fixture.ownerAgentId,
+      seq: 2, eventType: "turn.submitted", stream: "system",
+      payload: { prpEvent: { turnId: "turn-reference", eventType: "turn.submitted", payload: { text } } },
+    });
+    const reference = `/api/heartbeat-runs/${fixture.privateRunId}/events`;
+    for (const agentId of [fixture.ownerAgentId, fixture.grantedAgentId]) {
+      const app = createApp(fixture.companyId, agentId);
+      const first = await request(app).get(`${reference}?limit=1`).expect(200);
+      expect(first.body).toHaveLength(1);
+      const next = await request(app).get(`${reference}?afterSeq=${first.body[0].seq}&limit=1`).expect(200);
+      expect(next.body[0].payload.prpEvent).toMatchObject({ turnId: "turn-reference", payload: { text } });
+    }
+    await request(createApp(fixture.companyId, fixture.otherAgentId)).get(reference).expect(404);
+    await request(createApp(randomUUID(), fixture.otherAgentId)).get(reference).expect(404);
+  });
+
   it("returns full private-run content to the owner and an explicitly granted agent", async () => {
     const fixture = await seedFixture();
 
@@ -500,6 +520,40 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId))).toEqual(recorded);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId)))[0])
       .toMatchObject({ status: "failed", resultJson: null });
+  });
+
+  it("Stop on a task waiting in line cancels its run and wake, frees the task, and logs both changes", async () => {
+    const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "queued", startedAt: null, finishedAt: null, resultJson: null,
+      nextEventSeq: 100 })
+      .where(eq(heartbeatRuns.id, fixture.privateRunId));
+    await db.update(issues).set({ executionRunId: fixture.privateRunId, executionLockedAt: new Date() })
+      .where(eq(issues.id, fixture.issueId));
+
+    const denied = await request(createBoardApp(fixture.companyId, fixture.otherUserId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({});
+    expect(denied.status).toBe(404);
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0]?.status).toBe("in_progress");
+
+    // Correlated Stop is for native runs only. It must leave a waiting legacy
+    // run and its task untouched; task Stop sends the plain request below.
+    const correlated = await request(createBoardApp(fixture.companyId, fixture.ownerUserId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({ cancellationRequestId: randomUUID() });
+    expect(correlated.status).toBe(409);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId)))[0]?.status).toBe("queued");
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0]?.status).toBe("in_progress");
+
+    const stopped = await request(createBoardApp(fixture.companyId, fixture.ownerUserId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({});
+    expect(stopped.status).toBe(200);
+    expect(stopped.body.status).toBe("cancelled");
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0])
+      .toMatchObject({ status: "todo", executionRunId: null });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
+    expect(activity.map((row) => row.action)).toEqual(expect.arrayContaining(["heartbeat.cancelled", "issue.updated"]));
+    expect(activity.find((row) => row.action === "issue.updated")).toMatchObject({ actorType: "user",
+      actorId: fixture.ownerUserId, entityId: fixture.issueId, details: expect.objectContaining({ status: "todo",
+        previousStatus: "in_progress", reason: "stopped_while_waiting" }) });
   });
 
   it("conceals private runs from unauthorized cancellation and watchdog mutations", async () => {

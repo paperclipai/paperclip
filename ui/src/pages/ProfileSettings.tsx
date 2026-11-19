@@ -1,14 +1,16 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
 import { assetsApi } from "@/api/assets";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
+import { ProductAnalyticsSetting } from "@/components/ProductAnalyticsSetting";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -28,14 +30,18 @@ export function ProfileSettings() {
   const queryClient = useQueryClient();
   const avatarInputId = useId();
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
-  const [name, setName] = useState("");
-  const [image, setImage] = useState("");
+  // Unedited fields show the session's saved values from the first frame; a
+  // restored session must not render an empty name until an effect fills it.
+  const [nameDraft, setName] = useState<string | null>(null);
+  const [imageDraft, setImage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
   const sessionView = useQueryView(sessionQuery);
+  const name = nameDraft ?? sessionQuery.data?.user.name ?? "";
+  const image = imageDraft ?? sessionQuery.data?.user.image ?? "";
 
   useEffect(() => {
     setBreadcrumbs([
@@ -45,10 +51,8 @@ export function ProfileSettings() {
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    const session = sessionQuery.data;
-    if (!session) return;
-    setName(session.user.name ?? "");
-    setImage(session.user.image ?? "");
+    setName(null);
+    setImage(null);
   }, [sessionQuery.data]);
 
   function syncSessionProfile(profile: CurrentUserProfile) {
@@ -64,8 +68,13 @@ export function ProfileSettings() {
     });
   }
 
-  async function persistProfile(input: UpdateCurrentUserProfile) {
+  // A restored session can show one account while the cookie belongs to
+  // another, and the server saves for the cookie's user. Account-bound
+  // mutations wait for a verified session and abort if the user changed.
+  async function persistProfile(input: UpdateCurrentUserProfile, assertCurrentAccount: () => void) {
+    assertCurrentAccount();
     const profile = await authApi.updateProfile(input);
+    assertCurrentAccount();
     syncSessionProfile(profile);
     return profile;
   }
@@ -74,8 +83,8 @@ export function ProfileSettings() {
     return name.trim() || sessionQuery.data?.user.name || "Board";
   }
 
-  const updateMutation = useMutation({
-    mutationFn: (input: UpdateCurrentUserProfile) => persistProfile(input),
+  const updateMutation = useAccountBoundMutation({
+    mutationFn: (input: UpdateCurrentUserProfile, { assertCurrentAccount }) => persistProfile(input, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");
@@ -86,8 +95,8 @@ export function ProfileSettings() {
     },
   });
 
-  const uploadAvatarMutation = useMutation({
-    mutationFn: async (file: File) => {
+  const uploadAvatarMutation = useAccountBoundMutation({
+    mutationFn: async (file: File, { assertCurrentAccount }) => {
       if (!selectedCompanyId) {
         throw new Error("Select an organization before uploading a profile avatar.");
       }
@@ -97,7 +106,7 @@ export function ProfileSettings() {
         file,
         `profiles/${sessionQuery.data?.user.id ?? "board-user"}`,
       );
-      return persistProfile({ name: resolveProfileName(), image: asset.contentPath });
+      return persistProfile({ name: resolveProfileName(), image: asset.contentPath }, assertCurrentAccount);
     },
     onSuccess: (profile) => {
       setActionError(null);
@@ -109,8 +118,8 @@ export function ProfileSettings() {
     },
   });
 
-  const removeAvatarMutation = useMutation({
-    mutationFn: () => persistProfile({ name: resolveProfileName(), image: null }),
+  const removeAvatarMutation = useAccountBoundMutation({
+    mutationFn: (_input, { assertCurrentAccount }) => persistProfile({ name: resolveProfileName(), image: null }, assertCurrentAccount),
     onSuccess: (profile) => {
       setActionError(null);
       setName(profile.name ?? "");
@@ -281,6 +290,8 @@ export function ProfileSettings() {
         </form>
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
+
+        <ProductAnalyticsSetting config={sessionQuery.data.browserAnalytics} />
       </section>
     </div>
   );

@@ -1,4 +1,7 @@
 import { pluginIdleManifestGeneration } from "../services/plugin-idle-catalog.js";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
@@ -47,6 +50,51 @@ describe("plugin manager idle receipts", () => {
       expect(replacement.catalogGeneration).not.toBe(first.catalogGeneration);
       expect(replacement.catalog?.[0].manifestGeneration).not.toBe(first.catalog?.[0].manifestGeneration);
     } finally { stopTaskDrain(); await manager.stopAll(); }
+  });
+
+  it("drains a supported worker and persists its next useful operation under the same manifest", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-plugin-idle-"));
+    const stateFile = path.join(directory, "writes.json");
+    const writes: unknown[] = [];
+    const manager = createPluginWorkerManager();
+    try {
+      const handle = await manager.startWorker("test.idle", {
+        entrypointPath: fileURLToPath(new URL("./fixtures/plugin-worker-idle.cjs", import.meta.url)),
+        execArgv: ["--import", createRequire(import.meta.url).resolve("tsx")],
+        manifest, config: {}, instanceInfo: { instanceId: "fixture", hostVersion: "1.0.0" }, apiVersion: 1,
+        env: { IDLE_TEST_WRITE: "1" },
+        hostHandlers: {
+          "events.subscribe": async () => undefined,
+          "state.set": async (params) => {
+            writes.push(params);
+            await fs.writeFile(stateFile, JSON.stringify(writes));
+          },
+        },
+      });
+      expect(await manager.call("test.idle", "health", {})).toMatchObject({ status: "ok" });
+      const firstWrites = JSON.parse(await fs.readFile(stateFile, "utf8"));
+      expect(firstWrites).toHaveLength(1);
+      expect(firstWrites[0]).toMatchObject({ scopeKind: "instance", stateKey: "fixture", value: { value: 1 } });
+      const first = await manager.inspectIdleSleep!(hold());
+      expect(first.backgroundWork).toBe("none");
+      expect(first.catalog).toEqual([{ pluginId: "test.idle", manifestGeneration: pluginIdleManifestGeneration(manifest) }]);
+      await expect(manager.call("test.idle", "health", {})).rejects.toThrow("held");
+      expect(JSON.parse(await fs.readFile(stateFile, "utf8"))).toEqual(firstWrites);
+      stopTaskDrain();
+      manager.releaseIdleSleep!();
+      expect(await manager.call("test.idle", "health", {})).toMatchObject({ status: "ok" });
+      expect(manager.getWorker("test.idle")).toBe(handle);
+      const resumedWrites = JSON.parse(await fs.readFile(stateFile, "utf8"));
+      expect(resumedWrites).toEqual([firstWrites[0], firstWrites[0]]);
+      const resumed = await manager.inspectIdleSleep!(hold());
+      expect(resumed.backgroundWork).toBe("none");
+      expect(resumed.catalog).toEqual(first.catalog);
+      expect(resumed.catalogGeneration).toBe(first.catalogGeneration);
+    } finally {
+      stopTaskDrain();
+      await manager.stopAll();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("retains timed-out worker operations and admits work after the owned hold releases", async () => {

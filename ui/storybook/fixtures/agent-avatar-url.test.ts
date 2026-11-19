@@ -10,6 +10,7 @@ describe("packaged Storybook avatar URLs", () => {
     expect(new URL(agentAvatarUrl(appearance, 24, 2), "https://example.com/branches/personas/builds/123/iframe.html").href)
       .toBe("https://example.com/branches/personas/builds/123/agent-avatar-images/cap-v1/bubblegum-sky/rest-24-2.png");
     expect(agentAvatarUrl(appearance)).toBe("./agent-avatar-images/cap-v1/bubblegum-sky/rest-512-1.png");
+    expect(agentAvatarUrl(appearance, 256, 2, "rest", false, "transparent", "portrait")).toBe("./agent-avatar-images/cap-v1/bubblegum-sky/rest-256-2-portrait-v1.png");
   });
 
   it("gives every finite preset a distinct filename, retaining logical size separately from density", () => {

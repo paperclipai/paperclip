@@ -2,7 +2,7 @@ import { applyPendingMigrations } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createGrokRoutineDispatcher } from "../services/grok-bot/dispatcher.js";
 import { grokRoutineService } from "../services/grok-bot/routine.js";
-import { assertNoExternalOverlap } from "../modules/external-agents/admission.js";
+import { assertNoExternalOverlap, withExternalAdmissionGuard } from "../modules/external-agents/admission.js";
 import { accessService } from "../services/access.js";
 import { Readable } from "node:stream";
 import { createPublicMcpTransfers } from "../services/public-mcp/file-transfers.js";
@@ -90,7 +90,7 @@ describe("durable Dot Runner integration", () => {
   it("requires each persisted prerequisite for pairing and new work without relying on the retired environment flag", async () => {
     const settings = instanceSettingsService(db);
     const broker = dotRunnerBroker(db);
-    for (const key of ["enableOpenAiDot", "enablePublicMcp"] as const) {
+    for (const key of ["enableOpenAiDot"] as const) {
       await settings.updateExperimental({ [key]: false });
       try {
         vi.stubEnv("PAPERCLIP_ENABLE_OPENAI_DOT", "1");
@@ -718,6 +718,48 @@ describe("durable Dot Runner integration", () => {
     await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
   }, 30000);
 
+  it.each(["accept", "finish"] as const)("settles %s under the admission guard without waiting on a run that admission holds", async action => {
+    const f = await fixture();
+    const { run, assignment } = await offeredWork(f);
+    const requestId = randomUUID();
+    await db.insert(dotRunnerOperations).values({ companyId: f.company.id, assignmentId: assignment.id, requestId,
+      digest: "test", command: { action }, status: "admitted" });
+    let release!: () => void;
+    let held!: () => void;
+    const locked = new Promise<void>(resolve => { held = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    // Execution admission locks the run before it takes the guard. A settle
+    // that holds the guard must not then need that run row, or the two
+    // transactions wait on each other.
+    const admission = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)).for("update");
+      held(); await gate;
+      await withExternalAdmissionGuard(tx, f.company.id, f.agent.id, async () => {});
+    });
+    await locked;
+    const port = f.broker.port({ binding: { companyId: f.company.id, agentId: f.agent.id, runId: run.id }, provider: { binding: f.snapshot } });
+    // Capture each outcome now so a failure surfaces as itself, not as the wait timeout.
+    let settled = false;
+    let settleError: unknown;
+    const settle = port.settle({ sourceEventId: randomUUID(), payload: { requestId, binding: { ...f.snapshot, runId: run.id,
+      normalizedSessionId: assignment.normalizedSessionId, turnId: assignment.turnId, assignmentRevision: assignment.revision },
+      outcome: { status: action === "accept" ? "accepted" : "completed" } } } as Parameters<typeof port.settle>[0])
+      .then(() => { settled = true; }, error => { settleError = error; });
+    const admitted = admission.then(() => undefined, error => error as unknown);
+    try {
+      await vi.waitFor(() => { if (settleError) throw settleError; expect(settled).toBe(true); }, { timeout: 5000, interval: 20 });
+    } finally {
+      release();
+      await settle;
+      const admissionError = await admitted;
+      if (settleError) throw settleError;
+      if (admissionError) throw admissionError;
+    }
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id)))[0]?.status)
+      .toBe(action === "accept" ? "accepted" : "settled");
+    await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
+  }, 30000);
+
   it.each(["succeeded", "failed", "cancelled", "timed_out"] as const)("fences a stranded %s assignment before new admission without claiming external stop", async status => {
     const f = await fixture();
     const { run, assignment } = await offeredWork(f);
@@ -951,7 +993,7 @@ describe("durable Dot Runner integration", () => {
       await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, run!.id));
       const server = createServer(); await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
       const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing test server");
-      setupRunnerPrpWebSocketServer(server, { apiUrl: `http://127.0.0.1:${address.port}` });
+      setupRunnerPrpWebSocketServer(server);
       const observed: Array<Record<string, any>> = [];
       const appCall = vi.fn().mockResolvedValue({ status: "completed", result: { content: [{ type: "text", text: "synthetic gateway result" }] } });
       const gatewayTools = [{ name: "fixture:read_status", displayName: "Read fixture status", description: "Read a synthetic app", parametersSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "read" }];

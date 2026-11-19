@@ -39,7 +39,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     process.env.PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED = "true";
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else testDb = await startEmbeddedPostgresTestDatabase('paperclip-skill-sources-');
-    db = createDb(externalUrl ?? testDb.connectionString);
+    db = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 4 });
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-source-test-')); process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Skills', issuePrefix: 'SKL' });
   }, 30000);

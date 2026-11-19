@@ -58,6 +58,11 @@ describe("isInteractionAudienceDenial", () => {
 });
 
 describe("describeInteractionResolutionFailure", () => {
+  it("does not tell a person to retry a stale tool approval", () => {
+    const message = "The connected account, credentials, or permissions changed. A new review is required.";
+    expect(describeInteractionResolutionFailure(denial(409, "approved_tool_target_changed", message)))
+      .toMatchObject({ kind: "settled", message });
+  });
   it("keeps the server denial reason and names who can respond", () => {
     const failure = describeInteractionResolutionFailure(
       denial(403, "interaction_human_only", "This issue-thread interaction is human-only"),

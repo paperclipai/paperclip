@@ -60,6 +60,32 @@ it("keeps an unmigrated fixture database alive when its serving client dies", as
   }
 }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+it("finishes cleanup when the database already stopped because a group signal reached it", async () => {
+  const root = await createRunnerE2ETemporaryRoot();
+  const configPath = path.join(root, "instance", "config.json");
+  let database: Awaited<ReturnType<typeof prepareControllerDatabase>> | undefined;
+  try {
+    await (await prepareRunnerE2EServerConfig({ temporaryRoot: root, configPath, serverPort: 3100 }))!.close();
+    const dataDirectory = JSON.parse(await readFile(configPath, "utf8")).database.embeddedPostgresDataDir as string;
+    database = await prepareControllerDatabase(configPath, root);
+    const pid = Number((await readFile(path.join(dataDirectory, "postmaster.pid"), "utf8")).split("\n")[0]);
+    process.kill(pid, "SIGINT");
+    const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const deadline = Date.now() + 30_000;
+    while (alive() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    expect(alive()).toBe(false);
+    const outcome = await Promise.race([
+      database.cleanup().then(() => "cleaned"),
+      new Promise(resolve => setTimeout(resolve, 10_000, "hung")),
+    ]);
+    database = undefined;
+    expect(outcome).toBe("cleaned");
+  } finally {
+    await database?.cleanup();
+    await rm(root, { recursive: true, force: true });
+  }
+}, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
 it("rejects database directories outside the fixture and leaves external databases alone", async () => {
   const root = await createRunnerE2ETemporaryRoot();
   const configPath = path.join(root, "config.json");

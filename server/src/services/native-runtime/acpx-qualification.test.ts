@@ -88,6 +88,52 @@ describe("host ACPX qualification admission", () => {
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig }))
       .toMatchObject({ acpxAgent, model: "explicit-new-model" });
   });
+  it("admits Fable 5.2 because the bundled Agent SDK ships Claude Code 2.1.328", () => {
+    expect(QUALIFIED_ACPX_PROFILES.claude.agentRuntimeVersion).toBe("0.3.328");
+    for (const model of ["claude-fable-5-2", "claude-fable-5-2[1m]", "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
+      expect(resolvePaperclipRunnerProviderProfile({ provider: "acpx", acpxAgent: "claude", model }))
+        .toMatchObject({ acpxAgent: "claude", model });
+    }
+  });
+  it("admits GPT-6.2 because the qualified ACPX runtime is Codex 0.170.0", () => {
+    expect(QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion).toBe("0.170.0");
+    for (const model of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra"]) {
+      expect(resolvePaperclipRunnerProviderProfile({ provider: "acpx", acpxAgent: "codex", model }))
+        .toMatchObject({ acpxAgent: "codex", model });
+    }
+  });
+  it("names the CLI gap when a bundled runtime predates the model's minimum", async () => {
+    vi.resetModules();
+    vi.doMock("../../vendor/paperclip-runner/index.js", async (importOriginal) => {
+      const original = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
+      const olderRuntime = { claude: "0.3.286", codex: "0.160.0" } as Record<string, string>;
+      return {
+        ...original,
+        resolveQualifiedAcpxProfile: (agent: string, model: string) => {
+          const profile = original.resolveQualifiedAcpxProfile(agent as never, model);
+          return olderRuntime[agent] ? { ...profile, agentRuntimeVersion: olderRuntime[agent] } : profile;
+        },
+      };
+    });
+    try {
+      const { resolvePaperclipRunnerProviderProfile: resolveWithOlderRuntime } = await import("./provider-profile.js");
+      expect(() => resolveWithOlderRuntime({ provider: "acpx", acpxAgent: "claude", model: "claude-fable-5-2" }))
+        .toThrow(expect.objectContaining({
+          code: "paperclip_runner_claude_cli_version_incompatible",
+          message: expect.stringContaining("requires Claude Code 2.1.321 or newer; this Paperclip Runner bundles Claude Code 2.1.286"),
+        }));
+      expect(() => resolveWithOlderRuntime({ provider: "acpx", acpxAgent: "codex", model: "gpt-6.2-sol" }))
+        .toThrow(expect.objectContaining({
+          code: "paperclip_runner_codex_cli_version_incompatible",
+          message: expect.stringContaining("requires Codex 0.169.1 or newer; this Paperclip Runner bundles Codex 0.160.0"),
+        }));
+      expect(resolveWithOlderRuntime({ provider: "acpx", acpxAgent: "codex", model: "gpt-6.1-sol" }))
+        .toMatchObject({ acpxAgent: "codex", model: "gpt-6.1-sol" });
+    } finally {
+      vi.doUnmock("../../vendor/paperclip-runner/index.js");
+      vi.resetModules();
+    }
+  });
   it("requires an explicit Codex ACP selection", () => {
     for (const model of [undefined, "", " "]) {
       expect(() => resolvePaperclipRunnerProviderProfile({ provider: "acpx", acpxAgent: "codex", model }))

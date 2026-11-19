@@ -98,7 +98,8 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
         `#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc, char **argv) { FILE *log = fopen(${JSON.stringify(providerCalls)}, "a"); if (!log) return 126; fputs("process-start\\n", log); fclose(log); char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(providerNode)}; args[1] = ${JSON.stringify(script)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
       await chmod(opencode, 0o755);
     }
-    const proxy = resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs");
+    const proxy = join(filesystem, "opencode-app-server-proxy.cjs");
+    if (provider === "opencode") await copyFile(resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs"), proxy);
     const identity = { runnerInstanceId: native.runnerInstanceId, environmentLeaseId: runId, runId,
       normalizedSessionId: native.normalizedSessionId, turnId: `turn-${runId}`, itemId: `item-${runId}` };
     const assertSealedSkills = async () => {
@@ -128,7 +129,6 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
     const address = portProbe.address();
     if (!address || typeof address === "string") throw new Error("Missing fixture port");
     const runnerPort = address.port;
-    await new Promise<void>(done => portProbe.close(() => done()));
     let healthy = false, acquisitions = 0, previewUrl = "";
     const preview = createHttpsServer({ key: await readFile(key), cert: await readFile(certificate) }, (request, response) => {
       if (request.url !== "/preview") { response.writeHead(404).end(); return; }
@@ -159,9 +159,12 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
       });
     });
     preview.on("tlsClientError", error => { diagnostics.push(`fixture TLS: ${error.message}`); });
-    await new Promise<void>(done => preview.listen(0, "127.0.0.1", done));
+    try {
+      await new Promise<void>(done => preview.listen(0, "127.0.0.1", done));
+    } finally { await new Promise<void>(done => portProbe.close(() => done())); }
     const previewAddress = preview.address();
     if (!previewAddress || typeof previewAddress === "string") throw new Error("Missing preview address");
+    expect(previewAddress.port).not.toBe(runnerPort);
     previewUrl = `wss://127.0.0.1:${previewAddress.port}/api/runner/v1/connect/${runId}`;
     const bundles: ReturnType<typeof createRunnerdCodexTransport>[] = [];
     const handles: RunnerProcessHandle[] = [];

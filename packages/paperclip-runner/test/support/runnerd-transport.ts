@@ -8,6 +8,7 @@ import {
   nativeRuntimePromptDigest,
   type NativeRuntimeContextSnapshot,
 } from "../../src/contracts/runtime-context.js";
+import type { DurablePrpControlPlane, DurablePrpControlPlaneStore } from "../../src/control-plane/durable-prp-control-plane.js";
 import { defaultCapabilityRunnerdBinary as qualifiedCapabilityRunnerdBinary } from "../../src/live/runnerd-codex-transport.js";
 
 export const defaultCapabilityRunnerdBinary = () =>
@@ -85,4 +86,12 @@ export function assignedRuntimeContext(
     ...value,
     aggregateDigest: canonicalNativeRuntimeContextDigest(value),
   };
+}
+
+export type CommittableStore = DurablePrpControlPlaneStore & {
+  commit(candidate: DurablePrpControlPlaneStore["state"], checkpointRequired?: boolean): void;
+};
+
+export function committableStore(authority: DurablePrpControlPlane): CommittableStore {
+  return authority.store as CommittableStore;
 }
