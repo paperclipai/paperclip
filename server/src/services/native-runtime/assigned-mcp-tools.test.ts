@@ -144,19 +144,27 @@ describe("assigned MCP runner tools", () => {
 
     const dropped = await unknown(`${alias(begin).slice(0, -6)}${alias(begin).slice(-5)}`);
     expect(dropped).toMatch(/^assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools\./);
-    expect(dropped).toContain(`Closest assigned names: ${alias(begin)}, `);
+    expect(dropped).toContain(`Closest assigned names: ${alias(begin)}`);
     expect(dropped).not.toContain("calendar");
 
     const borrowed = await unknown(`${alias(submit).slice(0, -12)}${alias(read).slice(-12)}`);
-    expect(borrowed).toContain(`Closest assigned names: ${alias(submit)}, `);
+    expect(borrowed).toContain(`Closest assigned names: ${alias(submit)}`);
 
     const planning = await unknown(`${alias(begin).slice(0, -1)}0`, "planning");
-    expect(planning).toContain(`Closest assigned names: ${alias(read)}, `);
-    expect(planning).not.toContain(alias(begin));
-    expect(planning).not.toContain(alias(submit));
+    expect(planning).toBe("assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools. Search assigned tools again and use the returned name.");
 
     await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: `${alias(read)}x` } }))
-      .rejects.toThrow(`Closest assigned names: ${alias(read)}, `);
+      .rejects.toThrow(`Closest assigned names: ${alias(read)}`);
+
+    const started = performance.now();
+    const oversized = `${alias(read)}${"x".repeat(4 * 1024 * 1024)}`;
+    expect(await unknown(oversized)).not.toContain("Closest assigned names");
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: oversized } }))
+      .rejects.toThrow("schemaTool must match an authorized inputSchemaRef. Omit schemaTool");
+    expect(performance.now() - started).toBeLessThan(1000);
+
+    f.listToolsForNamedGateway.mockResolvedValue([read, submit]);
+    expect(await unknown(`${alias(begin).slice(0, -1)}0`)).not.toContain(alias(begin));
     expect(f.executeTool).not.toHaveBeenCalled();
   });
 

@@ -2809,6 +2809,7 @@ export {
   updatesConfigSchema,
   mergePaperclipConfig,
   findPaperclipConfigKeyWarnings,
+  editDistance,
   type ConfigKeyWarning,
   type TelemetryConfig,
   type UpdatesConfig,

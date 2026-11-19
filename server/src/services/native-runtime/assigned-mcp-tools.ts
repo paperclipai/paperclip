@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
+import { editDistance } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES } from "../../vendor/paperclip-runner/index.js";
 import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
@@ -85,23 +86,13 @@ export function assignedToolName(name: string): string {
   return `app_${readable}_${digest}`;
 }
 
-function editDistance(left: string, right: string): number {
-  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
-  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
-    const current = [leftIndex];
-    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
-      const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
-      current[rightIndex] = Math.min(current[rightIndex - 1]! + 1, previous[rightIndex]! + 1, previous[rightIndex - 1]! + substitutionCost);
-    }
-    previous = current;
-  }
-  return previous[right.length]!;
-}
-
 function closestNames(reference: string, names: string[]): string {
   const target = reference.trim().toLowerCase();
   const closest = names
-    .map(name => ({ name, distance: editDistance(target, name.toLowerCase()) }))
+    .map(name => ({ name, limit: Math.floor(Math.max(target.length, name.length) / 3) }))
+    .filter(({ name, limit }) => Math.abs(target.length - name.length) <= limit)
+    .map(({ name, limit }) => ({ name, limit, distance: editDistance(target, name.toLowerCase()) }))
+    .filter(({ distance, limit }) => distance <= limit)
     .sort((a, b) => a.distance - b.distance || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .slice(0, 3)
     .map(({ name }) => name);
@@ -339,6 +330,19 @@ export async function createAssignedMcpTools(input: {
     return matches[0]?.[0];
   }
 
+  // Intersect fresh grants with this session's pinned catalog. Revocations
+  // take effect immediately; newly assigned tools require a new session.
+  async function authorizedTools(currentWorkMode?: WorkMode) {
+    const current = new Map(deduplicateToolDescriptors(await input.gateway.listToolsForNamedGateway({
+      gatewayPublicId: input.gatewayPublicId, bearerToken: input.bearerToken,
+    })).map(tool => [tool.name, tool]));
+    return [...tools].filter(([, { tool }]) => {
+      const fresh = current.get(tool.name);
+      return fresh && permits(tool) && permits(tool, currentWorkMode) &&
+        permits(fresh) && permits(fresh, currentWorkMode);
+    });
+  }
+
   async function search(argumentsValue: unknown, currentWorkMode?: WorkMode) {
     const args = object(argumentsValue);
     const offset = args.offset ?? 0;
@@ -355,17 +359,8 @@ export async function createAssignedMcpTools(input: {
     if (schemaOffset > 0 && !hasSchemaTool) {
       throw new Error("assigned_mcp_tool_invalid_arguments: A positive schemaOffset requires an exact inputSchemaRef in schemaTool. Omit schemaTool and schemaOffset to search assigned tools.");
     }
-    // Intersect fresh grants with this session's pinned catalog. Revocations
-    // take effect immediately; newly assigned tools require a new session.
-    const current = new Map(deduplicateToolDescriptors(await input.gateway.listToolsForNamedGateway({
-      gatewayPublicId: input.gatewayPublicId, bearerToken: input.bearerToken,
-    })).map(tool => [tool.name, tool]));
     const terms = args.query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    const authorized = [...tools].filter(([, { tool }]) => {
-      const fresh = current.get(tool.name);
-      return fresh && permits(tool) && permits(tool, currentWorkMode) &&
-        permits(fresh) && permits(fresh, currentWorkMode);
-    });
+    const authorized = await authorizedTools(currentWorkMode);
     if (hasSchemaTool) {
       const reference = resolveAssignedName(args.schemaTool as string, "schemaTool");
       const selected = authorized.find(([name]) => name === reference);
@@ -430,8 +425,8 @@ export async function createAssignedMcpTools(input: {
         parameters = object(args.arguments);
         const resolved = resolveAssignedName(args.name, "name");
         if (!resolved) {
-          const permitted = [...tools].filter(([, { tool }]) => permits(tool) && permits(tool, currentWorkMode)).map(([candidate]) => candidate);
-          throw new Error(`assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools.${closestNames(args.name, permitted)} Search assigned tools again and use the returned name.`);
+          const authorized = (await authorizedTools(currentWorkMode)).map(([candidate]) => candidate);
+          throw new Error(`assigned_mcp_tool_unknown: name must be an exact name returned by paperclip_search_assigned_tools.${closestNames(args.name, authorized)} Search assigned tools again and use the returned name.`);
         }
         name = resolved;
       }
