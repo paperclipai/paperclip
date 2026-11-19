@@ -148,6 +148,7 @@ import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { withTelemetryCompany } from "../telemetry-company-scope.js";
+import { emitPlanApprovedAfterCommit } from "./product-telemetry.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
@@ -559,6 +560,7 @@ type IssueResolutionContext = {
   reviewPolicy: IssueReviewPolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId?: string | null;
   executionPolicy?: unknown;
   executionState?: unknown;
 };
@@ -2730,6 +2732,7 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
           executionPolicy: issues.executionPolicy,
           executionState: issues.executionState,
         })
@@ -2839,6 +2842,15 @@ export function issueThreadInteractionService(
         acceptedPlanTarget?.issueId === issueContext.id &&
         acceptedPlanTarget.key === "plan" &&
         issueContext.workMode === "planning";
+      if (lockedCurrent.kind === "request_confirmation" && acceptedPlanTarget?.issueId === issueContext.id
+        && acceptedPlanTarget.key === "plan") {
+        emitPlanApprovedAfterCommit({
+          companyId: issueContext.companyId,
+          actor: args.actor,
+          startsExecution: acceptedPlanStartsExecution,
+          task: { createdByUserId: issueContext.createdByUserId ?? null, responsibleUserId: issueContext.responsibleUserId ?? null },
+        });
+      }
       if (isNativeCompletionReview(lockedCurrent)) {
         const otherPending = await tx.select({ id: issueThreadInteractions.id })
           .from(issueThreadInteractions).where(and(

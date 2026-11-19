@@ -1386,7 +1386,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
         const before = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
         authority.queueCommand(scenario === "new_work" || scenario === "queued_new_work" ? "turn.start" : command, {}, `early-retirement-${scenario}`);
-        if (!["idle", "preparing_successor", "claimed_successor", "queued_successor", "scheduled_retry_successor"].includes(scenario)) {
+        if (!["idle", "preparing_successor", "foreign_preparation", "claimed_successor", "queued_successor", "scheduled_retry_successor"].includes(scenario)) {
           await expect(authority.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
           expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(before.records);
         } else {

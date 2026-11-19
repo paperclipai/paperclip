@@ -1183,6 +1183,38 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       responsibleUserId: "grant-user", serviceSlug: "notion" })).resolves.toMatchObject({ id: f.connection.id });
   });
 
+  it("names a shared connection whose sign-in must be renewed instead of a generic attention reason", async () => {
+    const f = await accessFixture("sentry");
+    const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: randomUUID(), name: "Sentry", defaultAction: "allow", status: "active" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });
+    const sentry = async () => (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(await sentry()).toMatchObject({ state: "ready", connectionId: f.connection.id });
+    // The rows a rejected refresh writes for an organization grant: the grant
+    // needs reauthorization and the connection is disabled. lastError is unchanged.
+    await db.update(connectionGrants).set({ status: "needs_reauthorization" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.update(toolConnections).set({ authKind: "oauth", status: "draft", enabled: false })
+      .where(eq(toolConnections.id, f.connection.id));
+    const result = await sentry();
+    expect(result).toMatchObject({ state: "needs_user_action", connectionId: null });
+    expect(result?.reason).toContain("Saved sentry");
+    expect(result?.reason).toMatch(/sign in again|signed in again/i);
+    expect(result?.reason).toMatch(/reconnect/i);
+  });
+
+  it("does not name another person's private connection that must be renewed", async () => {
+    const f = await accessFixture("sentry");
+    await db.update(connectionGrants).set({ kind: "user", subjectUserId: "other-user", status: "needs_reauthorization" })
+      .where(eq(connectionGrants.connectionId, f.connection.id));
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, f.connection.id));
+    await db.update(toolConnections).set({
+      name: "Private Sentry of another person", authKind: "oauth", credentialPolicy: "per_user", status: "draft", enabled: false,
+    }).where(eq(toolConnections.id, f.connection.id));
+    const result = (await f.service.search(f.claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(result).toBeDefined();
+    expect(result?.reason).not.toContain("Private Sentry of another person");
+  });
+
   it("creates a scoped access card and atomically accepts repeated clicks without granting other agents", async () => {
     const f = await accessFixture();
     const request = await f.service.request(f.claims, "composio", { connectionId: f.connection.id, toolNames: ["COMPOSIO_SEARCH_TOOLS", "COMPOSIO_MANAGE_CONNECTIONS"] });

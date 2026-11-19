@@ -88,7 +88,7 @@ import { connectionSourceSlug, pluginAppSlug } from "@paperclipai/shared";
 import { pluginAppCatalogFor } from "./plugin-app-catalog.js";
 import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import { inferToolRisk } from "./tool-risk-inference.js";
-import { executePluginConnectionTool as executePluginConnectionWorkerTool, pluginCatalogEntryCurrent, pluginConnectionIdentity, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "./plugin-connector-runtime.js";
+import { executePluginConnectionTool as executePluginConnectionWorkerTool, pluginCatalogEntryCurrent, pluginConnectionIdentity, pluginConnectionToolTimeoutMs, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "./plugin-connector-runtime.js";
 import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -5078,6 +5078,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession,
     tool: ToolGatewayDescriptor,
     parameters: unknown,
+    requestedTimeoutMs: number | undefined,
   ) {
     const [connection] = await db.select().from(toolConnections).where(and(
       eq(toolConnections.companyId, session.companyId),
@@ -5087,6 +5088,24 @@ export function createToolGatewayService(
     if (!connection || !identity || !tool.upstreamToolName) {
       throw new ToolGatewayHttpError(404, `Tool "${tool.name}" not found`, "tool_not_found", { tool: tool.name });
     }
+    const executionTimeoutMs = timeoutMs(
+      Number.isFinite(requestedTimeoutMs) ? requestedTimeoutMs : pluginConnectionToolTimeoutMs(connection, tool.upstreamToolName),
+      tool,
+    );
+    return runWithTimeout(
+      runPluginConnectionTool(session, tool.upstreamToolName, connection, identity, parameters, executionTimeoutMs),
+      executionTimeoutMs,
+    );
+  }
+
+  async function runPluginConnectionTool(
+    session: ToolGatewaySession,
+    toolName: string,
+    connection: typeof toolConnections.$inferSelect,
+    identity: NonNullable<ReturnType<typeof pluginConnectionIdentity>>,
+    parameters: unknown,
+    executionTimeoutMs: number,
+  ) {
     const grant = await resolveConnectionGrant(session, connection);
     let credential: { kind: "api_key"; value: string } | undefined;
     if (connection.authKind === "api_key") {
@@ -5099,7 +5118,7 @@ export function createToolGatewayService(
       result = await executePluginConnectionWorkerTool(db, {
         pluginKey: identity.pluginKey,
         appSlug: identity.appSlug,
-        toolName: tool.upstreamToolName,
+        toolName,
         parameters,
         runContext: {
           agentId: session.agentId ?? "",
@@ -5115,6 +5134,7 @@ export function createToolGatewayService(
             ...(credential ? { credential } : {}),
           },
         },
+        timeoutMs: executionTimeoutMs,
       });
     } catch (error) {
       const unavailable = findPluginWorkerUnavailableError(error);
@@ -9973,7 +9993,7 @@ export function createToolGatewayService(
               )
             : args.tool.providerType === "paperclip_plugin_connection"
               // Test calls run plugin connector tools through the same worker path.
-              ? { result: await runWithTimeout(executePluginConnectionTool(args.session, args.tool, args.parameters), executionTimeoutMs) } as unknown as Awaited<ReturnType<typeof executeLocalStdioTool>>
+              ? { result: await executePluginConnectionTool(args.session, args.tool, args.parameters, args.timeoutMs) } as unknown as Awaited<ReturnType<typeof executeLocalStdioTool>>
               : null;
       if (!connectedMcpExecution) {
         throw new ToolGatewayHttpError(
@@ -10857,7 +10877,7 @@ export function createToolGatewayService(
       const result = connectedMcpExecution
         ? connectedMcpExecution.result
         : tool.providerType === "paperclip_plugin_connection"
-          ? await runWithTimeout(executePluginConnectionTool(session, tool, parameters), executionTimeoutMs)
+          ? await executePluginConnectionTool(session, tool, parameters, executionTimeoutMs)
         : tool.providerType !== "paperclip_plugin"
           ? await runWithTimeout(
               executeBuiltinTool(session, tool, parameters, invocation.id),
@@ -13838,7 +13858,7 @@ export function createToolGatewayService(
         const result = recoveredGitHubPublication ?? (connectedMcpExecution
           ? connectedMcpExecution.result
           : tool.providerType === "paperclip_plugin_connection"
-            ? await runWithTimeout(executePluginConnectionTool(session, tool, effectiveParameters), executionTimeoutMs)
+            ? await executePluginConnectionTool(session, tool, effectiveParameters, input.timeoutMs)
           : tool.providerType === "paperclip_plugin"
             ? await runWithTimeout(
                 pluginToolDispatcher!.executeTool(

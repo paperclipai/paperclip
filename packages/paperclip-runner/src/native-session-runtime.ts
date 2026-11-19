@@ -3040,6 +3040,7 @@ export async function executeNativeSession(
       };
     };
     let restartContinuationStarted = false;
+    let ownTurnId: string | null = null;
     let borrowedContinuationTurnId: string | null = null;
     let restartContinuationTurnId: string | null = null;
     let settleStartupDecision: () => void = () => undefined;
@@ -3100,14 +3101,16 @@ export async function executeNativeSession(
     };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
-      if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
+      const restoredAtStartup = recovered && options.resumeInterruptedTurn === true &&
+        event.turnId === persistedSession?.activeTurnId;
+      const restoredInThisExecution = !recovered && ownTurnId !== null && event.turnId === ownTurnId;
+      if (restartContinuationStarted || !(restoredAtStartup || restoredInThisExecution) ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
           // proving the old process ended and restoring the same conversation.
           !["codex", "acpx", "opencode"].includes(input.provider.kind) || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
           recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
-          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
-          event.turnId !== persistedSession?.activeTurnId) return false;
+          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error)) return false;
       const snapshot = await session.snapshot();
       signal.throwIfAborted();
       if (nativeRestartInterruptedTurnId(snapshot) !== event.turnId || snapshot.pendingRuntimeRequests?.length) return false;
@@ -3425,7 +3428,7 @@ export async function executeNativeSession(
           // the fenced checkpoint right before the submit. A new session's
           // normal path adds nothing before turn.start.
           if (recovered) await checkpoint();
-          await session.startTurn({
+          ({ turnId: ownTurnId } = await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
@@ -3435,7 +3438,7 @@ export async function executeNativeSession(
               input.provider.kind === "cursor_cloud"
                 ? "default"
                 : "executionMode" in input ? input.executionMode : "default",
-          });
+          }));
           await checkpoint();
         }
         settleStartupDecision();

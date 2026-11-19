@@ -138,11 +138,10 @@ export function useRecentTasks({
   }), [confirmed, denied, pinnedTaskIds]);
   // A visit is only a candidate. Neither imported provenance nor a persisted
   // browser snapshot proves personal participation for the current account.
-  const refreshedEntries: RecentTaskEntry[] = useMemo(() => entries.filter(entry => confirmed.get(entry.id)?.isParticipantForMe === true).map((entry) => {
+  const refreshedEntries = useMemo(() => entries.flatMap((entry) => {
     const issue = confirmed.get(entry.id);
-    // Relationship/read state is session data, never a localStorage snapshot.
-    return issue ? { ...mergeRecentTaskSnapshot(entry, issue), parentId: issue.parentId,
-      isUnreadForMe: issue.isUnreadForMe, subtaskCount: issue.subtaskCount, unreadSubtaskCount: issue.unreadSubtaskCount } : entry;
+    if (issue?.isParticipantForMe !== true || issue.isArchivedForMe) return [];
+    return [{ ...mergeRecentTaskSnapshot(entry, issue), isUnreadForMe: issue.isUnreadForMe }];
   }), [entries, confirmed]);
   const processed = useRef<{ visit: typeof batchVisit; revision: number } | null>(null);
 
@@ -152,7 +151,7 @@ export function useRecentTasks({
     processed.current = { visit: batchVisit, revision: updateCount };
     // Older cached summaries without the new projection cannot prove either
     // eligibility or ineligibility. Keep those candidates until a current read.
-    const returnedIds = new Set(summaries.filter((issue) => issue.companyId === companyId && issue.isParticipantForMe !== false).map((issue) => issue.id));
+    const returnedIds = new Set(summaries.filter((issue) => issue.companyId === companyId && issue.isParticipantForMe !== false && !issue.isArchivedForMe).map((issue) => issue.id));
     updateRecentTaskSnapshots(storageKey, companyId, summaries);
     const omittedIds = new Set(recentIds.filter((id) => !returnedIds.has(id)));
     if (omittedIds.size && updateCount <= batchVisit.initialUpdateCount) {
