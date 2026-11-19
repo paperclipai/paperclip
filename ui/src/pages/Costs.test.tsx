@@ -8,6 +8,9 @@ import { Costs } from "./Costs";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { MemoryRouter } from "react-router-dom";
 
+const scopedAgentMock = vi.hoisted(() => vi.fn());
+vi.mock("../api/agents", () => ({ agentsApi: { get: scopedAgentMock } }));
+
 const resolveIncidentMock = vi.hoisted(() => vi.fn());
 const upsertPolicyMock = vi.hoisted(() => vi.fn());
 const budgetOverviewMock = vi.hoisted(() => vi.fn());
@@ -27,7 +30,11 @@ const costsApiMocks = vi.hoisted(() => ({
   byBiller: vi.fn(),
   windowSpend: vi.fn(),
   quotaWindows: vi.fn(),
+  dataQuality: vi.fn(),
+  retryAccounting: vi.fn(),
 }));
+const subscriptionsMocks = vi.hoisted(() => ({ report: vi.fn(), refresh: vi.fn(), update: vi.fn(), link: vi.fn() }));
+vi.mock("../api/subscriptions", () => ({ subscriptionsApi: subscriptionsMocks }));
 
 vi.mock("../api/budgets", () => ({
   budgetsApi: {
@@ -48,6 +55,8 @@ vi.mock("../context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: setBreadcrumbsMock }),
 }));
 
+vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
+
 vi.mock("../context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false }) }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -63,6 +72,9 @@ describe("Shared Costs surfaces", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    scopedAgentMock.mockReset();
+    const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: "0", eventCount: 0, estimatedEventCount: 0, unpricedEventCount: 0 };
+    subscriptionsMocks.report.mockResolvedValue({ canRefresh: false, asOf: "2026-10-08T00:00:00Z", accounts: [], monthlyTotals: [], activeCount: 0, unknownPriceCount: 0, unidentifiedAccountCount: 0, api: usage, subscription: usage, unknown: usage, unattributedSubscription: usage });
     decisionHistoryMock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
     container = document.createElement("div");
@@ -82,6 +94,32 @@ describe("Shared Costs surfaces", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["overview", "budgets"] as const)("explains unavailable Muse accounting on its scoped %s page", async (tab) => {
+    scopedAgentMock.mockResolvedValue({ id: "muse-agent", name: "Researcher", adapterType: "paperclip_runner", adapterConfig: { provider: "muse" } });
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter initialEntries={["/?agentId=muse-agent"]}><QueryClientProvider client={queryClient}><Costs embedded initialTab={tab} lockTab /></QueryClientProvider></MemoryRouter>));
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Researcher's Muse activity has no reported usage or cost")); });
+    expect(scopedAgentMock).toHaveBeenCalledWith("muse-agent", "company-1");
+    expect(container.textContent).toContain("Totals below show recorded organization charges only");
+    expect(container.textContent).toContain("Paperclip cannot enforce a Muse spend ceiling");
+    queryClient.clear();
+  });
+
+  it("explains when scoped provider details cannot be loaded", async () => {
+    scopedAgentMock.mockRejectedValue(new Error("unavailable"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter initialEntries={["/?agentId=muse-agent"]}><QueryClientProvider client={queryClient}><Costs embedded initialTab="budgets" lockTab /></QueryClientProvider></MemoryRouter>));
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Could not load agent details. Totals below show recorded organization costs.")); });
+    expect(container.textContent).not.toContain("Muse activity has no reported");
+    queryClient.clear();
+  });
+
   it.each([0, 125])("shows $%s of known user spend while retaining an unpriced warning", async (costCents) => {
     root = createRoot(container);
     await act(async () => root.render(<CostByUserTable report={{ activeUserCount: 1, rows: [{
@@ -90,6 +128,24 @@ describe("Shared Costs surfaces", () => {
     }] }} />));
     expect(container.querySelector("tbody tr td:last-child")?.textContent).toContain(costCents > 0 ? "$1.25" : "—");
     expect(container.textContent).toContain("1 unpriced charge");
+  });
+
+  it.each(surfaces)("labels other and unknown billing accurately on the %s surface", async (_name, props) => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 600, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const report = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...report, unknown: { ...report.unknown,
+      inputTokens: 100, cachedInputTokens: 40, outputTokens: 10, costCents: "600", eventCount: 3,
+    } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>));
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain(
+      "Other billing usage: 150 tokens · $6.00 in recorded charges, included in the inference ledger.",
+    )));
+    expect(container.textContent).not.toContain("tokens have an unknown billing type");
   });
 
   it("renders a focused Budgets section without duplicate Costs chrome or spend queries", async () => {
@@ -114,6 +170,37 @@ describe("Shared Costs surfaces", () => {
     expect(container.querySelector('[role="tab"]')).toBeFalsy();
     expect(setBreadcrumbsMock).not.toHaveBeenCalled();
     for (const mock of Object.values(costsApiMocks)) expect(mock).not.toHaveBeenCalled();
+  });
+
+  it.each(surfaces)("shows unknown billing separately from complete prices only on the %s Overview", async (_name, props) => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 21, budgetCents: 0, pricingComplete: true, unknownBillingEventCount: 1, unpricedEventCount: 0, pendingRunCount: 0 });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    costsApiMocks.dataQuality.mockResolvedValue({ canRetry: true, events: [{ id: "event", runId: "run", agentId: "agent", agentName: "Codie", reason: "unknown_billing", occurredAt: "2026-10-09T12:00:00Z" }], runs: [], hasMoreEvents: false, hasMoreRuns: false });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>));
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain("1 billing type unknown")));
+    expect(container.textContent).not.toContain("Totals include known charges only.");
+    expect(costsApiMocks.dataQuality).not.toHaveBeenCalled();
+    const button = (label: string) => [...container.querySelectorAll("button")].find(row => row.textContent === label)!;
+    await act(async () => button("1 billing type unknown").click());
+    await act(async () => vi.waitFor(() => expect(container.textContent).toContain("Billing category unknown")));
+    const [, from, to] = costsApiMocks.dataQuality.mock.lastCall!;
+    expect(Number.isFinite(Date.parse(from))).toBe(true);
+    expect(Number.isFinite(Date.parse(to))).toBe(true);
+    await act(async () => button("Providers").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    expect(container.querySelector('[role="tab"][data-state="active"]')?.textContent).toBe("Providers");
+    expect(container.textContent).not.toContain("1 billing type unknown");
+    expect(container.textContent).not.toContain("Billing category unknown");
+    await act(async () => button("Overview").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    expect(button("1 billing type unknown")).toBeDefined();
+    await act(async () => button("All Time").click());
+    await act(async () => vi.waitFor(() => expect(button("1 billing type unknown")).toBeDefined()));
+    await act(async () => button("1 billing type unknown").click());
+    await act(async () => vi.waitFor(() => expect(costsApiMocks.dataQuality).toHaveBeenLastCalledWith("company-1", undefined, undefined)));
+    queryClient.clear();
   });
 
   it("opens linked decision history with real date bounds instead of report cache labels", async () => {
@@ -212,6 +299,56 @@ describe("Shared Costs surfaces", () => {
     queryClient.clear();
   });
 
+  it("retries failed account discovery without discarding the last subscription report", async () => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 0, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const report = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...report, canRefresh: true, activeCount: 1, monthlyTotals: [{ currency: "USD", amountCents: "2000", estimatedCount: 1 }] });
+    subscriptionsMocks.refresh.mockRejectedValueOnce(new Error("private connection error")).mockResolvedValue({});
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs /></QueryClientProvider></MemoryRouter>));
+    const retry = () => [...container.querySelectorAll("button")].find(button => button.textContent === "Retry account check");
+    await act(async () => { await vi.waitFor(() => expect(retry()).toBeDefined()); });
+    expect(container.textContent).toContain("$20.00/month");
+    expect(container.textContent).not.toContain("private connection error");
+    await act(async () => retry()!.click());
+    await act(async () => { await vi.waitFor(() => expect(retry()).toBeUndefined()); });
+    expect(subscriptionsMocks.refresh).toHaveBeenCalledTimes(2);
+    expect(subscriptionsMocks.refresh).toHaveBeenLastCalledWith("company-1");
+    expect(container.textContent).toContain("$20.00/month");
+    queryClient.clear();
+  });
+
+  it("keeps monthly subscription fees through date changes and failed background reloads", async () => {
+    for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+    costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+    costsApiMocks.summary.mockResolvedValue({ spendCents: 200, budgetCents: 0, pricingComplete: true });
+    costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+    const report = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...report, activeCount: 1, monthlyTotals: [{ currency: "USD", amountCents: "2000", estimatedCount: 1 }], api: { ...report.api, costCents: "200" } });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs /></QueryClientProvider></MemoryRouter>));
+    const card = (label: string) => [...container.querySelectorAll("div")].find(node => node.textContent === label)?.closest('[data-slot="card"]');
+    await act(async () => { await vi.waitFor(() => expect(card("Subscriptions")?.textContent).toContain("$20.00/month")); });
+    expect(card("API spend")?.textContent).toContain("$2.00");
+    subscriptionsMocks.report.mockResolvedValue({ ...report, activeCount: 1, monthlyTotals: [{ currency: "USD", amountCents: "2000", estimatedCount: 1 }], api: { ...report.api, costCents: "300" } });
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "All Time")!.click());
+    await act(async () => { await vi.waitFor(() => expect(card("API spend")?.textContent).toContain("$3.00")); });
+    expect(card("Subscriptions")?.textContent).toContain("$20.00/month");
+    expect(subscriptionsMocks.report).toHaveBeenLastCalledWith("company-1", undefined, undefined);
+    subscriptionsMocks.report.mockRejectedValue(new Error("private provider failure"));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["cost-subscriptions"] }); });
+    await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Showing the last loaded API and subscription usage")); });
+    expect(card("API spend")?.textContent).toContain("$3.00");
+    expect(card("Subscriptions")?.textContent).toContain("$20.00/month");
+    expect(container.textContent).not.toContain("private provider failure");
+    queryClient.clear();
+  });
+
   it("compares monthly budgets only with month-to-date spend", async () => {
     for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
@@ -224,6 +361,8 @@ describe("Shared Costs surfaces", () => {
     await act(async () => { await vi.waitFor(() => expect(budgetCard()?.textContent).toContain("20%")); });
     expect(budgetCard()?.textContent).toContain("$2.00 of $10.00 this month");
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12000, budgetCents: 1000, utilizationPercent: 1200, pricingComplete: true });
+    const subscriptionReport = await subscriptionsMocks.report();
+    subscriptionsMocks.report.mockResolvedValue({ ...subscriptionReport, api: { ...subscriptionReport.api, costCents: "12000" } });
     await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "All Time")!.click());
     await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("$120.00")); });
     expect(budgetCard()?.textContent).toContain("$10.00");
@@ -274,34 +413,39 @@ describe("Shared Costs surfaces", () => {
       root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs {...props} /></QueryClientProvider></MemoryRouter>);
     });
     await act(async () => {
-      await vi.waitFor(() => expect(container.textContent).toContain("Costs are unavailable for 2 usage entries in this period. Totals include known costs only."));
+      await vi.waitFor(() => expect(container.textContent).toContain("3 run costs unavailable"));
     });
-    const notice = [...container.querySelectorAll('[role="status"]')].find(element => element.textContent?.includes("Costs are unavailable"))!;
+    const notice = [...container.querySelectorAll("button")].find(button => button.textContent === "3 run costs unavailable")!.parentElement!;
     expect(notice.classList.contains("text-muted-foreground")).toBe(true);
     expect(notice.querySelector(".text-destructive")).toBeNull();
     expect(notice.classList.contains("text-destructive")).toBe(false);
-    expect(notice.textContent).toContain("1 run is awaiting cost data.");
-    expect(notice.previousElementSibling?.textContent).toContain("Inference spend");
+    expect(notice.textContent).toBe("3 run costs unavailable");
+    expect(costsApiMocks.dataQuality).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Finance headline totals are USD only");
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 10, pendingRunCount: 0 });
     await act(async () => { await queryClient.invalidateQueries(); });
-    await vi.waitFor(() => expect(notice.textContent).toContain("Costs are unavailable for 10 usage entries"));
+    await vi.waitFor(() => expect(notice.textContent).toBe("10 run costs unavailable"));
     expect(notice.textContent).not.toContain("awaiting cost data");
     expect(notice.textContent).not.toContain("0 runs");
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: false, unpricedEventCount: 0, pendingRunCount: 1 });
     await act(async () => { await queryClient.invalidateQueries(); });
-    await vi.waitFor(() => expect(notice.textContent).toBe("1 run is awaiting cost data."));
+    await vi.waitFor(() => expect(notice.textContent).toBe("1 run cost unavailable"));
     costsApiMocks.summary.mockResolvedValue({ spendCents: 12.4, budgetCents: 0, pricingComplete: true, unpricedEventCount: 0, pendingRunCount: 0 });
     await act(async () => { await queryClient.invalidateQueries(); });
     await vi.waitFor(() => expect(container.contains(notice)).toBe(false));
   });
 
-  it.each(surfaces)("labels each agent and expanded model independently on the %s page", async (_name, props) => {
+  it.each(surfaces)("labels each agent, project, and expanded model independently on the %s page", async (_name, props) => {
     for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
     costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
     costsApiMocks.summary.mockResolvedValue({ spendCents: 600, budgetCents: 0, pricingComplete: true, estimatedEventCount: 3 });
     costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
     const base = { costCents: 200, inputTokens: 10, cachedInputTokens: 5, outputTokens: 2, apiRunCount: 2, subscriptionRunCount: 0, eventCount: 2 };
+    costsApiMocks.byProject.mockResolvedValue([
+      { ...base, projectId: "estimated-project", projectName: "Estimated project", estimatedEventCount: 2 },
+      { ...base, projectId: "mixed-project", projectName: "Mixed project", estimatedEventCount: 1 },
+      { ...base, projectId: "reported-project", projectName: "Reported project", estimatedEventCount: 0 },
+    ]);
     costsApiMocks.byAgent.mockResolvedValue([
       { ...base, agentId: "codie", agentName: "Codie", estimatedEventCount: 2 },
       { ...base, agentId: "mixed", agentName: "Mixed", estimatedEventCount: 1 },
@@ -326,6 +470,14 @@ describe("Shared Costs surfaces", () => {
     expect(card("Mixed").textContent).toContain("Partially estimated");
     expect(card("Reported").textContent).not.toMatch(/Estimated|Partially estimated/);
     expect(card("Legacy").textContent).not.toMatch(/Estimated|Partially estimated/);
+    const projectBadge = (name: string) => [...container.querySelectorAll("span")]
+      .find(element => element.textContent === name)!.parentElement!.querySelector('[data-slot="badge"]');
+    expect(projectBadge("Estimated project")?.textContent).toBe("Estimated");
+    expect(projectBadge("Mixed project")?.textContent).toBe("Partially estimated");
+    expect(projectBadge("Reported project")).toBeNull();
+    expect(container.textContent).not.toContain("Includes 3 estimated charges.");
+    expect(container.querySelector('button[aria-expanded]')).toBeNull();
+    expect(costsApiMocks.dataQuality).not.toHaveBeenCalled();
     await act(async () => card("Mixed").querySelector<HTMLElement>(".cursor-pointer")!.click());
     const breakdown = card("Mixed").querySelector(".border-l")!;
     expect(breakdown.textContent).toContain("gpt-6-astra");
@@ -355,7 +507,7 @@ describe("Shared Costs surfaces", () => {
       expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Costs" }]);
     }
     expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).toEqual(
-      streamlined ? ["Overview", "Providers", "Billers", "Finance", "Decisions"] : ["Overview", "Budgets", "Providers", "Billers", "Finance", "Decisions"],
+      streamlined ? ["Overview", "Providers", "Billers", "Finance", "Decisions", "Fast responses"] : ["Overview", "Budgets", "Providers", "Billers", "Finance", "Decisions", "Fast responses"],
     );
   });
 

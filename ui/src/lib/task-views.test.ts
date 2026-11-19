@@ -33,7 +33,7 @@ describe("task views registry (PAP-670)", () => {
       expect(Array.isArray(view.statuses)).toBe(true);
     }
     expect(taskView("all").statuses).toEqual([]);
-    expect(taskView("active").statuses).toEqual(["todo", "in_progress", "in_review", "blocked"]);
+    expect(taskView("active").statuses).toEqual(["todo", "in_progress", "monitoring", "in_review", "blocked"]);
     expect(taskView("backlog").statuses).toEqual(["backlog"]);
     expect(taskView("done").statuses).toEqual(["done", "cancelled"]);
   });
@@ -79,7 +79,7 @@ describe("resolveInitialTaskView", () => {
   it("falls back to the last-used view on a bare /issues", () => {
     expect(resolveInitialTaskView(null, false, "backlog")).toBe("backlog");
     expect(resolveInitialTaskView("nonsense", false, "backlog")).toBe("backlog");
-    expect(resolveInitialTaskView(null, false, DEFAULT_TASK_VIEW)).toBe("mine");
+    expect(resolveInitialTaskView(null, false, DEFAULT_TASK_VIEW)).toBe("all");
   });
 
   it("opens All tasks when an explicit inbox view carries an organization filter", () => {

@@ -29,9 +29,6 @@ vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: "/PAP/timeline", search: mockLocation.search }),
 }));
 
-vi.mock("@/components/RequestCollapsedSidebar", () => ({
-  RequestCollapsedSidebar: () => <div data-testid="request-collapsed-sidebar" />,
-}));
 
 const emptyTimeline: WorkTimelineResult = {
   actors: [],
@@ -143,21 +140,6 @@ describe("Timeline", () => {
     vi.clearAllMocks();
   });
 
-  it("requests the collapsed app sidebar by default", async () => {
-    root = createRoot(container);
-
-    flushSync(() => {
-      root?.render(
-        <QueryClientProvider client={queryClient}>
-          <Timeline />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.querySelector('[data-testid="request-collapsed-sidebar"]')).not.toBeNull();
-  });
-
   it("applies project scope from the project Timeline control", async () => {
     mockLocation.search = "?projectId=11111111-1111-4111-8111-111111111111";
     root = createRoot(container);
@@ -198,6 +180,17 @@ describe("Timeline", () => {
     expect(container.textContent).not.toContain("Everyone");
     expect(container.textContent).not.toContain("work kicked off");
     expect(container.textContent).not.toContain("visible");
+
+
+    expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        from: expect.any(String),
+        to: expect.any(String),
+      }),
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty("userId");
   });
 
   it("renders top timeline stats and keeps range controls in the chart footer", async () => {
@@ -356,28 +349,5 @@ describe("Timeline", () => {
       activeMs: 20 * 60 * 1000,
       totalTokens: 1_250,
     });
-  });
-
-  it("requests the company timeline without a user lens parameter", async () => {
-    root = createRoot(container);
-
-    flushSync(() => {
-      root?.render(
-        <QueryClientProvider client={queryClient}>
-          <Timeline />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        from: expect.any(String),
-        to: expect.any(String),
-      }),
-      { signal: expect.any(AbortSignal) },
-    );
-    expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty("userId");
   });
 });

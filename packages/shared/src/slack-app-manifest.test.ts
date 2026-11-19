@@ -30,6 +30,12 @@ describe("Slack app manifest", () => {
     expect(manual.settings.event_subscriptions.request_url).toBe(input.webhookUrl);
     expect(manual.settings.interactivity).toEqual({ is_enabled: true, request_url: input.webhookUrl });
     expect(manual.settings.socket_mode_enabled).toBe(false);
+    expect(manual.features).toHaveProperty("agent_view");
+    expect(manual.features).not.toHaveProperty("assistant_view");
+    expect(manual.features.bot_user).not.toHaveProperty("always_online");
+    expect(manual.features.app_home).toEqual({
+      home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false,
+    });
     // The reviewed provider permissions/events stay pinned across both creation paths.
     expect(manual.oauth_config.scopes.bot).toMatchSnapshot();
     expect(manual.settings.event_subscriptions.bot_events).toMatchSnapshot();

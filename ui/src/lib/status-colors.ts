@@ -22,7 +22,6 @@ export const issueStatusIcon: Record<string, string> = {
   todo: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
   in_progress: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
   in_review: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
-  ready_for_qa: "text-fuchsia-600 border-fuchsia-600 dark:text-fuchsia-400 dark:border-fuchsia-400",
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   cancelled: "text-neutral-500 border-neutral-500",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
@@ -36,7 +35,6 @@ export const issueStatusText: Record<string, string> = {
   todo: "text-amber-600 dark:text-amber-400",
   in_progress: "text-blue-600 dark:text-blue-400",
   in_review: "text-violet-600 dark:text-violet-400",
-  ready_for_qa: "text-fuchsia-600 dark:text-fuchsia-400",
   done: "text-green-600 dark:text-green-400",
   cancelled: "text-neutral-500",
   blocked: "text-red-600 dark:text-red-400",
@@ -117,7 +115,6 @@ export const statusBadge: Record<string, string> = {
   todo: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   in_progress: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
   in_review: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300",
-  ready_for_qa: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/50 dark:text-fuchsia-300",
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
@@ -259,10 +256,13 @@ export const taskStatusVar: Record<string, string> = {
   backlog: "--status-task-backlog",
   todo: "--status-task-todo",
   in_progress: "--status-task-in_progress",
+  monitoring: "--status-task-monitoring",
   in_review: "--status-task-in_review",
   done: "--status-task-done",
   blocked: "--status-task-blocked",
   cancelled: "--status-task-cancelled",
+  // Covered-blocked: the blocked shape on the in-progress blue (mirrors the icon var).
+  in_queue: "--status-task-in_progress",
 };
 export const taskStatusVarDefault = "--status-task-backlog";
 
@@ -278,6 +278,7 @@ export const taskStatusIconVar: Record<string, string> = {
   backlog: "--status-task-icon-backlog",
   todo: "--status-task-icon-todo",
   in_progress: "--status-task-icon-in_progress",
+  monitoring: "--status-task-icon-monitoring",
   in_review: "--status-task-icon-in_review",
   done: "--status-task-icon-done",
   blocked: "--status-task-icon-blocked",
@@ -347,6 +348,7 @@ export const externalObjectStatusIcon: Record<string, string> = {
   closed: "text-neutral-500 border-neutral-500",
   archived: "text-neutral-500 border-neutral-500",
   auth_required: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
+  rate_limited: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
   unreachable: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
 };
 
@@ -363,6 +365,7 @@ export const externalObjectStatusBadge: Record<string, string> = {
   closed: "bg-muted text-muted-foreground",
   archived: "bg-muted text-muted-foreground",
   auth_required: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
+  rate_limited: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   unreachable: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
 };
 
@@ -381,6 +384,7 @@ export const externalObjectLivenessOverlay: Record<string, string> = {
   fresh: "",
   stale: "opacity-70 [border-style:dashed]",
   auth_required: "[border-style:dashed]",
+  rate_limited: "[border-style:dashed]",
   unreachable: "[border-style:dashed]",
 };
 

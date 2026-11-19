@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { context, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -18,12 +21,13 @@ import {
   toolProfiles,
   toolMcpGatewayTokens,
 } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { ToolAccessDecisionInput } from "@paperclipai/shared";
 import {
   createToolAccessDecisionCache,
   toolAccessPolicyService,
 } from "../services/tool-access-policy.js";
+import { withRunExecutionTiming } from "../services/execution-preparation-timing.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -178,6 +182,48 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     expect(largeListing.statements.length).toBeLessThan(100);
   });
 
+  it("does not construct a condition clock for unmatched entries in a decision batch", async () => {
+    const fixture = await createListingFixture(db, 6);
+    const [binding] = await db.select().from(toolProfileBindings)
+      .where(and(eq(toolProfileBindings.companyId, fixture.company.id), eq(toolProfileBindings.targetId, fixture.namedGateway.id)));
+    expect(binding).toBeDefined();
+    for (let start = 0; start < 47_930; start += 1000) {
+      await db.insert(toolProfileEntries).values(Array.from({ length: Math.min(1000, 47_930 - start) }, (_, offset) => ({
+        companyId: fixture.company.id, profileId: binding!.profileId,
+        selectorType: "tool_name" as const, toolName: `not_selected_${start + offset}`, effect: "exclude" as const,
+      })));
+    }
+    const policy = toolAccessPolicyService(db);
+    const cache = createToolAccessDecisionCache();
+    const originalDate = Date;
+    let clocks = 0;
+    vi.stubGlobal("Date", new Proxy(originalDate, {
+      construct(target, args, constructor) {
+        if (args.length === 0) clocks++;
+        return Reflect.construct(target, args, constructor);
+      },
+    }));
+    const decisions = [];
+    try {
+      for (let index = 0; index < 10; index++) {
+        const entry = fixture.entries[4 + index % 2]!;
+        decisions.push(await policy.decide({
+          companyId: fixture.company.id,
+          actor: { actorType: "agent", actorId: fixture.agent.id, agentId: fixture.agent.id },
+          runContext: { heartbeatRunId: fixture.run.id, issueId: fixture.issue.id, projectId: fixture.project.id, gatewayId: fixture.namedGateway.id },
+          request: { toolName: entry.toolName!, applicationId: fixture.application.id, connectionId: fixture.connection.id,
+            catalogEntryId: entry.id, upstreamToolName: entry.toolName!, riskLevel: entry.riskLevel, arguments: {} },
+          consumeRateLimit: false,
+        }, { cache }));
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(decisions).toHaveLength(10);
+    expect(decisions.every(decision => decision.allowed && decision.reasonCode === "allow_profile")).toBe(true);
+    expect(clocks).toBeLessThan(5000);
+  }, 30_000);
+
   it("reads the catalog without repeating the connection row for each tool", async () => {
     const fixture = await createListingFixture(db, 20);
     // An eligible connection without catalog tools adds nothing to a listing.
@@ -208,6 +254,48 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     expect(connectionReadParams).toHaveLength(1);
     expect(connectionReadParams[0]).toContain(fixture.connection.id);
     expect(connectionReadParams[0]).not.toContain(emptyConnection.id);
+  });
+
+  it("exports the catalog transaction, query and projection boundaries for a gateway listing", async () => {
+    const fixture = await createListingFixture(db, 20, { connectionCount: 2 });
+    const gateway = createToolGatewayService(db);
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    const manager = new AsyncLocalStorageContextManager().enable();
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    try {
+      expect(context.setGlobalContextManager(manager)).toBe(true);
+      expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+      const tools = await withRunExecutionTiming(fixture.run.id, () => gateway.listToolsForNamedGateway({
+        gatewayId: fixture.namedGateway.id,
+        bearerToken: fixture.token.token,
+      }));
+      expect(tools.filter((tool) => tool.catalogEntryId)).toHaveLength(18);
+
+      const spans = exporter.getFinishedSpans();
+      const prefix = "connectors.discovery.connections";
+      const connectionPhase = spans.find((span) => span.name === prefix)!;
+      const transaction = spans.find((span) => span.name === `${prefix}.transaction`)!;
+      expect(transaction.parentSpanContext?.spanId).toBe(connectionPhase.spanContext().spanId);
+      expect(transaction.attributes).toMatchObject({
+        "paperclip.execution.catalogEntryCount": 20,
+        "paperclip.execution.connectionCount": 2,
+      });
+      for (const name of ["catalog_entries", "matched_connections"]) {
+        const query = spans.find((span) => span.name === `${transaction.name}.${name}`);
+        expect(query?.parentSpanContext?.spanId).toBe(transaction.spanContext().spanId);
+      }
+      for (const name of ["availability", "descriptors"]) {
+        const phase = spans.find((span) => span.name === `${prefix}.${name}`);
+        expect(phase?.parentSpanContext?.spanId).toBe(connectionPhase.spanContext().spanId);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      trace.disable();
+      context.disable();
+      manager.disable();
+      await provider.shutdown();
+    }
   });
 
   it("never selects the whole run snapshot or result when it decides access", async () => {

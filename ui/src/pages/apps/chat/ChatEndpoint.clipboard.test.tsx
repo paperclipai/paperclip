@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEndpoint, ChatProvider } from "@/api/chatEndpoints";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
@@ -30,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   createLinkIntent: vi.fn(),
   confirmIdentityLink: vi.fn(),
   pushToast: vi.fn(),
+  navigate: vi.fn(),
   setBreadcrumbs: vi.fn(),
   search: "",
   setParams: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: mocks }));
 vi.mock("@/api/githubChat", () => ({ githubChatApi: {
   configuration: async () => ({ revision: 0, configuration: {} }),
   progress: async () => mocks.get(),
+  advance: async () => ({ endpointId: "endpoint-a", state: "create" }),
 } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "owner-user", name: "Owner" } }) } }));
 vi.mock("@/api/health", () => ({ healthApi: { get: async () => ({ deploymentMode: "authenticated" }) } }));
@@ -56,7 +59,8 @@ vi.mock("@/context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 vi.mock("@/lib/router", () => ({
-  useNavigate: () => vi.fn(),
+  useNavigate: () => mocks.navigate,
+  useLocation: () => ({ state: null }),
   useParams: () => ({ endpointId: "endpoint-a", tab: mocks.tab }),
   useSearchParams: () => [new URLSearchParams(mocks.search), mocks.setParams],
   Link: ({ children }: { children: React.ReactNode }) => (
@@ -189,9 +193,56 @@ describe("chat setup and identity-link clipboard actions", () => {
     client.removeQueries({ queryKey: [...queryKeys.chatEndpoints.activity("endpoint-a"), "older-cursor"] });
     mocks.listActivityPage.mockRejectedValue(new Error("Offline"));
     await click("Next");
-    expect(container.textContent).toContain("Connection activity could not be loaded");
+    expect(container.textContent).toContain("Couldn't load the connection activity");
     await click("Previous");
     expect(container.textContent).toContain("Page 1");
+  });
+
+  // The people list renders its own inline error (a span); other sections of
+  // the Access tab (personal Slack search) have unmocked reads in this suite.
+  const peopleList = () => container.querySelector('[role="list"][aria-label="People"]');
+  const peopleError = () => container.querySelector('span[data-query-view="error"]');
+
+  it("keeps the loaded people list on screen when a refetch fails transiently", async () => {
+    await render("slack", true);
+    expect(peopleList()?.textContent).toContain("Test person");
+    mocks.listPrincipals.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await client.refetchQueries({ queryKey: queryKeys.chatEndpoints.principals("endpoint-a") });
+    await settle();
+    expect(peopleList()?.textContent).toContain("Test person");
+    expect(peopleError()).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy with Retry when the people list fails to load", async () => {
+    mocks.listPrincipals.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+    await render("slack", true);
+    const alert = peopleError();
+    expect(alert?.textContent).toContain("An unexpected error occurred");
+    expect(alert?.textContent).not.toContain("internal_error");
+    expect(peopleList()).toBeNull();
+    const retry = alert!.querySelector("button")!;
+    expect(retry.textContent).toContain("Retry");
+    flushSync(() => retry.click());
+    await settle();
+    expect(peopleList()?.textContent).toContain("Test person");
+    expect(peopleError()).toBeNull();
+  });
+
+  it("keeps loaded Slack channels on screen when a refetch fails transiently", async () => {
+    mocks.tab = "settings";
+    mocks.listResources.mockResolvedValue([
+      { id: "channel-general", type: "channel", label: "#general", providerResourceId: "CGENERAL", availability: "available", enabled: true },
+    ]);
+    await render("slack", true);
+    expect(container.textContent).toContain("#general");
+    mocks.listResources.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await client.refetchQueries({ queryKey: queryKeys.chatEndpoints.resources("endpoint-a") });
+    await settle();
+    expect(container.textContent).toContain("#general");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
   });
 
   it.each(["slack", "microsoft-teams"] as const)(
@@ -486,6 +537,8 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelectorAll('aside nav button')).toHaveLength(4);
     expect(container.querySelector('h1')?.textContent).toBe("Success");
     expect(container.textContent).toContain("You can now talk to Maya in Slack");
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
     expect(container.querySelector('[aria-label="Maya avatar"]')).not.toBeNull();
     expect(container.querySelector('main')?.textContent ?? container.textContent).not.toContain("Save & exit");
     expect(container.textContent).not.toContain("Copy message");
@@ -501,23 +554,72 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelector('aside button[aria-current="step"]')?.textContent).toBe("4Send a message");
   });
 
-  it("keeps a terminated agent’s saved avatar available in settings", async () => {
-    mocks.tab = "settings";
-    mocks.listAgents.mockResolvedValue([]);
-    mocks.getAgent.mockResolvedValue({ id: "agent-a", name: "Maya", status: "terminated", appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "orchid-peach" } });
-    await render("slack", true);
-    expect(container.querySelector('a[download]')?.getAttribute("href")).toBe("/api/agent-avatars/cap-v1/orchid-peach/rest.png?size=512&scale=1&background=paperclip-dark");
-    expect(mocks.getAgent).toHaveBeenCalledWith("agent-a", "company-a");
+  it.each(
+    (["managed", "automatic", "manual"] as const).flatMap(method =>
+      (["active", "paused"] as const).map(status => ({ method, status }))),
+  )("opens settings when Done resumes a completed $method Slack connection that is $status", async ({ method, status }) => {
+    const endpoint = await render("slack");
+    const saved: ChatEndpoint = { ...endpoint, status, providerAccountId: "workspace-a", setup: {
+      ...endpoint.setup!, step: "complete", slackSetupMethod: method,
+      slackRegistration: { status: "configured", appId: "ATEST" },
+      slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", welcomeStatus: "sent", dmChannelId: "DTEST" },
+    } };
+    mocks.get.mockResolvedValue(saved);
+    mocks.finishSlackSetup.mockRejectedValue(new Error("This connection is not waiting for a setup test"));
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], saved));
+    await settle();
+
+    await click("Done");
+
+    expect(mocks.finishSlackSetup).not.toHaveBeenCalled();
+    expect(mocks.navigate).toHaveBeenCalledWith("/apps/chat/endpoint-a/settings");
+    expect(mocks.pushToast).not.toHaveBeenCalled();
   });
 
-  it("keeps avatar download available in connector settings", async () => {
+  it.each(["managed", "automatic"] as const)("still finalizes an unfinished %s Slack setup before opening settings", async method => {
+    const endpoint = await render("slack");
+    const saved: ChatEndpoint = { ...endpoint, status: "verifying", providerAccountId: "workspace-a", setup: {
+      ...endpoint.setup!, step: "test", slackSetupMethod: method,
+      webhookVerifiedAt: "2026-01-01T00:00:00Z",
+      slackRegistration: { status: "configured", appId: "ATEST" },
+      slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", welcomeStatus: "sent", dmChannelId: "DTEST" },
+    } };
+    mocks.get.mockResolvedValue(saved);
+    mocks.finishSlackSetup.mockResolvedValue({ ...saved, status: "active", setup: { ...saved.setup, step: "complete" } });
+    flushSync(() => client.setQueryData(["chat-endpoint-setup-resume", endpoint.id], saved));
+    await settle();
+
+    await click("Done");
+
+    expect(mocks.finishSlackSetup).toHaveBeenCalledExactlyOnceWith("endpoint-a");
+    expect(mocks.navigate).toHaveBeenCalledWith("/apps/chat/endpoint-a/settings");
+  });
+
+  it("keeps settings focused on channel access and the test-message action", async () => {
     mocks.tab = "settings";
-    await render("slack", true);
-    const section = container.querySelector('section[aria-label="Slack avatar"]')!;
-    expect(section.textContent).toContain("Download avatar");
-    expect(section.querySelector('a[download]')?.getAttribute("href")).toContain("/cherry-pop/rest.png?size=512&scale=1");
-    expect(section.querySelector("details")?.open).toBe(false);
-    expect(mocks.getAgent).toHaveBeenCalledWith("agent-a", "company-a");
+    const endpoint = await render("slack", true);
+    expect(container.textContent).toContain("Send me a test message");
+    expect(container.textContent).toContain("Open Slack configuration");
+    expect([...container.querySelectorAll("a")].some(link => link.textContent?.trim() === "Open Slack")).toBe(false);
+    flushSync(() => client.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), {
+      ...endpoint, status: "active", providerAccountId: "workspace-a",
+      setup: { ...endpoint.setup, step: "complete", slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", dmChannelId: "DTEST" } },
+    }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, { user: { id: "other-user" } }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, null));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
+    expect(container.textContent).not.toContain("Message in a channel");
+    expect(container.textContent).not.toContain("Agent avatar");
+    expect(container.textContent).not.toContain("Manage action permissions");
+    expect(container.querySelector('a[download]')).toBeNull();
   });
 
   it("discovers a newly invited, enabled Slack channel while settings stays open", async () => {
@@ -630,13 +732,13 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelector("h1")?.textContent).toBe("Add Slack credentials");
   });
 
-  it.each(["slack", "github", "discord", "telegram", "microsoft-teams"] as const)(
+  it.each(["slack", "discord", "telegram", "microsoft-teams"] as const)(
     "lets %s setup revisit the agent without duplicating the connection or losing provider fields",
     async (provider) => {
       await render(provider);
-      const nav = container.querySelector(provider === "github" ? 'nav[aria-label="Setup progress"]' : 'aside nav[aria-label="Connection setup progress"]')!;
+      const nav = container.querySelector('aside nav[aria-label="Connection setup progress"]')!;
       expect(nav).not.toBeNull();
-      if (provider !== "github") expect(container.querySelector("main nav")).toBeNull();
+      expect(container.querySelector("main nav")).toBeNull();
       const steps = [...nav.querySelectorAll("button")];
       expect(steps[1].getAttribute("aria-current")).toBe("step");
       expect(steps[2].disabled).toBe(true);
@@ -650,55 +752,34 @@ describe("chat setup and identity-link clipboard actions", () => {
       expect([...container.querySelectorAll("main input")]).toEqual(fields);
       expect(mocks.create).not.toHaveBeenCalled();
       await click("1Choose agent");
-      await click(provider === "slack" ? "2Create Slack app" : provider === "github" ? "2Connect GitHub App" : "2Connect provider");
+      await click(provider === "slack" ? "2Create Slack app" : "2Connect provider");
       expect(steps[1].getAttribute("aria-current")).toBe("step");
     },
   );
 
-  it("copies the one-time webhook secret through the same fallback", async () => {
+  it("resumes an assigned GitHub draft in the two-screen wizard without creating a connection", async () => {
     await render("github");
-    await click("Use an existing App");
-    await click("Generate webhook secret");
-    await click("Copy webhook secret");
-    expect(copied).toEqual([secret]);
-    expect(writeText).not.toHaveBeenCalled();
+    const steps = [...container.querySelectorAll('nav[aria-label="Setup progress"] button')];
+    expect(steps).toHaveLength(2);
+    expect(steps[1].getAttribute("aria-current")).toBe("step");
+    expect(container.querySelector("h1")?.textContent).toBe("Connect GitHub");
+    expect(container.querySelector("input#github-app-name")?.getAttribute("value")).toBe("Maya");
+    expect(mocks.create).not.toHaveBeenCalled();
   });
 
-  it("reports a failed secret copy without exposing the secret or an unhandled rejection", async () => {
+  it("keeps manual existing-App recovery write-only without generating or copying credentials", async () => {
     await render("github");
-    await click("Use an existing App");
-    await click("Generate webhook secret");
-    execCommand.mockReturnValue(false);
-    await click("Copy webhook secret");
-    expect(mocks.pushToast).toHaveBeenLastCalledWith({
-      title: "Couldn't copy to clipboard",
-      body: "Select and copy the value manually.",
-      tone: "error",
-    });
-    expect(JSON.stringify(mocks.pushToast.mock.calls)).not.toContain(secret);
-  });
-
-  // The toast provider drops an identical toast raised inside 3.5 seconds, so
-  // a reader clicking twice against a blocked clipboard would see the failure
-  // once and then nothing. The inline state has to answer every click.
-  it("still shows a repeated copy failure the toast would have deduplicated", async () => {
-    await render("github");
-    await click("Use an existing App");
-    await click("Generate webhook secret");
-    execCommand.mockReturnValue(false);
-
-    await click("Copy webhook secret");
-    expect(container.textContent).toContain("Couldn’t copy");
-
-    // Same failure again, well inside the dedupe window: the second toast is
-    // suppressed, so the button itself is the only thing left to say so.
-    const toastsAfterFirst = mocks.pushToast.mock.calls.length;
-    await click("Couldn’t copy — select it manually");
-    expect(container.textContent).toContain("Couldn’t copy");
-    expect(container.textContent).not.toContain("Webhook secret copied");
-    expect(mocks.pushToast.mock.calls.length).toBeGreaterThanOrEqual(
-      toastsAfterFirst,
-    );
+    await click("I already have an App");
+    const privateKey = container.querySelector<HTMLInputElement>("#github-private-key");
+    const webhookSecret = container.querySelector<HTMLInputElement>("#github-webhook-secret");
+    expect(privateKey?.type).toBe("password");
+    expect(privateKey?.value).toBe("");
+    expect(webhookSecret?.type).toBe("password");
+    expect(webhookSecret?.value).toBe("");
+    expect(container.textContent).not.toContain("Copy webhook secret");
+    expect(container.textContent).not.toContain("Generate webhook secret");
+    expect(mocks.generateSetupSecret).not.toHaveBeenCalled();
+    expect(copied).toEqual([]);
   });
 
   it("copies a reusable Slack invitation without granting access or exposing a private confirmation token", async () => {

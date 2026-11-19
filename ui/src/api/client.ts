@@ -1,22 +1,108 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
+import { ApiError, apiErrorFromResponse } from "./api-error";
+import { errorCopy } from "./errors";
+export { ApiError, apiErrorFromResponse, type ApiErrorOptions } from "./api-error";
 import { readApiJson } from "./response";
 
 const BASE = "/api";
 
-export class ApiError extends Error {
-  status: number;
-  body: unknown;
+// --- Dev/QA outage simulator ----------------------------------------------------
+//
+// Reproduces a deploy blip without a deploy. Dev and QA builds only:
+//
+//   localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable"     // until removed
+//   localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable@20"  // for 20 seconds
+//   localStorage.paperclipSimulateOutage = "502"       // non-JSON proxy page
+//   localStorage.paperclipSimulateOutage = "network"   // fetch rejects (connection drop)
+//
+// Every same-origin API request made through `apiFetch` (the client, health,
+// session) fails with the chosen shape. Remove the key to end the outage.
 
-  constructor(message: string, status: number, body: unknown) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.body = body;
+export const OUTAGE_SIMULATOR_STORAGE_KEY = "paperclipSimulateOutage";
+
+export type SimulatedOutage =
+  | { kind: "network"; durationMs: number | null }
+  | { kind: "status"; status: number; code: string | null; durationMs: number | null };
+
+export function parseSimulatedOutage(raw: string | null | undefined): SimulatedOutage | null {
+  const match = /^\s*(network|(\d{3})(?::([A-Za-z0-9_.-]+))?)(?:@(\d+(?:\.\d+)?))?\s*$/.exec(raw ?? "");
+  if (!match) return null;
+  const durationMs = match[4] ? Math.round(Number(match[4]) * 1000) : null;
+  if (match[1] === "network") return { kind: "network", durationMs };
+  const status = Number(match[2]);
+  if (status < 400 || status > 599) return null;
+  return { kind: "status", status, code: match[3] ?? null, durationMs };
+}
+
+function outageSimulatorEnabled(): boolean {
+  return import.meta.env.DEV || import.meta.env.MODE === "qa";
+}
+
+let simulatedOutageWindow: { raw: string; endsAt: number | null } | null = null;
+
+/** The outage to simulate for the next request, or null. Never throws. */
+export function activeSimulatedOutage(now = Date.now()): SimulatedOutage | null {
+  if (!outageSimulatorEnabled() || typeof window === "undefined") return null;
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage?.getItem(OUTAGE_SIMULATOR_STORAGE_KEY) ?? null;
+  } catch {
+    return null;
   }
+  const outage = parseSimulatedOutage(raw);
+  if (!raw || !outage) {
+    simulatedOutageWindow = null;
+    return null;
+  }
+  if (simulatedOutageWindow?.raw !== raw) {
+    simulatedOutageWindow = { raw, endsAt: outage.durationMs === null ? null : now + outage.durationMs };
+  }
+  if (simulatedOutageWindow.endsAt !== null && now >= simulatedOutageWindow.endsAt) {
+    simulatedOutageWindow = null;
+    try {
+      window.localStorage.removeItem(OUTAGE_SIMULATOR_STORAGE_KEY);
+    } catch {
+      // Storage can be unavailable; the outage still ends for this tab.
+    }
+    return null;
+  }
+  return outage;
+}
+
+function simulatedOutageResponse(outage: Extract<SimulatedOutage, { kind: "status" }>): Response {
+  if (!outage.code) {
+    // What a proxy serves while the app is down: an HTML page, not JSON.
+    return new Response("<!doctype html><title>Unavailable</title>", {
+      status: outage.status,
+      headers: { "Content-Type": "text/html" },
+    });
+  }
+  return new Response(JSON.stringify({ error: outage.code }), {
+    status: outage.status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * `fetch` for same-origin API calls. Identical to `fetch` except that the
+ * dev/QA outage simulator can intercept it.
+ */
+export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  const outage = activeSimulatedOutage();
+  if (outage) {
+    if (init?.signal?.aborted) throw abortError();
+    if (outage.kind === "network") throw new TypeError("Failed to fetch");
+    return simulatedOutageResponse(outage);
+  }
+  return fetch(input, init);
 }
 
 export interface RequestOptions {
+  /** Do not join an older in-flight read when validating a write. */
+  fresh?: boolean;
+  /** Per-caller GET deadline, including the response body. A retry starts a fresh fetch. */
+  timeoutMs?: number;
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
   signal?: AbortSignal;
   /** Extra request headers (e.g. the async-import opt-in). Mutations only. */
@@ -51,7 +137,7 @@ export async function requestResponse(path: string, init?: RequestInit): Promise
   }
   applyObservabilityHeaders(headers);
 
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await apiFetch(`${BASE}${path}`, {
     credentials: "include",
     ...init,
     headers,
@@ -60,11 +146,7 @@ export async function requestResponse(path: string, init?: RequestInit): Promise
     const errorBody = await readApiJson(res);
     const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, errorBody);
     if (recovery) return recovery;
-    throw new ApiError(
-      (errorBody as { error?: string } | null)?.error ?? `Request failed: ${res.status}`,
-      res.status,
-      errorBody,
-    );
+    throw apiErrorFromResponse(res, errorBody);
   }
   return res;
 }
@@ -88,13 +170,14 @@ interface InflightGet {
   refs: Set<symbol>;
 }
 
-const inflightGets = new Map<string, InflightGet>();
+const inflightGets = new Map<string | symbol, InflightGet>();
 
 function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const signal = options?.signal;
   if (signal?.aborted) return Promise.reject(abortError());
 
-  let entry = inflightGets.get(path);
+  const key = options?.fresh ? Symbol(path) : path;
+  let entry = inflightGets.get(key);
   if (!entry) {
     const controller = new AbortController();
     const promise = request<T>(path, {
@@ -106,13 +189,13 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
     // Clear the shared entry once settled so later calls issue a fresh request.
     promise.then(
       () => {
-        if (inflightGets.get(path) === created) inflightGets.delete(path);
+        if (inflightGets.get(key) === created) inflightGets.delete(key);
       },
       () => {
-        if (inflightGets.get(path) === created) inflightGets.delete(path);
+        if (inflightGets.get(key) === created) inflightGets.delete(key);
       },
     );
-    inflightGets.set(path, created);
+    inflightGets.set(key, created);
     entry = created;
   }
 
@@ -123,28 +206,42 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const releaseRef = () => {
     if (!activeEntry.refs.delete(ref)) return;
     // Last caller gone before the fetch settled → abort the shared request.
-    if (activeEntry.refs.size === 0 && inflightGets.get(path) === activeEntry) {
-      inflightGets.delete(path);
+    if (activeEntry.refs.size === 0) {
+      if (inflightGets.get(key) === activeEntry) inflightGets.delete(key);
       activeEntry.controller.abort();
     }
   };
 
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
       signal?.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
+    };
+    const onAbort = () => {
+      cleanup();
       releaseRef();
       reject(abortError());
     };
     if (signal) signal.addEventListener("abort", onAbort);
+    if (options?.timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        cleanup();
+        // Other callers keep their request, but retries must not rejoin it.
+        if (inflightGets.get(key) === activeEntry) inflightGets.delete(key);
+        releaseRef();
+        reject(new ApiError(errorCopy("TIMEOUT").body, 408, { error: "TIMEOUT" }));
+      }, options.timeoutMs);
+    }
 
     activeEntry.promise.then(
       (value) => {
-        signal?.removeEventListener("abort", onAbort);
+        cleanup();
         activeEntry.refs.delete(ref);
         resolve(value as T);
       },
       (err) => {
-        signal?.removeEventListener("abort", onAbort);
+        cleanup();
         activeEntry.refs.delete(ref);
         reject(err);
       },
@@ -165,9 +262,9 @@ export function detachInflightGet(path: string): void {
   inflightGets.delete(path);
 }
 
-/** Test-only: number of in-flight coalesced GET keys. */
-export function __inflightGetCount(): number {
-  return inflightGets.size;
+/** End the sharing scope when identity changes; existing callers still settle. */
+export function detachInflightGets(): void {
+  inflightGets.clear();
 }
 
 function isRequestOptions(value: unknown): value is RequestOptions {

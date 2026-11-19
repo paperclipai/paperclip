@@ -4,7 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { boardStatuses, getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -188,16 +189,11 @@ describe("KanbanBoard", () => {
     expect(container.textContent).not.toContain("Issue 1");
   });
 
-  it("has a column for every selectable issue status", () => {
-    expect(boardStatuses).toContain("ready_for_qa");
-  });
-
   it("gives every column a status-hued tone", () => {
     expect(getKanbanColumnTone("backlog").body).toContain("bg-muted/30");
     expect(getKanbanColumnTone("todo").body).toContain("amber");
     expect(getKanbanColumnTone("in_progress").body).toContain("blue");
     expect(getKanbanColumnTone("in_review").body).toContain("violet");
-    expect(getKanbanColumnTone("ready_for_qa").body).toContain("fuchsia");
     expect(getKanbanColumnTone("blocked").body).toContain("red");
     expect(getKanbanColumnTone("done").body).toContain("green");
     expect(getKanbanColumnTone("cancelled").body).toContain("bg-muted/25");
@@ -237,4 +233,18 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
   });
+
+  it("moves a cached card into its new column before the server responds", () => {
+    const issue = { ...createIssue(1, "todo"), displayStatus: "todo" as const };
+    const { container, render } = renderBoard({ issues: [issue] });
+    const column = () => container.querySelector('a[href="/issues/PAP-1"]')?.closest('[data-issue-row-details]')?.parentElement?.parentElement;
+    expect(column()?.textContent).toContain("Todo");
+    render({ issues: [applyOptimisticIssueFieldUpdate(issue, { status: "done" })!] });
+    expect(column()?.textContent).toContain("Done");
+  });
+});
+
+
+it("keeps Monitoring derived rather than allowing a drag to manufacture it", () => {
+  expect(resolveKanbanTargetStatus("monitoring", [])).toBeNull();
 });

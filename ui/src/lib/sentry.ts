@@ -16,12 +16,12 @@
 // as long as the close call takes. Both calls are built-in Sentry client
 // calls — no custom filter code.
 //
-// `initBrowserErrorMonitoring`, `teardownBrowserErrorMonitoring`, and
-// `captureBrowserException` each queue their work on one shared promise
-// chain (`enqueue`) instead of running at once. One operation runs at a
-// time, in call order, so no operation can ever observe another one
-// part-finished — a sign-out always closes the client a sign-in already
-// finished starting, never one still starting.
+// `initBrowserErrorMonitoring`, `teardownBrowserErrorMonitoring`,
+// `captureBrowserException`, and `captureQueryException` each queue their
+// work on one shared promise chain (`enqueue`) instead of running at once.
+// One operation runs at a time, in call order, so no operation can ever
+// observe another one part-finished — a sign-out always closes the client a
+// sign-in already finished starting, never one still starting.
 //
 // `@sentry/browser` loads through a dynamic import, so Vite puts it in a
 // separate chunk that a browser with no DSN never fetches.
@@ -38,7 +38,16 @@
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
 
-import { buildBrowserErrorContext, readBrowserErrorState, type BrowserErrorDetails } from "./browser-error-context";
+import {
+  buildBrowserErrorContext,
+  buildQueryErrorContext,
+  classifyRejectionReason,
+  readBrowserErrorState,
+  readPageLifecycle,
+  startPageDiagnostics,
+  takeRejectionEventSnapshot,
+  type BrowserErrorDetails,
+} from "./browser-error-context";
 
 let queue: Promise<void> = Promise.resolve();
 
@@ -72,6 +81,11 @@ export function initBrowserErrorMonitoring(dsn: string, environment?: string | n
     if (sentry) return;
     try {
       const Sentry = await import("@sentry/browser");
+      // Before init: the rejection snapshot listener must precede the SDK's
+      // `onunhandledrejection` handler. Diagnostics never block monitoring.
+      try {
+        startPageDiagnostics();
+      } catch { /* diagnostic unavailable */ }
       Sentry.init(buildBrowserSentryInitOptions(dsn, environment));
       sentry = Sentry;
     } catch (err) {
@@ -144,13 +158,34 @@ export function captureBrowserException(error: unknown, details?: BrowserErrorDe
   } catch {
     // Diagnostics must never replace the original exception or its recovery UI.
   }
+  enqueueCapture(error, context);
+}
+
+/**
+ * Report a failed query, grouped by its HTTP status and the static name of
+ * its query key. Never throws, and is a no-op until the gate opens.
+ */
+export function captureQueryException(error: unknown, queryKey: readonly unknown[]): void {
+  let context: ReturnType<typeof buildQueryErrorContext> | undefined;
+  try {
+    context = buildQueryErrorContext(error, queryKey);
+  } catch {
+    // Diagnostics must never replace the original exception.
+  }
+  enqueueCapture(error, context);
+}
+
+function enqueueCapture(
+  error: unknown,
+  context: ReturnType<typeof buildBrowserErrorContext> | ReturnType<typeof buildQueryErrorContext> | undefined,
+): void {
   void enqueue(async () => {
     try {
       if (context) sentry?.captureException(error, context);
       else sentry?.captureException(error);
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("[paperclip] Sentry captureBrowserException failed", err);
+      console.error("[paperclip] Sentry captureException failed", err);
     }
   });
 }
@@ -183,6 +218,7 @@ export function buildBrowserSentryInitOptions(
         event.contexts = {
           ...event.contexts,
           browser_state: event.contexts?.browser_state ?? readBrowserErrorState(),
+          page_lifecycle: event.contexts?.page_lifecycle ?? readPageLifecycle(),
         };
         event.tags = {
           ...event.tags,
@@ -194,8 +230,16 @@ export function buildBrowserSentryInitOptions(
         )) {
           // The SDK supplies the rejected value directly. Classify without
           // reading object properties, coercing strings, or copying its value.
-          const reason = hint.originalException;
-          event.tags.browser_rejection_kind = reason === null ? "null" : typeof reason;
+          const kind = classifyRejectionReason(hint.originalException);
+          event.tags.browser_rejection_kind = kind;
+          // Whether the browser or a script dispatched the event, and which
+          // promise implementation carried it. Without a stack these are the
+          // remaining attribution facts for an `undefined` rejection.
+          const rejection = takeRejectionEventSnapshot(kind);
+          if (rejection) {
+            event.tags.browser_rejection_event = rejection.trusted ? "trusted" : "synthetic";
+            event.contexts.rejection_event = rejection;
+          }
         }
       } catch {
         // Diagnostics must not replace or discard the original error.
