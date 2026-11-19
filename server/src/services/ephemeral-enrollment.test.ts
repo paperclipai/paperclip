@@ -137,3 +137,17 @@ it("still names a listener that points somewhere else", async () => {
   vi.stubEnv("PAPERCLIP_DATABASE_LISTEN_URL", "postgres://fixture:fixture@other.test/database");
   await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_database_listener_required"] });
 });
+
+it("does not waive an unparseable runtime database because the listener is unset", async () => {
+  vi.stubEnv("PAPERCLIP_DATABASE_LISTEN_URL", "");
+  const config = await import("../config.js");
+  const original = config.loadConfig;
+  vi.spyOn(config, "loadConfig").mockReturnValue({ ...original(), databaseUrl: "not a url" } as never);
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_database_listener_required"] });
+});
+
+it("still names another missing setting when the listener is unset", async () => {
+  vi.stubEnv("PAPERCLIP_DATABASE_LISTEN_URL", "");
+  vi.stubEnv("PAPERCLIP_SHARED_UI_ASSETS", "");
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_storage_flags_required"] });
+});
