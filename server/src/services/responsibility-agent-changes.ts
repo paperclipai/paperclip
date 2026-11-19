@@ -6,6 +6,21 @@ import { lockDashboard, responsibilityDashboardVersionService } from "./responsi
 
 /** Names the Dashboard version an agent's change saved, so the agent can say it can be undone. */
 export const DASHBOARD_VERSION_HEADER = "X-Paperclip-Dashboard-Version";
+/** Whose Dashboard history holds the version in `DASHBOARD_VERSION_HEADER`. */
+export const DASHBOARD_OWNER_HEADER = "X-Paperclip-Dashboard-Owner";
+
+/**
+ * An `onVersion` that names only `ownerUserId`'s version in the response. A
+ * change can also save versions of other people's Dashboards (a move between
+ * owners, an area they use); those stay in their own histories.
+ */
+export function reportVersionOf(res: { setHeader(name: string, value: string): unknown }, ownerUserId: string) {
+  return (versionId: string, owner: string) => {
+    if (owner !== ownerUserId) return;
+    res.setHeader(DASHBOARD_VERSION_HEADER, versionId);
+    res.setHeader(DASHBOARD_OWNER_HEADER, owner);
+  };
+}
 
 /** The confirmation card key that authorizes deleting one responsibility or area. */
 export function responsibilityDeletionKey(kind: "responsibility" | "area", id: string) {
@@ -41,15 +56,15 @@ export function responsibilityAgentChangeService(db: Db) {
         touchedAreaIds?: readonly string[];
         /** Areas the change created, so an empty one shows (and can be undone). */
         createdAreaIds?: (result: T) => readonly string[];
-        /** Told each version the change saved, after it commits. */
-        onVersion?: (versionId: string) => void;
+        /** Told each version the change saved and whose Dashboard it is, after it commits. */
+        onVersion?: (versionId: string, ownerUserId: string) => void;
       },
       mutate: (tx: Db) => Promise<T>,
     ): Promise<T> {
       // A fixed lock order, so two changes that touch the same people cannot deadlock.
       const owners = [...new Set(input.ownerUserIds)].sort();
       const touched = [...(input.touchedAreaIds ?? [])];
-      const saved: string[] = [];
+      const saved: Array<{ id: string; owner: string }> = [];
       const result = await db.transaction(async (tx) => {
         for (const owner of owners) {
           await lockDashboard(tx, input.companyId, owner);
@@ -61,11 +76,11 @@ export function responsibilityAgentChangeService(db: Db) {
         for (const owner of owners) {
           const snapshot = await versions.captureSnapshot(tx, input.companyId, owner, kept, touched);
           const version = await versions.save(tx, { companyId: input.companyId, ownerUserId: owner, cause: "change_set", snapshot, actorAgentId: input.agentId });
-          if (version.created) saved.push(version.row.id);
+          if (version.created) saved.push({ id: version.row.id, owner });
         }
         return value;
       });
-      for (const id of saved) input.onVersion?.(id);
+      for (const version of saved) input.onVersion?.(version.id, version.owner);
       return result;
     },
 

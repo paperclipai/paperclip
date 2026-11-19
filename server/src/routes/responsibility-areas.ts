@@ -11,9 +11,10 @@ import { responsibilitiesDisabledError } from "../services/responsibilities-disa
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
-import { DASHBOARD_VERSION_HEADER, responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
+import { reportVersionOf, responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
 import { responsibilityAreaService } from "../services/responsibility-areas.js";
-import { agentPersonInCompany, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { AGENT_PERSON_RULE, agentPersonInCompany } from "./agent-person-authz.js";
+import { assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const NOT_FOUND = "Area not found";
 
@@ -61,8 +62,8 @@ export function responsibilityAreaRoutes(db: Db) {
   async function assertAreaWriter(req: Request, companyId: string) {
     if (req.actor.type === "board") return null;
     await assertCompanyRead(req, companyId);
-    const person = agentPersonInCompany(req, companyId);
-    if (!person) throw forbidden("Only a member of the company can change an area; this agent's run does not work for one");
+    const person = await agentPersonInCompany(db, req, companyId);
+    if (!person) throw forbidden(`Only a member of the company can change an area, and this agent's run does not act for one. ${AGENT_PERSON_RULE}.`);
     return { personUserId: person.userId, agentId: getActorInfo(req).actorId };
   }
 
@@ -97,7 +98,7 @@ export function responsibilityAreaRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     await assertCompanyRead(req, companyId);
     const actor = getActorInfo(req);
-    const person = agentPersonInCompany(req, companyId);
+    const person = await agentPersonInCompany(db, req, companyId);
     const create = (tx: Db) => responsibilityAreaService(tx).create(
       companyId,
       req.body,
@@ -108,7 +109,7 @@ export function responsibilityAreaRoutes(db: Db) {
     const { area, created } = person
       ? await agentChanges.record({
         companyId, ownerUserIds: [person.userId], agentId: actor.actorId,
-        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
+        onVersion: reportVersionOf(res, person.userId),
         createdAreaIds: (result) => (result.created ? [result.area.id] : []),
       }, create)
       : await create(db);
@@ -130,12 +131,20 @@ export function responsibilityAreaRoutes(db: Db) {
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
     const writer = await assertAreaWriter(req, row.companyId);
-    // Everyone whose Dashboard shows the area gets a version they can undo.
+    const owners = writer ? await svc.ownersInArea(row.companyId, row.id) : [];
+    // Undo never renames, re-describes, reorders or un-archives an area other people's responsibilities
+    // share (only their own Dashboards say so), so such a change is not reported as undoable.
+    const sharedChange = Boolean(writer) && owners.some((owner) => owner !== writer!.personUserId) && (
+      (req.body.title !== undefined && req.body.title !== row.title)
+      || (req.body.description !== undefined && req.body.description !== row.description)
+      || (req.body.sortOrder !== undefined && req.body.sortOrder !== row.sortOrder)
+      || (req.body.status !== undefined && req.body.status !== "archived" && row.status === "archived"));
+    // Everyone whose Dashboard shows the area gets a version.
     const updated = writer
       ? await agentChanges.record({
-        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...await svc.ownersInArea(row.companyId, row.id)],
+        companyId: row.companyId, ownerUserIds: [writer.personUserId, ...owners],
         agentId: writer.agentId, touchedAreaIds: [row.id],
-        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
+        onVersion: sharedChange ? undefined : reportVersionOf(res, writer.personUserId),
       }, (tx) => responsibilityAreaService(tx).update(row, req.body))
       : await svc.update(row, req.body);
     await logAreaMutation(req, row.companyId, "responsibility_area.updated", row.id, {
@@ -171,7 +180,7 @@ export function responsibilityAreaRoutes(db: Db) {
         companyId: row.companyId, ownerUserIds: [writer.personUserId, ...await svc.ownersInArea(row.companyId, row.id)],
         agentId: writer.agentId,
         touchedAreaIds: [row.id, ...(query.moveResponsibilitiesTo ? [query.moveResponsibilitiesTo] : [])],
-        onVersion: (versionId) => res.setHeader(DASHBOARD_VERSION_HEADER, versionId),
+        onVersion: reportVersionOf(res, writer.personUserId),
       }, remove)
       : await remove(db);
     if (!removed) {
