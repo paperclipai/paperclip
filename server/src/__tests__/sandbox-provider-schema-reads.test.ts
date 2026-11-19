@@ -1,10 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { eq, sql, type SQL } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb, plugins, type Db } from "@paperclipai/db";
 import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import type { PaperclipPluginManifestV1, PluginEnvironmentDriverDeclaration } from "@paperclipai/shared";
-import { resolvePluginSandboxProviderConfigSchema, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
+import {
+  PROVIDER_SCHEMA_REUSE_MS, resolvePluginSandboxProviderConfigSchema, resolvePluginSandboxProviderDriverByKey,
+} from "../services/plugin-environment-driver.js";
 import { resolveEnvironmentDriverConfigForRuntime, resolveSandboxProviderSecretRefPaths } from "../services/environment-config.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -37,6 +39,7 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
     return observed;
   }
   const lookup = (client: Db, driverKey = key) => resolvePluginSandboxProviderConfigSchema({ db: client, driverKey });
+  const expire = () => vi.setSystemTime(Date.now() + PROVIDER_SCHEMA_REUSE_MS);
   async function measure<T>(client: Db, operation: () => Promise<T>) {
     const events: Array<Record<string, unknown>> = [], now = Date.now();
     const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event), () => now);
@@ -54,8 +57,8 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
     temporary = await startEmbeddedPostgresTestDatabase("sandbox-schema-reads-");
     db = createDb(temporary.connectionString);
   }, 120_000);
-  beforeEach(async () => { await db.delete(plugins); });
-  afterEach(async () => { await Promise.all(clients.splice(0).map(client => client.$client.end())); });
+  beforeEach(async () => { vi.useFakeTimers({ toFake: ["Date"] }); await db.delete(plugins); });
+  afterEach(async () => { vi.useRealTimers(); await Promise.all(clients.splice(0).map(client => client.$client.end())); });
   afterAll(async () => { await temporary?.cleanup(); });
 
   it("keeps runtime secret paths current without retransferring an unchanged schema", async () => {
@@ -65,15 +68,20 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
     const id = await seed([driver(key, schema)]), observed = observer();
     const before = await db.select().from(plugins).where(eq(plugins.id, id));
     const cold = await measure(observed, () => resolveSandboxProviderSecretRefPaths(observed, key));
+    const reused = await measure(observed, () => resolveSandboxProviderSecretRefPaths(observed, key));
+    expire();
     const warm = await measure(observed, () => resolveSandboxProviderSecretRefPaths(observed, key));
     expect(cold.value).toEqual(new Set(["credentials.token"]));
+    expect(reused.value).toEqual(cold.value);
     expect(warm.value).toEqual(cold.value);
     expect(cold.calls).toBe(1);
+    expect(reused.calls).toBe(0);
     expect(warm.calls).toBe(1);
     expect(cold.bytes).toBeGreaterThan(32 * 1024);
     expect(warm.bytes).toBeLessThan(256);
     const changed = { type: "object", allOf: [{ properties: { apiKey: { type: "string", format: "secret-ref" } } }] };
     await db.update(plugins).set({ manifestJson: manifest(id, [driver(key, changed)]) }).where(eq(plugins.id, id));
+    expire();
     expect(await resolveSandboxProviderSecretRefPaths(observed, key)).toEqual(new Set(["apiKey"]));
     const environment = { id: randomUUID(), driver: "sandbox" as const, config: { provider: key, apiKey: randomUUID() } };
     await expect(resolveEnvironmentDriverConfigForRuntime(observed, null, environment)).rejects.toThrow("companyId");
@@ -90,10 +98,13 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
     expect(full?.plugin.status).toBe("disabled");
     expect(await resolvePluginSandboxProviderDriverByKey({ db: observed, driverKey: key, requireRunning: true })).toBeNull();
     await db.update(plugins).set({ installOrder: 0 }).where(eq(plugins.id, b));
+    expire();
     expect((await lookup(observed))).toEqual({ title: "other plugin" });
     await db.delete(plugins).where(eq(plugins.id, b));
+    expire();
     expect((await lookup(observed))).toEqual({ title: "first" });
     await db.update(plugins).set({ manifestJson: manifest(a, [driver("replacement")]) }).where(eq(plugins.id, a));
+    expire();
     expect(await lookup(observed)).toBeNull();
   });
 
@@ -112,6 +123,7 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
     const first = await lookup(a);
     first!.properties = {};
     expect(await resolveSandboxProviderSecretRefPaths(a, key)).toEqual(new Set(["token"]));
+    expire();
     const warm = await measure(a, () => lookup(a)), independent = await measure(b, () => lookup(b));
     expect(warm.bytes).toBeLessThan(256);
     expect(independent.bytes).toBeGreaterThan(4096);
@@ -125,6 +137,7 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
     await seed(declarations);
     const observed = observer();
     for (let index = 0; index < 33; index++) await lookup(observed, `provider-${index}`);
+    expire();
     expect((await measure(observed, () => lookup(observed, "provider-32"))).bytes).toBeLessThan(256);
     expect((await measure(observed, () => lookup(observed, "provider-0"))).bytes).toBeGreaterThan(2048);
     await lookup(observed, "oversized");
@@ -141,6 +154,7 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
       return observed.execute(query);
     } } as unknown as Db;
     expect((await lookup(guarded, unusual))).toEqual({ title: "exact provider" });
+    expire();
     fail = true;
     await expect(lookup(guarded, unusual)).rejects.toThrow("fixture database unavailable");
     fail = false;
@@ -159,6 +173,7 @@ describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
       return rows;
     } } as unknown as Db;
     expect((await lookup(raced))).toEqual({ title: "old" });
+    expire();
     pause = true;
     const oldRead = lookup(raced);
     await paused;

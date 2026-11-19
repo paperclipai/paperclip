@@ -31,7 +31,7 @@ import {
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { RECOVERY_ORIGIN_KINDS } from "../../../services/recovery/origins.js";
 import { isTerminalIssueStatus } from "../domain/policy.js";
-import type { WatchdogRunReader, WatchdogWriter } from "../application/ports.js";
+import type { FindLatestDecisionResult, WatchdogRunReader, WatchdogWriter } from "../application/ports.js";
 import type {
   EvaluationIssueSnapshot,
   FoldOutcome,
@@ -159,10 +159,14 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     return row?.pending ?? true;
   }
 
-  async function findLatestDecision(companyId: string, runId: string, now: Date) {
+  async function findLatestDecisions(companyId: string, runIds: readonly string[], now: Date) {
+    const ids = [...new Set(runIds)];
+    const result = new Map<string, FindLatestDecisionResult>();
+    if (ids.length === 0) return result;
     const [quietUntilRows, dismissedRows] = await Promise.all([
       db
-        .select({
+        .selectDistinctOn([heartbeatRunWatchdogDecisions.runId], {
+          runId: heartbeatRunWatchdogDecisions.runId,
           decision: heartbeatRunWatchdogDecisions.decision,
           snoozedUntil: heartbeatRunWatchdogDecisions.snoozedUntil,
         })
@@ -170,32 +174,39 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
         .where(
           and(
             eq(heartbeatRunWatchdogDecisions.companyId, companyId),
-            eq(heartbeatRunWatchdogDecisions.runId, runId),
+            inArray(heartbeatRunWatchdogDecisions.runId, ids),
             inArray(heartbeatRunWatchdogDecisions.decision, ["snooze", "continue"]),
             gt(heartbeatRunWatchdogDecisions.snoozedUntil, now),
           ),
         )
-        .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
-        .limit(1),
+        .orderBy(heartbeatRunWatchdogDecisions.runId, desc(heartbeatRunWatchdogDecisions.createdAt)),
       db
-        .select({ id: heartbeatRunWatchdogDecisions.id })
+        .selectDistinct({ runId: heartbeatRunWatchdogDecisions.runId })
         .from(heartbeatRunWatchdogDecisions)
         .where(
           and(
             eq(heartbeatRunWatchdogDecisions.companyId, companyId),
-            eq(heartbeatRunWatchdogDecisions.runId, runId),
+            inArray(heartbeatRunWatchdogDecisions.runId, ids),
             eq(heartbeatRunWatchdogDecisions.decision, "dismissed_false_positive"),
           ),
-        )
-        .limit(1),
+        ),
     ]);
-    const quietUntilRow = quietUntilRows[0];
-    return {
-      dismissedFalsePositive: dismissedRows.length > 0,
-      quietUntilDecision: quietUntilRow && quietUntilRow.snoozedUntil
-        ? { decision: quietUntilRow.decision as "snooze" | "continue", snoozedUntil: quietUntilRow.snoozedUntil }
-        : null,
-    };
+    const quietUntilByRun = new Map(quietUntilRows.map((row) => [row.runId, row]));
+    const dismissed = new Set(dismissedRows.map((row) => row.runId));
+    for (const runId of ids) {
+      const quietUntilRow = quietUntilByRun.get(runId);
+      result.set(runId, {
+        dismissedFalsePositive: dismissed.has(runId),
+        quietUntilDecision: quietUntilRow && quietUntilRow.snoozedUntil
+          ? { decision: quietUntilRow.decision as "snooze" | "continue", snoozedUntil: quietUntilRow.snoozedUntil }
+          : null,
+      });
+    }
+    return result;
+  }
+
+  async function findLatestDecision(companyId: string, runId: string, now: Date): Promise<FindLatestDecisionResult> {
+    return (await findLatestDecisions(companyId, [runId], now)).get(runId)!;
   }
 
   function selectEvaluationIssueSnapshot() {
@@ -211,21 +222,29 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     };
   }
 
-  async function findOpenStaleRunEvaluation(companyId: string, runId: string): Promise<EvaluationIssueSnapshot | null> {
-    const [row] = await db
-      .select(selectEvaluationIssueSnapshot())
+  async function findOpenStaleRunEvaluations(companyId: string, runIds: readonly string[]) {
+    const ids = [...new Set(runIds)];
+    const result = new Map<string, EvaluationIssueSnapshot>();
+    if (ids.length === 0) return result;
+    const rows = await db
+      .selectDistinctOn([issues.originId], selectEvaluationIssueSnapshot())
       .from(issues)
       .where(
         and(
           eq(issues.companyId, companyId),
           eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
-          eq(issues.originId, runId),
+          inArray(issues.originId, ids),
           visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
-      .limit(1);
-    return row ?? null;
+      .orderBy(issues.originId);
+    for (const row of rows) if (row.originId) result.set(row.originId, row);
+    return result;
+  }
+
+  async function findOpenStaleRunEvaluation(companyId: string, runId: string): Promise<EvaluationIssueSnapshot | null> {
+    return (await findOpenStaleRunEvaluations(companyId, [runId])).get(runId) ?? null;
   }
 
   async function findEvaluationIssueById(companyId: string, issueId: string): Promise<EvaluationIssueSnapshot | null> {
@@ -532,7 +551,9 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     findRunForCompany,
     isRuntimeSettlementPending,
     findLatestDecision,
+    findLatestDecisions,
     findOpenStaleRunEvaluation,
+    findOpenStaleRunEvaluations,
     findEvaluationIssueById,
     findLatestSameRunTerminalEvidence,
     findSourceIssue,

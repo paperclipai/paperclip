@@ -384,6 +384,17 @@ describe("P6-25 pre-result native session recovery", () => {
     ]);
   });
 
+  it("judges another owner's lease by the database clock, not a server clock that runs fast", async () => {
+    await db.update(nativeRunFinalizations).set({
+      leaseOwner: "other-server:resume:live", leaseExpiresAt: new Date(Date.now() + 2 * 60_000), nextAttemptAt: null,
+    }).where(eq(nativeRunFinalizations.runId, runId));
+    await expect(claimNativeSessionResumptions({ db, runnerInstanceId: "fast-clock", runIds: [runId],
+      now: new Date(Date.now() + 10 * 60_000) })).resolves.toEqual([]);
+    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).resolves.toEqual([
+      expect.objectContaining({ leaseOwner: "other-server:resume:live", nextAttemptAt: null }),
+    ]);
+  });
+
   it("dispatches the persisted run id and lease to the live same-run resume consumer", async () => {
     await db.update(nativeRunFinalizations).set({
       phase: "retryable_failure",

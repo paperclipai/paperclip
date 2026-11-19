@@ -34,6 +34,11 @@ describe("registered website delivery calibration", () => {
     const cancelled = structuredClone(o); cancelled.tasks[0]!.status = "cancelled"; expect(gradeWebsiteDelivery(cancelled).passed).toBe(false);
     const moved = structuredClone(o); (moved.tasks[0] as { projectId?: string }).projectId = "elsewhere"; expect(gradeWebsiteDelivery(moved).passed).toBe(false);
   });
+  // Full cohort 9: the answer linked /COM/api/attachments/<id>/content?download=1. The server serves its API only at /api.
+  it("accepts the served attachment routes and rejects the company-prefixed API path the server does not serve", () => {
+    const opened = valid(); opened.links = ["/RUN/issues/task", "/api/attachments/new/content"]; expect(gradeWebsiteDelivery(opened).passed).toBe(true);
+    const prefixed = valid(); prefixed.links = ["/RUN/issues/task", "/RUN/api/attachments/new/content?download=1"]; expect(gradeWebsiteDelivery(prefixed).passed).toBe(false);
+  });
   it("rejects a local path without registered download", () => { const o = valid(); o.links = ["/RUN/issues/task", "/tmp/website.html"]; expect(gradeWebsiteDelivery(o).passed).toBe(false); });
   it("rejects stale or mismatched downloaded bytes", () => { const o = valid(); o.downloaded[0]!.body = "<html>stale</html>"; expect(gradeWebsiteDelivery(o).passed).toBe(false); });
   it("rejects wrong immutable origin or work-product source", () => { const o = valid(); o.attachments[0]!.originatingRunId = "build"; expect(gradeWebsiteDelivery(o).passed).toBe(false); const source = valid(true); source.products[0]!.issueId = "another-task"; expect(gradeWebsiteDelivery(source).passed).toBe(false); });

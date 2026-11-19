@@ -1,8 +1,8 @@
-import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema } from "@paperclipai/shared";
+import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema, issueDocumentBatchQuerySchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
-import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
   experimentalApiDocs,
@@ -36,6 +36,11 @@ import {
   browserUseSettingsSchema,
   browserUseViewportSchema,
   browserUseViewerSchema,
+  mcpAppToolCallSchema,
+  mcpAppMessageSentSchema,
+  mcpAppModelContextUpdateSchema,
+  approveCompanyMcpSkillSchema,
+  mcpSkillFileQuerySchema,
   startVoiceSessionSchema, voiceCallbackPreferenceSchema, voicePhoneConfigurationSchema, voiceInboundDecisionSchema, VOICE_SESSION_STATES,
   slackToolCallSchema,
   slackSearchConfigSchema,
@@ -286,6 +291,9 @@ import {
   workspaceFileResourceQuerySchema,
   // Tool access
   connectToolAppSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
   configureRailwaySshSchema,
   createToolApplicationSchema,
   updateToolApplicationSchema,
@@ -1416,6 +1424,9 @@ const PUBLIC_OPERATIONS = new Set([
   "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
+  // Outside clouds fetch a company's workload identity issuer anonymously (routes/workload-identity.ts).
+  "GET /oidc/companies/{companyId}/.well-known/openid-configuration",
+  "GET /oidc/companies/{companyId}/jwks.json",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1439,7 +1450,31 @@ const browserUseOperations = [
   ["put", "/api/companies/{companyId}/browser-use-cloud/grants/{grantId}/settings", "Update browser credential settings", browserUseSettingsSchema],
 ] as const;
 
+// MCP Apps views in the task chat. Board only; reads follow task read access.
+const mcpAppsOperations = [
+  ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
+  ["get", "/api/issues/{issueId}/tool-call-progress", "Read the latest progress of a task's running app tool calls", undefined],
+  ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
+  ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
+  ["put", "/api/issues/{issueId}/mcp-app-views/{viewId}/model-context", "Store an MCP Apps view's context for the task's next run", mcpAppModelContextUpdateSchema],
+  ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/messages", "Record that a viewer sent an MCP Apps view's message", mcpAppMessageSentSchema],
+] as const;
+
+// MCP Skills from connected apps. Review is board only; agents in an active
+// run read an approved skill's files.
+const mcpSkillsBoardOperations = [
+  ["get", "/api/companies/{companyId}/mcp-skills", "List skills from connected apps", undefined],
+  ["get", "/api/companies/{companyId}/mcp-skills/{skillId}/content", "Read a connected app skill's instructions for review", undefined],
+  ["post", "/api/companies/{companyId}/mcp-skills/{skillId}/approve", "Approve a connected app skill for its manifest", approveCompanyMcpSkillSchema],
+  ["post", "/api/companies/{companyId}/mcp-skills/{skillId}/decline", "Decline or turn off a connected app skill", undefined],
+] as const;
+
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Workload identity status and key rotation are board-only (assertBoard in routes/workload-identity.ts).
+  "GET /api/companies/{companyId}/workload-identity",
+  "POST /api/companies/{companyId}/workload-identity/rotation",
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
@@ -1486,6 +1521,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/companies/{companyId}/observability",
   "POST /api/companies/{companyId}/observability/test",
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
+  ...mcpAppsOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
+  ...mcpSkillsBoardOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "POST /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/code",
 
   "GET /api/companies/{companyId}/project-repositories",
@@ -1603,9 +1640,17 @@ const BOARD_ONLY_OPERATIONS = new Set([
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/tailscale-connections",
+  "POST /api/companies/{companyId}/tailscale-connections",
+  "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/device-login",
+  "GET /api/companies/{companyId}/tailscale-connections/{connectionId}/devices",
+  "DELETE /api/companies/{companyId}/tailscale-connections/{connectionId}",
+  "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/pairing",
+  "GET /api/tools/oauth/tailscale/callback",
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "GET /api/instance/server-metrics",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
@@ -1715,6 +1760,8 @@ function resolveOperationAuthLevel(
   if (PUBLIC_OPERATIONS.has(key)) return "public";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
+  // An approved connected-app skill's file: an agent in an active run only.
+  if (key === "GET /api/agents/me/mcp-skills/{skillId}/files") return "agent_heartbeat";
   // Agents may read their own commentary, or all of it with commentary:view; the routes enforce that.
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
@@ -2261,6 +2308,26 @@ registry.registerPath({
     body: jsonBody(companyPortabilityImportSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+for (const [method, path, summary, body] of mcpAppsOperations) {
+  registerCurrentRoute({
+    method, path, summary, body, tags: ["MCP Apps"],
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 502: r.serverError },
+  });
+}
+
+for (const [method, path, summary, body] of mcpSkillsBoardOperations) {
+  registerCurrentRoute({
+    method, path, summary, body, tags: ["MCP Skills"],
+    responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  });
+}
+registerCurrentRoute({
+  method: "get", path: "/api/agents/me/mcp-skills/{skillId}/files", tags: ["MCP Skills"],
+  summary: "Read a file of an approved connected app skill (agent in an active run)",
+  query: mcpSkillFileQuerySchema,
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 for (const [method, path, summary, body] of browserUseOperations) {
@@ -4370,6 +4437,26 @@ registry.registerPath({
 // ─── Issues ──────────────────────────────────────────────────────────────────
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding",
+  tags: ["issues"],
+  summary: "Open the current board user's onboarding chat",
+  description: "Requires Agent Chat and company access. Reuses the caller's existing conversation or creates an unnumbered standing chat with onboarding context. Creates no execution task or project and starts no agent turn.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
+  tags: ["issues"],
+  summary: "Start the visible onboarding chat's live welcome",
+  description: "Call after the chat is visible. Requires an existing conversation owned by the caller. Returns started=true when a welcome is queued or already pending, or false when the conversation no longer needs a welcome. Retries failed or timed-out attempts and preserves normal agent admission gates.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(z.object({ started: z.boolean() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/chats",
   tags: ["issues"],
@@ -4422,10 +4509,13 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues/summaries",
   tags: ["issues"],
   summary: "Get authorized recent-task summaries",
-  description: "Accepts only the ids query parameter: one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. This private, no-store read excludes full task and workspace enrichment.",
+  description: "Accepts one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. With navigation=true, board viewers receive personal navigation state, including whether each task is archived for them. This private, no-store read excludes full task and workspace enrichment.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs; repeated query parameters are rejected") }),
+    query: z.object({
+      ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs. Repeated query parameters are rejected."),
+      navigation: z.literal("true").optional(),
+    }),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -4717,6 +4807,16 @@ registry.registerPath({
   summary: "Delete a work product",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issue-documents",
+  tags: ["issues"],
+  summary: "Bulk read one document key across issue IDs",
+  description: "Read current documents for 1–200 comma-separated task UUIDs in one request. Company and task read permissions apply. Unreadable, hidden, foreign and nonexistent tasks are omitted; a readable task without this key returns document:null. Items follow first-requested ID order with duplicates removed. includeBody defaults to true; includeBody=false returns revision metadata and updatedAt without loading bodies, for cache validation. No break-glass access. Responses over 8 MiB fail with 413; split the IDs into smaller requests. Native helpers can use save_api_response then download_artifact to relay the complete batch without per-task calls. Verify every requested ID is present before treating the inventory as complete.",
+  request: { params: z.object({ companyId: z.string().uuid() }), query: issueDocumentBatchQuerySchema },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 413: { description: "Split the document batch into smaller requests" }, 429: { description: "At most two active reads per actor and eight per server instance; retry after an active read finishes", headers: { "Retry-After": { schema: { type: "string", enum: ["1"] } } } } },
 });
 
 registry.registerPath({
@@ -5287,7 +5387,9 @@ registry.registerPath({
   path: "/api/projects/{id}",
   tags: ["projects"],
   summary: "Update project properties and defaults",
-  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds.",
+  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds. "
+    + "Archiving a project (archivedAt set to the current time) hides it from the sidebar and project selectors and keeps the project, its tasks and their history; no data is removed. Restoring sets archivedAt to null. "
+    + "A person unarchives a project on that project's own Configuration page, /<prefix>/projects/<projectId>/configuration, with the Unarchive button; give them that page as a Markdown link. Archived projects are not restored from the company Status page.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateProjectSchema),
@@ -5505,11 +5607,19 @@ registry.registerPath({
   },
 });
 
+const ROUTINE_WEBHOOK_SECRET_GUIDANCE = "A webhook response includes secretMaterial.webhookUrl and secretMaterial.webhookSecret. "
+  + "The webhookSecret is a credential: never write its value, or a header containing it, in a chat reply, comment, document or task. "
+  + "For a signed or bearer trigger, the URL and signing mode may be shared in chat. With signingMode none the URL alone starts the routine, so treat that URL as a credential too and do not write it in chat. "
+  + "Instead link the person to the routine's Triggers page, /<prefix>/routines/<routineId>/triggers, as a Markdown link, where Paperclip shows a key once: "
+  + "for a trigger still awaiting setup, link /<prefix>/routines/<routineId>/triggers?triggerSetup=<triggerId> and tell them to choose Generate new key; "
+  + "otherwise tell them to choose Edit webhook, then Replace key. Replacing the key invalidates the earlier one.";
+
 registry.registerPath({
   method: "post",
   path: "/api/routines/{id}/triggers",
   tags: ["routines"],
   summary: "Create a routine trigger",
+  description: ROUTINE_WEBHOOK_SECRET_GUIDANCE,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createRoutineTriggerSchema),
@@ -5543,6 +5653,7 @@ registry.registerPath({
   path: "/api/routine-triggers/{id}/rotate-secret",
   tags: ["routines"],
   summary: "Rotate a routine trigger secret",
+  description: ROUTINE_WEBHOOK_SECRET_GUIDANCE,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(rotateRoutineTriggerSecretSchema),
@@ -5681,6 +5792,10 @@ registry.registerPath({
       status: z
         .enum(["pending", "approved", "rejected", "withdrawn", "expired"])
         .optional(),
+      order: z
+        .enum(["created", "resolved"])
+        .optional()
+        .describe("created (default) lists the newest proposals first; resolved lists the most recent decisions first."),
     }),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
@@ -6414,6 +6529,7 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
+  description: "A retry run's retriedBy says in plain words who started it: a person who pressed Retry (named), or Paperclip's automatic recovery. It is null for a run that is not a retry. Use it rather than inferring the starter from invocationSource or triggerDetail.",
   request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries."), runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue.") }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -8008,6 +8124,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/assigned-work-invariant",
+  tags: ["runs"],
+  summary: "Report open agent tasks without a live run, pending start or wait on a person (board only)",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/live-runs",
   tags: ["runs"],
   summary: "List live runs for a company",
@@ -9526,6 +9651,142 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+const tailscaleCompanyParams = z.object({ companyId: z.string().uuid() });
+const tailscaleConnectionParams = tailscaleCompanyParams.extend({ connectionId: z.string().uuid() });
+const tailscaleConnectionResponse = z.object({
+  id: z.string().uuid(), companyId: z.string().uuid(), name: z.string(),
+  status: z.enum(["pending", "authorizing", "connecting", "connected", "disconnected", "expired", "error"]),
+}).strict();
+const tailscaleDeviceLoginResponse = {
+  ...r.ok(z.object({
+    connection: tailscaleConnectionResponse,
+    expiresAt: z.string().datetime().nullable(),
+    authorizationUrl: z.string().url().optional(),
+    needsApproval: z.boolean().optional(),
+  }).strict()),
+  headers: {
+    "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+    "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+  },
+};
+const tailscaleErrors = { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable };
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
+  summary: "List company Tailscale connections",
+  description: "Requires an instance administrator with company access, or local implicit board access. Returns connection metadata without credentials or node state.",
+  request: { params: tailscaleCompanyParams },
+  responses: { 200: r.ok(z.array(tailscaleConnectionResponse)), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
+  summary: "Start Tailscale device sign-in",
+  description: "Requires an instance administrator with company access, or local implicit board access. Starts device sign-in without a Cloud broker or OAuth app. Reuses an unexpired sign-in for connectionId; a connected network must be disconnected before replacement. Pending sign-in is bound to its initiating user and has a fixed ten-minute deadline. The authorization URL is present when sign-in is ready; needsApproval identifies a device waiting for tailnet administrator approval.",
+  request: { params: tailscaleCompanyParams, body: jsonBody(z.object({
+    name: z.string().trim().min(1).max(100).default("My tailnet"), connectionId: z.string().uuid().optional(),
+  }).strict()) },
+  responses: { 201: tailscaleDeviceLoginResponse, ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/device-login", tags: ["tailscale"],
+  summary: "Resume Tailscale device sign-in and read its progress",
+  description: "Requires the initiating user to retain instance-admin and company access, or local implicit board access. Resumes the private client for an existing sign-in without extending its deadline. Returns connection metadata, an optional sign-in URL or device approval flag, and expiresAt (null when no sign-in is pending). Does not return credentials or node state.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: tailscaleDeviceLoginResponse, ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/devices", tags: ["tailscale"],
+  summary: "List machines on a connected tailnet",
+  description: "Requires an instance administrator with company access, or local implicit board access. Resolves devices through this connection's private network client.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: r.ok(z.array(z.object({
+    id: z.string(), name: z.string(), hostname: z.string(), address: z.string(), os: z.string(), online: z.boolean(),
+  }).strict())), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "delete", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}", tags: ["tailscale"],
+  summary: "Disconnect a Tailscale network",
+  description: "Requires an instance administrator with company access, or local implicit board access. Invalidates pending consent and stops the private client. Keeps the saved connection record and does not remove the target machine from its tailnet.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: r.ok(tailscaleConnectionResponse), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/pairing", tags: ["tailscale"],
+  summary: "Prepare an SSH machine pairing command",
+  description: "Requires an instance administrator with company access, or local implicit board access. Generates a fresh SSH key, stores its private half in the company vault, and returns its secret ID and public install command.",
+  request: { params: tailscaleConnectionParams, body: jsonBody(z.object({
+    deviceId: z.string().min(1).max(256), port: z.number().int().min(1).max(65535).default(22),
+  }).strict()) },
+  responses: { 200: r.ok(z.object({ privateKeySecretId: z.string().uuid(), publicKey: z.string(), command: z.string() }).strict()), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/tools/oauth/tailscale/callback", tags: ["tailscale"],
+  summary: "Complete Tailscale network authorization",
+  description: "Requires the initiating board operator to retain instance-admin and company access. Consumes user-bound consent state and an opaque broker claim. Redirects to the connector page without returning enrollment credentials.",
+  request: { query: z.object({ state: z.string().min(1).max(128), claim_id: z.string().max(256).optional(), error: z.string().max(128).optional() }) },
+  responses: { 303: { description: "Return to the company Tailscale connector", headers: {
+    Location: { schema: { type: "string" } }, "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+    "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+  } }, ...tailscaleErrors },
+});
+
+const workloadIdentityParams = z.object({ companyId: z.string().uuid() });
+const workloadIdentityPublicNotFound = { 404: { description: "The company has no published signing key, or this instance has no public HTTPS address" } };
+const workloadIdentityKeyState = z.object({
+  issuer: z.string().url().nullable(),
+  unavailableReason: z.enum(["no_public_url", "not_https", "has_port", "loopback"]).nullable(),
+  keys: z.array(z.object({
+    keyId: z.string(), status: z.enum(["next", "active", "retiring"]),
+    createdAt: z.string().datetime(), statusChangedAt: z.string().datetime(),
+  }).strict()),
+}).strict();
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/.well-known/openid-configuration", tags: ["workload-identity"],
+  summary: "Company workload identity OIDC discovery document",
+  description: "Unauthenticated. Outside clouds read this to verify tokens that name one of the company's connections. Cacheable for five minutes.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({
+    issuer: z.string().url(), jwks_uri: z.string().url(),
+    response_types_supported: z.array(z.string()), subject_types_supported: z.array(z.string()),
+    id_token_signing_alg_values_supported: z.array(z.string()), claims_supported: z.array(z.string()),
+  }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/jwks.json", tags: ["workload-identity"],
+  summary: "Company workload identity public key set",
+  description: "Unauthenticated. Lists only public ES256 keys. Never contains private key members.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({ keys: z.array(z.object({
+    kty: z.literal("EC"), crv: z.string(), x: z.string(), y: z.string(), kid: z.string(), alg: z.literal("ES256"), use: z.literal("sig"),
+  }).strict()) }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/workload-identity", tags: ["workload-identity"],
+  summary: "Company workload identity issuer and key states",
+  description: "Board only. Returns the issuer (or why it is unavailable) and the published keys. No private key material.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(workloadIdentityKeyState), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/workload-identity/rotation", tags: ["workload-identity"],
+  summary: "Rotate the company workload identity signing key",
+  description: "Board only. begin publishes a next key; complete makes it sign after 24 hours of publication; emergency replaces every key at once. Each step writes its activity entry in the same transaction as the key change.",
+  request: { params: workloadIdentityParams, body: jsonBody(z.object({ step: z.enum(["begin", "complete", "emergency"]) }).strict()) },
+  responses: { 200: r.ok(z.object({
+    step: z.enum(["begin", "complete", "emergency"]), keyId: z.string(), created: z.boolean().optional(), state: workloadIdentityKeyState,
+  }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
 // ─── Environments ─────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -10223,6 +10484,17 @@ registry.registerPath({
   responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+// ─── Instance server metrics ──────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/server-metrics",
+  tags: ["instance"],
+  summary: "Get this server process's load metrics",
+  description: "Instance admins only: agent credentials and company members receive 403. Returns numbers for the one server process that answers: CPU, event-loop utilization and delay, statements per second, run event lateness and agent API pre-handler p99, missed lease renewals and dedicated database connection use, over about the last minute (windowMs). It returns 404 unless the operator set PAPERCLIP_SERVER_METRICS=true.",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 // ─── LLM text endpoints ───────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -10279,24 +10551,39 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+const linkPreviewResultSchema = z.object({
+  preview: z.object({
+    target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
+    title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
+    author: z.string().nullable(), updatedAt: z.string().nullable(),
+  }).nullable(),
+  maxAgeMs: z.number(),
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/link-preview",
   tags: ["companies"],
   summary: "Read optional link metadata for the current board user",
-  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. It does not change tasks or schedule background work.",
+  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. Each company/viewer can make 600 lookup requests per minute per server process. Excess requests return 429 with Retry-After; cached batch reads remain available. It does not change tasks or schedule background work.",
   request: { params: z.object({ companyId: z.string() }), query: z.object({ url: z.string().max(2048) }) },
   responses: {
-    200: r.ok(z.object({
-      preview: z.object({
-        target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
-        title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
-        author: z.string().nullable(), updatedAt: z.string().nullable(),
-      }).nullable(),
-      maxAgeMs: z.number(),
-    })),
-    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+    200: r.ok(linkPreviewResultSchema),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 429: r.tooManyRequests,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/link-previews/cached",
+  tags: ["companies"],
+  summary: "Read a batch of stored link statuses without contacting providers",
+  description: `Board-only and company/viewer scoped. Reads at most ${LINK_PREVIEW_BATCH_LIMIT} URLs. Canonical links are reused across tasks. Stale records have maxAgeMs zero; absent records are omitted. This is a read-only cache projection.`,
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ url: z.union([z.string().max(2048), z.array(z.string().max(2048)).min(1).max(LINK_PREVIEW_BATCH_LIMIT)]) }),
+  },
+  responses: { 200: r.ok(z.object({ results: z.record(z.string(), linkPreviewResultSchema) })), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -12287,6 +12574,12 @@ registerCurrentRoute({
   summary: "Revoke a personal tool connection grant delegation",
 });
 
+const managedGoogleAccessRemovalSchema = z.object({
+  provider: z.literal("google"),
+  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "not_ended"]),
+  outcomes: z.array(z.string()).describe("One diagnostic code per refresh token sent to Paperclip Cloud, in order."),
+}).describe("Present only for a Google connection managed by Paperclip Cloud. A failure to end access at Google does not undo the local removal.");
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
@@ -12294,6 +12587,13 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/grants/{grantId}",
   tags: ["tool-access"],
   summary: "Revoke a tool connection grant",
+  description: "Revokes the grant locally, then, for a Google connection managed by Paperclip Cloud, asks Paperclip Cloud to end the grant's access at Google and reports the result in providerAccess.",
+  responses: {
+    200: r.ok(z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registerCurrentRoute({
@@ -12379,6 +12679,104 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+  description: "Removes the connection and its credentials. For a Google connection managed by Paperclip Cloud, removal.providerAccess reports whether access was ended at Google.",
+  query: z.object({ deleteStoredContent: z.enum(["true", "false"]).optional() }),
+  responses: {
+    200: r.ok(z.object({ removal: z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content",
+  tags: ["tool-access"],
+  summary: "Count the content Paperclip stored from a connection's tool calls",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Delete the content Paperclip stored from a connection's tool calls",
+  responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Read the status of the latest stored-content deletion for a connection",
+});
+
+const MACHINE_SIGN_IN_ERRORS = {
+  400: r.badRequest,
+  401: r.unauthorized,
+  403: r.forbidden,
+  404: r.notFound,
+  422: r.unprocessable,
+};
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/companies/{companyId}/tools/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Start machine sign-in (OAuth client credentials) for an organization connection",
+  description: "Creates a draft organization connection to a remote MCP server that signs in as a registered client, with no person involved. With method paperclip_key, Paperclip creates a signing key, keeps the private half in the company vault, and returns the public key to register with the provider. Secrets are write-only.",
+  body: createMachineSignInSchema,
+  responses: { 201: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Read a connection's machine sign-in settings (no secret values)",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/test",
+  tags: ["tool-access"],
+  summary: "Test machine sign-in against the provider and server, then turn the connection on",
+  body: testMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate",
+  tags: ["tool-access"],
+  summary: "Replace the machine sign-in key or client secret without downtime",
+  body: rotateMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate/complete",
+  tags: ["tool-access"],
+  summary: "Switch to the new machine sign-in key once the provider accepts it",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
 });
 
 registerCurrentRoute({
@@ -12613,6 +13011,14 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/profile-configuration",
   tags: ["tool-access"],
   summary: "Read connection Permissions profile configuration without summaries or review counts",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  method: "get",
+  path: "/api/companies/{companyId}/tool-icons",
+  tags: ["tool-access"],
+  summary: "List provider icons for the company's connected tools",
 });
 
 registerCurrentRoute({

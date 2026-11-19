@@ -43,12 +43,13 @@ import {
 } from "@paperclipai/shared";
 import { HttpError, conflict, forbidden, notFound } from "../errors.js";
 import {
-  githubBotRepositoryToken,
+  githubBotRepositoryClient,
   githubBotRequest,
 } from "./chat-github-client.js";
 import { githubChatPrincipalAccess } from "./chat-github-access.js";
 import {
   effectiveGitHubReviewPolicy,
+  githubCompleteCoverageGap,
   githubReviewConclusion,
   githubReviewPathIsExcluded,
   githubReviewLineIsInPatch,
@@ -316,7 +317,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     source: Awaited<ReturnType<typeof scope>>,
     requestFetch = fetchImpl,
   ) {
-    const token = await githubBotRepositoryToken(
+    const github = await githubBotRepositoryClient(
       db,
       source.endpoint.companyId,
       source.endpoint.id,
@@ -330,7 +331,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         path: string,
         options?: Parameters<typeof githubBotRequest>[3],
       ) =>
-        githubBotRequest<T>(requestFetch, token, `${prefix}${path}`, options),
+        github<T>(`${prefix}${path}`, options),
     };
   }
   async function reviewForHead(
@@ -832,17 +833,13 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         throw conflict(
           "Assessment coverage and findings must refer to this PR's allowed changed files",
         );
-      if (
-        assessment.complete &&
-        (assessment.coverage.omittedPaths.some((path) => paths.has(path)) ||
-          permittedFiles.some(
-            (file) =>
-              !assessment.coverage.reviewedPaths.includes(file.filename),
-          ))
-      )
-        throw conflict(
-          "A complete assessment must cover every non-excluded changed file",
-        );
+      const coverageGap = assessment.complete
+        ? githubCompleteCoverageGap(
+            permittedFiles.map((file) => file.filename),
+            assessment.coverage,
+          )
+        : null;
+      if (coverageGap) throw conflict(coverageGap);
       // Commit the immutable assessment and its publication together. A restart
       // must never leave a stored result with no durable publication intent.
       const actionId = await db.transaction(async (tx) => {

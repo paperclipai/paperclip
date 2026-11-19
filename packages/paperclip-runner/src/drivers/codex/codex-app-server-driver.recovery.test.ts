@@ -42,7 +42,7 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
-import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
+import { NativeProviderRecoveryDeadlineError, NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
 import { canonicalJson } from "./codex-driver-values.js";
 
 function cursorProviderIdentity(mode: unknown) {
@@ -290,14 +290,36 @@ describe("Codex app-server Codex driver", () => {
       expect(recoveryTransport.calls.some(call => ["turn/start", "thread/start", "turn/interrupt"].includes(call.method))).toBe(false);
     });
 
-    it("still stops the Runner when an abort (a Stop or the recovery deadline) ends a hung read", async () => {
+    async function abortHungRead(reason: Error, recoversForStop = false) {
       const controller = new AbortController();
-      const { recovery, close, detach } = await recoverWith(method => {
+      const { recovery, close, detach, recoveryTransport } = await recoverWith(method => {
         if (method !== "thread/read") return null;
-        setTimeout(() => controller.abort(new Error("Stop requested")), 0);
+        setTimeout(() => controller.abort(reason), 0);
         return new Promise<never>(() => {});
       }, controller.signal);
-      await expect(recovery).rejects.toThrow("Stop requested");
+      Object.assign(recoveryTransport, { recoversForStop: () => recoversForStop });
+      return { outcome: await recovery.then(() => null, (error: unknown) => error), close, detach };
+    }
+
+    it("still stops the Runner when a Stop ends a hung read", async () => {
+      const { outcome, close, detach } = await abortHungRead(new Error("Stop requested"));
+      expect(outcome).toEqual(new Error("Stop requested"));
+      expect(detach).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close.mock.calls[0]).toEqual([]);
+    });
+
+    it("detaches and keeps the Runner when the provider recovery deadline ends a hung read", async () => {
+      const { outcome, close, detach } = await abortHungRead(new NativeProviderRecoveryDeadlineError(900_000));
+      expect(outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
+      expect(String(outcome)).toContain("native session provider recovery timed out after 900000ms");
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it("still stops the Runner when the provider recovery deadline ends a Stop's cleanup recovery", async () => {
+      const { outcome, close, detach } = await abortHungRead(new NativeProviderRecoveryDeadlineError(900_000), true);
+      expect(outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
       expect(detach).not.toHaveBeenCalled();
       expect(close).toHaveBeenCalledTimes(1);
       expect(close.mock.calls[0]).toEqual([]);

@@ -19,6 +19,26 @@ export const ProductionPicker: Story = {
   render: () => <GoogleWorkspaceServicesDialog onContinue={fn()} onCancel={fn()} />,
   parameters: { docs: { description: { story: "The production picker used by both Apps and task-hosted OAuth setup. Callbacks are mocked in Storybook; no OAuth grant is created." } } },
 };
+export const ProductionPickerReadOnly: Story = {
+  render: () => <GoogleWorkspaceServicesDialog initial={{ gmail: "read", calendar: "read" }} onContinue={fn()} onCancel={fn()} />,
+  parameters: { docs: { description: { story: "The data-use disclosure follows the selection: only selected services are described, at their chosen access level." } } },
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    const disclosure = body.getByRole("region", { name: "How Paperclip uses your Google data" });
+    await expect(disclosure).toHaveTextContent("Gmail: agents can read and search your email.");
+    await expect(disclosure).not.toHaveTextContent(/Drive|drafts|sending|Paperclip does not send/);
+    await expect(disclosure).toHaveTextContent("the content is sent to the AI model provider configured for your workspace");
+    await expect(within(disclosure).getByRole("link", { name: /Limited Use/ })).toHaveAttribute("href", "https://paperclip.ing/privacy");
+    await userEvent.click(body.getByRole("switch", { name: /^Gmail$/ }));
+    await userEvent.click(body.getByRole("switch", { name: /^Calendar$/ }));
+    await expect(body.queryByRole("region", { name: "How Paperclip uses your Google data" })).not.toBeInTheDocument();
+    await expect(body.getByRole("status")).toHaveTextContent("Select at least one service to continue.");
+  },
+};
+export const ProductionPickerMobile: Story = {
+  render: () => <GoogleWorkspaceServicesDialog onContinue={fn()} onCancel={fn()} />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+};
 export const ChooseServices: Story = { args: {} };
 export const FromApps: Story = { args: { start: "catalog" } };
 export const GmailOnlyReviewer: Story = { args: { initial: { gmail: "read" }, start: "review" } };

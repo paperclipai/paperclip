@@ -27,7 +27,7 @@ export async function settleFailedNativeRecoveryPreparation(db: Db, input: {
     if (run?.status !== "failed") return false;
     // Register the work before the writes it announces. A spare wake when no
     // coordinator matches below is harmless.
-    await notifyExecutionRunWork(tx as unknown as Db, { companyId: input.companyId });
+    await notifyExecutionRunWork(tx as unknown as Db, { companyId: input.companyId, runId: input.runId });
     const now = new Date();
     const [settled] = await tx.update(nativeRunFinalizations).set({
       phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null, controlDeadlineAt: null,

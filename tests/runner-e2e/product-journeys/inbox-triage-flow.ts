@@ -68,7 +68,15 @@ export async function inboxTriage(context: JourneyContext, session: TargetSessio
   await inboxStep("inbox_unread_projection_failed", () => expect.poll(async () => (await read()).isUnreadForMe).toBe(true));
   await openPersonalInbox(context, "unread");
   await inboxStep("inbox_unread_row_missing", () => expect(row).toBeVisible());
-  await inboxStep("inbox_mark_read_failed", () => row.getByRole("button", { name: "Mark as read", exact: true }).click());
+  await inboxStep("inbox_mark_read_failed", async () => {
+    const markRead = row.getByRole("button", { name: "Mark as read", exact: true });
+    if (await markRead.isVisible()) return await markRead.click();
+    await openPersonalInbox(context, "mine");
+    await expect(row).toBeVisible();
+    await page.getByPlaceholder(/^Search (?:inbox|tasks)(?:…|\.\.\.)$/i).blur();
+    await row.hover();
+    await page.keyboard.press("r");
+  });
   await inboxStep("inbox_read_projection_failed", () => expect.poll(async () => (await read()).isUnreadForMe).toBe(false));
   await inboxStep("inbox_unread_reload_failed", () => page.reload());
   await openPersonalInbox(context, "unread");

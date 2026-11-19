@@ -18,6 +18,7 @@ import { executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
+import { currentNativeControllerIdentity, type NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 
 const EXITED_PID = 4_194_304;
 
@@ -40,7 +41,8 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
     checkpointExists: true, originalFailureCode: "native_session_recovery_failed" };
 
   async function resumeOnce(options: { failureDetail: Record<string, unknown>; stopRecorded: boolean; viaReconciler?: boolean;
-    failedRelaunch?: boolean; unidentifiedStopRecorded?: boolean; liveRunnerForRun?: boolean }) {
+    failedRelaunch?: boolean; unidentifiedStopRecorded?: boolean; liveRunnerForRun?: boolean;
+    remoteReattach?: { replaceUnansweredRunner?: true } }) {
     const issueId = randomUUID();
     const runId = randomUUID();
     const [issue] = await db.insert(issues).values({ id: issueId, companyId, title: "Resume the lost turn",
@@ -99,12 +101,23 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
       ? spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)", "--", "--run-id", runId], { stdio: "ignore" }) : null;
     if (liveRunner) await once(liveRunner, "spawn");
     let leaseOwner: string | undefined;
+    let restartRecovery: NativeRestartRecoveryClaim | undefined;
+    if (options.remoteReattach) {
+      const controller = await currentNativeControllerIdentity();
+      leaseOwner = `reattach-${runId}`;
+      await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000),
+        controllerBootId: controller.bootId, controllerPid: controller.pid, controllerGeneration: 7 })
+        .where(eq(nativeRunFinalizations.runId, runId));
+      restartRecovery = { kind: "reattach_remote_runner", runId, leaseOwner, controllerGeneration: 7, providerAttempt: 2,
+        restartKind: "hard", recoveryRequestId: null, remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" },
+        ...options.remoteReattach };
+    }
     if (options.viaReconciler) {
       const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: native.runnerInstanceId, runIds: [runId] });
       expect(claims).toEqual([expect.objectContaining({ runId })]);
       leaseOwner = claims[0]!.leaseOwner;
     }
-    await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, leaseOwner, backend: {
+    await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, leaseOwner, restartRecovery, backend: {
       descriptor: async () => { throw new Error("Unexpected provider call"); },
       openSession: async () => { throw new Error("Unexpected provider call"); },
     } }).catch(() => undefined).finally(() => { liveRunner?.kill("SIGKILL"); });
@@ -133,6 +146,11 @@ describe("a scheduled same-run resume reaching the provider runtime", () => {
   it("keeps the lost turn failing after a failed relaunch while a runner for the run is still alive", async () => {
     const { passed } = await resumeOnce({ failureDetail: exactResume, stopRecorded: true, failedRelaunch: true, liveRunnerForRun: true });
     expect(passed).toEqual([false]);
+  });
+
+  it.each([{}, { replaceUnansweredRunner: true as const }])("continues a lost turn on a same-run remote Runner reattachment (%j)", async (remoteReattach) => {
+    const { passed } = await resumeOnce({ failureDetail: exactResume, stopRecorded: false, remoteReattach });
+    expect(passed).toEqual([true]);
   });
 
   it("keeps the lost turn failing when the reconciler claimed a resume without a stop receipt", async () => {
