@@ -1,6 +1,5 @@
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
 import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
-import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
@@ -60,7 +59,7 @@ import { retryNativeWorkspaceExport } from "../services/native-runtime/native-wo
 import { deferredWakeJoinsFirstTurn, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
-import { readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
+import { hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, heldConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
@@ -72,11 +71,6 @@ import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
 } from "../services/execution-recovery-resolution.js";
-import {
-  reserveSteeredIdentity,
-  acceptSteeredIdentity,
-  rejectSteeredIdentity,
-} from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
@@ -194,7 +188,6 @@ import {
   type IssueThreadInteractionCanonicalResolverPolicy,
   type IssueComment,
   type IssueCommentPresentation,
-  type IssueQueuedCommentQueue,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
   type SourceTrustMetadata,
@@ -259,6 +252,7 @@ import { questionResponseDeliveryService } from "../services/question-response-d
 import { emitAgentTaskRunById } from "../services/agent-task-run-telemetry.js";
 import {
   createQueuedCommentQueue,
+  requireQueuedCommentMutationTarget,
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
   type QueuedCommentIssueContext,
@@ -428,9 +422,7 @@ import {
 import {
   buildQueuedCommentQueueSnapshot,
   queuedCommentIdsFromWakePayload,
-  withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
-import { deliverSteeredMessage, steeringDeliveryIsUncertain } from "../services/queued-comment-steering.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -7701,23 +7693,6 @@ export function issueRoutes(
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
-
-  function assertQueueMutationTarget(input: {
-    queue: IssueQueuedCommentQueue;
-    queueId: string;
-    revision: string;
-  }) {
-    if (input.queue.queueId !== input.queueId) {
-      throw conflict("The queued message targets a stale queue", {
-        code: "queued_comment_stale_queue",
-      });
-    }
-    if (input.queue.revision !== input.revision) {
-      throw conflict("The queued messages changed in another session", {
-        code: "queued_comment_revision_conflict",
-      });
-    }
-  }
 
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
     return {
@@ -17446,10 +17421,14 @@ export function issueRoutes(
   /** Maps a wake-queue queued-comment mutation error onto the same HTTP error the route threw before this mutation moved into the module. */
   function throwForQueuedCommentMutationError(error: unknown): never {
     if (error instanceof QueuedCommentMutationError) {
+      if (error.code === "queued_comment_issue_not_found") throw notFound(error.message);
       throw conflict(error.message, { code: error.code });
     }
     if (error instanceof QueuedCommentMutationForbiddenError) {
       throw forbidden(error.message);
+    }
+    if (error instanceof NativeSessionSteeringError) {
+      throw conflict(error.message, { code: error.code, retryable: true });
     }
     throw error;
   }
@@ -17603,12 +17582,12 @@ export function issueRoutes(
         }
       }
       const actor = getActorInfo(req);
-      const interruptPlan = await db.transaction(async (tx): Promise<{ firstTurnRunId: string } | { runToInterrupt: string | null }> => {
+      const interruptPlan = await runQueuedCommentMutation(() => db.transaction(async (tx): Promise<{ firstTurnRunId: string } | { runToInterrupt: string | null }> => {
         const locked = await queuedCommentQueue.lockBoardQueue({
           tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId ?? undefined,
           allowStoppedTarget: true,
         });
-        assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
+        requireQueuedCommentMutationTarget(locked.queue, req.body.queueId, req.body.revision);
         // Explicit Interrupt is also the fallback when a native turn cannot
         // accept steering. Cancellation and ordinary admission still own Stop
         // confirmation, cleanup, and delivery; this click only records intent.
@@ -17642,7 +17621,7 @@ export function issueRoutes(
           updatedAt: new Date(),
         }).where(eq(agentWakeupRequests.id, locked.wake.id));
         return { runToInterrupt: locked.activeRun?.status === "running" ? locked.activeRun.id : null };
-      });
+      }));
       const firstTurnRunId = "firstTurnRunId" in interruptPlan ? interruptPlan.firstTurnRunId : null;
       const runToInterrupt = "runToInterrupt" in interruptPlan ? interruptPlan.runToInterrupt : null;
       // Never hold the issue lock while joining the adapter. Queue edits and
@@ -17693,243 +17672,11 @@ export function issueRoutes(
       const decision = await decideIssueAccess(req, issue, "issue:comment");
       if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       const actor = getActorInfo(req);
-      const responseWake = await db.select().from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId),
-      )).then(rows => rows[0]);
-      const response = responseWake ? await readQueuedInteractionResponse(db, issue.companyId, issue.id, responseWake.payload) : null;
-      if (responseWake) await recheckQueuedCommentInteractionDelivery(db, {
-        companyId: issue.companyId, issueId: issue.id, agentId: responseWake.agentId,
-        commentId, queueId: responseWake.id,
-      });
-      const steeringIdentity = await reserveSteeredIdentity(db, {
-        companyId: issue.companyId,
-        runId: req.body.targetRunId,
-        issueId: issue.id,
-        messageId: commentId,
-        source: response?.comment.id === commentId ? "interaction" : "comment",
-      });
-      let steeringDeliveryAttempted = false;
-      let acknowledgedTurnId: string | null = null;
-      let duplicate = false;
-      let queue: IssueQueuedCommentQueue;
-      try {
-        queue = await db.transaction(async (tx) => {
-          // A client can lose the successful response after the final queued
-          // message cancels its wake. Lock the original queue and target run
-          // first so that the persisted acknowledgement remains a durable
-          // idempotency record even when no pending queue remains.
-          await tx
-            .select({ id: issueRows.id })
-            .from(issueRows)
-            .where(
-              and(
-                eq(issueRows.id, issue.id),
-                eq(issueRows.companyId, issue.companyId),
-              ),
-            )
-            .for("update");
-          const retryWake = await tx
-            .select()
-            .from(agentWakeupRequests)
-            .where(
-              and(
-                eq(agentWakeupRequests.id, req.body.queueId),
-                eq(agentWakeupRequests.companyId, issue.companyId),
-                issue.assigneeAgentId
-                  ? eq(agentWakeupRequests.agentId, issue.assigneeAgentId)
-                  : undefined,
-              ),
-            )
-            .for("update")
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          const retryRun =
-            retryWake && readObject(retryWake.payload).issueId === issue.id
-              ? await tx
-                  .select()
-                  .from(heartbeatRuns)
-                  .where(
-                    and(
-                      eq(heartbeatRuns.id, req.body.targetRunId),
-                      eq(heartbeatRuns.companyId, issue.companyId),
-                      eq(heartbeatRuns.agentId, retryWake.agentId),
-                    ),
-                  )
-                  .limit(1)
-                  .then((rows) => rows[0] ?? null)
-              : null;
-          const retryRunContext = readObject(retryRun?.contextSnapshot);
-          const retryRunResult = readObject(retryRun?.resultJson);
-          const retryAcknowledgements = readObject(
-            retryRunResult.queuedSteeringAcknowledgements,
-          );
-          const retryAcknowledgement = readObject(
-            retryAcknowledgements[commentId],
-          );
-          if (
-            retryRun &&
-            (retryRunContext.issueId === issue.id ||
-              retryRunContext.taskId === issue.id) &&
-            retryAcknowledgement.status === "acknowledged" &&
-            retryAcknowledgement.queueId === req.body.queueId
-          ) {
-            duplicate = true;
-            acknowledgedTurnId =
-              typeof retryAcknowledgement.turnId === "string"
-                ? retryAcknowledgement.turnId
-                : null;
-            return queuedCommentQueue.readBoardQueue({
-              executor: tx,
-              issue,
-              activeRun: retryRun.status === "running" ? retryRun : null,
-              actor,
-            });
-          }
-
-          const locked = await queuedCommentQueue.lockBoardQueue({
-            tx,
-            issue,
-            actor,
-            queueId: req.body.queueId,
-            targetRunId: req.body.targetRunId,
-            lockRun: false,
-          });
-          if (!locked.activeRun) {
-            throw conflict("The queued message targets a stale run", {
-              code: "queued_comment_stale_target",
-            });
-          }
-          const runResult = readObject(locked.activeRun.resultJson);
-          const acknowledgements = readObject(
-            runResult.queuedSteeringAcknowledgements,
-          );
-          const priorAcknowledgement = readObject(acknowledgements[commentId]);
-          if (
-            priorAcknowledgement.status === "acknowledged" &&
-            priorAcknowledgement.queueId === req.body.queueId
-          ) {
-            duplicate = true;
-            acknowledgedTurnId =
-              typeof priorAcknowledgement.turnId === "string"
-                ? priorAcknowledgement.turnId
-                : null;
-            return queuedCommentQueue.readBoardQueue({
-              executor: tx,
-              issue,
-              activeRun: locked.activeRun,
-              actor,
-              queueState: locked.queueState,
-            });
-          }
-          assertQueueMutationTarget({
-            queue: locked.queue,
-            queueId: req.body.queueId,
-            revision: req.body.revision,
-          });
-          if (locked.queue.protocol !== "paperclip_runner_v1") {
-            throw conflict("This runner does not support same-turn steering", {
-              code: "steering_unsupported",
-            });
-          }
-          const entry = locked.queue.entries.find(
-            (candidate) => candidate.comment.id === commentId,
-          );
-          if (!entry) {
-            throw conflict("The queued message is no longer pending", {
-              code: "queued_comment_not_pending",
-            });
-          }
-
-          if (entry.source?.requiresFreshSession) {
-            throw conflict("This approval needs a fresh turn. Interrupt or wait for the current turn to finish.", {
-              code: "queued_response_requires_fresh_session",
-            });
-          }
-          await assertQueuedCommentInteractionDelivery(tx, {
-            companyId: issue.companyId, issueId: issue.id, agentId: locked.activeRun.agentId,
-            commentId, lock: true,
-          });
-          steeringDeliveryAttempted = true;
-          const acknowledgement = await deliverSteeredMessage(db, {
-            executor: tx, companyId: issue.companyId, runId: locked.activeRun.id,
-            messageId: commentId, message: entry.comment.body, identity: steeringIdentity,
-          });
-          // PRP ingestion allocates event sequences on this row. Locking it
-          // while awaiting the provider prevents its durable ACK from arriving.
-          // Re-read under lock after ACK so concurrent run receipts are retained.
-          const [acknowledgedRun] = await tx.select().from(heartbeatRuns)
-            .where(eq(heartbeatRuns.id, locked.activeRun.id)).for("update");
-          if (!acknowledgedRun || acknowledgedRun.status !== "running") {
-            throw conflict("The queued message targets a stopped run. Your message is still queued.", {
-              code: "queued_comment_stale_target",
-            });
-          }
-          const acknowledgedResult = readObject(acknowledgedRun.resultJson);
-          if (steeringIdentity)
-            await acceptSteeredIdentity(tx, steeringIdentity);
-          acknowledgedTurnId = acknowledgement.turnId;
-          const remainingIds = locked.queue.entries
-            .map((candidate) => candidate.comment.id)
-            .filter((candidateId) => candidateId !== commentId);
-          const now = new Date();
-          const nextWake =
-            remainingIds.length === 0
-              ? await tx
-                  .update(agentWakeupRequests)
-                  .set({ status: "cancelled", finishedAt: now, updatedAt: now })
-                  .where(eq(agentWakeupRequests.id, locked.wake.id))
-                  .returning()
-                  .then(() => null)
-              : await tx
-                  .update(agentWakeupRequests)
-                  .set({
-                    payload: withQueuedCommentIdsInWakePayload(
-                      locked.wake.payload,
-                      remainingIds,
-                    ),
-                    updatedAt: now,
-                  })
-                  .where(eq(agentWakeupRequests.id, locked.wake.id))
-                  .returning()
-                  .then((rows) => rows[0] ?? locked.wake);
-          await tx
-            .update(heartbeatRuns)
-            .set({
-              resultJson: {
-                ...acknowledgedResult,
-                queuedSteeringAcknowledgements: {
-                  ...readObject(acknowledgedResult.queuedSteeringAcknowledgements),
-                  [commentId]: {
-                    status: "acknowledged",
-                    queueId: req.body.queueId,
-                    turnId: acknowledgement.turnId,
-                    acknowledgedAt: now.toISOString(),
-                  },
-                },
-              },
-              updatedAt: now,
-            })
-            .where(eq(heartbeatRuns.id, locked.activeRun.id));
-          return queuedCommentQueue.readBoardQueue({
-            executor: tx,
-            issue,
-            activeRun: locked.activeRun,
-            actor,
-            queueState: nextWake
-              ? { wake: nextWake, state: "deferred", queueRun: null }
-              : null,
-          });
-        });
-      } catch (error) {
-        const uncertain = steeringDeliveryIsUncertain(error, steeringDeliveryAttempted);
-        if (steeringIdentity && !uncertain)
-          await rejectSteeredIdentity(db, steeringIdentity);
-
-        if (error instanceof NativeSessionSteeringError) {
-          throw conflict(error.message, { code: error.code, retryable: true });
-        }
-        throw error;
-      }
+      const { queue, turnId, duplicate } = await runQueuedCommentMutation(() =>
+        queuedCommentQueue.steerQueuedComment({
+          issue, actor, commentId, queueId: req.body.queueId, revision: req.body.revision, targetRunId: req.body.targetRunId,
+        }),
+      );
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -17943,7 +17690,7 @@ export function issueRoutes(
         details: {
           commentId,
           targetRunId: req.body.targetRunId,
-          turnId: acknowledgedTurnId,
+          turnId,
           duplicate,
         },
       });

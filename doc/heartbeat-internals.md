@@ -250,8 +250,11 @@ wake and run rows, so edits, ordering, interruption, and saved execution inputs
 keep their existing write contract.
 
 The task composer offers Steer when the native session has an active provider
-turn that accepts steering. If steering is unavailable or unsupported, it offers
-an explicit Interrupt action instead. Interrupt records the board user's intent,
+turn that accepts steering. Wake-queue locks the task and receipt for the click,
+then locks and rereads the run after the provider acknowledges delivery. It
+records the acknowledgement and removes the queued entry in one transaction.
+If steering is unavailable or unsupported, the composer offers Interrupt.
+Interrupt records the board user's intent,
 requests cancellation, and delivers the saved queue through normal admission after
 the previous execution stops. Preparation and cleanup can keep messages queued;
 the action does not bypass Stop confirmation or execution gates.

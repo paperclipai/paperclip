@@ -6,7 +6,7 @@ import {
   type IssueAdmissionTarget,
 } from "./adapters/postgres.js";
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
-import { lockBoardQueuedComments, readBoardQueuedComments } from "./adapters/queued-comment-board-postgres.js";
+import { createQueuedCommentSteeringAdapter, lockBoardQueuedComments, readBoardQueuedComments } from "./adapters/queued-comment-board-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 import { createFreshIssueRunAdmission } from "./application/fresh-issue-run.js";
 import { admitIssueWake, type IssueWakeAdmissionEffects, type IssueWakeAdmissionOutcome } from "./application/issue-wake-admission.js";
@@ -15,6 +15,7 @@ import {
   createDiscardQueuedComment,
   createEditQueuedComment,
   createReorderQueuedComments,
+  createSteerQueuedComment,
 } from "./application/queued-comment-use-cases.js";
 import type {
   IssueSnapshot,
@@ -42,6 +43,7 @@ export type { ReleaseIssueExecutionInput } from "./application/use-cases.js";
 export {
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
+  requireQueuedCommentMutationTarget,
 } from "./application/queued-comment-use-cases.js";
 export type {
   DiscardQueuedCommentInput,
@@ -125,9 +127,8 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
 export type WakeQueue = ReturnType<typeof createWakeQueue>;
 
 /**
- * Composes the three queued-comment queue mutations (edit, reorder,
- * discard): the Postgres adapter, which owns the one transaction each
- * mutation runs in, and the three use cases. This is a separate factory
+ * Composes the queued-comment reads and mutations with their Postgres
+ * adapters. This is a separate factory
  * from `createWakeQueue` because these mutations need none of the release
  * or admission host callbacks -- only the small set of comment-reference
  * and external-object sync callbacks in `deps`, which a caller outside
@@ -138,6 +139,7 @@ export function createQueuedCommentQueue(db: Db, deps: QueuedCommentQueuePostgre
   return {
     readBoardQueue: readBoardQueuedComments,
     lockBoardQueue: lockBoardQueuedComments,
+    steerQueuedComment: createSteerQueuedComment(createQueuedCommentSteeringAdapter(db)),
     editQueuedComment: createEditQueuedComment({ issueLock }),
     reorderQueuedComments: createReorderQueuedComments({ issueLock }),
     discardQueuedComment: createDiscardQueuedComment({ issueLock }),
