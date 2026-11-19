@@ -54,7 +54,7 @@ describe("canonical instruction tools through native authority", () => {
     await fs.writeFile(path.join(root, entryFile), original);
   });
   const call = (tool: string, args: Record<string, unknown> = {}) => authority.execute({ tool, callId: randomUUID(), arguments: { targetAgentId, ...args } }) as Promise<any>;
-  it("bridges old native instruction tools to current files without writing history", async () => {
+  it("bridges old native instruction tools to current files and lists the save in history", async () => {
     const first = await call("read_agent_instructions");
     expect(first).toMatchObject({ entryFile, content: original });
     const changed = await call("update_agent_instructions", { entryFile, content: "changed\r\n", baseRevisionId: first.revision.id });
@@ -65,7 +65,9 @@ describe("canonical instruction tools through native authority", () => {
     expect(changed.resourceLinks).toEqual([{ kind: "agent", id: targetAgentId, name: "Target",
       href: `/${encodeURIComponent(company!.issuePrefix)}/agents/${targetAgentId}` }]);
     expect(changed.appliesTo).toMatch(/start after this save/);
-    expect((await call("get_agent_instruction_history", { entryFile })).revisions).toHaveLength(0);
+    expect((await call("get_agent_instruction_history", { entryFile })).revisions).toEqual([
+      expect.objectContaining({ contentHash: changed.revision.contentHash, actorAgentId: agentId, sourceRunId: runId, createdAt: changed.revision.createdAt }),
+    ]);
     expect(await fs.readFile(path.join(root, entryFile), "utf8")).toBe("changed\r\n");
     await expect(call("update_agent_instructions", { entryFile, content: "stale", baseRevisionId: first.revision.id })).rejects.toMatchObject({ status: 409 });
     expect((await call("read_agent_instructions")).content).toBe("changed\r\n");

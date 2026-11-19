@@ -150,6 +150,19 @@ exposes the `TelemetryTransport` seam on `TelemetryClient`:
   reports on. Only the direct transport reads this scope, and it uses it only
   when no live request supplies a company. The collector envelope and the
   dimensions do not change.
+- Agent-driven events (`agent.task_run`, `agent.task_completed`, and
+  `agent.first_heartbeat`) also name the person responsible for the work, with
+  `withTelemetryActor({ companyId, person }, fn)` and
+  `resolveTelemetryPerson()` from the same file. The person is the user who
+  created the task, else the task's responsible user (who assigned or
+  delegated it), else the user who owns the run (for `agent.first_heartbeat`,
+  the user who created the agent). The emit site reads these ids from rows it
+  already loads; the transport does no database reads. A signed-in user on a
+  live request always wins over this scope. With no person, the event stays on
+  `workspace:<stackId>` with `$process_person_profile: false`. Every direct
+  event carries `attributed_via`: `request`, `task_creator`, `task_assigner`,
+  `run_owner`, or `none`. The collector path never reads this scope, so the
+  self-hosted envelope does not change.
 
 Cloud is Paperclip's own service under the Cloud terms, so its events carry
 real identifiers: raw agent and task ids, the stack id, and the company and

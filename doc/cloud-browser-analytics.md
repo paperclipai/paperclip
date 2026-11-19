@@ -31,6 +31,8 @@ extensions posthog-js loads at run time (recorder, web vitals).
 | `PAPERCLIP_POSTHOG_ENVIRONMENT` | — | `staging` or `production`. Added to every event as `environment`. |
 | `PAPERCLIP_POSTHOG_BROWSER_ENABLED` | off | `1` turns browser analytics on for this stack. Leave it unset to keep it off. |
 | `PAPERCLIP_POSTHOG_REPLAY_ENABLED` | on (when browser analytics is on) | `0` turns session replay off for this stack and keeps the other browser analytics. |
+| `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT` | `1024` | Proxy requests in flight for the whole server. See [Proxy limits](#proxy-limits). |
+| `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT` | `128` | Proxy requests in flight from one public client address. See [Proxy limits](#proxy-limits). |
 | `PAPERCLIP_POSTHOG_COUNTRY_HEADER` | — | Name of a request header that the platform edge sets to the visitor's two-letter country code (for example `CF-IPCountry` behind a proxied Cloudflare zone). Leave it unset unless the edge sets the header and drops a value from the client. See [Consent](#consent). |
 
 ### Per-stack opt-out
@@ -126,19 +128,91 @@ The ingest host is `PAPERCLIP_POSTHOG_HOST`. The assets host is derived from it
 answers 404 without contacting PostHog. The proxy streams bodies, builds a new
 header set from an allowlist plus `X-Forwarded-For`, and never forwards the
 inbound Host, Cookie or Authorization headers. It drops `Set-Cookie` from
-responses. It refuses bodies over 64 MiB (413) and limits requests in
-flight to 16 per client address and 256 in total (429). It is mounted only when
+responses. It refuses bodies over 64 MiB (413) and limits the requests in
+flight (429, see [Proxy limits](#proxy-limits)). It is mounted only when
 browser analytics is on. It does not require a session: posthog-js sends some
 events while a page unloads, and the proxy can only reach the two PostHog hosts
 with the public project token, like PostHog's own ingest endpoint.
 
-### Visitor address behind the platform proxy
+### Proxy limits
+
+Each open tab runs posthog-js. One tab sends event batches, session replay
+uploads and remote settings requests, so it can have a few requests in flight
+at once, and more when PostHog is slow (the proxy waits up to 30 seconds for
+an answer). The proxy has two limits. When a request is over a limit, the proxy
+answers 429 with `Retry-After: 1`, and posthog-js sends it again later.
+
+| Limit | Default | Variable |
+| --- | --- | --- |
+| Requests in flight for the whole server | 1024 | `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT` |
+| Requests in flight from one public client address | 128 | `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT` |
+
+Why these values:
+
+- 128 per address covers about 10 people behind one office network, each with
+  4 tabs and 3 requests in flight per tab, with space left over.
+- 1024 in total keeps memory use bounded. The proxy streams bodies, so a
+  request holds two sockets and the stream buffers between them, not the full
+  body. In a local test, 1024 held requests added about 96 MiB of resident
+  memory with 4 KiB bodies and about 173 MiB with 256 KiB bodies. These
+  numbers include the test client and the test upstream, which ran in the same
+  process. Most PostHog bodies are a few KiB.
+
+A value must be a whole number from 1 to 65536 (for example `2048`). The
+server reads the values at start. If a value is not valid, the server logs a
+warning, uses the default, and starts as usual.
+
+Each request has a deadline of 60 seconds from the time the proxy accepts it,
+whether or not data still moves. At the deadline, the proxy stops the request
+to PostHog and closes the browser request, so a slow body or a slow answer
+cannot hold a slot for longer. This deadline is not configurable. The proxy
+also stops a request to PostHog that has no data for 30 seconds.
+
+#### Shared platform hop
 
 The per-client limit uses `req.ip`, which comes from the server's trusted proxy
 settings (`TRUST_PROXY`). It never comes from a header the client controls. If
 `TRUST_PROXY` is unset behind a platform proxy, `req.ip` is the proxy's private
-hop, so every visitor behind that hop shares one 16-request limit. Set
-`TRUST_PROXY` to the platform's proxy range so that `req.ip` is the visitor.
+hop (for example `100.64.x.x` on Railway). All visitors come from that one
+address, so a per-client limit would hold back all of them together.
+
+When `req.ip` is not a public address (private, carrier-grade NAT, loopback,
+link-local or another reserved range, or no address), the proxy applies only
+the total limit. A separate limit for the shared hop would not protect the
+visitors behind it: one client that fills it blocks all of them, the same as
+with the total limit. The total limit and the request deadline bound the
+memory and sockets that clients can use. It does not read `X-Forwarded-For` to find the visitor for a
+limit, because a client can write that header. Set `TRUST_PROXY` to the
+platform's proxy range so that `req.ip` is the visitor, and the per-client
+limit applies again.
+
+#### When the limits are hit
+
+When the proxy refuses a request at a limit, it logs the warning
+`PostHog proxy refused requests at its in-flight limit` at most once a minute.
+The warning has these fields, and no addresses or other visitor data:
+
+- `refusedAtTotalLimit` and `refusedAtPerClientLimit`: the requests refused
+  at each limit since the last warning (the first warning counts only one).
+- `inFlight`: the requests in flight when the warning was written.
+- `maxInFlight` and `maxInFlightPerClient`: the limits in use.
+- `sinceMs`: the time since the last warning, or `null` for the first one.
+
+#### Tuning a fleet
+
+Set the variables with a fleet `env_config` campaign, the same way as the
+other `PAPERCLIP_POSTHOG_*` variables. Start with a canary stack. The server
+reads the values at start, so a campaign that drains and restarts the stacks
+applies them at once, and a campaign with `"applyOnNextDeploy": true` applies
+them on the next deploy. To go back to the defaults, remove the variables.
+
+Raise `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT` when the warning shows refusals
+at the total limit and the stack has memory to spare. Raise
+`PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT` when it shows refusals at
+the per-client limit, for example for a customer with many people behind one
+address.
+
+### Visitor location
 
 The `X-Forwarded-For` value that the proxy sends to PostHog carries the
 visitor's location. When the socket peer is private, the proxy uses the
@@ -158,6 +232,26 @@ This value is used only for location, never for limits.
 - Sign-out: `reset()`, called by `useSignOut` before it leaves the page.
 - API requests to our own host carry PostHog tracing headers, so server events
   link to the browser session.
+
+## Onboarding events
+
+The in-workspace onboarding wizard (`ui/src/components/OnboardingWizard.tsx`)
+captures four browser events through `ui/src/lib/analytics/onboarding-analytics.ts`.
+They follow the same consent rules as every other browser event: without a
+browser analytics config or with consent not granted, nothing is captured.
+Events from before posthog-js loads wait in a short queue (at most 50) and keep
+their original time. Withdrawing consent or a change of signed-in person drops
+the queue.
+
+| Event | When | Properties |
+| --- | --- | --- |
+| `onboarding_opened` | The wizard opens, once per open. Auto-open (`useAgentlessOnboardingAutoOpen`), a button, and the `/onboarding` route all count. | `step` when the wizard opens on an agent step |
+| `onboarding_step_viewed` | A step is shown, once per step change. | `step` |
+| `onboarding_step_completed` | The customer moves forward one step, presses Launch on the review step, or Launch finishes. | `step`; `outcome` for `connect_model` (`subscription` or `api_key`) and for `launch` (`succeeded` or `failed`) |
+| `onboarding_dismissed` | The wizard closes before Launch finishes, for example when the customer leaves the onboarding page. | `step` when closed on an agent step |
+
+`step` is one of `create_agent`, `connect_model`, `review`, or `launch`. The
+organization-naming steps have no `step` value. No event carries free text.
 
 ## Privacy
 

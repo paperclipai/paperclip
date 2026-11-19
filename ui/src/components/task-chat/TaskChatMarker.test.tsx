@@ -33,6 +33,25 @@ describe("TaskChatMarker", () => {
     vi.useRealTimers();
   });
 
+  it.each(["production", "streamlined"] as const)("shows provider reset details in the viewer's timezone in %s mode", (mode) => {
+    const resetAt = new Date(2099, 10, 18, 12, 17, 34, 353);
+    vi.setSystemTime(new Date(resetAt.getTime() - 44 * 60_000));
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatPresentationProvider mode={mode}>
+          <TaskChatMarker item={{ id: "limit", kind: "marker", variant: "interrupted", label: "Waiting for usage limit reset", collapsible: true,
+            detail: `The provider usage limit for this agent is expected to reset at ${resetAt.toISOString()}. Paperclip will start this work then.` }} />
+        </TaskChatPresentationProvider>
+      </ThemeProvider>,
+    ));
+    flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    const details = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]');
+    expect(details?.textContent).toContain("in 44 minutes (Nov 18, 2099, 12:17 PM");
+    expect(details?.textContent).not.toContain(resetAt.toISOString());
+    flushSync(() => vi.advanceTimersByTime(60_000));
+    expect(details?.textContent).toContain("in 43 minutes (Nov 18, 2099, 12:17 PM");
+  });
+
   it.each(["production", "streamlined"] as const)("renders old failure markers without divider rules in %s mode", (mode) => {
     flushSync(() => root!.render(
       <ThemeProvider>
