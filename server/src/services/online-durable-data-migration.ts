@@ -17,6 +17,7 @@ import { prestageNativeControllers } from "./native-runtime/native-controller-mi
 import { listLocalWorkspaceCompanies, listLocalWorkspaces } from "./local-workspace-dependencies.js";
 import { reconcileOnlineWorkspaceOperations } from "./offline-workspace-operation-reconciliation.js";
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
+import { readRunEvidenceMigrationDeferrals } from "./run-evidence-migration-work.js";
 
 export type OnlineDurableDataMigrationResult = {
   state: "completed" | "budget_exhausted" | "unsupported";
@@ -47,6 +48,7 @@ type Owners = {
     signal: AbortSignal; sourceLockWaitMs: number }) => Promise<{ alreadyMigrated: boolean; reasons: string[] }>;
   nativeHarnessBackups: typeof prestageNativeHarnessBackups;
   nativeControllers: typeof prestageNativeControllers;
+  runEvidenceDeferrals: () => Record<string, number>;
   eligibility: (db: Db) => Promise<{ eligible: boolean; blockers: string[] }>;
   record: (db: Db, result: PassRecord) => Promise<void>;
 };
@@ -75,6 +77,7 @@ const defaultOwners: Owners = {
   migrateWorkspace: migrateRemoteWorkspace,
   nativeHarnessBackups: prestageNativeHarnessBackups,
   nativeControllers: prestageNativeControllers,
+  runEvidenceDeferrals: readRunEvidenceMigrationDeferrals,
   eligibility: readOnlineEphemeralEnrollmentEligibility,
   record: recordPass,
 };
@@ -132,6 +135,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
   const deferred: Record<string, number> = {};
   const add = (bucket: Record<string, number>, key: string, by = 1) => { if (by) bucket[key] = (bucket[key] ?? 0) + by; };
   const finish = async (state: OnlineDurableDataMigrationResult["state"], reason?: string): Promise<OnlineDurableDataMigrationResult> => {
+    if (state !== "unsupported") for (const [key, count] of Object.entries(owners.runEvidenceDeferrals())) add(deferred, key, count);
     const { eligible, blockers } = await owners.eligibility(db);
     const result: OnlineDurableDataMigrationResult = { state, ...(reason ? { reason } : {}),
       ...(state === "budget_exhausted" ? { resumePhase: PHASES[progress.phase] } : {}), counts, deferred, eligible, blockers };
@@ -175,7 +179,7 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           const result = await skills.installations({ apply: true, writersStopped: false, after, limit, signal });
           for (const row of result.results) {
             if (row.status === "converted") add(counts, "skillInstallations");
-            else if (row.status !== "unchanged") add(deferred, `skills:${row.status}`);
+            else if (row.status !== "unchanged") add(deferred, `skills:${row.status === "blocked" ? row.code ?? "blocked" : row.status}`);
           }
           return result.inspected < limit || !result.after ? null : result.after;
         }

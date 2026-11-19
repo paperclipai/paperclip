@@ -39,6 +39,7 @@ function owners(overrides: Record<string, unknown> = {}) {
       for (const outcome of ["imported", "unchanged"]) input.onOutcome?.(outcome);
       return { inspected: 2, imported: 1, unchanged: 1, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} };
     },
+    runEvidenceDeferrals: () => ({}),
     eligibility: vi.fn(async () => ({ eligible: false, blockers: ["skills_require_migration", "volume_free_storage_flags_required"] })),
     record: vi.fn(async () => undefined),
     ...overrides,
@@ -63,6 +64,19 @@ describe("online durable-data migration pass", () => {
     });
     expect(fixture.eligibility).toHaveBeenCalledWith(db);
     expect(fixture.record).toHaveBeenCalledWith(db, result);
+  });
+
+  it("names why skill installations and retained run logs stay behind", async () => {
+    const fixture = owners({
+      skillInstallations: () => ({ installations: async () => ({ inspected: 3, after: null, results: [
+        { skillId: "s1", companyId: "c", status: "blocked", reason: "Saved version does not cover the installed inventory", code: "saved_version_incomplete" },
+        { skillId: "s2", companyId: "c", status: "blocked", reason: "network down" },
+        { skillId: "s3", companyId: "c", status: "linked_local" }] }) }),
+      runEvidenceDeferrals: () => ({ "run_logs:native_log_archive_source_unsettled": 2 }),
+    });
+    const result = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+    expect(result.deferred).toMatchObject({ "skills:saved_version_incomplete": 1, "skills:blocked": 1, "skills:linked_local": 1,
+      "run_logs:native_log_archive_source_unsettled": 2 });
   });
 
   it("migrates agent files with live writers, never the offline mode", async () => {
