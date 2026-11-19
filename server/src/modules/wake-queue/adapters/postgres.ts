@@ -16,7 +16,7 @@ import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-
 import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../../../services/execution-blocker.js";
 import { nativeManualAdmissionHoldsExecution } from "../../../services/native-runtime/native-runner-ownership.js";
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
 import { agentRunSupersededByFreshContinuation } from "../../../agent-run-cancellation.js";
@@ -53,13 +53,15 @@ import { executionRetryAccounting } from "../../../services/execution-recovery-a
 import { issueService } from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
+import { undeliveredLegacyUserCommentIds } from "../../../services/explicit-native-continuation.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import {
-  queuedCommentIdsFromWakePayload,
+  DEFERRED_WAKE_CONTEXT_KEY,
   queuedCommentIdsFromRunContext,
+  queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
-} from "../../../services/issue-queued-comment-queue.js";
+} from "../../../lib/queued-comment-context.js";
 import { CHAT_CONVERSATION_ID_KEY, extractWakeCommentIds, readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { deferredWakeHoldsNoOtherConversation, otherConversationCommentIds, splitOtherConversationMessages } from "./chat-conversation-batch.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
@@ -85,13 +87,12 @@ import type {
   WakeQueueHost,
   WakeQueueTransaction,
 } from "../application/ports.js";
-import type { FreshIssueRunWriter } from "../application/fresh-issue-run.js";
+import type { FreshIssueRunStore } from "../application/fresh-issue-run.js";
 import type { RunSummary } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 /** Wake outcome for a deferred chat wake whose news an earlier reply already gave. */
 export const ALREADY_REPORTED_WAKE_REASON = "Already reported by an earlier reply in this conversation";
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
@@ -1537,10 +1538,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
   };
 }
 
-export function createFreshIssueRunWriter(
+export function createFreshIssueRunStore(
   scope: TransactionScope,
   companyId: string,
-): FreshIssueRunWriter<HeartbeatRunRow> {
+): FreshIssueRunStore<HeartbeatRunRow> {
   const tx = requireAdmissionTx(scope, companyId);
   return {
     async saveReceipt(input) {
@@ -1560,6 +1561,36 @@ export function createFreshIssueRunWriter(
         isNull(agentWakeupRequests.runId),
       )).returning();
       return receipt;
+    },
+    async readCommentCandidates({ issueId, agentId, handoffRunId, receiptScope, checkExecutionBlocker }) {
+      const [handoff] = handoffRunId ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, handoffRunId), eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, "issue_reassigned"),
+        ne(heartbeatRuns.agentId, agentId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+        or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issueId)),
+      )) : [];
+      const candidates = receiptScope && (!checkExecutionBlocker || !(await getExecutionBlocker(tx, companyId, issueId)))
+        ? await tx.select({
+            id: agentWakeupRequests.id,
+            reason: agentWakeupRequests.reason,
+            idempotencyKey: agentWakeupRequests.idempotencyKey,
+            payload: agentWakeupRequests.payload,
+          }).from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.agentId, handoff ? [agentId, handoff.agentId] : [agentId]),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+            receiptScope.kind === "exact" ? eq(agentWakeupRequests.id, receiptScope.wakeId) : undefined,
+          )).orderBy(asc(agentWakeupRequests.requestedAt))
+        : [];
+      return { handoffAgentId: handoff?.agentId ?? null, candidates };
+    },
+    readUndeliveredLegacyCommentIds(issueId, agentId, commentIds) {
+      return undeliveredLegacyUserCommentIds(tx, companyId, issueId, agentId, commentIds);
+    },
+    notifyRunMilestones(issueId) {
+      return notifyChatRunMilestones(tx, { companyId, issueId });
     },
     async insertQueuedRun(seed) {
       const [run] = await tx.insert(heartbeatRuns).values({

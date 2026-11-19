@@ -7,11 +7,11 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
+import { createFreshIssueRunStore, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
 import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, notifyOtherAgentsQueuedOnSettledIssue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
-import { bindFreshIssueRunAdmission, createWakeQueue } from "../../modules/wake-queue/index.js";
+import { createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
 import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
@@ -494,6 +494,49 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { company, agent, issue, wake, run };
   }
 
+  it.each([true, false])("adopts only eligible saved comments from the exact reassignment source (%s)", async (matchingIssue) => {
+    const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null,
+      conversationState: null, status: "todo" }).where(eq(issues.id, issue.id));
+    const [previousAgent] = await db.insert(agents).values({ companyId: company.id,
+      name: "Previous assignee", adapterType: "process" }).returning();
+    const [interruptedRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: previousAgent.id,
+      status: "cancelled", errorCode: "issue_reassigned", finishedAt: new Date(),
+      contextSnapshot: { issueId: matchingIssue ? issue.id : randomUUID() } }).returning();
+    const [earlier, later] = await db.insert(issueComments).values(["Earlier", "Later"].map(body => ({
+      companyId: company.id, issueId: issue.id, authorType: "user" as const, authorUserId: user.id, body,
+    }))).returning();
+    const [local, handoff, chat, interaction] = await db.insert(agentWakeupRequests).values([
+      { agentId: agent.id, commentId: later.id, requestedAt: new Date(2) },
+      { agentId: previousAgent.id, commentId: earlier.id, requestedAt: new Date(1) },
+      { agentId: agent.id, commentId: randomUUID(), requestedAt: new Date(3), idempotencyKey: `chat-inbound:${randomUUID()}` },
+      { agentId: agent.id, commentId: randomUUID(), requestedAt: new Date(4), mutation: "interaction" },
+    ].map(({ agentId, commentId, requestedAt, idempotencyKey, mutation }) => ({
+      companyId: company.id, agentId, source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedAt, idempotencyKey, requestedByActorType: "user", requestedByActorId: user.id,
+      payload: withQueuedCommentIdsInWakePayload({ issueId: issue.id, mutation }, [commentId]),
+    }))).returning();
+
+    const run = await queue.enqueueWakeup(agent.id, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned", requestedByActorType: "system",
+      payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, interruptedRunId: interruptedRun.id },
+    });
+
+    const commentIds = matchingIssue ? [earlier.id, later.id] : [later.id];
+    expect(run).toMatchObject({ status: "queued", responsibleUserId: user.id, invocationSource: "assignment",
+      contextSnapshot: { wakeCommentIds: commentIds, wakeCommentId: later.id,
+        queuedCommentSourceWakeIds: matchingIssue ? [handoff.id, local.id] : [local.id] } });
+    const receipts = new Map((await db.select().from(agentWakeupRequests)).map(wake => [wake.id, wake]));
+    expect(receipts.get(run!.wakeupRequestId!)).toMatchObject({ runId: run!.id, source: "assignment",
+      requestedByActorType: "system", payload: { _paperclipWakeContext: { wakeCommentIds: commentIds } } });
+    expect(receipts.get(local.id)).toMatchObject({ status: "coalesced", runId: run!.id, requestedByActorId: user.id });
+    expect(receipts.get(handoff.id)).toMatchObject(matchingIssue
+      ? { status: "coalesced", runId: run!.id, agentId: previousAgent.id }
+      : { status: "deferred_issue_execution", runId: null });
+    for (const receipt of [chat, interaction]) expect(receipts.get(receipt.id)).toEqual(receipt);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("only promotes a deferred chat receipt for its agent and binds receipts within its company", async () => {
     const local = await fixture("queued");
     const [foreignCompany] = await db.insert(companies).values({ name: "Other company", issuePrefix: "OC" }).returning();
@@ -510,13 +553,11 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }).returning();
 
     await db.transaction(async (tx) => {
-      const admission = bindFreshIssueRunAdmission(local.company.id, tx as unknown as Db);
-      expect(await admission.createReceipt({
-        deferredChatReceiptId: localDeferredWake.id, agentId: foreignAgent.id, source: "automation",
-        triggerDetail: null, reason: null, payload: null, requestedByActorType: null,
-        requestedByActorId: null, idempotencyKey: null,
+      const store = createFreshIssueRunStore(TransactionScope.create(local.company.id, tx), local.company.id);
+      expect(await store.saveReceipt({
+        kind: "promote", wakeId: localDeferredWake.id, agentId: foreignAgent.id, payload: null,
       })).toBeUndefined();
-      await admission.bindReceipts({
+      await store.bindReceipts({
         wakeId: foreignWake.id, runId: local.run.id, failedChatRetryReceiptId: foreignWake.id,
         adopted: { wakeIds: [foreignWake.id, localDeferredWake.id], payload: { replaced: true } },
       });
