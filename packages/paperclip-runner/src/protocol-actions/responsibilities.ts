@@ -98,7 +98,7 @@ const bar = {
     current: { type: ["number", "boolean", "null"], description: "The latest reading; true or false for yes_no." },
   },
 } as const;
-const actsFor = "Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.";
+const actsFor = "When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.";
 
 export const createAreaAction = responsibilityAction({
   id: "create_area", title: "Create area", order: 87, write: true,

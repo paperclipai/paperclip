@@ -3007,7 +3007,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Create an area, a broad heading for responsibilities such as Fundraising. If a live area already has this title (any case), it is returned instead. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Create an area, a broad heading for responsibilities such as Fundraising. If a live area already has this title (any case), it is returned instead. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3049,7 +3049,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Rename, describe, reorder, archive or restore an area. Archiving keeps its responsibilities and can be undone. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Rename, describe, reorder, archive or restore an area. Archiving keeps its responsibilities and can be undone. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3143,7 +3143,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Create a responsibility for a person; a title alone is enough, the bar can come later. Defaults to the person this run works for and to active. A live responsibility of that person with the same title is returned instead of a copy. File it under an area by areaId or areaTitle (an area with that title is reused or created), and file work under it with fileItems. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Create a responsibility for a person; a title alone is enough, the bar can come later. Defaults to the person this run works for and to active. A live responsibility of that person with the same title is returned instead of a copy. File it under an area by areaId or areaTitle (an area with that title is reused or created), and file work under it with fileItems. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3323,7 +3323,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Change a responsibility: its title, description, bar sentence (standard), metric (bar; null clears it), area (areaId, null for none, or areaTitle), the agent that runs it, order, health override and note, or status (active, proposed, let_go to stop it, dismissed for a proposal). Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Change a responsibility: its title, description, bar sentence (standard), metric (bar; null clears it), area (areaId, null for none, or areaTitle), the agent that runs it, order, health override and note, or status (active, proposed, let_go to stop it, dismissed for a proposal). When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3534,7 +3534,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "File projects, tasks and routines under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "File projects, tasks and routines under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3599,7 +3599,7 @@
     "allowedModes": [
       "standard"
     ],
-    "description": "Unfile projects, tasks and routines from a responsibility by what they are; no link IDs needed. The items themselves are not changed. Acting for the person this run works for, you may do what they could; each change is saved in their Dashboard history, where they can undo it. Without such a person, the change is saved as a proposal for a person to confirm.",
+    "description": "Unfile projects, tasks and routines from a responsibility by what they are; no link IDs needed. The items themselves are not changed. When the person this run works for directed it (it is their own chat or task, or their message woke you), you act for them and may do what they could; each change is saved in their Dashboard history, where they can undo it. Otherwise the change is saved as a proposal for a person to confirm.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,

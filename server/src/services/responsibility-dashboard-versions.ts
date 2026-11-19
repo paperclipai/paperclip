@@ -355,6 +355,7 @@ export function responsibilityDashboardVersionService(db: Db) {
         const [created] = await tx.insert(responsibilityAreas).values({
           companyId,
           title: want.title,
+          description: want.description ?? null,
           status: want.status === "archived" ? "archived" : "active",
           sortOrder: want.sortOrder,
         }).returning();
