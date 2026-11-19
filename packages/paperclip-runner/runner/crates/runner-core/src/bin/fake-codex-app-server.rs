@@ -361,6 +361,21 @@ fn finish_turn_with_send(
     // Persist the fixture's settled state before publishing that permission.
     state.active_turn_id = None;
     save_state(state_path, state)?;
+    if std::env::args().any(|arg| arg == "--oversized-file-change") {
+        send(json!({
+            "method": "item/completed",
+            "params": {"threadId": state.thread_id, "turnId": turn_id, "item": {
+                "id": "large-file-change-1",
+                "type": "fileChange",
+                "status": "completed",
+                "changes": [{
+                    "path": "large-schema.sql",
+                    "kind": {"type": "update", "move_path": null},
+                    "diff": "x".repeat(5 * 1024 * 1024)
+                }]
+            }}
+        }))?;
+    }
     send(json!({
         "method": "item/completed",
         "params": {"threadId": state.thread_id, "turnId": turn_id, "item": {
