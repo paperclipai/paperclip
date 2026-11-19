@@ -70,6 +70,9 @@ release follows a backward-compatible protocol.
   startup reports the supported range and the remediation.
 - Runner binary contracts, required runner capabilities, artifact digests,
   provider-pack manifests, and runtime permission checks are unchanged.
+- A model whose Codex floor is above the window (GPT-6.2 needs `0.169.1`)
+  cannot run natively. A selection of it falls back to the newest same-class
+  model that the CLI accepts and shows a visible message.
   This window does not relax the separate ACP provider-pack qualification.
 
 When qualifying newer Codex releases, review the upper bound in

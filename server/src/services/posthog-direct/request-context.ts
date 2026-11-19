@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Request, RequestHandler } from "express";
 import { isPostHogDirectDeliveryEnabled, resolveCloudPostHogConfig } from "../cloud-posthog-config.js";
-import { scopedTelemetryCompanyId } from "../../telemetry-company-scope.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../../telemetry-company-scope.js";
 
 /**
  * Request-scoped analytics context for Paperclip Cloud direct delivery.
@@ -21,8 +21,11 @@ type PostHogRequestStore = {
   active: boolean;
 };
 
+export type PostHogAttribution = "request" | "task_creator" | "task_assigner" | "run_owner" | "none";
+
 export type PostHogEventContext = {
   userId?: string;
+  attributedVia?: PostHogAttribution;
   companyId?: string;
   sessionId?: string;
   windowId?: string;
@@ -103,10 +106,20 @@ export function capturePostHogEventContext(): PostHogEventContext | undefined {
   if (store?.active) {
     const userId = actingUserId(store.req);
     const companyId = knownCompanyId(store.req);
-    if (userId) context.userId = userId;
+    if (userId) {
+      context.userId = userId;
+      context.attributedVia = "request";
+    }
     if (companyId) context.companyId = companyId;
     if (store.sessionId) context.sessionId = store.sessionId;
     if (store.windowId) context.windowId = store.windowId;
+  }
+  if (!context.userId) {
+    const person = scopedTelemetryPerson();
+    if (person) {
+      context.userId = person.userId;
+      context.attributedVia = person.attributedVia;
+    }
   }
   if (!context.companyId) {
     const scopedCompanyId = scopedTelemetryCompanyId();

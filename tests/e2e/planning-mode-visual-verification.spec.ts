@@ -125,7 +125,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const issueIdentifier = issue.identifier ?? issue.id;
   const issuePath = `/${company.issuePrefix ?? company.id}/issues/${issueIdentifier}`;
   const companyPrefix = company.issuePrefix ?? company.id;
-  const issueLinkSelector = `a[href$="/issues/${issueIdentifier}"]`;
+  const issueRow = page.locator(`[data-issue-row-details="${issue.id}"]`);
 
   const setMode = async (mode: "standard" | "planning") => {
     const patchRes = await page.request.patch(`${baseOrigin}/api/issues/${issue.id}`, {
@@ -159,8 +159,8 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto(`/${companyPrefix}/issues`);
-  await expect(page.locator(issueLinkSelector)).toBeVisible();
-  await expect(page.locator(issueLinkSelector)).not.toContainText("Plan mode");
+  await expect(issueRow).toBeVisible();
+  await expect(issueRow).not.toContainText("Plan mode");
   await page.screenshot({
     path: `${screenshotDir}/desktop-planning-row-${timestamp}.png`,
     fullPage: true,
@@ -190,8 +190,8 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   });
 
   await page.goto(`/${companyPrefix}/issues`);
-  await expect(page.locator(issueLinkSelector)).toBeVisible();
-  await expect(page.locator(issueLinkSelector)).not.toContainText("Plan mode");
+  await expect(issueRow).toBeVisible();
+  await expect(issueRow).not.toContainText("Plan mode");
   await page.screenshot({
     path: `${screenshotDir}/mobile-planning-row-${timestamp}.png`,
     fullPage: true,

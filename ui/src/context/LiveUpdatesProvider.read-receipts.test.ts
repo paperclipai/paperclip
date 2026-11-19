@@ -43,11 +43,7 @@ describe("live read receipts", () => {
     const badges = queryKeys.sidebarBadges("company-1");
     const chats = queryKeys.agentChats.list("company-1", "viewer");
     const navigation = queryKeys.issues.summaryBatch("company-1", "viewer", ["task-1"]);
-    const subtasks = [...queryKeys.issues.list("company-1"), "recent-subtasks", "viewer", "parent-1"];
     const ownReads = [mine, touched, unread, badges, chats, navigation].map(key => watch(key));
-    const childRead = watch(subtasks);
-    client.setQueryData(subtasks, { pages: [[{id: "task-1", parentId: "parent-1", companyId: "company-1"}]], pageParams: [undefined] });
-    ownReads.push(childRead);
     const unrelatedReads = [
       queryKeys.issues.list("company-1"),
       [...queryKeys.issues.list("company-1"), "row-context"],

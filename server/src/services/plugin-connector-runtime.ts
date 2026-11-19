@@ -9,6 +9,7 @@
 import { and, eq } from "drizzle-orm";
 import { plugins, type Db } from "@paperclipai/db";
 import {
+  PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS,
   PLUGIN_CONNECTOR_TOOL_NAME,
   getConnectableAppDefinition,
   parsePluginAppSlug,
@@ -104,6 +105,18 @@ export function pluginCatalogEntryCurrent(
   return tools.list.some((tool) => tool.name === entry.toolName && tool.risk === entry.riskLevel);
 }
 
+export function pluginConnectionToolTimeoutMs(
+  connection: { config: Record<string, unknown> },
+  toolName: string,
+): number {
+  const method = pluginConnectionMethod(connection)?.method;
+  const tools = method?.tools;
+  const tool = tools?.kind === "static" ? tools.list.find((candidate) => candidate.name === toolName) : undefined;
+  return tool?.timeoutMs ?? method?.timeoutMs ?? PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS;
+}
+
+const PLUGIN_CONNECTOR_RPC_GRACE_MS = 1_000;
+
 /**
  * A health check for a plugin connection: its tools run in the plugin's
  * worker, so the connection is healthy only while that worker runs (static
@@ -183,6 +196,7 @@ export async function executePluginConnectionTool(
     toolName: string;
     parameters: unknown;
     runContext: ToolRunContext & { connection: NonNullable<ToolRunContext["connection"]> };
+    timeoutMs: number;
   },
 ): Promise<ToolResult> {
   const pluginDbId = await runningWorker(db, input.pluginKey);
@@ -191,5 +205,5 @@ export async function executePluginConnectionTool(
     appSlug: input.appSlug,
     parameters: input.parameters,
     runContext: input.runContext,
-  });
+  }, input.timeoutMs + PLUGIN_CONNECTOR_RPC_GRACE_MS);
 }
