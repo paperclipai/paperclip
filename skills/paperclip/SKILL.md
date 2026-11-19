@@ -282,6 +282,15 @@ A person's responsibilities are saved Paperclip records (experimental): each has
 
 Ask the person what they are responsible for only when the list is empty, and never invent responsibilities. A "turned off" error (code `responsibilities_disabled`) means the feature is off on this instance: say so instead of reporting that they have none. See "Areas and responsibilities" in `references/api-reference.md` for the routes behind these tools.
 
+To change them, you act for the person your run works for when they directed it: it is their own chat or a task they made, or their message woke you (a subtask you made does not count). You may then do what they could (their own responsibilities, or anyone's when they are a company owner or admin):
+
+- `create_area`, `update_area` (rename, describe, reorder, archive or restore) and `delete_area`.
+- `create_responsibility` (a title is enough; `areaTitle` reuses or creates the area; `fileItems` files work under it), `update_responsibility` (title, sentence, metric as `bar`, area, the agent that runs it, health override, or status such as `let_go`) and `delete_responsibility`.
+- `file_under_responsibility` files projects, tasks, routines and company skills in one step; `moveFrom` (a responsibility ID, or `all`) makes it a move. `remove_from_responsibility` unfiles items; no link IDs are needed. A responsibility's skills are those filed by hand plus those held by the agents doing its work; only filed ones can be removed. `update_skill_details` changes a skill's tagline and categories.
+- To map routines to responsibilities, read them with `list_routines` (`unfiled: true` lists those under no responsibility; add `status: "active"` for the running ones), then file them; `update_routine` also changes a routine's schedule, agent or instructions (see `references/routines.md`).
+
+Each change is saved as a version in the person's Dashboard history, where they can undo it; say so when you report what you changed. Prefer what can be undone: archive an area or let a responsibility go instead of deleting it. A delete is permanent, so the first call posts a confirmation card and returns `awaiting_confirmation`: tell the person, then stop; when they accept you are woken, and the same call deletes. Otherwise (a task someone else made for them, a routine, or no person), your changes are saved as proposals for a person to confirm.
+
 ### Propose a bar in a bar conversation
 
 A bar conversation is a task a person opens from one of their responsibilities to agree how its success is measured. When you are assigned one, its prompt carries a **Bar conversation** block with the responsibility's facts, the bar templates (`volume`, `percentage`, `yes_no`, `range`) and the exact call, `POST /api/issues/{issueId}/bar-proposals`. Follow that block: open with what you understand, ask at most three short questions, then propose. You choose the template. You never apply a bar yourself; the person accepts your proposal with one tap, or says it is not right and the conversation continues.

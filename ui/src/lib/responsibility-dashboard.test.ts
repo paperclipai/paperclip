@@ -75,6 +75,9 @@ describe("version words", () => {
     const name = (id: string) => (id === "agent-1" ? "Chief" : undefined);
     expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-1" }, name)).toBe("Chief");
     expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-gone" }, name)).toBe("An agent");
+    // A change the agent made with its responsibility tools, not a proposal the person applied.
+    expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-1", interactionId: null }, name)).toBe("Chief, for you");
+    expect(dashboardVersionWho({ cause: "change_set", actorAgentId: "agent-1", interactionId: "card-1" }, name)).toBe("Chief");
     expect(dashboardVersionWho({ cause: "person", actorAgentId: null }, name)).toBe("You");
     expect(dashboardVersionWho({ cause: "restore", actorAgentId: null }, name)).toBe("Restored");
     expect(dashboardChangeLine({ cause: "change_set", summary: "Added 1 area" })).toBe("Added 1 area.");
