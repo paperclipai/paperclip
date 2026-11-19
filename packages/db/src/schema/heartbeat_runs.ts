@@ -214,6 +214,11 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    companyAgentCreatedIdx: index("heartbeat_runs_company_agent_created_idx").on(
+      table.companyId,
+      table.agentId,
+      table.createdAt.desc().nullsFirst(),
+    ),
     companyNativeWorkspaceIdx: index("heartbeat_runs_company_native_workspace_idx")
       .on(table.companyId, sql`(${table.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId')`)
       .concurrently(),
