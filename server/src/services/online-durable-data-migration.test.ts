@@ -303,5 +303,20 @@ describe("online durable-data migration pass", () => {
       await runOnlineDurableDataMigration(db, { budgetMs: 20 }, fixture.owners);
       expect(limits).toEqual([4, 2]);
     });
+
+    it("returns at the budget while the owner waits on a lock, and skips workspaces until that owner settles", async () => {
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const migrateWorkspace = vi.fn(async () => { await held; return { alreadyMigrated: true, reasons: [] }; });
+      const fixture = owners({ localWorkspaces: async (_db: Db, input: { after?: string }) => input.after ? [] : [workspace(1)], migrateWorkspace });
+      expect(await runOnlineDurableDataMigration(db, { budgetMs: 20 }, fixture.owners)).toMatchObject({ state: "budget_exhausted", resumePhase: "workspaces" });
+      const busy = await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners);
+      expect(busy).toMatchObject({ state: "completed", deferred: expect.objectContaining({ "workspaces:owner_busy": 1 }) });
+      expect(migrateWorkspace).toHaveBeenCalledOnce();
+      release();
+      await held;
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(await runOnlineDurableDataMigration(db, { budgetMs: 60_000 }, fixture.owners)).toMatchObject({ counts: expect.objectContaining({ workspaces: 1 }) });
+    });
   });
 });

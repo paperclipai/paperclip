@@ -84,6 +84,7 @@ const PHASES = ["agent_files", "skill_objects", "skill_snapshots", "skill_versio
 type Phase = typeof PHASES[number];
 
 let running: Promise<OnlineDurableDataMigrationResult> | null = null;
+let workspaceOwner: Promise<void> | null = null;
 type Progress = { phase: number; after?: string; limit?: number; timeouts?: number };
 let progress: Progress = { phase: 0 };
 const DEFAULT_LIMITS: Partial<Record<Phase, number>> = { agent_files: 5, skill_objects: 50, skill_snapshots: 50, skill_versions: 50,
@@ -102,6 +103,16 @@ function workspaceDeferrals(error: unknown): string[] {
 
 export function resetOnlineDurableDataMigrationProgressForTests() {
   progress = { phase: 0 };
+  workspaceOwner = null;
+}
+
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) return abort();
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
 }
 
 export function runOnlineDurableDataMigration(db: Db, input: { budgetMs: number; now?: () => number }, owners: Owners = defaultOwners) {
@@ -183,14 +194,22 @@ async function migrate(db: Db, input: { budgetMs: number; now?: () => number }, 
           return companies.length < limit ? null : companies.at(-1)!;
         }
         case "workspaces": {
+          if (workspaceOwner) {
+            add(deferred, "workspaces:owner_busy");
+            return null;
+          }
           const rows = await owners.localWorkspaces(db, { after, limit });
           for (const { companyId, workspaceId } of rows) {
             let reasons: string[];
             try {
               reasons = (await owners.inventoryWorkspace(db, { companyId, workspaceId })).reasons;
               if (!reasons.length) {
-                const result = await owners.migrateWorkspace({ db, storage, companyId, workspaceId, apply: true, signal,
+                const work = owners.migrateWorkspace({ db, storage, companyId, workspaceId, apply: true, signal,
                   sourceLockWaitMs: WORKSPACE_SOURCE_LOCK_WAIT_MS });
+                const tracked: Promise<void> = work.then(() => undefined, () => undefined)
+                  .finally(() => { if (workspaceOwner === tracked) workspaceOwner = null; });
+                workspaceOwner = tracked;
+                const result = await untilAborted(work, signal);
                 reasons = result.alreadyMigrated ? [] : result.reasons.length ? result.reasons : ["not_migrated"];
               }
             } catch (error) {

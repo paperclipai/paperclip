@@ -107,4 +107,30 @@ describe.skipIf(!support.supported)("online durable-data migration of local work
     expect(await fs.readFile(path.join(busy.cwd, "saved.txt"), "utf8")).toBe("busy work\n");
     expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, busy.workspace.id))).toEqual([]);
   }, 60_000);
+
+  it("pages local workspaces deepest first and pages companies, with no skips or repeats across page boundaries", async () => {
+    const expected: Array<{ id: string; depth: number }> = [];
+    const companyIds = [randomUUID(), randomUUID()].sort();
+    for (const companyId of companyIds) {
+      await db.insert(companies).values({ id: companyId, name: "Paging", issuePrefix: `P${companyId.slice(0, 6)}` });
+      for (const cwd of ["/a/b", "/a/bb", "/a/bb", "/a/b/c/d", "/a/b/c"]) {
+        const [row] = await db.insert(executionWorkspaces).values({ companyId, name: cwd, mode: "shared_workspace",
+          strategyType: "project_primary", providerType: "local_fs", cwd, providerRef: cwd }).returning();
+        expected.push({ id: row.id, depth: cwd.length });
+      }
+    }
+    expected.sort((a, b) => b.depth - a.depth || a.id.localeCompare(b.id));
+    const seen: string[] = [];
+    let after: string | undefined;
+    for (;;) {
+      const page = await listLocalWorkspaces(db, { after, limit: 3 });
+      seen.push(...page.map(row => row.workspaceId));
+      if (page.length < 3) break;
+      after = page.at(-1)!.cursor;
+    }
+    expect(seen).toEqual(expected.map(row => row.id));
+    expect(await listLocalWorkspaceCompanies(db, { limit: 1 })).toEqual([companyIds[0]]);
+    expect(await listLocalWorkspaceCompanies(db, { after: companyIds[0], limit: 1 })).toEqual([companyIds[1]]);
+    expect(await listLocalWorkspaceCompanies(db, { after: companyIds[1], limit: 1 })).toEqual([]);
+  });
 });
