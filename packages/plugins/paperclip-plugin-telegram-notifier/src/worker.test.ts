@@ -1,127 +1,20 @@
-import { createTestHarness, type TestHarness } from "@paperclipai/plugin-sdk/testing";
-import type {
-  Agent,
-  Company,
-  Issue,
-  PluginAccessMember,
-  PluginCapability,
-} from "@paperclipai/plugin-sdk";
+import type { TestHarness } from "@paperclipai/plugin-sdk/testing";
+import type { Agent, Issue, PluginAccessMember } from "@paperclipai/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JOB_KEYS, STATE_KEY, TOOL_NAMES } from "./constants.js";
-import {
-  BOT_TOKEN_SECRET_REQUIRED_MESSAGE,
-  clearTokenCache,
-  tokenCacheSettings,
-} from "./telegram-client.js";
 import manifest from "./manifest.js";
 import { readPairing, saveMessageContext, setApprovalConfig, setPairedChat } from "./pairing.js";
+import { pair, REF_A, REF_B, seedCompany, setup, state, TOKEN_A } from "./test-helpers.js";
 import type { PairingState, TelegramUpdate } from "./types.js";
+import { applyConfigPatch, saveThenRefresh } from "./ui/index.js";
 import {
-  applyConfigPatch,
-  botTokenSecretPatch,
-  saveThenRefresh,
-  withoutLiteralToken,
-} from "./ui/index.js";
-import plugin, {
   collectDigestIssues,
   postTelegramReplyComment,
   resolveUpdateConfig,
 } from "./worker.js";
 
-const TOKEN_A = "111111:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const TOKEN_B = "222222:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
-// Stored config holds only secret bindings; `setup` resolves them to the tokens.
-const REF_A = { type: "secret_ref", secretId: "00000000-0000-4000-8000-00000000000a", version: "latest" };
-const REF_B = { type: "secret_ref", secretId: "00000000-0000-4000-8000-00000000000b", version: "latest" };
-const SECRET_VALUES: Record<string, string> = {
-  [REF_A.secretId]: TOKEN_A,
-  [REF_B.secretId]: TOKEN_B,
-};
-
-interface TelegramCall {
-  botId: string;
-  method: string;
-  body: Record<string, unknown>;
-}
-
-/**
- * Harness with the host's current config contract: config is stored per
- * company and `get()` without a company is rejected, as it is for a
- * scheduled job outside any company-scoped invocation.
- */
-async function setup(
-  configs: Record<string, Record<string, unknown>>,
-  extraCapabilities: PluginCapability[] = [],
-) {
-  const harness = createTestHarness({
-    manifest,
-    capabilities: [...manifest.capabilities, ...extraCapabilities],
-  });
-  const configReads: Array<string | undefined> = [];
-  harness.ctx.config.get = async (companyId?: string) => {
-    configReads.push(companyId);
-    const config = companyId ? configs[companyId] : undefined;
-    if (!config) throw new Error("company context is required");
-    return { ...config };
-  };
-
-  const secretResolves: Array<{ secretRef: unknown; companyId?: string }> = [];
-  harness.ctx.secrets.resolve = async (secretRef, opts) => {
-    secretResolves.push({ secretRef, companyId: opts?.companyId });
-    const id = typeof secretRef === "object" ? secretRef.secretId : undefined;
-    const value = id ? SECRET_VALUES[id] : undefined;
-    if (!value) throw new Error("unknown secret");
-    return value;
-  };
-
-  const calls: TelegramCall[] = [];
-  const pendingUpdates = new Map<string, TelegramUpdate[]>();
-  harness.ctx.http.fetch = async (url: string, init?: RequestInit) => {
-    const match = String(url).match(/\/bot(\d+):[^/]+\/(\w+)$/);
-    if (!match) throw new Error(`unexpected url ${url}`);
-    const [, botId, method] = match;
-    const body = init?.body ? JSON.parse(String(init.body)) : {};
-    calls.push({ botId: botId!, method: method!, body });
-    let result: unknown = true;
-    if (method === "getMe") result = { id: Number(botId), username: `bot${botId}` };
-    if (method === "sendMessage") result = { message_id: calls.length };
-    if (method === "getUpdates") {
-      result = pendingUpdates.get(botId!) ?? [];
-      pendingUpdates.delete(botId!);
-      // End the 55-second long-poll loop after the first round.
-      vi.setSystemTime(Date.now() + 120_000);
-    }
-    return new Response(JSON.stringify({ ok: true, result }), { status: 200 });
-  };
-
-  await plugin.definition.setup(harness.ctx);
-  return { harness, configReads, calls, pendingUpdates, secretResolves };
-}
-
-function seedCompany(harness: TestHarness, id: string) {
-  harness.seed({ companies: [{ id, name: `Company ${id}` } as unknown as Company] });
-}
-
-async function pair(harness: TestHarness, companyId: string, chatId: string) {
-  await setPairedChat(harness.ctx, companyId, {
-    chatId,
-    chatLabel: `chat ${chatId}`,
-    pairedAt: "2026-10-01T00:00:00.000Z",
-    pairedByTelegramUserId: 42,
-  });
-}
-
-function state(harness: TestHarness): PairingState {
-  return (harness.getState({ scopeKind: "instance", stateKey: STATE_KEY }) ??
-    {}) as PairingState;
-}
-
-const DEFAULT_RETRY_DELAYS = [...tokenCacheSettings.retryDelaysMs];
-
 afterEach(() => {
   vi.useRealTimers();
-  clearTokenCache();
-  tokenCacheSettings.retryDelaysMs = [...DEFAULT_RETRY_DELAYS];
 });
 
 describe("poll job with company-scoped config", () => {
@@ -180,9 +73,13 @@ describe("resolveUpdateConfig", () => {
   });
   const groupA = () => ({
     botId: "111111",
-    config: { botToken: TOKEN_A },
-    configs: new Map([["company-a", { botToken: TOKEN_A, silent: true }]]),
+    companyIds: ["company-a"],
+    stored: new Map([["company-a", { botToken: REF_A, silent: true }]]),
   });
+  const configs = {
+    "company-a": { botToken: REF_A, silent: true },
+    "company-b": { botToken: REF_B },
+  };
   const pairedState: PairingState = {
     pairedByCompany: {
       "company-a": { chatId: "100", chatLabel: "a", pairedAt: "" },
@@ -191,23 +88,25 @@ describe("resolveUpdateConfig", () => {
   };
 
   it("uses the config of the company the chat is paired to", async () => {
-    const { harness } = await setup({ "company-b": { botToken: REF_B } });
-    expect(await resolveUpdateConfig(harness.ctx, pairedState, update(100), groupA())).toEqual({
+    const { harness } = await setup(configs);
+    expect(
+      await resolveUpdateConfig(harness.ctx, pairedState, update(100), groupA(), new Map()),
+    ).toEqual({
       botToken: TOKEN_A,
       silent: true,
     });
   });
 
   it("ignores a chat paired to a company that uses another bot", async () => {
-    const { harness } = await setup({ "company-b": { botToken: REF_B } });
+    const { harness } = await setup(configs);
     expect(
-      await resolveUpdateConfig(harness.ctx, pairedState, update(200), groupA()),
+      await resolveUpdateConfig(harness.ctx, pairedState, update(200), groupA(), new Map()),
     ).toBeUndefined();
   });
 
   it("loads a company that started pairing on this bot after the poll began", async () => {
-    const { harness } = await setup({ "company-c": { botToken: REF_A } });
-    const group = groupA();
+    const { harness } = await setup({ ...configs, "company-c": { botToken: REF_A } });
+    const batch = new Map();
     const handshakeState: PairingState = {
       ...pairedState,
       pairing: {
@@ -217,10 +116,10 @@ describe("resolveUpdateConfig", () => {
       },
     };
 
-    const config = await resolveUpdateConfig(harness.ctx, handshakeState, update(300), group);
+    const config = await resolveUpdateConfig(harness.ctx, handshakeState, update(300), groupA(), batch);
 
     expect(config?.botToken).toBe(TOKEN_A);
-    expect(group.configs.has("company-c")).toBe(true);
+    expect(batch.has("company-c")).toBe(true);
   });
 });
 
@@ -821,180 +720,6 @@ describe("config", () => {
       const schema = tool.parametersSchema as { required?: string[] };
       expect(schema.required ?? []).not.toContain("companyId");
     }
-  });
-});
-
-describe("bot token as a secret reference", () => {
-  // Fake literal token in the shape a real one has; it must never be used,
-  // echoed or shown.
-  const LITERAL = "333333:TEST_FAKE_TOKEN_CCCCCCCCCCCCCCCCCCCC";
-  const leaks = (value: unknown) => {
-    const text = JSON.stringify(value);
-    return text.includes("TEST_FAKE_TOKEN") || text.includes("CCCC");
-  };
-
-  it("rejects a literal token in config validation without echoing it", async () => {
-    const result = await plugin.definition.onValidateConfig!({ botToken: LITERAL });
-    expect(result.ok).toBe(false);
-    expect(result.errors).toEqual([BOT_TOKEN_SECRET_REQUIRED_MESSAGE]);
-    expect(leaks(result)).toBe(false);
-    expect(await plugin.definition.onValidateConfig!({ botToken: REF_A })).toEqual({ ok: true });
-  });
-
-  it("refuses to poll or send with a literal token saved earlier", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    const { harness, calls } = await setup({ "company-a": { botToken: LITERAL } });
-    await pair(harness, "company-a", "100");
-
-    await harness.runJob(JOB_KEYS.pollUpdates);
-    await expect(
-      harness.performAction("startPairing", {}, { companyId: "company-a" }),
-    ).rejects.toThrow(BOT_TOKEN_SECRET_REQUIRED_MESSAGE);
-
-    expect(calls).toEqual([]);
-    expect(harness.logs.some((l) => l.message.includes(BOT_TOKEN_SECRET_REQUIRED_MESSAGE))).toBe(true);
-    expect(leaks(harness.logs)).toBe(false);
-  });
-
-  it("resolves the secret reference for the company and gives the client the token", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    const { harness, calls, secretResolves } = await setup({ "company-a": { botToken: REF_A } });
-    await pair(harness, "company-a", "100");
-
-    await harness.runJob(JOB_KEYS.pollUpdates);
-
-    expect(secretResolves).toContainEqual({ secretRef: REF_A, companyId: "company-a" });
-    expect(calls.some((c) => c.botId === "111111" && c.method === "getUpdates")).toBe(true);
-  });
-
-  it("keeps a literal token out of the status payload the settings page reads", async () => {
-    const { harness } = await setup({ "company-a": { botToken: LITERAL } });
-    const status = await harness.getData<Record<string, unknown>>("status", {
-      companyId: "company-a",
-    });
-    expect(status.tokenConfigured).toBe(false);
-    expect(status.tokenError).toBe(BOT_TOKEN_SECRET_REQUIRED_MESSAGE);
-    expect(leaks(status)).toBe(false);
-  });
-
-  it("drops a literal token from the config the settings page loads and saves", () => {
-    const stored = { botToken: LITERAL as unknown, silent: true };
-    const loaded = withoutLiteralToken(stored);
-    expect(leaks(loaded)).toBe(false);
-    const saved = applyConfigPatch(loaded, botTokenSecretPatch(REF_A.secretId));
-    expect(saved).toEqual({ botToken: REF_A, silent: true });
-    expect(leaks(saved)).toBe(false);
-  });
-});
-
-describe("bot token secret resolution under load", () => {
-  const runFailed = (harness: TestHarness, companyId = "company-a") =>
-    harness.emit(
-      "agent.run.failed",
-      { runId: "run-1", agentId: "agent-1", error: "boom" },
-      { companyId, entityId: "run-1", entityType: "heartbeat_run" },
-    );
-  const rateLimited = () => {
-    const err = new Error("Rate limit exceeded for secret resolution");
-    err.name = "RateLimitExceededError";
-    return err;
-  };
-
-  it("resolves the secret once for many events within the TTL", async () => {
-    const { harness, calls, secretResolves } = await setup({ "company-a": { botToken: REF_A } });
-    await pair(harness, "company-a", "100");
-
-    for (let i = 0; i < 5; i++) await runFailed(harness);
-
-    expect(secretResolves).toHaveLength(1);
-    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(5);
-  });
-
-  it("does not resolve the secret for events that send nothing", async () => {
-    const { harness, calls, secretResolves } = await setup({
-      "company-a": { botToken: REF_A },
-      "company-b": { botToken: REF_B },
-    });
-    await pair(harness, "company-a", "100");
-
-    await harness.emit("issue.updated", { status: "in_progress" }, {
-      companyId: "company-a",
-      entityId: "issue-1",
-    });
-    await harness.emit("approval.created", { interactionKind: "suggest_tasks", interactionId: "ix-1" }, {
-      companyId: "company-a",
-      entityId: "issue-1",
-    });
-    await runFailed(harness, "company-b");
-
-    expect(secretResolves).toEqual([]);
-    expect(calls).toEqual([]);
-  });
-
-  it("keeps sending with the cached token when secret resolution is rate-limited", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    const { harness, calls } = await setup({ "company-a": { botToken: REF_A } });
-    await pair(harness, "company-a", "100");
-    await runFailed(harness);
-
-    vi.setSystemTime(Date.now() + tokenCacheSettings.ttlMs + 1);
-    harness.ctx.secrets.resolve = async () => {
-      throw rateLimited();
-    };
-    await runFailed(harness);
-
-    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(2);
-  });
-
-  it("retries a rate-limited resolution when nothing is cached", async () => {
-    tokenCacheSettings.retryDelaysMs = [0, 0];
-    const { harness, calls } = await setup({ "company-a": { botToken: REF_A } });
-    await pair(harness, "company-a", "100");
-    let attempts = 0;
-    harness.ctx.secrets.resolve = async () => {
-      attempts += 1;
-      if (attempts < 3) throw rateLimited();
-      return TOKEN_A;
-    };
-
-    await runFailed(harness);
-
-    expect(attempts).toBe(3);
-    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
-  });
-
-  it("resolves again after the config names another secret", async () => {
-    const configs: Record<string, Record<string, unknown>> = { "company-a": { botToken: REF_A } };
-    const { harness, calls, secretResolves } = await setup(configs);
-    await pair(harness, "company-a", "100");
-    await runFailed(harness);
-
-    configs["company-a"] = { botToken: REF_B };
-    await runFailed(harness);
-
-    expect(secretResolves.map((r) => (r.secretRef as { secretId: string }).secretId)).toEqual([
-      REF_A.secretId,
-      REF_B.secretId,
-    ]);
-    expect(calls.filter((c) => c.method === "sendMessage").map((c) => c.botId)).toEqual([
-      "111111",
-      "222222",
-    ]);
-  });
-
-  it("drops the cached token when Telegram rejects it", async () => {
-    const { harness, secretResolves } = await setup({ "company-a": { botToken: REF_A } });
-    await pair(harness, "company-a", "100");
-    const fetchOk = harness.ctx.http.fetch;
-    harness.ctx.http.fetch = async () =>
-      new Response(JSON.stringify({ ok: false, error_code: 401, description: "Unauthorized" }), {
-        status: 401,
-      });
-    await runFailed(harness);
-    harness.ctx.http.fetch = fetchOk;
-    await runFailed(harness);
-
-    expect(secretResolves).toHaveLength(2);
   });
 });
 

@@ -33,7 +33,6 @@ import type {
   Issue,
   PluginContext,
   PluginEvent,
-  PluginJobContext,
   ToolRunContext,
 } from "@paperclipai/plugin-sdk";
 
@@ -101,12 +100,20 @@ import {
 } from "./pairing.js";
 import { agentAssigneeChange, asRecord, asString } from "./events.js";
 import {
+  BOT_TOKEN_UNRESOLVED_MESSAGE,
   botIdFromToken,
   botTokenConfigError,
   createTelegramClient,
+  isRateLimitError,
   isSecretRefBinding,
   resolveToken,
 } from "./telegram-client.js";
+import {
+  createOutboundQueue,
+  nextBackoff,
+  outboundQueueSettings,
+  type OutboundQueue,
+} from "./outbound-queue.js";
 import type {
   ApprovalConfig,
   InlineKeyboard,
@@ -136,23 +143,15 @@ async function loadRawConfig(
 }
 
 /**
- * Load a company's config with `botToken` resolved for that company. The
- * resolved token lives only in memory for the current call; it is never
- * written to state or logs.
+ * Load a company's config with `botToken` resolved for that company. Every
+ * call resolves the secret again: the token lives only in the caller's local
+ * variables for one operation and is never cached, written to state or logged.
  */
 async function loadConfig(
   ctx: PluginContext,
   companyId: string,
 ): Promise<PluginConfig> {
-  return resolveStoredConfig(ctx, await loadRawConfig(ctx, companyId), companyId);
-}
-
-async function resolveStoredConfig(
-  ctx: PluginContext,
-  storedConfig: StoredPluginConfig,
-  companyId: string,
-): Promise<PluginConfig> {
-  const { botToken: stored, ...config } = storedConfig;
+  const { botToken: stored, ...config } = await loadRawConfig(ctx, companyId);
   if (isSecretRefBinding(stored)) {
     return { ...config, botToken: await resolveToken(ctx, stored, companyId) };
   }
@@ -1751,15 +1750,15 @@ async function handleCallbackQuery(
 // ---------------------------------------------------------------------------
 
 /**
- * Companies sharing one bot token are polled together. `configs` holds each
- * company's own config (with the token resolved in memory); `config` is the
- * first one and is used only for replies to chats that are not tied to a
- * company yet.
+ * Companies sharing one bot are polled together. A group holds no token:
+ * `companyIds` lists the companies on this bot (the first one's secret is
+ * used for the bot's own requests) and `stored` holds each company's config
+ * as stored, without the secret resolved.
  */
 export interface BotGroup {
   botId: string;
-  config: PluginConfig;
-  configs: Map<string, PluginConfig>;
+  companyIds: string[];
+  stored: Map<string, StoredPluginConfig>;
 }
 
 /**
@@ -1767,7 +1766,8 @@ export interface BotGroup {
  * paired company plus the target of an in-flight handshake. Config is
  * company-scoped, and a scheduled job has no company context, so each read
  * names its company. The host allows such proactive reads only for companies
- * that have saved plugin config; a company without config is skipped.
+ * that have saved plugin config; a company without config is skipped. The
+ * token is resolved once per company to learn its bot id, then dropped.
  */
 export async function collectBotGroups(ctx: PluginContext): Promise<BotGroup[]> {
   const state = await readPairing(ctx);
@@ -1777,9 +1777,13 @@ export async function collectBotGroups(ctx: PluginContext): Promise<BotGroup[]> 
   }
   const groups = new Map<string, BotGroup>();
   for (const companyId of companyIds) {
-    let config: PluginConfig;
+    let botId: string;
+    let stored: StoredPluginConfig;
     try {
-      config = await loadConfig(ctx, companyId);
+      stored = await loadRawConfig(ctx, companyId);
+      const config = await loadConfig(ctx, companyId);
+      if (!config.botToken) continue;
+      botId = botIdFromToken(config.botToken);
     } catch (err) {
       ctx.logger.debug("telegram-notifier: no readable config for company", {
         companyId,
@@ -1787,14 +1791,13 @@ export async function collectBotGroups(ctx: PluginContext): Promise<BotGroup[]> 
       });
       continue;
     }
-    if (!config.botToken) continue;
-    const botId = botIdFromToken(config.botToken);
     let group = groups.get(botId);
     if (!group) {
-      group = { botId, config, configs: new Map() };
+      group = { botId, companyIds: [], stored: new Map() };
       groups.set(botId, group);
     }
-    group.configs.set(companyId, config);
+    group.companyIds.push(companyId);
+    group.stored.set(companyId, stored);
   }
   return [...groups.values()];
 }
@@ -1819,27 +1822,57 @@ function companyForUpdate(
 }
 
 /**
+ * Load a company's config for one poller operation. A rate-limited secret
+ * resolution waits with backoff and retries while the poll loop's deadline
+ * allows; any other failure is thrown.
+ */
+async function loadConfigWithBackoff(
+  ctx: PluginContext,
+  companyId: string,
+  deadline: number,
+): Promise<PluginConfig> {
+  let delay = outboundQueueSettings.initialBackoffMs;
+  for (;;) {
+    try {
+      return await loadConfig(ctx, companyId);
+    } catch (err) {
+      if (!isRateLimitError(err) || Date.now() + delay >= deadline) throw err;
+      ctx.logger.debug("telegram-notifier: secret resolution rate-limited, backing off", {
+        companyId,
+        delayMs: delay,
+      });
+      await sleep(delay);
+      delay = nextBackoff(delay);
+    }
+  }
+}
+
+/**
  * Pick the config an update is handled with. A chat paired to a company
  * that uses a different bot is ignored, so one company's bot never reads or
- * acts on another company's data. A company that joined this bot after the
- * poll started (for example, it started pairing during the long-poll loop)
- * is loaded on demand, so its first message is not dropped.
+ * acts on another company's data. A chat with no company yet is answered
+ * with the group's first company's config. `batch` holds the configs
+ * resolved for the update batch being handled, so each company's secret is
+ * resolved at most once per batch; the caller drops it after the batch.
  */
 export async function resolveUpdateConfig(
   ctx: PluginContext,
   state: PairingState,
   update: TelegramUpdate,
   group: BotGroup,
+  batch: Map<string, PluginConfig>,
+  deadline = Date.now() + POLL_LOOP_DEADLINE_MS,
 ): Promise<PluginConfig | undefined> {
-  const companyId = companyForUpdate(state, update);
-  if (companyId === undefined) return undefined;
-  if (companyId === null) return group.config;
-  const known = group.configs.get(companyId);
+  const updateCompanyId = companyForUpdate(state, update);
+  if (updateCompanyId === undefined) return undefined;
+  const companyId = updateCompanyId ?? group.companyIds[0];
+  if (!companyId) return undefined;
+  const known = batch.get(companyId);
   if (known) return known;
   try {
-    const config = await loadConfig(ctx, companyId);
+    const config = await loadConfigWithBackoff(ctx, companyId, deadline);
     if (config.botToken && botIdFromToken(config.botToken) === group.botId) {
-      group.configs.set(companyId, config);
+      batch.set(companyId, config);
       return config;
     }
   } catch (err) {
@@ -1853,32 +1886,95 @@ export async function resolveUpdateConfig(
 
 async function runPollUpdates(
   ctx: PluginContext,
-  _job: PluginJobContext,
+  outbound: OutboundQueue,
 ): Promise<void> {
   const groups = await collectBotGroups(ctx);
   if (groups.length === 0) {
     ctx.logger.debug("telegram-notifier: no configured bot to poll");
     return;
   }
-  await Promise.all(groups.map((group) => pollBot(ctx, group)));
+  await Promise.all(groups.map((group) => pollBot(ctx, group, outbound)));
 }
 
-async function pollBot(ctx: PluginContext, group: BotGroup): Promise<void> {
-  await ensureBotBootstrap(ctx, group.config);
+/**
+ * One getUpdates call as one operation: resolve the group's secret, check
+ * it still names this bot, long-poll, and drop the token on return. Returns
+ * null when the secret is gone (deleted, disabled, or no longer this bot).
+ */
+async function fetchUpdates(
+  ctx: PluginContext,
+  group: BotGroup,
+  offset: number | undefined,
+  timeoutSec: number,
+  deadline: number,
+): Promise<TelegramUpdate[] | null> {
+  let config: PluginConfig;
+  try {
+    config = await loadConfigWithBackoff(ctx, group.companyIds[0]!, deadline);
+  } catch (err) {
+    if (isRateLimitError(err)) throw err;
+    return null;
+  }
+  if (!config.botToken || botIdFromToken(config.botToken) !== group.botId) return null;
+  const client = await createTelegramClient(ctx, config.botToken);
+  return client.getUpdates(offset, timeoutSec);
+}
 
-  // Morning digest is independent of inbound polling; run it once per
-  // cron tick before we settle into the long-poll loop.
-  for (const [companyId, config] of group.configs) {
-    await runMorningDigestIfDue(ctx, config, companyId);
+/** Handle one update batch; configs resolved for it are dropped on return. */
+async function handleUpdateBatch(
+  ctx: PluginContext,
+  group: BotGroup,
+  updates: TelegramUpdate[],
+  deadline: number,
+): Promise<void> {
+  const batch = new Map<string, PluginConfig>();
+  for (const update of updates) {
+    try {
+      const config = await resolveUpdateConfig(
+        ctx,
+        await readPairing(ctx),
+        update,
+        group,
+        batch,
+        deadline,
+      );
+      if (!config) continue;
+      if (update.message) {
+        await handleMessage(ctx, config, update.message);
+      } else if (update.callback_query) {
+        await handleCallbackQuery(ctx, config, update.callback_query);
+      }
+    } catch (err) {
+      ctx.logger.warn("telegram-notifier: update handler failed", {
+        updateId: update.update_id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+async function pollBot(
+  ctx: PluginContext,
+  group: BotGroup,
+  outbound: OutboundQueue,
+): Promise<void> {
+  const deadline = Date.now() + POLL_LOOP_DEADLINE_MS;
+  const primaryCompanyId = group.companyIds[0]!;
+  if (!getBotState(await readPairing(ctx), group.botId).username) {
+    await ensureBotBootstrap(ctx, await loadConfigWithBackoff(ctx, primaryCompanyId, deadline));
   }
 
-  const client = await createTelegramClient(ctx, group.config.botToken!);
-  const deadline = Date.now() + POLL_LOOP_DEADLINE_MS;
+  // Morning digest is independent of inbound polling; it is checked once
+  // per cron tick and, when due, sent through the company's outbound queue.
+  for (const [companyId, stored] of group.stored) {
+    await runMorningDigestIfDue(ctx, stored, companyId, outbound);
+  }
 
   // Long-poll loop: keep getUpdates open for up to POLL_TIMEOUT_SEC and process
   // anything that arrives. Exits before the next cron tick fires so two
-  // jobs don't overlap. This compresses callback_query latency from up to
-  // 60s (full cron gap) down to ~10s, well under Telegram's 60s expiry.
+  // jobs don't overlap. An idle bot makes about three requests (and three
+  // secret resolutions) per cycle, well under the host's 30 per minute.
+  let backoff = outboundQueueSettings.initialBackoffMs;
   while (Date.now() < deadline) {
     const state = await readPairing(ctx);
     if (state.pairing && isHandshakeExpired(state.pairing)) {
@@ -1887,44 +1983,41 @@ async function pollBot(ctx: PluginContext, group: BotGroup): Promise<void> {
     const lastUpdateId = getBotState(state, group.botId).lastUpdateId;
     const offset = lastUpdateId !== undefined ? lastUpdateId + 1 : undefined;
 
-    let updates: TelegramUpdate[];
+    let updates: TelegramUpdate[] | null;
     try {
       // End the last long poll before the deadline so cycles never overlap.
       const remainingSec = Math.floor((deadline - Date.now()) / 1000) - 1;
       if (remainingSec < 1) break;
-      updates = await client.getUpdates(offset, Math.min(POLL_TIMEOUT_SEC, remainingSec));
+      updates = await fetchUpdates(
+        ctx,
+        group,
+        offset,
+        Math.min(POLL_TIMEOUT_SEC, remainingSec),
+        deadline,
+      );
+      backoff = outboundQueueSettings.initialBackoffMs;
     } catch (err) {
       ctx.logger.warn("telegram-notifier: getUpdates failed", {
         botId: group.botId,
         err: err instanceof Error ? err.message : String(err),
       });
-      // Back off briefly on transport errors so we don't busy-loop.
-      await sleep(2000);
+      // Back off on rate limits and transport errors so we don't busy-loop.
+      await sleep(Math.min(backoff, Math.max(0, deadline - Date.now())));
+      backoff = nextBackoff(backoff);
       continue;
     }
+    if (updates === null) {
+      // A deleted or disabled secret ends this cycle: nothing polls with it.
+      ctx.logger.warn("telegram-notifier: bot token secret unavailable, polling stopped", {
+        botId: group.botId,
+      });
+      break;
+    }
 
+    await handleUpdateBatch(ctx, group, updates, deadline);
     let newest = lastUpdateId ?? -1;
     for (const update of updates) {
       if (update.update_id > newest) newest = update.update_id;
-      try {
-        const config = await resolveUpdateConfig(
-          ctx,
-          await readPairing(ctx),
-          update,
-          group,
-        );
-        if (!config) continue;
-        if (update.message) {
-          await handleMessage(ctx, config, update.message);
-        } else if (update.callback_query) {
-          await handleCallbackQuery(ctx, config, update.callback_query);
-        }
-      } catch (err) {
-        ctx.logger.warn("telegram-notifier: update handler failed", {
-          updateId: update.update_id,
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
     }
     if (newest >= 0 && newest !== lastUpdateId) {
       await patchBotState(ctx, group.botId, { lastUpdateId: newest });
@@ -2095,10 +2188,11 @@ async function sendDigestForCompany(
 
 async function runMorningDigestIfDue(
   ctx: PluginContext,
-  config: PluginConfig,
+  stored: StoredPluginConfig,
   companyId: string,
+  outbound: OutboundQueue,
 ): Promise<void> {
-  const digest = config.morningDigest;
+  const digest = stored.morningDigest;
   if (!digest?.enabled) return;
 
   const now = new Date();
@@ -2110,8 +2204,12 @@ async function runMorningDigestIfDue(
   }
 
   const chat = getPaired(await readPairing(ctx), companyId);
-  if (!chat?.operateAsAgentId) return;
-  await sendDigestForCompany(ctx, config, companyId);
+  if (!chat?.operateAsAgentId || chat.lastDigestSentOn === localDateKey(now)) return;
+  // Not awaited: a rate-limited queue must not hold up the poll loop. A
+  // digest queued twice sends once, because the send re-checks the date.
+  void outbound.enqueue(companyId, async (config) => {
+    await sendDigestForCompany(ctx, config, companyId);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2122,10 +2220,21 @@ const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info("telegram-notifier: starting");
 
+    // Companies whose bot token secret failed to resolve (deleted, disabled
+    // or missing) on the last outbound drain; shown as `tokenError`.
+    const unresolvedTokenCompanies = new Set<string>();
+    const outbound = createOutboundQueue({
+      logger: ctx.logger,
+      loadConfig: (companyId) => loadConfig(ctx, companyId),
+      onResolveFailure: (companyId) => unresolvedTokenCompanies.add(companyId),
+      onResolveSuccess: (companyId) => unresolvedTokenCompanies.delete(companyId),
+    });
+
     // Decide whether an event needs a message before resolving the bot
     // secret: the host rate-limits secret resolution per company, and most
     // events (an `issue.updated` without an assignment, an unpaired company)
-    // send nothing.
+    // send nothing. A message that is needed goes through the company's
+    // outbound queue, which resolves the secret once per drain cycle.
     const guarded =
       <T extends PluginEvent>(
         flag: NotifyFlag,
@@ -2141,9 +2250,9 @@ const plugin = definePlugin({
           const stored = await loadRawConfig(ctx, event.companyId);
           if (!notifyEnabled(stored, flag) || !relevant(event)) return;
           if (!getPaired(await readPairing(ctx), event.companyId)) return;
-          const config = await resolveStoredConfig(ctx, stored, event.companyId);
-          if (!config.botToken) return;
-          await fn(ctx, config, event);
+          await outbound.enqueue(event.companyId, async (config) => {
+            if (config.botToken) await fn(ctx, config, event);
+          });
         } catch (err) {
           ctx.logger.warn("telegram-notifier: handler failed", {
             eventType: event.eventType,
@@ -2173,8 +2282,8 @@ const plugin = definePlugin({
       guarded("wakeRequests", onWakeupRequested),
     );
 
-    ctx.jobs.register(JOB_KEYS.pollUpdates, async (job) => {
-      await runPollUpdates(ctx, job);
+    ctx.jobs.register(JOB_KEYS.pollUpdates, async () => {
+      await runPollUpdates(ctx, outbound);
     });
 
     // Agent tools act on the calling agent's company only. The host supplies
@@ -2675,10 +2784,18 @@ const plugin = definePlugin({
       // Only whether a secret is bound and why a stored value was refused;
       // the stored value itself never reaches the page.
       const tokenConfigured = isSecretRefBinding(config.botToken);
-      const tokenError = botTokenConfigError(config.botToken);
-      const botUsername = tokenConfigured
-        ? await botUsernameFor(companyId).catch(() => undefined)
-        : undefined;
+      let botUsername: string | undefined;
+      if (tokenConfigured) {
+        try {
+          botUsername = await botUsernameFor(companyId);
+          unresolvedTokenCompanies.delete(companyId);
+        } catch (err) {
+          if (!isRateLimitError(err)) unresolvedTokenCompanies.add(companyId);
+        }
+      }
+      const tokenError =
+        botTokenConfigError(config.botToken) ??
+        (unresolvedTokenCompanies.has(companyId) ? BOT_TOKEN_UNRESOLVED_MESSAGE : null);
       // Another company's handshake is reported without its details, so the
       // page can explain why pairing cannot start yet.
       const otherHandshakeInFlight =
