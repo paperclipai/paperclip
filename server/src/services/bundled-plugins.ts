@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { isCloudManagedInstance } from "./cloud-instance.js";
+import { pluginManifestJson } from "./bundled-plugin-package.js";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { assertDistributionManifestCapabilities, readDistributionPluginCatalog, type DistributionPlugin } from "./distribution-plugin-catalog.js";
 
@@ -257,6 +258,26 @@ function defaultBundleManifestExists(localPath: string): boolean {
   return fs.existsSync(path.join(localPath, "dist", "manifest.js"));
 }
 
+function withoutDisplayDescriptions(manifest: PaperclipPluginManifestV1): unknown {
+  const copy = pluginManifestJson(manifest) as unknown as Record<string, unknown>;
+  const removeDescription = (value: unknown) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const object = value as Record<string, unknown>;
+      if (typeof object.description === "string") delete object.description;
+    }
+  };
+  removeDescription(copy);
+  if (Array.isArray(copy.environmentDrivers)) for (const driver of copy.environmentDrivers) {
+    removeDescription(driver);
+    const schema = driver?.configSchema;
+    removeDescription(schema);
+    if (schema?.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)) {
+      for (const property of Object.values(schema.properties)) removeDescription(property);
+    }
+  }
+  return copy;
+}
+
 /**
  * Reconcile a present bundled plugin's persisted manifest with the shipped
  * bundle. The bundle is part of the release image, so its manifest is the
@@ -294,7 +315,10 @@ async function reconcileBundledPluginManifest(
     }
     const rebindPackage = !preservePackagePath && install.distribution && existing.packagePath !== install.localPath && existing.status !== "uninstalled";
     const refreshDistribution = install.distribution && !isDeepStrictEqual(bundleManifest, existing.manifestJson);
-    if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval && !refreshDistribution) return;
+    const refreshDescriptions = !install.distribution && !["uninstalled", "upgrade_pending"].includes(existing.status) &&
+      !isDeepStrictEqual(pluginManifestJson(bundleManifest), pluginManifestJson(existing.manifestJson)) &&
+      isDeepStrictEqual(withoutDisplayDescriptions(bundleManifest), withoutDisplayDescriptions(existing.manifestJson));
+    if (bundleManifest.version === existing.version && !rebindPackage && !requiresApproval && !refreshDistribution && !refreshDescriptions) return;
     await deps.registry.update(existing.id, {
       version: bundleManifest.version,
       manifest: bundleManifest,
