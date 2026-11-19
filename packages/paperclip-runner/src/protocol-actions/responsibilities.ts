@@ -58,7 +58,7 @@ export const listResponsibilitiesAction = responsibilityAction({
 
 export const getResponsibilityAction = responsibilityAction({
   id: "get_responsibility", title: "Read responsibility", order: 85, write: false,
-  description: "Read one responsibility in full: its bar and health, area, the projects, tasks and routines under it (with link IDs for items filed directly, and items under it through a filed project), the skills of the agents doing its work, and its latest status report.",
+  description: "Read one responsibility in full: its bar and health, area, the projects, tasks and routines under it (with link IDs for items filed directly, and items under it through a filed project), its skills (filed by hand, with a link ID, and computed from the agents doing its work), and its latest status report.",
   schema: { type: "object", additionalProperties: false, required: ["responsibilityId"], properties: {
     responsibilityId: { type: "string", pattern: uuidPattern, description: "Responsibility ID from list_responsibilities or find_responsibilities_for." },
   } }, example: { responsibilityId: "00000000-0000-4000-8000-000000000001" },
@@ -66,9 +66,9 @@ export const getResponsibilityAction = responsibilityAction({
 
 export const findResponsibilitiesForAction = responsibilityAction({
   id: "find_responsibilities_for", title: "Find responsibilities for an item", order: 86, write: false,
-  description: "List the proposed and active responsibilities a project, task or routine is filed under, directly or through its project. An empty list means it is uncovered.",
+  description: "List the proposed and active responsibilities a project, task, routine or company skill is filed under, directly or (for a task or routine) through its project. An empty list means it is uncovered.",
   schema: { type: "object", additionalProperties: false, required: ["kind", "id"], properties: {
-    kind: { type: "string", enum: ["project", "task", "routine"], description: "What the item is." },
+    kind: { type: "string", enum: ["project", "task", "routine", "skill"], description: "What the item is." },
     id: { type: "string", minLength: 1, maxLength: 200, description: "The item's ID. For a task, an identifier such as PAP-123 also works." },
   } }, example: { kind: "routine", id: "00000000-0000-4000-8000-000000000002" },
 });
@@ -78,9 +78,9 @@ const nullableText = (description: string) => ({ type: ["string", "null"], maxLe
 const title = { type: "string", minLength: 1, maxLength: 200 } as const;
 const items = {
   type: "array", minItems: 1, maxItems: 50,
-  description: "What to file: each a project, task or routine by ID. A task can also be an identifier such as PAP-12.",
+  description: "What to file: each a project, task, routine or company skill by ID. A task can also be an identifier such as PAP-12.",
   items: { type: "object", additionalProperties: false, required: ["kind", "id"], properties: {
-    kind: { type: "string", enum: ["project", "task", "routine"] },
+    kind: { type: "string", enum: ["project", "task", "routine", "skill"] },
     id: { type: "string", minLength: 1, maxLength: 200 },
   } },
 } as const;
@@ -169,7 +169,7 @@ export const deleteResponsibilityAction = responsibilityAction({
 
 export const fileUnderResponsibilityAction = responsibilityAction({
   id: "file_under_responsibility", title: "File work under responsibility", order: 93, write: true,
-  description: `File projects, tasks and routines under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. ${actsFor}`,
+  description: `File projects, tasks, routines and company skills under a responsibility in one step. With moveFrom it is a move: the items also leave that responsibility, or with all, every other responsibility of the same person. An item can sit under several responsibilities; filing one already there changes nothing. ${actsFor}`,
   schema: { type: "object", additionalProperties: false, required: ["responsibilityId", "items"], properties: {
     responsibilityId: id("Responsibility ID to file under."), items,
     moveFrom: { type: "string", description: "A responsibility ID to move the items from, or all." },
@@ -178,7 +178,7 @@ export const fileUnderResponsibilityAction = responsibilityAction({
 
 export const removeFromResponsibilityAction = responsibilityAction({
   id: "remove_from_responsibility", title: "Remove work from responsibility", order: 94, write: true,
-  description: `Unfile projects, tasks and routines from a responsibility by what they are; no link IDs needed. The items themselves are not changed. ${actsFor}`,
+  description: `Unfile projects, tasks, routines and skills from a responsibility by what they are; no link IDs needed. The items themselves are not changed. ${actsFor}`,
   schema: { type: "object", additionalProperties: false, required: ["responsibilityId", "items"], properties: {
     responsibilityId: id("Responsibility ID."), items,
   } }, example: { responsibilityId: "00000000-0000-4000-8000-000000000001", items: [{ kind: "task", id: "PAP-12" }] },

@@ -48,7 +48,7 @@ import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { normalizeIssueExecutionPolicy, redactIssueMonitorExternalRef } from "../issue-execution-policy.js";
 import { buildLowTrustSourceTrust, isLowTrustQuarantined, LOW_TRUST_QUARANTINED_BODY, resolveActorSourceTrustForIssue, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
-import { callCreateSkillTool, callUpdateSkillTool } from "../skill-tools.js";
+import { callCreateSkillTool, callUpdateSkillDetailsTool, callUpdateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
 import { callResponsibilityTool, isResponsibilityTool, RESPONSIBILITY_TOOL_NAMES, responsibilityToolsDisabledError } from "../responsibility-tools.js";
 import { callRoutineTool, ROUTINE_TOOL_NAMES } from "../routine-tools.js";
@@ -158,7 +158,7 @@ const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title", "set_task_monitor",
   "request_human_input", "handoff_case", ...NATIVE_CASE_OPERATIONS,
-  "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
+  "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "update_skill_details", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
   ...RESPONSIBILITY_TOOL_NAMES, ...ROUTINE_TOOL_NAMES,
@@ -941,6 +941,12 @@ export class PaperclipRunnerToolAuthority {
         const token = this.#apiToken(context);
         if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
         return callUpdateSkillTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
+      }
+      case "update_skill_details": {
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
+        return callUpdateSkillDetailsTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
       }
       case "get_workspace":
       case "list_workspaces":

@@ -14,6 +14,7 @@ import { sendChatMessageAction } from "../protocol-actions/send-chat-message.js"
 import { reassignTaskAction } from "../protocol-actions/reassign-task.js";
 import { listRoutinesAction } from "../protocol-actions/list-routines.js";
 import { updateRoutineAction } from "../protocol-actions/update-routine.js";
+import { updateSkillDetailsAction } from "../protocol-actions/update-skill-details.js";
 import {
   createAreaAction, createResponsibilityAction, deleteAreaAction, deleteResponsibilityAction, fileUnderResponsibilityAction,
   findResponsibilitiesForAction, getResponsibilityAction, listResponsibilitiesAction, removeFromResponsibilityAction,
@@ -525,7 +526,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     createAreaAction, updateAreaAction, deleteAreaAction,
     createResponsibilityAction, updateResponsibilityAction, deleteResponsibilityAction,
     fileUnderResponsibilityAction, removeFromResponsibilityAction,
-    listRoutinesAction, updateRoutineAction,
+    listRoutinesAction, updateRoutineAction, updateSkillDetailsAction,
   ].map((action) => descriptor({
     operationId: action.id,
     title: action.documentation.title,

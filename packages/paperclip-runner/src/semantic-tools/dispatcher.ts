@@ -210,6 +210,7 @@ export class CapabilitySemanticDispatcher {
             "file_under_responsibility" as const,
             "remove_from_responsibility" as const,
             "update_routine" as const,
+            "update_skill_details" as const,
             "handoff_case" as const,
             "read_case" as const,
             "update_case" as const,

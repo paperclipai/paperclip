@@ -51,6 +51,7 @@ const NAMESPACE: Readonly<Record<PaperclipSemanticActionId, string>> =
   create_responsibility: "responsibilities", update_responsibility: "responsibilities", delete_responsibility: "responsibilities",
   file_under_responsibility: "responsibilities", remove_from_responsibility: "responsibilities",
   list_routines: "routines", update_routine: "routines",
+  update_skill_details: "skills",
     request_approval: "governance",
     decide_approval: "governance",
     comment_on_approval: "governance",

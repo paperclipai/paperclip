@@ -165,7 +165,8 @@
         "create_skill",
         "update_skill",
         "list_company_skills",
-        "sync_company_skills"
+        "sync_company_skills",
+        "update_skill_details"
       ]
     },
     {
@@ -534,6 +535,7 @@
         "update_routine",
         "create_skill",
         "update_skill",
+        "update_skill_details",
         "list_company_skills",
         "sync_company_skills",
         "list_secret_metadata",

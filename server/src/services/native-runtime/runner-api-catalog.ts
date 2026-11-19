@@ -55,6 +55,7 @@ function dedicatedTools(method: string, path: string): string[] {
   if (/\/agents\/\{[^}]+\}\/instructions-bundle\/restore$/.test(path) && method === "POST") return ["restore_agent_instructions"];
   if (/\/companies\/\{[^}]+\}\/skills$/.test(path) && method === "POST") return ["create_skill"];
   if (/\/companies\/\{[^}]+\}\/skills\/\{[^}]+\}\/files$/.test(path) && method === "PATCH") return ["update_skill"];
+  if (/\/companies\/\{[^}]+\}\/skills\/\{[^}]+\}$/.test(path) && method === "PATCH") return ["update_skill_details"];
   if (/\/companies\/\{[^}]+\}\/agent-hires$/.test(path) && method === "POST") return ["hire_agent"];
   if (/\/projects$/.test(path)) return method === "GET" ? ["list_projects"] : method === "POST" ? ["create_project"] : [];
   if (/\/project-repositories$/.test(path) && method === "GET") return ["list_project_repositories"];
