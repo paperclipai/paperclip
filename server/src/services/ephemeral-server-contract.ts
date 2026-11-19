@@ -32,10 +32,13 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
     refuse("a stable PAPERCLIP_DECISION_SIGNING_SECRET of at least 32 characters is required; preserve the existing decision key during migration");
   }
   let runtime: URL, listener: URL;
+  const waiveListener = options.allowMissingListener === true && !env.PAPERCLIP_DATABASE_LISTEN_URL?.trim();
+  const runtimeRequired = waiveListener ? "an external postgres DATABASE_URL is required"
+    : "external DATABASE_URL and PAPERCLIP_DATABASE_LISTEN_URL are required";
   try { runtime = new URL(config.databaseUrl ?? ""); }
-  catch { return refuse("external DATABASE_URL and PAPERCLIP_DATABASE_LISTEN_URL are required"); }
-  if (options.allowMissingListener && !env.PAPERCLIP_DATABASE_LISTEN_URL?.trim()) {
-    if (!["postgres:", "postgresql:"].includes(runtime.protocol)) refuse("external DATABASE_URL and PAPERCLIP_DATABASE_LISTEN_URL are required");
+  catch { return refuse(runtimeRequired); }
+  if (waiveListener) {
+    if (!["postgres:", "postgresql:"].includes(runtime.protocol)) refuse(runtimeRequired);
     return null;
   }
   try { listener = new URL(env.PAPERCLIP_DATABASE_LISTEN_URL ?? ""); }

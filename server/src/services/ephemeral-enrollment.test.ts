@@ -143,7 +143,7 @@ it("does not waive an unparseable runtime database because the listener is unset
   const config = await import("../config.js");
   const original = config.loadConfig;
   vi.spyOn(config, "loadConfig").mockReturnValue({ ...original(), databaseUrl: "not a url" } as never);
-  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_database_listener_required"] });
+  await expect(readOnlineEphemeralEnrollmentEligibility(db)).resolves.toMatchObject({ eligible: false, blockers: ["volume_free_configuration_required"] });
 });
 
 it("still names another missing setting when the listener is unset", async () => {
