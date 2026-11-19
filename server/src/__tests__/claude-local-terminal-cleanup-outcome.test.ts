@@ -5,12 +5,6 @@ import path from "node:path";
 import { execute } from "@paperclipai/adapter-claude-local/server";
 import { resolveAdapterResultOutcome } from "../services/heartbeat/adapter-result-outcome.js";
 
-// A Claude CLI that reports a terminal result, then keeps running because
-// something it started (a background task, a lingering child) holds it open.
-// The cleanup timer starts when the result is read and signals the whole
-// process group, so a lingering child must be fully started (its SIGTERM
-// handler installed) before the result is printed. It reports readiness over
-// IPC and the CLI prints the result only after that.
 async function writeLingeringSuccessClaudeCommand(
   commandPath: string,
   options: { resultEvent: Record<string, unknown>; lingeringChild: boolean; childIgnoresSigterm?: boolean },
@@ -93,12 +87,12 @@ describe("claude_local terminal-result cleanup run outcome", () => {
       expect(adapterResult.errorMessage).toBeNull();
       expect(adapterResult.errorCode).toBeNull();
       expect(adapterResult.resultJson?.subtype).toBe("success");
+      expect(adapterResult.terminalResultSuccess).toBe(true);
       expect(adapterResult.resultJson?.unmanagedBackgroundTask).toMatchObject({
         kind: "terminal_result_cleanup",
         stopped: true,
         terminalResultSeen: true,
       });
-      // The cleanup's own termination, not a clean exit.
       expect(adapterResult.exitCode === 0 && adapterResult.signal === null).toBe(false);
 
       expect(resolveAdapterResultOutcome(adapterResult)).toBe("succeeded");
@@ -136,12 +130,11 @@ describe("claude_local terminal-result cleanup run outcome", () => {
         lingeringChild,
       });
 
-      // The adapter reports no error and the cleanup's own SIGTERM, which is
-      // the shape that must not be mistaken for a clean success.
       expect(adapterResult.timedOut).toBe(false);
       expect(adapterResult.errorMessage).toBeNull();
       expect(adapterResult.errorCode).toBeNull();
       expect(adapterResult.resultJson?.subtype).toBe("error_max_turns");
+      expect(adapterResult.terminalResultSuccess).toBe(false);
       expect(adapterResult.resultJson?.unmanagedBackgroundTask).toMatchObject({
         kind: "terminal_result_cleanup",
         stopped: true,
@@ -166,7 +159,6 @@ describe("claude_local terminal-result cleanup run outcome", () => {
     });
 
     expect(adapterResult.resultJson?.unmanagedBackgroundTask).toMatchObject({ stopped: true, terminalResultSeen: true });
-    // Max-turn exhaustion handling keys off these and a failed outcome.
     expect(adapterResult.errorCode).toBe("max_turns_exhausted");
     expect(adapterResult.resultJson?.stopReason).toBe("max_turns_exhausted");
     expect(resolveAdapterResultOutcome(adapterResult)).toBe("failed");

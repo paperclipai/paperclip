@@ -19,10 +19,8 @@ function cleanupResult(overrides: Partial<AdapterExecutionResult> = {}, evidence
     timedOut: false,
     errorMessage: null,
     errorCode: null,
+    terminalResultSuccess: true,
     resultJson: {
-      type: "result",
-      subtype: "success",
-      stop_reason: "end_turn",
       unmanagedBackgroundTask: { ...cleanupEvidence, ...evidence },
     },
     ...overrides,
@@ -44,7 +42,7 @@ describe("resolveAdapterResultOutcome: terminal-result cleanup", () => {
   });
 
   it.each([
-    ["no cleanup evidence", { resultJson: { type: "result", subtype: "success" } }, {}],
+    ["no cleanup evidence", { resultJson: {} }, {}],
     ["evidence not stopped", {}, { stopped: false }],
     ["terminal result not seen", {}, { terminalResultSeen: false }],
     ["adapter error message (error result)", { errorMessage: "Claude reported an error" }, {}],
@@ -60,25 +58,17 @@ describe("resolveAdapterResultOutcome: terminal-result cleanup", () => {
   });
 
   it.each([
-    ["error_max_turns reported without is_error", { subtype: "error_max_turns", is_error: false }],
-    ["error_during_execution reported without is_error", { subtype: "error_during_execution", is_error: false }],
-    ["an empty subtype", { subtype: "  " }],
-    ["is_error true with a success subtype", { subtype: "success", is_error: true }],
-    ["is_error true without a subtype", { subtype: undefined, is_error: true }],
-  ])("keeps failed when the result is not a clean success: %s", (_label, fields) => {
-    const result = cleanupResult();
-    result.resultJson = { ...result.resultJson, ...fields };
+    ["reports an unsuccessful terminal result", false],
+    ["does not report a terminal result outcome", undefined],
+  ])("keeps failed when the adapter %s", (_label, terminalResultSuccess) => {
+    const result = cleanupResult({ terminalResultSuccess });
     expect(isTerminalResultCleanupSuccess(result)).toBe(false);
     expect(resolveAdapterResultOutcome(result)).toBe("failed");
   });
 
-  it.each([
-    ["a success subtype with surrounding space and capitals", { subtype: " Success " }],
-    ["no subtype (generic adapter result)", { subtype: undefined }],
-    ["a non-string subtype", { subtype: 1 }],
-  ])("records succeeded for %s", (_label, fields) => {
+  it("decides from the adapter-reported result outcome, not provider result fields", () => {
     const result = cleanupResult();
-    result.resultJson = { ...result.resultJson, ...fields };
+    result.resultJson = { ...result.resultJson, subtype: "error_max_turns", is_error: true };
     expect(isTerminalResultCleanupSuccess(result)).toBe(true);
     expect(resolveAdapterResultOutcome(result)).toBe("succeeded");
   });

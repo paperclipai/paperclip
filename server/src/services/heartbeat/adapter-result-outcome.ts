@@ -3,17 +3,6 @@ import type { RunSessionOutcome } from "./run-state.js";
 
 const TERMINAL_RESULT_CLEANUP_EXIT_CODES: ReadonlySet<number> = new Set([0, 143, 137]);
 
-/**
- * The CLI reported its terminal result and then lingered (a background task or
- * child kept it open), so the adapter's terminal-result cleanup stopped it. The
- * non-zero exit or signal is that cleanup's own termination, not a failure of
- * the turn. Only a clean result qualifies: any adapter error, timeout,
- * cancellation or failed process cancellation keeps the existing outcome.
- * A result the CLI itself marks as an error, or whose explicit subtype is
- * anything other than `success` (for example `error_max_turns`), is not a
- * clean result even when the adapter reported no error. A result without a
- * subtype keeps the generic adapter behaviour.
- */
 export function isTerminalResultCleanupSuccess(
   adapterResult: AdapterExecutionResult,
   options: { processCancellationFailed?: boolean } = {},
@@ -22,20 +11,13 @@ export function isTerminalResultCleanupSuccess(
   if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return false;
   const cleanup = evidence as Record<string, unknown>;
   if (cleanup.stopped !== true || cleanup.terminalResultSeen !== true) return false;
+  if (adapterResult.terminalResultSuccess !== true) return false;
   if (adapterResult.errorMessage || adapterResult.errorCode) return false;
   if (adapterResult.timedOut || options.processCancellationFailed) return false;
   if (adapterResult.resultJson?.status === "cancelled") return false;
-  if (adapterResult.resultJson?.is_error === true) return false;
-  const subtype = adapterResult.resultJson?.subtype;
-  if (typeof subtype === "string" && subtype.trim().toLowerCase() !== "success") return false;
 
   const { exitCode, signal } = adapterResult;
   if (signal) {
-    // Cleanup always sends SIGTERM first. It sends SIGKILL only when it
-    // escalates, and then records SIGKILL in the evidence. The CLI can exit
-    // on the first SIGTERM while a child that ignores it holds the output
-    // open until the escalation, so a SIGTERM exit with SIGKILL evidence is
-    // still the cleanup's own termination.
     if (signal === "SIGTERM") return cleanup.signal === "SIGTERM" || cleanup.signal === "SIGKILL";
     if (signal === "SIGKILL") return cleanup.signal === "SIGKILL";
     return false;
@@ -43,10 +25,6 @@ export function isTerminalResultCleanupSuccess(
   return exitCode !== null && exitCode !== undefined && TERMINAL_RESULT_CLEANUP_EXIT_CODES.has(exitCode);
 }
 
-/**
- * Run outcome derived from the adapter's own result, once the run is known not
- * to be already terminal and not aborted by the controller.
- */
 export function resolveAdapterResultOutcome(
   adapterResult: AdapterExecutionResult,
   options: { processCancellationFailed?: boolean } = {},
