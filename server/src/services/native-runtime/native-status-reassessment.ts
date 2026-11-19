@@ -1,8 +1,9 @@
+import { NativeDeliverableEvidenceError, validateNativeDeliverableEvidence } from "./native-deliverable-feedback.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { and, desc, eq, gt, or } from "drizzle-orm";
-import { completionContracts, heartbeatRuns, issueWorkProducts, issues, nativeRunResults,
+import { agentWakeupRequests, completionContracts, heartbeatRuns, issueWorkProducts, issues, nativeRunResults,
   statusDecisions, workAssessments, workspaceOperations, type Db } from "@paperclipai/db";
 import { issueService } from "../issues.js";
 import { decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
@@ -246,6 +247,38 @@ export async function reassessNativeStatusFromSource(
       decision = supersedeStaleOwnerCompletion(decision, { ...currentIssue, status: row.issueStatus }, row.agentId, row.runId);
     }
     decision = gateDoneOnConfiguredReview(decision, reviewStage, row.agentId);
+    if (decision.statusAction === "done" && currentIssue) {
+      const run = currentRun ?? await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, row.runId),
+        eq(heartbeatRuns.companyId, row.companyId), eq(heartbeatRuns.nativeIssueId, row.issueId)))
+        .limit(1).then(rows => rows[0]);
+      if (!run) return { kind: "deferred", retry: true };
+      const continuation = record(run.contextSnapshot?.executionContinuation);
+      const objective = typeof continuation.objective === "string" ? continuation.objective
+        : [currentIssue.title, currentIssue.description].filter(Boolean).join("\n");
+      try {
+        await validateNativeDeliverableEvidence(db, { companyId: row.companyId, issueId: row.issueId,
+          runId: row.runId, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts, authoritativeDone: true },
+        record(resultRow.resultJson).result);
+      } catch (error) {
+        if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
+        const [wake] = run.wakeupRequestId ? await db.select({ payload: agentWakeupRequests.payload }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, row.companyId))) : [];
+        const dependency = readiness ?? await issueService(db).getDependencyReadiness(row.issueId, db);
+        const gate = governanceGate ?? await pendingNativeGovernance({ db, companyId: row.companyId, issueId: row.issueId,
+          runId: row.runId, executionState: record(currentIssue.executionState) });
+        const incomplete = resolveNativeFinalizerStatus({
+          assessment: { ...reassessment, hasBlockingRemainingWork: true, continuation: null },
+          terminalState: "succeeded", workspaceFinalizeStatus: "succeeded", governanceGate: gate,
+          hasPendingChildCompletion, hasUnresolvedIssueBlockers: dependency.unresolvedBlockerCount > 0,
+          allowIncompleteContinuation: record(wake?.payload).continuationIdempotencyKey !== "native-completion-incomplete",
+          priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
+          reviewOwnerUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId,
+        });
+        decision = { ...incomplete, effects: incomplete.effects.map(effect => effect.kind === "enqueue_continuation"
+          ? { ...effect, summary: error.message } : effect.kind === "record_finalization_error"
+            ? { ...effect, nextAction: error.message } : effect) };
+      }
+    }
     let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
     try {
       committed = await commitNativeStatusDecision({

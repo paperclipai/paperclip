@@ -123,8 +123,9 @@ manifest `apps` (requires `connectors.provide`) with a method that uses
 
 ```ts
 // manifest: apps: [{ slug: "records", ..., methods: [{ key: "default", transport: "plugin",
-//   auth: "none", settingsSchema: {...}, tools: { kind: "static", list: [
-//   { name: "lookup_record", risk: "read", parametersSchema: {...} }] } }] }]
+//   auth: "none", settingsSchema: {...}, timeoutMs: 30000, tools: { kind: "static", list: [
+//   { name: "lookup_record", risk: "read", parametersSchema: {...} },
+//   { name: "build_report", risk: "read", parametersSchema: {...}, timeoutMs: 60000 }] } }] }]
 ctx.connectors.register("records", "lookup_record", async (params, runCtx) => {
   // runCtx.connection: { id, appSlug, methodKey, grantId, settings, credential? }
   return { content: `Record for ${runCtx.connection.settings.region}` };
@@ -142,6 +143,13 @@ against `settingsSchema`, resolves the connection's credential (`api_key`
 methods) for each call only, and passes the run context from the gateway
 session; tool arguments cannot change it. Every static tool needs a
 registered handler before `setup` returns, or the worker fails to start.
+
+The gateway waits 30 s for a plugin connector tool by default. If your
+backend legitimately takes longer, declare `timeoutMs` (1000–60000 ms) on the
+method, or on a single static tool to override the method's value. Values
+outside that range fail manifest validation; 60 s is the gateway's ceiling.
+A call that a person approved under an "ask first" policy always gets the
+gateway's fixed 60 s approved-execution budget, whatever the tool declares.
 
 Top-level `tools` with `ctx.tools.register` stay supported as legacy. The host
 offers them as one implicit connector named after the plugin: installations

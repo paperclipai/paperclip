@@ -16,7 +16,7 @@ export const AGENT_FILE_OBJECT_GRACE_MS = 30 * 24 * 60 * 60_000;
  * serializes file writers and new admission. First adoption also requires its
  * local working copies to be settled. A dry run never adopts local files. */
 export async function migrateAgentFiles(db: Db, input: {
-  apply: boolean; writersStopped: boolean; companyId?: string; after?: string; limit?: number;
+  apply: boolean; writersStopped: boolean; companyId?: string; after?: string; limit?: number; signal?: AbortSignal;
 }) {
   if (input.apply && !durableAgentFilesEnabled()) {
     throw new Error("Agent file migration requires PAPERCLIP_DURABLE_AGENT_FILES=true");
@@ -29,6 +29,7 @@ export async function migrateAgentFiles(db: Db, input: {
   )).orderBy(asc(agents.id)).limit(limit + 1);
   const results: Array<{ agentId: string; state: string }> = [];
   for (const candidate of rows.slice(0, limit)) {
+    input.signal?.throwIfAborted();
     const state = await fileStorageDb(db).transaction(async tx => {
       const [agent] = await tx.select().from(agents).where(eq(agents.id, candidate.id)).for("update");
       if (!agent) return "removed";

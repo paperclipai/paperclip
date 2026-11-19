@@ -236,7 +236,8 @@ export async function nativeCompletionFeedback(
   const objective = typeof continuation?.objective === "string"
     ? continuation.objective : [issue.title, issue.description].filter(Boolean).join("\n");
   await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id, runId,
-    objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+    objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts,
+    enteringConfiguredReview: !isConversation(issue) && completionReviewStageEntry(issue, run.agentId).kind === "starts" }, result);
   if (result.reportedWorkDisposition === "done") {
     const quality = await readRequiredQualityReview(db, issue);
     if (!quality.satisfied) throw new Error(`Required human quality review is incomplete: ${JSON.stringify(quality.missing)}. Read each existing review and preserve approved unchanged outputs. For missing or revised outputs call request_human_input with a concise confirmation payload.qualityReview:{key} (or item_verdicts items with qualityReview:{key}), payload.target with the exact current output, top-level resolverPolicy:human_only and continuationPolicy:wake_assignee, and payload.supersedeOnUserComment:false. Do not omit payload or its bindings after a validation error. Wait for its recorded response; do not report done, create a generic completion review, or treat plan acceptance/file presence as quality approval.`);

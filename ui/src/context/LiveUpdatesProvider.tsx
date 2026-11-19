@@ -4,7 +4,7 @@ import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
 import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
-import { refreshRecentSubtasks, refreshRecentTaskSummaries } from "../lib/recent-subtasks-refresh";
+import { refreshRecentTaskSummaries } from "../lib/recent-task-summary-refresh";
 import { invalidateInteractionRecordViews } from "../lib/attention-record-views";
 import {
   createContext,
@@ -1495,7 +1495,6 @@ function invalidateHeartbeatQueries(
     ? payload.recentSubtaskParentIds.filter((id): id is string => typeof id === "string") : undefined;
   const issueId = readString(payload.issueId);
   refreshRecentTaskSummaries(queryClient, companyId, issueId, parentIds);
-  refreshRecentSubtasks(queryClient, companyId, issueId, parentIds);
   // Note: liveRuns(companyId) is intentionally NOT invalidated here — it is
   // event-sourced via applyRunLifecycleToCompanyLiveRuns in the caller.
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
@@ -1601,7 +1600,6 @@ function invalidateActivityQueries(
     }
     const readerId = readString(details?.userId) ?? (actorType === "user" ? actorId : null);
     if (readerId && readerId === currentActor.userId) {
-      refreshRecentSubtasks(queryClient, companyId, entityId, subtaskParents, currentActor.userId);
       refreshRecentTaskSummaries(queryClient, companyId, entityId, subtaskParents);
       for (const queryKey of [
         queryKeys.issues.listMineByMe(companyId),
@@ -1635,7 +1633,6 @@ function invalidateActivityQueries(
     action?.startsWith("company_membership.") ||
     action?.startsWith("membership.") || action?.includes("privacy");
   if (decisionAudienceChanged) {
-    void queryClient.resetQueries({ queryKey: [...queryKeys.issues.list(companyId), "recent-subtasks"] });
     void queryClient.resetQueries({ queryKey: queryKeys.issues.summaries(companyId) });
     // Drop old permission-filtered payloads immediately while the API resolves
     // the current audience. A failed refetch must not retain a revoked receipt.
@@ -1679,7 +1676,6 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
-    refreshRecentSubtasks(queryClient, companyId, entityId, subtaskParents);
     refreshRecentTaskSummaries(queryClient, companyId, entityId, subtaskParents);
     // Browser lists stop polling while connected; this activity refreshes them.
     if (entityId && action?.startsWith("browser.")) refreshTaskBrowsers(queryClient, entityId);
@@ -1697,7 +1693,7 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
       predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId),
-        [...queryKeys.issues.list(companyId), "recent-subtasks"], queryKeys.issues.summaries(companyId)),
+        queryKeys.issues.summaries(companyId)),
     });
     refreshTaskIndexForActivity(queryClient, companyId, ownActorActivity);
     refreshMentionPoolForActivity(

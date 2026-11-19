@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { ChevronRight, Clock } from "lucide-react";
 import {
   summarizeProviderRateLimits,
@@ -6,7 +7,9 @@ import {
 } from "@paperclipai/shared";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Link } from "@/lib/router";
-import { cn } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
+import { formatProviderLimitTime } from "@/lib/provider-limit-message";
+import { useProviderLimitClock } from "@/hooks/useProviderLimitMessage";
 
 type Tone = ProviderRateLimitSummary["tone"];
 
@@ -21,14 +24,6 @@ const textClass: Record<Tone, string> = {
   warn: "text-(--status-task-icon-todo)",
   reached: "text-destructive",
 };
-
-export function formatRateLimitClock(iso: string, now: number): string {
-  const at = new Date(iso);
-  const time = at.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-  if (new Date(now).toDateString() === at.toDateString()) return time;
-  if (Math.abs(at.getTime() - now) < 6 * 86_400_000) return `${at.toLocaleDateString("en-US", { weekday: "short" })} ${time}`;
-  return `${at.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${time}`;
-}
 
 function Bar({ pct, tone, className }: { pct: number; tone: Tone; className?: string }) {
   const clamped = Math.min(100, Math.max(0, pct));
@@ -64,11 +59,9 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
               <span className="truncate text-muted-foreground">{window.label}</span>
               <span className={cn("shrink-0 tabular-nums", textClass[tone])}>
                 {Math.round(pct)}%
-                {window.resetsAt && (
-                  <span className="text-muted-foreground"> · resets {formatRateLimitClock(window.resetsAt, now)}</span>
-                )}
               </span>
             </div>
+            {window.resetsAt && <div className="text-xs tabular-nums text-muted-foreground">Resets {formatProviderLimitTime(window.resetsAt, now)}</div>}
             <Bar pct={pct} tone={tone} className="w-full" />
           </div>
         );
@@ -85,13 +78,7 @@ export function AgentRateLimitPanel({ snapshot, summary, now }: {
   );
 }
 
-/**
- * One-line "Usage limit" property value: "5h 78% · resets 15:40", amber above
- * 80%, "Limited until 15:40" while the provider refuses work, "using credits"
- * when a used-up window falls back to account credits. Click opens the
- * full window breakdown. Renders nothing when no current limit data exists.
- */
-export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaultOpen, detailsHref, className }: {
+export function AgentRateLimitPropertyValue({ snapshot, now: fixedNow, defaultOpen, detailsHref, className }: {
   snapshot: ProviderRateLimitSnapshot | null;
   now?: number;
   defaultOpen?: boolean;
@@ -99,14 +86,23 @@ export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaul
   detailsHref?: string;
   className?: string;
 }) {
+  const resetAt = useMemo(() => {
+    let latest: number | null = null;
+    for (const iso of [...(snapshot?.windows.map(window => window.resetsAt) ?? []), snapshot?.limitReached?.resetsAt]) {
+      const time = iso ? Date.parse(iso) : Number.NaN;
+      if (Number.isFinite(time)) latest = Math.max(latest ?? time, time);
+    }
+    return latest;
+  }, [snapshot]);
+  const now = useProviderLimitClock(resetAt, fixedNow);
   const summary = summarizeProviderRateLimits(snapshot, now);
   if (!snapshot || !summary) return null;
   const { window, tone } = summary;
   const label = summary.limited
-    ? `Limited${summary.limitedUntil ? ` until ${formatRateLimitClock(summary.limitedUntil, now)}` : ""}`
+    ? `Limited${summary.limitedUntil ? ` · resets ${formatProviderLimitTime(summary.limitedUntil, now)}` : ""}`
     : summary.usingCredits
       ? `${window!.shortLabel} ${Math.round(window!.usedPercent ?? 0)}% · using credits`
-      : `${window!.shortLabel} ${Math.round(window!.usedPercent ?? 0)}%${window!.resetsAt ? ` · resets ${formatRateLimitClock(window!.resetsAt, now)}` : ""}`;
+      : `${window!.shortLabel} ${Math.round(window!.usedPercent ?? 0)}%${window!.resetsAt ? ` · resets ${formatProviderLimitTime(window!.resetsAt, now)}` : ""}`;
   return (
     <Popover defaultOpen={defaultOpen}>
       <PopoverTrigger asChild>
@@ -118,6 +114,7 @@ export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaul
             className,
           )}
           aria-label={`Provider usage limit: ${label}`}
+          title={label}
         >
           {summary.limited
             ? <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden />
@@ -129,9 +126,9 @@ export function AgentRateLimitPropertyValue({ snapshot, now = Date.now(), defaul
       <PopoverContent align="start" className="w-72 space-y-3 p-3">
         <div className="text-xs font-medium">{snapshot.provider === "openai" ? "Codex" : "Claude"} usage limits</div>
         <AgentRateLimitPanel snapshot={snapshot} summary={summary} now={now} />
-        <div className="flex items-center justify-between gap-3 text-(length:--text-micro) text-muted-foreground">
-          <span>Reported {formatRateLimitClock(snapshot.observedAt, now)}</span>
-          {detailsHref && <Link to={detailsHref} className="hover:text-foreground hover:underline">View agent</Link>}
+        <div className="flex flex-wrap items-center justify-between gap-3 text-(length:--text-micro) text-muted-foreground">
+          <span>Reported {formatDateTime(snapshot.observedAt, { includeTimeZone: true })}</span>
+          {detailsHref && <Link to={detailsHref} className="shrink-0 hover:text-foreground hover:underline">View agent</Link>}
         </div>
       </PopoverContent>
     </Popover>

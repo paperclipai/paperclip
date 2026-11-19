@@ -37,8 +37,8 @@ let container: HTMLDivElement;
 let client: QueryClient;
 const roster = ["alice", "bob"].map(id => ({ id, companyId: "company-a", name: id, urlKey: id, role: "general", title: "Teammate", status: "idle" } as Agent));
 const chat = (id: string) => ({ id: `chat-${id}`, companyId: "company-a", conversationAgentId: id, conversationUserId: "user-a", updatedAt: id === "bob" ? "2026-09-02T00:00:00Z" : "2026-09-01T00:00:00Z" });
-async function render() {
-  await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar /></QueryClientProvider>); });
+async function render(compact = false) {
+  await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar compact={compact} /></QueryClientProvider>); });
 }
 async function openContact(name: string) {
   await act(async () => container.querySelector<HTMLAnchorElement>(`a[href="/chats/${name}"]`)!.click());
@@ -242,6 +242,22 @@ it("retains terminated agents' history by id without offering them for new chats
   const historyLink = container.querySelector<HTMLAnchorElement>('a[href="/chats/retired-id"]')!;
   expect(historyLink.textContent).toContain("RetiredTerminated");
   await act(async () => historyLink.click());
+  expect(state.navigate).toHaveBeenLastCalledWith("/chats/retired-id");
+  expect(state.ensure).not.toHaveBeenCalled();
+});
+
+it("opens a terminated agent's saved chat from Browse chats", async () => {
+  const retired = { ...roster[0], id: "retired-id", name: "Retired", status: "terminated", urlKey: "alice" };
+  client.setQueryData(queryKeys.agents.detail(retired.id), retired);
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [chat(retired.id), chat("alice")]);
+  await render(true);
+
+  const browse = container.querySelector<HTMLButtonElement>('button[aria-label="Browse chats"]');
+  expect(browse).not.toBeNull();
+  await act(async () => browse!.click());
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(row => row.textContent?.includes("Retired"));
+  expect(option?.textContent).toContain("Open chat");
+  await act(async () => option!.click());
   expect(state.navigate).toHaveBeenLastCalledWith("/chats/retired-id");
   expect(state.ensure).not.toHaveBeenCalled();
 });
