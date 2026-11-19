@@ -1,5 +1,5 @@
 import { it, expect } from "vitest";
-import { gradePrimary } from "./runtime-primary.js";
+import { gradePrimary, isPrimarySaveRequest } from "./runtime-primary.js";
 function valid() {
   const primaryBefore = { companyId: "company", userId: "person", primaryAgentId: "ceo" };
   const other = { companyId: "company", userId: "other-person", primaryAgentId: null as string | null };
@@ -26,4 +26,11 @@ it("rejects a preference changed for another person", () => {
 });
 it("rejects navigation that starts a new execution", () => {
   const o = valid(); o.state.runsAfterNavigation = 2; expect(gradePrimary(o).passed).toBe(false);
+});
+it("waits only for the person's save that names the chosen agent", () => {
+  const url = "http://fixture.invalid/api/companies/company/primary-agent/me";
+  expect(isPrimarySaveRequest({ method: "PUT", url, body: JSON.stringify({ primaryAgentId: "morgan" }) }, "company", "morgan")).toBe(true);
+  expect(isPrimarySaveRequest({ method: "GET", url, body: null }, "company", "morgan")).toBe(false);
+  expect(isPrimarySaveRequest({ method: "PUT", url, body: JSON.stringify({ primaryAgentId: "ceo" }) }, "company", "morgan")).toBe(false);
+  expect(isPrimarySaveRequest({ method: "PUT", url: "http://fixture.invalid/api/companies/other/primary-agent/me", body: JSON.stringify({ primaryAgentId: "morgan" }) }, "company", "morgan")).toBe(false);
 });

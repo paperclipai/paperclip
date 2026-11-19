@@ -28,9 +28,7 @@ export function gradeIntegratorCases(value: unknown) {
     // The choice is graded by structure: a reply link to the page where Cases is enabled (opened by the scripted
     // person in verifyCases), or a pending question card offering choices. Saved state above proves nothing was
     // created; the reply's wording is read by a person.
-    const pendingChoice = o.interactions?.some(card => card.kind === "ask_user_questions" && card.status === "pending"
-      && card.payload.questions?.some(question => (question.options?.length ?? 0) >= 2));
-    c.add("truthful-availability-and-choice", !!experimentalSettingsHref(o) || pendingChoice === true,
+    c.add("truthful-availability-and-choice", !!experimentalSettingsHref(o) || pendingChoices(o).length > 0,
       "The reply links the Experimental settings page where an authorized person can enable Cases, or ends on a pending choice card; no case or task exists until the person chooses.");
   } else if (o.scenarioId === "cases.browse-cases") {
     const expected = o.state.openCases as CaseRecord[] | undefined; const excluded = o.state.excludedCases as CaseRecord[] | undefined;
@@ -56,17 +54,27 @@ export function gradeIntegratorCases(value: unknown) {
 function experimentalSettingsHref(o: InternalObservation) {
   return o.links.find(href => { try { const url = new URL(href, o.origin); return url.origin === new URL(o.origin).origin && /\/company\/settings\/instance\/experimental\/?$/.test(url.pathname); } catch { return false; } });
 }
+/** Pending question cards that offer the person a real choice. */
+function pendingChoices(o: CasesObservation) {
+  return (o.interactions ?? []).filter(card => card.kind === "ask_user_questions" && card.status === "pending"
+    && card.payload.questions?.some(question => (question.options?.length ?? 0) >= 2));
+}
+/** The timeline chip for one pending question; the docked takeover card shows the same interaction. */
+export function unansweredQuestionSelector(interactionId: string) {
+  return `[data-testid="task-chat-unanswered-question"][id=${JSON.stringify(`interaction-${interactionId}`)}]`;
+}
 function caseHref(o: InternalObservation, row: Pick<CaseRecord, "id" | "identifier">) { return resultHref(o, row.id, "cases") ?? resultHref(o, row.identifier, "cases"); }
 async function verifyCases(ctx: ChatCatalogContext, _state: Record<string, unknown>, value: unknown) {
   const o = caseObservation(value); if (!o) throw new Error("Missing case UI observation");
   if (!o.casesEnabled) {
     if (!o.reply && o.interactions?.length) {
-      const choices = o.interactions.filter(card => card.kind === "ask_user_questions" && card.status === "pending" && /Cases/i.test(JSON.stringify(card.payload)));
-      if (choices.length !== 1) throw new Error("Missing unambiguous Cases availability choice in real UI");
-      const request = ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${choices[0]!.id}`)}]`);
+      // The person opens the saved choice from its timeline chip and sees that same card docked in the composer.
+      // The question's wording is left to human review.
+      const choices = pendingChoices(o);
+      if (choices.length !== 1) throw new Error("Missing unambiguous pending choice card in real UI");
+      const request = ctx.input.page.locator(unansweredQuestionSelector(choices[0]!.id));
       await expect(request).toBeVisible(); await request.click();
-      await expect(ctx.input.page.getByText(/Cases (?:is |are )?(?:disabled|unavailable|not enabled|not available)/i).first()).toBeVisible();
-      await expect(ctx.input.page.getByText(/ordinary task|regular task|normal task|enable Cases/i).first()).toBeVisible();
+      await expect(ctx.input.page.getByTestId("task-chat-composer-takeover").locator(`[data-interaction-id=${JSON.stringify(choices[0]!.id)}]`)).toBeVisible();
     }
     const settings = experimentalSettingsHref(o);
     if (settings) {
@@ -103,7 +111,7 @@ export const integratorCasesCases: readonly ChatCatalogCase[] = [
     if (!ctx.issue()) throw new Error("Customer bug context requires its actual standing conversation");
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: "Customer bug: the checkout button stops responding on mobile Safari after a trial item and a test address are entered. The person is asking about this bug." });
     return {};
-  }), oracleVersion: "paperclip.chat-catalog.cases-disabled.structural.v1" },
+  }), oracleVersion: "paperclip.chat-catalog.cases-disabled.structural.v2" },
   { ...define("cases.browse-cases", true, async ctx => {
     const launch = await project(ctx, "Launch"); const other = await project(ctx, "Research");
     const create = (title: string, projectId: string, status: string) => ctx.input.api.post<CaseRecord>(`${root(ctx)}/cases`, { caseType: "customer", key: `browse-${ctx.input.nonce}-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, title, projectId, status });

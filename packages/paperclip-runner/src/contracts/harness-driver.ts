@@ -505,6 +505,7 @@ export interface PersistedHarnessSession {
     | "same_session_only"
     | "allow_replacement_after_governed_wait"
     | "allow_replacement_after_resume_failure";
+  awaitingProviderTurn?: boolean;
 }
 
 /** Runner proof that saved provider state cannot be restored by this runner
@@ -668,6 +669,7 @@ export interface HarnessSession {
   usage?(): Promise<Record<string, unknown> | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
+  boundarySnapshot?(sourceSeq: number): PersistedHarnessSession | null;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without semantically closing the session. */

@@ -30,8 +30,17 @@ test("promotes only a successful merge-queue build of this repository for this e
     ["a queue for another branch", run({ head_branch: "gh-readonly-queue/release/pr-1-x" })],
     ["an ordinary branch", run({ head_branch: "master" })],
   ]) assert.match(selectVerifiedRun({ sha, runs: [candidate] }).reason, /no merge-queue image build/, label);
-  for (const candidate of [run({ conclusion: "failure" }), run({ conclusion: "cancelled" }), run({ status: "in_progress", conclusion: null })]) {
-    assert.match(selectVerifiedRun({ sha, runs: [candidate] }).reason, /did not succeed/);
+  for (const candidate of [run({ conclusion: "failure" }), run({ conclusion: "cancelled" })]) {
+    assert.deepEqual(selectVerifiedRun({ sha, runs: [candidate] }), { reason: "the merge-queue image build for this commit did not succeed" });
+  }
+  // An unfinished build is worth waiting for, even beside a failed attempt. A
+  // finished one is used at once, and an unfinished run of another commit is not.
+  for (const status of ["queued", "in_progress"]) {
+    const unfinished = run({ id: 11, status, conclusion: null });
+    assert.equal(selectVerifiedRun({ sha, runs: [unfinished] }).pending, true);
+    assert.equal(selectVerifiedRun({ sha, runs: [run({ conclusion: "failure" }), unfinished] }).pending, true);
+    assert.deepEqual(selectVerifiedRun({ sha, runs: [run(), unfinished] }), { runId: 10 });
+    assert.equal(selectVerifiedRun({ sha, runs: [run({ id: 11, status, conclusion: null, head_sha: "b".repeat(40) })] }).pending, undefined);
   }
   assert.throws(() => selectVerifiedRun({ sha: "master", runs: [] }));
 });
@@ -179,7 +188,7 @@ test("master promotes only after proof and otherwise builds exactly as before", 
   const step = name => { const found = steps.find(item => item.startsWith(`      - name: ${name}\n`)); assert.ok(found, name); return found; };
   const order = name => steps.indexOf(step(name));
   assert.match(step("Find the merge-queue build of this commit"),
-    /if: github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
+    /if: needs.runner_image.outputs.mode != 'published' && github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
   for (const name of ["Find the merge-queue build of this commit", "Download the merge-queue image", "Promote the merge-queue image"]) {
     assert.match(step(name), /continue-on-error: true/, `${name} must fall back to the build`);
   }

@@ -30,6 +30,22 @@ export function morningTimezone(now: Date) {
   if (!zone) throw new Error("No candidate timezone currently reads 08:xx");
   return zone;
 }
+/** Minutes the zone's wall clock is ahead of UTC at the instant. */
+export function utcOffsetMinutes(instant: Date, timezone: string) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+    .formatToParts(instant).map(part => [part.type, part.value]));
+  const wall = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+  return Math.round((wall - Math.floor(instant.getTime() / 60_000) * 60_000) / 60_000);
+}
+/**
+ * Whether the browser's reported zone keeps the same clock as the requested one. Browsers report a zone by
+ * their own canonical name, which may be an alias (Chrome reports America/Argentina/Buenos_Aires as
+ * America/Buenos_Aires), so names are not compared: the UTC offsets must agree now and half a year away.
+ */
+export function sameZoneClock(reported: string, requested: string, now: Date) {
+  const later = new Date(now.getTime() + 182 * 86_400_000);
+  try { return [now, later].every(instant => utcOffsetMinutes(instant, reported) === utcOffsetMinutes(instant, requested)); } catch { return false; }
+}
 function morning(instant: string | undefined, timezone: string, observedAt: string) {
   return !!instant && localDay(instant, timezone) === localDay(observedAt, timezone) && localClock(new Date(instant), timezone).hour < 12;
 }
@@ -123,7 +139,7 @@ function routineAudit(): ChatCatalogCase {
     // The person's browser lives in the routine's timezone, where it is now morning.
     const cdp = await page.context().newCDPSession(page); await cdp.send("Emulation.setTimezoneOverride", { timezoneId: timezone });
     const browserTimezone = await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
-    if (browserTimezone !== timezone) throw new Error(`Browser timezone override did not apply (${browserTimezone})`);
+    if (!sameZoneClock(browserTimezone, timezone, new Date())) throw new Error(`Browser timezone override did not apply (requested ${timezone}, browser reports ${browserTimezone})`);
     const p = await project(ctx, "Launch"); const worker = await fixtureWorker(ctx);
     // The harness funds the company and lead before setup; fund the routine's worker the same way so its
     // unpriced setup turn does not budget-pause it before the query.
@@ -154,7 +170,7 @@ function routineAudit(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-routine-audit-setup.json", { companyId: ctx.input.fixtures.company.id, timezone, trigger, edit, runs: outcome.runs, task: outcome.task, now });
     return { project: p, worker: { id: worker.id }, routine: saved, timezone, editEventId: edit.id, failedRunId: failed.id, executionTaskId: failed.linkedIssueId, routineRunCount: outcome.runs.length, now };
   }, gradeRoutineAudit);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v6", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.routine-audit.v7", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-routine-audit.ts", "run-observations.ts"],
     async observe(ctx, state): Promise<RoutineAudit> {
       const id = entity(state, "routine").id; const o = await observeInternal(ctx, state); const leadEvents: RunEvent[] = [];

@@ -119,6 +119,24 @@ export const pluginWorkspaceParamsSchema = z
     deadline: z.string().datetime(),
     runId: z.string().uuid().nullable(),
     agentId: z.string().uuid().nullable(),
+    /** Placement selected by Core for workspace work on the run's Launcher. */
+    taskLease: z.object({
+      environmentId: z.string().uuid(),
+      driverKey: z.string().min(1).max(128),
+      providerLeaseId: z.string().min(1).max(1024),
+    }).strict().optional(),
+    /**
+     * The run's selected environment, sent only when it is an environment driver
+     * of this same plugin and the provider declares
+     * `workspaceProvider.workspaceEnvironmentVersion: 1`. `config` is that
+     * environment's driver config, exactly as the driver's acquire receives it.
+     * It is not part of the operation identity.
+     */
+    environment: z.object({
+      id: z.string().uuid(),
+      driverKey: z.string().min(1).max(128),
+      config: z.record(z.string(), z.unknown()),
+    }).strict().optional(),
     operation: workspaceProviderOperationSchema,
   })
   .strict();

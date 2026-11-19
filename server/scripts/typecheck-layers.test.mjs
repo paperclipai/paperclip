@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { emitOnlyTscArgs, lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
 import { STEPS, typecheckLowMemory } from "../../scripts/typecheck-low-memory.mjs";
 import { findServerSource, PREPARE_STEPS, PROJECTS, typecheckTestProjects } from "../../scripts/typecheck-test-projects.mjs";
-import { declarationsConfig, layerConfig, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
+import { declarationsConfig, layerConfig, listLayers, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourcesOf = (layers, name) => layers.find((layer) => layer.name === name)?.sourceFiles;
@@ -283,6 +283,38 @@ describe("typecheckLayers", () => {
       { path: "./tsconfig.below.json" },
       { path: "./tsconfig.cycle.json" },
       { path: "./tsconfig.above.json" },
+    ]);
+  });
+
+  it("checks one layer against the configs a declarations run left, without writing them again", () => {
+    const root = serverFixture();
+    const silent = { log: () => {}, logError: () => {}, run: () => ({ status: 0, signal: null }) };
+    expect(typecheckLayers({ serverRoot: root, layer: "tests", ...silent })).toBe(2);
+
+    expect(typecheckLayers({ serverRoot: root, declarationsOnly: true, ...silent })).toBe(0);
+    const output = path.join(root, "node_modules", ".cache", "paperclip-typecheck");
+    const marker = path.join(output, "dts", "marker.d.ts");
+    mkdirSync(path.dirname(marker), { recursive: true });
+    writeFileSync(marker, "");
+    const configs = [];
+    const status = typecheckLayers({
+      serverRoot: root,
+      layer: "tests",
+      log: () => {},
+      run: (args, { cwd }) => {
+        configs.push({ config: args[1], cwd });
+        return { status: 3, signal: null };
+      },
+    });
+
+    expect(status).toBe(3);
+    expect(configs).toEqual([{ config: path.join("node_modules", ".cache", "paperclip-typecheck", "tsconfig.tests.json"), cwd: root }]);
+    expect(existsSync(marker)).toBe(true);
+    expect(listLayers(root)).toEqual([
+      { name: "below", emitsDeclarations: true },
+      { name: "cycle", emitsDeclarations: true },
+      { name: "above", emitsDeclarations: true },
+      { name: "tests", emitsDeclarations: false },
     ]);
   });
 

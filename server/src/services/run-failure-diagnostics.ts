@@ -380,7 +380,10 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       break;
     }
     if (typeof error !== "object") break;
-    const acquisition = options.phase === "setup" && run.errorCode === "setup_failed"
+    // A lease acquisition timeout is retried as a transient provider failure;
+    // it needs the same phase and provider state as a plain setup failure.
+    const acquisition = options.phase === "setup" && (run.errorCode === "setup_failed"
+      || run.errorCode === "environment_provider_unavailable")
       ? getEnvironmentAcquisitionDiagnostic(error, run) : null;
     if (acquisition && execution.environmentAcquisitionPhase === undefined) {
       execution.environmentAcquisitionPhase = acquisition.phase;

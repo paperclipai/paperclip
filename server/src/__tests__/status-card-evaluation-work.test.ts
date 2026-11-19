@@ -546,8 +546,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     try {
       const created = await card("reactive", { ...policy(), debounceSeconds: 1 });
       const countLocks = async () => Number((await db.execute<{ count: string }>(sql`
-        select count(*) from pg_stat_activity where datname = current_database()
-        and application_name = 'paperclip-workspace-finalization-lock'`))[0]!.count);
+        select count(*) from pg_locks l join pg_database d on d.oid = l.database
+        where l.locktype = 'advisory' and d.datname = current_database()`))[0]!.count);
       const baseline = await countLocks();
       await issueService(db).create(companyId, { title: "Pool-one blocker", status: "blocked", priority: "medium" });
       const service = statusCardEvaluationService(db, { wakeup });
@@ -573,7 +573,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(await service.next()).toBeNull();
       expect(idleWorkSnapshot().active).toBe(0);
       await vi.waitFor(async () => expect(await countLocks()).toBe(baseline));
-      // Failure exits also release the physical connection and advisory lock.
+      // Failure exits also release the advisory lock.
       await db.update(statusCards).set({ queries: [{ scope: "invalid" } as never], nextEvalAt: new Date() }).where(eq(statusCards.id, created.id));
       await service.run(new AbortController().signal);
       expect((await statusCardService(db).getById(created.id))!.nextEvalReason).toBe("retry");

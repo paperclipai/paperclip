@@ -39,12 +39,14 @@ test("distribution build admits network settings without provider keys or Node i
 test("setup cancellation physically stops an in-flight owned child", { timeout: 5_000 }, async t => {
   const { root } = await fixture(t), pidFile = join(root, "pid");
   const controller = new AbortController();
-  const result = runKimiBuildCommand(process.execPath, ["-e", "require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000)", pidFile], { env: {}, timeout: 3_000 }, undefined, controller.signal).then(() => null, error => error);
-  let pid;
+  const result = runKimiBuildCommand(process.execPath, ["-e", "const f=require('node:fs');f.writeFileSync(process.argv[1]+'.tmp',String(process.pid));f.renameSync(process.argv[1]+'.tmp',process.argv[1]);setInterval(()=>{},1000)", pidFile], { env: {}, timeout: 3_000 }, undefined, controller.signal).then(() => null, error => error);
+  let pid, settled = false;
+  void result.then(() => { settled = true; });
   try {
-    for (let attempt = 0; attempt < 100; attempt++) {
-      try { pid = Number(await readFile(pidFile, "utf8")); break; }
-      catch (error) { if (error.code !== "ENOENT") throw error; await delay(10); }
+    while (!settled && !(Number.isSafeInteger(pid) && pid > 0)) {
+      try { pid = Number(await readFile(pidFile, "utf8")); }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      await delay(10);
     }
     assert.ok(Number.isSafeInteger(pid) && pid > 0, "The real child did not start");
     controller.abort();

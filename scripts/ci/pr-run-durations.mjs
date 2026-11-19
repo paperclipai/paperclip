@@ -219,7 +219,7 @@ export async function collectMergedPrSamples({ gh, lanes, maxRuns = 3, pullLimit
   const pulls = await gh(`${api}/pulls?state=closed&base=master&sort=updated&direction=desc&per_page=${pullLimit}`);
   const merged = pulls.filter(pull => pull.merged_at).sort((a, b) => b.merged_at.localeCompare(a.merged_at));
   for (const pull of merged) {
-    const pending = lanes.filter(lane => result[lane.name].samples.length < maxRuns);
+    const pending = lanes.filter(lane => result[lane.name].samples.length < (lane.maxRuns ?? maxRuns));
     if (!pending.length) break;
     validatePull(pull);
     // Only measure code present in this checkout.
@@ -249,6 +249,7 @@ export async function collectMergedPrSamples({ gh, lanes, maxRuns = 3, pullLimit
         log(`::warning::${lane.name}: skipped run ${run.id} for PR #${pull.number}: ${error.message.split("\n")[0]}`);
         continue;
       }
+      if (lane.minFiles && sample.size < lane.minFiles) continue;
       result[lane.name].samples.push(sample);
       result[lane.name].sources.push({ pull: pull.number, run: run.id, attempt: run.run_attempt, sha: run.head_sha, url: run.html_url });
     }
