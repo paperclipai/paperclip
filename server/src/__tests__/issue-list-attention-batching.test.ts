@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IssueBlockedInboxAttention } from "@paperclipai/shared";
-import { agents, companies, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, companies, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import { expect, it } from "vitest";
 import { issueService } from "../services/issues.js";
 import { describeEmbeddedPostgres, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
@@ -39,6 +39,40 @@ describeEmbeddedPostgres("issue list attention batching", () => {
       expect(selects.length, `24 rows used ${selects.length} queries versus ${singleCount} for one`).toBeLessThanOrEqual(singleCount + 12);
     } finally { client.unsafe = unsafe; }
   });
+  it("keeps transitive blockers, off-page blocked dependents, and recovery references", async () => {
+    const companyId = randomUUID();
+    await ctx.db.insert(companies).values({ id: companyId, name: "Scoped graph", issuePrefix: `S${companyId.slice(0, 7)}` });
+    const [agent] = await ctx.db.insert(agents).values({ companyId, name: "Worker", adapterType: "process", status: "active" }).returning();
+    const [root, middle, leaf, review, dependent, recovery, source, badReference] = Array.from({ length: 8 }, () => randomUUID());
+    await ctx.db.insert(issues).values([
+      { id: root, companyId, title: "Page root", status: "blocked", assigneeAgentId: agent!.id },
+      { id: middle, companyId, title: "Off-page intermediate blocker", status: "blocked", assigneeAgentId: agent!.id },
+      { id: leaf, companyId, title: "Off-page unowned blocker", status: "todo" },
+      { id: review, companyId, title: "Page review", status: "in_review", assigneeAgentId: agent!.id },
+      { id: dependent, companyId, title: "Off-page blocked dependent", status: "blocked" },
+      { id: source, companyId, title: "Off-page recovery source", status: "todo" },
+      { id: recovery, companyId, title: "Page recovery", status: "todo", originKind: "stranded_issue_recovery", originId: source },
+      { id: badReference, companyId, title: "Recovery without a leaf", status: "todo",
+        originKind: "harness_liveness_escalation", originId: `harness_liveness:${companyId}:${source}:invalid_review_participant:none` },
+    ]);
+    await ctx.db.insert(issueRelations).values([
+      { companyId, issueId: leaf!, relatedIssueId: middle!, type: "blocks" },
+      { companyId, issueId: middle!, relatedIssueId: root!, type: "blocks" },
+      { companyId, issueId: review!, relatedIssueId: dependent!, type: "blocks" },
+    ]);
+
+    const rows = await issueService(ctx.db).list(companyId, {
+      issueIds: [root!, review!, recovery!, badReference!],
+      listProjection: "rows",
+      includeBlockedInboxAttention: true,
+    });
+    const attention = (id: string | undefined) => attentionOf(rows.find(row => row.id === id));
+    expect(attention(root)).toMatchObject({ reason: "blocked_by_unassigned_issue", leafIssue: { id: leaf } });
+    expect(attention(review)).toBeNull();
+    expect(attention(recovery)).toMatchObject({ reason: "open_recovery_issue", sourceIssue: { id: source } });
+    expect(attention(badReference)).toMatchObject({ reason: "open_recovery_issue", sourceIssue: { id: source }, leafIssue: null });
+  });
+
   it("preserves singleton attention when the shared graph exceeds its node budget", async () => {
     const companyId = randomUUID();
     await ctx.db.insert(companies).values({ id: companyId, name: "Bounded attention", issuePrefix: `L${companyId.slice(0, 7)}` });

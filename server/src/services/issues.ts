@@ -6065,6 +6065,40 @@ const blockedInboxGraphIssueSelect = {
 };
 type BlockedInboxGraphIssue = Pick<IssueRow, keyof typeof blockedInboxGraphIssueSelect>;
 
+function blockedInboxGraphScope(companyId: string, rootIds: string[], recoveryReferenceIds: string[]) {
+  // Follow incoming blockers. Also retain one outgoing hop from the requested
+  // rows: a task blocking another blocked task does not get its own finding.
+  const visibleInCompany = and(eq(issues.companyId, companyId), visibleIssueCondition(), ne(issues.status, "done"));
+  return and(
+    visibleInCompany,
+    or(
+      inArray(issues.originKind, [...BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS]),
+      recoveryReferenceIds.length > 0 ? inArray(issues.id, recoveryReferenceIds) : undefined,
+      sql<boolean>`
+        ${issues.id} IN (
+          WITH RECURSIVE blocker_chain(id) AS (
+            SELECT ${issues.id} FROM ${issues}
+            WHERE ${visibleInCompany} AND ${inArray(issues.id, rootIds)}
+            UNION
+            SELECT ${issues.id} FROM blocker_chain
+            JOIN ${issueRelations} ON ${issueRelations.relatedIssueId} = blocker_chain.id
+            JOIN ${issues} ON ${issues.id} = ${issueRelations.issueId}
+            WHERE ${issueRelations.companyId} = ${companyId}
+              AND ${issueRelations.type} = 'blocks'
+              AND ${visibleInCompany}
+          )
+          SELECT id FROM blocker_chain
+          UNION
+          SELECT ${issueRelations.relatedIssueId} FROM ${issueRelations}
+          WHERE ${issueRelations.companyId} = ${companyId}
+            AND ${issueRelations.type} = 'blocks'
+            AND ${inArray(issueRelations.issueId, rootIds)}
+        )
+      `,
+    ),
+  );
+}
+
 async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
@@ -6072,55 +6106,58 @@ async function listIssueBlockedInboxAttentionMap(
   readExternalReviewWaits: ExternalReviewWaitReader = createExternalReviewWaitReader(dbOrTx, companyId),
   readBlockerAttention = createIssueBlockerAttentionReader(dbOrTx, companyId, issueRows).forIssue,
 ): Promise<Map<string, IssueBlockedInboxAttention>> {
-  const rowIssueIds = [...new Set(issueRows.map((row) => row.id))];
+  const attentionRows = issueRows.filter((row) =>
+    row.companyId === companyId && row.status !== "done" && row.status !== "cancelled" && !row.hiddenAt,
+  );
+  const rowIssueIds = [...new Set(attentionRows.map((row) => row.id))];
   const result = new Map<string, IssueBlockedInboxAttention>();
   if (rowIssueIds.length === 0) return result;
 
-  const [graphIssueRows, graphRelationRows, companyAgentRows] =
-    await Promise.all([
-      dbOrTx
-        .select(blockedInboxGraphIssueSelect)
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            visibleIssueCondition(),
-            ne(issues.status, "done"),
-          ),
-        ),
-      dbOrTx
-        .select({
-          companyId: issueRelations.companyId,
-          blockerIssueId: issueRelations.issueId,
-          blockedIssueId: issueRelations.relatedIssueId,
-        })
-        .from(issueRelations)
-        .where(
-          and(
-            eq(issueRelations.companyId, companyId),
-            eq(issueRelations.type, "blocks"),
-          ),
-        ),
-      dbOrTx
-        .select({
-          id: agents.id,
-          companyId: agents.companyId,
-          name: agents.name,
-          role: agents.role,
-          title: agents.title,
-          status: agents.status,
-          reportsTo: agents.reportsTo,
-        })
-        .from(agents)
-        .where(eq(agents.companyId, companyId)),
-    ]);
+  const recoveryReferenceIds = new Set<string>();
+  for (const row of attentionRows) {
+    if (row.originKind === "harness_liveness_escalation") {
+      const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
+      if (parsed?.companyId === companyId) {
+        if (isUuidLike(parsed.issueId)) recoveryReferenceIds.add(parsed.issueId);
+        if (isUuidLike(parsed.leafIssueId)) recoveryReferenceIds.add(parsed.leafIssueId);
+      }
+    } else if (row.originKind === "stranded_issue_recovery" && row.originId && isUuidLike(row.originId)) {
+      recoveryReferenceIds.add(row.originId);
+    }
+  }
 
-  const graphIssues = graphIssueRows as BlockedInboxGraphIssue[];
-  const graphRelations = graphRelationRows as Array<{
-    companyId: string;
-    blockerIssueId: string;
-    blockedIssueId: string;
-  }>;
+  const [graphIssueRows, companyAgentRows] = await Promise.all([
+    dbOrTx
+      .select({
+        ...blockedInboxGraphIssueSelect,
+        incomingBlockerIds: sql<string[]>`ARRAY(
+          SELECT ${issueRelations.issueId}
+          FROM ${issueRelations}
+          WHERE ${issueRelations.companyId} = ${companyId}
+            AND ${issueRelations.type} = 'blocks'
+            AND ${issueRelations.relatedIssueId} = ${issues.id}
+        )`.mapWith((value: string[]) => value),
+      })
+      .from(issues)
+      .where(blockedInboxGraphScope(companyId, rowIssueIds, [...recoveryReferenceIds])),
+    dbOrTx
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId)),
+  ]);
+
+  const graphIssues = graphIssueRows as (BlockedInboxGraphIssue & { incomingBlockerIds: string[] })[];
+  const graphRelations = graphIssues.flatMap((issue) =>
+    issue.incomingBlockerIds.map((blockerIssueId) => ({ companyId, blockerIssueId, blockedIssueId: issue.id })),
+  );
   const companyAgents = companyAgentRows as Array<{
     id: string;
     companyId: string;
@@ -6136,9 +6173,8 @@ async function listIssueBlockedInboxAttentionMap(
   );
 
   const [
-    activeRunRows,
+    runRows,
     wakeRows,
-    scheduledRetryRows,
     interactionRows,
     approvalRows,
     handoffMap,
@@ -6161,6 +6197,7 @@ async function listIssueBlockedInboxAttentionMap(
               eq(heartbeatRuns.companyId, companyId),
               inArray(heartbeatRuns.status, [
                 ...BLOCKED_INBOX_ACTIVE_RUN_STATUSES,
+                "scheduled_retry",
               ]),
               inArray(
                 sql<string>`coalesce(
@@ -6198,32 +6235,6 @@ async function listIssueBlockedInboxAttentionMap(
               ${agentWakeupRequests.payload} ->> 'taskId',
               ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
               ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
-            )`,
-                graphIssueIds,
-              ),
-            ),
-          ),
-    graphIssueIds.length === 0
-      ? Promise.resolve([])
-      : dbOrTx
-          .select({
-            companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`coalesce(
-              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
-              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
-            )`,
-            agentId: heartbeatRuns.agentId,
-            status: heartbeatRuns.status,
-          })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              eq(heartbeatRuns.status, "scheduled_retry"),
-              inArray(
-                sql<string>`coalesce(
-              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
-              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
             )`,
                 graphIssueIds,
               ),
@@ -6272,6 +6283,15 @@ async function listIssueBlockedInboxAttentionMap(
       hydrateLiveness: false,
     }),
   ]);
+
+  const scopedRunRows = runRows as Array<{
+    companyId: string;
+    issueId: string | null;
+    agentId: string | null;
+    status: string;
+  }>;
+  const activeRunRows = scopedRunRows.filter((row) => row.status !== "scheduled_retry");
+  const scheduledRetryRows = scopedRunRows.filter((row) => row.status === "scheduled_retry");
 
   const pendingInteractions = (
     interactionRows as BlockedInboxInteractionRow[]
@@ -6433,16 +6453,7 @@ async function listIssueBlockedInboxAttentionMap(
     ),
   );
 
-  for (const row of issueRows) {
-    if (
-      row.companyId !== companyId ||
-      BLOCKED_INBOX_TERMINAL_STATUSES.includes(
-        row.status as (typeof BLOCKED_INBOX_TERMINAL_STATUSES)[number],
-      ) ||
-      row.hiddenAt
-    ) {
-      continue;
-    }
+  for (const row of attentionRows) {
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
     const hasLiveHandoffContinuation = Boolean(
