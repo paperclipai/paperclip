@@ -1,3 +1,4 @@
+import { environmentSupportsLoginPty } from "@paperclipai/shared";
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type AiProvider, type AiAuthMethod, type AiConnectionLoginIntent } from "@paperclipai/shared";
@@ -14,6 +15,7 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
 import { resolveAdapterTestEnvironmentId, resolveLocalDefaultEnvironmentId, resolveManagedSandboxEnvironmentId } from "@/lib/adapter-test-environment";
 import { resolveForcedKubernetesEnvironment } from "@/lib/forced-kubernetes-environment";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type Props = {
   companyId: string;
@@ -28,6 +30,7 @@ type Props = {
   agentIds: string[];
   allAgents: boolean;
   environmentId?: string;
+  loginAgentId?: string;
   defaults?: ReactNode;
   disabled?: boolean;
   onComplete: (result: { connectionId: string; grantId: string; method: AiAuthMethod }) => void;
@@ -40,7 +43,7 @@ export function AiConnectionCredentialStep(props: Props) {
   return <SubscriptionConnectionStep {...props} />;
 }
 
-function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedMethod, connectionId, name: initialName, hideName, nameForMethod, ownership, agentIds, allAgents, environmentId: suppliedEnvironmentId, onComplete, onCancel, defaults, disabled }: Props) {
+function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedMethod, connectionId, name: initialName, hideName, nameForMethod, ownership, agentIds, allAgents, environmentId: suppliedEnvironmentId, loginAgentId, onComplete, onCancel, defaults, disabled }: Props) {
   const [name, setName] = useState(initialName);
   const [chosenEnvironment, setChosenEnvironment] = useState<string>();
   const client = useQueryClient();
@@ -69,9 +72,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     });
   } catch (error) { environmentError = describeError(error).body; }
   const loginEnvironments = (envs.data ?? []).filter((env) =>
-    env.status === "active" && (env.driver === "local" || (provider !== "google" && env.driver === "sandbox" &&
-    typeof env.config.provider === "string" &&
-    caps.data?.sandboxProviders?.[env.config.provider]?.supportsLoginPty === true)),
+    env.status === "active" && (env.driver === "local" || (provider !== "google" && environmentSupportsLoginPty(env, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported"))),
   );
   // Signing in may use a different environment from later agent execution.
   // Prefer a supported login environment without changing any agent routing.
@@ -80,16 +81,15 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     environmentId = loginEnvironments[0]?.id ?? null;
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
-  const sandboxProvider = typeof environment?.config.provider === "string" ? environment.config.provider : "";
-  const canLogin = environment?.driver === "sandbox" && caps.data?.sandboxProviders?.[sandboxProvider]?.supportsLoginPty === true;
+  const canLogin = environmentSupportsLoginPty(environment, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported");
   const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending) || views.some((view) => view.kind === "reconnecting");
   const loadError = views.find((view) => view.kind === "error");
   const intent: AiConnectionLoginIntent = { provider: provider as AiConnectionLoginIntent["provider"], method: "subscription", name, ownership, agentIds, allAgents, connectionId };
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-6">
     {!hideName && <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>}
     {!suppliedEnvironmentId && !forced.forced && loginEnvironments.length > 1 && <Select value={environmentId ?? ""} onValueChange={setChosenEnvironment}>
-      <SelectTrigger aria-label="Sign-in environment"><SelectValue placeholder="Sign-in environment" /></SelectTrigger>
-      <SelectContent>{loginEnvironments.map((env) => <SelectItem key={env.id} value={env.id}>{env.name}</SelectItem>)}</SelectContent>
+      <SelectTrigger className={ANALYTICS_MASK_CLASS} aria-label="Sign-in environment"><SelectValue placeholder="Sign-in environment" /></SelectTrigger>
+      <SelectContent className={ANALYTICS_MASK_CLASS}>{loginEnvironments.map((env) => <SelectItem key={env.id} value={env.id}>{env.name}</SelectItem>)}</SelectContent>
     </Select>}
     {loadError ? <QueryErrorState size="inline" error={loadError.error} action="prepare sign-in" onRetry={loadError.retry} retrying={loadError.isFetching} />
       : environmentError ? <p role="alert" className="text-sm text-destructive">{environmentError}</p> : null}
@@ -100,6 +100,8 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       adapterType={provider === "google" ? "antigravity_runtime" : provider === "anthropic" ? "claude_local" : provider === "xai" ? "grok_local" : "codex_local"}
       environmentId={environmentId}
       canLogin={canLogin}
+      requiresAgent={environment?.driver === "plugin"}
+      agentId={environmentId === (suppliedEnvironmentId ?? settings.data?.defaultEnvironmentId) ? loginAgentId : undefined}
       localEnvironment={environment?.driver === "local"}
       onBack={onCancel}
       onConnected={() => {}}
@@ -130,8 +132,8 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
     {save.error && <p role="alert" className="text-sm text-destructive">{describeError(save.error).body}</p>}
     {copilot && <p className="text-sm text-muted-foreground">Use a personal fine-grained token with Copilot Requests permission. <a className="underline" href="https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli" target="_blank" rel="noreferrer">GitHub token instructions</a>. Verification discovers models in the selected environment and sends no model prompt. Repository access uses a separate connection.</p>}
     {copilot && !suppliedEnvironmentId && <Select value={environmentId ?? ""} onValueChange={setChosenEnvironment} disabled={preparing || save.isPending}>
-      <SelectTrigger aria-label="Copilot execution environment"><SelectValue placeholder="Execution environment" /></SelectTrigger>
-      <SelectContent>{(envs.data ?? []).filter(env => env.status === "active").map(env => <SelectItem key={env.id} value={env.id}>{env.name}</SelectItem>)}</SelectContent>
+      <SelectTrigger className={ANALYTICS_MASK_CLASS} aria-label="Copilot execution environment"><SelectValue placeholder="Execution environment" /></SelectTrigger>
+      <SelectContent className={ANALYTICS_MASK_CLASS}>{(envs.data ?? []).filter(env => env.status === "active").map(env => <SelectItem key={env.id} value={env.id}>{env.name}</SelectItem>)}</SelectContent>
     </Select>}
     {environmentError && <p role="alert" className="text-sm text-destructive">{environmentError}</p>}
     {defaults}

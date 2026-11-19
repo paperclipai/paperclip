@@ -238,6 +238,7 @@ describe("remote connector lifecycle", () => {
       const body = JSON.parse(String(init.body));
       if (body.method === "initialize") return Response.json({ id: body.id, result: { protocolVersion: "2025-06-18" } }, { headers: { "Mcp-Session-Id": "execution-session" } });
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "server/discover") return Response.json({ id: body.id, error: { code: -32601, message: "Method not found" } }, { status: 404 });
       if (body.method === "tools/list") return Response.json({ id: body.id, result: { tools: [tool("execute"), tool("resume"), tool("off")] } });
       calls.push({ ...body.params, session: new Headers(init.headers).get("mcp-session-id") });
       return Response.json({ id: body.id, result: { structuredContent: body.params.name === "execute"

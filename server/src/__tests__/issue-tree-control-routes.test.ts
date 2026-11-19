@@ -14,8 +14,10 @@ const mockTreeControlService = vi.hoisted(() => ({
   cancelIssueStatusesForHold: vi.fn(),
   restoreIssueStatusesForHold: vi.fn(),
   getHold: vi.fn(),
+  listTreeIssues: vi.fn(),
   getActivePauseHoldGate: vi.fn(),
   releaseHold: vi.fn(),
+  listPauseInterruptedResumeTargets: vi.fn(),
   cancelUnclaimedWakeupsForTree: vi.fn(),
 }));
 
@@ -61,7 +63,8 @@ async function createApp(
     where: (predicate: unknown) => { mockReplayWhere(predicate); return mockReplayBlocks(); },
     limit: mockReplayBlocks,
   };
-  app.use("/api", issueTreeControlRoutes({ select: () => query } as any, { pluginWorkerManager }));
+  app.use("/api", issueTreeControlRoutes({ select: () => query, selectDistinct: () => query } as any,
+    { pluginWorkerManager }));
   app.use(errorHandler);
   return app;
 }
@@ -73,12 +76,14 @@ describe("issue tree control routes", () => {
     mockReplayBlocks.mockResolvedValue([]);
     mockExecutionBlocker.mockResolvedValue(null);
     mockTreeControlService.getHold.mockResolvedValue(null);
+    mockTreeControlService.listTreeIssues.mockResolvedValue([]);
     mockTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-2",
     });
     mockTreeControlService.cancelUnclaimedWakeupsForTree.mockResolvedValue([]);
+    mockTreeControlService.listPauseInterruptedResumeTargets.mockResolvedValue([]);
     mockTreeControlService.cancelIssueStatusesForHold.mockResolvedValue({
       updatedIssueIds: [],
       updatedIssues: [],

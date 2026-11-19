@@ -44,6 +44,16 @@ describe("plugin manifest validators", () => {
     }
     expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, supportsMergeAncestry: "false" } }).success).toBe(false);
   });
+  it("accepts only version 1 of the workspace environment capability", () => {
+    const manifest = { id: "example.storage", apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Tests",
+      categories: ["workspace"], capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
+      entrypoints: { worker: "worker.js" }, workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } };
+    expect(pluginManifestV1Schema.parse(manifest).workspaceProvider?.workspaceEnvironmentVersion).toBeUndefined();
+    expect(pluginManifestV1Schema.parse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, workspaceEnvironmentVersion: 1 } })
+      .workspaceProvider?.workspaceEnvironmentVersion).toBe(1);
+    for (const workspaceEnvironmentVersion of [2, "1", true])
+      expect(pluginManifestV1Schema.safeParse({ ...manifest, workspaceProvider: { ...manifest.workspaceProvider, workspaceEnvironmentVersion } }).success).toBe(false);
+  });
   it("limits environment skills to unique declarations owned by the plugin", () => {
     const manifest = { ...buildSandboxProviderManifest({ skillKeys: ["desktop"] }),
       capabilities: ["environment.drivers.register", "skills.managed"],
@@ -54,6 +64,13 @@ describe("plugin manifest validators", () => {
         environmentDrivers: [{ ...manifest.environmentDrivers[0], skillKeys: keys }] }).success).toBe(false);
     }
     expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["environment.drivers.register"] }).success).toBe(false);
+  });
+  it("accepts protected environment keys only as variable names", () => {
+    expect(pluginManifestV1Schema.parse(buildSandboxProviderManifest({ protectedEnvironmentKeys: ["DESKTOP_SESSION"] }))
+      .environmentDrivers?.[0]?.protectedEnvironmentKeys).toEqual(["DESKTOP_SESSION"]);
+    for (const keys of [["BAD-NAME"], ["1BAD"], "DESKTOP_SESSION", Array.from({ length: 65 }, (_, index) => `K${index}`)]) {
+      expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ protectedEnvironmentKeys: keys })).success).toBe(false);
+    }
   });
   it("retains the agent prerequisite on environment drivers", () => {
     const manifest = { ...buildSandboxProviderManifest({ requiresAgent: true }), agentLifecycle: true,
@@ -539,5 +556,16 @@ describe("plugin task side-panel declarations", () => {
   });
   it.each([[], [{ ...route, method: "POST" }], [{ ...route, auth: "agent" }], [{ ...route, companyResolution: { from: "query", key: "companyId" } }]].map(apiRoutes => ({ apiRoutes })))("requires a declared board GET route scoped to the supplied agent", ({ apiRoutes }) => {
     expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes }).success).toBe(false);
+  });
+});
+
+
+describe("agent environment slot requirements", () => {
+  const slot = { type: "detailTab", id: "view", displayName: "View", exportName: "View", entityTypes: ["agent"], agentEnvironmentDriver: "tasks" };
+  it("preserves the optional driver requirement", () => {
+    expect(pluginUiSlotDeclarationSchema.parse(slot).agentEnvironmentDriver).toBe("tasks");
+  });
+  it.each([{ agentEnvironmentDriver: "" }, { entityTypes: ["issue"] }, { entityTypes: ["agent", "issue"] }, { type: "page" }])("rejects unsupported requirements %j", patch => {
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, ...patch }).success).toBe(false);
   });
 });

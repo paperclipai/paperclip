@@ -1,5 +1,5 @@
 // Generated from acpx-profiles.json and cursor-distributions.json. Do not edit.
-export const QUALIFIED_ACPX_VERSION = "0.13.1" as const;
+export const QUALIFIED_ACPX_VERSION = "0.22.0" as const;
 export const ACPX_DRIVER_KIND = "acpx_runtime" as const;
 export const ACPX_DRIVER_PROTOCOL_VERSION = 1 as const;
 
@@ -7,7 +7,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
   "antigravity": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "antigravity",
     "agentProfileVersion": 1,
     "agentServerPackage": "native:antigravity-acp",
@@ -21,7 +21,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
   "grok": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "grok",
     "agentProfileVersion": 20,
     "agentServerPackage": "builtin:grok-acp",
@@ -34,7 +34,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
   "pi": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "pi",
     "agentProfileVersion": 37,
     "agentServerPackage": "pi-acp",
@@ -47,7 +47,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
   "cursor": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "cursor",
     "agentProfileVersion": 17,
     "agentServerPackage": "cursor-agent",
@@ -60,7 +60,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
   "copilot": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "copilot",
     "agentProfileVersion": 92,
     "agentServerPackage": "@github/copilot",
@@ -73,33 +73,33 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
   "claude": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "claude",
     "agentProfileVersion": 1,
     "agentServerPackage": "@agentclientprotocol/claude-agent-acp",
     "agentServerVersion": "0.73.0",
     "agentRuntimePackage": "@anthropic-ai/claude-agent-sdk",
-    "agentRuntimeVersion": "0.3.286",
+    "agentRuntimeVersion": "0.3.328",
     "commandDigest": "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
     "permissionPolicy": "interactive"
   },
   "codex": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "codex",
     "agentProfileVersion": 1,
     "agentServerPackage": "@agentclientprotocol/codex-acp",
     "agentServerVersion": "1.6.2",
     "agentRuntimePackage": "@openai/codex",
-    "agentRuntimeVersion": "0.160.0",
+    "agentRuntimeVersion": "0.170.0",
     "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
     "permissionPolicy": "interactive"
   },
   "kimi": {
     "driverKind": "acpx_runtime",
     "protocolVersion": 1,
-    "acpxVersion": "0.13.1",
+    "acpxVersion": "0.22.0",
     "agent": "kimi",
     "agentProfileVersion": 17,
     "agentServerPackage": "@moonshot-ai/kimi-code",

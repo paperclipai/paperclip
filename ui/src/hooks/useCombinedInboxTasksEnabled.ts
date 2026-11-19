@@ -43,8 +43,7 @@ export function useCombinedInboxTasksEnabled(): { enabled: boolean; loaded: bool
   if (!contextClient) return { enabled: false, loaded: true };
 
   return {
-    // Coordinator keeps Inbox under More and owns its separate Tasks/Needs You IA.
-    enabled: !coordinator.enabled && resolveCombinedInboxTasksEnabled(query.data),
-    loaded: query.isFetched && coordinator.loaded,
+    enabled: coordinator.enabled || resolveCombinedInboxTasksEnabled(query.data),
+    loaded: coordinator.loaded && (coordinator.enabled || query.isFetched),
   };
 }

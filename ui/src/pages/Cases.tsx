@@ -1,9 +1,9 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { useQueryView } from "@/components/QueryView";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, Search } from "lucide-react";
 import { casesApi, CASE_STATUSES, type ListCasesParams } from "@/api/cases";
-import { projectsApi } from "@/api/projects";
 import { CaseListRow } from "@/components/cases/CaseListRow";
 import { CaseListControls } from "@/components/cases/CaseListControls";
 import { CollectionToolbar } from "@/components/CollectionToolbar";
@@ -86,8 +86,7 @@ export function Cases() {
   });
   const typesQueryView = useQueryView(typesQuery);
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId ?? "", { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId ?? "", { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const projectsQueryView = useQueryView(projectsQuery);

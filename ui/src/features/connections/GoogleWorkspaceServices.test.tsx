@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { googleWorkspaceSelectedScopes, type ToolConnection } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
+import { GOOGLE_WORKSPACE_PRIVACY_POLICY_URL, googleWorkspaceDataUseDisclosure } from "./googleWorkspaceDisclosure";
 
 const listGrants = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: { listConnectionGrants: listGrants } }));
@@ -150,4 +151,95 @@ describe("Workspace service consent", () => {
     expect(onContinue).toHaveBeenCalledWith({ gmail: "read" });
   });
 
+});
+
+const GMAIL_SEND_NOTE = "Google's permission screen also mentions sending email; Paperclip does not send email.";
+
+describe("Google Workspace data-use disclosure", () => {
+  const use = [
+    "Agents read this content only to do the tasks you give them.",
+    "To do that, the content is sent to the AI model provider configured for your workspace.",
+    "It is not used to train general AI models.",
+    "Results are saved in the task and its run history. They stay there until you delete them, even after you disconnect.",
+  ];
+
+  it.each([
+    [{ gmail: "read" }, ["Gmail: agents can read and search your email."]],
+    [{ gmail: "write" }, ["Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email."]],
+    [{ drive: "read" }, ["Drive: agents can read and search your files, Docs, Sheets and Slides."]],
+    [{ drive: "write" }, ["Drive: agents can read and search your files, Docs, Sheets and Slides. They can also create files and edit Docs, Sheets and Slides."]],
+    [{ calendar: "read" }, ["Calendar: agents can see your calendars, events and free/busy times."]],
+    [{ calendar: "write" }, ["Calendar: agents can see your calendars, events and free/busy times. They can also create, change and delete events, and respond to invitations."]],
+  ] as const)("describes only the selected service (%o)", (selection, access) => {
+    expect(googleWorkspaceDataUseDisclosure(selection)).toEqual({ access, use });
+  });
+
+  it("lists every selected service in picker order and always explains sharing", () => {
+    const disclosure = googleWorkspaceDataUseDisclosure({ calendar: "read", gmail: "write", drive: "read" });
+    expect(disclosure.access.map(line => line.split(":")[0])).toEqual(["Gmail", "Drive", "Calendar"]);
+    expect(disclosure.use).toContain("To do that, the content is sent to the AI model provider configured for your workspace.");
+  });
+
+  it("never claims Gmail can send: read only never mentions sending, read & write only says Paperclip does not send", () => {
+    const text = (gmail: "read" | "write") => {
+      const { access, use } = googleWorkspaceDataUseDisclosure({ gmail });
+      return [...access, ...use].join(" ");
+    };
+    expect(text("read")).not.toMatch(/send/i);
+    expect(text("write")).toContain("Paperclip does not send email.");
+    expect(text("write").replace(GMAIL_SEND_NOTE, "")).not.toMatch(/send/i);
+  });
+
+  it("says nothing with no services selected", () => {
+    expect(googleWorkspaceDataUseDisclosure({})).toEqual({ access: [], use: [] });
+  });
+});
+
+describe("Workspace picker disclosure", () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  const flush = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); }); };
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+  afterEach(async () => {
+    await act(async () => { root.unmount(); });
+    container.remove();
+  });
+  async function render(initial?: Record<string, "read" | "write">) {
+    await act(async () => { root.render(<QueryClientProvider client={new QueryClient()}>
+      <GoogleWorkspaceServicesDialog initial={initial} onContinue={vi.fn()} onCancel={vi.fn()} />
+    </QueryClientProvider>); });
+    await flush();
+  }
+  const disclosure = () => document.querySelector('[aria-label="How Paperclip uses your Google data"]');
+
+  it("shows the selected services, sharing and privacy policy before Continue", async () => {
+    await render({ gmail: "write", calendar: "read" });
+    const block = disclosure()!;
+    expect(block.textContent).toContain("Gmail: agents can read and search your email, and create drafts. Google's permission screen also mentions sending email; Paperclip does not send email.");
+    expect(block.textContent).toContain("Calendar: agents can see your calendars, events and free/busy times.");
+    expect(block.textContent).not.toContain("Drive");
+    expect(block.textContent!.replace(GMAIL_SEND_NOTE, "")).not.toMatch(/\bsend/i);
+    expect(block.textContent).toContain("the content is sent to the AI model provider configured for your workspace");
+    const link = block.querySelector("a")!;
+    expect(link.getAttribute("href")).toBe(GOOGLE_WORKSPACE_PRIVACY_POLICY_URL);
+    expect(GOOGLE_WORKSPACE_PRIVACY_POLICY_URL).toBe("https://paperclip.ing/privacy");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(link.textContent).toContain("Limited Use");
+    const footer = document.querySelector("footer")!;
+    expect(block.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("follows the selection as services are turned off", async () => {
+    await render({ drive: "read" });
+    expect(disclosure()!.textContent).toContain("Drive: agents can read and search your files");
+    const toggle = document.querySelector<HTMLButtonElement>("#workspace-service-drive")!;
+    await act(async () => { toggle.click(); });
+    expect(disclosure()).toBeNull();
+    expect(document.body.textContent).toContain("Select at least one service to continue.");
+  });
 });

@@ -114,6 +114,7 @@ import {
   XOctagon,
 } from "lucide-react";
 import { GithubIcon } from "../components/icons/github-icon";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 // Matches design §11 breakpoints. Module-level so stories and the page agree.
 const DESKTOP_MIN = 1024;
@@ -853,7 +854,7 @@ export function TeamDetailPane({
                     <MarkdownBody>{fileContent}</MarkdownBody>
                   </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap break-words font-mono text-xs">{fileContent}</pre>
+                  <pre className={cn("whitespace-pre-wrap break-words font-mono text-xs", ANALYTICS_MASK_CLASS)}>{fileContent}</pre>
                 )}
               </div>
             </div>
@@ -2399,7 +2400,7 @@ export function TeamCatalog() {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+      <div data-canonical-toolbar="teams" role="toolbar" aria-label="Teams controls" className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
         <h1 className="text-lg font-semibold">Teams</h1>
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />

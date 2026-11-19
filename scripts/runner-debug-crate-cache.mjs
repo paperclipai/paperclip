@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, globSync, readFileSync, statSync } from "no
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeScope, HASHED_INPUTS, markCurrent, readRustcVersion, RUNNER_PACKAGE } from "./runner-release-crate-cache.mjs";
+import { computeScope, HASHED_INPUTS, markCurrent, processTableRequired, readRustcVersion, RUNNER_PACKAGE } from "./runner-release-crate-cache.mjs";
 
 const directory = `${RUNNER_PACKAGE}/runner/target/debug`;
 export const DEBUG_INPUTS = [...HASHED_INPUTS, `${RUNNER_PACKAGE}/package.json`, ".cargo/**", `${RUNNER_PACKAGE}/.cargo/**`,
@@ -20,18 +20,28 @@ function readMetadata(root) {
   }));
 }
 
+// The workspace is the Runner crate plus its process-table library, which
+// has only a lib target. Any other shape needs this contract reviewed.
+const PROCESS_TABLE = "paperclip-process-table";
+
 export function debugContract(root, metadata = readMetadata(root)) {
   const packages = metadata.packages.filter(pkg => metadata.workspace_members.includes(pkg.id));
-  if (packages.length !== 1 || packages[0].name !== "paperclip-runner-core") {
+  const core = packages.filter(pkg => pkg.name === "paperclip-runner-core");
+  const others = packages.filter(pkg => pkg.name !== "paperclip-runner-core");
+  const libraryOnly = pkg => pkg.name === PROCESS_TABLE
+    && pkg.targets.every(target => target.kind.every(kind => kind === "lib"));
+  if (core.length !== 1 || others.length > 1 || !others.every(libraryOnly)) {
     throw new Error("Review the debug artifact contract for the changed Runner workspace");
   }
-  const bins = packages[0].targets.filter(target => target.kind.includes("bin")).map(target => target.name).sort();
+  const withProcessTable = others.length === 1;
+  const bins = core[0].targets.filter(target => target.kind.includes("bin")).map(target => target.name).sort();
   if (!bins.includes("paperclip-runnerd")) throw new Error("Missing Runner binary target");
   const fingerprint = `${directory}/.fingerprint/paperclip-runner-core-*`;
   const cachedPaths = [fingerprint, `${directory}/deps/libpaperclip_runner_core-*`,
     `${directory}/deps/paperclip_runner_core-*.d`, ...bins.flatMap(bin => [
       `${directory}/deps/${bin.replaceAll("-", "_")}-*`, `${directory}/${bin}`, `${directory}/${bin}.d`,
-    ])];
+    ]), ...(withProcessTable ? [`${directory}/.fingerprint/${PROCESS_TABLE}-*`,
+      `${directory}/deps/libpaperclip_process_table-*`, `${directory}/deps/paperclip_process_table-*.d`] : [])];
   const required = [
     { label: "lib fingerprint", glob: `${fingerprint}/lib-paperclip_runner_core` },
     { label: "lib dep-info", glob: `${fingerprint}/dep-lib-paperclip_runner_core` },
@@ -42,6 +52,7 @@ export function debugContract(root, metadata = readMetadata(root)) {
       { label: `${bin} dep-info`, glob: `${fingerprint}/dep-bin-${bin}` },
       { label: `${bin} executable`, glob: `${directory}/deps/${bin.replaceAll("-", "_")}-*`, exclude: /\.(d|dSYM)$/ },
     ]),
+    ...(withProcessTable ? processTableRequired(directory) : []),
   ];
   return { bins, cachedPaths, required };
 }

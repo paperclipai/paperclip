@@ -1,18 +1,18 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { Link, useSearchParams } from "../lib/router";
 import { AllowedProjectsEditor } from "./AllowedProjectsEditor";
 import { Button } from "./ui/button";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 export function AgentProjectAccessSettings({ agent }: { agent: { id: string; companyId: string; name: string; urlKey?: string } }) {
   const client = useQueryClient();
   const [params] = useSearchParams();
   const fromTask = params.get("fromTask");
   const access = useQuery({ queryKey: queryKeys.agents.projectAccess(agent.id), queryFn: () => agentsApi.projectAccess(agent.id) });
-  const projects = useQuery({ queryKey: queryKeys.projects.list(agent.companyId), queryFn: () => projectsApi.list(agent.companyId) });
+  const projects = useQuery({ ...companyProjectsQuery(agent.companyId) });
   if (access.error || projects.error) return <div role="alert" className="space-y-2 text-sm">
     <p>Couldn’t load project access.</p><Button variant="outline" size="sm" onClick={() => { void access.refetch(); void projects.refetch(); }}>Try again</Button>
   </div>;

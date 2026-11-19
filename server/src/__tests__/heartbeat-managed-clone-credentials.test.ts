@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ensureManagedProjectWorkspace, prepareProjectRepositoryWorkspaces } from "../services/heartbeat.ts";
-import { materializeManagedProjectWorkspace } from "../services/managed-repository-checkout.js";
+import { materializeManagedProjectWorkspace, RepositoryRefNotFoundError } from "../services/managed-repository-checkout.js";
 import { buildGitAuthInvocation, GIT_CREDENTIAL_TOKEN_ENV_KEY } from "../services/git-credentials.ts";
 import { sanitizeRuntimeServiceBaseEnv } from "../services/workspace-runtime.ts";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
@@ -108,6 +108,36 @@ exit 128
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message).toContain("Authentication failed");
       expect(readGitConnectionFailure(failure)).toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      await fs.rm(bin, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["the ref still resolves", "exit 0"],
+    ["the ref probe fails for another reason", "exit 128"],
+  ])("keeps the original checkout failure when %s", async (_label, revParseExit) => {
+    const bin = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fake-resolvable-ref-"));
+    const previousPath = process.env.PATH;
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh
+if [ "$1" = clone ]; then
+  for argument in "$@"; do destination="$argument"; done
+  /bin/mkdir -p "$destination/.git"
+  exit 0
+fi
+if [ "$3" = rev-parse ]; then ${revParseExit}; fi
+printf '%s\\n' "error: pathspec 'release' did not match any file(s) known to git" >&2
+exit 1
+`, { mode: 0o755 });
+    try {
+      process.env.PATH = bin;
+      const failure = await materializeManagedProjectWorkspace(path.join(bin, "checkout"), {
+        repoUrl: "https://example.test/repo.git", repoRef: "release",
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(RepositoryRefNotFoundError);
+      expect((failure as Error).message).toContain("did not match any file(s) known to git");
     } finally {
       if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
       await fs.rm(bin, { recursive: true, force: true });
