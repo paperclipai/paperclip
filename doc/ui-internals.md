@@ -16,17 +16,31 @@ emits them under `ui/dist/fonts/`. The server package copies the same output int
 
 ## Recent task ordering
 
-The streamlined sidebar keeps five recent tasks per company and account in browser
-storage. It sorts by the newest observed task or comment activity, not by live-run
-state. Older detail responses cannot move the stored activity time backward.
+The streamlined sidebar keeps recent task candidates per company and account in browser
+storage. A task appears only after the authenticated navigation summary confirms
+personal participation using the same rule as Mine: manual creation, human assignment,
+a direct comment, a meaningful audited action, or a live request addressed to the viewer.
+Routine ownership, connected-account provenance and read-only visits do not qualify.
+Inbox archive is independent of this personal history. Readable children remain
+contextual navigation beneath a qualifying parent.
+
+Local human actions advance recency. Passive visits and background title, status
+and readiness refreshes preserve the recorded time and never promote a task.
+New passive candidates enter below existing history without using server update
+time. A successful sidebar rename records explicit local human activity.
 Activity-only reorderings wait for one second without further activity changes;
 new and removed tasks appear immediately. Titles, status, and live indicators stay
 current during that delay.
 
-The sidebar renders saved snapshots immediately and refreshes its exact five IDs
-with one company/account-scoped summary query. Passive refreshes do not fetch
+The sidebar validates saved candidates with company/account-scoped summary queries,
+using bounded parallel chunks for long histories. Viewer participation and unread
+facts are session data and are never trusted from browser storage. Passive refreshes do not fetch
 full task details or inspect workspaces. Successful omissions remove unavailable
-tasks; failed batch reads retain saved history. Existing full-detail cache data
+tasks and nonparticipants; failed batch reads retain saved history and any
+previously confirmed session state, including after a change to the candidate batch.
+These confirmed facts never cross account or company scopes. Unverified history
+stays out of the visible list and does not affect the activity reorder delay.
+Existing full-detail cache data
 can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching
 session and health; reconnects and visibility recovery retain full reconciliation.

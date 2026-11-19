@@ -277,6 +277,91 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     }
   }, 45_000);
 
+  it("runs the parent's children-completed wake when a child it bound after completion saved after its finalize", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentId = randomUUID();
+    const firstChildId = randomUUID();
+    const secondChildId = randomUUID();
+    const firstWorkspaceId = randomUUID();
+    const secondWorkspaceId = randomUUID();
+    const firstRunId = randomUUID();
+    const secondRunId = randomUUID();
+    const decisionId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Child completion",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Parent", role: "engineer",
+      status: "active", adapterType: "codex_local", adapterConfig: {}, permissions: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    await db.insert(executionWorkspaces).values([firstWorkspaceId, secondWorkspaceId].map((id) => ({
+      id, companyId, mode: "shared_workspace", strategyType: "project_primary", name: "Child workspace", status: "active",
+    })));
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "in_progress",
+        assigneeAgentId: agentId, responsibleUserId: "responsible-user" },
+      { id: firstChildId, companyId, parentId, title: "First child", status: "done",
+        assigneeAgentId: agentId, executionWorkspaceId: firstWorkspaceId, responsibleUserId: "responsible-user",
+        completedAt: new Date("2026-11-16T23:33:00.000Z") },
+      { id: secondChildId, companyId, parentId, title: "Second child", status: "in_progress",
+        assigneeAgentId: agentId, executionWorkspaceId: secondWorkspaceId, responsibleUserId: "responsible-user" },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      { id: firstRunId, companyId, agentId, issueId: firstChildId, status: "succeeded",
+        startedAt: new Date("2026-11-16T23:28:28.000Z"), finishedAt: new Date("2026-11-16T23:32:59.430Z") },
+      { id: secondRunId, companyId, agentId, issueId: secondChildId, status: "running",
+        startedAt: new Date("2026-11-16T23:31:17.000Z") },
+    ]);
+    await db.insert(workspaceOperations).values([
+      { companyId, executionWorkspaceId: firstWorkspaceId, issueId: firstChildId, heartbeatRunId: firstRunId,
+        phase: "workspace_finalize", status: "succeeded",
+        startedAt: new Date("2026-11-16T23:32:57.000Z"), finishedAt: new Date("2026-11-16T23:32:59.000Z") },
+      { companyId, executionWorkspaceId: firstWorkspaceId, issueId: firstChildId, heartbeatRunId: firstRunId,
+        phase: "remote_workspace_snapshot", status: "succeeded",
+        startedAt: new Date("2026-11-16T23:32:58.000Z"), finishedAt: new Date("2026-11-16T23:32:59.200Z") },
+    ]);
+    await db.insert(issueRelations).values([firstChildId, secondChildId].map((blockerId) => ({
+      companyId, issueId: blockerId, relatedIssueId: parentId, type: "blocks" as const, createdByAgentId: agentId,
+    })));
+    await db.update(issues).set({ status: "blocked", blockedTransitionAt: new Date("2026-11-16T23:34:52.374Z") })
+      .where(eq(issues.id, parentId));
+    await db.insert(workspaceOperations).values({ companyId, executionWorkspaceId: secondWorkspaceId,
+      issueId: secondChildId, heartbeatRunId: secondRunId, phase: "workspace_finalize", status: "succeeded",
+      startedAt: new Date("2026-11-16T23:35:20.000Z"), finishedAt: new Date("2026-11-16T23:35:22.000Z") });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date("2026-11-16T23:35:23.250Z") })
+      .where(eq(heartbeatRuns.id, secondRunId));
+    await db.update(issues).set({ status: "done", completedAt: new Date("2026-11-16T23:35:23.218Z") })
+      .where(eq(issues.id, secondChildId));
+    const [intent] = await db.insert(agentWakeupRequests).values({ companyId, agentId,
+      source: "automation", triggerDetail: "system", reason: "issue_children_completed",
+      requestedByActorType: "system", requestedByActorId: "native-status-committer",
+      idempotencyKey: `issue_children_completed:${parentId}:${secondChildId}:${decisionId}`,
+      payload: { issueId: parentId, taskId: parentId, _paperclipWakeContext: {
+        issueId: parentId, taskId: parentId, source: "native_status_decision",
+        nativeChildCompletionDecisionId: decisionId, completedChildIssueId: secondChildId,
+        childIssueIds: [firstChildId, secondChildId],
+      } },
+    }).returning();
+
+    await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+    expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 10_000)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+
+    const dependencyWaits = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_dependencies_blocked"),
+    ));
+    expect(dependencyWaits).toEqual([]);
+    const parentRuns = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${parentId}`,
+    ));
+    const childrenCompletedRun = parentRuns.find((run) => run.contextSnapshot?.nativeStatusWakeIntentId === intent!.id);
+    expect(childrenCompletedRun?.contextSnapshot).toMatchObject({
+      wakeReason: "issue_children_completed", nativeStatusWakeIntentId: intent!.id,
+      completedChildIssueId: secondChildId,
+    });
+  }, 45_000);
+
   it("keeps a saved native continuation behind its active predecessor without retagging that run", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     let finishPredecessor!: () => void;

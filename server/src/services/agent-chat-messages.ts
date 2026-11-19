@@ -2,11 +2,10 @@ import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { agentApiKeys, agents, companies, companyMemberships, heartbeatRuns, issueComments, issues, nativeRunResults, type Db } from "@paperclipai/db";
 import { agentApiKeyScopeSchema, isUuidLike, sendChatMessageSchema, type AgentApiKeyScope } from "@paperclipai/shared";
-import { badRequest, conflict, forbidden, notFound, tooManyRequests } from "../errors.js";
+import { badRequest, conflict, forbidden, tooManyRequests } from "../errors.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { authorizationService, canActorReadIssuePrivacy, type AuthorizationActor } from "./authorization.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import { issueTreeControlService } from "./issue-tree-control.js";
 import { resolveActorSourceTrustForIssue } from "./source-trust.js";
@@ -47,6 +46,7 @@ export async function sendAgentChatMessage(
   const publications: ActivityPublication[] = [];
   const result = await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, actor.companyId)).for("no key update");
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${actor.companyId}`}, 0))`);
     const runWhere = and(eq(heartbeatRuns.id, actor.runId), eq(heartbeatRuns.companyId, actor.companyId), eq(heartbeatRuns.agentId, actor.agentId));
     const [initial] = await tx.select().from(heartbeatRuns).where(runWhere);
@@ -78,7 +78,6 @@ export async function sendAgentChatMessage(
     };
     const [initialContext] = await contextQuery();
     const context = validateContext(initialContext);
-    if (!(await instanceSettingsService(tx).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     const userId = context.run.responsibleUserId;
     if (!userId) throw forbidden("This task has no responsible human to receive the message");
     if (actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== userId) throw forbidden("The authenticated responsible human no longer matches this run");
@@ -114,7 +113,7 @@ export async function sendAgentChatMessage(
     let conversation = await svc.getConversation(actor.companyId, actor.agentId, userId);
     if (!conversation && !options.receiptOnly) {
       conversation = await svc.create(actor.companyId, {
-        title: `Chat with ${context.agent.name}`, assigneeAgentId: actor.agentId,
+        title: `Chat with ${context.agent.name}`, generateConversationTitle: true, assigneeAgentId: actor.agentId,
         conversationAgentId: actor.agentId, conversationUserId: userId,
         conversationState: "waiting", status: "in_review", createdByAgentId: actor.agentId,
         responsibleUserId: userId, trustExplicitResponsibleUserId: true,
@@ -144,7 +143,6 @@ export async function sendAgentChatMessage(
       eq(nativeRunResults.companyId, actor.companyId), eq(nativeRunResults.runId, actor.runId), eq(nativeRunResults.schemaStatus, "accepted"),
     )).limit(1);
     if (finished) throw forbidden("Send the message before finishing the run");
-    if (!(await instanceSettingsService(tx).getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
     await authorize(source.id, "issue:read");
     if (!conversation) return null;
     await authorize(conversation.id, "issue:comment");

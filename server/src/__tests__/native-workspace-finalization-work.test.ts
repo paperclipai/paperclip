@@ -16,6 +16,7 @@ import { nativeWorkspaceFinalizationWork } from "../services/native-runtime/nati
 import { attemptNativeWorkspaceFinalization } from "../services/native-runtime/native-workspace-finalizer.js";
 import { getRunExecutionTraceContext, measureRunPhase } from "../services/execution-preparation-timing.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
+import { reserveLiveNativeFinalization } from "../services/native-runtime/live-native-finalization.js";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
 import * as platformProof from "../services/native-runtime/native-workspace-platform-proof.js";
 import { reconcileNativeFinalizations } from "../services/native-runtime/native-finalization-reconciler.js";
@@ -319,6 +320,22 @@ describe("workspace finalization scheduled lifecycle", () => {
     expect(pending.dueAt).toBeLessThanOrEqual(Date.now());
     expect([...entries].sort((a, b) => a.dueAt - b.dueAt).map(item => item.id))
       .toEqual([overdue.runId, interrupted.runId]);
+  });
+  it("leaves a result posted mid-run to the live heartbeat, then resumes after its release", async () => {
+    await start(); await flush();
+    const binding = await seed();
+    const release = reserveLiveNativeFinalization(db, binding);
+    const nested = reserveLiveNativeFinalization(db, binding);
+    await nested(); await nested();
+    // The runner posts its accepted result before its process returns.
+    await complete(binding); await flush(); await quiet();
+    expect(await successful(binding.runId)).toHaveLength(0);
+    const heartbeat = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: binding.runId, liveHeartbeat: true },
+      async () => "owned");
+    expect(heartbeat).toEqual({ acquired: true, value: "owned" });
+    // A heartbeat that stopped before exporting leaves the work to the worker.
+    await release(); await flush();
+    expect(await successful(binding.runId)).toHaveLength(1); await quiet();
   });
   it("waits quietly for the actual local owner to release", async () => {
     const binding = await seed(); await complete(binding);

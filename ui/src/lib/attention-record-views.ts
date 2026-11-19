@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { AttentionItem } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
+import type { IssueThreadInteraction } from "./issue-thread-interactions";
 
 /**
  * One record, many views (PAP-749 design review, Part 2). A card's source
@@ -58,9 +59,20 @@ export function invalidateAttentionRecordViews(queryClient: QueryClient, company
  * the task's interaction list under both its UUID and its identifier key.
  * Other people's tabs get the same change from LiveUpdatesProvider.
  */
-export function invalidateInteractionRecordViews(queryClient: QueryClient, companyId: string) {
-  void queryClient.invalidateQueries({ queryKey: ["issues", "interactions"] });
-  void queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
-  void queryClient.invalidateQueries({ queryKey: ["issues", "pending-questions"] });
-  void queryClient.invalidateQueries({ queryKey: ["issues", "decision-receipts"] });
+export function invalidateInteractionRecordViews(queryClient: QueryClient, companyId: string, interaction?: IssueThreadInteraction) {
+  const keys = [["issues", "interactions"], queryKeys.attention(companyId), ["issues", "pending-questions"], ["issues", "decision-receipts"]];
+  // Initial reads can also predate this write. Cancel before invalidation so
+  // they cannot restore a question that has already been answered.
+  for (const queryKey of keys) {
+    void queryClient.cancelQueries({ queryKey });
+  }
+  if (interaction) {
+    // UUID and identifier routes can both be mounted. Give every cached copy
+    // the same canonical receipt before their authoritative reads complete.
+    queryClient.setQueriesData<IssueThreadInteraction[]>(
+      { queryKey: ["issues", "interactions"] },
+      current => current?.map(entry => entry.id === interaction.id ? interaction : entry),
+    );
+  }
+  for (const queryKey of keys) void queryClient.invalidateQueries({ queryKey });
 }

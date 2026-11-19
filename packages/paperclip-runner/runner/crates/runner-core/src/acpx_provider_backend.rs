@@ -325,6 +325,13 @@ impl AcpxProviderDescriptor {
         })
     }
 
+    fn supports_host_parking(&self) -> bool {
+        matches!(self.agent.as_str(), "codex" | "claude")
+            && self.names_qualified_release()
+            && acpx_release_profile(&self.agent)
+                .is_some_and(|profile| !profile.qualification_pending)
+    }
+
     fn validate_session(
         &self,
         context: &AcpxEventProjectionContext,
@@ -1035,6 +1042,7 @@ pub struct AcpxCommandExecutor {
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
     recovery_pending_effects: Option<usize>,
+    parked_relaunch: bool,
     /// The failed turn-end restart's cause, reported by the next turn start.
     failed_turn_end_restart: Option<String>,
     /// The failed turn-end restart's cause, until the Runner records it.
@@ -1079,6 +1087,7 @@ impl AcpxCommandExecutor {
             session: None,
             restore_checked: false,
             recovery_pending_effects: None,
+            parked_relaunch: false,
             failed_turn_end_restart: None,
             unreported_turn_end_restart_failure: None,
             turn_accepts_provider_turns: false,
@@ -1096,6 +1105,33 @@ impl AcpxCommandExecutor {
 
     pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
         self.recovery_pending_effects = Some(state.recovery_pending_effects());
+    }
+
+    pub(crate) fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        self.load_state_without_session()?;
+        let settled = self.state.as_ref().is_some_and(|state| {
+            state.descriptor.supports_host_parking()
+                && state.descriptor.run_id == self.context.run_id
+                && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
+                && settled_checkpoint_blockers(state).is_empty()
+                && state.pending_events.is_empty()
+                && state.pending_runtime_requests.is_empty()
+                && state.provider_turn_wait.is_none()
+                && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+        });
+        if !settled
+            || self.recovery_pending_effects != Some(0)
+            || self.candidate_admission().is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "parked ACPX recovery requires a settled provider checkpoint qualified for host parking",
+            )
+            .with_classification(crate::durable::PROVIDER_ATTACH_REFUSED));
+        }
+        self.restore_checked = true;
+        self.parked_relaunch = true;
+        Ok(())
     }
 
     fn candidate_admission(
@@ -1556,6 +1592,14 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        self.start_session_from(state, recovering)
+    }
+
+    fn start_session_from(
+        &self,
+        state: &AcpxDurableState,
+        recovering: bool,
+    ) -> Result<AcpxProviderSession, DurableRunnerError> {
         let expected = recovering.then(|| state.identity.clone()).flatten();
         let config = state.descriptor.session_config(
             state.tool_set.clone(),
@@ -1933,7 +1977,12 @@ impl AcpxCommandExecutor {
         if clears_turn_end_restart_failure {
             state.turn_end_restart_failed_run = None;
         }
-        let saved = if cold_candidate_attachment {
+        let saved = if self.parked_relaunch {
+            let session = self.start_session_from(&state, true)?;
+            self.commit_staged_state(state)?;
+            self.session = Some(session);
+            Ok(())
+        } else if cold_candidate_attachment {
             self.commit_staged_state(state)
         } else {
             self.state = Some(state);
@@ -3135,7 +3184,7 @@ impl CommandExecutor for AcpxCommandExecutor {
         let Some(state) = self.state.as_ref() else {
             return Ok(false);
         };
-        if !matches!(state.descriptor.agent.as_str(), "codex" | "claude")
+        if !state.descriptor.supports_host_parking()
             || self.session.is_none()
             || state.lifecycle != "session_open"
             || state.provider_exit_unconfirmed
@@ -3145,11 +3194,8 @@ impl CommandExecutor for AcpxCommandExecutor {
             || !state.pending_events.is_empty()
             || !state.pending_runtime_requests.is_empty()
             || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
-            || !state.descriptor.names_qualified_release()
             || state.provider_turn_wait.is_some()
             || self.candidate_admission().is_some()
-            || !acpx_release_profile(&state.descriptor.agent)
-                .is_some_and(|profile| !profile.qualification_pending)
         {
             return Ok(false);
         }
@@ -3277,6 +3323,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.parked_relaunch = false;
         self.recovery_pending_effects = None;
         self.context.run_id = config.run_id.clone();
         self.context.normalized_session_id = config.normalized_session_id.clone();
@@ -3512,6 +3559,10 @@ pub(crate) fn secure_directory(path: &Path, label: &str) -> Result<(), DurableRu
     })
 }
 
+#[cfg(all(test, unix))]
+#[path = "tests/acpx_park_relaunch.rs"]
+pub(crate) mod park_relaunch_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3532,7 +3583,7 @@ mod tests {
         directory
     }
 
-    fn write_artifact(path: &Path, contents: &[u8], executable: bool) {
+    pub(super) fn write_artifact(path: &Path, contents: &[u8], executable: bool) {
         fs::write(path, contents).unwrap();
         #[cfg(unix)]
         fs::set_permissions(
@@ -3542,7 +3593,7 @@ mod tests {
         .unwrap();
     }
 
-    fn artifact(path: &Path) -> QualifiedLaunchArtifact {
+    pub(super) fn artifact(path: &Path) -> QualifiedLaunchArtifact {
         QualifiedLaunchArtifact {
             path: path.to_owned(),
             sha256: format!("sha256:{:x}", Sha256::digest(fs::read(path).unwrap())),
@@ -3575,6 +3626,7 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
             turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 
@@ -6327,7 +6379,7 @@ mod tests {
         )
     }
 
-    fn cold_attach_command(payload: Value) -> Command {
+    pub(super) fn cold_attach_command(payload: Value) -> Command {
         Command {
             schema: "paperclip.prp.command.v1".into(),
             command_id: "cold-attach".into(),
@@ -6629,12 +6681,13 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    // A settled Claude session saved by one runner build. The next deploy
+    // A settled ACPX session saved by one runner build. The next deploy
     // ships a new sidecar build and provider-pack authority at the same
     // qualified launch paths, and the next run cold-attaches in a new runner.
     #[cfg(unix)]
-    fn settled_session_after_runner_upgrade(
+    pub(super) fn settled_session_after_runner_upgrade(
         label: &str,
+        agent: &str,
     ) -> (PathBuf, DurableRunnerConfig, Value, Vec<u8>) {
         let directory = temporary_directory(label);
         let command = directory.join("node");
@@ -6654,7 +6707,7 @@ mod tests {
         fs::create_dir_all(&workspace).unwrap();
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
-        let mut value = descriptor("claude");
+        let mut value = descriptor(agent);
         value["runtimeDirectory"] = json!(runtime);
         value["cwd"] = json!(workspace);
         value["sidecarCommand"] = json!(command);
@@ -6717,7 +6770,7 @@ mod tests {
     #[test]
     fn settled_session_rebinds_to_the_upgraded_runner_launch_profile() {
         let (directory, config, payload, saved) =
-            settled_session_after_runner_upgrade("upgrade-rebind");
+            settled_session_after_runner_upgrade("upgrade-rebind", "claude");
         let prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
         let current_digest = config
             .acpx_launch_profile
@@ -6781,7 +6834,7 @@ mod tests {
         ];
         for (label, seed) in settled {
             let (directory, config, payload, saved) =
-                settled_session_after_runner_upgrade("upgrade-retired-settled");
+                settled_session_after_runner_upgrade("upgrade-retired-settled", "claude");
             let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
             let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
             seed(&mut prior);
@@ -6825,7 +6878,8 @@ mod tests {
     fn interrupted_turn_after_runner_upgrade(
         label: &str,
     ) -> (PathBuf, DurableRunnerConfig, PathBuf) {
-        let (directory, mut config, _, saved) = settled_session_after_runner_upgrade(label);
+        let (directory, mut config, _, saved) =
+            settled_session_after_runner_upgrade(label, "claude");
         config.run_id = "run-1".to_owned();
         config.turn_id = "turn-1".to_owned();
         config.item_id = "item-1".to_owned();
@@ -6955,7 +7009,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
 
         let (directory, mut config, payload, _) =
-            settled_session_after_runner_upgrade("upgrade-relocated-settled");
+            settled_session_after_runner_upgrade("upgrade-relocated-settled", "claude");
         let (command, args) = relocate_upgraded_install(&directory, &mut config);
         // The controller attaches with the payload it saved, which still names
         // the old install's paths.
@@ -7034,10 +7088,11 @@ mod tests {
             ("command_moved", "launch_shape_changed"),
             ("args_changed", "launch_shape_changed"),
             ("agent_server_release", ""),
+            ("agent_runtime_release", ""),
             ("acpx_release", ""),
         ] {
             let (directory, mut config, _, saved) =
-                settled_session_after_runner_upgrade("upgrade-strict");
+                settled_session_after_runner_upgrade("upgrade-strict", "claude");
             let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
             let mut state: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
             let profile = config.acpx_launch_profile.as_mut().unwrap();
@@ -7081,6 +7136,9 @@ mod tests {
                 }
                 "args_changed" => profile.args.push("--changed".into()),
                 "agent_server_release" => state.descriptor.agent_server_version = "0.0.1".into(),
+                "agent_runtime_release" => {
+                    state.descriptor.agent_runtime_version = Some("0.3.286".into())
+                }
                 "acpx_release" => {
                     state.descriptor.acpx_version = "0.0.1".into();
                     state.descriptor.provider_version = "0.0.1".into();
@@ -7119,7 +7177,7 @@ mod tests {
     #[test]
     fn a_settled_session_saved_by_the_previous_acpx_release_continues() {
         let (directory, config, payload, saved) =
-            settled_session_after_runner_upgrade("previous-acpx-settled");
+            settled_session_after_runner_upgrade("previous-acpx-settled", "claude");
         let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
         let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
         prior.descriptor.acpx_version = "0.13.1".into();
@@ -7166,5 +7224,50 @@ mod tests {
         // close path of a lost turn instead of failing the restore.
         assert!(restored.active_turn_id.is_none());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    // The previous release bundled Agent SDK 0.3.286 and Codex 0.160.0 behind
+    // the same bridge command digests. A runner that bundles a newer runtime
+    // cannot restore a session that runtime saved, whether the session was
+    // settled or a deploy landed mid-turn. Restore refuses it by name, opens no
+    // provider and keeps the saved bytes; the server then continues the task in
+    // a fresh provider session in the same workspace.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_saved_by_the_previous_agent_runtime_is_refused_by_name() {
+        let mut cases = Vec::new();
+        for (agent, runtime) in [("claude", "0.3.286"), ("codex", "0.160.0")] {
+            let (directory, config, _, _) =
+                settled_session_after_runner_upgrade(&format!("previous-runtime-{agent}"), agent);
+            cases.push((agent, runtime, directory, config));
+        }
+        let (directory, config, _) =
+            interrupted_turn_after_runner_upgrade("previous-runtime-mid-turn");
+        cases.push(("claude mid-turn", "0.3.286", directory, config));
+        for (label, runtime, directory, config) in cases {
+            let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+            let mut prior: AcpxDurableState =
+                serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            prior.descriptor.agent_runtime_version = Some(runtime.into());
+            fs::write(&state_path, serde_json::to_vec(&prior).unwrap()).unwrap();
+            let retained = fs::read(&state_path).unwrap();
+
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            let error = recovered.restore().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not match a qualified immutable profile"),
+                "{label}: {error}"
+            );
+            assert_eq!(
+                error.classification(),
+                Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+                "{label}"
+            );
+            assert!(recovered.session.is_none(), "{label}");
+            assert_eq!(fs::read(&state_path).unwrap(), retained, "{label}");
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

@@ -153,6 +153,7 @@ fn config(state_dir: &Path) -> DurableRunnerConfig {
         reconnect_grace: None,
         max_runtime: Duration::from_secs(60),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     }
 }
 
@@ -439,7 +440,7 @@ fn prepare_payload(directory: &Path, agent: &str) -> Value {
 fn prepare_payload_with_mode(directory: &Path, agent: &str, mode: &str) -> Value {
     let operations = Vec::new();
     let (runtime_package, runtime_version) = if agent == "codex" {
-        (json!("@openai/codex"), json!("0.160.0"))
+        (json!("@openai/codex"), json!("0.170.0"))
     } else {
         (Value::Null, Value::Null)
     };
@@ -522,7 +523,7 @@ fn pending_acpx_runtime_request(
         provider["agentServerPackage"] = json!("@agentclientprotocol/claude-agent-acp");
         provider["agentServerVersion"] = json!("0.73.0");
         provider["agentRuntimePackage"] = json!("@anthropic-ai/claude-agent-sdk");
-        provider["agentRuntimeVersion"] = json!("0.3.286");
+        provider["agentRuntimeVersion"] = json!("0.3.328");
         provider["commandDigest"] = json!(digest);
         provider["sidecarArgs"][3] = json!(digest);
     } else {
