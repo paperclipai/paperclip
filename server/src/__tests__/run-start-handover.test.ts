@@ -110,7 +110,7 @@ suite("run start hand-over between an old and a new server during a deploy overl
 
   it("the old server stops starting runs once the new one starts them, and the new one starts the queued run", async () => {
     // The old server booted alone long ago: it recorded its own start and holds no hand-over.
-    const old = await bootServer("old");
+    const old = await bootServer("old", { timing: { skipHintMinMs: 500 } });
     await old.handover.begin();
     expect(old.handover.isHandingOver()).toBe(false);
     const before = await queueRun();
@@ -126,12 +126,16 @@ suite("run start hand-over between an old and a new server during a deploy overl
     expect(next.handover.isHandingOver()).toBe(true);
     expect(await marker(next)).toMatchObject({ live: true });
     await vi.waitFor(() => expect(old.handover.isActive()).toBe(true), { timeout: 10_000 });
+    await vi.waitFor(() => expect(next.dispatchHints).toBeGreaterThan(0), { timeout: 10_000 });
 
     const handedOver = await queueRun();
     const hintsBefore = next.dispatchHints;
     expect(await dispatch(old, handedOver)).toBe(false);
     // The skipped start wakes the new server's queued-run dispatch instead of waiting for a sweep.
-    await vi.waitFor(() => expect(next.dispatchHints).toBeGreaterThan(hintsBefore), { timeout: 10_000 });
+    await vi.waitFor(async () => {
+      expect(await dispatch(old, handedOver)).toBe(false);
+      expect(next.dispatchHints).toBeGreaterThan(hintsBefore);
+    }, { timeout: 10_000 });
     expect(await dispatch(next, handedOver)).toBe(true);
     expect(claims.filter(claim => claim.runId === handedOver)).toEqual([{ server: "new", runId: handedOver }]);
 

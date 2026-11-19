@@ -56,8 +56,8 @@ export function coordinatorCardDetail(item: AttentionItem, detailLine: string | 
   }
   return detailLine ?? item.whyNow;
 }
-export const coordinatorAttentionSummaryQueryKey = (companyId: string) => [...queryKeys.attention(companyId), "coordinator", "summary"] as const;
-export const coordinatorAttentionTasksQueryKey = (companyId: string) => [...queryKeys.attention(companyId), "coordinator", "tasks"] as const;
+export const coordinatorAttentionSummaryQueryKey = (companyId: string, userId: string | null) => [...queryKeys.attention(companyId), userId, "coordinator", "summary"] as const;
+export const coordinatorAttentionTasksQueryKey = (companyId: string, userId: string | null) => [...queryKeys.attention(companyId), userId, "coordinator", "tasks"] as const;
 
 /** Presentation-only assumption from the prototype, never a retention policy. */
 export const COORDINATOR_RECENT_DECISION_MS = 24 * 60 * 60 * 1_000;

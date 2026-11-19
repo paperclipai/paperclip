@@ -8,6 +8,7 @@ import { enforcedUniversalFailures, gradeUniversal, type SlotFree, type Universa
 export const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
 export const STALL_LIMIT_MS = 3 * 60_000;
 export const PROVIDER_TURN_LIMIT_MS = 10 * 60_000;
+export const PREPARATION_LIMIT_MS = 10 * 60_000;
 const REST_STATUSES_WITH_WORK = new Set(["todo", "in_progress"]);
 
 const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
@@ -211,7 +212,7 @@ export function deadRunningRun(sample: TaskSample, readySince: number): { id: st
     if (run.status !== "running") continue;
     // Quiet is not dead while a tool is still in flight or the run's process is verifiably alive.
     if (run.toolInFlight || run.processAlive) continue;
-    const limit = run.providerTurnActive ? PROVIDER_TURN_LIMIT_MS : STALL_LIMIT_MS;
+    const limit = run.preparing ? PREPARATION_LIMIT_MS : run.providerTurnActive ? PROVIDER_TURN_LIMIT_MS : STALL_LIMIT_MS;
     const evidence = Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0, readySince);
     if (sample.at - evidence > limit) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
   }

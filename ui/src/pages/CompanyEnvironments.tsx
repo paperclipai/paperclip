@@ -67,6 +67,8 @@ import {
   Field,
   ToggleField,
 } from "../components/agent-config-primitives";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 type EnvironmentFormState = {
   name: string;
@@ -1207,7 +1209,7 @@ function EnvironmentImageTemplatePanel({
             <summary className="cursor-pointer select-none font-medium text-foreground">
               SSH command fallback
             </summary>
-            <code className="mt-2 block overflow-x-auto whitespace-nowrap text-(length:--text-micro) leading-5">
+            <code className={cn("mt-2 block overflow-x-auto whitespace-nowrap text-(length:--text-micro) leading-5", ANALYTICS_NO_CAPTURE_CLASS)}>
               {connectionCommand}
             </code>
           </details>

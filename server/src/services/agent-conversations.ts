@@ -29,6 +29,7 @@ import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { createHeartbeatTimerPolicy, parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { HttpError } from "../errors.js";
+import { ONBOARDING_CHAT_GREETING_REASON } from "./onboarding-chat-prompt.js";
 
 export type ConversationIdentity = {
   conversationAgentId?: string | null;
@@ -424,7 +425,9 @@ export async function settleConversationTurn(
             .from(issueComments)
             .where(eq(issueComments.id, wakeId))
         : [];
-    const [pending] = wake
+    // The welcome has no synthetic human anchor. Every real user message
+    // arriving during that first reply is still owed a response.
+    const [pending] = wake || context.wakeReason === ONBOARDING_CHAT_GREETING_REASON
       ? await tx
           .select({ id: issueComments.id })
           .from(issueComments)
@@ -433,7 +436,7 @@ export async function settleConversationTurn(
               eq(issueComments.issueId, issueId),
               isNull(issueComments.deletedAt),
               sql`${issueComments.authorUserId} is not null`,
-              sql`(${issueComments.createdAt}, ${issueComments.id}) > (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${wake.id}::uuid)`,
+              wake ? sql`(${issueComments.createdAt}, ${issueComments.id}) > (select cursor.created_at, cursor.id from issue_comments cursor where cursor.id = ${wake.id}::uuid)` : undefined,
             ),
           )
           .limit(1)
@@ -604,7 +607,7 @@ export async function resumeConversationForReset(db: Db, comment: typeof issueCo
       eq(issues.id, comment.issueId), eq(issues.companyId, comment.companyId),
     )).for("update");
     if (!isConversation(issue) || comment.conversationSessionGeneration != null) return;
-    await notifyIssueRecovery(tx, { companyId: issue.companyId });
+    await notifyIssueRecovery(tx, { companyId: issue.companyId, everyTask: true });
     const released = await tx.update(issueTreeHolds).set({
       status: "released", releasedAt: new Date(), updatedAt: new Date(),
       releasedByActorType: "user", releasedByUserId: comment.authorUserId,

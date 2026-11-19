@@ -6,7 +6,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "@paperclipai/db/schema/index";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
-  activityLog, agents, chatConversations, chatEndpoints, companyMemberships, heartbeatRuns, issueComments, issueReadStates, issueRelations, issues, issueThreadInteractions, toolApplications, toolConnections,
+  activityLog, agents, chatConversations, chatEndpoints, companyMemberships, heartbeatRuns, issueComments, issueInboxArchives, issueReadStates, issueRelations, issues, issueThreadInteractions, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { issueRoutes } from "../routes/issues.js";
@@ -43,6 +43,48 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     return result;
   }
   const url = (companyId: string) => `/api/companies/${companyId}/issues/summaries`;
+
+  it("reports personal participation and archive state for navigation", async () => {
+    const f = await fixture();
+    const user = f.actor.userId!;
+    const names = ["manual", "routine", "github", "agent", "read", "comment", "edit", "assigned", "addressed", "other-request", "archived", "archived-by-other", "cancelled"];
+    const rows = await ctx.db.insert(issues).values(names.map(title => ({
+      companyId: f.companyId, title,
+      originKind: title === "routine" ? "routine_execution" : title === "github" ? "chat_channel" : "manual",
+      createdByUserId: ["manual", "routine", "github", "archived", "archived-by-other", "cancelled"].includes(title) ? user : null,
+      status: title === "cancelled" ? "cancelled" : "todo",
+      responsibleUserId: user,
+      assigneeUserId: title === "assigned" ? user : null,
+    }))).returning();
+    const id = (name: string) => rows.find(row => row.title === name)!.id;
+    await ctx.db.insert(issueComments).values([
+      { companyId: f.companyId, issueId: id("comment"), authorUserId: user, body: "Please do this." },
+      { companyId: f.companyId, issueId: id("github"), authorUserId: user, metadata: { version: 1, sections: [], sourceChannel: "github" }, body: "Imported review" },
+    ]);
+    await ctx.db.insert(activityLog).values([
+      { companyId: f.companyId, entityType: "issue", entityId: id("read"), actorType: "user", actorId: user, action: "issue.read_marked" },
+      { companyId: f.companyId, entityType: "issue", entityId: id("edit"), actorType: "user", actorId: user, action: "issue.updated" },
+      { companyId: f.companyId, entityType: "issue", entityId: id("agent"), actorType: "agent", actorId: "worker", action: "issue.updated", responsibleUserId: user },
+    ]);
+    await ctx.db.insert(issueInboxArchives).values([
+      { companyId: f.companyId, issueId: id("archived"), userId: user },
+      { companyId: f.companyId, issueId: id("archived-by-other"), userId: "other" },
+    ]);
+    await ctx.db.insert(issueThreadInteractions).values(["addressed", "other-request"].map(title => ({
+      companyId: f.companyId, issueId: id(title), kind: "request_confirmation", status: "pending",
+      addresseeUserId: title === "addressed" ? user : "other", effectiveResolverPolicy: "human_only" as const,
+      payload: { version: 1 as const, prompt: "Confirm." },
+    })));
+    const res = await request(app(f.actor)).get(url(f.companyId)).query({ ids: rows.map(row => row.id).join(","), navigation: "true" }).expect(200);
+    expect(res.body.filter((row: { isParticipantForMe: boolean }) => row.isParticipantForMe).map((row: { title: string }) => row.title).sort())
+      .toEqual(["addressed", "archived", "archived-by-other", "assigned", "cancelled", "comment", "edit", "manual"]);
+    expect(res.body.filter((row: { isArchivedForMe: boolean }) => row.isArchivedForMe).map((row: { title: string }) => row.title)).toEqual(["archived"]);
+    expect(res.body).toContainEqual(expect.objectContaining({ id: id("cancelled"), status: "cancelled", isArchivedForMe: false }));
+    const general = await request(app(f.actor)).get(url(f.companyId)).query({ ids: [id("archived"), id("cancelled")].join(",") }).expect(200);
+    expect(general.body.map((row: { title: string }) => row.title)).toEqual(["archived", "cancelled"]);
+    expect(general.body[0]).not.toHaveProperty("isArchivedForMe");
+    expect(res.body.every((row: { isParticipantForMe: unknown }) => typeof row.isParticipantForMe === "boolean")).toBe(true);
+  });
 
   it("matches the inbox unread predicate across participation, request, withdrawal and read histories", async () => {
     const f = await fixture();

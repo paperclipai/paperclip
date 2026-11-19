@@ -1,24 +1,23 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Inbox, Boxes, ChevronRight, CircleCheck, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
-import type { Agent, Project } from "@paperclipai/shared";
+import { Inbox, Boxes, CircleCheck, Compass, FolderOpen, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Pin, PinOff, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
+import type { Agent, IssueSummary, Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
-import { issuesApi } from "@/api/issues";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
+import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { useDialogActions } from "@/context/DialogContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
+import type { RecentTaskEntry } from "@/lib/recent-tasks";
 import { Link, useLocation } from "@/lib/router";
-import { agentRouteRef, cn, projectRouteRef, SIDEBAR_RAIL_HIDDEN_LABEL } from "@/lib/utils";
+import { agentRouteRef, cn, projectRouteRef } from "@/lib/utils";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarNavItem } from "./SidebarNavItem";
-import { RecentTaskNavItem } from "./RecentTaskNavItem";
-import { RecentTaskGroup } from "./RecentTaskGroup";
-import { recentTaskHierarchy } from "@/lib/recent-task-hierarchy";
+import { RecentTaskNavItem, recentTaskPathRef } from "./RecentTaskNavItem";
 import { SidebarSection } from "./SidebarSection";
 import { TruncatedTextMarqueeProvider } from "./TruncatedText";
 import { useScrollbarWhileScrolling } from "./side-panel/use-scrollbar-while-scrolling";
@@ -31,8 +30,12 @@ import { AgentAvatar } from "./AgentAvatar";
 import { agentChatPinKey } from "./AgentChatPin";
 import { PinnedNavigationList, type PinnedNavigationItem } from "./PinnedNavigationList";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { SidebarProjectTasks } from "./SidebarProjectTasks";
 
 const NO_RECENT_TASKS: never[] = [];
+const TASK_PIN_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const taskPinKey = (companyId: string, id: string) => `task:${companyId}:${id}`;
+const projectPinKey = (project: Project) => `project:${project.companyId}:${project.id}`;
 
 const moreDestinations = [
   { label: "Search", to: "/search", icon: Search },
@@ -47,12 +50,27 @@ const moreDestinations = [
   { label: "Settings", to: "/settings", icon: Settings },
 ] as const;
 
-export function buildPinnedNavigationItems(pins: readonly string[], agents: readonly Agent[], destinations: readonly { to: string; label: string; icon: LucideIcon }[]): PinnedNavigationItem[] {
+export function buildPinnedNavigationItems(
+  pins: readonly string[],
+  agents: readonly Agent[],
+  destinations: readonly { to: string; label: string; icon: LucideIcon }[],
+  tasks: readonly IssueSummary[] = [],
+  projects: readonly Project[] = [],
+): PinnedNavigationItem[] {
+  if (!pins.length) return [];
   const keys = new Set(pins);
   const items = new Map<string, PinnedNavigationItem>(destinations.map(item => [item.to, { key: item.to, to: item.to, label: item.label, icon: <item.icon className="size-4" /> }]));
   for (const agent of agents) {
     const key = agentChatPinKey(agent.companyId, agent.id);
     if (keys.has(key)) items.set(key, { key, to: `/chats/${encodeURIComponent(agentRouteRef(agent))}`, label: agent.name, icon: <AgentAvatar agent={agent} size={16} /> });
+  }
+  for (const task of tasks) {
+    const key = taskPinKey(task.companyId, task.id);
+    if (keys.has(key)) items.set(key, { key, to: `/issues/${recentTaskPathRef(task)}`, label: task.title, icon: <StatusIcon {...taskStatusIconProps(task)} />, task });
+  }
+  for (const project of projects) {
+    const key = projectPinKey(project);
+    if (keys.has(key)) items.set(key, { key, to: `/projects/${projectRouteRef(project)}/issues`, label: project.name, icon: <FolderOpen className="size-4" />, project });
   }
   return pins.flatMap(key => {
     const item = items.get(key);
@@ -60,27 +78,31 @@ export function buildPinnedNavigationItems(pins: readonly string[], agents: read
   });
 }
 
-function ProjectRecent({ project }: { project: Project }) {
-  const [expanded, setExpanded] = useState(false);
-  const { data: tasks, isPending, error } = useQuery({
-    queryKey: [...queryKeys.issues.listByProject(project.companyId, project.id), "coordinator-recents"],
-    queryFn: () => issuesApi.listCompact(project.companyId, { projection: "rows", projectId: project.id, limit: 12, sortField: "updated", sortDir: "desc" }),
-    enabled: expanded,
-  });
-  return <div>
-    <div className="group/coordinator-recent relative">
-      <SidebarNavItem to={`/projects/${projectRouteRef(project)}`} label={project.name} icon={FolderOpen} className="design-sidebar-item pr-9" />
-      <button type="button" aria-label={`${expanded ? "Collapse" : "Expand"} ${project.name}`} aria-expanded={expanded}
-        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring" onClick={() => setExpanded(!expanded)}>
-        <ChevronRight className={cn("size-3.5 transition-transform", expanded && "rotate-90")} />
-      </button>
-    </div>
-    {expanded && <div className="ml-5 border-l border-border pl-1">
-      {isPending ? <p className="px-3 py-2 text-xs text-muted-foreground" role="status">Loading tasks…</p> : error ? <p className="px-3 py-2 text-xs text-muted-foreground">Couldn’t load tasks.</p> : tasks?.length ? tasks.map(task =>
-        <RecentTaskNavItem className="design-sidebar-item" key={task.id} task={task} label={task.title} iconNode={<StatusIcon {...taskStatusIconProps(task)} />} />)
-        : <p className="px-3 py-2 text-xs text-muted-foreground">No tasks yet.</p>}
-    </div>}
+type PinControls = { keys: ReadonlySet<string>; canPin: boolean; toggle: (key: string) => void };
+type RecentTaskLink = Omit<RecentTaskEntry, "recordedAt">;
+
+function NavigationPinButton({ pinKey, label, pins, className }: { pinKey: string; label: string; pins: PinControls; className: string }) {
+  const pinned = pins.keys.has(pinKey);
+  const Icon = pinned ? PinOff : Pin;
+  const actionLabel = `${pinned ? "Unpin" : "Pin"} ${label}`;
+  return <button type="button" aria-label={actionLabel} title={actionLabel} aria-pressed={pinned} disabled={!pins.canPin}
+    onClick={() => pins.toggle(pinKey)} className={cn("absolute top-1/2 flex -translate-y-1/2 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring hover:text-foreground", pinned ? "text-foreground" : "text-muted-foreground", className)}>
+    <Icon aria-hidden className="size-3.5" />
+  </button>;
+}
+
+function RecentPinRow({ pinKey, label, pins, children }: { pinKey: string; label: string; pins: PinControls; children: ReactNode }) {
+  if (!pins.canPin) return <>{children}</>;
+  return <div className="design-sidebar-pin-target relative min-w-0">
+    {children}
+    <NavigationPinButton pinKey={pinKey} label={label} pins={pins} className="right-3 size-7" />
   </div>;
+}
+
+function RecentTaskPinRow({ task, pins }: { task: RecentTaskLink; pins: PinControls }) {
+  return <RecentPinRow pinKey={taskPinKey(task.companyId, task.id)} label={task.title} pins={pins}>
+    <RecentTaskNavItem className="design-sidebar-item" task={task} label={task.title} iconNode={<StatusIcon {...taskStatusIconProps(task)} />} />
+  </RecentPinRow>;
 }
 
 function RecentNavigationList({ children }: { children: ReactNode }) {
@@ -112,27 +134,43 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const unreadChatCount = chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
   const pinnedNavigation = usePinnedNavigation(userId);
+  const pinKeys = useMemo(() => new Set(pinnedNavigation.pins), [pinnedNavigation.pins]);
+  const pins = { keys: pinKeys, canPin: pinnedNavigation.canPin, toggle: pinnedNavigation.toggle };
+  const pinnedTaskIds = useMemo(() => {
+    if (!companyId || !session.isSuccess) return [];
+    const prefix = taskPinKey(companyId, "");
+    return pinnedNavigation.pins.flatMap(key => {
+      if (!key.startsWith(prefix)) return [];
+      const id = key.slice(prefix.length);
+      return TASK_PIN_ID_PATTERN.test(id) ? [id] : [];
+    });
+  }, [companyId, pinnedNavigation.pins, session.isSuccess]);
   const { data: experimental } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const destinations = useMemo(() => experimental?.enableCases
-    ? [...moreDestinations, { label: "Cases", to: "/cases", icon: Boxes }]
-    : moreDestinations, [experimental?.enableCases]);
+  // Responsibilities (experimental) is home, named Dashboard, and leads Chat,
+  // Tasks and Inbox. The classic dashboard leaves More: one Dashboard at a time.
+  const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
+  const destinations = useMemo(() => {
+    const base = responsibilitiesHome
+      ? moreDestinations.filter((item) => item.to !== "/dashboard")
+      : moreDestinations;
+    return experimental?.enableCases ? [...base, { label: "Cases", to: "/cases", icon: Boxes }] : base;
+  }, [experimental?.enableCases, responsibilitiesHome]);
   const [moreOpen, setMoreOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(true);
   const moreContentRef = useRef<HTMLDivElement>(null);
-  const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations), [pinnedNavigation.pins, agents.data, destinations]);
-  const { entries: recentTasks } = useRecentTasks({ companyId, userId });
-  const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
-  const rail = collapsed && !peeking;
+  const { entries: recentTasks, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds });
+  const { isMobile, setSidebarOpen } = useSidebar();
   // Warm opens only while the Recents list is on screen.
-  useRecentTaskOpenWarmup({ companyId, userId, tasks: !rail && session.isSuccess ? recentTasks : NO_RECENT_TASKS });
-  const { openNewIssue } = useDialogActions();
   const location = useLocation();
-  const hierarchy = useMemo(() => recentTaskHierarchy(recentTasks, location.pathname), [recentTasks, location.pathname]);
+  useRecentTaskOpenWarmup({ companyId, userId, tasks: session.isSuccess ? recentTasks : NO_RECENT_TASKS, navigationKey: location.pathname });
+  const { openNewIssue } = useDialogActions();
   const attentionCount = useCoordinatorAttentionCount(companyId);
   const { data: projects } = useQuery({ ...companyProjectsQuery(companyId!), enabled: !!companyId });
+  const orderedPins = useMemo(() => buildPinnedNavigationItems(pinnedNavigation.pins, agents.data ?? [], destinations,
+    pinnedTasks, session.isSuccess ? projects : undefined), [pinnedNavigation.pins, agents.data, destinations, pinnedTasks, projects, session.isSuccess]);
   // Only project IDs and visit times are kept in memory. Labels and task lists
   // always come from the authorized API, scoped to the current person/company.
   const scope = `${companyId}:${userId}`;
@@ -145,7 +183,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   }, [location.pathname, projects, scope]);
   const recents = useMemo(() => {
     const roster = new Map((agents.data ?? []).map(agent => [agent.id, agent]));
-    const taskRows = recentTasks.filter(task => !hierarchy.nestedIds.has(task.id)).map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
+    const taskRows = recentTasks.map(task => ({ kind: "task" as const, id: task.id, time: task.recordedAt, task }));
     const chatRows = (chats.data ?? []).flatMap(chat => {
       const agent = chat.conversationAgentId ? roster.get(chat.conversationAgentId) : null;
       return agent ? [{ kind: "chat" as const, id: chat.id, time: new Date(chat.updatedAt).getTime(), agent }] : [];
@@ -153,61 +191,60 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
     const projectRows = (projects ?? []).flatMap(project => projectVisits.scope === scope && projectVisits.entries[project.id]
       ? [{ kind: "project" as const, id: project.id, time: projectVisits.entries[project.id]!, project }] : []);
     return [...taskRows, ...chatRows, ...projectRows].sort((a, b) => b.time - a.time);
-  }, [agents.data, chats.data, recentTasks, projects, projectVisits, scope, hierarchy]);
+  }, [agents.data, chats.data, recentTasks, projects, projectVisits, scope]);
   const newTaskButton = <Button type="button" variant="ghost" className="design-sidebar-new-task rounded-lg" aria-label="New task" onClick={() => openNewIssue()}>
     <SquarePen aria-hidden />
-    <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New task</span>
+    <span className="truncate">New task</span>
   </Button>;
   return <FlyoutAppearanceProvider><TruncatedTextMarqueeProvider><aside className="coordinator-sidebar design-sidebar w-full">
-    <div className="design-sidebar-brand" data-collapsed={rail || undefined}>
+    <div className="design-sidebar-brand">
       <SidebarCompanyMenu showChevron={false} />
       <Tooltip><TooltipTrigger asChild><Button variant="ghost" size="icon-sm" className="design-sidebar-search" aria-label="Global search" onClick={() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }))}><Search aria-hidden /></Button></TooltipTrigger><TooltipContent side="right">Search tasks, agents, projects</TooltipContent></Tooltip>
     </div>
     <nav className="design-sidebar-navigation" aria-label="Workspace navigation">
       <div className="design-sidebar-primary">
-        {rail ? <Tooltip><TooltipTrigger asChild>{newTaskButton}</TooltipTrigger><TooltipContent side="right">New task</TooltipContent></Tooltip> : newTaskButton}
+        {newTaskButton}
         <div className="design-sidebar-primary my-2">
+          {responsibilitiesHome && <SidebarNavItem className="design-sidebar-item" to="/responsibilities" label="Dashboard" icon={Compass} />}
           <SidebarNavItem className="design-sidebar-item" to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />
           <div className="group/coordinator-new relative">
-            <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} className={cn("design-sidebar-item", !rail && "pr-9")} />
-            {!rail && <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}
-              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>}
+            <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} className="design-sidebar-item pr-9" />
+            <button type="button" aria-label="New task" title="New task" onClick={() => openNewIssue()}
+              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>
           </div>
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
-          {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} rail={rail} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
+          {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} userId={userId} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
-          <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>More</span></button></FlyoutTrigger>
+          <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span>More</span></button></FlyoutTrigger>
           <FlyoutContent ref={moreContentRef} tabIndex={-1} onOpenAutoFocus={(event) => { event.preventDefault(); moreContentRef.current?.focus(); }} side={isMobile ? "bottom" : "right"} align="start" className="w-56 p-1" aria-label="More workspace pages">
-            {destinations.map(({ label, to, icon: Icon }, index) => {
-              const pinned = pinnedNavigation.pins.includes(to);
-              const PinIcon = pinned ? PinOff : Pin;
-              return <div key={to}>
+            {destinations.map(({ label, to, icon: Icon }, index) => <div key={to}>
                 {index === 6 || index === 10 ? <div role="separator" className="my-1 border-t border-border" /> : null}
-                <div className="group/coordinator-more relative flex items-center rounded-sm transition-colors hover:bg-accent">
+                <div className="group/navigation-pin relative flex items-center rounded-sm transition-colors hover:bg-accent">
                   <Link to={to} onClick={() => { setMoreOpen(false); if (isMobile) setSidebarOpen(false); }} className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-1.5 pr-10 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
                     <Icon className="size-4 shrink-0 text-muted-foreground" />{label}
                   </Link>
-                  <button type="button" aria-label={`${pinned ? "Unpin" : "Pin"} ${label}`} aria-pressed={pinned} title={`${pinned ? "Unpin" : "Pin"} ${label}`} disabled={!pinnedNavigation.canPin} onClick={() => pinnedNavigation.toggle(to)} className={cn("absolute right-0.5 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-sm opacity-0 transition-opacity outline-none group-hover/coordinator-more:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring", pinned ? "text-foreground" : "text-muted-foreground")}>
-                    <PinIcon className="size-3.5" />
-                  </button>
+                  <NavigationPinButton pinKey={to} label={label} pins={pins} className="right-0.5 size-8 rounded-sm opacity-0 transition-opacity group-hover/navigation-pin:opacity-100 group-focus-within/navigation-pin:opacity-100 pointer-coarse:opacity-100" />
                 </div>
-              </div>;
-            })}
+              </div>)}
           </FlyoutContent>
         </Flyout>
       </div>
       {pinnedNavigation.error && <p role="alert" className="px-4 py-2 text-xs text-destructive">{pinnedNavigation.error}</p>}
-      {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents" collapsible={{ open: recentsOpen, onOpenChange: setRecentsOpen }}>
+      {session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents" collapsible={{ open: recentsOpen, onOpenChange: setRecentsOpen }}>
         <RecentNavigationList>
         {recents.map(item => item.kind === "task"
-          ? <RecentTaskGroup key={`${scope}:${item.id}`} task={item.task} userId={userId} className="design-sidebar-item" flattened={hierarchy.flattenedIds.has(item.id)}
-              selectedChild={hierarchy.selectedChild?.parentId === item.id ? hierarchy.selectedChild : undefined}>
-              <RecentTaskNavItem className="design-sidebar-item" task={item.task} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
-            </RecentTaskGroup>
+          ? <RecentTaskPinRow key={`${scope}:${item.id}`} task={item.task} pins={pins} />
           : item.kind === "chat"
-            ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
-            : <ProjectRecent key={item.id} project={item.project} />)}
+            ? <RecentPinRow key={item.id} pinKey={agentChatPinKey(item.agent.companyId, item.agent.id)} label={item.agent.name} pins={pins}>
+                <SidebarNavItem className="design-sidebar-item" to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
+              </RecentPinRow>
+            : <SidebarProjectTasks key={`${scope}:${item.id}`} project={item.project} userId={userId}
+                renderTask={task => <RecentTaskPinRow task={task} pins={pins} />}>
+                <RecentPinRow pinKey={projectPinKey(item.project)} label={item.project.name} pins={pins}>
+                  <SidebarNavItem className="design-sidebar-item" to={`/projects/${projectRouteRef(item.project)}/issues`} label={item.project.name} icon={FolderOpen} />
+                </RecentPinRow>
+              </SidebarProjectTasks>)}
         </RecentNavigationList>
       </SidebarSection></div>}
       {children}

@@ -13,8 +13,8 @@ This is separate from Paperclip's first-party Telemetry and its content-free
 
 ## Capture and supported runtimes
 
-The qualified versions are Codex 0.160.0 and Claude Code through ACP bridge
-0.73.0 with Agent SDK 0.3.286. Both logs and traces use HTTP/protobuf. Prompts,
+The qualified versions are Codex 0.170.0 and Claude Code through ACP bridge
+0.73.0 with Agent SDK 0.3.328. Both logs and traces use HTTP/protobuf. Prompts,
 assistant responses and tool content default on. Additional tool details are a
 Claude Code and native OpenCode control; Codex has no equivalent switch. Codex requests up to 64 KiB
 of tool output (or zero when disabled); native event availability, truncation
@@ -44,6 +44,24 @@ remain available when failure occurs before dispatch, such as an oversized
 request. These are separate observations, not correlated calls. The
 `paperclip.tool.source` attribute distinguishes dispatch and provider records.
 Native tools retain their provider spans without submitted-argument diagnostics. OpenCode's performance-only OTLP sink stays separate.
+
+For known native task envelopes, OpenCode selects the task identifier, title and
+prompt before the 8 KiB limit. A valid leading fresh-session handoff packet is
+omitted from this excerpt so earlier history cannot hide the current request.
+Continuation excerpts put pending user messages before recovery guidance.
+Plain text and unknown envelope formats retain their existing text projection.
+History omission also sets the turn's truncation flag; the flag can also mean a
+text or row limit was reached.
+
+When prompt capture is enabled, `paperclip.observability.input.events` gives a
+relative URL on the originating Paperclip instance:
+`/api/heartbeat-runs/<run-id>/events`. Sign in to that instance, read pages using
+`afterSeq` and `limit`, and find the `turn.submitted` event for the trace's
+`paperclip.turn.id`. Its `payload.prpEvent.payload.text` holds the retained
+submission, including history, subject to existing redaction and retention.
+The URL does not grant access. Run telemetry permission, company membership and
+task privacy checks still apply. The reference is absent when prompt capture is
+disabled. Tool argument values remain excluded from company traces.
 
 The exporter sends once at turn completion with a three-second deadline, at most
 four requests in flight and no idle polling or persistent queue. Closing drains

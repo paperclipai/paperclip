@@ -39,6 +39,9 @@ const MAX_SETTLED_CALL_IDS: usize = 65_536;
 const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
+const TOOL_CALLS_IN_FLIGHT_MESSAGE: &str =
+    "too many provider tool calls are in flight for the retained result reserve";
+const TOOL_CALLS_IN_FLIGHT_HINT: &str = "Too many tool calls are in flight. This call was not executed. Wait for the pending tool results, then retry it.";
 const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake or monitor, summary, and idempotencyKey.";
 const HUMAN_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. For questions, use payload.version=1 and a complete payload.questionSet. Preserve question and option IDs. Correct the arguments and retry.";
 const APPROVAL_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. Keep approval requests in their confirmation or checkbox interactionKind; do not replace them with questions. Correct the arguments and retry.";
@@ -308,6 +311,17 @@ impl ProviderBridgeError {
 
     pub fn is_active_turn_receipt_limit(&self) -> bool {
         self.message == ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE
+    }
+
+    fn tool_calls_in_flight() -> Self {
+        Self {
+            message: TOOL_CALLS_IN_FLIGHT_MESSAGE.to_owned(),
+            safe_provider_message: Some(TOOL_CALLS_IN_FLIGHT_HINT.to_owned()),
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.message == TOOL_CALLS_IN_FLIGHT_MESSAGE
     }
 
     pub fn safe_provider_message(&self) -> Option<&str> {
@@ -779,7 +793,7 @@ impl ProviderToolBridge {
             .and_then(|total| total.checked_add(result_reserve))
             .is_none_or(|total| total > MAX_RETAINED_TOOL_VALUE_BYTES)
         {
-            return Err(ProviderBridgeError::active_turn_receipt_limit());
+            return Err(ProviderBridgeError::tool_calls_in_flight());
         }
         // Reserve the complete encoded receipt, including this exact input and
         // a maximum-sized result, before accepting work. An admitted call can
@@ -791,7 +805,7 @@ impl ProviderToolBridge {
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         if self.ensure_settled_result_capacity(Some(&call)).is_err() {
-            return Err(ProviderBridgeError::active_turn_receipt_limit());
+            return Err(ProviderBridgeError::tool_calls_in_flight());
         }
         self.pending.insert(call_id, call.clone());
         Ok(call)
@@ -1654,6 +1668,108 @@ mod tests {
             })
             .unwrap();
         bridge
+    }
+
+    fn get_task_bridge() -> ProviderToolBridge {
+        let operation = AuthorizedTool {
+            operation_id: "get_task".to_owned(),
+            version: 1,
+            description: "Read a task.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+    }
+
+    fn settle_get_task(bridge: &mut ProviderToolBridge, call_id: &str, result_bytes: usize) {
+        bridge
+            .begin_call(call_id.to_owned(), "get_task".to_owned(), json!({}))
+            .unwrap();
+        bridge
+            .apply_result(ToolResult {
+                call_id: call_id.to_owned(),
+                operation_id: "get_task".to_owned(),
+                result: json!({"body": "x".repeat(result_bytes)}),
+                is_error: false,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn parallel_calls_over_the_result_reserve_reject_only_the_overflow_call() {
+        let mut bridge = get_task_bridge();
+        settle_get_task(&mut bridge, "settled", 600 * 1024);
+        for index in 0..9 {
+            bridge
+                .begin_call(
+                    format!("parallel-{index}"),
+                    "get_task".to_owned(),
+                    json!({}),
+                )
+                .expect("calls within the result reserve are admitted");
+        }
+        let error = bridge
+            .begin_call("parallel-9".to_owned(), "get_task".to_owned(), json!({}))
+            .expect_err("the call that overflows the reserve is rejected");
+        assert!(!error.is_active_turn_receipt_limit());
+        assert!(error.is_retryable());
+        assert_eq!(
+            error.safe_provider_message(),
+            Some(TOOL_CALLS_IN_FLIGHT_HINT)
+        );
+        assert!(!bridge.durable_run_receipt_limit_reached());
+        assert!(!bridge.has_call_receipt("parallel-9"));
+        assert_eq!(bridge.pending_calls().count(), 9);
+
+        bridge
+            .apply_result(ToolResult {
+                call_id: "parallel-0".to_owned(),
+                operation_id: "get_task".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        bridge
+            .begin_call("parallel-9".to_owned(), "get_task".to_owned(), json!({}))
+            .expect("the rejected call is admitted once a pending result settles");
+        assert!(!bridge.durable_run_receipt_limit_reached());
+    }
+
+    #[test]
+    fn held_result_bytes_over_the_limit_still_stop_the_turn() {
+        let mut bridge = get_task_bridge();
+        let mut settled = 0;
+        let error = loop {
+            match bridge.begin_call(format!("held-{settled}"), "get_task".to_owned(), json!({})) {
+                Ok(_) => {
+                    bridge
+                        .apply_result(ToolResult {
+                            call_id: format!("held-{settled}"),
+                            operation_id: "get_task".to_owned(),
+                            result: json!({"body": "x".repeat(760 * 1024)}),
+                            is_error: false,
+                        })
+                        .unwrap();
+                    settled += 1;
+                }
+                Err(error) => break error,
+            }
+        };
+        assert!(settled >= 9);
+        assert_eq!(bridge.pending_calls().count(), 0);
+        assert!(error.is_active_turn_receipt_limit());
+        assert!(!error.is_retryable());
+        assert!(bridge.durable_run_receipt_limit_reached());
     }
 
     #[test]

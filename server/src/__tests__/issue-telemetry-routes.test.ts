@@ -185,6 +185,9 @@ describe("issue telemetry routes", () => {
   }, 60_000);
 
   it("emits task-completed telemetry with the agent role, adapter type, and model", async () => {
+    const { scopedTelemetryCompanyId } = await import("../telemetry-company-scope.js");
+    const scopedCompanies: Array<string | undefined> = [];
+    mockTrackAgentTaskCompleted.mockImplementationOnce(() => scopedCompanies.push(scopedTelemetryCompanyId()));
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -213,6 +216,41 @@ describe("issue telemetry routes", () => {
         taskId: "11111111-1111-4111-8111-111111111111",
       });
     });
+    expect(scopedCompanies).toEqual(["company-1"]);
+  }, 10_000);
+
+  it.each([
+    { name: "task creator", issue: { createdByUserId: "paperclip-id:creator", responsibleUserId: "paperclip-id:assigner" }, expected: { userId: "paperclip-id:creator", attributedVia: "task_creator" } },
+    { name: "task assigner", issue: { createdByUserId: null, responsibleUserId: "paperclip-id:assigner" }, expected: { userId: "paperclip-id:assigner", attributedVia: "task_assigner" } },
+  ])("attributes agent task-completed telemetry to the $name", async ({ issue, expected }) => {
+    const { scopedTelemetryPerson } = await import("../telemetry-company-scope.js");
+    const people: unknown[] = [];
+    mockTrackAgentTaskCompleted.mockImplementationOnce(() => people.push(scopedTelemetryPerson()));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("todo"),
+      ...issue,
+      ...patch,
+    }));
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "22222222-2222-4222-8222-222222222222",
+    });
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(people).toEqual([expected]));
   }, 10_000);
 
   it("does not emit agent task-completed telemetry for board-driven completions", async () => {

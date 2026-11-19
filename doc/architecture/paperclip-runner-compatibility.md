@@ -46,15 +46,15 @@ would hide the runtime that executed the task.
 
 ## Remote Codex version window
 
-Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.161.0`**.
-The install pin is `0.160.0`. A sandbox image can therefore use an older
+Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.171.0`**.
+The install pin is `0.170.0`. A sandbox image can therefore use an older
 compatible Codex without failing startup or installing another copy.
 
 The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
 It is not a rolling one-month support window. The official
 [`@openai/codex` publication history](https://registry.npmjs.org/@openai/codex)
 records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, `0.156.0` on
-2026-09-22, and `0.160.0` on 2026-10-01. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
+2026-09-22, `0.160.0` on 2026-10-01, and `0.170.0` on 2026-11-18. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
 This is an explicit compatibility window, not a claim that every Codex minor
 release follows a backward-compatible protocol.
 
@@ -65,11 +65,14 @@ release follows a backward-compatible protocol.
 - The same check applies to discovered, explicitly staged, and npm-installed
   remote Codex executables, including the final executable after linking.
 - For an incompatible image, the existing
-  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.160.0` configuration
+  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.170.0` configuration
   allows installation of the pinned runtime. Without that configuration,
   startup reports the supported range and the remediation.
 - Runner binary contracts, required runner capabilities, artifact digests,
   provider-pack manifests, and runtime permission checks are unchanged.
+- A model whose Codex floor is above the CLI an image actually carries (for
+  example GPT-6.2, which needs `0.169.1`, on an image with `0.160.0`) falls back
+  to the newest same-class model that the CLI accepts and shows a visible message.
   This window does not relax the separate ACP provider-pack qualification.
 
 When qualifying newer Codex releases, review the upper bound in
@@ -91,6 +94,16 @@ the installed ACP package contract. Codex `0.157.0` through `0.160.0` add the
 GPT-6.1 Sol catalog entry and app-server pagination without a documented
 app-server protocol break; the Linux CI qualification workflow covers the real
 startup and session-resume probes for the new pin.
+The 2026-11-19 refresh moved the install pin to `0.170.0` and the upper bound
+to `<0.171.0` after verifying the integrity-checked Linux x64 `0.170.0`
+executable digest and running the opt-in paginated cleanup qualification
+(`scripts/tests/native-cleanup-paginated-codex.mjs`) against the real `0.170.0`
+app-server: initialize, thread start, and paginated thread resume passed.
+Codex `0.161.0` through `0.170.0` add the GPT-6.2 catalog entries; their release
+notes document no app-server protocol break. `0.169.0` keeps project
+configuration disabled for `codex exec` in untrusted directories, which does not
+affect Paperclip's app-server path or the `--skip-git-repo-check` CLI path. The
+Linux CI qualification workflow covers the real startup and session-resume probes.
 Version-boundary and remote artifact-preparation regressions are covered by
 `codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
 
