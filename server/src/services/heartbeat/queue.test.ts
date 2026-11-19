@@ -12,11 +12,11 @@ import { createReleaseIssueExecution } from "../../modules/wake-queue/applicatio
 import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
 import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, notifyOtherAgentsQueuedOnSettledIssue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
 import { createWakeQueue } from "../../modules/wake-queue/index.js";
-import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
 import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
 import { settleConversationTurn } from "../agent-conversations.js";
 import { chatCompletionDeliveryService, recordChatCompletion, recordChatHandoff } from "../chat-completion-delivery.js";
+import { createDurableChatWakeupRequest } from "../durable-chat-wakeup.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks as runControlCallbacks } from "./__tests__/run-control-fixtures.js";
@@ -255,6 +255,60 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...f, agent, service };
   }
 
+  it.each([
+    ["fresh", "authorization contention"], ["busy", "authorization contention"],
+    ["fresh", "wrong locked issue"], ["busy", "wrong locked issue"],
+  ] as const)("rolls back a %s chat admission on %s without publishing", async (kind, failure) => {
+    const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
+      .where(eq(issues.id, issue.id));
+    if (kind === "busy") {
+      const [active] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+        status: "running", invocationSource: "assignment", contextSnapshot: { issueId: issue.id } }).returning();
+      await db.update(issues).set({ executionRunId: active.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() })
+        .where(eq(issues.id, issue.id));
+      deps.liveRunExecutions.has.mockImplementation((id) => id === active.id);
+    }
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: user.id, body: "Please continue" }).returning();
+    const id = randomUUID();
+    const authorize = vi.fn(async () => {});
+    const onAdmitted = vi.fn(async (tx: Db, { runId }: { runId: string | null }) => {
+      const [receipt] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id));
+      expect(receipt).toMatchObject({ status: kind === "fresh" ? "queued" : "deferred_issue_execution", runId });
+      expect(Boolean(runId)).toBe(kind === "fresh");
+      throw Object.assign(new Error("authorization lock was held"), { code: "55P03" });
+    });
+    const request = createDurableChatWakeupRequest({ id, companyId: company.id, issueId: issue.id, agentId: agent.id,
+      commentId: comment.id, requestedByActorType: "user", requestedByActorId: user.id, requestedAt: new Date(), authorize, onAdmitted });
+    const [otherIssue] = failure === "wrong locked issue" ? await db.insert(issues).values({
+      companyId: company.id, assigneeAgentId: agent.id, title: "Another task",
+    }).returning() : [];
+    const publishIssueActivity = vi.fn();
+    const admit = deps.wakeQueue.admitIssueWake.getMockImplementation()!;
+    deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target,
+      (tx, admission) => evaluate(tx, otherIssue ? {
+        admitFreshIssueRun: (input) => admission.admitFreshIssueRun({ ...input,
+          issue: { ...input.issue, id: otherIssue.id }, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
+        admitWakeBehindIssueExecution: (input) => admission.admitWakeBehindIssueExecution({ ...input,
+          issueId: otherIssue.id, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
+      } : admission), { ...effects, publishIssueActivity }));
+
+    const wake = queue.enqueueWakeup(agent.id, {
+      source: "assignment", triggerDetail: "system", reason: "External chat message received",
+      requestedByActorType: "user", requestedByActorId: user.id, allowRunCoalescing: false, durableChatRequest: request,
+      payload: { issueId: issue.id, commentId: comment.id, mutation: "chat_message_received" },
+    });
+    if (otherIssue) await expect(wake).rejects.toThrow(/does not match the locked/);
+    else await expect(wake).resolves.toBeNull();
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(onAdmitted).toHaveBeenCalledTimes(otherIssue ? 0 : 1);
+    expect(publishIssueActivity).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    expect(await db.select().from(agentWakeupRequests)).toEqual([]);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
+  });
+
   it("admits the owner's context compaction maintenance request while its conversation waits", async () => {
     const f = await waitingCompactionFixture();
     const accepted = await f.service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });
@@ -287,8 +341,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
         mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
       recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
     });
-    f.deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
-    f.deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    f.deps.wakeQueue.admitIssueWake.mockImplementation(admission.admitIssueWake);
     let releaseAvailability!: () => void;
     const bothAvailable = new Promise<void>(resolve => { releaseAvailability = resolve; });
     let arrivals = 0;
@@ -333,7 +386,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       const context = enrichWakeContextSnapshot({ contextSnapshot: { ...options.contextSnapshot },
         reason: options.reason ?? null, source, triggerDetail, payload: options.payload ?? null });
       await db.transaction(async tx => {
-        await createWakeAdmissionWriter().insertNewDeferredWake(TransactionScope.create(f.company.id, tx), {
+        await createWakeAdmissionWriter(tx, f.company.id).insertNewDeferredWake({
           companyId: f.company.id, agentId, source, triggerDetail,
           payload: { ...options.payload, manualUserWake: true, [DEFERRED_WAKE_CONTEXT_KEY]: context.contextSnapshot },
           requestedByActorType: options.requestedByActorType ?? null,
@@ -553,7 +606,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }).returning();
 
     await db.transaction(async (tx) => {
-      const store = createFreshIssueRunStore(TransactionScope.create(local.company.id, tx), local.company.id);
+      const store = createFreshIssueRunStore(tx, local.company.id);
       expect(await store.saveReceipt({
         kind: "promote", wakeId: localDeferredWake.id, agentId: foreignAgent.id, payload: null,
       })).toBeUndefined();
@@ -889,8 +942,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
         mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
       recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
     });
-    deps.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
-    deps.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    deps.wakeQueue.admitIssueWake.mockImplementation(admission.admitIssueWake);
     const queue = createHeartbeatQueue(db, deps);
     if (scenario === "running") {
       deps.canStartNewExternalBotWork.mockResolvedValue(true);

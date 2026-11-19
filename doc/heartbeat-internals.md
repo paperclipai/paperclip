@@ -313,13 +313,16 @@ and shared execution sets so separate service instances keep the same ownership
 and shutdown barriers. Cleanup single-flight state stays at module scope.
 Keep recovery policy changes separate from retry scheduling and execution changes.
 
-Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
-It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
-concurrency and priority checks, timer admission, and native status wake intents.
-The wake-queue module admits fresh task runs inside heartbeat's issue admission
-transaction. It selects eligible saved comment receipts in request order and
-binds them to the new run. Heartbeat supplies responsible-user resolution and
-records any specialized continuation delivery before those receipts are bound.
+Heartbeat coordinates wakeup dispatch, queued-run claims, daily heartbeat caps,
+concurrency and priority checks, timer admission, and native status wake intents
+in `server/src/services/heartbeat/queue.ts`. The wake-queue module owns the
+company and issue lock, the admission transaction, and the handoff after commit
+for both fresh task runs and wakes arriving behind an active execution. Heartbeat
+uses the locked transaction for its specialized eligibility gates and continuation
+writes. Wake-queue selects eligible saved comment receipts in request order and
+binds them to the new run. Chat authorization and its admission callback run in
+the same transaction. Authorization contention defers the wake and rolls back
+without publishing buffered effects.
 `createHeartbeatQueue` binds these operations without querying or starting work.
 The service supplies lifecycle effects, execution callbacks, worktree gates, and
 its process-wide execution and wakeup promise sets. Forwarding callbacks preserve
