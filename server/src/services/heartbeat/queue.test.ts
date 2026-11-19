@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations, routines, routineRuns } from "@paperclipai/db";
+import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, routines, routineRuns } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -323,6 +323,53 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
     expect(await db.select().from(agentWakeupRequests)).toEqual([]);
     expect(await db.select().from(heartbeatRuns)).toHaveLength(kind === "fresh" ? 0 : 1);
+  });
+
+  it("defers an ordinary user wake behind a recovery hold committed while acquiring the task lock", async () => {
+    const { user, company, agent, issue, deps, queue } = await waitingConversationFixture();
+    await db.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null, status: "todo" })
+      .where(eq(issues.id, issue.id));
+    const [comment] = await db.insert(issueComments).values({
+      companyId: company.id, issueId: issue.id, authorType: "user", authorUserId: user.id, body: "Please continue.",
+    }).returning();
+    const actionId = randomUUID();
+    function enqueue() {
+      return queue.enqueueWakeup(agent.id, {
+        source: "assignment", triggerDetail: "system", reason: "issue_commented",
+        requestedByActorType: "user", requestedByActorId: user.id, payload: { issueId: issue.id, commentId: comment.id },
+      });
+    }
+    let pending: ReturnType<typeof enqueue> | undefined;
+    try {
+      await db.transaction(async writer => {
+        const [{ pid }] = await writer.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        await writer.insert(issueRecoveryActions).values({
+          id: actionId, companyId: company.id, sourceIssueId: issue.id, kind: "active_run_watchdog",
+          cause: "legacy_execution_requires_reconciliation", fingerprint: actionId, status: "resolved",
+          evidence: { automaticRecovery: { replay: "blocked" } }, nextAction: "Inspect the stopped run.",
+        });
+        pending = enqueue();
+        await vi.waitFor(async () => {
+          const [waiter] = await db.execute<{ waiting: boolean }>(sql`select exists (
+            select 1 from pg_stat_activity
+            where wait_event_type = 'Lock' and ${pid} = any(pg_blocking_pids(pg_stat_activity.pid))
+              and query ilike '%for update%'
+          ) as waiting`);
+          expect(waiter.waiting).toBe(true);
+        }, { timeout: 5_000, interval: 20 });
+      });
+    } finally {
+      await pending;
+    }
+
+    await expect(pending).resolves.toBeNull();
+    expect(await db.select().from(heartbeatRuns)).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests)).toEqual([
+      expect.objectContaining({ status: "deferred_issue_execution", runId: null,
+        payload: expect.objectContaining({ issueId: issue.id, commentId: comment.id,
+          executionWait: expect.objectContaining({ recoveryActionId: actionId }) }) }),
+    ]);
+    expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
   it("uses issue changes written by durable chat authorization before admission", async () => {
