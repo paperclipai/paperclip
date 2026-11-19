@@ -3161,7 +3161,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-18: calc(100dvh - 2rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (max-h-[calc(100dvh-2rem)]). */
   --sz-calc-19: calc(1rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (pb-[calc(1rem+env(safe-area-inset-bottom))]). */
   --sz-calc-20: min(calc(100dvh - 2rem),42rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.tsx (max-h-[min(calc(100dvh-2rem),42rem)]). */
-  --sz-100dvh: 100dvh; /* Extracted from ui/src/components/RoutineSubSidebar.tsx (max-h-[100dvh]). */
+  --sz-100dvh: 100dvh; /* Originally extracted from the removed RoutineSubSidebar (max-h-[100dvh]). */
   --sz-calc-21: calc(1.5rem + 5rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/ScrollToBottom.tsx (bottom-[calc(1.5rem+5rem+env(safe-area-inset-bottom))]). */
   --sz-calc-22: calc(320px + 1.5rem); /* Extracted from ui/src/components/ScrollToBottom.tsx (right-[calc(320px+1.5rem)]). */
   --sz-calc-23: min(32rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/SearchableSelect.tsx (max-w-[min(32rem,calc(100vw-2rem))]). */
@@ -4832,7 +4832,14 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
 }
 .design-sidebar .design-sidebar-item { min-height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); color: var(--design-sidebar-item-foreground); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); }
+.design-sidebar-pin-target > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); }
+.design-sidebar .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
 .design-sidebar .design-sidebar-item:is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+.design-sidebar-pin-target > button { opacity: 0; pointer-events: none; }
+.design-sidebar-pin-target:is(:hover, :has(> [aria-current="page"], > :focus-visible)) {
+  > .design-sidebar-item { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+  > button { opacity: 1; pointer-events: auto; }
+}
 .design-sidebar-new-task { display: flex; justify-content: flex-start; width: calc(100% - var(--design-sidebar-item-inset) * 2); height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); gap: calc(var(--spacing) * 2.5); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); font-weight: var(--font-weight-medium); color: var(--design-sidebar-item-foreground); }
 .design-sidebar-new-task svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-new-task:hover { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
@@ -5810,3 +5817,16 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 .secret-value-masked {
   -webkit-text-security: disc;
 }
+
+:root {
+  --routine-title-min: calc(var(--spacing) * 48);
+  --routine-column-project: calc(var(--spacing) * 36);
+  --routine-column-assignee: calc(var(--spacing) * 36);
+  --routine-column-responsibleUser: calc(var(--spacing) * 36);
+  --routine-column-lastRun: calc(var(--spacing) * 52);
+  --routine-column-enabled: calc(var(--spacing) * 24);
+  --routine-actions-width: calc(var(--spacing) * 20);
+  --routine-select-width: calc(var(--spacing) * 6);
+}
+.routine-table { min-width: max-content; }
+.routine-table-grid { display: grid; align-items: center; gap: calc(var(--spacing) * 3); }

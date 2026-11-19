@@ -31,6 +31,7 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
+import { resolveAndRetainRunTrustPreset } from "../services/run-trust-preset.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 // These process fixtures do not consume skills. Keep the real scheduler,
@@ -404,6 +405,41 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(triggered.monitorAttemptCount).toBe(1);
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakes.filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
+  });
+
+  it("keeps low-trust limits on the run a reviewer's self-wake starts", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const runId = randomUUID();
+    const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustPreset: "low_trust_review",
+      trustBoundary: { mode: "low_trust_review", companyId, rootIssueId: issueId } } };
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, nativeIssueId: issueId,
+      runtimeMode: "native", status: "running", contextSnapshot: { issueId, executionPolicy: policy } });
+    await db.update(issues).set({ executionRunId: runId, executionPolicy: null, executionState: null,
+      monitorNextCheckAt: null, monitorNotes: null, monitorScheduledBy: null }).where(eq(issues.id, issueId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, issueId, agentId, runId });
+    const monitor = { nextCheckAt: new Date(Date.now() + 60_000).toISOString(), notes: "Check the review again." };
+    const call = (idempotencyKey: string) => authority.execute({
+      tool: "set_task_monitor", callId: randomUUID(), arguments: { idempotencyKey, monitor },
+    });
+    try {
+      await expect(call("run-only-trust")).rejects.toThrow(/runtime:manage/);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.monitorNextCheckAt).toBeNull();
+      await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, issueId));
+      await expect(call("task-trust")).resolves.toMatchObject({ monitor: { status: "scheduled" } });
+    } finally {
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+    }
+    expect((await heartbeatService(db).tickTimers(new Date(Date.parse(monitor.nextCheckAt) + 1_000))).enqueued).toBe(1);
+    const [woken] = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)))
+      .filter(run => run.id !== runId);
+    expect(woken).toBeDefined();
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, woken!.id));
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const retained = await resolveAndRetainRunTrustPreset(db, { companyId, agentId, runId: woken!.id,
+      agent: { companyId, permissions: agent!.permissions }, issue: { companyId, executionPolicy: issue!.executionPolicy } });
+    expect(retained.trustPreset).toMatchObject({ kind: "low_trust_review", boundary: { rootIssueId: issueId } });
   });
 
   it.each(["replaced", "cleared", "reassigned", "completed"] as const)("fences a monitor %s after claim but before wake admission", async (change) => {

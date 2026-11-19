@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { AnchorHTMLAttributes, ComponentProps, ReactNode } from "react";
+import { useState, type AnchorHTMLAttributes, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -8,7 +8,11 @@ import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 import type { RequestOptions } from "../api/client";
-import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
+import { Routines, buildRoutineGroups, buildRoutineSections } from "./Routines";
+import { Routines as CurrentRoutines } from "./Routines.production";
+import { sortRoutines } from "../lib/routine-list-data";
+import { routinesApi } from "../api/routines";
+import { accessApi } from "../api/access";
 
 let currentSearch = "";
 
@@ -40,7 +44,13 @@ vi.mock("@/lib/router", () => ({
   ),
   useNavigate: () => navigateMock,
   useLocation: () => ({ pathname: "/routines", search: currentSearch ? `?${currentSearch}` : "", hash: "" }),
-  useSearchParams: () => [new URLSearchParams(currentSearch), vi.fn()],
+  useSearchParams: () => {
+    const [, rerender] = useState(0);
+    return [new URLSearchParams(currentSearch), (update: URLSearchParams | ((params: URLSearchParams) => URLSearchParams)) => {
+      currentSearch = (typeof update === "function" ? update(new URLSearchParams(currentSearch)) : update).toString();
+      rerender(count => count + 1);
+    }];
+  },
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -54,6 +64,8 @@ vi.mock("../context/BreadcrumbContext", () => ({
 vi.mock("../context/ToastContext", () => ({
   useToastActions: () => ({ pushToast: vi.fn() }),
 }));
+
+vi.mock("../api/auth", () => ({ authApi: { getSession: vi.fn(async () => ({ user: { id: "user-1" } })) } }));
 
 vi.mock("../api/routines", () => ({
   routinesApi: {
@@ -228,6 +240,10 @@ vi.mock("../api/access", () => ({
       ],
     })),
   },
+}));
+
+vi.mock("../api/secrets", () => ({
+  secretsApi: { list: vi.fn(async () => []), create: vi.fn() },
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -727,6 +743,35 @@ describe("Routines page", () => {
     }
   });
 
+  it.each([["classic", Routines], ["current", CurrentRoutines]] as const)("keeps %s routines readable when the people directory fails and restores names on retry", async (_variant, Page) => {
+    routinesListMock.mockResolvedValue([createRoutine({ title: "Owned routine", responsibleUserId: "user-1" })]);
+    vi.mocked(accessApi.listUserDirectory).mockRejectedValueOnce(new Error("Could not load responsible people"));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Page /></QueryClientProvider>);
+        await flush();
+      });
+      await act(async () => { await flush(); });
+      const routineLink = container.querySelector('a[href="/routines/routine-1"]');
+      expect(routineLink).not.toBeNull();
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert?.textContent).toContain("Could not load responsible people");
+      const retry = alert?.querySelector("button");
+      expect(retry?.textContent).toBe("Retry");
+      await act(async () => { retry!.click(); await flush(); });
+      await act(async () => { await flush(); });
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector('a[href="/routines/routine-1"]')).toBe(routineLink);
+      expect(container.textContent).toContain("Taylor");
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it("bounds a stalled folder request and leaves routines accessible with a retry", async () => {
     const actual = await vi.importActual<typeof import("../api/folders")>("../api/folders");
     routinesListMock.mockResolvedValue([createRoutine({ title: "Accessible after timeout", folderId: "folder-1" })]);
@@ -1099,14 +1144,14 @@ describe("Routines page", () => {
     });
 
     let runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Run now"),
+      button.getAttribute("aria-label") === "Run now: Morning sync",
     );
     for (let attempts = 0; attempts < 5 && !runNowButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       runNowButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Run now"),
+        button.getAttribute("aria-label") === "Run now: Morning sync",
       );
     }
 
@@ -1118,23 +1163,38 @@ describe("Routines page", () => {
     });
   });
 
-  it("opens the project picker after selecting the responsible agent", async () => {
-    pickerMode.real = true;
+  it("creates a routine from the shared routine form and opens its page", async () => {
     routinesListMock.mockResolvedValue([]);
     issuesListMock.mockResolvedValue([]);
+    vi.mocked(routinesApi.create).mockResolvedValue({ id: "routine-new", responsibleUserId: null } as Awaited<ReturnType<typeof routinesApi.create>>);
     const root = createRoot(container), queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const button = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
-      .find(element => element.textContent?.trim() === text)!;
+    const buttons = (text: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+      .filter(element => element.textContent?.trim() === text);
     try {
       await act(async () => { root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>); await flush(); });
-      await vi.waitFor(() => expect(button("Create routine")).toBeTruthy());
-      await act(async () => { button("Create routine").click(); await flush(); });
-      await act(async () => { button("Responsible").click(); await flush(); });
-      await act(async () => { button("Agent One").click(); await new Promise(resolve => requestAnimationFrame(resolve)); await flush(); });
-      // Responsible selection already opens Project through its real focus path.
-      expect(document.querySelector('input[placeholder="Search projects..."]')).not.toBeNull();
-      await act(async () => { button("Project Alpha").click(); await flush(); });
-      expect(button("Project Alpha")).toBeTruthy();
+      await vi.waitFor(() => expect(buttons("New routine").length).toBeGreaterThan(0));
+      await act(async () => { buttons("New routine")[0]!.click(); await flush(); });
+      const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+      expect(dialog?.textContent).toContain("New routine");
+      const title = dialog!.querySelector<HTMLInputElement>("input[placeholder='Send the weekly digest']")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(title, "Weekly digest");
+        title.dispatchEvent(new Event("input", { bubbles: true }));
+        await flush();
+      });
+      const submit = Array.from(dialog!.querySelectorAll<HTMLButtonElement>("button")).find(element => element.textContent?.trim() === "Create routine")!;
+      await act(async () => { submit.click(); await flush(); });
+      await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith("/routines/routine-new"));
+      expect(routinesApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        title: "Weekly digest",
+        description: null,
+        assigneeAgentId: null,
+        projectId: null,
+      }));
+      // Delivery settings and priority have no editor: new routines take the server defaults.
+      const payload = vi.mocked(routinesApi.create).mock.calls[0]![1];
+      expect(payload).not.toHaveProperty("concurrencyPolicy");
+      expect(payload).not.toHaveProperty("priority");
     } finally { await act(() => root.unmount()); queryClient.clear(); }
   });
 
@@ -1159,14 +1219,14 @@ describe("Routines page", () => {
     });
 
     let createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Create routine"),
+      button.textContent?.includes("New routine"),
     );
     for (let attempts = 0; attempts < 5 && !createButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Create routine"),
+        button.textContent?.includes("New routine"),
       );
     }
 
@@ -1209,14 +1269,14 @@ describe("Routines page", () => {
     });
 
     let createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("Create routine"),
+      button.textContent?.includes("New routine"),
     );
     for (let attempts = 0; attempts < 5 && !createButton; attempts += 1) {
       await act(async () => {
         await flush();
       });
       createButton = Array.from(container.querySelectorAll("button")).find((button) =>
-        button.textContent?.includes("Create routine"),
+        button.textContent?.includes("New routine"),
       );
     }
 
@@ -1252,6 +1312,44 @@ describe("Routines page", () => {
     });
   });
 
+  it("opens linked filters and restores saved columns with responsible people beside agents", async () => {
+    currentSearch = "projects=project-1&responsibleUsers=user-1&statuses=active";
+    localStorage.setItem("paperclip:routines-view:company-1:user:user-1", JSON.stringify({
+      projects: ["project-2"], columns: ["assignee", "responsibleUser"], groupBy: "none",
+    }));
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "match", title: "Linked routine", responsibleUserId: "user-1" }),
+      createRoutine({ id: "other", title: "Other routine", projectId: "project-2", responsibleUserId: "user-1" }),
+      createRoutine({ id: "paused", title: "Paused routine", status: "paused", responsibleUserId: "user-1" }),
+    ]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => { root.render(<QueryClientProvider client={client}><Routines /></QueryClientProvider>); await flush(); });
+      await vi.waitFor(() => expect(container.textContent).toContain("Linked routine"));
+      const rows = container.querySelectorAll('[role="row"]');
+      expect(container.textContent).not.toContain("Other routine");
+      expect(container.textContent).not.toContain("Paused routine");
+      expect(Array.from(rows[0].querySelectorAll('[role="columnheader"]'), cell => cell.textContent)).toEqual(["Routine", "Agent", "Responsible user", "Actions"]);
+      expect(rows[1].textContent).toContain("Agent One");
+      expect(rows[1].textContent).toContain("Taylor");
+      expect(rows[1].querySelector('a[href="/routines/match"]')?.textContent).toBe("Linked routine");
+      expect(rows[1].querySelector('button[aria-label="Run now: Linked routine"]')?.textContent).toBe("");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it("shows a filtered empty state when the enabled filter excludes all routines", async () => {
+    currentSearch = "statuses=paused";
+    routinesListMock.mockResolvedValue([createRoutine({ status: "active" })]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => { root.render(<QueryClientProvider client={client}><Routines /></QueryClientProvider>); await flush(); });
+      await vi.waitFor(() => expect(container.textContent).toContain("No routines match this view."));
+      expect(container.textContent).not.toContain("define the first recurring workflow");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
   it("links View all tasks to the routine-filtered task list", async () => {
     routinesListMock.mockResolvedValue([]);
     const root = createRoot(container);
@@ -1260,6 +1358,7 @@ describe("Routines page", () => {
       root.render(<QueryClientProvider client={queryClient}><Routines /></QueryClientProvider>);
       await flush();
     });
+    await vi.waitFor(() => expect(container.textContent).toContain("View all tasks"));
     const link = Array.from(container.querySelectorAll("a")).find(anchor => anchor.textContent === "View all tasks");
     expect(link?.getAttribute("href")).toBe("/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc");
     expect(container.textContent).not.toContain("View all runs");

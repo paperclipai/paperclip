@@ -65,10 +65,11 @@ describe("adapter model listing", () => {
     expect(models).toEqual(claudeFallbackModels);
     expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
     // Newest release of the most capable family leads the list (#14877).
-    expect(models[0]?.id).toBe("claude-fable-5-1");
+    expect(models[0]?.id).toBe("claude-fable-5-2");
     expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-opus-4-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(true);
+    expect(models.some((model) => model.id === "claude-fable-5-2")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
@@ -101,7 +102,7 @@ describe("adapter model listing", () => {
     expect(first.some((model) => model.id === "claude-sonnet-5-5")).toBe(true);
     // Discovered models take the curated order too: the API's order is not shown as-is.
     const firstIds = first.map((model) => model.id);
-    expect(firstIds[0]).toBe("claude-fable-5-1");
+    expect(firstIds[0]).toBe("claude-fable-5-2");
     expect(firstIds.indexOf("claude-opus-5-5")).toBeLessThan(firstIds.indexOf("claude-opus-4-8"));
     expect(firstIds.indexOf("claude-opus-4-8")).toBeLessThan(firstIds.indexOf("claude-opus-4-8-20260529"));
   });
@@ -143,6 +144,7 @@ describe("adapter model listing", () => {
   });
 
   it.each([
+    ["claude-fable-5-2", "Claude Fable 5.2"],
     ["claude-fable-5-1", "Claude Fable 5.1"],
     ["claude-opus-5-5", "Claude Opus 5.5"],
     ["claude-sonnet-5-5", "Claude Sonnet 5.5"],
@@ -163,14 +165,14 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
   });
 
-  it("exposes the Bedrock-native Fable 5.1 ID (never the direct ID) in Bedrock mode", async () => {
+  it("exposes Bedrock-native Fable IDs (never the direct IDs) in Bedrock mode", async () => {
     process.env.CLAUDE_CODE_USE_BEDROCK = "1";
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const models = await listAdapterModels("claude_local");
 
-    // Fable 5.1 leads here too, using its documented dateless Bedrock ID.
-    expect(models[0]?.id).toBe("us.anthropic.claude-fable-5-1");
+    // Fable 5.2 leads here too; Anthropic documents only its global inference profile ID.
+    expect(models[0]?.id).toBe("global.anthropic.claude-fable-5-2");
     expect(models.map((model) => model.id)).toEqual(expect.arrayContaining([
       "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5-5",
       "us.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-4-7",
@@ -178,7 +180,7 @@ describe("adapter model listing", () => {
     ]));
     expect(models.some((model) => model.id === "claude-sonnet-5-5")).toBe(false);
     expect(models.map((model) => model.id)).not.toEqual(expect.arrayContaining(["us.anthropic.claude-opus-4-8-v1"]));
-    expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(false);
+    expect(models.some((model) => model.id === "claude-fable-5-1" || model.id === "claude-fable-5-2")).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

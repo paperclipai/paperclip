@@ -2434,6 +2434,42 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
   });
 
+  it("explains a full sandbox disk without exposing its error code", async () => {
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "blocked", onRetryFailedRun: vi.fn(),
+      linkedRuns: [{
+        runId: "native-disk-full", runtimeMode: "native", status: "failed", errorCode: "sandbox_disk_full",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
+      }],
+    });
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Disk full");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    const details = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]');
+    expect(details?.textContent).toContain("Ask the agent to use less disk space");
+    expect(details?.textContent).not.toContain("sandbox_disk_full");
+  });
+
+  it("explains a full sandbox disk beside the task's interruption without a second Retry", async () => {
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "blocked", onRetryFailedRun: vi.fn(),
+      interruption: { intentId: null, responsibility: "system", state: "failed", nextRetryAt: null, canRetry: true,
+        userAction: null, sourceRunIds: ["native-disk-full"], observedRunId: "native-disk-full" },
+      linkedRuns: [{
+        runId: "native-disk-full", runtimeMode: "native", status: "failed", errorCode: "sandbox_disk_full",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
+      }],
+    });
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Disk full");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    expect(container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')?.textContent)
+      .toContain("Ask the agent to use less disk space");
+    expect(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')).toBeNull();
+  });
+
   it("explains a native provider usage limit without exposing its error code", async () => {
     const onRetryFailedRun = vi.fn();
     renderThread({

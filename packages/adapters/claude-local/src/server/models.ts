@@ -14,6 +14,8 @@ const ANTHROPIC_API_VERSION = "2023-06-01";
  * then older releases grouped by family.
  */
 const BEDROCK_MODELS: AdapterModel[] = [
+  // Anthropic documents Fable 5.2 on Bedrock only by its global inference profile ID.
+  { id: "global.anthropic.claude-fable-5-2", label: "Bedrock Fable 5.2" },
   // Fable 5.1's documented geo inference ID carries no -v1 suffix, unlike earlier entries.
   { id: "us.anthropic.claude-fable-5-1", label: "Bedrock Fable 5.1" },
   { id: "us.anthropic.claude-opus-5-5", label: "Bedrock Opus 5.5" },

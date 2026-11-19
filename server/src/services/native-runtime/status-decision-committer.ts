@@ -1,3 +1,4 @@
+import { NativePullRequestCompletionError, verifyNativePullRequestCompletion } from "./native-pull-request-completion.js";
 import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
 import { toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
@@ -1727,6 +1728,14 @@ export async function commitNativeStatusDecision(input: {
       || reasonCode === NATIVE_AGENT_BLOCKER_HANDOFF_CODE) && !input.requireProviderFailureOwner) {
     throw new Error("native_provider_failure_owner_required");
   }
+  let verifiedMergedPullRequests: ReadonlySet<string> | undefined;
+  if (input.decision.statusAction === "done") {
+    try { verifiedMergedPullRequests = await verifyNativePullRequestCompletion(input.db, input); }
+    catch (error) {
+      if (error instanceof NativePullRequestCompletionError) throw new NativeStatusRaceError();
+      throw error;
+    }
+  }
   const publications: ActivityPublication[] = [];
   const terminalRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
   const committed = await input.db.transaction(async (tx) => {
@@ -1901,7 +1910,7 @@ export async function commitNativeStatusDecision(input: {
           : [issue.title, issue.description].filter(Boolean).join("\n");
         await validateNativeDeliverableEvidence(tx as unknown as Db, { companyId: input.companyId, issueId: input.issueId,
           runId: input.runId, objective, semanticToolReceipts: saved.receipts?.semanticToolReceipts, lockSources: true,
-          authoritativeDone: true }, record(saved.envelope).result);
+          authoritativeDone: true, verifiedMergedPullRequests }, record(saved.envelope).result);
       } catch (error) {
         if (error instanceof NativeDeliverableEvidenceError || record(error).code === "55P03" ||
             record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
