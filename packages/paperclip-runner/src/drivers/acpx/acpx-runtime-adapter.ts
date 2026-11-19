@@ -198,9 +198,6 @@ export interface QualifiedAcpxRuntimeDependencies {
   platform?: NodeJS.Platform;
 }
 
-/** @deprecated Use QualifiedAcpxRuntimeDependencies for provider-neutral ACPX runtimes. */
-export type CodexAcpxRuntimeDependencies = QualifiedAcpxRuntimeDependencies;
-
 /**
  * Adapt the pinned ACPX library to Paperclip's admitted runtime port. The
  * executable, launch environment, and spawn cwd stay host-owned and are never
@@ -431,6 +428,16 @@ export async function openQualifiedAcpxRuntime(
     ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
     : null;
   const contextAdmission = instructionAdmission ?? antigravityAdmission;
+  const mcpBearerVariable = (index: number): string | undefined =>
+    options.profile.agent === "claude" ? `PAPERCLIP_ACPX_MCP_BEARER_${index}` : undefined;
+  const mcpBearerEnvironment = Object.fromEntries(options.mcpServers.flatMap((server, index) => {
+    const name = mcpBearerVariable(index);
+    return name && "url" in server ? [[name, server.bearerToken]] : [];
+  }));
+  const mcpBearerCredential = (index: number, bearerToken: string): string => {
+    const name = mcpBearerVariable(index);
+    return name ? `\${${name}}` : bearerToken;
+  };
   // The agent's complete launch environment. ACPX's own environment handling
   // (credential checks, ACP terminals) keeps reading this process's environment.
   const agentEnvironment = (): Record<string, string> => ({
@@ -447,6 +454,7 @@ export async function openQualifiedAcpxRuntime(
           PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
             (server): server is Extract<typeof server, { url: string }> => "url" in server && server.runnerOwned && server.name === "paperclip",
           )?.url ?? "",
+          ...mcpBearerEnvironment,
         }
       : {}),
   });
@@ -518,7 +526,7 @@ export async function openQualifiedAcpxRuntime(
         ? [...options.permissionPolicy.escalate]
         : undefined,
     },
-    mcpServers: options.mcpServers.map((server) => "command" in server ? {
+    mcpServers: options.mcpServers.map((server, index) => "command" in server ? {
       name: server.name, command: server.command, args: server.args,
       env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
     } : ({
@@ -526,7 +534,7 @@ export async function openQualifiedAcpxRuntime(
       name: server.name,
       url: server.url,
       headers: [
-        { name: "Authorization", value: `Bearer ${server.bearerToken}` },
+        { name: "Authorization", value: `Bearer ${mcpBearerCredential(index, server.bearerToken)}` },
       ],
     })),
     onPermissionRequest: async (request, context) => {
@@ -865,9 +873,6 @@ export async function openQualifiedAcpxRuntime(
     throw error;
   }
 }
-
-/** Backward-compatible name retained for existing Codex-only consumers. */
-export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
 
 function classifySessionEnsureFailure(error: unknown, providerFailure: ProviderFailure | null): Error {
   const failure = error instanceof Error ? error

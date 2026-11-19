@@ -386,6 +386,68 @@ fn receiver_admits_normal_tool_event_and_resolves_only_correlated_call_once() {
 }
 
 #[test]
+fn receiver_rejects_only_the_tool_call_that_overflows_the_result_reserve() {
+    let root = std::env::temp_dir().join(format!("acpx-burst-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let journal = root.join("commands.jsonl");
+    let mut fixture = config("admission-tool-burst");
+    fixture
+        .transport
+        .args
+        .extend(["--journal".to_owned(), journal.to_str().unwrap().to_owned()]);
+    let mut session = AcpxProviderSession::start(&fixture).unwrap();
+    session
+        .start_turn("turn-admission", "Read the issues", &std::env::temp_dir())
+        .unwrap();
+    let mut exposed = 0;
+    while (0..10).any(|index| {
+        session
+            .state()
+            .pending_tool(&format!("call-burst-{index}"))
+            .is_none()
+    }) || exposed < 10
+    {
+        exposed += session
+            .poll_event(Duration::from_secs(1))
+            .unwrap()
+            .map_or(0, |events| events.len());
+    }
+    for _ in 0..3 {
+        let _ = session.poll_event(Duration::from_millis(100)).unwrap();
+    }
+    assert_eq!(exposed, 10);
+    assert!(session.state().pending_tool("call-burst-10").is_none());
+    session
+        .deliver_tool_result(&paperclip_runner_core::provider_bridge::ToolResult {
+            call_id: "call-burst-0".to_owned(),
+            operation_id: "issues.read".to_owned(),
+            result: json!({"id":"issue-0"}),
+            is_error: false,
+        })
+        .unwrap();
+    session.shutdown("burst test complete").unwrap();
+    let rows: Vec<serde_json::Value> = std::fs::read_to_string(&journal)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let resolutions: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row.get("request"))
+        .filter(|request| request["command"] == "tool.resolve")
+        .map(|request| request["params"].clone())
+        .collect();
+    assert_eq!(resolutions.len(), 2);
+    assert_eq!(resolutions[0]["callId"], "call-burst-10");
+    assert!(resolutions[0]["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Too many tool calls are in flight"));
+    assert_eq!(resolutions[1]["callId"], "call-burst-0");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pi_thinking_effective_identity_is_admitted_before_any_turn() {
     use paperclip_runner_core::acpx_provider_session::{
         AcpxProviderRuntimePolicy, PiThinkingLevel,

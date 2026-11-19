@@ -249,7 +249,10 @@ jobs:
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/cloud-readiness-runner-loss.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs
+        run: |
+          tests=(./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/cloud-readiness-runner-loss.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs)
+          if [[ -f ./scripts/verify-canary-provenance.test.mjs ]]; then tests+=(./scripts/verify-canary-provenance.test.mjs); fi
+          node "$CI_NODE_TEST" "${tests[@]}"
 
       - name: Test merge-queue workflow wiring
         # This workflow loads from master and tests the caller's checkout. A
@@ -753,6 +756,7 @@ jobs:
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Runner support suite
+      PAPERCLIP_CI_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
     # The paid Runner workflows depend on this suite: workflow security
     # policy, evidence oracles, cost receipts and controller recovery. It

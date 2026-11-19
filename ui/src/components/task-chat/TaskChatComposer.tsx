@@ -322,7 +322,7 @@ function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean
   if (mobile) {
     if (mode === "planning") return `Plan with ${agentName}…`;
     if (mode === "ask") return `Ask ${agentName}…`;
-    return `Message ${agentName}…`;
+    return `Work with ${agentName}`;
   }
   switch (mode) {
     case "planning":
@@ -330,7 +330,7 @@ function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean
     case "ask":
       return `Ask ${agentName} a question — read-only, nothing runs…`;
     default:
-      return `Message ${agentName} — describe what you want done…`;
+      return `Work with ${agentName}`;
   }
 }
 

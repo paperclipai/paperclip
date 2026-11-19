@@ -59,6 +59,44 @@ describeEmbeddedPostgres("issue creation visibility", () => {
     await request(app).get(`/api/companies/${other.companyId}/issues?includeAgentCreatedTasks=false`).expect(403);
   });
 
+  it.each(["slack", "speko"] as const)("includes waiting %s descendants while preserving task read permissions", async (provider) => {
+    const { companyId, userId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Waiting descendants");
+    const other = await seedCompanyWithBoardAccess(ctx.db, "Other descendants");
+    const [agent] = await ctx.db.insert(agents).values({ companyId, name: "Worker", role: "engineer", adapterType: "process" }).returning();
+    const [application] = await ctx.db.insert(toolApplications).values({ companyId, name: provider, type: "chat" }).returning();
+    const [connection] = await ctx.db.insert(toolConnections).values({ companyId, applicationId: application!.id, name: provider, uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
+    const endpointId = randomUUID();
+    await ctx.db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId: connection!.id, provider, publicId: endpointId, assignedAgentId: agent!.id, status: "active" });
+    const rootId = randomUUID();
+    const childId = randomUUID();
+    const nestedId = randomUUID();
+    const privateId = randomUUID();
+    await ctx.db.insert(issues).values({ id: rootId, companyId, title: "Parent task", status: "todo", createdByUserId: userId });
+    await ctx.db.insert(issues).values([childId, nestedId, privateId].map(id => ({
+      id, companyId, title: `Waiting ${provider} subtask`, status: "in_review",
+      parentId: id === nestedId ? childId : rootId,
+      assigneeAgentId: agent!.id, originKind: "chat_channel", originId: endpointId,
+      visibility: id === privateId ? "private" : "open",
+      createdByUserId: id === privateId ? other.userId : userId,
+      responsibleUserId: id === privateId ? other.userId : userId,
+    })));
+    await ctx.db.insert(chatConversations).values([childId, nestedId, privateId].map(issueId => ({
+      companyId, endpointId, issueId, externalConversationId: randomUUID(), externalThreadId: randomUUID(), externalLabel: "Waiting subtask", state: "waiting",
+    })));
+    const app = routeApp(ctx.db, actor, issueRoutes);
+    const path = `/api/companies/${companyId}/issues`;
+    const ambient = await request(app).get(path).expect(200);
+    expect(ambient.body.map((task: { id: string }) => task.id)).toEqual([rootId]);
+    for (const view of ["", "&view=compact"]) {
+      const response = await request(app).get(`${path}?descendantOf=${rootId}${view}`).expect(200);
+      expect(response.body.map((task: { id: string }) => task.id).sort()).toEqual([childId, nestedId].sort());
+      expect(response.body.every((task: { externalConversationState: string }) => task.externalConversationState === "waiting")).toBe(true);
+    }
+    const restricted = await issueService(ctx.db).list(companyId, { descendantOf: rootId, readCondition: sql<boolean>`${issues.id} = ${childId}` });
+    expect(restricted.map(task => task.id)).toEqual([childId]);
+    await request(app).get(`/api/companies/${other.companyId}/issues?descendantOf=${rootId}`).expect(403);
+  });
+
   it("preserves participation but excludes routine ownership and read-only activity", async () => {
     const { companyId, userId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Inbox participation");
     const ids = Object.fromEntries(["scheduled", "commented", "assigned", "manual", "read", "touched", "channelScheduled", "channelCommented", "channelManual"].map((name) => [name, randomUUID()]));

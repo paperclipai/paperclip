@@ -11,6 +11,9 @@ import { findNativeSessionResumeRun, isNativeSessionId, isUnusedNativeSessionBoo
 import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT } from "./native-recovery-wait-codes.js";
+
+export { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT };
 
 export const NATIVE_CONTROLLER_RECOVERY_MAX_BYTES = 4 * 1024;
 
@@ -68,7 +71,6 @@ export type NativeControllerRecoveryOutcome =
   | { kind: "missing_evidence" | "unsupported" | "dependency_unavailable"; reason: string; cause?: unknown }
   | { kind: "no_prior_execution" };
 
-export const NATIVE_RETAINED_OWNER_WAIT = "native_controller_recovery_waiting_for_owner";
 
 export type NativeRetainedOwnerWait = { runId: string; controllerBootId: string };
 
@@ -138,7 +140,6 @@ export async function deferNativeControllerRecovery(db: Db, input: {
   });
 }
 
-export const NATIVE_AGENT_DIRECTORY_BUSY_WAIT = "agent_directory_operation_busy";
 
 export async function deferNativeRunForBusyAgentDirectory(db: Db, input: {
   companyId: string; runId: string; leaseOwner?: string; retryAt: Date; maxDeferrals: number;

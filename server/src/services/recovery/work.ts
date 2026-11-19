@@ -19,6 +19,11 @@ type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: numb
 const PAGE_SIZE = 100;
 /** How long past its deadline a saved deferral of a task that left its queue is kept. */
 const STALE_DEFERRAL_MS = 10 * 60_000;
+/** How long past its saved deadline a task that keeps deferring leaves its row as is.
+ * A boot re-checks every task with a row whatever its deadline, so only the
+ * stale prune reads it; refreshing well before STALE_DEFERRAL_MS keeps the
+ * row of a task that is still deferring from ever looking stale. */
+const DEFERRAL_REFRESH_MS = STALE_DEFERRAL_MS / 2;
 
 export const resolvedDependencyCandidate = sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
       and r.related_issue_id = ${issues.id} and r.type = 'blocks' offset 0)
@@ -181,7 +186,9 @@ export function registerIssueRecoveryWork(
       async deferral(id: string, companyId: string, dueAt: number | null): Promise<boolean> {
         const known = deferred.get(id);
         if (dueAt !== null) {
-          if (known === dueAt) return true;
+          // A task that defers again and again (now + 30 s while a run lives)
+          // keeps its saved row until that row's deadline is well past.
+          if (known !== undefined && (known === dueAt || Date.now() < known + DEFERRAL_REFRESH_MS)) return true;
           deferred.delete(id);
           const saved = await db.execute(sql`insert into issue_recovery_deferrals (queue, issue_id, company_id, due_at)
             values (${queue}, ${id}::uuid, ${companyId}::uuid, ${at(dueAt)})
