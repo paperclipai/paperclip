@@ -1,3 +1,4 @@
+import { NATIVE_RESTART_RECOVERY_FAILED } from "./native-runner-recovery-contract.js";
 import { carriesInheritedRunnerIdentity } from "./native-inherited-runner-retry.js";
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { nativeRunHandedOffTask } from "./native-human-self-handoff.js";
@@ -71,8 +72,7 @@ export type NativeControllerIdentity = {
 
 export type NativeRestartKind = "hot" | "hard" | "graceful";
 
-/** A recovery claim for one run failed unexpectedly and was deferred. */
-export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
+export { NATIVE_RESTART_RECOVERY_FAILED } from "./native-runner-recovery-contract.js";
 
 export const NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT = 3;
 

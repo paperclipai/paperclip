@@ -211,6 +211,15 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("recognizes the five hour limit and its Amsterdam reset time", () => {
+    const now = new Date("2026-11-06T07:00:00.000Z");
+    const errorMessage = "You've hit your 5 hour limit · resets 9:30am (Europe/Amsterdam)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe("2026-11-06T08:30:00.000Z");
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({

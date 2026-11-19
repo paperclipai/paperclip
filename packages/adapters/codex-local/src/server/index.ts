@@ -1,4 +1,5 @@
 export { execute, ensureCodexSkillsInjected } from "./execute.js";
+export { buildCodexExecArgs } from "./codex-args.js";
 export {
   resolveCodexAuthPrecedence,
   CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,

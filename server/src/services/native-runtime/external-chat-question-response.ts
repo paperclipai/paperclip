@@ -31,8 +31,8 @@ import { nativeSha256 } from "./canonical.js";
 import { EXTERNAL_CHAT_ANSWER_ADMISSION_KEYS, resolveQuestionResponseRetryAdmission } from "./external-chat-question-response-retry.js";
 import { INTERACTION_CONTINUATION_INFRA_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 
-export const EXTERNAL_CHAT_QUESTION_RESPONSE_KEY =
-  "paperclipExternalChatQuestionResponse";
+import { EXTERNAL_CHAT_QUESTION_RESPONSE_KEY } from "./external-chat-question-response-key.js";
+export { EXTERNAL_CHAT_QUESTION_RESPONSE_KEY };
 type Binding = {
   companyId: string;
   issueId: string;

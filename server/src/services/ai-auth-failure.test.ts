@@ -3,10 +3,10 @@ import { aiConnectionMetadataSchema, aiRoutingHarness, isAiConnectionCompatible 
 import { aiBindingForAuthRecovery, isAiAuthenticationFailure } from "./ai-auth-failure.js";
 
 describe("AI authentication failure recovery", () => {
-  it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "grok_auth_required", "adapter_auth_missing", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"])("recognizes %s", (code) => {
+  it.each(["native_provider_auth_failed", "acpx_auth_required", "claude_auth_required", "codex_auth_required", "grok_auth_required", "adapter_auth_missing", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"])("recognizes %s", (code) => {
     expect(isAiAuthenticationFailure(code)).toBe(true);
   });
-  it.each(["github_auth_required", "native_adopted_runner_authentication_timeout", "rate_limit", "adapter_failed", "permission_denied", undefined])("does not treat %s as model authentication", (code) => {
+  it.each(["native_provider_usage_limit", "native_provider_runner_failed", "github_auth_required", "native_adopted_runner_authentication_timeout", "rate_limit", "adapter_failed", "permission_denied", undefined])("does not treat %s as model authentication", (code) => {
     expect(isAiAuthenticationFailure(code)).toBe(false);
   });
   it.each([

@@ -655,6 +655,16 @@ describe("Cursor mode native execution projection", () => {
     expect(result.executionMode).toBe("default");
     expect(result.task.workMode).toBe("standard");
   });
+  it("emits a run-bound capability only when explicitly supplied", () => {
+    const capability = { schema: "paperclip.native-quota-failover.v1" as const,
+      companyId: "company-1", agentId: "agent-1", runId: "run-1", issueId: "issue-1",
+      poolId: "pool-1", taskKey: "issue-1", memberId: "member-1" };
+    const input = buildNativeExecutionInput({ ...fixture(), builtinQuotaPoolCapability: capability });
+    expect(input.schema).toBe("paperclip.native-execution-input.v11");
+    expect(input).toMatchObject({ builtinQuotaPoolCapability: capability });
+    expect(() => buildNativeExecutionInput({ ...fixture(), builtinQuotaPoolCapability: { ...capability, runId: "other" } })).toThrow();
+    expect(buildNativeExecutionInput(fixture()).schema).toBe("paperclip.native-execution-input.v5");
+  });
   it("rejects a Cursor mode attached to another harness", () => {
     expect(() => buildNativeExecutionInput({ ...fixture("plan"), acpxAgent: "copilot" })).toThrow("only for Cursor");
   });

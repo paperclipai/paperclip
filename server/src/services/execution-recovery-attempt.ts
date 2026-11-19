@@ -2,7 +2,7 @@ import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON } from "./environment-provider-wait.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
-import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
+import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "@paperclipai/shared";
 
 /**
  * A preparation that a restart interrupted before any provider work started
@@ -25,8 +25,8 @@ export const AGENT_DIRECTORY_WAIT_RETRY_REASON = AGENT_DIRECTORY_BUSY_RETRY_REAS
  * long task survives several deploys a day.
  */
 export const SERVER_RESTART_RETRY_REASON = "server_restart";
-export const SERVER_RESTART_RETRY_MAX_ATTEMPTS = 6;
-export const SERVER_RESTART_RETRY_WINDOW_MS = 60 * 60_000;
+export { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "./execution-recovery-limits.js";
+import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "./execution-recovery-limits.js";
 
 /** Retry lanes that keep their own counter and never spend failures. */
 const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([

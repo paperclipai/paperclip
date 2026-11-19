@@ -60,7 +60,7 @@ function overage(input: Partial<AiConnectionUsageOverage>): AiConnectionUsageOve
 }
 
 class ProbeFailure extends Error {
-  constructor(readonly code: NonNullable<AiConnectionUsage["errorCode"]>) { super(code); }
+  constructor(readonly code: NonNullable<AiConnectionUsage["errorCode"]>, readonly providerStatus?: number) { super(code); }
 }
 
 export async function readUsage(url: string, headers: Record<string, string>, request: typeof fetch): Promise<ObjectValue> {
@@ -72,7 +72,7 @@ export async function readUsage(url: string, headers: Record<string, string>, re
     await response.body?.cancel();
     throw new ProbeFailure(response.status === 401 ? "authentication_required"
       : response.status === 403 ? "permission_denied"
-      : response.status === 429 ? "rate_limited" : "provider_unavailable");
+      : response.status === 429 ? "rate_limited" : "provider_unavailable", response.status);
   }
   // Provider errors and raw responses must never be returned to the caller.
   const reader = response.body?.getReader();
@@ -342,6 +342,7 @@ export async function probeAiConnectionUsage(
     return { ...base, ...observation, status: "ok", checkedAt: new Date().toISOString() };
   } catch (error) {
     const errorCode = error instanceof ProbeFailure ? error.code : "provider_unavailable";
-    return { ...base, status: errorCode === "authentication_required" || errorCode === "permission_denied" ? "unavailable" : "error", errorCode, message: messages[errorCode] };
+    return { ...base, status: errorCode === "authentication_required" || errorCode === "permission_denied" ? "unavailable" : "error", errorCode, message: messages[errorCode],
+      ...(error instanceof ProbeFailure && error.providerStatus !== undefined ? { providerStatus: error.providerStatus } : {}) };
   }
 }

@@ -7,6 +7,7 @@ import { readTranscriptRequest } from "../transcript/read-transcript-request";
 import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
 import { liveRunEvent, mergeRunEvents } from "../../lib/live-run-event";
 import { mergeRunLogChunks, readChunkSeq } from "../../lib/run-log-chunks";
+import { runAdapterType } from "../../lib/run-adapter";
 import { usePageVisibility } from "../../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -42,7 +43,8 @@ import {
 } from "./RunDetails";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
-export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType: configuredAdapterType }: { run: HeartbeatRun; adapterType: string }) {
+  const adapterType = runAdapterType(run, configuredAdapterType);
   const { visible } = usePageVisibility();
   const connection = useConnectivityStore();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);

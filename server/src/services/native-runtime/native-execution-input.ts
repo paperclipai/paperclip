@@ -19,6 +19,7 @@ import type {
   NativeExecutionInputV8,
   NativeExecutionInputV9,
   NativeExecutionInputV10,
+  NativeExecutionInputV11,
   MuseBindingSnapshot,
   DotBindingSnapshot,
   NativeExecutionInputV7,
@@ -49,6 +50,7 @@ const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
 export interface BuildNativeExecutionInput {
   companyId: string;
   runId: string;
+  builtinQuotaPoolCapability?: NativeExecutionInputV11["builtinQuotaPoolCapability"];
   issue: {
     id: string;
     identifier: string | null;
@@ -142,9 +144,9 @@ export interface BuildNativeExecutionInput {
 }
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "muse"; museBinding: MuseBindingSnapshot }): NativeExecutionInputV8;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "openai_dot" | "grok_bot"; dotBinding: DotBindingSnapshot }): NativeExecutionInputV6;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9 | NativeExecutionInputV10;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 {
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11 {
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask" && input.issue.workMode !== "skill_test") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, ask, or skill_test");
   }
@@ -258,10 +260,11 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   const workflowCase = input.caseContext && previousCaseProjection
     ? projectCaseContinuation(input.caseContext, previousCaseProjection) : null;
   const prepared = {
-    schema: input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined ? "paperclip.native-execution-input.v10"
+    schema: input.builtinQuotaPoolCapability ? "paperclip.native-execution-input.v11" : input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined ? "paperclip.native-execution-input.v10"
       : input.claudeEffort !== undefined ? "paperclip.native-execution-input.v9"
       : input.homeMode === "preconfigured" ? "paperclip.native-execution-input.v7" : "paperclip.native-execution-input.v5",
-    ...(input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined || input.claudeEffort !== undefined || input.homeMode === "preconfigured" ? { homeMode: input.homeMode ?? "isolated" } : {}),
+    ...(input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined || input.claudeEffort !== undefined || input.homeMode === "preconfigured" || input.builtinQuotaPoolCapability ? { homeMode: input.homeMode ?? "isolated" } : {}),
+    ...(input.builtinQuotaPoolCapability ? { builtinQuotaPoolCapability: input.builtinQuotaPoolCapability } : {}),
     ...((input.initialCommunicationGuidance || input.freshSessionHandoff) ? {
       initialCommunicationGuidance: [input.initialCommunicationGuidance, input.freshSessionHandoff].filter(Boolean).join("\n\n"),
     } : {}),
@@ -397,7 +400,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     schema: "paperclip.native-execution-input.v6", provider: { kind: input.provider, model: null, binding: input.dotBinding },
     workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
     session: { ...prepared.session, driverKind: input.provider === "grok_bot" ? "grok_bot_mcp" : "openai_dot_mcp", lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } }
-  } : prepared) as NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
+  } : prepared) as NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11;
 }
 
 

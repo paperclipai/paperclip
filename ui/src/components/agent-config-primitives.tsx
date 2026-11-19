@@ -87,7 +87,7 @@ export function HintIcon({ text }: { text: string }) {
   );
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode; configSection?: import("../adapters/types").AdapterConfigSection }) {
+export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode; configKey?: string; configSection?: import("../adapters/types").AdapterConfigSection }) {
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
@@ -111,6 +111,8 @@ export function ToggleField({
   checked: boolean;
   onChange: (v: boolean) => void;
   toggleTestId?: string;
+  configKey?: string;
+  configSection?: import("../adapters/types").AdapterConfigSection;
 }) {
   return (
     <div className="flex items-center justify-between">

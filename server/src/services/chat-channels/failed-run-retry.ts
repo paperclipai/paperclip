@@ -251,6 +251,10 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         "effectiveTimeoutSec", "timeoutConfigured", "timeoutFired", "timeoutSource", "failureCause"].includes(key));
     const diagnostic = failedRetry ? retryDiagnostic : workspacePreparation ? run.error : "reviewed_chat_execution_binding_not_authorized";
     const dispatchOnlyProfile = failedRetry || workspacePreparation;
+    const safeDispatchOnlyProfile = [
+      { adapterDispatch: { adapterType: "paperclip_runner" } },
+      { adapterDispatch: { adapterType: "paperclip_runner", configuredAdapterType: "paperclip_runner" } },
+    ].some(profile => JSON.stringify(run.runnerProfileJson) === JSON.stringify(profile));
     if (
       adapterExecutionControls.has(run.id) ||
       (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) ||
@@ -258,7 +262,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       (!failedRetry && !workspacePreparation && run.errorCode !== "setup_failed") ||
       run.status !== "failed" || !run.finishedAt ||
       (failedRetry && run.sessionIdBefore !== null) ||
-      (dispatchOnlyProfile && JSON.stringify(run.runnerProfileJson) !== JSON.stringify({ adapterDispatch: { adapterType: "paperclip_runner" } })) ||
+      (dispatchOnlyProfile && !safeDispatchOnlyProfile) ||
       !diagnostic || run.error !== diagnostic ||
       (workspacePreparation && run.usageJson !== null &&
         Object.keys(run.usageJson).some(key => key !== "ledgerScope")) ||

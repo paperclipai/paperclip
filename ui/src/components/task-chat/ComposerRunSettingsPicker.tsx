@@ -1,3 +1,4 @@
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
@@ -54,9 +55,10 @@ const HARNESS_LABELS: Record<string, string> = {
 
 function harnessLabel(agent: Agent | undefined): string {
   if (!agent) return "Choose an agent";
+  if (agent.runtimeConfig?.harnessPool) return "Pool";
   const harness = HARNESS_LABELS[agentHarnessType(agent.adapterType, agent.adapterConfig)] ?? agent.adapterType;
   const provider = composerCatalogProvider(agent);
-  const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
+  const binding = aiRuntimeConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent?.runtimeConfig)).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
   return provider === "openrouter" ? `${harness} · OpenRouter` : harness;
 }
@@ -115,7 +117,7 @@ export function ComposerRunSettingsPicker({
   useEffect(() => {
     if (isMuseRunner && settings !== null) onSettingsChange(null);
   }, [isMuseRunner, settings, onSettingsChange]);
-  const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
+  const binding = aiRuntimeConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent?.runtimeConfig)).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
   const nativeCatalog = nativeTaskModelCatalogOptions(agent);
   const acpxAgent = agent?.adapterType === "paperclip_runner" && provider === "acpx" && typeof agent.adapterConfig.acpxAgent === "string" ? agent.adapterConfig.acpxAgent : undefined;

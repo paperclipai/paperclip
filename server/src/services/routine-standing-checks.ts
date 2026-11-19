@@ -33,7 +33,7 @@ const SILENT_AGENT_STATUSES = new Set(["paused", "terminated", "pending_approval
  */
 export function agentWakesOnItsOwn(agent: { adapterType: string; status: string; runtimeConfig: unknown }): boolean {
   if (SILENT_AGENT_STATUSES.has(agent.status)) return false;
-  if (!supportsUnscopedTimerHeartbeat(agent)) return false;
+  if (!supportsUnscopedTimerHeartbeat({ adapterType: agent.adapterType, runtimeConfig: parseObject(agent.runtimeConfig) })) return false;
   const heartbeat = parseObject(parseObject(agent.runtimeConfig).heartbeat);
   return asBoolean(heartbeat.enabled, false) && Math.max(0, asNumber(heartbeat.intervalSec, 0)) > 0;
 }

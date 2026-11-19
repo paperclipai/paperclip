@@ -1,6 +1,7 @@
 /** Automatic replacement requires positive evidence at every boundary. */
 export interface NativeReplacementEvidence {
   failedSession: boolean;
+  freshConversation?: boolean;
   failureMeaningKnown: boolean;
   predecessorFenced: boolean;
   providerStopped: boolean;
@@ -87,7 +88,7 @@ export function decideNativeReplacement(
     );
   const invocation = evidence.invocations.find(
     (row) =>
-      row.riskLevel !== "read" ||
+      (!evidence.freshConversation && row.riskLevel !== "read") ||
       row.status !== "succeeded" ||
       !row.completedAt ||
       !row.resultHash,

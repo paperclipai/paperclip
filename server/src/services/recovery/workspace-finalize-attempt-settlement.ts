@@ -1,3 +1,4 @@
+import { LOCAL_WORKSPACE_COMMAND_PHASES } from "../workspace-operation-phases.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
@@ -7,7 +8,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { isRemoteWorkspaceSaveInvocationLive, readSaveWork } from "../remote-workspaces.js";
 import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import { RETAINED_SOURCE_FALLBACK_CHECK_KEY } from "../workspace-recovery-fallback-discovery.js";
-import { LOCAL_WORKSPACE_COMMAND_PHASES, isOwnerStampedWorkspaceOperationLive } from "../workspace-operations.js";
+import { isOwnerStampedWorkspaceOperationLive } from "../workspace-operations.js";
 import type { InProgressRecord, SettleOutcome } from "./ownership-registry.js";
 import type { StorageService } from "../../storage/types.js";
 import { abortRetiredSnapshotUploads, retireAbandonedSaveLedgerRows } from "./remote-snapshot-ledger-settlement.js";

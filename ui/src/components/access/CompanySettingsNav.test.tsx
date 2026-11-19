@@ -138,6 +138,7 @@ describe("CompanySettingsNav", () => {
           { value: "instance-profile", label: "Profile" },
           { value: "instance-environments", label: "Environments" },
           { value: "connections", label: "Connections" },
+          { value: "pools", label: "Pools" },
           { value: "instance-access", label: "Access" },
           { value: "instance-experimental", label: "Experimental" },
           { value: "instance-plugins", label: "Plugins" },
@@ -180,6 +181,7 @@ describe("CompanySettingsNav", () => {
       "instance-profile",
       "instance-environments",
       "connections",
+      "pools",
       "instance-access",
       "instance-experimental",
       "instance-adapters",
@@ -229,4 +231,8 @@ describe("CompanySettingsNav", () => {
       root.unmount();
     });
   });
+});
+
+it("selects the dedicated Pools settings destination", () => {
+  expect(getCompanySettingsTab("/company/settings/pools")).toBe("pools");
 });

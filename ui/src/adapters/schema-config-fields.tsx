@@ -322,6 +322,7 @@ export function fieldMatchesVisibleWhen(
 
 export function SchemaConfigFields({
   section,
+  allowedConfigKeys,
   hideModel,
   adapterType,
   isCreate,
@@ -344,6 +345,7 @@ export function SchemaConfigFields({
     defaultsApplied.current.applied = true;
     const defaults: Record<string, unknown> = {};
     for (const field of schema.fields) {
+      if (allowedConfigKeys && !allowedConfigKeys.has(field.key)) continue;
       const def = getDefaultValue(field);
       if (def !== undefined && def !== "") {
         defaults[field.key] = def;
@@ -354,7 +356,7 @@ export function SchemaConfigFields({
         adapterSchemaValues: { ...defaults, ...values?.adapterSchemaValues },
       });
     }
-  }, [schema, adapterType, isCreate, set, values?.adapterSchemaValues, section]);
+  }, [schema, adapterType, isCreate, set, values?.adapterSchemaValues, section, allowedConfigKeys]);
 
   if (!schema || schema.fields.length === 0) return null;
 
@@ -410,6 +412,7 @@ export function SchemaConfigFields({
   return (
     <>
       {schema.fields
+        .filter(field => !allowedConfigKeys || allowedConfigKeys.has(field.key))
         .filter((field) => !hideModel || field.key !== "model")
         .filter((field) => !section || schemaFieldSection(field.key) === section)
         .filter((field) => !(field.type === "select" && /permissionMode/i.test(field.key) && (field.options?.length ?? 0) <= 1))

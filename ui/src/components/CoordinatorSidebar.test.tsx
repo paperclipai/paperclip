@@ -363,6 +363,22 @@ async function renderSidebar() {
 const decisionLink = () => container.querySelector('a[href="/decisions"]')!;
 
 describe("Coordinator Inbox badge", () => {
+  it("shows personal grouped actions rather than raw company signals", async () => {
+    fixture.summary.mockResolvedValue({ ...summary(Array.from({ length: 5 }, (_, index) => pending(String(index)))), deskBadgeCount: 2 });
+    await renderSidebar();
+    expect(decisionLink().querySelector('[data-slot="badge"]')?.textContent).toBe("2");
+  });
+  it("does not reuse another person's cached count after an account switch", async () => {
+    const key = coordinatorAttentionSummaryQueryKey("company", "reviewer");
+    client.setQueryDefaults(key, { staleTime: Infinity });
+    client.setQueryData(key, summary([pending("private") ]));
+    await renderSidebar();
+    expect(decisionLink().querySelector('[data-slot="badge"]')?.textContent).toBe("1");
+    fixture.userId = "other-user";
+    fixture.summary.mockResolvedValue(summary([]));
+    await renderSidebar();
+    expect(decisionLink().querySelector('[data-slot="badge"]')).toBeNull();
+  });
   it("counts outstanding decisions for you even when none arrived today", async () => {
     // Personal page filters and completed receipts are separate cache entries.
     client.setQueryData([...coordinatorAttentionQueryKey("company", "reviewer", "mine"), { search: "no match" }], feed([]));

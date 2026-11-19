@@ -1,3 +1,4 @@
+import { legacyRunHasUnsettledActions } from "./legacy-action-outcomes.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
@@ -37,7 +38,8 @@ import { recordLegacyShutdownBeforeDispatch, SERVER_SHUTDOWN_INTERRUPTED_CODE } 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const UNRESTORED_FILES_NEXT_ACTION = "The task's saved files could not be put back after the run stopped. "
   + "They are kept where they were and are not applied. Press Retry to continue from the last saved version in a new workspace.";
-export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
+import { LEGACY_RECOVERY_CAUSE } from "./legacy-execution-recovery-contract.js";
+export { LEGACY_RECOVERY_CAUSE };
 
 const unusedReconciliationContextKeys = [
   "executionContinuation", "paperclipWake", "paperclipWakeComment",
@@ -92,6 +94,8 @@ export function legacyExecutionNeedsReconciliation(
       || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
       || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  if ((run.errorCode === "provider_quota" || run.resultJson?.errorFamily === "provider_quota") &&
+      evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   // A server restart or replacement stopped this setup before dispatch: no
   // provider action happened, so there is nothing to reconcile. Its
   // continuation is bounded by the server-restart lane, not the failure count.
@@ -108,7 +112,9 @@ export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run
   if (await isInterruptedNativePreparation(db, run)) return false;
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
-      && !(await isPreDispatchExecutionWaitVerified(db, run)));
+      && !(await isPreDispatchExecutionWaitVerified(db, run))) ||
+    (run.runtimeMode !== "native" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+      && await legacyRunHasUnsettledActions(db, run));
 }
 
 async function findRecordedLegacyDecision(db: Db, run: Run, taskId: string, resultJson: Run["resultJson"]) {

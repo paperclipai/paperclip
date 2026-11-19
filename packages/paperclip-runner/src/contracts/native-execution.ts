@@ -9,11 +9,13 @@ import { isProviderMode } from "./provider-mode.js";
 import { createHash } from "node:crypto";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
+import { GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA } from "../drivers/acpx/generated-sidecar-contract.js";
 
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V1 = "paperclip.native-execution-input.v1" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V2 = "paperclip.native-execution-input.v2" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-input.v3" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V10 = "paperclip.native-execution-input.v10" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V11 = "paperclip.native-execution-input.v11" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V9 = "paperclip.native-execution-input.v9" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V8 = "paperclip.native-execution-input.v8" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V6 = "paperclip.native-execution-input.v6" as const;
@@ -281,13 +283,24 @@ export interface NativeExecutionInputV10 extends Omit<NativeExecutionInputV9, "s
   provider: NativeProviderConfigV10;
 }
 
+export interface BuiltinQuotaPoolCapability {
+  schema: typeof GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA;
+  companyId: string; agentId: string; runId: string; issueId: string;
+  poolId: string; taskKey: string; memberId: string;
+}
+export interface NativeExecutionInputV11 extends Omit<NativeExecutionInputV10, "schema" | "provider"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V11;
+  provider: Extract<NativeProviderConfigV10, { kind: "acpx" }>;
+  builtinQuotaPoolCapability: BuiltinQuotaPoolCapability;
+}
+
 export interface NativeExecutionInputV8 extends Omit<NativeExecutionInputV6, "schema" | "provider" | "session"> {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V8;
   provider: { kind: "muse"; model: null; binding: MuseBindingSnapshot; bridgeRevision: "muse-v1" };
   session: Omit<NativeExecutionInputV6["session"], "driverKind"> & { driverKind: "muse_external" };
 }
 
-export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
+export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11;
 
 /** The only task data that may enter provider-visible model input. */
 export interface NativeModelEnvelopeV1 {
@@ -431,7 +444,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   const input = record(value, "input");
   if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8) return parseMuseNativeExecutionInput(input);
   if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) return parseExternalNativeExecutionInput(input);
-  const isV10 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
+  const isV11 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V11;
+  const isV10 = isV11 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
   const isV9 = isV10 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9;
   const isV7 = isV9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7;
   const isV5 = isV7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
@@ -453,6 +467,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     ...(isV4 ? ["continuationPrompt", "initialCommunicationGuidance"] : []),
     ...(isV5 ? ["completionSources"] : []),
     ...(isV7 ? ["homeMode"] : []),
+    ...(isV11 ? ["builtinQuotaPoolCapability"] : []),
   ], "input");
   if (!isV2 && input.schema !== NATIVE_EXECUTION_INPUT_SCHEMA_V1) {
     throw new NativeExecutionInputError(
@@ -937,6 +952,23 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     provider: parsedProvider as NativeProviderConfigV4,
   };
   if (!isV5) return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V4 };
+  if (isV11) {
+    const capability = record(input.builtinQuotaPoolCapability, "input.builtinQuotaPoolCapability");
+    exactKeys(capability, ["schema", "companyId", "agentId", "runId", "issueId", "poolId", "taskKey", "memberId"], "input.builtinQuotaPoolCapability");
+    if (capability.schema !== GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA || parsedProvider.kind !== "acpx" ||
+        ["companyId", "agentId", "runId", "issueId"].some(key => capability[key] !== binding[key]))
+      throw new NativeExecutionInputError("builtin quota pool capability does not match the native run");
+    const builtinQuotaPoolCapability: BuiltinQuotaPoolCapability = {
+      schema: GENERATED_ACPX_QUOTA_CAPABILITY_SCHEMA,
+      companyId: text(capability.companyId, "capability.companyId"), agentId: text(capability.agentId, "capability.agentId"),
+      runId: text(capability.runId, "capability.runId"), issueId: text(capability.issueId, "capability.issueId"),
+      poolId: text(capability.poolId, "capability.poolId"), taskKey: text(capability.taskKey, "capability.taskKey"),
+      memberId: text(capability.memberId, "capability.memberId"),
+    };
+    return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V11, homeMode: input.homeMode as NativeHomeMode,
+      provider: parsedProvider as Extract<NativeProviderConfigV10, { kind: "acpx" }>, builtinQuotaPoolCapability,
+      ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}) };
+  }
   if (isV10) return {
     ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V10, homeMode: input.homeMode as NativeHomeMode,
     provider: parsedProvider as NativeProviderConfigV10,
@@ -1013,7 +1045,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       interactionResponses: structuredClone(input.interactionResponses),
     };
   }
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10) {
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V11) {
     const sourceBinding = input.completionSources;
     const references = sourceBinding?.contractRevision === input.completionContract.contract.revision
       && sourceBinding.promptSha256 === createHash("sha256").update(input.task.prompt).digest("hex")

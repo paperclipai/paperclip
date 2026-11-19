@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { CompanyConnections } from "./CompanyConnections";
+vi.mock("../components/ai-connections/HarnessPoolSettings", () => ({ HarnessPoolSettings: () => <section>Harness pools</section> }));
 const flags = vi.hoisted(() => ({ enabled: false, loaded: false }));
 const breadcrumbs = vi.hoisted(() => vi.fn());
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company", selectedCompany: { name: "Company" } }) }));

@@ -181,6 +181,7 @@
     "@agentclientprotocol/codex-acp": "1.6.2",
     "@agentclientprotocol/sdk": "1.9.0",
     "@openai/codex": "0.170.0",
+    "@openai/codex-native": "npm:@openai/codex@0.166.0",
     "acpx": "0.22.0",
     "ajv": "^8.20.0",
     "json-schema-to-ts": "^3.1.1",

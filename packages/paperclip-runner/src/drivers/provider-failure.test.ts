@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
-import { acpxProviderFailure, acpxTerminalResult } from "./acpx/provider-failure.js";
+import { acpxProviderFailure, acpxTerminalResult, acpxTypedTerminalSessionFailure } from "./acpx/provider-failure.js";
 import { codexProviderFailure } from "./codex/provider-failure.js";
 import { openCodeProviderFailure } from "./opencode/provider-failure.js";
 import { createProviderFailure, providerFailureFromError } from "./provider-failure.js";
@@ -77,6 +77,37 @@ describe("provider failure boundary", () => {
     // The thrown form of the same terminal is classified the same way.
     expect(acpxProviderFailure(new Error(generic), "claude", "turn", {}, false, { category: "limit", title: "Claude is temporarily rate limited." }))
       .toMatchObject({ category: "rate_limit", message: `${generic}\nClaude is temporarily rate limited.` });
+  });
+
+  it.each(["5-hour", "7-day"])("classifies a typed Claude %s allowance as quota in result and thrown paths", duration => {
+    const message = "ACP agent reported a terminal limit failure.";
+    const title = `You've hit your ${duration} limit · resets 5pm (Europe/Amsterdam)`;
+    const sessionFailure = { category: "limit", title };
+    const expected = { provider: "anthropic", phase: "turn", category: "quota_exhausted",
+      retryability: "requires_action", message: `${message}\n${title}` };
+    expect(acpxTerminalResult({ status: "failed", error: { code: "RUNTIME", message } }, "claude", {}, sessionFailure))
+      .toMatchObject({ error: { providerFailure: expected } });
+    expect(acpxProviderFailure(new Error(message), "claude", "turn", {}, false, sessionFailure)).toMatchObject(expected);
+    expect(acpxTerminalResult({ status: "failed", error: { code: "RUNTIME", message: title } }, "claude"))
+      .toMatchObject({ error: { providerFailure: { category: "unknown" } } });
+    expect(acpxProviderFailure(new Error(message), "claude", "turn", {}, false, { category: "request", title }))
+      .toMatchObject({ category: "unknown" });
+  });
+
+  it.each([
+    ["De gebruiksruimte van dit account is op.", [], "quota_exhausted"],
+    ["Probeer het later opnieuw.", ["retry"], "rate_limit"],
+    ["You've hit your context limit.", ["new_session"], "unknown"],
+    ["You've hit your budget limit.", ["new_session"], "unknown"],
+  ])("classifies Claude's typed limit by recovery actions: %s", (title, actions, category) => {
+    const metadata = { jetbrains: { air: { version: 1, sessionFailure: { severity: "error", category: "limit", title, actions } } } };
+    const failure = acpxTypedTerminalSessionFailure(metadata) ?? undefined;
+    const terminal = { status: "failed", error: { code: "RUNTIME", message: "ACP turn failed" } };
+    expect(acpxTerminalResult(terminal, "claude", {}, failure))
+      .toMatchObject({ error: { providerFailure: { category } } });
+    expect(acpxTerminalResult(terminal, "kimi", {}, acpxTypedTerminalSessionFailure({
+      jetbrains: { air: { version: 1, sessionFailure: { severity: "error", category: "limit", title: "Opaque provider message", actions } } },
+    }) ?? undefined)).toMatchObject({ error: { providerFailure: { category: "unknown" } } });
   });
 
   it("classifies Claude's rejection of the selected model as an unavailable model", () => {

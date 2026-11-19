@@ -21,6 +21,8 @@ export type AdapterConfigSection = "adapter" | "configuration" | "advanced" | "r
 export interface AdapterConfigFieldsProps {
   /** Render only fields belonging to this shared form section. Omit for all fields. */
   section?: AdapterConfigSection;
+  /** Constrain reusable runtime fields to this host-authorized configuration surface. */
+  allowedConfigKeys?: ReadonlySet<string>;
   /** The shared local-adapter model picker is already rendered by the form. */
   hideModel?: boolean;
   companyId?: string;
@@ -34,6 +36,7 @@ export interface AdapterConfigFieldsProps {
   set: ((patch: Partial<CreateConfigValues>) => void) | null;
   /** Edit mode: original adapterConfig from agent */
   config: Record<string, unknown>;
+  displayDefaults?: Record<string, unknown>;
   /** Edit mode: read effective value */
   eff: <T>(group: "adapterConfig", field: string, original: T) => T;
   /** Edit mode: mark field dirty */

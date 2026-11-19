@@ -1,4 +1,4 @@
-import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "../execution-recovery-attempt.js";
+import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "../execution-recovery-limits.js";
 
 /**
  * The assigned-work invariant. Every open task assigned to an agent (`todo`,

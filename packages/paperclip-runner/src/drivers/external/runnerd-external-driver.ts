@@ -206,6 +206,7 @@ class RunnerdExternalSession implements HarnessSession {
       expectedRunnerVersion: artifact.version, expectedRunnerDigest: artifact.digest,
       connectionLeaseTtlMs: Math.min(7_200_000, Math.max(60_000, o.execution.provider.binding.expiresAtUnixMs - Date.now())),
       onProtocolIntegrityError: error => { this.#failure = error; this.#wake(); },
+      onPersistenceError: error => { this.#failure = error; this.#wake(); },
       onCommittedEvent: async event => {
         if (event.eventType === "external_provider.dispatch_requested") await o.port.dispatch(event);
         if (event.eventType === "external_provider.operation_settled") await o.port.settle(event);

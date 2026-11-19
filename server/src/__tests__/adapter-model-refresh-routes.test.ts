@@ -31,6 +31,11 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 const mockListOpenCodeModels = vi.hoisted(() => vi.fn());
+const mockAiSelect = vi.hoisted(() => vi.fn());
+const mockAiCredential = vi.hoisted(() => vi.fn());
+const mockAiRefreshCredential = vi.hoisted(() => vi.fn());
+const mockAccountModels = vi.hoisted(() => vi.fn());
+const mockCanInstallShared = vi.hoisted(() => vi.fn(async () => true));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
   materializeManagedBundle: vi.fn(),
@@ -67,6 +72,12 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../routes/ai-connections.js", async importOriginal => ({
+    ...await importOriginal<typeof import("../routes/ai-connections.js")>(),
+    canInstallSharedAiConnectionForNewAgent: mockCanInstallShared,
+  }));
+  vi.doMock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ select: mockAiSelect, runtimeCredential: mockAiCredential, refreshQuotaCredential: mockAiRefreshCredential }) }));
+  vi.doMock("../services/account-model-catalog.js", () => ({ fetchAccountModels: mockAccountModels }));
   vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
     const actual = await vi.importActual<typeof import("@paperclipai/adapter-opencode-local/server")>("@paperclipai/adapter-opencode-local/server");
     return {
@@ -178,6 +189,38 @@ describe("adapter model refresh route", () => {
 
   afterEach(async () => {
     await unregisterTestAdapter(refreshableAdapterType);
+  });
+
+  it("uses the selected company account for the Codex catalog", async () => {
+    const binding = { mode: "shared", provider: "openai", method: "subscription", connectionId: "5c30af68-4094-48c3-b831-81d922b14570", grantId: "7b0dc1f1-f57c-4d65-9b7f-704bf4260abe" };
+    const selected = { connection: { config: { ai: null } }, attribution: { method: "subscription" } };
+    mockAiSelect.mockResolvedValue(selected);
+    mockAiCredential.mockResolvedValue("selected-credential");
+    mockAccountModels.mockResolvedValue([{ id: "gpt-6.1-terra", label: "Terra" }]);
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl).get("/api/companies/company-1/adapters/codex_local/models").query({ aiConnection: JSON.stringify(binding) }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([{ id: "gpt-6.1-terra", label: "Terra" }]);
+    expect(mockAiSelect).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1", binding, adapterType: "codex_local" }));
+    expect(mockAiCredential).toHaveBeenCalledWith(selected);
+    expect(mockAccountModels).toHaveBeenCalledWith("openai", "subscription", "selected-credential", { refreshCredential: expect.any(Function) });
+    const signal = new AbortController().signal;
+    mockAiRefreshCredential.mockResolvedValue("protected-refreshed-credential");
+    const refreshCredential = mockAccountModels.mock.calls[0][3].refreshCredential;
+    await expect(refreshCredential("failed-credential", signal)).resolves.toBe("protected-refreshed-credential");
+    expect(mockAiRefreshCredential).toHaveBeenCalledExactlyOnceWith(selected, "failed-credential", signal);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("does not fetch a catalog when account access is denied", async () => {
+    const binding = { mode: "shared", provider: "anthropic", method: "api_key", connectionId: "5c30af68-4094-48c3-b831-81d922b14570", grantId: "7b0dc1f1-f57c-4d65-9b7f-704bf4260abe" };
+    const { forbidden } = await import("../errors.js");
+    mockAiSelect.mockRejectedValue(forbidden("Account access denied"));
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl).get("/api/companies/company-1/adapters/claude_local/models").query({ aiConnection: JSON.stringify(binding) }));
+    expect(res.status).toBe(403);
+    expect(mockAiCredential).not.toHaveBeenCalled();
+    expect(mockAccountModels).not.toHaveBeenCalled();
   });
 
   it.each([

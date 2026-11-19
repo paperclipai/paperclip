@@ -62,6 +62,7 @@ export interface AdapterDisplayInfo {
 }
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
+  pool: { label: "Pool", description: "Shared harness, model and account pool", icon: Cpu, hideFromVisualSelection: true, experimental: true },
   antigravity_runtime: { label: "Google Antigravity", description: "Antigravity through Paperclip Runner", icon: Gem, hideFromVisualSelection: true },
   copilot_runtime: { label: "GitHub Copilot", description: "Copilot through Paperclip Runner", icon: Code, hideFromVisualSelection: true },
   kimi_runtime: { label: "Kimi Code (Runner)", description: "Kimi Code through Paperclip Runner", icon: Moon, hideFromVisualSelection: true },
@@ -219,9 +220,10 @@ export function getAdapterDisplay(type: string): AdapterDisplayInfo {
   };
 }
 
-export function agentDisplayAdapterType(agent: { adapterType: string; adapterConfig: Record<string, unknown>; pauseReason?: unknown; metadata?: unknown }): string {
+export function agentDisplayAdapterType(agent: { adapterType: string; adapterConfig: Record<string, unknown>; pauseReason?: unknown; metadata?: unknown; runtimeConfig?: Record<string, unknown> }): string {
   const pendingSetup = pendingAgentSetupDisplayAdapter(agent);
   if (pendingSetup) return pendingSetup;
+  if (agent.adapterType === "paperclip_runner" && agent.runtimeConfig?.harnessPool) return "pool";
   if (agent.adapterType !== "paperclip_runner") return agent.adapterType;
   if (agent.adapterConfig.provider === "openai_dot" || agent.adapterConfig.provider === "grok_bot" || agent.adapterConfig.provider === "muse") {
     return agent.adapterConfig.provider;

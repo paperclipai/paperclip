@@ -23,7 +23,8 @@ import { skillAccessService } from "../skill-access.js";
 import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, SkillLibraryReadCache, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
 import { apiResultMayHaveWorkspace, callTaskWorkspaceTool, pendingTaskRepositoryContinuation, withWorkspacePageHref } from "../task-workspace-tools.js";
-import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
+import { TaskAttachmentReadCache, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
+import { TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS } from "./task-attachment-tool-definitions.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { assertCanManageIssueMonitor, eligibleIssueMonitorWait, prepareIssueMonitorUpdate, setTaskMonitorSchema, summarizeIssueMonitor } from "../issue-monitors.js";
@@ -126,16 +127,13 @@ import {
   readCurrentWakeComments,
   type CurrentWakeCommentsBinding,
 } from "./current-wake-comments.js";
+import { LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION, LIST_CHAT_ATTACHMENTS_TOOL_NAME, REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION, REUSE_CHAT_ATTACHMENT_TOOL_NAME } from "./chat-attachment-tool-definitions.js";
 import {
   readPublishedGitHubReviewCompletionContinuation,
   authorizeChatAttachmentReuse,
   authorizeChatConversationForBoundRun,
-  LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION,
-  LIST_CHAT_ATTACHMENTS_TOOL_NAME,
   listAuthorizedChatAttachments,
   prepareReusedChatAttachment,
-  REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION,
-  REUSE_CHAT_ATTACHMENT_TOOL_NAME,
   type ChatAttachmentReuseSource,
 } from "./chat-attachment-reuse.js";
 import {

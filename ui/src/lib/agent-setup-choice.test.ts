@@ -17,3 +17,10 @@ describe("held agent setup choice", () => {
     expect(pendingAgentSetupDisplayAdapter(draft)).toBeUndefined();
   });
 });
+
+it("retains a held Pool choice without treating it as execution authority", () => {
+  const choice = { adapterType: "paperclip_runner", runnerProvider: "pool", runner: "auto" };
+  const draft = { pauseReason: "setup", metadata: { setupAdapterPending: true, setupAdapterChoice: choice } };
+  expect(pendingAgentSetupChoice(draft)).toEqual(choice);
+  expect(pendingAgentSetupDisplayAdapter(draft)).toBe("pool");
+});

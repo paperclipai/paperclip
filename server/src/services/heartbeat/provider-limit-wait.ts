@@ -4,6 +4,7 @@ import { logger } from "../../middleware/logger.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { agentProviderLimitCooldown } from "../native-runtime/native-startup-retry.js";
 import { parseObject } from "../../adapters/utils.js";
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -44,7 +45,7 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
   ): Promise<boolean> {
     if (options.resumingAdmittedRun || options.conversation) return false;
     if (run.invocationSource === "on_demand" && run.triggerDetail === "manual") return false;
-    if (parseObject(parseObject(agent.runtimeConfig).aiConnection).mode === "router") return false;
+    if (parseObject(effectiveAiConnectionInput(agent.runtimeConfig)).mode === "router") return false;
     const now = new Date();
     const cooldown = await agentProviderLimitCooldown(db, {
       companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
