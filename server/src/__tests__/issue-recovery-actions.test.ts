@@ -2169,6 +2169,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     return { ...fixture, hold: hold!, agent };
   }
 
+  async function seedLiveOwnerRun(f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) {
+    await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId, agentId: f.coderId,
+      invocationSource: "manual", status: "failed", processPid: process.pid, contextSnapshot: { issueId: f.sourceIssueId },
+      resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } });
+    expect(await getExecutionBlocker(db, f.companyId, f.sourceIssueId))
+      .toMatchObject({ cause: "execution_owner_active", recoveryActionId: null });
+  }
+
   it.each([
     ["status change", (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) =>
       request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "in_progress" })],
@@ -2183,6 +2191,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         stages: [{ id: randomUUID(), type: "review", participants: [{ type: "agent", agentId: f.managerId }] }] } })
         .where(eq(issues.id, f.sourceIssueId));
       return request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "done" });
+    }],
+    ["status change while a live previous run also owns the task", async (f: Awaited<ReturnType<typeof seedHeldBlockedTask>>) => {
+      await seedLiveOwnerRun(f);
+      return request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "todo" });
     }],
   ])("keeps a task blocked behind a no-replay hold when its agent tries a %s", async (_entry, send) => {
     const f = await seedHeldBlockedTask();
@@ -2205,11 +2217,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
   it("does not hold a blocked task while only a live previous run still owns it", async () => {
     const f = await seedHeldBlockedTask();
     await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.hold.id));
-    await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId: f.companyId, agentId: f.coderId,
-      invocationSource: "manual", status: "failed", processPid: process.pid, contextSnapshot: { issueId: f.sourceIssueId },
-      resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } });
-    expect(await getExecutionBlocker(db, f.companyId, f.sourceIssueId))
-      .toMatchObject({ cause: "execution_owner_active", recoveryActionId: null });
+    await seedLiveOwnerRun(f);
     await request(f.agent).patch(`/api/issues/${f.sourceIssueId}`).send({ status: "todo" }).expect(200);
   });
 

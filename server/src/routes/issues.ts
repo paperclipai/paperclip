@@ -7287,7 +7287,7 @@ export function issueRoutes(
     nextStatus: string,
   ) {
     if (req.actor.type !== "agent" || issue.status !== "blocked" || nextStatus === "blocked" || isClosedIssueStatus(nextStatus)) return true;
-    const hold = await getExecutionBlocker(db, issue.companyId, issue.id);
+    const hold = await getExecutionBlocker(db, issue.companyId, issue.id, { recoveryHoldOnly: true });
     if (!hold?.recoveryActionId) return true;
     res.status(409).json({
       error: `Issue stays blocked until its execution recovery hold is released. ${hold.nextAction}`,
