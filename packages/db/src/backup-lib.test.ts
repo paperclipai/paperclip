@@ -108,6 +108,83 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("reports the pg_dump engine and does not call the fallback hook when pg_dump succeeds", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("engine-pg-dump-");
+    const executable = path.join(backupDir, "pg-dump-ok");
+    fs.writeFileSync(executable, "#!/bin/sh\nprintf 'SELECT 1;\\n'\n", { mode: 0o700 });
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = executable;
+    const reasons: string[] = [];
+    try {
+      const result = await runDatabaseBackup({
+        connectionString, backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        onPgDumpFallback: (reason) => reasons.push(reason),
+      });
+      expect(result.engine).toBe("pg_dump");
+      expect(reasons).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("reports the JavaScript engine and a redacted one-line reason when pg_dump fails (TECH-9120)", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("engine-fallback-");
+    const executable = path.join(backupDir, "pg-dump-rls-failure");
+    // Mimics the production failure plus noise a real pg_dump may print, including a URL with a password.
+    fs.writeFileSync(
+      executable,
+      [
+        "#!/bin/sh",
+        "echo 'pg_dump: warning: there are circular foreign-key constraints on this table:' >&2",
+        "echo 'pg_dump: error: query failed: ERROR:  query would be affected by row-level security policy for table \"agents\"' >&2",
+        "echo 'pg_dump: detail: postgres://paperclip_app:s3cret-pw@db.internal:5432/paperclip' >&2",
+        "exit 1",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = executable;
+    const reasons: string[] = [];
+    try {
+      const result = await runDatabaseBackup({
+        connectionString, backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        onPgDumpFallback: (reason) => reasons.push(reason),
+      });
+      expect(result.engine).toBe("javascript");
+      expect(reasons).toHaveLength(1);
+      expect(reasons[0]).toContain("row-level security policy");
+      expect(reasons[0]).not.toContain("\n");
+      expect(reasons[0]).not.toContain("s3cret-pw");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("a throwing fallback hook cannot fail the backup", async () => {
+    const connectionString = await createTempDatabase();
+    const backupDir = createTempDir("engine-fallback-hook-");
+    const previous = process.env.PAPERCLIP_PG_DUMP_PATH;
+    process.env.PAPERCLIP_PG_DUMP_PATH = "/bin/false";
+    try {
+      const result = await runDatabaseBackup({
+        connectionString, backupDir,
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        onPgDumpFallback: () => { throw new Error("logger exploded"); },
+      });
+      expect(result.engine).toBe("javascript");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
+      else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("preserves identity generation, sequence options and progress in JavaScript backups", async () => {
     const source = await createTempDatabase();
     const target = await createSiblingDatabase(source, "identity_restore_target");

@@ -123,3 +123,17 @@ describe("buildPgDumpInvocation (TECH-7095)", () => {
     expect(buildPgDumpInvocation("postgres://us%er:pw@h/db", 5, {}).env.PGUSER).toBe("us%er");
   });
 });
+
+describe("buildPgDumpInvocation row security (TECH-9120)", () => {
+  it("asks pg_dump to read under the role's RLS visibility so a non-bypass role does not fail", () => {
+    // Without this flag pg_dump runs with row_security=off and exits 1 with "query would be affected by
+    // row-level security policy" for a role that is not superuser/BYPASSRLS, which silently sent the
+    // production backup to the in-process engine.
+    const mapped = buildPgDumpInvocation("postgres://u:p@db.internal:5432/paperclip", 5, {});
+    expect(mapped.args).toContain("--enable-row-security");
+    // Also on the argv fallback path used for URLs with unmappable parameters.
+    const argvFallback = buildPgDumpInvocation("postgres://u:p@db.internal:5432/paperclip?unmappable=1", 5, {});
+    expect(argvFallback.credentialInArgv).toBe(true);
+    expect(argvFallback.args).toContain("--enable-row-security");
+  });
+});
