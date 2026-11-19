@@ -12,6 +12,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,
@@ -47,7 +48,7 @@ import {
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
-import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
+import { checkLeaseResumable, destroyLeaseResources, waitForSandboxTermination } from "./lease-lifecycle.js";
 import {
   beginLeaseExec,
   evictLongestIdleLease,
@@ -767,6 +768,45 @@ async function executeInLease(
   }
 }
 
+/** The lease's pod name as recorded at acquire time, if any. */
+function leasePodName(metadata: Record<string, unknown> | null | undefined): string | null {
+  return typeof metadata?.podName === "string" && metadata.podName.length > 0 ? metadata.podName : null;
+}
+
+/**
+ * Termination receipt for a released sandbox-cr lease: returned only once the
+ * Sandbox CR and its pod are confirmed gone, so the server may treat the agent
+ * process as ended. A user interrupt of a run depends on this: without a
+ * receipt the server cannot prove the interrupted run stopped, holds the issue
+ * for recovery, and the user's queued message never starts. On timeout or an
+ * unconfirmable state, return no receipt (the server keeps its conservative
+ * hold). The job backend is unchanged.
+ */
+async function confirmedSandboxTermination(
+  clients: ReturnType<typeof makeKubeClients>,
+  input: { backend: "sandbox-cr" | "job"; namespace: string; providerLeaseId: string; podName: string | null },
+): Promise<PluginEnvironmentTerminationReceipt | void> {
+  if (input.backend !== "sandbox-cr") return;
+  try {
+    const gone = await waitForSandboxTermination(clients, {
+      namespace: input.namespace,
+      name: input.providerLeaseId,
+      podName: input.podName,
+    });
+    if (gone) return { providerLeaseId: input.providerLeaseId, state: "destroyed" };
+    console.warn(
+      `Sandbox ${input.namespace}/${input.providerLeaseId} was still terminating at the deadline; ` +
+        "no termination receipt granted (an interrupted run's queued message waits for recovery).",
+    );
+  } catch (err) {
+    // Cannot confirm (API error): grant no continuation authority.
+    console.warn(
+      `Could not confirm termination of sandbox ${input.namespace}/${input.providerLeaseId}: ` +
+        `${err instanceof Error ? err.message : String(err)}. No termination receipt granted.`,
+    );
+  }
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     // Idle-TTL reaper for reusable (kept-running) conversation pods.
@@ -1224,7 +1264,7 @@ const plugin = definePlugin({
 
   async onEnvironmentReleaseLease(
     params: PluginEnvironmentReleaseLeaseParams,
-  ): Promise<void> {
+  ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace =
@@ -1261,11 +1301,17 @@ const plugin = definePlugin({
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
     }
+    return await confirmedSandboxTermination(clients, {
+      backend: leaseBackend,
+      namespace,
+      providerLeaseId: params.providerLeaseId,
+      podName: leasePodName(params.leaseMetadata),
+    });
   },
 
   async onEnvironmentDestroyLease(
     params: PluginEnvironmentDestroyLeaseParams,
-  ): Promise<void> {
+  ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace =
@@ -1307,6 +1353,12 @@ const plugin = definePlugin({
       backend: leaseBackend,
       podName,
       secretName,
+    });
+    return await confirmedSandboxTermination(clients, {
+      backend: leaseBackend,
+      namespace,
+      providerLeaseId: params.providerLeaseId,
+      podName,
     });
   },
 

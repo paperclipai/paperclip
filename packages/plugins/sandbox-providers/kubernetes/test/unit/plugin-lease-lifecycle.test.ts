@@ -850,3 +850,95 @@ describe("reusable conversation pods", () => {
     expect(create).toHaveBeenCalled();
   });
 });
+
+// A user interrupt cancels the run and releases its lease. The server can only
+// treat the interrupted run as stopped, and start the user's queued message, if
+// the plugin proves the agent process ended with a termination receipt.
+describe("termination receipt on release and destroy (user interrupt of a sandbox run)", () => {
+  const PARAMS = {
+    driverKey: "kubernetes",
+    companyId: "acme",
+    environmentId: "env-1",
+    config: CONFIG,
+    providerLeaseId: "pc-abc",
+    leaseMetadata: leaseMetadata(),
+  };
+
+  function gone(over: Record<string, unknown> = {}) {
+    return {
+      custom: {
+        deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+        getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()),
+      },
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+        readNamespacedPod: vi.fn().mockRejectedValue(notFound()),
+      },
+      batch: { deleteNamespacedJob: vi.fn() },
+      ...over,
+    };
+  }
+
+  it("release returns a destroyed receipt once the Sandbox CR and pod are gone", async () => {
+    h.clients = gone();
+    await expect(plugin.definition.onEnvironmentReleaseLease!(PARAMS)).resolves.toEqual({
+      providerLeaseId: "pc-abc",
+      state: "destroyed",
+    });
+  });
+
+  it("release waits for a still-terminating pod before granting the receipt", async () => {
+    const readPod = vi
+      .fn()
+      .mockResolvedValueOnce({ metadata: { deletionTimestamp: "now" } })
+      .mockRejectedValue(notFound());
+    h.clients = gone({
+      core: {
+        deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+        deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+        readNamespacedPod: readPod,
+      },
+    });
+    await expect(plugin.definition.onEnvironmentReleaseLease!(PARAMS)).resolves.toEqual({
+      providerLeaseId: "pc-abc",
+      state: "destroyed",
+    });
+    // First poll: the pod named after the Sandbox is still terminating. Second
+    // poll: it and the recorded pod name are both 404.
+    expect(readPod).toHaveBeenCalledTimes(3);
+    expect(readPod).toHaveBeenCalledWith({ namespace: "paperclip-acme", name: "pc-abc" });
+    expect(readPod).toHaveBeenCalledWith({ namespace: "paperclip-acme", name: "pc-abc-pod" });
+  });
+
+  it("release grants no receipt (and does not throw) when termination cannot be confirmed", async () => {
+    h.clients = gone({
+      custom: {
+        deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+        getNamespacedCustomObject: vi.fn().mockRejectedValue(Object.assign(new Error("boom"), { code: 500 })),
+      },
+    });
+    await expect(plugin.definition.onEnvironmentReleaseLease!(PARAMS)).resolves.toBeUndefined();
+  });
+
+  it("destroy returns a destroyed receipt once everything is gone", async () => {
+    h.clients = gone();
+    await expect(plugin.definition.onEnvironmentDestroyLease!(PARAMS)).resolves.toEqual({
+      providerLeaseId: "pc-abc",
+      state: "destroyed",
+    });
+  });
+
+  it("the job backend grants no receipt (unchanged behaviour)", async () => {
+    h.clients = gone({
+      batch: { deleteNamespacedJob: vi.fn().mockResolvedValue({}) },
+    });
+    await expect(
+      plugin.definition.onEnvironmentReleaseLease!({
+        ...PARAMS,
+        config: { inCluster: true, backend: "job" },
+        leaseMetadata: leaseMetadata({ backend: "job" }),
+      }),
+    ).resolves.toBeUndefined();
+  });
+});

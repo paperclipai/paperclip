@@ -243,6 +243,30 @@ export async function deleteSandboxCr(
   });
 }
 
+/** True when the Sandbox CR no longer exists (HTTP 404). Other errors propagate. */
+export async function isSandboxCrGone(
+  clients: KubeClients,
+  namespace: string,
+  name: string,
+): Promise<boolean> {
+  try {
+    await clients.custom.getNamespacedCustomObject({
+      group: SANDBOX_GROUP,
+      version: SANDBOX_VERSION,
+      namespace,
+      plural: SANDBOX_PLURAL,
+      name,
+    });
+    return false;
+  } catch (err) {
+    const code =
+      (err as { code?: number; statusCode?: number }).code ??
+      (err as { code?: number; statusCode?: number }).statusCode;
+    if (code === 404) return true;
+    throw err;
+  }
+}
+
 /**
  * Wait until the Sandbox CR's pod reaches Ready phase (i.e., the pod is up and
  * exec-able). This is NOT waiting for a workload to finish — the Sandbox pod

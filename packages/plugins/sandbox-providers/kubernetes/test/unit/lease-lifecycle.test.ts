@@ -3,6 +3,7 @@ import {
   checkLeaseResumable,
   destroyLeaseResources,
   isKubeNotFoundError,
+  waitForSandboxTermination,
 } from "../../src/lease-lifecycle.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
@@ -344,5 +345,82 @@ describe("destroyLeaseResources", () => {
         secretName: null,
       }),
     ).rejects.toThrow("forbidden");
+  });
+});
+
+describe("waitForSandboxTermination", () => {
+  const nf = () => Object.assign(new Error("not found"), { code: 404 });
+  const mk = (cr: ReturnType<typeof vi.fn>, pod: ReturnType<typeof vi.fn>) =>
+    ({ custom: { getNamespacedCustomObject: cr }, core: { readNamespacedPod: pod } }) as never;
+
+  it("is true when the CR and the pod are both 404", async () => {
+    const ok = await waitForSandboxTermination(
+      mk(vi.fn().mockRejectedValue(nf()), vi.fn().mockRejectedValue(nf())),
+      { namespace: "ns", name: "pc-1", podName: "pc-1-pod" },
+      { pollMs: 1, timeoutMs: 50 },
+    );
+    expect(ok).toBe(true);
+  });
+
+  it("is false when the CR is still present at the deadline", async () => {
+    const ok = await waitForSandboxTermination(
+      mk(vi.fn().mockResolvedValue({}), vi.fn().mockRejectedValue(nf())),
+      { namespace: "ns", name: "pc-1", podName: "pc-1-pod" },
+      { pollMs: 1, timeoutMs: 20 },
+    );
+    expect(ok).toBe(false);
+  });
+
+  it("is false when the CR is gone but the pod is still terminating at the deadline", async () => {
+    const ok = await waitForSandboxTermination(
+      mk(vi.fn().mockRejectedValue(nf()), vi.fn().mockResolvedValue({})),
+      { namespace: "ns", name: "pc-1", podName: "pc-1-pod" },
+      { pollMs: 1, timeoutMs: 20 },
+    );
+    expect(ok).toBe(false);
+  });
+
+  it("still checks the pod named after the Sandbox when no pod name is recorded", async () => {
+    const pod = vi.fn().mockRejectedValue(nf());
+    const ok = await waitForSandboxTermination(
+      mk(vi.fn().mockRejectedValue(nf()), pod),
+      { namespace: "ns", name: "pc-1", podName: null },
+      { pollMs: 1, timeoutMs: 20 },
+    );
+    expect(ok).toBe(true);
+    expect(pod).toHaveBeenCalledWith({ namespace: "ns", name: "pc-1" });
+  });
+
+  it("is false when the CR is gone but a pod named after the Sandbox is still running (no recorded pod name)", async () => {
+    const ok = await waitForSandboxTermination(
+      mk(vi.fn().mockRejectedValue(nf()), vi.fn().mockResolvedValue({})),
+      { namespace: "ns", name: "pc-1", podName: null },
+      { pollMs: 1, timeoutMs: 20 },
+    );
+    expect(ok).toBe(false);
+  });
+
+  it("defaults to a bound under the host's 30 s release RPC timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const done = waitForSandboxTermination(
+        mk(vi.fn().mockResolvedValue({}), vi.fn().mockRejectedValue(nf())),
+        { namespace: "ns", name: "pc-1", podName: null },
+      );
+      await vi.advanceTimersByTimeAsync(20_500);
+      await expect(done).resolves.toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates a non-404 API error so the caller grants no receipt", async () => {
+    await expect(
+      waitForSandboxTermination(
+        mk(vi.fn().mockRejectedValue(Object.assign(new Error("x"), { code: 500 })), vi.fn()),
+        { namespace: "ns", name: "pc-1", podName: null },
+        { pollMs: 1, timeoutMs: 20 },
+      ),
+    ).rejects.toThrow("x");
   });
 });

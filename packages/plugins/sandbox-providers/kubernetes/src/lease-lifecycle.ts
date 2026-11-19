@@ -21,6 +21,7 @@ import { deleteJob, findPodForJob, getJobStatus } from "./job-orchestrator.js";
 import {
   deleteSandboxCr,
   findPodForSandbox,
+  isSandboxCrGone,
   waitForSandboxReady,
 } from "./sandbox-cr-orchestrator.js";
 
@@ -189,5 +190,49 @@ export async function destroyLeaseResources(
         name: input.secretName,
       }),
     );
+  }
+}
+
+/**
+ * Wait until a sandbox-cr lease's Sandbox CR and pod are both gone (404).
+ *
+ * The Sandbox CR is deleted with Foreground propagation, so the CR only
+ * disappears after its pod does; the pod check also covers a controller that
+ * does not block owner deletion. The agent-sandbox controller names the backing
+ * pod exactly after the Sandbox, so that name is always checked, together with
+ * any recorded pod name (the recorded name can be unset when the pod name was
+ * resolved lazily). A pod that has been asked to stop is not a stopped pod:
+ * only this confirmation lets the server treat the agent process as ended (a
+ * termination receipt), which is what lets a user's queued message start its
+ * successor run after an interrupt. Returns false on timeout; the caller then
+ * returns no receipt and the server keeps its conservative hold.
+ *
+ * The default bound (20 s) stays under the host's default 30 s RPC timeout for
+ * release/destroy, so a slow termination yields "no receipt", never a failed
+ * release call.
+ */
+export async function waitForSandboxTermination(
+  clients: KubeClients,
+  input: { namespace: string; name: string; podName?: string | null },
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + (opts.timeoutMs ?? 20_000);
+  const pollMs = opts.pollMs ?? 500;
+  const podNames = [...new Set([input.name, ...(input.podName ? [input.podName] : [])])];
+  for (;;) {
+    const crGone = await isSandboxCrGone(clients, input.namespace, input.name);
+    let podsGone = true;
+    for (const podName of podNames) {
+      try {
+        await clients.core.readNamespacedPod({ namespace: input.namespace, name: podName });
+        podsGone = false;
+        break;
+      } catch (err) {
+        if (!isKubeNotFoundError(err)) throw err;
+      }
+    }
+    if (crGone && podsGone) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }
