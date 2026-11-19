@@ -3484,29 +3484,8 @@
     {
       "idx": 499,
       "version": "7",
-      "when": 1794981205305,
-      "tag": "0499_skill_source_security_override",
-      "breakpoints": true
-    },
-    {
-      "idx": 500,
-      "version": "7",
-      "when": 1794981222139,
-      "tag": "0500_skill_version_security_approval",
-      "breakpoints": true
-    },
-    {
-      "idx": 501,
-      "version": "7",
-      "when": 1794981240059,
-      "tag": "0501_skill_source_security_override_summary",
-      "breakpoints": true
-    },
-    {
-      "idx": 502,
-      "version": "7",
-      "when": 1794981255860,
-      "tag": "0502_skill_version_security_approval_index",
+      "when": 1795048062306,
+      "tag": "0499_numerous_whizzer",
       "breakpoints": true
     }
   ]

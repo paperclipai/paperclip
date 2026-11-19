@@ -33,6 +33,9 @@ describe.skipIf(!support.supported)("reading cross-server evidence from a wave d
     await db.$client.unsafe(`insert into heartbeat_runs values ('00000000-0000-4000-8000-0000000000a2', $1, null, 'succeeded', null, $2, $2, null)`, [COMPANY, iso(NOON)]);
     await db.$client.unsafe(`insert into heartbeat_run_events values ('00000000-0000-4000-8000-0000000000a2', 'native.process_identity_recorded', '{"processPid": 11}', $1),
       ('00000000-0000-4000-8000-0000000000a2', 'native.process_identity_recorded', '{"processPid": 12}', $2)`, [iso(NOON - 2_000), iso(NOON - 1_000)]);
+    await db.$client.unsafe(`insert into heartbeat_runs values ('00000000-0000-4000-8000-0000000000a3', $1, null, 'succeeded', null, $2, $2, null)`, [COMPANY, iso(NOON)]);
+    await db.$client.unsafe(`insert into heartbeat_run_events values ('00000000-0000-4000-8000-0000000000a3', 'native.process_identity_recorded', '{"processPid": 21, "targetKind": "remote"}', $1),
+      ('00000000-0000-4000-8000-0000000000a3', 'native.process_identity_recorded', '{"processPid": 22, "targetKind": "remote"}', $2)`, [iso(NOON - 2_000), iso(NOON - 1_000)]);
   }, 120_000);
 
   afterAll(async () => {
@@ -45,6 +48,7 @@ describe.skipIf(!support.supported)("reading cross-server evidence from a wave d
     expect(evidence.runs).toEqual([expect.objectContaining({ runId: "00000000-0000-4000-8000-0000000000a1", status: "running",
       errorCode: "native_execution_ownership_unverified", endedAt: NOON, ownerBootId: "boot-a", ownerPid: 100 })]);
     expect(evidence.events.map(event => event.pid)).toEqual(expect.arrayContaining([11, 12]));
+    expect(evidence.events.filter(event => event.runId.endsWith("a3")).map(event => event.targetKind)).toEqual(["remote", "remote"]);
     const windows: ServerProcessWindow[] = [
       { pid: 100, role: "primary", spawnedAt: NOON - 60_000, exitedAt: null, frozen: [{ from: NOON - 50_000, to: NOON - 5_000 }] },
       { pid: 200, role: "secondary", spawnedAt: NOON - 55_000, exitedAt: null, frozen: [] },

@@ -2047,8 +2047,9 @@ function createSandboxEnvironmentDriver(
           resolvePluginSandboxRpcTimeoutMs(workerConfig, pluginProvider.resolved.driver.defaultAcquireTimeoutMs));
           } catch (error) {
             const cleanup = readEnvironmentCreationCleanupError(error);
-            const diagnostic = error instanceof JsonRpcCallError && cleanup?.companyId === input.companyId &&
-              cleanup.environmentId === input.environment.id && cleanup.runId === identity.runId
+            const ownsReceipt = cleanup === null || (cleanup.companyId === input.companyId &&
+              cleanup.environmentId === input.environment.id && cleanup.runId === identity.runId);
+            const diagnostic = error instanceof JsonRpcCallError && ownsReceipt
               ? readEnvironmentAcquisitionDiagnostic(error) : null;
             captureEnvironmentAcquisitionDiagnostic(error, {
               companyId: input.companyId, environmentId: input.environment.id, runId: identity.runId,

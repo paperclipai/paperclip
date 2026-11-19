@@ -1,5 +1,6 @@
 import { JsonRpcCallError, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import { readTransientLeaseAcquisitionFailure } from "../services/environment-provider-unavailable-error.js";
 import { PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -1494,6 +1495,37 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(call.mock.calls.filter(value => value[1] === "environmentDestroyLease")).toHaveLength(0);
     expect(await db.select().from(sandboxCreationOperations).where(eq(sandboxCreationOperations.companyId, seeded.companyId)))
       .toEqual([expect.objectContaining({ state: "pending", originalEnvironmentId: seeded.environment.id, runId: seeded.runId })]);
+  });
+
+  it.each(["worker", "forged error", "invalid worker diagnostic"])("records the step of a sandbox the provider could not start and removed: %s", async (mode) => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const data = { schema: "paperclip/environment-acquire-error/v1",
+      acquisitionDiagnostic: { phase: mode === "invalid worker diagnostic" ? "private-command" : "create",
+        elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } };
+    const failure = mode === "forged error"
+      ? Object.assign(new Error("Daytona could not start the sandbox; it was removed."), { data })
+      : new JsonRpcCallError({ code: -32002, message: "Daytona could not start the sandbox; it was removed.", data });
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method === "environmentAcquireLease") throw failure;
+      throw new Error(`Unexpected method ${method}`);
+    });
+    const worker = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const caught = await environmentRuntimeService(db, { pluginWorkerManager: worker }).acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, issueId: null, heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: null }).catch(error => error);
+    expect(caught).toBe(failure);
+    const run = { id: seeded.runId, companyId: seeded.companyId };
+    const execution = collectRunFailureDiagnostics({ ...run, errorCode: "setup_failed", resultJson: null,
+    } as typeof heartbeatRuns.$inferSelect, { error: caught, phase: "setup" }).execution;
+    if (mode === "worker") {
+      expect(execution).toMatchObject({ environmentAcquisitionPhase: "create", environmentAcquisitionProviderState: "error" });
+      expect(readTransientLeaseAcquisitionFailure(caught, run)).toEqual({ reason: "provider_start_failed" });
+    } else {
+      expect(execution).not.toHaveProperty("environmentAcquisitionPhase");
+      expect(readTransientLeaseAcquisitionFailure(caught, run)).toBeNull();
+    }
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"))).toHaveLength(0);
   });
 
   it.each(["deleted receipt lost", "observation response lost", "journal write failed", "foreign observation"])(

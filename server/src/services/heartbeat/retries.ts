@@ -40,6 +40,7 @@ import { REVIEWED_CHAT_BINDING_NOT_READY } from "../reviewed-chat-binding-diagno
 import { RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY, RUNNER_REVISION_WAIT_RETRY_REASON } from "../runner-revision-mismatch.js";
 import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_RETRY, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../../storage/storage-unavailable.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
+import { ENVIRONMENT_PROVIDER_WAIT_KEY, ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, environmentProviderWaitFor, environmentProviderWaitRetry } from "../environment-provider-wait.js";
 import { randomUUID } from "node:crypto";
 import {
   and,
@@ -90,6 +91,7 @@ import {
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
 import type { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
+import { NATIVE_SANDBOX_DISK_FULL, NATIVE_SANDBOX_DISK_FULL_ACTION } from "../native-runtime/native-sandbox-disk-full.js";
 import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { createRunDispatch, PostCommitEffect } from "../../modules/run-dispatch/index.js";
@@ -524,11 +526,21 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     if (!opts?.retryReason && run.errorCode === RUNNER_REVISION_MISMATCH_CODE) opts = { ...RUNNER_REVISION_MISMATCH_RETRY, ...opts };
     if (!opts?.retryReason && run.errorCode === STORAGE_UNAVAILABLE_CODE) opts = { ...STORAGE_UNAVAILABLE_RETRY, ...opts };
+    if (!opts?.retryReason && run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+        && (run.scheduledRetryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON
+          || executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS)) {
+      const providerWait = environmentProviderWaitRetry(run, opts?.now ?? new Date());
+      if (providerWait) opts = { ...providerWait, ...opts };
+    }
     if (await hasCaseHandoffForRun(run)) return { outcome: "not_scheduled" as const,
       reason: "The durable case handoff owns successor work.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
         || ["openai_dot", "muse"].includes(String(parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind))) {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
+    if (run.errorCode === NATIVE_SANDBOX_DISK_FULL) {
+      return { outcome: "not_scheduled" as const, reason: NATIVE_SANDBOX_DISK_FULL_ACTION,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "provider_tool_definition_invalid") {
       return { outcome: "not_scheduled" as const,
@@ -781,6 +793,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           ? { preparationWait: { kind: retryReason, attempt: schedule.attempt, nextAttemptAt: schedule.dueAt.toISOString() } }
           : { wakeReason, retryReason }),
         ...(interactionRunnerWait ? { mutation: "interaction" } : {}),
+        ...(retryReason === ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON
+          ? { [ENVIRONMENT_PROVIDER_WAIT_KEY]: environmentProviderWaitFor(run, now) }
+          : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
               failureRetriesBeforeWorkspaceWait:
@@ -831,6 +846,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     delete retryContextSnapshot.skillSelectionSnapshot;
     delete retryContextSnapshot.shadowedSkills;
     delete retryContextSnapshot.retryWorkspaceRefusal;
+    if (retryReason !== ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON) delete retryContextSnapshot[ENVIRONMENT_PROVIDER_WAIT_KEY];
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,

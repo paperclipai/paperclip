@@ -67,6 +67,14 @@ export const smallEditChanges: ResponsibilityDashboardChange[] = [
   change(3, { op: "rename_area", groupAreaId: "area-team", groupName: "Team", fromName: "Team", name: "People", sharedWith: 2 }),
 ];
 
+export const mixedAreaChanges: ResponsibilityDashboardChange[] = [
+  change(0, { op: "add_responsibility", groupAreaId: "area-product", groupName: "Product", sentence: "Every launch has a named owner and a clear release date." }),
+  change(1, { op: "add_area", groupRef: "quality", groupName: "Quality & Reliability", name: "Quality & Reliability", reason: "Give the health of the product its own home." }),
+  change(2, { op: "add_responsibility", groupRef: "quality", groupName: "Quality & Reliability", dependsOn: [1], sentence: "The core product journeys pass their daily checks.", reason: "Keep a clear signal for the work customers depend on." }),
+  change(3, { op: "move_responsibility", groupRef: "quality", groupName: "Quality & Reliability", dependsOn: [1], responsibilityId: "resp-speed", fromSentence: "Key pages load quickly and stay fast.", fromAreaId: "area-product", fromAreaName: "Product" }),
+  change(4, { op: "add_area", groupRef: "community", groupName: "Community", name: "Community", reason: "An area can start empty; add responsibilities when you are ready." }),
+];
+
 function payload(changes: ResponsibilityDashboardChange[], mode: ProposeDashboardChangesPayload["mode"], message: string | null): ProposeDashboardChangesPayload {
   return { version: 1, ownerUserId: RESPONSIBILITY_FIXTURE_OWNER_ID, mode, message, changes };
 }
@@ -111,6 +119,7 @@ function version(id: string, values: Partial<ResponsibilityDashboardVersionSumma
     summary: "No changes",
     actorUserId: RESPONSIBILITY_FIXTURE_OWNER_ID,
     actorAgentId: null,
+    interactionId: null,
     previousVersionId: null,
     restoredFromVersionId: null,
     createdAt: NOW,
@@ -121,10 +130,11 @@ function version(id: string, values: Partial<ResponsibilityDashboardVersionSumma
 export const dashboardVersionsFixture: ResponsibilityDashboardVersionList = {
   ownerUserId: RESPONSIBILITY_FIXTURE_OWNER_ID,
   versions: [
+    version("version-6", { cause: "change_set", summary: "Filed 3 items", actorAgentId: DASHBOARD_FIXTURE_AGENT_ID, previousVersionId: "version-5", createdAt: new Date("2026-11-16T10:12:00Z") }),
     version("version-5", { cause: "person", summary: "Added 1 responsibility", previousVersionId: "version-4", createdAt: new Date("2026-11-16T09:40:00Z") }),
     version("version-4", { cause: "restore", summary: "Let go of 1 responsibility", previousVersionId: "version-3", restoredFromVersionId: "version-2", createdAt: new Date("2026-11-15T16:05:00Z") }),
-    version("version-3", { cause: "change_set", summary: "Reworded 1 responsibility, moved 1 responsibility and let go of 1 responsibility", actorAgentId: DASHBOARD_FIXTURE_AGENT_ID, previousVersionId: "version-2", createdAt: new Date("2026-11-15T15:58:00Z") }),
-    version("version-2", { cause: "change_set", summary: "Added 4 areas and 6 responsibilities", actorAgentId: DASHBOARD_FIXTURE_AGENT_ID, previousVersionId: "version-1", createdAt: new Date("2026-11-12T11:20:00Z") }),
+    version("version-3", { cause: "change_set", summary: "Reworded 1 responsibility, moved 1 responsibility and let go of 1 responsibility", actorAgentId: DASHBOARD_FIXTURE_AGENT_ID, interactionId: "interaction-3", previousVersionId: "version-2", createdAt: new Date("2026-11-15T15:58:00Z") }),
+    version("version-2", { cause: "change_set", summary: "Added 4 areas and 6 responsibilities", actorAgentId: DASHBOARD_FIXTURE_AGENT_ID, interactionId: "interaction-2", previousVersionId: "version-1", createdAt: new Date("2026-11-12T11:20:00Z") }),
     version("version-1", { cause: "person", summary: "Empty", actorUserId: RESPONSIBILITY_FIXTURE_OWNER_ID, createdAt: new Date("2026-11-12T11:19:00Z") }),
   ],
 };
@@ -134,6 +144,7 @@ export const latestChangeFixture = version("version-change", {
   cause: "change_set",
   summary: "Added 4 areas and 6 responsibilities",
   actorAgentId: DASHBOARD_FIXTURE_AGENT_ID,
+  interactionId: "interaction-change",
   previousVersionId: "version-before",
   createdAt: NOW,
 });

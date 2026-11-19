@@ -14,6 +14,12 @@ checks for an incoming connection every 10 ms (or sooner, when that delay is
 smaller). It never redials, so a connection does not wait out the reconnect
 delay after a disconnect or an authority rotation.
 
+A listening Runner accepts one controller at a time. Core pings the Runner
+every 20 seconds. When the current controller sends no frame, ping included,
+for 90 seconds, the Runner closes that connection and accepts the next one
+within its reconnect grace. A path that broke without a close therefore cannot
+block a replacement controller.
+
 In both modes, Runner enables `TCP_NODELAY` before the WebSocket handshake
 when the connected peer is on loopback.
 
@@ -169,6 +175,16 @@ keep their usual precedence and compatibility checks.
 fresh snapshot and checkpoint and runs any recovery callback. B can then
 start work. If a write or callback fails, Core can retry the handoff.
 Cancellation cleanup only settles retained work.
+
+**What if the Runner starts as B?** Core can rotate the session to B before
+launch: it archives A's Runner state and starts a Runner under B's identity.
+That Runner starts with fresh durable state over A's saved Codex session. It
+does not restore Codex under A's settings. Until `run.attach`, it refuses
+commands that start work; snapshots and shutdown commands still work. The
+Runner saves the wait in the Codex state before it creates its durable state,
+so a restart before attachment keeps it.
+`run.attach` then starts Codex once with B's settings. ACPX follows the same
+rule.
 
 Live qualification still needs to verify that restoring a provider starts no
 work, deployed storage honors fsync, and the old process has exited.

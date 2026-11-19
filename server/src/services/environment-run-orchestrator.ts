@@ -260,7 +260,7 @@ export function environmentRunOrchestrator(
           environmentId: input.environment.id,
           driver: input.environment.driver,
           cause: transient
-            ? new EnvironmentProviderUnavailableError({ environmentName: input.environment.name,
+            ? new EnvironmentProviderUnavailableError({ environmentId: input.environment.id, environmentName: input.environment.name,
               driver: input.environment.driver, evidence: transient, cause: err })
             : err,
         },

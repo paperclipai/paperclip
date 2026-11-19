@@ -120,6 +120,69 @@ value with a salted hash of the per-installation secret.
 Use `trackAgentTaskRun()` to emit this event. The generated contract remains
 the authority for its exact dimensions and optionality.
 
+Failed, timed-out, and interrupted runs also carry `failure_cause`. The server
+picks this code from the run's stored error code and its provider failure
+category, in `server/src/services/agent-task-run-telemetry.ts`. The code is a
+fixed enum. It never contains error text, provider messages, or SQL. An error
+code that the mapping does not know is sent as `unknown`. The provider failure
+category decides the code only for the generic `adapter_failed` and
+`provider_failed` codes, or when there is no error code. The mapping reuses the
+run failure code sets in `server/src/services/continuation-cause.ts`, and a
+test fails when a code in those sets has no telemetry code.
+
+## Product Lifecycle Events
+
+`model.connected`, `task.created`, `task.completed`, `task.blocked`,
+`plan.created`, `plan.approved`, and `artifact.created` describe the main
+product path. Their dimensions are enums, booleans, and counts only. They never
+contain a task title, a document body, a plan step, a connection or account
+name, an email, a URL, a repository name, or an endpoint address.
+
+The server emits these events through
+`server/src/services/product-telemetry.ts`. Each emit site runs inside the
+transaction that writes the change, and the helper sends the event only after
+that transaction commits (`afterTransactionCommit` in `@paperclipai/db`). A
+rolled-back write sends nothing. This includes a write in a savepoint that
+rolls back while the outer transaction commits. The
+helper also wraps the track call in `withTelemetryCompany()`, so Cloud direct
+delivery gets the company for background writes.
+
+These rules keep one event per real change:
+
+- `task.created` is sent for a newly inserted task only. Chat conversations,
+  company imports, and create requests that return an existing task do not send
+  it. `created_by_kind` is `routine` for a routine-run task and `onboarding` for
+  the first task from the onboarding wizard. Otherwise it is the acting kind.
+- `task.completed` and `task.blocked` are sent when a task's status changes
+  from another value to `done` or `blocked`. Writing the same status again
+  sends nothing. `issueService.update` covers most writers. The two direct
+  writers that block a task (the dispatch check for unrunnable workspace
+  settings and execution recovery) call the same helper as a system write.
+  A new direct status writer must call it too.
+- `blocked_reason` is derived at the transition. A blocking task that is not
+  done gives `waiting_on_task`. A cancelled blocker counts, because it stays
+  unresolved until someone changes the relation. Otherwise, the unblock owner gives `waiting_for_person` or
+  `waiting_for_agent`. A system write with neither gives `needs_recovery`. A
+  person or agent write with neither gives `unspecified`.
+- `plan.created` is sent for the first revision of a task's `plan` document
+  only.
+- `plan.approved` is sent when a person or agent accepts a confirmation request
+  whose target is the task's `plan` document.
+- `model.connected` is sent for a new AI provider connection. A reconnect of an
+  existing connection does not send it.
+- `artifact.created` is sent for a new task work product. A work product
+  provider outside `paperclip`, `github`, `vercel`, and `s3` is sent as
+  `custom`, so a private service name never leaves the installation.
+
+The actor kind is `agent` when an agent acts, `user` when a person acts, and
+`system` when neither does.
+
+On Cloud direct delivery, each of these events also names the responsible
+person with `withTelemetryActor()` and `resolveTelemetryPerson()`: the task
+creator, else the task's responsible user, else the run owner (the acting
+person, the plan author, or the user who owns the model connection). A live
+request still wins. The self-hosted collector envelope does not change.
+
 ## Cloud Direct Delivery
 
 Self-hosted installs are unchanged. They post every batch to the collector,
@@ -143,6 +206,26 @@ exposes the `TelemetryTransport` seam on `TelemetryClient`:
   `source_ref_hashed` stays `true` for them.
 - The transport can capture per-event context at track time. That context is
   never added to the collector envelope.
+- Background work (heartbeat runs, routine runs, connection invocations, and
+  interactions) has no request. The server emit site wraps the track call in
+  `withTelemetryCompany(companyId, fn)` from
+  `server/src/telemetry-company-scope.ts`, with the company of the entity it
+  reports on. Only the direct transport reads this scope, and it uses it only
+  when no live request supplies a company. The collector envelope and the
+  dimensions do not change.
+- Agent-driven events (`agent.task_run`, `agent.task_completed`, and
+  `agent.first_heartbeat`) also name the person responsible for the work, with
+  `withTelemetryActor({ companyId, person }, fn)` and
+  `resolveTelemetryPerson()` from the same file. The person is the user who
+  created the task, else the task's responsible user (who assigned or
+  delegated it), else the user who owns the run (for `agent.first_heartbeat`,
+  the user who created the agent). The emit site reads these ids from rows it
+  already loads; the transport does no database reads. A signed-in user on a
+  live request always wins over this scope. With no person, the event stays on
+  `workspace:<stackId>` with `$process_person_profile: false`. Every direct
+  event carries `attributed_via`: `request`, `task_creator`, `task_assigner`,
+  `run_owner`, or `none`. The collector path never reads this scope, so the
+  self-hosted envelope does not change.
 
 Cloud is Paperclip's own service under the Cloud terms, so its events carry
 real identifiers: raw agent and task ids, the stack id, and the company and
