@@ -351,6 +351,16 @@ function runCancellationFenceSql(input: {
     jsonb_build_object('startupCancellation', ${startupFence})`;
 }
 
+export function shouldResumeStrandedQueueAfterRelease(
+  source: { errorCode: string | null | undefined; error: string | null | undefined } | undefined,
+  requested = false,
+) {
+  return requested || (
+    source?.errorCode === "legacy_disposition_repair_suppressed" &&
+    source.error === "Disposition repair suppressed: existing_execution"
+  );
+}
+
 /** Run control binds cancellation, resource release, and saved-input resumption. */
 export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunControlDependencies) {
   const {
@@ -1023,6 +1033,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     try {
       const [source] = await db.select({
         errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
         livenessState: heartbeatRuns.livenessState,
         resultJson: sql<Record<string, unknown>>`jsonb_build_object(
           'configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete'
@@ -1031,6 +1042,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
       ));
       const sourceHandoff = await pendingCaseHandoffForRun(db, run.id, run.companyId);
+      const existingExecutionRepairSuppressed = shouldResumeStrandedQueueAfterRelease(source);
       const { postCommitEffects } = await wakeQueue.releaseIssueExecution({
         companyId: run.companyId,
         runId: run.id,
@@ -1038,7 +1050,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         // A durable authentication card owns recovery. This covers the review path,
         // while continuation classification blocks periodic generic retries.
         suppressImmediateRecovery: options.suppressImmediateRecovery || isAiAuthenticationBlocked(source) || Boolean(sourceHandoff),
-        ...(options.resumeStrandedQueue ? { resumeStrandedQueue: true } : {}),
+        ...(shouldResumeStrandedQueueAfterRelease(source, options.resumeStrandedQueue)
+          ? { resumeStrandedQueue: true }
+          : {}),
+        ...(existingExecutionRepairSuppressed ? { existingExecutionRepairSuppressed: true } : {}),
       });
       if (options.deferredPostCommitEffects) {
         options.deferredPostCommitEffects.push(...postCommitEffects);
