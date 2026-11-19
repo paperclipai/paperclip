@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { appendFile, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -122,7 +122,7 @@ test("atomically publishes while the previous executable is running", { skip: pr
   await withOwnedChildren(root, async start => {
     await stageRunnerBinary(sleep, destination);
     const previous = await stat(destination);
-    const old = start(destination, ["-e", "setTimeout(() => {}, 30_000)"]);
+    const old = start(destination, ["30"], "sleep");
     await old.spawned;
     await stageRunnerBinary(sleep, destination);
     const published = await stat(destination);
@@ -131,7 +131,7 @@ test("atomically publishes while the previous executable is running", { skip: pr
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
     assert.deepEqual(await readdir(root), ["paperclip-runnerd"]);
-    const next = start(destination, ["-e", "process.exit(0)"]);
+    const next = start(destination, ["0"], "sleep");
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });
@@ -157,7 +157,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     await mkdir(path.dirname(source), { recursive: true });
     await writeFile(source, "fn main() {}\n");
     await mkdir(path.dirname(built), { recursive: true });
-    await copyHostFixture(process.execPath, built);
+    await copyHostFixture("/bin/sh", built);
     const previousBuild = path.join(root, "previous-build");
     await copyHostFixture(await standaloneSleep(), previousBuild);
     await stageRunnerBinary(previousBuild, hostTarget);
@@ -185,7 +185,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     const manifestPath = path.join(binaryRoot, "release-manifest.json");
     const manifest = JSON.stringify({ schema: "paperclip.runner.release-binaries.v1", sourceRevision: "a".repeat(40), platforms });
     await writeFile(manifestPath, manifest);
-    const old = start(hostTarget, ["-e", "setTimeout(() => {}, 30_000)"]);
+    const old = start(hostTarget, ["30"], "sleep");
     await old.spawned;
     const requirement = { repoRoot: root, nativeRunnerRequired: true };
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), true);
@@ -205,7 +205,7 @@ test("a source rebuild selects fresh dev bytes while preserving release binaries
     assert.equal(paperclipRunnerBinaryNeedsBuild(requirement), false);
     assert.equal(old.child.exitCode, null);
     assert.equal(old.child.signalCode, null);
-    const next = start(selected.binary, ["-e", "process.exit(0)"]);
+    const next = start(selected.binary, ["-c", "exit 0"]);
     await next.spawned; await next.closed;
     assert.equal(next.child.exitCode, 0);
   });
@@ -215,7 +215,7 @@ test("a second spawn error still retires the live old child and removes its fixt
   const root = await mkdtemp(path.join(tmpdir(), "runnerd-stage-spawn-failure-"));
   let old;
   await assert.rejects(withOwnedChildren(root, async start => {
-    old = start(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"]); await old.spawned;
+    old = start("/bin/sleep", ["30"]); await old.spawned;
     const failed = start(path.join(root, "missing-executable"), []);
     await failed.spawned;
   }), { code: "ENOENT" });
