@@ -446,7 +446,7 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(deadlines).toHaveLength(1);
     // Too soon: spaced, not repaired and not reported as fine.
     clock = new Date(clock.getTime() + 60_000);
-    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "deferred_rate_limit", verdict: { kind: "violation" } });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "waiting_unchanged", verdict: { kind: "violation" } });
     // After the spacing it is admitted; the queue later declines the claim
     // (for example behind the old run's pending cleanup) and the wake is skipped.
     admit = true;
@@ -472,8 +472,9 @@ describePostgres("assigned-work invariant sweep", () => {
       evidence: { runId: run.id, originalFailureCode: "process_lost" }, nextAction: "Reconcile the stopped run.", attemptCount: 1 });
     const heartbeat = heartbeatService(db);
     try {
+      // The wake became the continuation, so the sweep counts it as repaired.
       const first = await heartbeat.checkAssignedWorkInvariant({ companyId: f.companyId, issueId });
-      expect(first).toMatchObject({ outcome: "enqueue_refused", verdict: { kind: "violation" } });
+      expect(first).toMatchObject({ outcome: "repaired", verdict: { kind: "violation" } });
       const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         sqlTag`${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')`));
       expect(queued).toHaveLength(0);
@@ -482,7 +483,7 @@ describePostgres("assigned-work invariant sweep", () => {
       expect(pending).toHaveLength(0);
       const [entry] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, issueId),
         eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
-      expect(entry.details).toMatchObject({ outcome: "not_started" });
+      expect(entry.details).toMatchObject({ outcome: "queued", continuedFromSavedWork: "true" });
       const [record] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
         sqlTag`${issueRecoveryActions.evidence}->'freshContinuation' is not null`));
       expect(record!.evidence).toMatchObject({ continuationDelivery: "pending" });

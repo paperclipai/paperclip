@@ -38,8 +38,8 @@ vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({
   selectedCompanyId: "company-1", loading: false, setSelectedCompanyId: vi.fn(),
 }) }));
 vi.mock("../context/SidebarContext", () => ({ useSidebar: () => ({
-  isMobile: false, sidebarOpen: true, collapsed: false, peeking: false,
-  setSidebarOpen: vi.fn(), setPeeking: vi.fn(), setForceCollapsed: vi.fn(), setRouteRequestsCollapsed: vi.fn(),
+  isMobile: false, sidebarOpen: true,
+  setSidebarOpen: vi.fn(),
 }) }));
 vi.mock("../hooks/useKeyboardShortcuts", () => ({ useKeyboardShortcuts: () => undefined }));
 vi.mock("../hooks/useCompanyPageMemory", () => ({ useCompanyPageMemory: () => undefined }));

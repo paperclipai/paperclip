@@ -417,6 +417,7 @@ export function FailedRunInboxRow({
           project_access: "Agent needs project access",
           confirm_owner_stop: "Confirm the previous server stopped",
           confirm_run_stopped: "Confirm the previous run stopped",
+          unblock: "The agent needs your help",
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || (interruption.canRetry && interruption.retryAction !== "move_forward");
   const showUnreadSlot = unreadState !== null;

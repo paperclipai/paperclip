@@ -41,7 +41,7 @@ import {
 } from "./legacy-continuation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController, legacyControllerBootId, liveLegacyControllerExpiresAt } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
-import { instanceSettingsService } from "../instance-settings.js";
+import { NATIVE_STATUS_COMMITTER_ACTOR_ID } from "../issue-rewake-throttle.js";
 import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
 import {
   and,
@@ -127,7 +127,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
-import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { issueRecoveryActionService, SOURCE_TERMINAL_RESOLUTION } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
@@ -159,7 +159,8 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { evaluateAgentInvokabilityFromDb, type AgentOrgRow } from "../agent-invokability.js";
+import { createRecoveryPassReads, type RecoveryPassReads } from "./pass-reads.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -207,6 +208,17 @@ import {
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
+
+const strandedAgentFields = {
+  id: agents.id,
+  companyId: agents.companyId,
+  name: agents.name,
+  reportsTo: agents.reportsTo,
+  status: agents.status,
+  lifecycleState: agents.lifecycleState,
+  lifecycleHolds: agents.lifecycleHolds,
+};
+type StrandedAgent = { [K in keyof typeof strandedAgentFields]: (typeof agents.$inferSelect)[K] };
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
@@ -310,6 +322,8 @@ type LatestIssueRun =
       retryOfRunId?: string | null;
       scheduledRetryReason?: string | null;
       runnerProfileJson?: unknown;
+      runtimeMode?: string | null;
+      controllerBootId?: string | null;
     })
   | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & {
@@ -1039,9 +1053,31 @@ export function recoveryService(
   }
 
   async function isAgentInvokable(
-    agent: typeof agents.$inferSelect | null | undefined,
+    agent: AgentOrgRow | null | undefined,
   ) {
     return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+  }
+
+  async function readStrandedAgent(agentId: string, companyId: string) {
+    const agent: StrandedAgent | null = await db.select(strandedAgentFields).from(agents).where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    const invokable = agent && agent.companyId === companyId && !isAgentAwaitingSetup(agent)
+      ? await isAgentInvokable(agent) : false;
+    return { agent, invokable };
+  }
+
+  async function hasExternalReviewWait(issue: RecoveryIssue, pass?: RecoveryPassReads) {
+    if (pass?.issueIds.has(issue.id)) {
+      const key = `external-review-waits:${issue.companyId}`;
+      let waiting = pass.reads.get(key) as Promise<Set<string>> | undefined;
+      if (!waiting) {
+        waiting = listExternalReviewWaits(db, issue.companyId, [...pass.issueIds])
+          .then((waits) => new Set(waits.map((wait) => wait.issueId)));
+        pass.reads.set(key, waiting);
+      }
+      if ((await waiting).has(issue.id)) return true;
+    }
+    return (await listExternalReviewWaits(db, issue.companyId, [issue.id])).length > 0;
   }
 
   async function getLatestIssueRun(
@@ -1065,6 +1101,8 @@ export function recoveryService(
         retryOfRunId: heartbeatRuns.retryOfRunId,
         scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
         runnerProfileJson: heartbeatRuns.runnerProfileJson,
+        runtimeMode: heartbeatRuns.runtimeMode,
+        controllerBootId: heartbeatRuns.controllerBootId,
       })
       .from(heartbeatRuns)
       .where(
@@ -1174,8 +1212,11 @@ export function recoveryService(
    * a live execution; another process proves it with its unexpired controller
    * lease, which it clears once settlement (retry scheduling, claim release)
    * is done. This process's own lease without a live execution is stale. */
-  async function terminalRunSettlingUntil(companyId: string, runId: string): Promise<Date | null> {
+  async function terminalRunSettlingUntil(companyId: string, runId: string,
+    known?: { runtimeMode?: string | null; controllerBootId?: string | null }): Promise<Date | null> {
     if (deps.liveRunExecutions?.has(runId)) return new Date(Date.now() + 30_000);
+    if (known?.runtimeMode !== undefined && (known.runtimeMode !== "legacy" || !known.controllerBootId
+      || known.controllerBootId === legacyControllerBootId)) return null;
     const [run] = await db.select({ leaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
         eq(heartbeatRuns.runtimeMode, "legacy"), sql`${heartbeatRuns.controllerBootId} is not null`,
@@ -1218,7 +1259,15 @@ export function recoveryService(
         .where(
           and(
             eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            or(
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              and(
+                eq(agentWakeupRequests.requestedByActorType, "system"),
+                eq(agentWakeupRequests.requestedByActorId, NATIVE_STATUS_COMMITTER_ACTOR_ID),
+                inArray(agentWakeupRequests.status, ["queued", "claimed"]),
+                isNull(agentWakeupRequests.runId),
+              ),
+            ),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
             agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
           ),
@@ -1562,10 +1611,11 @@ export function recoveryService(
   async function hasPersistedDurableWaitPath(
     issue: RecoveryIssue,
     latestRun: LatestIssueRun,
+    pass?: RecoveryPassReads,
   ) {
     if (issue.monitorNextCheckAt) return true;
     if (issue.status === "in_review" && latestRun?.status === "succeeded" &&
-      (await listExternalReviewWaits(db, issue.companyId, [issue.id])).length > 0) return true;
+      await hasExternalReviewWait(issue, pass)) return true;
     if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
       await hasCommittedNativePlanWait(db, { companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId: latestRun.agentId })) return true;
     if (issue.status === "in_progress" && latestRun?.status === "succeeded" && latestRun.agentId === issue.assigneeAgentId &&
@@ -2832,7 +2882,7 @@ export function recoveryService(
     const now = new Date();
     const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
     return database.transaction(async (tx) => {
-      await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
+      await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId, issueId: input.issue.id });
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -3429,7 +3479,7 @@ export function recoveryService(
           created = Boolean(enqueuedRun);
         } else {
           scheduledRun = await db.transaction(async (tx) => {
-            await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
+            await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId, issueId: input.issue.id });
             const wakeup = await tx
               .insert(agentWakeupRequests)
               .values({
@@ -3670,7 +3720,8 @@ export function recoveryService(
           actionId: action.id,
           status: "resolved",
           outcome: "restored",
-          resolutionNote: "source_terminal",
+          resolutionNote: SOURCE_TERMINAL_RESOLUTION,
+          sourceTerminal: true,
         });
         if (resolved) {
           result.resolved += 1;
@@ -4205,6 +4256,18 @@ export function recoveryService(
         return null;
       }
 
+      if (input.recoveryCause === "configuration_incomplete" && input.latestRun) {
+        const [restored] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, current.companyId),
+          eq(issueRecoveryActions.sourceIssueId, current.id),
+          eq(issueRecoveryActions.cause, "configuration_incomplete"),
+          eq(issueRecoveryActions.status, "resolved"),
+          eq(issueRecoveryActions.outcome, "restored"),
+          sql`${issueRecoveryActions.evidence}->>'latestRunId' = ${input.latestRun.id}`,
+        )).limit(1);
+        if (restored) return null;
+      }
+
       // Acceptance holds the same issue lock before writing its successor.
       // An awaiting-release handoff need not change the issue's version or
       // owner, and generic recovery must not cancel that durable successor.
@@ -4719,7 +4782,7 @@ export function recoveryService(
         || await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) continue;
       // Another server is still settling the run: look again when its lease
       // lapses, since later generic skips may never reach their own check.
-      const settlingUntil = await terminalRunSettlingUntil(issue.companyId, run.id);
+      const settlingUntil = await terminalRunSettlingUntil(issue.companyId, run.id, latestRun);
       if (settlingUntil) {
         onDeferredDeadline?.(settlingUntil.getTime());
         handled.add(issue.id);
@@ -4751,6 +4814,7 @@ export function recoveryService(
     issueCreatedAtGte?: Date | null;
     skipExternalConversationSettlement?: boolean;
     skipRelatedRecovery?: boolean;
+    pass?: RecoveryPassReads;
   }) {
     const candidates = await db
       .select(recoveryIssueFields)
@@ -4800,6 +4864,8 @@ export function recoveryService(
       issueIds: [] as string[],
     };
 
+    const pass = opts?.pass ?? (candidates.length > 1
+      ? createRecoveryPassReads(candidates.filter((issue) => issue.status === "in_review").map((issue) => issue.id)) : undefined);
     const handledIssueIds = await resumeShutdownStoppedRetryPreparations(candidates, result, opts?.onDeferredDeadline);
 
     const candidateIssueIds = candidates.map((issue) => issue.id);
@@ -4851,7 +4917,6 @@ export function recoveryService(
             if (current) Object.assign(issue, current);
           }
         }
-        if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
           if (await deliverConversationComments(db, issue, deps.enqueueWakeup,
             { onDeferredDeadline: opts?.onDeferredDeadline }) === "deferred") {
@@ -4898,7 +4963,7 @@ export function recoveryService(
       // and releases the claim itself. Escalating in that window clears the
       // claim the retry needs. Re-check once its controller lease lapses.
       const settlingUntil = latestRun && isTerminalIssueRun(latestRun)
-        ? await terminalRunSettlingUntil(issue.companyId, latestRun.id) : null;
+        ? await terminalRunSettlingUntil(issue.companyId, latestRun.id, latestRun) : null;
       if (settlingUntil) {
         opts?.onDeferredDeadline?.(settlingUntil.getTime());
         result.skipped += 1;
@@ -4954,15 +5019,11 @@ export function recoveryService(
         }
       }
 
-      const agent = await getAgent(agentId);
+      const { agent, invokable: agentInvokable } = await readStrandedAgent(agentId, issue.companyId);
       if (agent?.companyId === issue.companyId && isAgentAwaitingSetup(agent)) {
         result.skipped += 1;
         continue;
       }
-      const agentInvokable =
-        agent && agent.companyId === issue.companyId
-          ? await isAgentInvokable(agent)
-          : false;
       if (
         agent?.status === "paused" &&
         agent.companyId === issue.companyId &&
@@ -5203,7 +5264,7 @@ export function recoveryService(
       }
       if (
         latestRun?.status === "succeeded" &&
-        (await hasPersistedDurableWaitPath(issue, latestRun))
+        (await hasPersistedDurableWaitPath(issue, latestRun, pass))
       ) {
         result.skipped += 1;
         continue;
@@ -6821,6 +6882,17 @@ export function recoveryService(
       if (!taskClosed && [issue.checkoutRunId, issue.executionRunId]
         .some(runId => runId !== null && pendingResumeRunIds.has(runId))) {
         continue;
+      }
+      if (!taskClosed) {
+        let settlingUntil: Date | null = null;
+        for (const runId of new Set([issue.checkoutRunId, issue.executionRunId])) {
+          const lockRun = runId ? runById.get(runId) : undefined;
+          if (lockRun && !settlingUntil) settlingUntil = await terminalRunSettlingUntil(issue.companyId, lockRun.id, lockRun);
+        }
+        if (settlingUntil) {
+          opts?.onDeferredDeadline?.(settlingUntil.getTime());
+          continue;
+        }
       }
 
       await deps.beforeStaleLockClear?.(issue.id);

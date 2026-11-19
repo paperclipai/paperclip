@@ -9,6 +9,7 @@ import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recov
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { logActivity } from "../activity-log.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { nativeRunNeverLaunchedRunner, settleUnchangedNativeWorkspace } from "../environment-lease-release-deferral.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { hasAcknowledgedNativeRunStopRequest } from "../acknowledged-native-stop.js";
@@ -161,7 +162,7 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     let retained = !retainFiles || alreadyRetained ? run : await recordRequiredWorkspaceRestoreFailure(tx as unknown as Db, run, { workspaceRestoreFailure: "restore_failed" }, source);
     if (!retained || retainFiles && !hasRequiredWorkspaceRecovery(retained.resultJson)) return;
     if (options.allowPreterminal && coordinator.phase === "observed") {
-      await notifyExecutionRunWork(tx, { companyId: run.companyId });
+      await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
       const [settled] = await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure",
         leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, nextAttemptAt: null,
         recoveryState: "blocked", failureCode: coordinator.failureCode ?? "native_continuation_requires_reconciliation", updatedAt: new Date(),
@@ -329,9 +330,16 @@ export function registerCancelledWorkspacePreservationWork(db: Db,
       eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
     ));
     if (finalization?.resultId && !stoppedAcceptedCopyback(finalization)) return null;
-    if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner)
+    if (finalization?.phase !== "terminal_failure" || finalization.leaseOwner) {
+      const ownerDeadline = finalization?.leaseOwner ? finalization.leaseExpiresAt?.getTime() ?? null : null;
+      if (ownerDeadline && ownerDeadline > Date.now()) return { ...entry, dueAt: ownerDeadline };
+      if (await nativeRunNeverLaunchedRunner(db, run.id, run.companyId)
+        && await settleUnchangedNativeWorkspace(db, run.id, run.companyId)) return null;
       return { ...entry, dueAt: Date.now() + 30_000 };
+    }
     if (await cancelledWorkspaceSource(db, run)) await preserveNativeFailedWorkspace(db, run, { allowPreterminal: true, requireCancelledStop: true });
+    else if (await nativeRunNeverLaunchedRunner(db, run.id, run.companyId)
+      && await settleUnchangedNativeWorkspace(db, run.id, run.companyId)) return null;
     const [current] = await db.select().from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
     const currentControllerDeadline = current?.controllerLeaseExpiresAt?.getTime();

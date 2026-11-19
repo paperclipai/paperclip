@@ -69,6 +69,18 @@ function createRecordingTraceContext(): {
 }
 
 describe("native runner performance trace", () => {
+  it("records the named check of a failed measurement on its run event", async () => {
+    const {traceContext}=createRecordingTraceContext();
+    const events: Array<Record<string, unknown>> = [];
+    const trace=createNativeRunTrace({runId:"provider-pack-check",startedAtMs:1000,traceContext,
+      onEvent:async event=>{events.push(event.payload as Record<string, unknown>);}});
+    const rejected=Object.assign(new Error("runner_remote_provider_artifact_incompatible: incompatible"),{failureCheck:"contract_digest"});
+    await expect(trace.measure("provider_pack.compatibility",async()=>{throw rejected;},{attributes:{target:"image"}})).rejects.toBe(rejected);
+    await expect(trace.measure("provider_pack.verify",async()=>{throw Object.assign(new Error("x"),{failureCheck:"has space"});})).rejects.toThrow("x");
+    await trace.finish("ok");
+    expect(events.find(event=>event.span==="provider_pack.compatibility")).toMatchObject({outcome:"failed",target:"image",check:"contract_digest"});
+    expect(events.find(event=>event.span==="provider_pack.verify")).not.toHaveProperty("check");
+  });
   it("projects a full durable diagnostic batch without waiting on duplicate run-log writes", async () => {
     const {traceContext, spans}=createRecordingTraceContext();
     let release!: () => void;

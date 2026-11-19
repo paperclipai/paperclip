@@ -901,6 +901,34 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     },
   );
 
+  it("cancels an environment-blocker fresh-session retry whose task is reassigned before adapter dispatch", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({ id: replacementAgentId, companyId, name: "ReplacementCoder", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Environment blocker retry reassigned at final dispatch",
+      status: "in_progress", priority: "medium", assigneeAgentId: agentId });
+    const { runId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "native_environment_blocker",
+      invocationSource: "automation", scheduledRetryReason: "native_environment_blocker",
+      contextExtras: { retryReason: "native_environment_blocker", forceFreshSession: true } });
+    let guarded = false;
+    beforeContinuationDispatchCheck = async ({ runId: guardedRunId }) => {
+      if (guardedRunId !== runId) return;
+      guarded = true;
+      await db.update(issues).set({ assigneeAgentId: replacementAgentId, updatedAt: new Date() }).where(eq(issues.id, issueId));
+    };
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(guarded).toBe(true);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
   it("rejects ownership changes immediately before the final continuation handoff", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

@@ -36,9 +36,11 @@ import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-
 import { createNativeControllerRecovery, NATIVE_CONTROLLER_RECOVERY_MAX_BYTES, type NativeControllerCompatibility } from "./native-controller-recovery.js";
 import { eligibleNativeTaskSessionPublication, publishNativeTaskSessionInTransaction, NATIVE_TASK_SESSION_PUBLICATION_KEY,
   type NativeTaskSessionPublicationContext, type NativeTaskSessionPublicationIssue } from "./native-task-session-publication.js";
+import { trackRunIntake } from "../run-intake-stall-watch.js";
 import { lockNativeRunnerCheckpointOwner, nativeRunnerCheckpointOwnerLock, validateNativeRunnerCheckpointOwner, inspectNativeRunnerUpgradeHeader, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
+import { recordRunEventCommitted } from "../server-metrics.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -124,6 +126,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
    * a delta's receipt settles; the receipt settles after its batch commits.
    */
   readonly pipelinesStreamingEvents = true;
+  readonly pipelinedEventTypes: ReadonlySet<PrpEvent["eventType"]> = new Set(["item.delta", "tool.execution.progressed"]);
   readonly #streamingBatchMs: number;
   #streamingBatch: PendingStreamingEvent[] = [];
   #streamingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -132,7 +135,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   /** Deltas queued or committing. Other operations wait only when some are; otherwise they start at once. */
   #streamingEventsPending = 0;
   /**
-   * False until a delta with text commits after the latest other event. Until
+   * False until a delta with text is appended after the latest other event. Until
    * then each delta commits at once, so the first text of an item, and the
    * time to first token, never wait for the batch timer.
    */
@@ -397,6 +400,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
+    const eventType = (value as { eventType?: unknown }).eventType;
+    return trackRunIntake(this.#binding.runId, "received", typeof eventType === "string" ? eventType : "unknown",
+      () => this.#appendEvent(value, options));
+  }
+
+  async #appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal; deferPostCommitObservers?: true; streaming?: true }) {
     const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
     this.#assertActive(options);
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
@@ -466,7 +475,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       },
       assertWritable: () => this.#assertActive(options),
     };
-    if (event.eventType === "item.delta" && !options?.deferPostCommitObservers) {
+    if (this.pipelinedEventTypes.has(event.eventType) && !options?.deferPostCommitObservers) {
       return this.#appendStreamingEvent({ event, input, options, startedAtMs: persistenceStartedAt, startedClock: persistenceClock },
         options?.streaming === true);
     }
@@ -476,10 +485,11 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     this.#assertActive(options);
     const pendingObservation = this.#deferredEventObservers.get(observerKey);
     const persisted = await appendHeartbeatRunEvent(this.#db, input);
+    const committedAtMs = Date.now();
     this.#assertActive(options);
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
     let observation = pendingObservation ?? this.#deferredEventObservers.get(observerKey);
-    if (!observation) observation = this.#observePersistedEvent(event, persisted, persistenceStartedAt, persistenceEndedAt);
+    if (!observation) observation = this.#observePersistedEvent(event, persisted, persistenceStartedAt, persistenceEndedAt, committedAtMs);
     if (options?.deferPostCommitObservers) {
       this.#deferredEventObservers.set(observerKey, observation);
       void observation.then(() => {
@@ -503,9 +513,11 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     persisted: AppendHeartbeatRunEventResult,
     persistenceStartedAt: number,
     persistenceEndedAt: number,
+    committedAtMs: number,
   ): Promise<void> {
     try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
     if (persisted.disposition === "committed") {
+      recordRunEventCommitted(event.emittedAt, committedAtMs);
       try {
         publishLiveEvent({
           companyId: this.#binding.companyId,
@@ -543,7 +555,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return new Promise<AppendReceipt>((resolve, reject) => {
       this.#streamingBatch.push({ ...pending, resolve, reject });
       this.#streamingEventsPending += 1;
-      if (!streaming || !this.#streamedSinceBoundary || this.#streamingBatch.length >= STREAMING_EVENT_BATCH_MAX) {
+      if (pending.event.eventType !== "item.delta") this.#streamedSinceBoundary = false;
+      const flushNow = !streaming || !this.#streamedSinceBoundary || this.#streamingBatch.length >= STREAMING_EVENT_BATCH_MAX;
+      if (typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0) {
+        this.#streamedSinceBoundary = true;
+      }
+      if (flushNow) {
         void this.#flushStreamingEvents();
       } else {
         this.#streamingTimer ??= setTimeout(() => { void this.#flushStreamingEvents(); }, this.#streamingBatchMs);
@@ -565,9 +582,6 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         this.#streamingFlushQueued = false;
         const batch = this.#streamingBatch;
         this.#streamingBatch = [];
-        if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
-          this.#streamedSinceBoundary = true;
-        }
         try { await this.#commitStreamingEvents(batch); }
         finally { this.#streamingEventsPending -= batch.length; }
       });
@@ -590,11 +604,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       for (const pending of batch) pending.reject(error);
       return;
     }
+    const committedAtMs = Date.now();
     for (const [index, pending] of batch.entries()) {
       const persisted = receipts[index]!;
       const endedAt = pending.startedAtMs + performance.now() - pending.startedClock;
       try {
-        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt);
+        await this.#observePersistedEvent(pending.event, persisted, pending.startedAtMs, endedAt, committedAtMs);
       } catch (error) {
         pending.reject(error);
         continue;

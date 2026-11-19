@@ -29,6 +29,7 @@ import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService }
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { RemoteWorkspacePreparationTimeoutError } from "../services/remote-workspace-transport.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_DIRECTORY_TEST_DATABASE_URL");
 
@@ -354,6 +355,31 @@ describe("persistent agent directories", () => {
         expect(await fs.readFile(path.join(root, "memory.txt"), "utf8")).toBe("last save");
         expect(worker.nextWakeAt()).toBeNull();
       } finally { release(); await foreground; removes.mockRestore(); await worker.stop(); }
+    });
+    it("keeps a cleanup pending without an error while another server holds the agent directory lock", async () => {
+      const copy = await run();
+      await db.update(agentInstructionWorkingCopies).set({ location: `remote:${randomUUID()}` })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      await stopped(copy, new Date(Date.now() - 1000));
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+      const held = await db.$client.reserve();
+      const lockKey = `agent-directory:${companyId}:${agentId}`;
+      await held`select pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+      const errors: unknown[] = [], worker = coordinator(() => true, () => true, error => errors.push(error));
+      try {
+        const before = Date.now();
+        await copies.registerDirectoryCleanupWork(worker, () => true, async () => true).ready;
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(errors).toEqual([]);
+        const pending = (await copies.get(companyId, copy.runId))!;
+        expect(pending.receipt?.cleanupPending).not.toBe(false);
+        expect(pending.nextAttemptAt!.getTime()).toBeGreaterThan(before);
+      } finally {
+        await worker.stop();
+        await held`select pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
+        held.release();
+        vi.unstubAllEnvs();
+      }
     });
     it("reactivates from the real worktree setting without polling disabled policy", async () => {
       const copy = await run(); await stopped(copy);
@@ -911,7 +937,8 @@ describe("persistent agent directories", () => {
     const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "fixture failure", pid: null, startedAt: null });
     try {
       await expect(copies.prepare({ ...target(), runId, cwd: home, target: { kind: "remote", transport: "ssh", environmentId: randomUUID(), remoteCwd: "/fixture/task",
-        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd: "/fixture/task", remoteWorkspacePath: "/fixture/task", privateKey: null, knownHosts: null, strictHostKeyChecking: true } } })).rejects.toThrow("Could not exclude");
+        spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd: "/fixture/task", remoteWorkspacePath: "/fixture/task", privateKey: null, knownHosts: null, strictHostKeyChecking: true } } })).rejects.toThrow("Could not exclude agent files from task Git staging (reason=exit_1)");
+      expect(shell.mock.calls.filter(([, , command]) => command.includes("Unsafe runtime exclusion"))).toHaveLength(1);
       const row = (await copies.get(companyId, runId))!;
       expect(row.state).toBe("unavailable");
       expect(row.receipt?.baseline).toBeUndefined();
@@ -1448,6 +1475,44 @@ describe("persistent agent directories", () => {
       expect(restore).toHaveBeenCalledWith(expect.objectContaining({ remoteDir: copy.executionRoot, restoreGitHistory: false }));
       expect(await fs.readFile(path.join(root, "ssh-note.txt"), "utf8")).toBe("persistent SSH file");
     } finally { stage.mockRestore(); restore.mockRestore(); exclude.mockRestore(); }
+  });
+
+  describe("Git exclusion on a slow remote", () => {
+    const timedOut = { exitCode: null, signal: null, timedOut: true, stdout: "", stderr: "", pid: null, startedAt: null };
+    const succeeded = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null };
+    const sshTarget = (remoteCwd: string) => ({ kind: "remote" as const, transport: "ssh" as const, environmentId: randomUUID(), remoteCwd,
+      spec: { host: "unused.invalid", port: 22, username: "test", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } });
+    const exclusions = (shell: { mock: { calls: Parameters<typeof executionTargetTools.runAdapterExecutionTargetShellCommand>[] } }) =>
+      shell.mock.calls.filter(([, , command]) => command.includes("Unsafe runtime exclusion"));
+
+    it("retries a timed-out exclusion and stages the agent files", async () => {
+      const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValueOnce(timedOut).mockResolvedValue(succeeded);
+      const stage = vi.spyOn(ssh, "syncDirectoryToSsh").mockImplementation(async input => {
+        await fs.mkdir(path.dirname(input.remoteDir), { recursive: true });
+        await fs.cp(input.localDir, input.remoteDir, { recursive: true });
+      });
+      try {
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+        const copy = (await copies.prepare({ companyId, agentId, runId, cwd: home, target: sshTarget(path.join(home, "slow-task")) }))!;
+        expect(copy.state).toBe("prepared");
+        expect(exclusions(shell).map(([, , , options]) => options.timeoutSec)).toEqual([30, 30]);
+        expect(stage).toHaveBeenCalledWith(expect.objectContaining({ remoteDir: copy.executionRoot }));
+      } finally { stage.mockRestore(); shell.mockRestore(); }
+    });
+
+    it("names the timeout after the last attempt", async () => {
+      const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue(timedOut);
+      try {
+        const runId = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
+        const failure = copies.prepare({ companyId, agentId, runId, cwd: home, target: sshTarget("/fixture/slow-task") });
+        await expect(failure).rejects.toThrow("Could not exclude agent files from task Git staging (reason=timed_out)");
+        await expect(failure).rejects.toBeInstanceOf(RemoteWorkspacePreparationTimeoutError);
+        expect(exclusions(shell)).toHaveLength(3);
+        expect((await copies.get(companyId, runId))!.state).toBe("unavailable");
+      } finally { shell.mockRestore(); }
+    });
   });
 
   it("deduplicates concurrent stopped callbacks and discards completed operational snapshots", async () => {

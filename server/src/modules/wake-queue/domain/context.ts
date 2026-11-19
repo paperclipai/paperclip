@@ -89,6 +89,23 @@ export function wakeMustNotJoinActiveRun(
     wakeChatConversationsConflict(activeRunContext, wakeContext);
 }
 
+const WAKE_REASONS_KEY = "wakeReasons";
+
+function readWakeReasons(context: unknown): string[] {
+  const parsed = parseObject(context);
+  const listed = Array.isArray(parsed[WAKE_REASONS_KEY]) ? parsed[WAKE_REASONS_KEY] as unknown[] : [];
+  return [...listed, parsed.wakeReason].flatMap((value) => readNonEmptyString(value) ?? []);
+}
+
+export function withMergedWakeReasons(
+  merged: Record<string, unknown>,
+  existing: unknown,
+  incoming: unknown,
+): Record<string, unknown> {
+  const reasons = [...new Set([...readWakeReasons(existing), ...readWakeReasons(incoming)])];
+  return reasons.length > 1 ? { ...merged, [WAKE_REASONS_KEY]: reasons } : merged;
+}
+
 export function hasRetainedExternalChatRetry(context: unknown): boolean {
   const active = parseObject(context);
   const activeSource = readNonEmptyString(active.source);
@@ -97,7 +114,7 @@ export function hasRetainedExternalChatRetry(context: unknown): boolean {
       (activeSource === "issue.interaction.respond" && active.externalChatContinuation === true));
 }
 
-function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
+export function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
   return readNonEmptyString(payload?.mutation) === "interaction";
 }
 

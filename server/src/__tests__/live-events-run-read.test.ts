@@ -142,6 +142,12 @@ describe("live-event run read boundaries", () => {
       expect(await deliver(run.id, issueId)).toMatchObject([{ payload: { runId: run.id, issueId, status: "running" } }]);
       expect(queries.length - batchStart).toBeLessThanOrEqual(6);
       expect(queries.slice(batchStart).filter(query => query.startsWith("select ") && query.includes('from "issues"')).length).toBeLessThanOrEqual(2);
+      const [parent] = await db.insert(issues).values({ companyId, title: "Readable parent" }).returning();
+      await db.update(issues).set({ parentId: parent.id }).where(eq(issues.id, issueId));
+      expect(await deliver(run.id, issueId)).toMatchObject([{ payload: { recentSubtaskParentIds: [parent.id] } }]);
+      await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, parent.id));
+      expect(await deliver(run.id, issueId)).toMatchObject([{ payload: { recentSubtaskParentIds: [] } }]);
+      await db.update(issues).set({ parentId: null }).where(eq(issues.id, issueId));
       expect(await deliver(hiddenRun.id, issueId)).toEqual([]);
       expect(await deliver(run.id, hiddenIssueId)).toEqual([]);
       expect(await deliver(run.id, randomUUID())).toEqual([]);
@@ -164,7 +170,7 @@ describe("live-event run read boundaries", () => {
 
       expect(reads).toHaveLength(deliveries);
       for (const query of reads) {
-        expect(query).toMatch(/^select "company_id", "scope_kind", "issue_id" from "heartbeat_runs"/);
+        expect(query).toMatch(/^select "heartbeat_runs"\."company_id", "heartbeat_runs"\."scope_kind", "heartbeat_runs"\."issue_id", "issues"\."parent_id" from "heartbeat_runs"/);
         expect(query).not.toMatch(/context_snapshot|runner_profile_json|stdout_excerpt|result_json/);
       }
       expect(JSON.stringify(messages)).not.toMatch(/private-context|private-profile|private-output/);

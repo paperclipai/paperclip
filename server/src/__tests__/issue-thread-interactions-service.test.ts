@@ -44,6 +44,7 @@ import {
 } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
+import * as productTelemetry from "../services/product-telemetry.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
 
@@ -3235,8 +3236,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: { version: 1, prompt: "Accept this plan?", target },
     }, { agentId });
 
+    const planApproved = vi.spyOn(productTelemetry, "emitPlanApprovedAfterCommit");
     const accepted = await interactionsSvc.acceptInteraction(acceptIssueScope(issueId, companyId, goalId), created.id, {}, { userId: "local-board" });
 
+    expect(planApproved).toHaveBeenCalledExactlyOnceWith({
+      companyId,
+      actor: { userId: "local-board" },
+      startsExecution: true,
+      task: { createdByUserId: null, responsibleUserId: null },
+    });
+    planApproved.mockRestore();
     expect(accepted.interaction).toMatchObject({
       id: created.id,
       status: "accepted",
@@ -3267,6 +3276,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       assigneeAgentId: agentId,
     }).where(eq(issues.id, issueId));
 
+    const planApproved = vi.spyOn(productTelemetry, "emitPlanApprovedAfterCommit");
     const nonPlan = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
       payload: { version: 1, prompt: "Accept this unrelated decision?" },
@@ -3274,6 +3284,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await interactionsSvc.acceptInteraction(acceptIssueScope(issueId, companyId, goalId), nonPlan.id, {}, {
       userId: "local-board",
     });
+    expect(planApproved).not.toHaveBeenCalled();
+    planApproved.mockRestore();
     await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
       .resolves.toBe("planning");
 
@@ -3477,6 +3489,88 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(listed[0]?.result).toBeNull();
     expect(listed[0]?.status).toBe("cancelled");
   });
+
+  it("reads an old authorization target and saves follow-up comments without resolving the request", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Saved authorization target");
+    const key = `connection:https://mcp.example.test/${"connection/".repeat(25)}:user:local-board`;
+    const [card] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId, kind: "request_confirmation", status: "pending",
+      continuationPolicy: "wake_assignee", requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only", createdByUserId: "local-board",
+      payload: { version: 1, prompt: "Connect your account to continue",
+        target: { type: "custom", key, label: "Personal connection ".repeat(10), href: "/apps/example/permissions" } },
+    }).returning();
+
+    expect((await interactionsSvc.listForIssue(issueId))[0]).toMatchObject({
+      id: card.id, status: "pending", effectiveResolverPolicy: "human_only",
+      payload: { target: { key } },
+    });
+    for (const body of ["How do I connect it?", "Please explain the next step."]) {
+      const saved = await issuesSvc.addComment(issueId, body, { userId: "local-board" }, {
+        clientRequestId: randomUUID(),
+      });
+      expect(await db.select().from(issueComments).where(eq(issueComments.id, saved.id)))
+        .toMatchObject([{ body }]);
+    }
+    // Reconstruct the reader as a reload would. A comment never supplies consent.
+    expect((await issueThreadInteractionService(db).listForIssue(issueId))[0]).toMatchObject({
+      id: card.id, status: "pending", result: null, payload: { target: { key } },
+    });
+    await expect(interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation", payload: { version: 1, prompt: "New request",
+        target: { type: "custom", key } },
+    }, { userId: "local-board" })).rejects.toThrow();
+    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId: randomUUID(), projectId: null, goalId: null }, card.id, {}, { userId: "local-board" }))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it.each([
+    { type: "custom", key: "" },
+    { type: "custom", key: "authorization", href: "javascript:alert(1)" },
+    { type: "issue_document", key: "plan", revisionId: "invalid" },
+  ] as const)("keeps invalid stored target structure protected: %j", async target => {
+    const { companyId, issueId } = await seedConfirmationIssue("Invalid target structure");
+    const [card] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId, kind: "request_confirmation", status: "pending",
+      continuationPolicy: "none", createdByUserId: "local-board",
+      payload: { version: 1, prompt: "Review this request", target },
+    }).returning();
+    await expect(interactionsSvc.listForIssue(issueId)).rejects.toThrow();
+    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId, projectId: null, goalId: null }, card.id, {}, { userId: "local-board" }))
+      .rejects.toThrow();
+    await expect(issuesSvc.addComment(issueId, "This request needs repair", { userId: "local-board" }))
+      .resolves.toMatchObject({ body: "This request needs repair" });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card.id)))[0])
+      .toMatchObject({ status: "pending", result: null });
+  });
+
+  it.each(["request_confirmation", "ask_user_questions"] as const)(
+    "keeps a malformed %s pending while saving a comment and superseding a valid sibling", async kind => {
+      const { companyId, issueId } = await seedConfirmationIssue("Malformed saved request");
+      const [malformed] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind, status: "pending", continuationPolicy: "wake_assignee",
+        createdByUserId: "local-board",
+        payload: sql`${JSON.stringify({ version: 1, prompt: null, supersedeOnUserComment: true })}::jsonb`,
+      }).returning();
+      const [valid] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind: "request_confirmation", status: "pending",
+        continuationPolicy: "none", createdByUserId: "local-board",
+        payload: { version: 1, prompt: "An optional question", supersedeOnUserComment: true },
+        createdAt: new Date(Date.now() - 1000),
+      }).returning();
+      const saved = await issuesSvc.addComment(issueId, "I need help with this request", { userId: "local-board" });
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, saved.id)))[0].body)
+        .toBe("I need help with this request");
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, malformed.id)))[0])
+        .toMatchObject({ status: "pending", result: null });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, valid.id)))[0])
+        .toMatchObject({ status: "expired", result: { outcome: "superseded_by_comment", commentId: saved.id } });
+      await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({ id: issueId, companyId }))
+        .resolves.toEqual([]);
+      await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId, projectId: null, goalId: null }, malformed.id, {}, { userId: "local-board" }))
+        .rejects.toThrow();
+    },
+  );
 
   it("derives legacy pending interactions as expired on closed issues without mutating the GET", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Legacy pending interaction on closed issue");

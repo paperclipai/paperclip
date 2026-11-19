@@ -669,8 +669,10 @@ export interface HarnessSession {
   usage?(): Promise<Record<string, unknown> | null>;
   transcript?(): Promise<HarnessTranscriptSnapshot>;
   snapshot(): Promise<PersistedHarnessSession>;
+  boundarySnapshot?(sourceSeq: number): PersistedHarnessSession | null;
   /** Return the confirmed released source, or false when active use was not released. */
   release?(): Promise<DurableRecoveryIdentity | false>;
+  retireReleasedController?(): Promise<{ source: DurableRecoveryIdentity; runner: { version: string; digest: string } } | null>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
   close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void>;

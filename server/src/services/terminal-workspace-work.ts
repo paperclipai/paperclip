@@ -3,6 +3,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 
 export const TERMINAL_WORKSPACE_RETRY_MS = 5 * 60 * 1000;
 export const MAX_TERMINAL_WORKSPACE_TARGETS = 50;
+export const TERMINAL_WORKSPACE_BACKSTOP_MS = 60 * 60 * 1000;
+export const TERMINAL_WORKSPACE_PLUGIN_HINT = "plugin-workspaces";
 
 export function notifyTerminalWorkspaceWork(transaction: object, hint?: string) {
   return notifyDeliveryWork(transaction, DELIVERY_QUEUES.terminalWorkspaces, hint);
@@ -36,6 +38,8 @@ export function registerTerminalWorkspaceWork(
     nextTerminalWorkspaceSweepAt(): Promise<number | null>;
     hasTerminalWorkspaceSweepContinuation(): boolean;
     terminalWorkspaceWorkSettled?(hints?: ReadonlySet<string>, options?: { targeted?: boolean }): void;
+    takeDueTerminalWorkspaceTargets?(): { workspaceIds: string[]; rotation: boolean };
+    listPluginTerminalWorkspaceIds?(): Promise<string[]>;
   },
   canRun: () => boolean,
 ) {
@@ -46,22 +50,31 @@ export function registerTerminalWorkspaceWork(
   // can take seconds per workspace, so the first sweep skips it and later
   // sweeps do it.
   let startupSweepStarted = false;
-  let rotationRequested = false;
   let dueAt: number | null = null;
   let lastRotationPageAt = 0;
-  const targetWorkspaceIds = new Set<string>(), targetIssueIds = new Set<string>();
+  let backstopArmed = false;
+  let lastFullRotationAt = Date.now();
+  let continuing = false;
+  let pluginRefresh = false;
+  const pendingWorkspaceIds = new Set<string>(), pendingIssueIds = new Set<string>();
+  const pendingCount = () => pendingWorkspaceIds.size + pendingIssueIds.size;
+  const takeTargets = (): TerminalWorkspaceTargets => {
+    const workspaceIds = [...pendingWorkspaceIds].slice(0, MAX_TERMINAL_WORKSPACE_TARGETS);
+    for (const id of workspaceIds) pendingWorkspaceIds.delete(id);
+    const issueIds = [...pendingIssueIds].slice(0, MAX_TERMINAL_WORKSPACE_TARGETS - workspaceIds.length);
+    for (const id of issueIds) pendingIssueIds.delete(id);
+    return { workspaceIds, issueIds };
+  };
   const worker = coordinator.register(DELIVERY_QUEUES.terminalWorkspaces, {
     retryMs: TERMINAL_WORKSPACE_RETRY_MS,
     onSettled: hints => {
-      const targets = terminalWorkspaceTargetsFromHints(hints);
-      for (const id of targets?.workspaceIds ?? []) targetWorkspaceIds.add(id);
-      for (const id of targets?.issueIds ?? []) targetIssueIds.add(id);
-      const overflow = targetWorkspaceIds.size + targetIssueIds.size > MAX_TERMINAL_WORKSPACE_TARGETS;
-      service.terminalWorkspaceWorkSettled?.(hints, { targeted: Boolean(targets) && !overflow });
-      if (!targets || overflow) {
-        rotationRequested = true;
-        targetWorkspaceIds.clear(); targetIssueIds.clear();
-      }
+      backstopArmed = true;
+      if (hints?.has(TERMINAL_WORKSPACE_PLUGIN_HINT)) pluginRefresh = true;
+      const scoped = hints ? new Set([...hints].filter(hint => hint !== TERMINAL_WORKSPACE_PLUGIN_HINT)) : undefined;
+      const targets = terminalWorkspaceTargetsFromHints(scoped);
+      for (const id of targets?.workspaceIds ?? []) pendingWorkspaceIds.add(id);
+      for (const id of targets?.issueIds ?? []) pendingIssueIds.add(id);
+      service.terminalWorkspaceWorkSettled?.(hints, { targeted: true });
     },
     run: async signal => {
       recovered = false;
@@ -71,32 +84,53 @@ export function registerTerminalWorkspaceWork(
       const startup = !startupSweepStarted;
       startupSweepStarted = true;
       const options = { compact: !startup, allowRemoteDeliveryChecks: !startup };
-      const targeted = targetWorkspaceIds.size + targetIssueIds.size > 0;
-      if (startup || due || rotationRequested || !targeted
-        || (service.hasTerminalWorkspaceSweepContinuation() && Date.now() >= lastRotationPageAt + 1000)) {
-        rotationRequested = false;
+      let prelude = false;
+      const legacyDue = due && !startup && !service.takeDueTerminalWorkspaceTargets;
+      if (due && !startup && service.takeDueTerminalWorkspaceTargets) {
+        const dueTargets = service.takeDueTerminalWorkspaceTargets();
+        for (const id of dueTargets.workspaceIds) pendingWorkspaceIds.add(id);
+        if (dueTargets.rotation) { prelude = true; backstopArmed = true; }
+      }
+      if (pluginRefresh && !startup && service.listPluginTerminalWorkspaceIds) {
+        pluginRefresh = false;
+        try {
+          for (const id of await service.listPluginTerminalWorkspaceIds()) pendingWorkspaceIds.add(id);
+        } catch (error) {
+          pluginRefresh = true;
+          throw error;
+        }
+      }
+      const backstopDue = backstopArmed && Date.now() >= lastFullRotationAt + TERMINAL_WORKSPACE_BACKSTOP_MS;
+      if (startup || backstopDue || legacyDue || (continuing && Date.now() >= lastRotationPageAt + 1000)) {
         lastRotationPageAt = Date.now();
+        if (!continuing) { lastFullRotationAt = Date.now(); backstopArmed = false; pluginRefresh = false; }
         return service.sweepTerminalWorkspaces(50, signal, options);
       }
-      const targets = { workspaceIds: [...targetWorkspaceIds], issueIds: [...targetIssueIds] };
-      targetWorkspaceIds.clear(); targetIssueIds.clear();
+      if (pendingCount() === 0 && !prelude) return { checked: 0 };
+      const targets = takeTargets();
       try {
         return await service.sweepTerminalWorkspaces(50, signal, { ...options, targets });
       } catch (error) {
-        rotationRequested = true;
+        for (const id of targets.workspaceIds) pendingWorkspaceIds.add(id);
+        for (const id of targets.issueIds) pendingIssueIds.add(id);
         throw error;
       }
     },
     hasPending: async () => {
+      if (canRun()) continuing = service.hasTerminalWorkspaceSweepContinuation();
       if (!canRun()) next = Date.now() + TERMINAL_WORKSPACE_RETRY_MS;
-      else if (service.hasTerminalWorkspaceSweepContinuation()) next = Math.max(Date.now(), lastRotationPageAt + 1000);
-      else if (rotationRequested || targetWorkspaceIds.size + targetIssueIds.size > 0) next = Date.now();
+      else if (continuing) next = Math.max(Date.now(), lastRotationPageAt + 1000);
+      else if (pendingCount() > 0 || pluginRefresh) next = Date.now();
       else {
         const deadline = await service.nextTerminalWorkspaceSweepAt();
         next = deadline === null ? null : deadline > Date.now()
           ? deadline : Date.now() + TERMINAL_WORKSPACE_RETRY_MS;
         dueAt = next;
         recovered = true;
+      }
+      if (backstopArmed && canRun()) {
+        const backstopAt = lastFullRotationAt + TERMINAL_WORKSPACE_BACKSTOP_MS;
+        next = next === null ? backstopAt : Math.min(next, backstopAt);
       }
       return false;
     },

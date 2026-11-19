@@ -44,7 +44,7 @@ type AdmissionFailure = { remaining: number; turnNeverIssued: boolean; environme
   sessionRoots: string[] };
 
 function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescriptorOnce?: { failed: boolean };
-  unretiredPredecessorOnce?: { failed: boolean; environmentId: string; taskBlocked?: boolean }; turnMessages?: Map<string, string>;
+  unretiredPredecessorOnce?: { failed: boolean; environmentId: string; taskBlocked?: boolean; repeat?: string[] }; turnMessages?: Map<string, string>;
   admissionFailure?: AdmissionFailure } = {}):
   NonNullable<HeartbeatServiceOptions["nativeSessionBackendFactory"]> {
   return execution => {
@@ -87,7 +87,8 @@ function nativeBackend(db: ReturnType<typeof createDb>, options: { failDescripto
           throw Object.assign(new Error("could not serialize access due to concurrent update"), { name: "PostgresError", code: "40001" });
         }
         const unretired = options.unretiredPredecessorOnce;
-        if (unretired && !unretired.failed) {
+        if (unretired && (!unretired.failed || unretired.repeat)) {
+          unretired.repeat?.push(execution.binding.runId);
           // Staging: this run resumed the task's reused sandbox, where
           // the previous run's warm Runner could not be retired before any
           // provider work. The executor reports that after its coordinator claim.
@@ -238,6 +239,41 @@ describe.skipIf(!support.supported)("heartbeat native pre-dispatch failure retry
     } finally {
       await heartbeat.drainActiveRunExecutions();
       await closeIdleWarmNativeSessionsForRestart();
+      await db.$client.end();
+    }
+  }, 90_000);
+
+  it("stops retrying with a truthful failure when the next attempt met the same unretired sandbox instead of a fresh one", async () => {
+    const { companyId } = fixture.current;
+    const db = createDb(fixture.current.temporary.connectionString, { maxConnections: 4 });
+    const [environment] = await db.insert(environments).values({ name: `reused-${randomUUID()}`, driver: "sandbox" }).returning();
+    const attempts: string[] = [];
+    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: nativeBackend(db,
+      { unretiredPredecessorOnce: { failed: false, environmentId: environment!.id, repeat: attempts } }) });
+    try {
+      const { issueId, runId } = await startTask(db, heartbeat);
+      const [first] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId)));
+      expect(first).toMatchObject({ scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 1 });
+      expect(await heartbeat.promoteDueScheduledRetries()).toMatchObject({ promoted: 1 });
+      await heartbeat.resumeQueuedRuns();
+      await waitForCondition("the second attempt to end", async () =>
+        (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first!.id)))[0]?.status === "failed");
+      await waitForCondition("the second attempt to settle", () => heartbeat.getTaskDrainStatus().quiescent);
+      expect(attempts).toEqual([runId, first!.id]);
+      const [second] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first!.id));
+      expect(second?.resultJson ?? {}).not.toHaveProperty("predecessorRetirementFallback");
+      expect(second?.error ?? "").not.toMatch(/fresh sandbox/i);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, first!.id)))).toHaveLength(0);
+      expect(await heartbeat.promoteDueScheduledRetries()).toMatchObject({ promoted: 0 });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(await taskInterruptionPresentation(db, issue!)).toMatchObject({ canRetry: true });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      await closeIdleWarmNativeSessionsForRestart();
+      await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(
+        eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry"])));
       await db.$client.end();
     }
   }, 90_000);
