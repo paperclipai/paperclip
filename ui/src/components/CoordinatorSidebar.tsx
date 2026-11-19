@@ -30,6 +30,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { agentChatPinKey } from "./AgentChatPin";
 import { PinnedNavigationList, type PinnedNavigationItem } from "./PinnedNavigationList";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { SidebarProjectTasks } from "./SidebarProjectTasks";
 
 const NO_RECENT_TASKS: never[] = [];
 const TASK_PIN_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -69,7 +70,7 @@ export function buildPinnedNavigationItems(
   }
   for (const project of projects) {
     const key = projectPinKey(project);
-    if (keys.has(key)) items.set(key, { key, to: `/projects/${projectRouteRef(project)}`, label: project.name, icon: <FolderOpen className="size-4" /> });
+    if (keys.has(key)) items.set(key, { key, to: `/projects/${projectRouteRef(project)}/issues`, label: project.name, icon: <FolderOpen className="size-4" />, project });
   }
   return pins.flatMap(key => {
     const item = items.get(key);
@@ -212,7 +213,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>
           </div>
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
-          {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
+          {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} userId={userId} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
           <FlyoutTrigger asChild><button type="button" aria-label="More workspace pages" className="design-sidebar-item flex w-auto items-center gap-2.5 rounded-lg py-1.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring"><MoreHorizontal className="size-4 shrink-0" /><span>More</span></button></FlyoutTrigger>
@@ -238,9 +239,12 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
             ? <RecentPinRow key={item.id} pinKey={agentChatPinKey(item.agent.companyId, item.agent.id)} label={item.agent.name} pins={pins}>
                 <SidebarNavItem className="design-sidebar-item" to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} iconNode={<AgentAvatar agent={item.agent} size={16} />} />
               </RecentPinRow>
-            : <RecentPinRow key={`${scope}:${item.id}`} pinKey={projectPinKey(item.project)} label={item.project.name} pins={pins}>
-                <SidebarNavItem className="design-sidebar-item" to={`/projects/${projectRouteRef(item.project)}`} label={item.project.name} icon={FolderOpen} />
-              </RecentPinRow>)}
+            : <SidebarProjectTasks key={`${scope}:${item.id}`} project={item.project} userId={userId}
+                renderTask={task => <RecentTaskPinRow task={task} pins={pins} />}>
+                <RecentPinRow pinKey={projectPinKey(item.project)} label={item.project.name} pins={pins}>
+                  <SidebarNavItem className="design-sidebar-item" to={`/projects/${projectRouteRef(item.project)}/issues`} label={item.project.name} icon={FolderOpen} />
+                </RecentPinRow>
+              </SidebarProjectTasks>)}
         </RecentNavigationList>
       </SidebarSection></div>}
       {children}
