@@ -289,6 +289,19 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
         const phase = spans.find((span) => span.name === `${prefix}.${name}`);
         expect(phase?.parentSpanContext?.spanId).toBe(connectionPhase.spanContext().spanId);
       }
+
+      exporter.reset();
+      await db.update(toolConnections).set({
+        agentInstructions: { enabled: true, text: "Use this tool for the assigned task." },
+      }).where(eq(toolConnections.id, fixture.connection.id));
+      await withRunExecutionTiming(fixture.run.id, () => gateway.resolveConnectionInstructionsForRun({
+        companyId: fixture.company.id, agentId: fixture.agent.id, runId: fixture.run.id,
+      }));
+      const instructionCatalog = exporter.getFinishedSpans().find((span) => span.name === transaction.name);
+      expect(instructionCatalog?.attributes).toMatchObject({
+        "paperclip.execution.catalogEntryCount": 10,
+        "paperclip.execution.connectionCount": 1,
+      });
     } finally {
       vi.unstubAllEnvs();
       trace.disable();
