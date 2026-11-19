@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { attentionApi } from "@/api/attention";
 import { useCoordinatorWorkspaceEnabled } from "./useCoordinatorWorkspaceEnabled";
 import { coordinatorAttentionQueryKey, coordinatorAttentionSummaryQueryKey, coordinatorAttentionTasksQueryKey } from "@/lib/coordinator-attention";
-import { useCoordinatorWorkspaceEnabled } from "./useCoordinatorWorkspaceEnabled";
 import { useLocation } from "@/lib/router";
 
 /** Navigation never starts a full-feed read. Reuse it on pages that own one;
@@ -24,7 +23,6 @@ export function useCoordinatorAttentionCount(companyId: string | null | undefine
   // Server generation time wins over a delayed older response arriving later.
   if (!canRead) return 0;
   const snapshots = feedPage ? [attention, tasks, summary] : taskPage ? [tasks, attention, summary] : [summary, attention, tasks];
-  if (!enabled || !userId || !companyId) return 0;
   return snapshots.filter(snapshot => snapshot.data !== undefined)
     .sort((a, b) => ((Date.parse(b.data?.generatedAt ?? "") || 0) - (Date.parse(a.data?.generatedAt ?? "") || 0))
       || b.dataUpdatedAt - a.dataUpdatedAt)[0]?.data?.deskBadgeCount ?? 0;
