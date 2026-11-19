@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import { sql } from "drizzle-orm";
+import { companySkillRepositorySnapshots, type Db } from "@paperclipai/db";
 import { readBuildCommit } from "../build-commit.js";
 import { loadConfig } from "../config.js";
 import { conflict, unauthorized } from "../errors.js";
@@ -9,9 +10,42 @@ import { cloudTenantPrimaryCompanyId, getCloudStackContext } from "./cloud-insta
 import { resolveDecisionSigningSecret } from "./decision-signing.js";
 import { assertEphemeralServerConfig, ephemeralServerEnabled, readEphemeralServerDataEligibility } from "./ephemeral-server-contract.js";
 
+const configurationBlockers: Array<[RegExp, string]> = [
+  [/shared S3 storage, durable agent files and shared UI assets/, "volume_free_storage_flags_required"],
+  [/PAPERCLIP_SECRETS_MASTER_KEY/, "volume_free_master_key_required"],
+  [/PAPERCLIP_DECISION_SIGNING_SECRET|decision/i, "volume_free_decision_key_required"],
+  [/PAPERCLIP_DATABASE_LISTEN_URL/, "volume_free_database_listener_required"],
+];
+
+function volumeFreeConfigurationBlocker(): { blocker: string | null; decisionSigningSecret?: string } {
+  let decisionSigningSecret: string;
+  try {
+    decisionSigningSecret = resolveDecisionSigningSecret({ allowCreate: false });
+  } catch {
+    return { blocker: "volume_free_decision_key_required" };
+  }
+  try {
+    assertEphemeralServerConfig(loadConfig(), { ...process.env, PAPERCLIP_EPHEMERAL_SERVER: "true",
+      PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret }, { allowMissingListener: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    return { blocker: configurationBlockers.find(([pattern]) => pattern.test(message))?.[1] ?? "volume_free_configuration_required" };
+  }
+  return { blocker: null, decisionSigningSecret };
+}
+
+async function onlineDataBlockers(db: Db) {
+  const { blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
+  const [localPackage] = await db.select({ id: companySkillRepositorySnapshots.id }).from(companySkillRepositorySnapshots)
+    .where(sql`${companySkillRepositorySnapshots.storage}->>'provider' = 'local_disk'`).limit(1);
+  return localPackage && !blockers.includes("skills_require_migration") ? [...blockers, "skills_require_migration"] : blockers;
+}
+
 export async function readOnlineEphemeralEnrollmentEligibility(db: Db) {
-  const { eligible, blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
-  return { eligible, blockers, ephemeralServer: ephemeralServerEnabled() };
+  const blockers = await onlineDataBlockers(db);
+  const eligible = blockers.length === 0;
+  const { blocker } = volumeFreeConfigurationBlocker();
+  return { eligible: eligible && !blocker, blockers: blocker ? [...blockers, blocker] : blockers, ephemeralServer: ephemeralServerEnabled() };
 }
 
 export async function prepareOnlineEphemeralEnrollment(db: Db, attemptId: string, control: Pick<CloudControlClaims, "requestId" | "exp">) {
@@ -21,11 +55,13 @@ export async function prepareOnlineEphemeralEnrollment(db: Db, attemptId: string
   if (!stackId || !commit || !deploymentId || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(deploymentId)) {
     throw conflict("Online enrollment requires a stamped managed Railway deployment");
   }
-  const eligibility = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
-  if (!eligibility.eligible) throw conflict("Durable data migration is incomplete", { blockers: eligibility.blockers });
-  const decisionSigningSecret = resolveDecisionSigningSecret({ allowCreate: false });
-  assertEphemeralServerConfig(loadConfig(), { ...process.env, PAPERCLIP_EPHEMERAL_SERVER: "true",
-    PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret });
+  const dataBlockers = await onlineDataBlockers(db);
+  if (dataBlockers.length) throw conflict("Durable data migration is incomplete", { blockers: dataBlockers });
+  const configuration = volumeFreeConfigurationBlocker();
+  if (configuration.blocker || !configuration.decisionSigningSecret) {
+    throw conflict("Volume-free configuration is incomplete", { blockers: [configuration.blocker ?? "volume_free_configuration_required"] });
+  }
+  const decisionSigningSecret = configuration.decisionSigningSecret;
   const receipt = {
     schema: "paperclip.online-ephemeral-enrollment.v1" as const,
     attemptId, stackId, commit, deploymentId, observedAt: new Date().toISOString(),

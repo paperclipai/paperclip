@@ -51,6 +51,7 @@ import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 
 import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_BACKLOG_SHARE_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
   recoveryContinuationHeldSince } from "./recovery-continuation-pacing.js";
+import { emitSystemTaskBlockedAfterCommit } from "./product-telemetry.js";
 
 export { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS,
   RECOVERY_CONTINUATION_MAX_HOLD_MS } from "./recovery-continuation-pacing.js";
@@ -910,6 +911,7 @@ export async function settleUnrecoverableExecutions(
               updatedAt: now,
             })
             .where(eq(issues.id, task.id)).returning();
+          await emitSystemTaskBlockedAfterCommit(tx, projected!, task.status);
           // Only a transition owned by this failure grants a recovery receipt.
           // An already-blocked task may have a separate human/dependency hold.
           if (task.status !== "blocked" && run.runtimeMode === "native") {

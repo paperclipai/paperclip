@@ -5,7 +5,8 @@ import {
   listResponsibilityAreasQuerySchema,
   updateResponsibilityAreaSchema,
 } from "@paperclipai/shared";
-import { forbidden, notFound } from "../errors.js";
+import { forbidden } from "../errors.js";
+import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import { validate } from "../middleware/validate.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
@@ -27,7 +28,7 @@ export function responsibilityAreaRoutes(db: Db) {
 
   async function assertResponsibilitiesEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   async function assertCompanyRead(req: Request, companyId: string) {

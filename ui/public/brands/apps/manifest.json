@@ -194,6 +194,13 @@
       "darkAsset": "/brands/apps/github-dark.svg"
     },
     {
+      "slug": "github-copilot",
+      "provider": "GitHub Copilot",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/github-copilot.svg",
+      "darkAsset": "/brands/apps/github-copilot-dark.svg"
+    },
+    {
       "slug": "gmail",
       "provider": "Gmail",
       "catalogVisible": true,

@@ -6,14 +6,18 @@ The [qualification record](../plans/2026-10-20-copilot-qualification-v47.json)
 identifies the tested build, retained failures, and remaining release gates.
 
 On first setup, choose **GitHub Copilot** when creating your first agent. In an
-existing organization, open **Connectors → GitHub → Connect Copilot**. Create a
-fine-grained personal access token owned by your personal GitHub account and
-add the **Copilot Requests** account permission. Organization-owned tokens and
-classic personal tokens are unsupported for this setup. Follow
+existing organization, open **Connectors → GitHub Copilot → Connect**. GitHub
+Copilot is its own connector, separate from the **GitHub** connector for
+repository and MCP access. Create a fine-grained personal access token owned
+by your personal GitHub account and add the **Copilot Requests** account
+permission. Organization-owned tokens and classic personal tokens are
+unsupported for this setup. Follow
 [GitHub's authentication instructions](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli).
 
 Save the token as a personal or shared AI connection and select the execution
-environment. Paperclip uses its encrypted credential store, grants, access
+environment. Copilot accounts saved before the split are listed under GitHub
+Copilot as well, and older `source=github&method=copilot-token` setup links
+redirect there. Paperclip uses its encrypted credential store, grants, access
 checks, reconnect/revocation, and activity logging. GitHub repository/MCP access
 uses its separate connection and grants. Copilot execution receives only the
 selected runtime token as `COPILOT_GITHUB_TOKEN`; ambient GitHub credentials

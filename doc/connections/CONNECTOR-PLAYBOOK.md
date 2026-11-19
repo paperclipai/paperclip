@@ -192,6 +192,10 @@ create the agent grant in the callback. Methods without sign-in (`none` or
 that grant; one connection serves exactly one agent, so connecting it for a
 second agent is a conflict. Finish never creates agent grants: the grant still
 gives no tools until finish or the installs API adds that agent's install.
+For a plugin-served connection (`transport: "plugin"`) the tool access policy
+denies an agent with no install for it (or for the company) with
+`deny_connection_not_installed`, before any profile, grant, trust rule or allow
+policy. A general `tools:use` grant does not replace the install.
 A later successful
 catalog refresh clears an earlier connection-health error without new consent.
 An agent caller denied for lacking its own grant must not change shared health

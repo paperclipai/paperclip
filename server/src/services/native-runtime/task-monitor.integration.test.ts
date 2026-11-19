@@ -115,6 +115,39 @@ describeEmbeddedPostgres("native task monitors", () => {
     await expect(authority.execute({ tool: "set_task_monitor", callId: randomUUID(), arguments: { idempotencyKey: "review", monitor: value.monitor } })).rejects.toThrow("review run");
   });
 
+  it("lets a low-trust reviewer schedule a self-wake on its own task without company runtime access", async () => {
+    const value = await fixture(), otherId = randomUUID();
+    const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustPreset: "low_trust_review",
+      trustBoundary: { mode: "low_trust_review", companyId: value.companyId, rootIssueId: value.issueId } } };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: value.issueId, executionPolicy: policy } })
+      .where(eq(heartbeatRuns.id, value.runId));
+    await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, value.issueId));
+    await db.insert(issues).values({ id: otherId, companyId: value.companyId,
+      title: "Owned task outside the review boundary", status: "in_progress", assigneeAgentId: value.agentId });
+    await expect(value.call({ idempotencyKey: "review-check", monitor: value.monitor }))
+      .resolves.toMatchObject({ taskId: value.issueId, monitor: { status: "scheduled" }, replayed: false });
+    expect((await value.read()).monitorNextCheckAt?.toISOString()).toBe(value.monitor.nextCheckAt);
+    for (const recoveryPolicy of ["create_recovery_issue", "escalate_to_board"]) {
+      await expect(value.call({ idempotencyKey: `review-${recoveryPolicy}`, monitor: { ...value.monitor, recoveryPolicy } }))
+        .rejects.toThrow(/runtime:manage/);
+    }
+    await expect(value.call({ taskId: otherId, idempotencyKey: "review-other", monitor: value.monitor })).rejects.toThrow();
+    expect((await db.select().from(issues).where(eq(issues.id, otherId)))[0]!.monitorNextCheckAt).toBeNull();
+    await expect(value.call({ idempotencyKey: "review-clear", monitor: null }))
+      .resolves.toMatchObject({ taskId: value.issueId, replayed: false });
+    expect((await value.read()).monitorNextCheckAt).toBeNull();
+    for (const existing of [{ scheduledBy: "board", recoveryPolicy: "escalate_to_board" },
+      { scheduledBy: "assignee", recoveryPolicy: "create_recovery_issue" }, { scheduledBy: "board" },
+      { scheduledBy: "assignee", serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME }]) {
+      await db.update(issues).set({ executionPolicy: { ...policy, monitor: { ...value.monitor, ...existing } },
+        monitorNextCheckAt: new Date(value.monitor.nextCheckAt) }).where(eq(issues.id, value.issueId));
+      for (const monitor of [null, value.monitor]) {
+        await expect(value.call({ idempotencyKey: `review-replace-${randomUUID()}`, monitor })).rejects.toThrow(/runtime:manage/);
+      }
+      expect((await value.read()).monitorNextCheckAt?.toISOString()).toBe(value.monitor.nextCheckAt);
+    }
+  });
+
   it("rechecks the responsible user's permissions before mutation and replay", async () => {
     const value = await fixture(), userId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { aiProviderRoutingSchema, aiRoutingHarness, isAiRoutingCompatible, type AiProviderRouting } from "./ai-provider-routing.js";
+import { aiConnectionCatalogSlug, aiProviderRoutingSchema, aiRoutingHarness, isAiRoutingCompatible, type AiProviderRouting } from "./ai-provider-routing.js";
 
 /** Runtime authentication is a separate transport, never a tool or channel. */
 export const connectionPurposeTransportSchema = z.discriminatedUnion(
@@ -69,6 +69,18 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object({ ...requirement, routing: aiProviderRoutingSchema.optional() }).strict();
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
+
+/**
+ * Catalog source of a saved AI connection. It reads the AI metadata, not the
+ * application, so accounts saved under an earlier catalog entry still resolve.
+ */
+export function aiConnectionSourceSlug(
+  connection: { connectionPurpose?: string | null; config?: Record<string, unknown> | null } | null | undefined,
+): string | null {
+  if (connection?.connectionPurpose !== "ai") return null;
+  const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
+  return metadata.success ? aiConnectionCatalogSlug(metadata.data.provider, metadata.data.routing) : null;
+}
 
 /** Existing integrations only. This table describes compatibility, never routing. */
 export const AI_CONNECTION_CAPABILITIES: Record<

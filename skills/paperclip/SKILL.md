@@ -272,6 +272,16 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 - **`message`** is one plain sentence in your own voice. Say "task" and "routine"; never "issue", cron, trigger or other internals.
 - The person sees a card with your offer and can accept or decline. Accepting creates the routine with you as its agent, in the task's project and under the task's responsibilities. You are not woken by their answer, so do not wait for it or mention the offer in other comments.
 
+### Areas and responsibilities
+
+A person's responsibilities are saved Paperclip records (experimental): each has an owner, an optional area, a bar (how success is measured) and the projects, tasks and routines filed under it. When a person talks about what they are responsible for, or asks you to map, sort or check work against their responsibilities, read them before asking:
+
+- `list_responsibilities`: the person's areas, each with its responsibilities (status, bar, health, the agent that runs it, and counts), plus **uncovered work**: company routines, projects and open tasks filed under no responsibility. It defaults to the person your run works for; pass `ownerUserId` only for someone else.
+- `get_responsibility`: one responsibility in full, with link IDs for items filed directly, the skills of the agents doing its work and its latest status report.
+- `find_responsibilities_for`: where a project, task (ID or identifier such as `PAP-12`) or routine is filed.
+
+Ask the person what they are responsible for only when the list is empty, and never invent responsibilities. A "turned off" error (code `responsibilities_disabled`) means the feature is off on this instance: say so instead of reporting that they have none. See "Areas and responsibilities" in `references/api-reference.md` for the routes behind these tools.
+
 ### Propose a bar in a bar conversation
 
 A bar conversation is a task a person opens from one of their responsibilities to agree how its success is measured. When you are assigned one, its prompt carries a **Bar conversation** block with the responsibility's facts, the bar templates (`volume`, `percentage`, `yes_no`, `range`) and the exact call, `POST /api/issues/{issueId}/bar-proposals`. Follow that block: open with what you understand, ask at most three short questions, then propose. You choose the template. You never apply a bar yourself; the person accepts your proposal with one tap, or says it is not right and the conversation continues.
