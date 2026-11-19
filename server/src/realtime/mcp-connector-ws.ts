@@ -68,6 +68,12 @@ function frameText(data: Buffer | ArrayBuffer | Buffer[]): string {
   return data.toString("utf8");
 }
 
+/** `req.ip` for a raw upgrade request, so the app's TRUST_PROXY setting applies like on HTTP routes. */
+export function expressClientAddress(app: { request: object }) {
+  return (req: IncomingMessage): string | undefined =>
+    (Object.create(app.request, { headers: { value: req.headers }, socket: { value: req.socket } }) as { ip?: string }).ip;
+}
+
 /**
  * Accept outbound connector sessions on `MCP_CONNECTOR_WS_PATH`.
  *
@@ -80,7 +86,13 @@ function frameText(data: Buffer | ArrayBuffer | Buffer[]): string {
 export function setupMcpConnectorWebSocketServer(
   server: HttpServer,
   db: Db,
-  options: { hub?: McpConnectorHub; heartbeatIntervalMs?: number; upgradeRateLimiter?: InviteRateLimiter; maxPendingAuthentications?: number } = {},
+  options: {
+    hub?: McpConnectorHub;
+    heartbeatIntervalMs?: number;
+    upgradeRateLimiter?: InviteRateLimiter;
+    maxPendingAuthentications?: number;
+    clientAddress?: (req: IncomingMessage) => string | undefined;
+  } = {},
 ) {
   const hub = options.hub ?? mcpConnectorHub;
   const connectors = mcpConnectorService(db, { hub });
@@ -100,7 +112,7 @@ export function setupMcpConnectorWebSocketServer(
     socket.on("error", () => undefined);
 
     // Bound credential lookups before authentication; the connector retries with backoff.
-    const limit = upgradeRateLimiter.consume(req.socket.remoteAddress ?? "unknown");
+    const limit = upgradeRateLimiter.consume((options.clientAddress?.(req) ?? req.socket.remoteAddress) || "unknown");
     if (!limit.allowed) {
       rejectUpgrade(socket, "429 Too Many Requests", `Retry-After: ${limit.retryAfterSeconds}\r\n`);
       return;

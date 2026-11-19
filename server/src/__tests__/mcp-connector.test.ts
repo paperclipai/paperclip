@@ -38,7 +38,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { isSecretSensitiveHttpRequest } from "../middleware/http-log-policy.js";
-import { setupMcpConnectorWebSocketServer } from "../realtime/mcp-connector-ws.js";
+import { expressClientAddress, setupMcpConnectorWebSocketServer } from "../realtime/mcp-connector-ws.js";
 import { mcpConnectorRoutes } from "../routes/mcp-connectors.js";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 import { McpConnectorHub } from "../services/mcp-connector-hub.js";
@@ -365,9 +365,14 @@ describeEmbeddedPostgres("outbound MCP connector", () => {
   });
 
   it("bounds unauthenticated websocket upgrades before any credential lookup", async () => {
-    const upgradeStatus = (url: string) => new Promise<{ status?: number; retryAfter?: string | string[] }>((resolve, reject) => {
+    const upgradeStatus = (url: string, forwardedFor?: string) => new Promise<{ status?: number; retryAfter?: string | string[] }>((resolve, reject) => {
       const req = httpRequest(`${url}${MCP_CONNECTOR_WS_PATH}`, {
-        headers: { connection: "Upgrade", upgrade: "websocket", authorization: `Bearer pcmcc_${randomUUID()}.${"a".repeat(40)}` },
+        headers: {
+          connection: "Upgrade",
+          upgrade: "websocket",
+          authorization: `Bearer pcmcc_${randomUUID()}.${"a".repeat(40)}`,
+          ...(forwardedFor ? { "x-forwarded-for": forwardedFor } : {}),
+        },
       });
       req.on("response", (res) => {
         res.resume();
@@ -376,19 +381,27 @@ describeEmbeddedPostgres("outbound MCP connector", () => {
       req.on("error", reject);
       req.end();
     });
-    for (const [options, expected] of [
-      [{ upgradeRateLimiter: createInviteRateLimiter({ maxRequests: 1 }) }, [401, 429]],
-      [{ maxPendingAuthentications: 0 }, [503, 503]],
+    const behindProxy = express();
+    behindProxy.set("trust proxy", "loopback");
+    for (const [options, forwardedFor, expected] of [
+      [{ upgradeRateLimiter: createInviteRateLimiter({ maxRequests: 1 }) }, [undefined, undefined], [401, 429]],
+      [{ maxPendingAuthentications: 0 }, [undefined, undefined], [503, 503]],
+      // Behind a trusted proxy each client gets its own budget.
+      [
+        { upgradeRateLimiter: createInviteRateLimiter({ maxRequests: 1 }), clientAddress: expressClientAddress(behindProxy) },
+        ["203.0.113.1", "203.0.113.2"],
+        [401, 401],
+      ],
     ] as const) {
       const server = createServer();
       const wss = setupMcpConnectorWebSocketServer(server, db, { hub: new McpConnectorHub(), ...options });
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
       try {
-        const first = await upgradeStatus(url);
-        const second = await upgradeStatus(url);
+        const first = await upgradeStatus(url, forwardedFor[0]);
+        const second = await upgradeStatus(url, forwardedFor[1]);
         expect([first.status, second.status]).toEqual(expected);
-        expect(second.retryAfter).toBeDefined();
+        if (expected[1] !== 401) expect(second.retryAfter).toBeDefined();
       } finally {
         wss.close();
         server.closeAllConnections();
