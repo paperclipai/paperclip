@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq, inArray, sql } from "drizzle-orm";
+import { authUsers, agents, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -1337,5 +1337,43 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(cancelled, { suppressImmediateRecovery: true });
     expect(deps.treeControlSvc.getActivePauseHoldGate).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("admits a verified person comment behind a resolved no-replay hold and claims it at dispatch", async () => {
+    const [company] = await db.insert(companies).values({ name: "Replay hold", issuePrefix: "RH" }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Worker", role: "engineer",
+      status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Held task",
+      status: "blocked", assigneeAgentId: agent.id }).returning();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      issueId: issue.id, status: "cancelled", runtimeMode: "legacy", finishedAt: new Date(),
+      errorCode: "operator_interrupted", error: "Interrupted to send queued messages",
+      contextSnapshot: { issueId: issue.id } }).returning();
+    await db.insert(issueRecoveryActions).values({ companyId: company.id, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: source.id,
+      status: "resolved", outcome: "blocked", nextAction: "Inspect the source run.",
+      evidence: { runId: source.id, automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked" } } });
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: "board", body: "Please continue" }).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false } as Awaited<ReturnType<HeartbeatQueueDependencies["instanceSettings"]["getExperimental"]>>);
+    const queue = createHeartbeatQueue(db, deps);
+    const admitted = await queue.enqueueWakeup(agent.id, { source: "on_demand", triggerDetail: "manual",
+      reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: issue.id, commentId: comment.id },
+      contextSnapshot: { source: "issue.comment", issueId: issue.id, wakeCommentId: comment.id } });
+    expect(admitted).toMatchObject({ status: "queued" });
+    const [dispatched] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, admitted!.id));
+    expect(dispatched).toMatchObject({ status: "running", errorCode: null });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, admitted!.id));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agent.id));
+    await db.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.id, issue.id));
+    await queue.enqueueWakeup(agent.id, { source: "automation", triggerDetail: "system",
+      reason: "issue_heartbeat", requestedByActorType: "system", payload: { issueId: issue.id },
+      contextSnapshot: { issueId: issue.id } });
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, company.id),
+      eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
   });
 });

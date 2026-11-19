@@ -115,12 +115,7 @@ export async function hasPendingRunCleanup(db: Db, companyId: string, runId: str
   return state?.pending === true;
 }
 
-/** Resolved recovery bookkeeping can still carry an effective no-replay hold.
- * That hold gates automatic continuation of the interrupted run; it does not
- * block new human input. Callers dispatching a user-initiated wake (a comment,
- * a reopen, an explicit task Retry) pass `includeResolvedReplayHolds: false`
- * so a resolved action's `replay: "blocked"` residue no longer fences the
- * issue. Live actions and unreconciled native exports still fence everyone. */
+/** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
 export function executionBlockerPredicate(opts: { includeResolvedReplayHolds?: boolean } = {}) {
   const replayArm = opts.includeResolvedReplayHolds === false
     ? inArray(issueRecoveryActions.status, ["active", "escalated"])
@@ -333,10 +328,6 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   conversationResetCommentId?: string | null;
   /** The native run being dispatched; its own scheduled resume does not block it. */
   resumingNativeRunId?: string | null;
-  /** The wake carries new human input (comment, reopen, task Retry). A resolved
-   * reconciliation action's saved `replay: "blocked"` residue gates automatic
-   * continuation of its interrupted run, not a new instruction; such wakes are
-   * only fenced by live actions, restore holds, and unreconciled exports. */
   userInitiated?: boolean;
 }): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,

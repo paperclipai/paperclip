@@ -4115,12 +4115,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               )).limit(1)
             : [];
           const verifiedConversationReset = Boolean(isConversation(issue) && wakeComment && isConversationReset(wakeComment.body));
-          // A resolved hold's replay:"blocked" residue only gates automatic
-          // continuation. A wake carrying new input from a verified person —
-          // their own comment or their task Retry receipt — is new intent, not
-          // an automatic replay, so the resolved residue does not fence it.
-          // Wakes whose actor does not match the comment author keep the full
-          // fence: a mismatched receipt proves nothing about a person's intent.
           if (wakeCommentId && opts.requestedByActorType === "user")
             await preserveTaskRemoteWorkspaceWriter(tx as unknown as Db, issue.companyId, issue.id);
           const executionBlocker = await getExecutionBlocker(
