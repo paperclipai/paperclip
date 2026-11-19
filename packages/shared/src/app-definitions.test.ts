@@ -1521,7 +1521,6 @@ describe("AppDefinition catalog", () => {
       "aws:aws-access-key:endpointRegion",
       "aws:aws-role:accessLevel",
       "aws:aws-role:endpointRegion",
-      "aws:aws-role:roleArn",
       "clickhouse:mcp-oauth:serviceId",
       "honcho:mcp-api-key:workspaceId",
       "make:mcp-api-token:zone",

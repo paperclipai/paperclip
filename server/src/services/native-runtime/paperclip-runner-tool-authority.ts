@@ -48,9 +48,10 @@ import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { normalizeIssueExecutionPolicy, redactIssueMonitorExternalRef } from "../issue-execution-policy.js";
 import { buildLowTrustSourceTrust, isLowTrustQuarantined, LOW_TRUST_QUARANTINED_BODY, resolveActorSourceTrustForIssue, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { handoffPlanContext } from "./handoff-plan-context.js";
-import { callCreateSkillTool, callUpdateSkillTool } from "../skill-tools.js";
+import { callCreateSkillTool, callUpdateSkillDetailsTool, callUpdateSkillTool } from "../skill-tools.js";
 import { callProjectTool } from "../project-tools.js";
 import { callResponsibilityTool, isResponsibilityTool, RESPONSIBILITY_TOOL_NAMES, responsibilityToolsDisabledError } from "../responsibility-tools.js";
+import { callRoutineTool, ROUTINE_TOOL_NAMES } from "../routine-tools.js";
 import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -157,10 +158,10 @@ const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api", "hire_agent",
   "get_task_context", "get_task_history", "search_tasks", "report_progress", "set_task_title", "set_task_monitor",
   "request_human_input", "handoff_case", ...NATIVE_CASE_OPERATIONS,
-  "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
+  "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "create_skill", "update_skill", "update_skill_details", "create_task", "reassign_task", "set_dependencies", "create_project", "list_project_repositories", "list_projects", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
-  ...RESPONSIBILITY_TOOL_NAMES,
+  ...RESPONSIBILITY_TOOL_NAMES, ...ROUTINE_TOOL_NAMES,
 ]);
 
 /** Closed first-party native Muse profile. No connector, generic API, credential or workspace grants. */
@@ -941,6 +942,12 @@ export class PaperclipRunnerToolAuthority {
         if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
         return callUpdateSkillTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
       }
+      case "update_skill_details": {
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Skill tool authentication is unavailable");
+        return callUpdateSkillDetailsTool({ arguments: input, apiUrl, token, companyId: this.binding.companyId });
+      }
       case "get_workspace":
       case "list_workspaces":
       case "select_workspace":
@@ -964,13 +971,30 @@ export class PaperclipRunnerToolAuthority {
       }
       case "list_responsibilities":
       case "get_responsibility":
-      case "find_responsibilities_for": {
+      case "find_responsibilities_for":
+      case "create_area":
+      case "update_area":
+      case "delete_area":
+      case "create_responsibility":
+      case "update_responsibility":
+      case "delete_responsibility":
+      case "file_under_responsibility":
+      case "remove_from_responsibility": {
         // Hidden tools stay refused when called by name; the routes also re-check the live setting.
         if (this.binding.responsibilitiesEnabled !== true) throw responsibilityToolsDisabledError();
         const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
         const token = this.#apiToken(context);
         if (!apiUrl || !token) throw new Error("Responsibility tool authentication is unavailable");
         return callResponsibilityTool({ name: call.tool, arguments: input, apiUrl, token,
+          companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
+          companyPrefix: await this.#companyPagePrefix() });
+      }
+      case "list_routines":
+      case "update_routine": {
+        const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+        const token = this.#apiToken(context);
+        if (!apiUrl || !token) throw new Error("Routine tool authentication is unavailable");
+        return callRoutineTool({ name: call.tool, arguments: input, apiUrl, token,
           companyId: this.binding.companyId, companyPrefix: await this.#companyPagePrefix() });
       }
       case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());

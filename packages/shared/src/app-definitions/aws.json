@@ -49,13 +49,14 @@
           "key": "roleArn",
           "label": "Role ARN",
           "type": "text",
-          "required": true,
-          "placeholder": "arn:aws:iam::123456789012:role/paperclip-agents",
-          "helperMd": "The role must trust this company's Paperclip identity provider for this connection only. Its permissions decide what agents can do.",
+          "required": false,
+          "helperMd": "Set on the AWS setup step after the role exists. The role must trust this company's Paperclip identity provider for this connection only.",
           "validation": {
-            "pattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",
+            "pattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/(?:[A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]{1,64}$",
             "maxLength": 600
-          }
+          },
+          "hidden": true,
+          "defaultValue": ""
         },
         {
           "key": "endpointRegion",
@@ -173,7 +174,7 @@
           "placeholder": "arn:aws:iam::123456789012:role/paperclip-agents",
           "helperMd": "Paperclip switches into this role before each session when set.",
           "validation": {
-            "pattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",
+            "pattern": "^arn:aws[a-z-]*:iam::[0-9]{12}:role/(?:[A-Za-z0-9+=,.@_-]+/)*[A-Za-z0-9+=,.@_-]{1,64}$",
             "maxLength": 600
           }
         },
