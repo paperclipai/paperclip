@@ -490,28 +490,43 @@ interface AnchoredExecutorPending {
   timer: NodeJS.Timeout;
 }
 
-interface AnchoredExecutorState {
-  child: ChildProcess | null;
+/**
+ * One executor generation: the child together with the requests, ids and
+ * stdout buffer that belong to exactly that child. All executor state is
+ * scoped to the generation so a stale child's exit or stream error can only
+ * ever settle its own requests — never the pending work a replacement child
+ * is already serving.
+ */
+interface AnchoredExecutorGeneration {
+  child: ChildProcess;
   pending: Map<number, AnchoredExecutorPending>;
   nextId: number;
   stdoutBuffer: string;
+  dead: boolean;
 }
 
-const anchoredExecutor: AnchoredExecutorState = { child: null, pending: new Map(), nextId: 1, stdoutBuffer: "" };
+let anchoredExecutorCurrent: AnchoredExecutorGeneration | null = null;
 
 function anchoredExecutorFailure(code: string, message: string): AnchoredEntryResult {
   return { ok: false, code, message };
 }
 
-function settleAnchoredExecutor() {
-  for (const pending of anchoredExecutor.pending.values()) {
+function settleAnchoredExecutorGeneration(
+  generation: AnchoredExecutorGeneration,
+  code: string,
+  message: string,
+): void {
+  for (const pending of generation.pending.values()) {
     clearTimeout(pending.timer);
-    pending.resolve(anchoredExecutorFailure("ECHILD", "run scratch anchored entry executor exited"));
+    pending.resolve(anchoredExecutorFailure(code, message));
   }
-  anchoredExecutor.pending.clear();
+  generation.pending.clear();
+  generation.stdoutBuffer = "";
+  generation.dead = true;
+  if (anchoredExecutorCurrent === generation) anchoredExecutorCurrent = null;
 }
 
-function spawnAnchoredExecutor(): ChildProcess | null {
+function spawnAnchoredExecutor(): AnchoredExecutorGeneration | null {
   let child: ChildProcess;
   try {
     child = spawn(process.execPath, ["-e", ANCHORED_ENTRY_EXECUTOR_SOURCE], { stdio: ["pipe", "pipe", "ignore"] });
@@ -524,25 +539,31 @@ function spawnAnchoredExecutor(): ChildProcess | null {
   child.unref();
   (child.stdout as import("node:net").Socket).unref();
   (child.stdin as import("node:net").Socket).unref();
-  child.on("error", () => {
-    if (anchoredExecutor.child === child) anchoredExecutor.child = null;
-    settleAnchoredExecutor();
-  });
-  child.on("exit", () => {
-    if (anchoredExecutor.child === child) anchoredExecutor.child = null;
-    settleAnchoredExecutor();
-  });
+  const generation: AnchoredExecutorGeneration = {
+    child,
+    pending: new Map(),
+    nextId: 1,
+    stdoutBuffer: "",
+    dead: false,
+  };
+  const failGeneration = (message: string) =>
+    settleAnchoredExecutorGeneration(generation, "ECHILD", message);
+  child.on("error", () => failGeneration("run scratch anchored entry executor failed"));
+  child.on("exit", () => failGeneration("run scratch anchored entry executor exited"));
+  // Stream errors (a cleanup pipe that breaks mid-write, a closed read end)
+  // must never surface as unhandled `error` events in the shared server
+  // process: the generation that owns the stream settles its requests as
+  // failed and the walker keeps the tree for a later retry.
+  child.stdin?.on("error", () => failGeneration("run scratch anchored entry executor pipe failed"));
+  child.stdout?.on("error", () => failGeneration("run scratch anchored entry executor pipe failed"));
   child.stdout!.setEncoding("utf8");
   child.stdout!.on("data", (chunk: string) => {
-    anchoredExecutor.stdoutBuffer += chunk;
-    if (anchoredExecutor.child !== child) {
-      anchoredExecutor.stdoutBuffer = "";
-      return;
-    }
+    if (generation.dead) return;
+    generation.stdoutBuffer += chunk;
     let index;
-    while ((index = anchoredExecutor.stdoutBuffer.indexOf("\n")) >= 0) {
-      const line = anchoredExecutor.stdoutBuffer.slice(0, index);
-      anchoredExecutor.stdoutBuffer = anchoredExecutor.stdoutBuffer.slice(index + 1);
+    while ((index = generation.stdoutBuffer.indexOf("\n")) >= 0) {
+      const line = generation.stdoutBuffer.slice(0, index);
+      generation.stdoutBuffer = generation.stdoutBuffer.slice(index + 1);
       if (!line.trim()) continue;
       let response: { id?: number; result?: unknown; error?: { code?: string; message?: string } };
       try {
@@ -550,9 +571,9 @@ function spawnAnchoredExecutor(): ChildProcess | null {
       } catch {
         continue;
       }
-      const pending = response.id !== undefined ? anchoredExecutor.pending.get(response.id) : undefined;
+      const pending = response.id !== undefined ? generation.pending.get(response.id) : undefined;
       if (!pending) continue;
-      anchoredExecutor.pending.delete(response.id!);
+      generation.pending.delete(response.id!);
       clearTimeout(pending.timer);
       if (response.error) {
         pending.resolve(
@@ -567,7 +588,7 @@ function spawnAnchoredExecutor(): ChildProcess | null {
       }
     }
   });
-  return child;
+  return generation;
 }
 
 /**
@@ -576,27 +597,26 @@ function spawnAnchoredExecutor(): ChildProcess | null {
  * keeps the tree fail-closed; the child respawns on the next request.
  */
 function runAnchoredEntryOp(request: Omit<AnchoredEntryRequest, "id">): Promise<AnchoredEntryResult> {
-  if (!anchoredExecutor.child || anchoredExecutor.child.killed) {
-    const child = spawnAnchoredExecutor();
-    if (!child) return Promise.resolve(anchoredExecutorFailure("ECHILD", "run scratch anchored entry executor unavailable"));
-    anchoredExecutor.child = child;
-    anchoredExecutor.stdoutBuffer = "";
+  if (!anchoredExecutorCurrent || anchoredExecutorCurrent.dead || anchoredExecutorCurrent.child.killed) {
+    const generation = spawnAnchoredExecutor();
+    if (!generation) return Promise.resolve(anchoredExecutorFailure("ECHILD", "run scratch anchored entry executor unavailable"));
+    anchoredExecutorCurrent = generation;
   }
-  const child = anchoredExecutor.child;
-  const id = anchoredExecutor.nextId;
-  anchoredExecutor.nextId += 1;
+  const generation = anchoredExecutorCurrent;
+  const id = generation.nextId;
+  generation.nextId += 1;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
-      anchoredExecutor.pending.delete(id);
-      child.kill("SIGKILL");
-      if (anchoredExecutor.child === child) anchoredExecutor.child = null;
+      generation.pending.delete(id);
+      generation.child.kill("SIGKILL");
+      if (anchoredExecutorCurrent === generation) anchoredExecutorCurrent = null;
       resolve(anchoredExecutorFailure("ECHILD", "run scratch anchored entry executor timed out"));
     }, ANCHORED_ENTRY_EXECUTOR_TIMEOUT_MS);
-    anchoredExecutor.pending.set(id, { resolve, timer });
+    generation.pending.set(id, { resolve, timer });
     try {
-      child.stdin!.write(`${JSON.stringify({ id, ...request })}\n`);
+      generation.child.stdin!.write(`${JSON.stringify({ id, ...request })}\n`);
     } catch {
-      anchoredExecutor.pending.delete(id);
+      generation.pending.delete(id);
       clearTimeout(timer);
       resolve(anchoredExecutorFailure("ECHILD", "run scratch anchored entry executor pipe closed"));
     }
@@ -1044,6 +1064,48 @@ export async function runScratchRemnantDirs(dir: string): Promise<string[]> {
     .sort();
 }
 
+/**
+ * The pre-quarantine name path of a remnant. Retained homes and teardown
+ * holds are registered by path, so a quarantine rename must never orphan
+ * the protection: remnant gates evaluate it on the remnant AND on the
+ * original name the protections were registered under.
+ */
+function quarantineOriginalPath(remnant: string): string {
+  const resolved = path.resolve(remnant);
+  return path.join(path.dirname(resolved), path.basename(resolved).replace(QUARANTINE_NAME_RE, ""));
+}
+
+/** True while any credential-home protection covers the remnant under either name. */
+async function quarantineProtectionActive(remnant: string): Promise<boolean> {
+  if (await retainedAiCredentialCleanupHomeInside(remnant)) return true;
+  return retainedAiCredentialCleanupHomeInside(quarantineOriginalPath(remnant));
+}
+
+/**
+ * A receipt name already present is normally foreign evidence a removal must
+ * refuse — but this removal's own prior attempt may have written the receipt
+ * and then lost the rename (a transient failure, or a crash between the
+ * exclusive write and the rename). That receipt is exactly the evidence this
+ * attempt is trying to write, so the quarantine may proceed against it:
+ * nothing is overwritten, and only content matching this removal's own
+ * identity (kind, owner, original name) is accepted. Anything else —
+ * unreadable, foreign, or not a regular file — stays refuse.
+ */
+async function recoverOwnQuarantineReceipt(dir: string, ours: RunScratchQuarantineReceipt): Promise<boolean> {
+  const receiptPath = path.join(dir, RUN_SCRATCH_QUARANTINE_RECEIPT);
+  const stats = await fs.lstat(receiptPath).catch(() => null);
+  if (!stats || !stats.isFile() || stats.isSymbolicLink()) return false;
+  const existing = await readQuarantineReceipt(receiptPath).catch(() => null);
+  if (!existing) return false;
+  return (
+    existing.kind === ours.kind &&
+    existing.companyId === ours.companyId &&
+    existing.agentId === ours.agentId &&
+    existing.runId === ours.runId &&
+    existing.originalName === ours.originalName
+  );
+}
+
 async function quarantineRenameForPortableRemoval(
   dir: string,
   ops: RunScratchWalkerOps,
@@ -1061,6 +1123,13 @@ async function quarantineRenameForPortableRemoval(
     // unguessable name proven by identity, so renaming again would only
     // orphan the previous suffix.
     if (!QUARANTINE_NAME_RE.test(name)) {
+      // Retained homes and teardown holds are registered by path: a rename
+      // would orphan the protection, because the registry cannot recognize
+      // the moved inode under the quarantine name. Never quarantine a
+      // protected tree — the removal refuses and the directory keeps its
+      // original name, where every gate still finds the hold; the retry
+      // after the hold is released performs the quarantine.
+      if (await retainedAiCredentialCleanupHomeInside(dir)) return { kind: "refused" };
       // The quarantine receipt is the durable evidence later retries and
       // sweeps re-derive the removal's gates from: written exclusively
       // through the verified fd before the rename, it cannot overwrite a
@@ -1068,7 +1137,7 @@ async function quarantineRenameForPortableRemoval(
       const receiptWritten = await ops
         .writeEntryExclusive(verified.fd, RUN_SCRATCH_QUARANTINE_RECEIPT, `${JSON.stringify(receipt, null, 2)}\n`, 0o600)
         .then(() => true, () => false);
-      if (!receiptWritten) return { kind: "refused" };
+      if (!receiptWritten && !(await recoverOwnQuarantineReceipt(dir, receipt))) return { kind: "refused" };
       const suffix = randomBytes(8).toString("hex");
       const quarantine = path.join(parent, `${name}-rm-${suffix}`);
       try {
@@ -1145,8 +1214,10 @@ export async function removeRunTempTree(
     for (const remnant of await runScratchRemnantDirs(dir)) {
       if (remnant === exclude) continue;
       // Protections survive the rename: a retained credential home inside
-      // the remnant keeps the whole tree until the write-back settles.
-      if (await retainedAiCredentialCleanupHomeInside(remnant)) {
+      // the remnant keeps the whole tree until the write-back settles —
+      // under the remnant name or the original name the hold was
+      // registered under.
+      if (await quarantineProtectionActive(remnant)) {
         return { complete: false, quarantinePath: remnant };
       }
       // A `-rm-` shape alone is not authorization to destroy a tree: only
@@ -1374,7 +1445,7 @@ export async function cleanupHeartbeatRunScratch(input: {
     if (remnants.length === 0) return { removed: false, dir, reason: "missing" };
     const metadata = input.scratch.metadata;
     for (const remnant of remnants) {
-      if (await retainedAiCredentialCleanupHomeInside(remnant)) {
+      if (await quarantineProtectionActive(remnant)) {
         return { removed: false, dir, reason: "ai_home_retained" };
       }
       const marker = await readMarker(path.join(remnant, HEARTBEAT_RUN_SCRATCH_MARKER)).catch(() => null);
@@ -1707,15 +1778,16 @@ export async function sweepOrphanedRunScratch(input: {
     if (runId) {
       const state = remnantStates.get(runId) ?? "active";
       const removable = state === "terminal" && input.isRunProcessGroupAlive?.(runId) !== true &&
-        !(await retainedAiCredentialCleanupHomeInside(dir));
+        !(await quarantineProtectionActive(dir));
       if (!removable) {
         result.kept += 1;
         if (state === "terminal" || state === "active") result.pending += 1;
         continue;
       }
-    } else if (await retainedAiCredentialCleanupHomeInside(dir)) {
+    } else if (await quarantineProtectionActive(dir)) {
       // Home remnants carry no run to interrogate: the teardown hold is the
-      // protection that survives the rename.
+      // protection that survives the rename — also when it is still
+      // registered under the pre-quarantine name.
       result.kept += 1;
       result.pending += 1;
       continue;

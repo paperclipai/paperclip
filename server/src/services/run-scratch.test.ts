@@ -1923,3 +1923,235 @@ describe("VPS-787 portable anchor process isolation", () => {
     }
   });
 });
+
+// VPS-789 finding 1: a receipt written before a quarantine rename that then
+// failed (transient error, or a crash between write and rename) must not
+// permanently block the retry and the sweep — the exclusive write sees
+// EEXIST forever. Recovery accepts exactly this removal's own prior
+// receipt; foreign evidence still refuses.
+describe("VPS-789 quarantine receipt recovery", () => {
+  const exists = (p: string) => fs.stat(p).then(() => true, () => false);
+
+  async function faultFirstRenameOf(target: string, run: () => Promise<void>): Promise<void> {
+    const original = fs.rename;
+    let injected = false;
+    (fs as { rename: (oldPath: string, newPath: string) => Promise<void> }).rename = async (oldPath: string, newPath: string) => {
+      if (oldPath === target && !injected) {
+        injected = true;
+        throw Object.assign(new Error("fixture transient rename failure"), { code: "EACCES" });
+      }
+      return original(oldPath, newPath);
+    };
+    try {
+      await run();
+    } finally {
+      (fs as { rename: (oldPath: string, newPath: string) => Promise<void> }).rename = original;
+    }
+  }
+
+  it("recovers a scratch quarantine whose rename failed after the receipt write, on retry and sweep", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-receipt-g1-"));
+    cleanupDirs.add(root);
+    const isolated = await makeIsolatedTempRoot();
+    const scratch = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: runId("g1aa1111"),
+      root,
+    }));
+    await fs.writeFile(path.join(scratch.dir, "sentinel.txt"), "fixture");
+
+    // The transient rename failure leaves this removal's own receipt on the
+    // original name: the directory keeps its marker and its receipt.
+    await faultFirstRenameOf(scratch.dir, async () => {
+      const first = await cleanupHeartbeatRunScratch({
+        scratch,
+        walkerOps: () => createDefaultRunScratchWalkerOps("paths"),
+        runTempRootOverride: root,
+      });
+      expect(first).toEqual({ removed: false, dir: scratch.dir, reason: "unsafe_tree" });
+    });
+    expect(await exists(path.join(scratch.dir, RUN_SCRATCH_QUARANTINE_RECEIPT))).toBe(true);
+    expect(await exists(path.join(scratch.dir, "sentinel.txt"))).toBe(true);
+
+    // The sweep reclaims the still-named terminal directory instead of
+    // retrying the refused quarantine forever.
+    const swept = await sweepOrphanedRunScratch({
+      tmpRoot: isolated,
+      runTempRootOverride: root,
+      resolveRunStates: async () => new Map([[runId("g1aa1111"), "terminal" as const]]),
+      isRunProcessGroupAlive: () => false,
+    });
+    expect(swept.removed).toEqual([scratch.dir]);
+    expect(await fs.readdir(root)).toEqual([]);
+  });
+
+  it("recovers a home quarantine whose rename failed after the receipt write", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-receipt-g1b-"));
+    cleanupDirs.add(root);
+    const home = path.join(root, "paperclip-ai-fixture");
+    await fs.mkdir(path.join(home, "provider"), { recursive: true });
+    await fs.writeFile(path.join(home, "provider", "auth.json"), "credential");
+
+    await faultFirstRenameOf(home, async () => {
+      const first = await removeRunTempTree(home, { walkerOps: () => createDefaultRunScratchWalkerOps("paths") });
+      expect(first).toEqual({ complete: false });
+    });
+    expect(await exists(home)).toBe(true);
+    expect(await exists(path.join(home, RUN_SCRATCH_QUARANTINE_RECEIPT))).toBe(true);
+
+    const second = await removeRunTempTree(home, { walkerOps: () => createDefaultRunScratchWalkerOps("paths") });
+    expect(second).toEqual({ complete: true });
+    expect(await exists(home)).toBe(false);
+  });
+
+  it("accepts a receipt left by a crash between the write and the rename, and still refuses a foreign one", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-receipt-g1c-"));
+    cleanupDirs.add(root);
+
+    // Crash simulation: the receipt is exactly what this run's own removal
+    // would have written, but no rename ever happened.
+    const crash = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: runId("g1cc3333"),
+      root,
+    }));
+    await fs.writeFile(path.join(crash.dir, "sentinel.txt"), "fixture");
+    await fs.writeFile(path.join(crash.dir, RUN_SCRATCH_QUARANTINE_RECEIPT), JSON.stringify({
+      version: 1,
+      kind: "scratch",
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: runId("g1cc3333"),
+      originalName: path.basename(crash.dir),
+      createdAt: new Date("2026-11-19T00:00:00.000Z").toISOString(),
+    }));
+    const recovered = await cleanupHeartbeatRunScratch({
+      scratch: crash,
+      walkerOps: () => createDefaultRunScratchWalkerOps("paths"),
+      runTempRootOverride: root,
+    });
+    expect(recovered).toEqual({ removed: true, dir: crash.dir });
+
+    // Foreign evidence under the receipt name never authorizes the rename.
+    const foreign = await trackScratch(await prepareHeartbeatRunScratch({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: runId("g1dd4444"),
+      root,
+    }));
+    await fs.writeFile(path.join(foreign.dir, "sentinel.txt"), "fixture");
+    await fs.writeFile(path.join(foreign.dir, RUN_SCRATCH_QUARANTINE_RECEIPT), JSON.stringify({
+      version: 1,
+      kind: "scratch",
+      companyId: "someone-else",
+      agentId: "someone-else",
+      runId: "another-run",
+      originalName: path.basename(foreign.dir),
+      createdAt: new Date().toISOString(),
+    }));
+    const refused = await cleanupHeartbeatRunScratch({
+      scratch: foreign,
+      walkerOps: () => createDefaultRunScratchWalkerOps("paths"),
+      runTempRootOverride: root,
+    });
+    expect(refused).toEqual({ removed: false, dir: foreign.dir, reason: "unsafe_tree" });
+    expect(await exists(path.join(foreign.dir, "sentinel.txt"))).toBe(true);
+  });
+});
+
+// VPS-789 finding 3: retained-home holds are registered by path, so the
+// quarantine rename must never orphan them. A protected tree is not renamed
+// at all, and a remnant stays protected also while the hold is still
+// registered under the pre-quarantine name.
+describe("VPS-789 hold survives the quarantine rename", () => {
+  const exists = (p: string) => fs.stat(p).then(() => true, () => false);
+
+  it("refuses the quarantine while a teardown hold is active, and completes it after release", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hold-g3-"));
+    cleanupDirs.add(root);
+    const isolated = await makeIsolatedTempRoot();
+    const home = path.join(root, "paperclip-ai-fixture");
+    const provider = path.join(home, "provider");
+    await fs.mkdir(provider, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(provider, "auth.json"), "synthetic credential");
+
+    const release = acquireAiCredentialTeardownHold(provider);
+    try {
+      const blockedUnlink = (): RunScratchWalkerOpsOverride => {
+        const paths = createDefaultRunScratchWalkerOps("paths");
+        return () => ({
+          ...paths,
+          unlinkEntry: async () => {
+            throw Object.assign(new Error("fixture blocked"), { code: "EACCES" });
+          },
+        });
+      };
+      const partial = await removeRunTempTree(home, { walkerOps: blockedUnlink() });
+      // The hold was acquired before the quarantine: the tree is never
+      // renamed out from under the registry, so no remnant appears.
+      expect(partial).toEqual({ complete: false });
+      expect(await exists(home)).toBe(true);
+      expect(await exists(path.join(provider, "auth.json"))).toBe(true);
+
+      const swept = await sweepOrphanedRunScratch({
+        tmpRoot: root,
+        runTempRootOverride: isolated,
+        resolveRunStates: async () => new Map(),
+      });
+      expect(swept.removed).toEqual([]);
+      expect(await exists(path.join(provider, "auth.json"))).toBe(true);
+    } finally {
+      release();
+    }
+
+    const done = await removeRunTempTree(home, { walkerOps: () => createDefaultRunScratchWalkerOps("paths") });
+    expect(done).toEqual({ complete: true });
+    expect(await exists(home)).toBe(false);
+  });
+
+  it("keeps a quarantine remnant while the hold is still registered under the original name", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hold-g3b-"));
+    cleanupDirs.add(root);
+    const isolated = await makeIsolatedTempRoot();
+    const home = path.join(root, "paperclip-ai-fixture");
+    const provider = path.join(home, "provider");
+    await fs.mkdir(provider, { recursive: true, mode: 0o700 });
+    await fs.writeFile(path.join(provider, "auth.json"), "synthetic credential");
+    await fs.writeFile(path.join(home, RUN_SCRATCH_QUARANTINE_RECEIPT), JSON.stringify({
+      version: 1,
+      kind: "home",
+      companyId: null,
+      agentId: null,
+      runId: null,
+      originalName: "paperclip-ai-fixture",
+      createdAt: new Date().toISOString(),
+    }));
+    // The quarantine rename already happened (a pre-fix remnant); the hold
+    // is registered under the original, now-gone provider path.
+    const remnant = path.join(root, `paperclip-ai-fixture-rm-${"d4e5f6a7b8c9d0e1"}`);
+    await fs.rename(home, remnant);
+
+    const release = acquireAiCredentialTeardownHold(provider);
+    try {
+      const retry = await removeRunTempTree(home, { walkerOps: () => createDefaultRunScratchWalkerOps("paths") });
+      expect(retry).toEqual({ complete: false, quarantinePath: remnant });
+      expect(await exists(path.join(remnant, "provider", "auth.json"))).toBe(true);
+
+      const swept = await sweepOrphanedRunScratch({
+        tmpRoot: root,
+        runTempRootOverride: isolated,
+        resolveRunStates: async () => new Map(),
+      });
+      expect(swept.removed).toEqual([]);
+      expect(await exists(path.join(remnant, "provider", "auth.json"))).toBe(true);
+    } finally {
+      release();
+    }
+
+    const done = await removeRunTempTree(home, { walkerOps: () => createDefaultRunScratchWalkerOps("paths") });
+    expect(done).toEqual({ complete: true });
+    expect(await exists(remnant)).toBe(false);
+  });
+});
