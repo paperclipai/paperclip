@@ -1,12 +1,14 @@
 import type { Db } from "@paperclipai/db";
 import {
   createAdmissionTransactionScope as buildAdmissionTransactionScope,
+  createFreshIssueRunWriter,
   createPostgresWakeQueueAdapter,
   createWakeAdmissionReader,
   createWakeAdmissionWriter,
 } from "./adapters/postgres.js";
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
+import { createFreshIssueRunAdmission } from "./application/fresh-issue-run.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
 import {
   createDiscardQueuedComment,
@@ -109,6 +111,11 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
 }
 
 export type WakeQueue = ReturnType<typeof createWakeQueue>;
+
+/** Uses the transaction that already owns the issue's admission lock. */
+export function bindFreshIssueRunAdmission(companyId: string, tx: Db) {
+  return createFreshIssueRunAdmission(createFreshIssueRunWriter(buildAdmissionTransactionScope(companyId, tx), companyId));
+}
 
 /**
  * Composes the three queued-comment queue mutations (edit, reorder,

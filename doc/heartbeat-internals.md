@@ -316,6 +316,8 @@ Keep recovery policy changes separate from retry scheduling and execution change
 Queue admission and wakeup dispatch are in `server/src/services/heartbeat/queue.ts`.
 It owns wake coalescing and batching, queued-run claims, daily heartbeat caps,
 concurrency and priority checks, timer admission, and native status wake intents.
+The wake-queue module creates fresh task runs and binds their receipts inside
+heartbeat's issue admission transaction.
 `createHeartbeatQueue` binds these operations without querying or starting work.
 The service supplies lifecycle effects, execution callbacks, worktree gates, and
 its process-wide execution and wakeup promise sets. Forwarding callbacks preserve

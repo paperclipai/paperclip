@@ -85,6 +85,7 @@ import type {
   WakeQueueHost,
   WakeQueueTransaction,
 } from "../application/ports.js";
+import type { FreshIssueRunWriter } from "../application/fresh-issue-run.js";
 import type { RunSummary } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
@@ -1532,6 +1533,57 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
         return { ...result, run: runSnapshot };
       });
+    },
+  };
+}
+
+export function createFreshIssueRunWriter(
+  scope: TransactionScope,
+  companyId: string,
+): FreshIssueRunWriter<HeartbeatRunRow> {
+  const tx = requireAdmissionTx(scope, companyId);
+  return {
+    async saveReceipt(input) {
+      if (input.kind === "insert") {
+        const [receipt] = await tx.insert(agentWakeupRequests).values({
+          ...input.seed, companyId, status: "queued",
+        }).returning();
+        return receipt;
+      }
+      const [receipt] = await tx.update(agentWakeupRequests).set({
+        payload: input.payload, status: "queued", error: null, finishedAt: null, updatedAt: new Date(),
+      }).where(and(
+        eq(agentWakeupRequests.id, input.wakeId),
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        isNull(agentWakeupRequests.runId),
+      )).returning();
+      return receipt;
+    },
+    async insertQueuedRun(seed) {
+      const [run] = await tx.insert(heartbeatRuns).values({
+        ...seed, companyId, status: "queued",
+      }).returning();
+      return run;
+    },
+    async bindReceipts({ wakeId, runId, failedChatRetryReceiptId, adopted }) {
+      const inCompany = eq(agentWakeupRequests.companyId, companyId);
+      const primaryReceipt = and(inCompany, eq(agentWakeupRequests.id, wakeId));
+      await tx.update(agentWakeupRequests).set({ runId, updatedAt: new Date() })
+        .where(primaryReceipt);
+      if (failedChatRetryReceiptId) {
+        await tx.update(agentWakeupRequests).set({
+          status: "coalesced", runId, finishedAt: new Date(), updatedAt: new Date(),
+        }).where(and(inCompany, eq(agentWakeupRequests.id, failedChatRetryReceiptId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      }
+      if (adopted) {
+        await tx.update(agentWakeupRequests).set({
+          status: "coalesced", runId, finishedAt: new Date(), updatedAt: new Date(),
+        }).where(and(inCompany, inArray(agentWakeupRequests.id, adopted.wakeIds)));
+        await tx.update(agentWakeupRequests).set({ payload: adopted.payload }).where(primaryReceipt);
+      }
     },
   };
 }

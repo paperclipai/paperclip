@@ -11,7 +11,7 @@ import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../..
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "./run-admission.js";
 import { createHeartbeatQueue, DEFERRED_WAKE_CONTEXT_KEY, notifyOtherAgentsQueuedOnSettledIssue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake, type HeartbeatQueueDependencies } from "./queue.js";
-import { createWakeQueue } from "../../modules/wake-queue/index.js";
+import { bindFreshIssueRunAdmission, createWakeQueue } from "../../modules/wake-queue/index.js";
 import { TransactionScope } from "../../modules/wake-queue/application/ports.js";
 import { enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./run-preparation.js";
 import { withQueuedCommentIdsInWakePayload, withQueuedCommentIdsInRunContext } from "../issue-queued-comment-queue.js";
@@ -493,6 +493,40 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
   }
+
+  it("only promotes a deferred chat receipt for its agent and binds receipts within its company", async () => {
+    const local = await fixture("queued");
+    const [foreignCompany] = await db.insert(companies).values({ name: "Other company", issuePrefix: "OC" }).returning();
+    const [foreignAgent] = await db.insert(agents).values({
+      companyId: foreignCompany.id, name: "Other agent", adapterType: "process",
+    }).returning();
+    const [foreignWake] = await db.insert(agentWakeupRequests).values({
+      companyId: foreignCompany.id, agentId: foreignAgent.id, source: "automation",
+      status: "deferred_issue_execution", payload: { original: true },
+    }).returning();
+    const [localDeferredWake] = await db.insert(agentWakeupRequests).values({
+      companyId: local.company.id, agentId: local.agent.id, source: "automation",
+      status: "deferred_issue_execution",
+    }).returning();
+
+    await db.transaction(async (tx) => {
+      const admission = bindFreshIssueRunAdmission(local.company.id, tx as unknown as Db);
+      expect(await admission.createReceipt({
+        deferredChatReceiptId: localDeferredWake.id, agentId: foreignAgent.id, source: "automation",
+        triggerDetail: null, reason: null, payload: null, requestedByActorType: null,
+        requestedByActorId: null, idempotencyKey: null,
+      })).toBeUndefined();
+      await admission.bindReceipts({
+        wakeId: foreignWake.id, runId: local.run.id, failedChatRetryReceiptId: foreignWake.id,
+        adopted: { wakeIds: [foreignWake.id, localDeferredWake.id], payload: { replaced: true } },
+      });
+    });
+
+    const [preserved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, foreignWake.id));
+    expect(preserved).toMatchObject({ status: "deferred_issue_execution", runId: null, payload: { original: true } });
+    const [adopted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, localDeferredWake.id));
+    expect(adopted).toMatchObject({ status: "coalesced", runId: local.run.id });
+  });
 
   async function pendingPredecessorFixture() {
     const f = await fixture("queued");
