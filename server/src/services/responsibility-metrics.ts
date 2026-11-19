@@ -31,6 +31,7 @@ import {
   type SetResponsibilityMetrics,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
+import { responsibilitiesDisabledError } from "./responsibilities-disabled.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { responsibilityService, type DbTransaction, type ResponsibilityReadScope } from "./responsibilities.js";
 import { responsibilityAutomationService } from "./responsibility-automation.js";
@@ -116,7 +117,7 @@ export function responsibilityMetricService(db: Db) {
 
   async function assertEnabled() {
     const experimental = await settings.getExperimental();
-    if (experimental.enableResponsibilities !== true) throw notFound("Responsibilities are not enabled");
+    if (experimental.enableResponsibilities !== true) throw responsibilitiesDisabledError();
   }
 
   /** The newest readings of each metric, oldest first, at most `limit` each. */
