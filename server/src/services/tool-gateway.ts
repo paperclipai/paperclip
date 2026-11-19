@@ -31,7 +31,7 @@ import type { BudgetServiceHooks } from "./budgets.js";
 import type { PromptInjectionDetectorMetadata } from "@paperclipai/shared";
 import { connectionManagementService, type ConnectionManagementContext } from "./connection-management.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { measureToolDiscovery, measureRunPhase } from "./execution-preparation-timing.js";
+import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import { callGoogleWorkspaceRest, googleWorkspaceRestAuditEndpoint } from "./google-workspace-rest-dispatch.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
@@ -1837,9 +1837,9 @@ export function createToolGatewayService(
     // every tool, and one connection can expose hundreds of tools. Both reads
     // share one read-only snapshot, so they agree like a single join, and the
     // second read gets only the connections that have listed tools.
-    const { connectionRows, catalogRows } = await db.transaction(
+    const readCatalog = () => db.transaction(
       async (tx) => {
-        const catalogRows = await tx
+        const catalogRows = await measureRunPhase("connectors.discovery.connections.transaction.catalog_entries", async () => await tx
           .select({ catalogEntry: toolCatalogEntries })
           .from(toolCatalogEntries)
           .innerJoin(
@@ -1860,7 +1860,7 @@ export function createToolGatewayService(
               selectedConnectionIds ? inArray(toolConnections.id, selectedConnectionIds) : undefined,
             ),
           )
-          .orderBy(toolConnections.name, toolCatalogEntries.name);
+          .orderBy(toolConnections.name, toolCatalogEntries.name));
         const connectionIds = [
           ...new Set(
             catalogRows.map(({ catalogEntry }) => catalogEntry.connectionId),
@@ -1868,7 +1868,7 @@ export function createToolGatewayService(
         ];
         if (connectionIds.length === 0)
           return { connectionRows: [], catalogRows };
-        const connectionRows = await tx
+        const connectionRows = await measureRunPhase("connectors.discovery.connections.transaction.matched_connections", async () => await tx
           .select({
             connection: toolConnections,
             application: toolApplications,
@@ -1883,44 +1883,59 @@ export function createToolGatewayService(
               inArray(toolConnections.id, connectionIds),
               connectedMcpConnectionFilter(companyId),
             ),
-          );
+          ));
         return { connectionRows, catalogRows };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
-    const connectionRowsById = new Map(
-      connectionRows.map((row) => [row.connection.id, row]),
-    );
-    const rows = catalogRows.flatMap(({ catalogEntry }) => {
-      const connectionRow = connectionRowsById.get(catalogEntry.connectionId);
-      return connectionRow ? [{ catalogEntry, ...connectionRow }] : [];
+    const { connectionRows, catalogRows } = await measureRunPhase("connectors.discovery.connections.transaction", async () => {
+      const rows = await readCatalog();
+      recordConnectionCatalogCounts(rows.catalogRows.length, rows.connectionRows.length);
+      return rows;
     });
+    const eligibleRows = await measureRunPhase("connectors.discovery.connections.availability", async () => {
+      const connectionRowsById = new Map(
+        connectionRows.map((row) => [row.connection.id, row]),
+      );
+      const rows = catalogRows.flatMap(({ catalogEntry }) => {
+        const connectionRow = connectionRowsById.get(catalogEntry.connectionId);
+        return connectionRow ? [{ catalogEntry, ...connectionRow }] : [];
+      });
 
-    // A plugin connector's tools reach agents only while its plugin is ready
-    // and still declares the app. Disabled plugins keep their saved setup.
-    const pluginApps = await pluginAppCatalogFor(db, connectionRows.map(({ connection }) => connection));
-    const featureSettings = connectionRows.some(({ application }) => getAppDefinitionForApplicationKey(application.applicationKey)?.experimentalFeatureKey)
-      ? await instanceSettingsService(db).getExperimental() : undefined;
-    const eligibleRows = rows.filter(
-      ({ catalogEntry, connection, application }) =>
-        pluginApps.isAvailable(connectionSourceSlug(connection)) &&
-        (!featureSettings || isConnectorFeatureEnabled(getAppDefinitionForApplicationKey(application.applicationKey), featureSettings)) &&
-        !isRetiredComposioConnection(connection) &&
-        !(nativeProviderCatalogFor(connection) && !nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)) &&
-        !(restConnectorFor(connection) && !restConnectorFor(connection)!.isCurrent(catalogEntry)) &&
-        !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
-        (((isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) && application.type === "rest_api") ||
-        (connection.transport === "mcp_remote" &&
-          application.type === "mcp_http") ||
-        (connection.transport === "local_stdio" &&
-          application.type === "mcp_stdio") ||
-        // Legacy top-level plugin tools keep their original names and are
-        // listed by the plugin tool path, gated by this connection's installs.
-        (connection.transport === "plugin" &&
-          application.type === "paperclip_plugin" &&
-          !pluginConnectionIdentity(connection)?.legacyTools &&
-          pluginCatalogEntryCurrent(connection, catalogEntry))),
-    );
+      // A plugin connector's tools reach agents only while its plugin is ready
+      // and still declares the app. Disabled plugins keep their saved setup.
+      const pluginApps = await pluginAppCatalogFor(db, connectionRows.map(({ connection }) => connection));
+      const featureSettings = connectionRows.some(({ application }) => getAppDefinitionForApplicationKey(application.applicationKey)?.experimentalFeatureKey)
+        ? await instanceSettingsService(db).getExperimental() : undefined;
+      return rows.filter(
+        ({ catalogEntry, connection, application }) =>
+          pluginApps.isAvailable(connectionSourceSlug(connection)) &&
+          (!featureSettings || isConnectorFeatureEnabled(getAppDefinitionForApplicationKey(application.applicationKey), featureSettings)) &&
+          !isRetiredComposioConnection(connection) &&
+          !(nativeProviderCatalogFor(connection) && !nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)) &&
+          !(restConnectorFor(connection) && !restConnectorFor(connection)!.isCurrent(catalogEntry)) &&
+          !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
+          (((isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) && application.type === "rest_api") ||
+          (connection.transport === "mcp_remote" &&
+            application.type === "mcp_http") ||
+          (connection.transport === "local_stdio" &&
+            application.type === "mcp_stdio") ||
+          // Legacy top-level plugin tools keep their original names and are
+          // listed by the plugin tool path, gated by this connection's installs.
+          (connection.transport === "plugin" &&
+            application.type === "paperclip_plugin" &&
+            !pluginConnectionIdentity(connection)?.legacyTools &&
+            pluginCatalogEntryCurrent(connection, catalogEntry))),
+      );
+    });
+    return measureRunPhase("connectors.discovery.connections.descriptors", () => buildConnectedCatalogDescriptors(eligibleRows));
+  }
+
+  function buildConnectedCatalogDescriptors(eligibleRows: Array<{
+    catalogEntry: typeof toolCatalogEntries.$inferSelect;
+    connection: typeof toolConnections.$inferSelect;
+    application: typeof toolApplications.$inferSelect;
+  }>): ToolGatewayDescriptor[] {
     const baseNames = eligibleRows.map(
       ({ catalogEntry, connection, application }) => {
         const toolSlug = slugSegment(catalogEntry.toolName, "tool");
