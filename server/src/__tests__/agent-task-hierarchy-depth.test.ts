@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import {
@@ -9,6 +9,7 @@ import {
 import { issueService } from "../services/issues.ts";
 import {
   PARENT_WRITE_VALIDATION_DEPTH_CAP,
+  PARENT_WRITE_VALIDATION_STATEMENT_TIMEOUT_MS,
   loadParentChainBounded,
   planIssueParentChange,
   resolveNewTaskParent,
@@ -621,6 +622,42 @@ describeEmbeddedPostgres("agent task hierarchy depth", () => {
       await db.transaction(async (tx) => {
         await expect(planIssueParentChange(tx, { id: ids[3]!, companyId, parentId: null }, ids[ids.length - 1]!, "allow_nested"))
           .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+      });
+    });
+
+    it("restores the caller's statement_timeout after a fallback cycle rejection", async () => {
+      const { companyId } = await seedCompany();
+      const { ids } = await seedDeepChain(companyId, PARENT_WRITE_VALIDATION_DEPTH_CAP + 6);
+
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('statement_timeout', '250ms', true)`);
+        await expect(planIssueParentChange(tx, { id: ids[3]!, companyId, parentId: null }, ids[ids.length - 1]!, "allow_nested"))
+          .rejects.toMatchObject({ status: 422, details: { code: "issue_parent_cycle" } });
+        // The fallback's savepoint was released (the walk succeeded; the 422
+        // is thrown afterwards), so a reset to '0' would leak "unlimited"
+        // into this transaction. The caller's 250ms limit must survive.
+        const [after] = await tx.execute<{ statementTimeout: string }>(
+          sql`select current_setting('statement_timeout') as "statementTimeout"`,
+        );
+        expect(after?.statementTimeout).toBe("250ms");
+      });
+    });
+
+    it("leaves the caller's default statement_timeout in effect after a fallback walk", async () => {
+      const { companyId } = await seedCompany();
+      const { deepestId } = await seedDeepChain(companyId, PARENT_WRITE_VALIDATION_DEPTH_CAP + 6);
+      const moverId = await seedIssue(companyId);
+
+      await db.transaction(async (tx) => {
+        const [before] = await tx.execute<{ statement_timeout: string }>(sql`show statement_timeout`);
+        const plan = await planIssueParentChange(tx, { id: moverId, companyId, parentId: null }, deepestId, "allow_nested");
+        expect(plan).toEqual({ parentId: deepestId, adjustment: null });
+        const [after] = await tx.execute<{ statement_timeout: string }>(sql`show statement_timeout`);
+        // No operator limit was configured: '' and '0' both mean "unlimited",
+        // so restoring '0' preserves the effective default. The fallback's
+        // own 5000ms window must never leak out either way.
+        expect(after?.statement_timeout).toBe(before?.statement_timeout || "0");
+        expect(after?.statement_timeout).not.toBe(`${PARENT_WRITE_VALIDATION_STATEMENT_TIMEOUT_MS}ms`);
       });
     });
 

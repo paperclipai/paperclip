@@ -304,12 +304,21 @@ export async function assertParentWriteAllowed(
   if (!chainComplete && !chainLoops(chain) && chain.length === PARENT_WRITE_VALIDATION_DEPTH_CAP) {
     // Cut off mid-chain with no loop: the tree is deeper than the window (or
     // rooted past a dangling link), so only the full walk can answer. Run it
-    // once under a statement timeout instead of unbounded work, and reset the
-    // timeout afterwards so it never applies to the caller's later statements.
+    // once under a statement timeout, then restore the caller's previous
+    // setting: this helper can run inside the caller's open transaction (the
+    // nested transaction is a savepoint) and `set_config` with `is_local` is
+    // transaction-scoped, so resetting to '0' (unlimited) would clobber any
+    // operator-configured limit for the rest of that transaction.
     const full = await db.transaction(async (tx) => {
+      // missing_ok: NULL/'' means no limit is configured — restoring '0' is
+      // then the same unlimited value, not a clobber. The savepoint rollback
+      // already reverts local settings when the walk itself times out.
+      const [previous] = await tx.execute<{ statementTimeout: string | null }>(
+        sql`select current_setting('statement_timeout', true) as "statementTimeout"`,
+      );
       await tx.execute(sql`select set_config('statement_timeout', ${`${PARENT_WRITE_VALIDATION_STATEMENT_TIMEOUT_MS}ms`}, true)`);
       const rows = await loadParentChain(tx as Pick<Db, "execute">, existing.companyId, requestedParentId);
-      await tx.execute(sql`select set_config('statement_timeout', ${"0"}, true)`);
+      await tx.execute(sql`select set_config('statement_timeout', ${previous?.statementTimeout || "0"}, true)`);
       return rows;
     });
     if (full.some(row => row.id === existing.id)) {
