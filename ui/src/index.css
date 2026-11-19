@@ -5817,3 +5817,16 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 .secret-value-masked {
   -webkit-text-security: disc;
 }
+
+:root {
+  --routine-title-min: calc(var(--spacing) * 48);
+  --routine-column-project: calc(var(--spacing) * 36);
+  --routine-column-assignee: calc(var(--spacing) * 36);
+  --routine-column-responsibleUser: calc(var(--spacing) * 36);
+  --routine-column-lastRun: calc(var(--spacing) * 52);
+  --routine-column-enabled: calc(var(--spacing) * 24);
+  --routine-actions-width: calc(var(--spacing) * 20);
+  --routine-select-width: calc(var(--spacing) * 6);
+}
+.routine-table { min-width: max-content; }
+.routine-table-grid { display: grid; align-items: center; gap: calc(var(--spacing) * 3); }

@@ -1,12 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
+import { scopedTelemetryCompanyId, scopedTelemetryPerson } from "../telemetry-company-scope.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
@@ -44,6 +44,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
   afterEach(async () => {
     vi.clearAllMocks();
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -118,6 +119,45 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
 
     expect(scopedCompanies).toEqual([companyId, companyId]);
     expect(scopedTelemetryCompanyId()).toBeUndefined();
+  });
+
+  it.each([
+    { name: "task creator", issue: { createdByUserId: "user-creator", responsibleUserId: "user-assigner" }, runOwner: "user-owner", expected: { userId: "user-creator", attributedVia: "task_creator" } },
+    { name: "task assigner", issue: { createdByUserId: null, responsibleUserId: "user-assigner" }, runOwner: "user-owner", expected: { userId: "user-assigner", attributedVia: "task_assigner" } },
+    { name: "run owner", issue: { createdByUserId: null, responsibleUserId: null }, runOwner: "user-owner", expected: { userId: "user-owner", attributedVia: "run_owner" } },
+    { name: "nobody", issue: { createdByUserId: null, responsibleUserId: null }, runOwner: null, expected: undefined },
+  ])("tracks agent.task_run for the person responsible: $name", async ({ issue, runOwner, expected }) => {
+    await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Write the report", assigneeAgentId: agentId, createdByAgentId: issue.createdByUserId ? null : agentId, ...issue });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded",
+      responsibleUserId: runOwner, contextSnapshot: { issueId } }).returning();
+    const people: unknown[] = [];
+    const recordPerson = () => people.push(scopedTelemetryPerson());
+    mockTrackAgentTaskRun.mockImplementationOnce(recordPerson).mockImplementationOnce(recordPerson);
+
+    await emitAgentTaskRun(db, run);
+    await emitAgentTaskRunById(db, { runId: run.id, companyId });
+
+    expect(people).toEqual([expected, expected]);
+    expect(mockTrackAgentTaskRun).toHaveBeenCalledWith(mockTelemetryClient, expect.objectContaining({ taskId: issueId }));
+  });
+
+  it("does not read another company's task for attribution", async () => {
+    await seedCompanyAndAgent();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`, requireBoardApprovalForNewAgents: false });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: otherCompanyId, title: "Other task", createdByUserId: "user-other" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } }).returning();
+    const people: unknown[] = [];
+    mockTrackAgentTaskRun.mockImplementationOnce(() => people.push(scopedTelemetryPerson()));
+
+    await emitAgentTaskRun(db, run);
+
+    expect(people).toEqual([undefined]);
+    await db.delete(issues);
+    await db.delete(companies).where(eq(companies.id, otherCompanyId));
   });
 
   it("emits the same event from a small scoped run read without loading execution payloads", async () => {

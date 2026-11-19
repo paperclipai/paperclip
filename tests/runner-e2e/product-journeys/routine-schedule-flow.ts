@@ -83,7 +83,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       + "Then finish the task. Do not create other tasks or agents.";
     await routineUiStep("open_composer", async () => {
       await page.goto(`${api.origin}/${company.issuePrefix}/routines`, { waitUntil: "domcontentloaded" });
-      await page.getByRole("button", { name: "Create routine", exact: true }).first().click();
+      await page.getByRole("button", { name: "New routine", exact: true }).first().click();
     });
     const dialog = page.getByRole("dialog");
     await routineUiStep("select_responsible", async () => {

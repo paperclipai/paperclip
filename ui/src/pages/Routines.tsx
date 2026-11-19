@@ -1,3 +1,7 @@
+import { useRoutineListView } from "../hooks/useRoutineListView";
+import { routineFilterKeys } from "../lib/routine-list-view";
+import { buildRoutineFilterOptions, selectRoutineRows } from "../lib/routine-list-data";
+import { RoutineTable } from "../components/RoutineTable";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { startTransition, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -6,11 +10,13 @@ import { ChevronRight, Plus, Repeat } from "lucide-react";
 import { routinesApi } from "../api/routines";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
+import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
+import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { retryTransientOnly } from "../lib/query-client";
@@ -23,7 +29,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { describeError } from "../api/errors";
 import { PageTabBar } from "../components/PageTabBar";
-import { RoutineListRow, nextRoutineStatus } from "../components/RoutineList";
+import { RoutineTableRow, nextRoutineStatus } from "../components/RoutineList";
 import {
   RoutineRunVariablesDialog,
   type RoutineRunDialogSubmitData,
@@ -31,7 +37,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { RoutinesToolbar, type RoutineGroupBy, type RoutineSortField, type RoutineSortDir } from "@/components/RoutinesToolbar";
+import { RoutinesToolbar, type RoutineGroupBy } from "@/components/RoutinesToolbar";
 import { auditSectionHref } from "./audit/audit-navigation";
 import { RoutineCreateDialog } from "../components/routine-page/RoutineCreateDialog";
 import { routinePath } from "../components/routine-page/routine-routes";
@@ -56,13 +62,6 @@ import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 type RoutinesTab = "routines" | "runs";
 
-type RoutineViewState = {
-  sortField: RoutineSortField;
-  sortDir: RoutineSortDir;
-  groupBy: RoutineGroupBy;
-  collapsedGroups: string[];
-};
-
 type RoutineGroup = {
   key: string;
   label: string | null;
@@ -71,36 +70,6 @@ type RoutineGroup = {
 
 const builtInRoutineGroupKey = "__built_in_routines";
 
-const defaultRoutineViewState: RoutineViewState = {
-  sortField: "title",
-  sortDir: "asc",
-  groupBy: "folder",
-  collapsedGroups: [],
-};
-
-function getRoutineViewState(key: string): RoutineViewState {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw) return { ...defaultRoutineViewState, ...JSON.parse(raw) };
-  } catch {
-    // Ignore malformed local state and fall back to defaults.
-  }
-  return { ...defaultRoutineViewState };
-}
-
-function saveRoutineViewState(key: string, state: RoutineViewState) {
-  localStorage.setItem(key, JSON.stringify(state));
-}
-
-function timestampValue(value: Date | string | null | undefined) {
-  if (!value) return Number.NEGATIVE_INFINITY;
-  const timestamp = new Date(value).getTime();
-  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
-}
-
-function compareNullableText(left: string | null | undefined, right: string | null | undefined) {
-  return (left ?? "").localeCompare(right ?? "", undefined, { sensitivity: "base" });
-}
 
 type RoutineFolderGroupMeta = { name: string; position?: number | null };
 
@@ -207,30 +176,6 @@ export function buildRoutineSections(
   ];
 }
 
-export function sortRoutines(
-  routines: RoutineListItem[],
-  sortField: RoutineSortField,
-  sortDir: RoutineSortDir,
-): RoutineListItem[] {
-  const direction = sortDir === "asc" ? 1 : -1;
-  return [...routines].sort((left, right) => {
-    let result = 0;
-
-    if (sortField === "title") {
-      result = compareNullableText(left.title, right.title);
-    } else if (sortField === "created") {
-      result = timestampValue(left.createdAt) - timestampValue(right.createdAt);
-    } else if (sortField === "lastRun") {
-      result = timestampValue(left.lastRun?.triggeredAt ?? left.lastTriggeredAt) -
-        timestampValue(right.lastRun?.triggeredAt ?? right.lastTriggeredAt);
-    } else {
-      result = timestampValue(left.updatedAt) - timestampValue(right.updatedAt);
-    }
-
-    if (result !== 0) return result * direction;
-    return compareNullableText(left.title, right.title);
-  });
-}
 
 function RoutineSectionHeader({
   label,
@@ -276,20 +221,13 @@ export function Routines() {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const legacyRunsRequested = searchParams.get("tab") === "runs";
   const activeTab: RoutinesTab = !streamlinedUiEnabled && legacyRunsRequested ? "runs" : "routines";
-  const routineViewStateKey = selectedCompanyId
-    ? `paperclip:routines-view:${selectedCompanyId}`
-    : "paperclip:routines-view";
-  const [query, setQuery] = useState("");
-  const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
+  const [routineViewState, updateRoutineView] = useRoutineListView(selectedCompanyId);
+  const query = routineViewState.query;
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Routines" }]);
   }, [setBreadcrumbs]);
-
-  useEffect(() => {
-    setRoutineViewState(getRoutineViewState(routineViewStateKey));
-  }, [routineViewStateKey]);
 
   const routinesQuery = useQuery({
     queryKey: queryKeys.routines.list(selectedCompanyId!),
@@ -316,6 +254,13 @@ export function Routines() {
     ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
+  const companyMembersQuery = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const { data: companyMembers } = companyMembersQuery;
+  const companyMembersView = useQueryView(companyMembersQuery);
   const recentRunsQuery = useQuery({
     queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
     queryFn: () => issuesApi.list(selectedCompanyId!, { originKind: "routine_execution" }),
@@ -501,9 +446,11 @@ export function Routines() {
     () => new Map((routineFolders?.folders ?? []).map((folder) => [folder.id, folder])),
     [routineFolders],
   );
-  const visibleRoutines = useMemo(
-    () => (routines ?? []).filter((routine) => routine.status !== "archived"),
-    [routines],
+  const userById = useMemo(() => buildCompanyUserProfileMap(companyMembers?.users), [companyMembers]);
+  const filterOptions = useMemo(() => buildRoutineFilterOptions({ projects: projects ?? [], agents: agents ?? [], userById, routines: routines ?? [] }), [projects, agents, userById, routines]);
+  const { visibleRoutines, sortedRoutines, railFolderResult } = useMemo(
+    () => selectRoutineRows(routines ?? [], routineViewState, routineFolders, folderSelection),
+    [routines, routineViewState, routineFolders, folderSelection],
   );
   const liveIssueIds = useMemo(
     () => collectLiveIssueIds(liveRuns, routineExecutionIssues),
@@ -524,45 +471,6 @@ export function Routines() {
       navigate(nextTab === "runs" ? "/routines?tab=runs" : "/routines");
     });
   }
-  const folderFilteredRoutines = useMemo(() => {
-    if (routineViewState.groupBy !== "folder" || !routineFolders) return visibleRoutines;
-    if (folderSelection === "all") return visibleRoutines;
-    if (folderSelection === "unfiled") return visibleRoutines.filter((routine) => !routine.folderId);
-    return visibleRoutines.filter((routine) => routine.folderId === folderSelection);
-  }, [folderSelection, routineFolders, routineViewState.groupBy, visibleRoutines]);
-  // Rail counts reflect the page's visible scope (archived hidden), not raw DB
-  // counts (ux-spec §5.3).
-  const railFolderResult = useMemo(() => {
-    if (!routineFolders) return routineFolders;
-    const counts = new Map<string, number>();
-    let unfiled = 0;
-    for (const routine of visibleRoutines) {
-      if (routine.folderId) counts.set(routine.folderId, (counts.get(routine.folderId) ?? 0) + 1);
-      else unfiled += 1;
-    }
-    return {
-      ...routineFolders,
-      allCount: visibleRoutines.length,
-      unfiledCount: unfiled,
-      folders: routineFolders.folders.map((folder) => ({
-        ...folder,
-        itemCount: counts.get(folder.id) ?? 0,
-      })),
-    };
-  }, [routineFolders, visibleRoutines]);
-  const sortedRoutines = useMemo(
-    () => {
-      const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-      const matches = folderFilteredRoutines.filter(routine => {
-        const text = `${routine.title} ${routine.description ?? ""}`.toLowerCase();
-        return terms.every(term => text.includes(term));
-      });
-      return sortRoutines(matches, routineViewState.sortField, routineViewState.sortDir);
-    },
-    [folderFilteredRoutines, query, routineViewState.sortDir, routineViewState.sortField],
-  );
-  // A failed initial folder read is not an empty folder collection. Keep
-  // routine rows usable without inventing folder names or changing the saved view.
   const effectiveGroupBy = routineViewState.groupBy === "folder" && !routineFolders ? "none" : routineViewState.groupBy;
   const routineSections = useMemo(
     () => buildRoutineSections(sortedRoutines, effectiveGroupBy, projectById, agentById, folderById),
@@ -570,14 +478,6 @@ export function Routines() {
   );
   const hasRoutineFolders = (routineFolders?.folders.length ?? 0) > 0;
   const showFolderRail = routineViewState.groupBy === "folder" && hasRoutineFolders;
-
-  function updateRoutineView(patch: Partial<RoutineViewState>) {
-    setRoutineViewState((current) => {
-      const next = { ...current, ...patch };
-      saveRoutineViewState(routineViewStateKey, next);
-      return next;
-    });
-  }
 
   function setFolderSelection(selection: FolderSelection) {
     setSearchParams((current) => {
@@ -687,13 +587,16 @@ export function Routines() {
 
   return (
     <div className="space-y-6">
+      <h1 className="sr-only">Routines</h1>
       <RoutinesToolbar
-        query={query} onQueryChange={setQuery}
+        query={query} onQueryChange={query => updateRoutineView({ query })}
         sortField={routineViewState.sortField} sortDir={routineViewState.sortDir} groupBy={routineViewState.groupBy}
         onSortChange={(sortField, sortDir) => updateRoutineView({ sortField, sortDir })}
         onGroupChange={groupBy => updateRoutineView({ groupBy, collapsedGroups: [] })}
         onNewFolder={routineViewState.groupBy === "folder" && routineFolders && !hasRoutineFolders ? () => openCreateFolder() : undefined}
         onCreateRoutine={openCreateRoutine}
+        filters={routineViewState} filterOptions={filterOptions} onFiltersChange={updateRoutineView}
+        columns={routineViewState.columns} onColumnsChange={columns => updateRoutineView({ columns })}
         tasksHref="/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc"
       />
 
@@ -740,6 +643,11 @@ export function Routines() {
         />
       ) : null}
 
+      {companyMembersView.kind === "error" ? (
+        <QueryErrorState error={companyMembersView.error} action="load responsible people" size="inline"
+          onRetry={companyMembersView.retry} retrying={companyMembersView.isFetching} />
+      ) : null}
+
       {routineViewState.groupBy === "folder" && foldersView.kind === "error" ? (
         <QueryErrorState error={foldersView.error} action="load routine folders"
           onRetry={foldersView.retry} retrying={foldersView.isFetching} />
@@ -771,18 +679,18 @@ export function Routines() {
               onCreateFolder={() => openCreateFolder()}
             />
           ) : null}
-          {visibleRoutines.length === 0 ? (
+          {visibleRoutines.length === 0 && !routineViewState.statuses.length ? (
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No active routines. Use Create routine to define the first recurring workflow."
+                message="No active routines. Use New routine to define the first recurring workflow."
               />
             </div>
           ) : sortedRoutines.length === 0 ? (
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message={query.trim() ? "No routines match your search." : folderSelection === "all" ? "No routines match this view." : "This folder is empty."}
+                message={query.trim() ? "No routines match your search." : routineFilterKeys.some(key => routineViewState[key].length) || folderSelection === "all" ? "No routines match this view." : "This folder is empty."}
               />
               {folderSelection !== "all" ? (
                 <div className="mt-3 flex justify-center">
@@ -817,10 +725,13 @@ export function Routines() {
                       />
                     ) : null}
                     <CollapsibleContent>
+                      <RoutineTable columns={routineViewState.columns} label={group.label ?? "Routines"}>
                       {group.items.map((routine) => (
-                        <RoutineListRow
+                        <RoutineTableRow
                           key={routine.id}
                           routine={routine}
+                          columns={routineViewState.columns}
+                          userById={userById}
                           projectById={projectById}
                           agentById={agentById}
                           runningRoutineId={runningRoutineId}
@@ -855,6 +766,7 @@ export function Routines() {
                           }
                         />
                       ))}
+                      </RoutineTable>
                     </CollapsibleContent>
                   </Collapsible>
                 );
