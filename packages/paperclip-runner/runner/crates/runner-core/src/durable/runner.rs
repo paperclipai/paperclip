@@ -345,7 +345,9 @@ pub trait CommandExecutor {
         ))
     }
 
-    fn observe_fresh_durable_state(&mut self) {}
+    fn observe_fresh_durable_state(&mut self) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
 
     /// Opt in only when semantic result delivery validates an exact durable
     /// call receipt and cannot dispatch the underlying business operation.
@@ -554,6 +556,9 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         };
     }
     let store = DurableStateStore::new(&config.state_dir)?;
+    if !store.exists() {
+        executor.observe_fresh_durable_state()?;
+    }
     let (mut state, recovered) = store.load_or_create(&config)?;
     #[cfg(unix)]
     if let Some(control) = host_control
@@ -589,8 +594,6 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         {
             executor.defer_parked_acpx_restore()?;
         }
-    } else {
-        executor.observe_fresh_durable_state();
     }
     if recovered && state.warm_transition.is_none() {
         state.reconnect_count = state.reconnect_count.saturating_add(1);

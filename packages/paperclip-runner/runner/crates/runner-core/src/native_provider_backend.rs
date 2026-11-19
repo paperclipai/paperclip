@@ -142,7 +142,6 @@ pub struct NativeProviderCommandExecutor {
     config: DurableRunnerConfig,
     selected: Option<SelectedExecutor>,
     recovery_checked: bool,
-    fresh_durable_state: bool,
     credentials: CredentialObserver,
     attachments: AttachmentDownloads,
     attachment_result: Option<PolledEvent>,
@@ -159,7 +158,6 @@ impl NativeProviderCommandExecutor {
             config: config.clone(),
             selected: None,
             recovery_checked: false,
-            fresh_durable_state: false,
             credentials,
         }
     }
@@ -231,12 +229,9 @@ impl NativeProviderCommandExecutor {
                 AcpxCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ))
         } else if codex {
-            let mut executor =
-                CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config);
-            if self.fresh_durable_state {
-                executor.await_new_run_attach();
-            }
-            Some(SelectedExecutor::LocalFacade(executor))
+            Some(SelectedExecutor::LocalFacade(
+                CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
+            ))
         } else {
             None
         };
@@ -408,8 +403,12 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         Ok(())
     }
 
-    fn observe_fresh_durable_state(&mut self) {
-        self.fresh_durable_state = true;
+    fn observe_fresh_durable_state(&mut self) -> Result<(), DurableRunnerError> {
+        if self.state_dir.join(CODEX_PROVIDER_STATE_FILE).exists() {
+            CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config)
+                .await_new_run_attach()?;
+        }
+        Ok(())
     }
 
     fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {

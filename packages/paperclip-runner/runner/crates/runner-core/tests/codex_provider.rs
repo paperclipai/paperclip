@@ -398,7 +398,7 @@ fn a_fresh_runner_waits_for_run_attach_before_restoring_a_saved_session() {
     let directory = temporary_directory("fresh-runner-attach");
     let (config, _) = dormant_source_fixture(&directory);
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
-    executor.observe_fresh_durable_state();
+    executor.observe_fresh_durable_state().unwrap();
     assert_waits_for_run_attach(&mut executor, &directory);
 
     let attached = executor
@@ -457,7 +457,7 @@ fn a_fresh_runner_restarted_before_run_attach_still_waits_for_it() {
     let directory = temporary_directory("fresh-runner-restart");
     let (config, _) = dormant_source_fixture(&directory);
     let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
-    first.observe_fresh_durable_state();
+    first.observe_fresh_durable_state().unwrap();
     assert_waits_for_run_attach(&mut first, &directory);
     drop(first);
 
@@ -476,6 +476,19 @@ fn a_fresh_runner_restarted_before_run_attach_still_waits_for_it() {
         .iter()
         .any(|(event_type, _, _)| event_type == "run.attached"));
     assert_eq!(call_count(&directory, "process-start"), 2);
+    restarted.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_runner_lost_right_after_a_fresh_start_keeps_the_attach_wait() {
+    let directory = temporary_directory("fresh-runner-lost");
+    let (config, _) = dormant_source_fixture(&directory);
+    NativeProviderCommandExecutor::with_runner_config(&directory, &config)
+        .observe_fresh_durable_state()
+        .unwrap();
+    let mut restarted = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert_waits_for_run_attach(&mut restarted, &directory);
     restarted.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }

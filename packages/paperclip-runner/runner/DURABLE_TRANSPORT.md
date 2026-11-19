@@ -181,7 +181,8 @@ launch: it archives A's Runner state and starts a Runner under B's identity.
 That Runner starts with fresh durable state over A's saved Codex session. It
 does not restore Codex under A's settings. Until `run.attach`, it refuses
 commands that start work; snapshots and shutdown commands still work. The
-wait is saved with the Codex state, so a restart before attachment keeps it.
+Runner saves the wait in the Codex state before it creates its durable state,
+so a restart before attachment keeps it.
 `run.attach` then starts Codex once with B's settings. ACPX follows the same
 rule.
 

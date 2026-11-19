@@ -2064,8 +2064,32 @@ impl CodexCommandExecutor {
         executor
     }
 
-    pub fn await_new_run_attach(&mut self) {
-        self.awaiting_new_run_attach = true;
+    pub fn await_new_run_attach(&self) -> Result<(), DurableRunnerError> {
+        let Ok(mut file) = open_private_regular_file(&self.state_path()) else {
+            return Ok(());
+        };
+        let mut input = Vec::new();
+        if file
+            .metadata()
+            .map_or(true, |metadata| metadata.len() > MAX_PROVIDER_STATE_BYTES)
+            || file.read_to_end(&mut input).is_err()
+        {
+            return Ok(());
+        }
+        let Ok(mut state) = serde_json::from_slice::<Value>(&input) else {
+            return Ok(());
+        };
+        let Some(fields) = state.as_object_mut() else {
+            return Ok(());
+        };
+        if fields.get("awaitingRunAttach") == Some(&Value::Bool(true)) {
+            return Ok(());
+        }
+        fields.insert("awaitingRunAttach".to_owned(), Value::Bool(true));
+        let bytes = serde_json::to_vec(&state).map_err(|error| {
+            DurableRunnerError::invalid(format!("failed to encode Codex provider state: {error}"))
+        })?;
+        self.write_state_bytes(&bytes)
     }
 
     pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
@@ -2427,14 +2451,12 @@ impl CodexCommandExecutor {
 
     fn restore_once(&mut self) -> Result<(), DurableRunnerError> {
         self.load_state_without_provider()?;
-        if let Some(mut state) = self.state.clone() {
-            if state.awaiting_run_attach {
-                self.awaiting_new_run_attach = true;
-            } else if self.awaiting_new_run_attach {
-                state.awaiting_run_attach = true;
-                self.persist_state(&state)?;
-                self.state = Some(state);
-            }
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.awaiting_run_attach)
+        {
+            self.awaiting_new_run_attach = true;
         }
         self.retire_orphaned_startup_attempt(
             &|pid| local_process_definitely_gone(pid, false),
