@@ -21,8 +21,23 @@ function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] {
-  const parsed = asRecord(safeJsonParse(line));
+/**
+ * Whether a raw log chunk is one of Antigravity's streaming text deltas.
+ * This is the owning adapter's classification: shared log code must not
+ * parse the provider's wire format itself, so callers that merge raw log
+ * chunks (dedupe) pass this in as the adapter's classifier and the shared
+ * helper only handles the provider-agnostic text record.
+ */
+export function isAgyStreamingTextDelta(chunk: string): boolean {
+  const parsed = asRecord(safeJsonParse(chunk));
+  if (!parsed) return false;
+  if (asString(parsed.type) === "acpx.text_delta") return true;
+  if (asString(parsed.event) !== "step_update") return false;
+  const stepUpdate = asRecord(parsed.step_update);
+  return typeof stepUpdate?.text_delta === "string" && stepUpdate.text_delta.length > 0;
+}
+
+export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] {  const parsed = asRecord(safeJsonParse(line));
   if (!parsed) {
     return [{ kind: "stdout", ts, text: line }];
   }

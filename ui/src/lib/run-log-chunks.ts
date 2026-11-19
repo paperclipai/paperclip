@@ -138,11 +138,14 @@ export function readChunkSeq(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * Whether a raw log chunk is a provider-agnostic structured streaming text
+ * delta. Provider-specific wire formats (e.g. Antigravity's acpx events)
+ * are NOT matched here: the owning adapter supplies its own classifier to
+ * mergeRunLogChunks, and shared code must not parse provider payloads.
+ */
 export function isStructuredStreamingTextDelta(chunk: string): boolean {
-  return (
-    /"type"\s*:\s*"(?:acpx\.text_delta|text)"/.test(chunk) ||
-    (/"event"\s*:\s*"step_update"/.test(chunk) && /"text_delta"/.test(chunk))
-  );
+  return /"type"\s*:\s*"text"/.test(chunk);
 }
 
 /**
@@ -208,6 +211,16 @@ export function mergeRunLogChunks(
   incoming: IncomingRunLogChunk[],
   refs: ChunkMergeRefs,
   budget: number | ChunkRetentionBudget,
+  opts?: {
+    /**
+     * Adapter-supplied streaming-text-delta classifier for raw chunks.
+     * When the run's adapter is known, the caller passes its classifier so
+     * the adapter's deltas are exempt from dedup; otherwise only the
+     * provider-agnostic text record is exempt. Shared code never parses
+     * provider wire formats itself.
+     */
+    isStreamingTextDelta?: (chunk: string) => boolean;
+  },
 ): { chunks: RunLogChunk[]; changed: boolean } {
   if (incoming.length === 0) return { chunks: prevChunks, changed: false };
 
@@ -243,7 +256,9 @@ export function mergeRunLogChunks(
       continue;
     }
 
-    if (!isStructuredStreamingTextDelta(chunk.chunk)) {
+    const isStreamingDelta =
+      isStructuredStreamingTextDelta(chunk.chunk) || opts?.isStreamingTextDelta?.(chunk.chunk) === true;
+    if (!isStreamingDelta) {
       if (refs.seenChunkKeys.has(chunk.dedupeKey)) continue;
       refs.seenChunkKeys.add(chunk.dedupeKey);
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAgyStdoutLine } from "./parse-stdout.js";
+import { isAgyStreamingTextDelta, parseAgyStdoutLine } from "./parse-stdout.js";
 
 describe("parseAgyStdoutLine", () => {
   const ts = "2026-08-28T12:00:00.000Z";
@@ -254,5 +254,27 @@ describe("parseAgyStdoutLine", () => {
         text: line,
       },
     ]);
+  });
+});
+
+describe("isAgyStreamingTextDelta", () => {
+  it("matches Antigravity's text-delta wire shapes", () => {
+    expect(isAgyStreamingTextDelta('{"type":"acpx.text_delta","text":"x"}')).toBe(true);
+    expect(
+      isAgyStreamingTextDelta(
+        '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}',
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects non-delta Antigravity records and plain text", () => {
+    expect(isAgyStreamingTextDelta('{"type":"acpx.tool_call"}')).toBe(false);
+    expect(
+      isAgyStreamingTextDelta(
+        '{"event":"step_update","step_update":{"step_type":"tool","tool_name":"read"}}',
+      ),
+    ).toBe(false);
+    expect(isAgyStreamingTextDelta("plain text")).toBe(false);
+    expect(isAgyStreamingTextDelta('{"type":"text"}')).toBe(false);
   });
 });

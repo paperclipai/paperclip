@@ -125,10 +125,18 @@ export function useSummaryDraftStream(
         incoming,
         mergeRefs.current,
         MAX_CHUNKS,
+        {
+          // The run's adapter classifies its own streaming deltas so they
+          // are exempt from dedup; shared code only knows the generic
+          // provider-agnostic text record.
+          isStreamingTextDelta: runAdapterType
+            ? getUIAdapter(runAdapterType).isStreamingTextDelta
+            : undefined,
+        },
       );
       return changed ? merged : prev;
     });
-  }, []);
+  }, [runAdapterType]);
 
   // Learn the generation run id from live progress/queued events for the issue.
   useCompanyLiveEvent((event: LiveEvent) => {

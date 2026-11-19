@@ -430,17 +430,13 @@ export async function stageAgyMcpConfigForSync(
     // Missing or invalid config on host; start fresh
   }
 
-  // Stage only servers authorized for this run: the user's own servers plus
-  // this run's managed servers. Entries other Paperclip runs injected into
-  // the shared host config carry those runs' credentials and must not leak
-  // into this target; the ownership record identifies them.
-  const ownership = await readAgyMcpOwnership(hostConfigPath);
-  const existingServers: Record<string, AgyMcpServerConfig> =
-    parsedConfig.mcpServers && typeof parsedConfig.mcpServers === "object" && !Array.isArray(parsedConfig.mcpServers)
-      ? (Object.fromEntries(
-          Object.entries(parsedConfig.mcpServers).filter(([name]) => !ownership[name]),
-        ) as Record<string, AgyMcpServerConfig>)
-      : {};
+  // Stage only the servers supplied for this run. The host config's own
+  // servers are the operator's personal entries (they may carry secrets in
+  // headers/env) and must not be uploaded into the tenant sandbox; the
+  // run's managed servers arrive via input.servers. Servers other
+  // Paperclip runs injected into the host config are excluded the same way
+  // (they are never in input.servers).
+  const existingServers: Record<string, AgyMcpServerConfig> = {};
 
   const existingNames = new Set(Object.keys(existingServers));
 

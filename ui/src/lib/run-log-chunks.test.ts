@@ -31,10 +31,14 @@ describe("readChunkSeq", () => {
 });
 
 describe("isStructuredStreamingTextDelta", () => {
-  it("matches acpx.text_delta and text records", () => {
-    expect(isStructuredStreamingTextDelta('{"type":"acpx.text_delta","text":"x"}')).toBe(true);
+  it("matches only the provider-agnostic text record", () => {
+    // Provider-specific shapes (Antigravity's acpx.text_delta and
+    // step_update/text_delta) belong to the owning adapter, which supplies
+    // its own classifier to mergeRunLogChunks; the shared helper must not
+    // parse them.
+    expect(isStructuredStreamingTextDelta('{"type":"acpx.text_delta","text":"x"}')).toBe(false);
     expect(isStructuredStreamingTextDelta('{"type":"text"}')).toBe(true);
-    expect(isStructuredStreamingTextDelta('{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}')).toBe(true);
+    expect(isStructuredStreamingTextDelta('{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}')).toBe(false);
     expect(isStructuredStreamingTextDelta('{"type":"acpx.tool_call"}')).toBe(false);
     expect(isStructuredStreamingTextDelta("plain text")).toBe(false);
   });
@@ -97,7 +101,7 @@ describe("mergeRunLogChunks", () => {
     const delta: IncomingRunLogChunk = {
       ts: "t",
       stream: "stdout",
-      chunk: '{"type":"acpx.text_delta","text":"x"}',
+      chunk: '{"type":"text","text":"x"}',
       dedupeKey: "delta",
     };
     const sys: IncomingRunLogChunk = { ts: "t", stream: "system", chunk: "run queued", dedupeKey: "sys" };
@@ -106,10 +110,37 @@ describe("mergeRunLogChunks", () => {
     ({ chunks: state } = mergeRunLogChunks("r", state, [delta, delta, sys, sys], refs, 100));
     // Both identical text deltas kept; the duplicate system row dropped.
     expect(state.map((c) => c.chunk)).toEqual([
-      '{"type":"acpx.text_delta","text":"x"}',
-      '{"type":"acpx.text_delta","text":"x"}',
+      '{"type":"text","text":"x"}',
+      '{"type":"text","text":"x"}',
       "run queued",
     ]);
+  });
+
+  it("keeps repeated provider deltas when the adapter supplies its classifier", () => {
+    const refs = freshRefs();
+    const agyDelta: IncomingRunLogChunk = {
+      ts: "t",
+      stream: "stdout",
+      chunk: '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}',
+      dedupeKey: "delta",
+    };
+    const isAgyDelta = (chunk: string): boolean =>
+      chunk.includes('"event":"step_update"') && chunk.includes('"text_delta"');
+
+    let state: RunLogChunk[] = [];
+    ({ chunks: state } = mergeRunLogChunks("r", state, [agyDelta, agyDelta], refs, 100, {
+      isStreamingTextDelta: isAgyDelta,
+    }));
+    // The adapter's classifier exempts its deltas from dedup, like the
+    // generic text-delta check does for provider-agnostic records.
+    expect(state.map((c) => c.chunk)).toEqual([agyDelta.chunk, agyDelta.chunk]);
+
+    // Without the adapter's classifier the shared merge treats the
+    // provider record as an ordinary chunk and dedupes the repeat.
+    const plainRefs = freshRefs();
+    let plainState: RunLogChunk[] = [];
+    ({ chunks: plainState } = mergeRunLogChunks("r", plainState, [agyDelta, agyDelta], plainRefs, 100));
+    expect(plainState.map((c) => c.chunk)).toEqual([agyDelta.chunk]);
   });
 
   it("drops re-delivered chunks at or below the trimmed seq floor", () => {

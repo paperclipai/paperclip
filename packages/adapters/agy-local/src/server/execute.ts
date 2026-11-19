@@ -832,7 +832,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const resolvedSessionId =
       attempt.parsed.sessionId ??
-      (clearSessionOnMissingSession ? null : runtimeSessionId ?? runtime.sessionId ?? null);
+      // Only fall back to the session this run actually attempted to
+      // resume. A rejected session (canResumeSession false, so the CLI
+      // started fresh) must not be restored when the fresh attempt reports
+      // no conversation id: the fallback would stamp it with the current
+      // workspace and target, and the next run would then resume the
+      // conversation that was just rejected.
+      (clearSessionOnMissingSession ? null : sessionId);
     const resolvedSessionParams = resolvedSessionId
       ? ({
           sessionId: resolvedSessionId,

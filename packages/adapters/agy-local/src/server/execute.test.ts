@@ -319,6 +319,53 @@ describe("agy-local execute", () => {
     expect(commandArgs[commandArgs.indexOf("--conversation") + 1]).toBe("conv-prior-1");
   });
 
+
+  it("does not re-validate a rejected session when the fresh run reports no conversation id", async () => {
+    // The saved session points at a different workspace, so canResumeSession
+    // rejects it and the run starts fresh. If that fresh attempt exits
+    // before reporting a conversation id, the result must not fall back to
+    // the rejected id stamped with the current workspace: the next run
+    // would then see a matching identity and resume the rejected
+    // conversation.
+    vi.mocked(runChildProcess).mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({ event: "result", result: { status: "ERROR", error: "boom" } }) + "\n",
+      stderr: "",
+    } as Awaited<ReturnType<typeof runChildProcess>>);
+
+    const result = await execute({
+      runId: "run-rejected-session",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Test Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: "conv-rejected",
+        sessionParams: {
+          sessionId: "conv-rejected",
+          cwd: "/other/cwd",
+        },
+        sessionDisplayId: "conv-rejected",
+        taskKey: null,
+      },
+      config: {},
+      context: {
+        paperclipWorkspace: {
+          cwd: "/tmp/workspace",
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(result.sessionId).toBeNull();
+    expect(result.sessionParams).toBeNull();
+  });
+
   it("passes multi-workspace --add-dir, --agent, --sandbox, and --json-schema", async () => {
     let capturedMeta: AdapterInvocationMeta | null = null;
 

@@ -454,7 +454,7 @@ describe("stageAgyMcpConfigForSync", () => {
     }
   });
 
-  it("merges existing host MCP servers when staging for sync", async () => {
+  it("does not stage the operator's personal host MCP servers when staging for sync", async () => {
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-mcp-home-"));
     const configDir = path.join(tempHome, ".gemini", "config");
     await fs.mkdir(configDir, { recursive: true });
@@ -462,7 +462,7 @@ describe("stageAgyMcpConfigForSync", () => {
       path.join(configDir, "mcp_config.json"),
       JSON.stringify({
         mcpServers: {
-          existing_tool: { url: "https://existing.tool/mcp" },
+          existing_tool: { url: "https://existing.tool/mcp", headers: { Authorization: "Bearer host-secret" } },
         },
       }),
     );
@@ -471,7 +471,7 @@ describe("stageAgyMcpConfigForSync", () => {
       {
         name: "paperclip_tool",
         url: "https://api.paperclip.test/mcp/tool",
-        token: "",
+        token: "paperclip-token-2",
         connectionId: "conn-2",
       },
     ];
@@ -484,8 +484,13 @@ describe("stageAgyMcpConfigForSync", () => {
 
     try {
       const content = JSON.parse(await fs.readFile(path.join(stagedDir, "mcp_config.json"), "utf8"));
-      expect(content.mcpServers.existing_tool).toEqual({ url: "https://existing.tool/mcp" });
-      expect(content.mcpServers.paperclip_tool).toEqual({ url: "https://api.paperclip.test/mcp/tool" });
+      // The host's personal servers (with their secrets) must not be
+      // uploaded into the tenant sandbox; only this run's servers are staged.
+      expect(content.mcpServers.existing_tool).toBeUndefined();
+      expect(content.mcpServers.paperclip_tool).toEqual({
+        url: "https://api.paperclip.test/mcp/tool",
+        headers: { Authorization: "Bearer paperclip-token-2" },
+      });
     } finally {
       await Promise.all([
         fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined),
@@ -532,7 +537,8 @@ describe("stageAgyMcpConfigForSync", () => {
       const content = JSON.parse(await fs.readFile(path.join(stagedDir, "mcp_config.json"), "utf8"));
       // The other run's credentials must not leak into this run's target.
       expect(content.mcpServers["Paperclip connections"]).toBeUndefined();
-      expect(content.mcpServers.existing_tool).toEqual({ url: "https://existing.tool/mcp" });
+      // The host's personal servers must not be uploaded either.
+      expect(content.mcpServers.existing_tool).toBeUndefined();
       expect(content.mcpServers.paperclip_tool).toEqual({
         url: "https://api.paperclip.test/mcp/tool",
         headers: { Authorization: "Bearer this-run-token" },
