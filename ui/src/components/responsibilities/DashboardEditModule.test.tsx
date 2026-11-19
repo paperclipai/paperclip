@@ -144,14 +144,18 @@ describe("DashboardEditModule", () => {
     const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
     expect(dialog.querySelector("h2")?.textContent).toBe("Previous versions");
     const rows = [...dialog.querySelectorAll("li")];
-    expect(rows).toHaveLength(5);
-    expect(rows[0]!.textContent).toContain("Added 1 responsibility");
-    expect(rows[0]!.textContent).toContain("You");
+    expect(rows).toHaveLength(6);
+    // A change the agent made for the person with its tools.
+    expect(rows[0]!.textContent).toContain("Filed 3 items");
+    expect(rows[0]!.textContent).toContain("Chief, for you");
     expect(rows[0]!.textContent).toContain("Now");
-    expect(rows[1]!.textContent).toContain("Restored");
-    expect(rows[2]!.textContent).toContain("Chief");
-    expect([...dialog.querySelectorAll("button")].filter((node) => node.textContent?.trim() === "Restore")).toHaveLength(4);
-    await act(async () => button("Restore", rows[3]!).click());
+    expect(rows[1]!.textContent).toContain("Added 1 responsibility");
+    expect(rows[1]!.textContent).toContain("You");
+    expect(rows[2]!.textContent).toContain("Restored");
+    expect(rows[3]!.textContent).toContain("Chief");
+    expect(rows[3]!.textContent).not.toContain("for you");
+    expect([...dialog.querySelectorAll("button")].filter((node) => node.textContent?.trim() === "Restore")).toHaveLength(5);
+    await act(async () => button("Restore", rows[4]!).click());
     await flush();
     expect(api.versions).toHaveBeenCalledWith("company-storybook", "user-storybook");
     expect(api.restore).toHaveBeenCalledExactlyOnceWith("version-2");
@@ -170,7 +174,7 @@ describe("DashboardEditModule", () => {
     await render(false);
     await act(async () => button("Versions").click());
     await flush();
-    expect(document.querySelectorAll('[role="dialog"] li')).toHaveLength(5);
+    expect(document.querySelectorAll('[role="dialog"] li')).toHaveLength(6);
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });

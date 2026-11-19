@@ -50,6 +50,7 @@ export function toDashboardVersionSummary(row: VersionRow): ResponsibilityDashbo
     summary: row.summary,
     actorUserId: row.actorUserId,
     actorAgentId: row.actorAgentId,
+    interactionId: row.interactionId,
     previousVersionId: row.previousVersionId,
     restoredFromVersionId: row.restoredFromVersionId,
     createdAt: row.createdAt,

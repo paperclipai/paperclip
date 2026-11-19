@@ -143,11 +143,15 @@ export function lettingGoWith(
   return items.filter((item) => !leaving.has(item.id)).map((item) => item.sentence);
 }
 
-/** Who caused a version, in a word or a name. */
-export function dashboardVersionWho(version: Pick<ResponsibilityDashboardVersionSummary, "cause" | "actorAgentId">, agentName: (id: string) => string | undefined): string {
+/** Who caused a version, in a word or a name; an agent's change made without a proposal reads "<agent>, for you". */
+export function dashboardVersionWho(
+  version: Pick<ResponsibilityDashboardVersionSummary, "cause" | "actorAgentId"> & { interactionId?: string | null },
+  agentName: (id: string) => string | undefined,
+): string {
   if (version.cause === "restore") return "Restored";
   if (version.cause === "person") return "You";
-  return (version.actorAgentId ? agentName(version.actorAgentId) : undefined) ?? "An agent";
+  const name = (version.actorAgentId ? agentName(version.actorAgentId) : undefined) ?? "An agent";
+  return version.interactionId === null ? `${name}, for you` : name;
 }
 
 /** The line the Dashboard shows right after a change, beside Undo. */

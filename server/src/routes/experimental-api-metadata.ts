@@ -284,7 +284,7 @@ export const experimentalApiMetadata: Record<string, { successStatuses: number[]
     "successStatuses": [
       200
     ],
-    "boardOnly": true,
+    "boardOnly": false,
     "source": "server/src/routes/responsibilities.ts"
   },
   "POST /api/responsibilities/{id}/links": {
@@ -296,6 +296,20 @@ export const experimentalApiMetadata: Record<string, { successStatuses: number[]
     "source": "server/src/routes/responsibilities.ts"
   },
   "DELETE /api/responsibilities/{id}/links/{linkId}": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "POST /api/responsibilities/{id}/file": {
+    "successStatuses": [
+      200
+    ],
+    "boardOnly": false,
+    "source": "server/src/routes/responsibilities.ts"
+  },
+  "POST /api/responsibilities/{id}/unfile": {
     "successStatuses": [
       200
     ],
@@ -335,14 +349,14 @@ export const experimentalApiMetadata: Record<string, { successStatuses: number[]
     "successStatuses": [
       200
     ],
-    "boardOnly": true,
+    "boardOnly": false,
     "source": "server/src/routes/responsibility-areas.ts"
   },
   "DELETE /api/responsibility-areas/{id}": {
     "successStatuses": [
       200
     ],
-    "boardOnly": true,
+    "boardOnly": false,
     "source": "server/src/routes/responsibility-areas.ts"
   },
   "GET /api/companies/{companyId}/responsibilities/summary": {

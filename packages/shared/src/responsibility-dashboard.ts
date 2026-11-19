@@ -470,8 +470,10 @@ export interface ResponsibilityDashboardVersionSummary {
   /** One plain line of what changed since the version before it. */
   summary: string;
   actorUserId: string | null;
-  /** For `change_set`: the agent that proposed it. */
+  /** For `change_set`: the agent that proposed it, or that made it for the person. */
   actorAgentId: string | null;
+  /** For `change_set`: the proposal a person applied; null when the agent made the change for them. */
+  interactionId: string | null;
   /** The version this one followed: Undo restores it. */
   previousVersionId: string | null;
   /** For `restore`: the version that was restored. */

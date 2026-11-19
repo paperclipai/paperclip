@@ -13,7 +13,7 @@ import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
 import { responsibilityAgentChangeService, responsibilityDeletionKey } from "../services/responsibility-agent-changes.js";
 import { responsibilityAreaService } from "../services/responsibility-areas.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { agentPersonInCompany } from "./responsibilities.js";
 
 const NOT_FOUND = "Area not found";
@@ -126,7 +126,7 @@ export function responsibilityAreaRoutes(db: Db) {
 
   router.patch("/responsibility-areas/:id", validate(updateResponsibilityAreaSchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
-    if (req.actor.type !== "agent") assertBoard(req);
+    assertBoardOrAgent(req);
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
     const writer = await assertAreaWriter(req, row.companyId);
@@ -144,7 +144,7 @@ export function responsibilityAreaRoutes(db: Db) {
 
   router.delete("/responsibility-areas/:id", async (req, res) => {
     await assertResponsibilitiesEnabled();
-    if (req.actor.type !== "agent") assertBoard(req);
+    assertBoardOrAgent(req);
     const row = await loadForBoardWrite(req, res);
     if (!row) return;
     const query = deleteResponsibilityAreaQuerySchema.parse(req.query);

@@ -38,7 +38,7 @@ import {
   type ResponsibilityLinkTarget,
   type ResponsibilityReadScope,
 } from "../services/responsibilities.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const NOT_FOUND = "Responsibility not found";
 
@@ -360,7 +360,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
 
   router.delete("/responsibilities/:id", async (req, res) => {
     await assertResponsibilitiesEnabled();
-    if (req.actor.type !== "agent") assertBoard(req);
+    assertBoardOrAgent(req);
     const row = await loadForWrite(req, res);
     if (!row) return;
     let confirmationId: string | null = null;

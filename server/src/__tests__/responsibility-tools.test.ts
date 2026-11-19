@@ -30,12 +30,17 @@ function responsibility(overrides: Record<string, unknown> = {}) {
 
 /** Records each request and answers from a path table; unknown paths are a test failure. */
 function fakeApi(routes: Record<string, { status?: number; body: unknown }>) {
-  const calls: Array<{ url: string; auth: string | null }> = [];
+  const calls: Array<{ url: string; auth: string | null; method?: string; body?: unknown }> = [];
   const fetcher = (async (url: string | URL, init?: RequestInit) => {
     const href = String(url);
-    calls.push({ url: href, auth: new Headers(init?.headers).get("authorization") });
+    const method = init?.method ?? "GET";
+    calls.push({
+      url: href, auth: new Headers(init?.headers).get("authorization"),
+      ...(method !== "GET" ? { method, body: init?.body ? JSON.parse(String(init.body)) : undefined } : {}),
+    });
     const path = href.replace("http://paperclip.test/api", "");
-    const route = routes[path];
+    // A route is keyed by path, or by "METHOD path" when one path takes several methods.
+    const route = routes[`${method} ${path}`] ?? routes[path];
     if (!route) throw new Error(`unexpected request ${path}`);
     return new Response(JSON.stringify(route.body), { status: route.status ?? 200, headers: { "content-type": "application/json" } });
   }) as typeof fetch;
@@ -147,5 +152,92 @@ describe("responsibility tools", () => {
     await expect(callResponsibilityTool({ ...base, name: "find_responsibilities_for", arguments: { kind: "routine", id: "weekly" } }, api.fetcher))
       .rejects.toMatchObject({ status: 422 });
     await expect(callResponsibilityTool({ ...base, name: "list_responsibilities", arguments: { owner: "x" } }, api.fetcher)).rejects.toThrow();
+  });
+
+  describe("changes", () => {
+    const emptyOverview = {
+      ownerUserId: "owner", areas: [], responsibilities: [responsibility()], proposed: [],
+      totals: { byHealth: {}, openTasks: 0, agentTasks: 0, userTasks: 0, blockedTasks: 0, projects: 0, lateProjects: 0 },
+      loose: { projectCount: 0, openTaskCount: 0, routineCount: 0, projects: [], tasks: [], routines: [] },
+    };
+
+    it("creates a responsibility under an area by title, creating the area when none has it", async () => {
+      const created = responsibility({ id: "88888888-8888-4888-8888-888888888888", title: "Hiring", areaId: "99999999-9999-4999-8999-999999999999", metricName: null });
+      const api = fakeApi({
+        [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: { body: emptyOverview },
+        [`GET /companies/${COMPANY}/responsibility-areas`]: { body: [{ id: AREA, title: "Money", status: "active" }] },
+        [`POST /companies/${COMPANY}/responsibility-areas`]: { body: { id: "99999999-9999-4999-8999-999999999999", title: "People", status: "active" } },
+        [`POST /companies/${COMPANY}/responsibilities`]: { body: created },
+      });
+      const result = await callResponsibilityTool({ ...base, name: "create_responsibility", arguments: { title: "Hiring", areaTitle: "people" } }, api.fetcher);
+      expect(api.calls.filter((entry) => entry.method === "POST").map((entry) => entry.body)).toEqual([
+        { title: "people" },
+        { title: "Hiring", areaId: "99999999-9999-4999-8999-999999999999" },
+      ]);
+      expect(result).toMatchObject({ created: true, responsibility: { title: "Hiring", status: "active" }, undo: expect.stringContaining("undo") });
+    });
+
+    it("reuses a live responsibility with the same title instead of making a copy", async () => {
+      const api = fakeApi({ [`/companies/${COMPANY}/responsibilities?includeLetGo=false`]: { body: emptyOverview } });
+      const result = await callResponsibilityTool({ ...base, name: "create_responsibility", arguments: { title: "  fundraising " } }, api.fetcher);
+      expect(result).toMatchObject({ created: false, responsibility: { id: RESPONSIBILITY } });
+      expect(api.calls.some((entry) => entry.method === "POST")).toBe(false);
+    });
+
+    it("maps a cleared bar to empty metric inputs and moves to an area by title", async () => {
+      const api = fakeApi({
+        [`GET /companies/${COMPANY}/responsibility-areas`]: { body: [{ id: AREA, title: "Money", status: "active" }] },
+        [`PATCH /responsibilities/${RESPONSIBILITY}`]: { body: responsibility({ metricName: null }) },
+      });
+      await callResponsibilityTool({ ...base, name: "update_responsibility", arguments: { responsibilityId: RESPONSIBILITY, bar: null, areaTitle: "MONEY" } }, api.fetcher);
+      expect(api.calls.find((entry) => entry.method === "PATCH")?.body).toEqual({
+        areaId: AREA, metricName: null, metricUnit: null, metricTarget: null, metricLow: null, metricHigh: null, metricDirection: null, metricCurrent: null,
+      });
+    });
+
+    it("asks the person on a card before a permanent delete, and deletes once they accept", async () => {
+      const detail = { ...responsibility(), area: null, skills: [], artifacts: [], artifactsTotal: 0, artifactsTruncated: false, projects: [], tasks: [], tasksTruncated: false, routines: [] };
+      const key = `responsibility-delete:${RESPONSIBILITY}`;
+      const card = (status: string, id = "card-1") => ({ id, kind: "request_confirmation", status, createdAt: "2026-11-18T00:00:00.000Z", payload: { target: { type: "custom", key } } });
+
+      const first = fakeApi({
+        [`/responsibilities/${RESPONSIBILITY}`]: { body: detail },
+        [`GET /issues/${ISSUE}/interactions`]: { body: [] },
+        [`POST /issues/${ISSUE}/interactions`]: { body: { id: "card-1" } },
+      });
+      expect(await callResponsibilityTool({ ...base, name: "delete_responsibility", arguments: { responsibilityId: RESPONSIBILITY } }, first.fetcher))
+        .toMatchObject({ deleted: false, status: "awaiting_confirmation", confirmationId: "card-1" });
+      expect(first.calls.find((entry) => entry.method === "POST")?.body).toMatchObject({
+        kind: "request_confirmation", idempotencyKey: `${key}:1`, resolverPolicy: "human_only", continuationPolicy: "wake_assignee",
+        payload: { acceptLabel: "Delete", target: { type: "custom", key } },
+      });
+
+      const declined = fakeApi({ [`/responsibilities/${RESPONSIBILITY}`]: { body: detail }, [`GET /issues/${ISSUE}/interactions`]: { body: [card("rejected")] } });
+      expect(await callResponsibilityTool({ ...base, name: "delete_responsibility", arguments: { responsibilityId: RESPONSIBILITY } }, declined.fetcher))
+        .toMatchObject({ deleted: false, status: "declined" });
+      expect(declined.calls.some((entry) => entry.method)).toBe(false);
+
+      const accepted = fakeApi({
+        [`/responsibilities/${RESPONSIBILITY}`]: { body: detail },
+        [`GET /issues/${ISSUE}/interactions`]: { body: [card("rejected", "card-0"), { ...card("accepted"), createdAt: "2026-11-18T01:00:00.000Z" }] },
+        [`DELETE /responsibilities/${RESPONSIBILITY}?confirmationId=card-1`]: { body: responsibility() },
+      });
+      expect(await callResponsibilityTool({ ...base, name: "delete_responsibility", arguments: { responsibilityId: RESPONSIBILITY } }, accepted.fetcher))
+        .toMatchObject({ deleted: true, responsibility: { id: RESPONSIBILITY } });
+    });
+
+    it("files work by identifier and reports a move", async () => {
+      const api = fakeApi({
+        "/issues/PAP-9": { body: { id: TASK, identifier: "PAP-9" } },
+        [`POST /responsibilities/${RESPONSIBILITY}/file`]: { body: { filed: [{ link: { id: "l1" }, created: true }, { link: { id: "l2" }, created: false }], unfiled: [{ responsibilityId: "old" }] } },
+      });
+      const result = await callResponsibilityTool({ ...base, name: "file_under_responsibility", arguments: {
+        responsibilityId: RESPONSIBILITY, items: [{ kind: "task", id: "PAP-9" }, { kind: "routine", id: ROUTINE }], moveFrom: "all",
+      } }, api.fetcher);
+      expect(api.calls.find((entry) => entry.method === "POST")?.body).toEqual({
+        items: [{ kind: "task", id: TASK }, { kind: "routine", id: ROUTINE }], moveFrom: "all",
+      });
+      expect(result).toMatchObject({ filed: 1, alreadyFiled: 1, movedFrom: ["old"] });
+    });
   });
 });
