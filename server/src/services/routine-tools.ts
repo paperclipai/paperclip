@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { HttpError } from "../errors.js";
+import { fetchPaperclipApi } from "./paperclip-api-loopback.js";
 
 /**
  * Native agent tools for routines. Like the responsibility tools they call the
@@ -61,14 +62,8 @@ export const updateRoutineToolInput = z.object({
 type ApiCall = (method: "GET" | "POST" | "PATCH", path: string, body?: unknown) => Promise<unknown>;
 
 function apiCaller(input: { apiUrl: string; token: string }, fetcher: typeof fetch): ApiCall {
-  const base = `${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api`;
   return async (method, path, body) => {
-    const response = await fetcher(`${base}${path}`, {
-      method,
-      headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(60_000),
-    });
+    const response = await fetchPaperclipApi({ ...input, method, path, body, fetcher });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new HttpError(response.status, typeof result?.error === "string" ? result.error : `Routine tool failed (${response.status})`,
