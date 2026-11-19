@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
-import { acpxProviderFailure, acpxTerminalResult } from "./acpx/provider-failure.js";
+import { acpxProviderFailure, acpxTerminalResult, acpxTypedTerminalSessionFailure } from "./acpx/provider-failure.js";
 import { codexProviderFailure } from "./codex/provider-failure.js";
 import { openCodeProviderFailure } from "./opencode/provider-failure.js";
 import { createProviderFailure, providerFailureFromError } from "./provider-failure.js";
@@ -92,6 +92,22 @@ describe("provider failure boundary", () => {
       .toMatchObject({ error: { providerFailure: { category: "unknown" } } });
     expect(acpxProviderFailure(new Error(message), "claude", "turn", {}, false, { category: "request", title }))
       .toMatchObject({ category: "unknown" });
+  });
+
+  it.each([
+    ["De gebruiksruimte van dit account is op.", [], "quota_exhausted"],
+    ["Probeer het later opnieuw.", ["retry"], "rate_limit"],
+    ["You've hit your context limit.", ["new_session"], "unknown"],
+    ["You've hit your budget limit.", ["new_session"], "unknown"],
+  ])("classifies Claude's typed limit by recovery actions: %s", (title, actions, category) => {
+    const metadata = { jetbrains: { air: { version: 1, sessionFailure: { severity: "error", category: "limit", title, actions } } } };
+    const failure = acpxTypedTerminalSessionFailure(metadata) ?? undefined;
+    const terminal = { status: "failed", error: { code: "RUNTIME", message: "ACP turn failed" } };
+    expect(acpxTerminalResult(terminal, "claude", {}, failure))
+      .toMatchObject({ error: { providerFailure: { category } } });
+    expect(acpxTerminalResult(terminal, "kimi", {}, acpxTypedTerminalSessionFailure({
+      jetbrains: { air: { version: 1, sessionFailure: { severity: "error", category: "limit", title: "Opaque provider message", actions } } },
+    }) ?? undefined)).toMatchObject({ error: { providerFailure: { category: "unknown" } } });
   });
 
   it("classifies Claude's rejection of the selected model as an unavailable model", () => {
