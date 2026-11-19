@@ -1598,7 +1598,7 @@ export function createFreshIssueRunStore(
         sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
         or(isNull(heartbeatRuns.nativeIssueId), eq(heartbeatRuns.nativeIssueId, issueId)),
       )) : [];
-      const candidates = receiptScope && (!checkExecutionBlocker || !(await getExecutionBlocker(tx, companyId, issueId)))
+      const candidates = receiptScope
         ? await tx.select({
             id: agentWakeupRequests.id,
             reason: agentWakeupRequests.reason,
@@ -1612,7 +1612,8 @@ export function createFreshIssueRunStore(
             receiptScope.kind === "exact" ? eq(agentWakeupRequests.id, receiptScope.wakeId) : undefined,
           )).orderBy(asc(agentWakeupRequests.requestedAt))
         : [];
-      return { handoffAgentId: handoff?.agentId ?? null, candidates };
+      const blocked = candidates.length > 0 && checkExecutionBlocker && await getExecutionBlocker(tx, companyId, issueId);
+      return { handoffAgentId: handoff?.agentId ?? null, candidates: blocked ? [] : candidates };
     },
     readUndeliveredLegacyCommentIds(issueId, agentId, commentIds) {
       return undeliveredLegacyUserCommentIds(tx, companyId, issueId, agentId, commentIds);
