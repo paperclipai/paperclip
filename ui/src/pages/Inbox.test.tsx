@@ -2436,6 +2436,44 @@ describe("Inbox toolbar", () => {
     }
   });
 
+  it("archives an unread task from Tasks and restores it with Undo", async () => {
+    const issue = createIssue({ id: "unread-task", title: "Unread task to archive", isUnreadForMe: true });
+    setIssueRows([issue]);
+    apiMocks.archiveFromInbox.mockImplementation(async () => {
+      setIssueRows([]);
+      return { id: issue.id, archivedAt: new Date() };
+    });
+    apiMocks.unarchiveFromInbox.mockImplementation(async () => {
+      setIssueRows([issue]);
+      return { id: issue.id, archivedAt: new Date() };
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={client}><Inbox tab="unread" surfaceLabel="Tasks" /></QueryClientProvider>);
+      });
+      const archive = () => container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      await vi.waitFor(() => expect(archive()).not.toBeNull());
+      expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({ inboxArchivedByUserId: "me" }));
+      await act(async () => archive()!.click());
+
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain("Unread task to archive");
+        expect(toastMocks.pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Task archived" }));
+      });
+      const toast = toastMocks.pushToast.mock.calls.find(([input]) => input.title === "Task archived")?.[0];
+      await act(async () => toast.action.onClick());
+      await vi.waitFor(() => {
+        expect(apiMocks.unarchiveFromInbox).toHaveBeenCalledWith(issue.id);
+        expect(container.textContent).toContain("Unread task to archive");
+      });
+    } finally {
+      act(() => root.unmount());
+      client.clear();
+    }
+  });
+
   it("keeps other issue archive controls enabled while one archive is pending", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
