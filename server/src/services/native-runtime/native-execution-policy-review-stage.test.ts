@@ -1,6 +1,7 @@
+import * as pullRequestMerge from "../github-pull-request-merge.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentWakeupRequests, agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueThreadInteractions, issueWorkProducts, issues, statusDecisions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
@@ -87,6 +88,23 @@ describe.skipIf(!support.supported)("native completion with a configured review 
     const r = await finishVerifiedDone();
     expect(r.task.status).toBe("done");
     expect(r.decisions.map(row => row.reasonCode)).toEqual(["completion_contract_satisfied"]);
+  });
+
+  it("allows an open PR to enter its configured review without claiming completion", async () => {
+    const lookup = vi.fn().mockResolvedValue("open");
+    const resolve = vi.spyOn(pullRequestMerge, "createPullRequestMergeStateResolver").mockReturnValue(lookup);
+    try {
+      const r = await finishVerifiedDone({ stage: "user", beforeFinish: async (runId, result) => {
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        await db.insert(issueWorkProducts).values({ companyId: run.companyId, issueId: run.nativeIssueId!,
+          type: "pull_request", provider: "github", title: "Implementation", status: "ready_for_review",
+          url: "https://github.com/example/project/pull/42" });
+        expect(await nativeCompletionFeedback(db, runId, result)).toContain("configured review stage starts");
+      } });
+      expect(r.task.status).toBe("in_review");
+      expect(r.decisions.map(row => row.reasonCode)).toEqual(["execution_stage_review_required"]);
+      expect(lookup).not.toHaveBeenCalled();
+    } finally { resolve.mockRestore(); }
   });
 
   it("starts the configured human review stage instead of closing verified work", async () => {

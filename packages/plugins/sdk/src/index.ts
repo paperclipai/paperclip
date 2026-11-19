@@ -476,7 +476,7 @@ export {
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
 
-export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
+export { PluginEnvironmentAcquisitionError, PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
 export type { PluginEnvironmentCreationCleanup, PluginEnvironmentAcquisitionDiagnostic, PluginEnvironmentAcquisitionProviderState } from "./environment-creation-cleanup.js";
 export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";

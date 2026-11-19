@@ -53,7 +53,7 @@ export function formatDate(date: Date | string): string {
 
 export function formatDateTime(
   date: Date | string,
-  options: { includeSeconds?: boolean; includeYear?: boolean } = {},
+  options: { includeSeconds?: boolean; includeYear?: boolean; includeTimeZone?: boolean } = {},
 ): string {
   return new Date(date).toLocaleString("en-US", {
     month: "short",
@@ -62,6 +62,7 @@ export function formatDateTime(
     hour: "numeric",
     minute: "2-digit",
     ...(options.includeSeconds ? { second: "2-digit" as const } : {}),
+    ...(options.includeTimeZone ? { timeZoneName: "short" as const } : {}),
   });
 }
 

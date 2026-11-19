@@ -487,6 +487,48 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }
   });
 
+  it.each([
+    { auth: "none" as const, credentialValues: {} },
+    { auth: "api_key" as const, credentialValues: { "credentials.apiKey": "records-key" } },
+  ])("asks which one agent uses a plugin connector with agent grants ($auth)", async ({ auth, credentialValues }) => {
+    const app = pluginAppDefinition("example.records", {
+      schemaVersion: 1, slug: "records", name: "Records", description: "Look up records", categories: ["data"],
+      branding: { logoUrl: "/brands/apps/api-key-generic.svg" }, urlPatterns: [],
+      methods: [{ key: "agent", label: "Agent", transport: "plugin", auth, grantKinds: ["agent"], ownershipModes: ["customer"],
+        whenToUse: "One agent uses it.", guidanceMd: "Pick the agent.", riskTier: "S1",
+        ...(auth === "api_key"
+          ? { credentialFields: [{ key: "apiKey", label: "API key", type: "password" as const, required: true, placeholder: "key", secret: true }] }
+          : {}),
+        tools: { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] } }],
+    });
+    setPluginAppDefinitions([app]);
+    try {
+      listGalleryMock.mockResolvedValue({ apps: [app] });
+      await render(undefined, false, <ConnectionSetupFlow serviceSlug={app.slug} />);
+      // The stated default must not promise every agent, and the picker is
+      // already open because the connection needs its one agent.
+      expect(container.textContent).not.toContain("available to all agents");
+      expect(container.textContent).toContain("Which agent uses this connection?");
+      expect(container.textContent).not.toContain("GitHub");
+      expect(container.textContent).not.toContain("No identity required");
+      expect(buttonByText("Connect")?.disabled).toBe(true);
+      const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+      if (auth === "api_key") await act(async () => setInputValue(key!, "records-key"));
+      await act(async () => buttonByText("Select agents")!.click());
+      await flushReact();
+      await act(async () => document.body.querySelector<HTMLElement>('[aria-label="Allow Ada"]')!.click());
+      await flushReact();
+      expect(container.textContent).toContain("available only to the chosen agent");
+      await act(async () => buttonByText("Connect")?.click());
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: app.slug,
+        connectionMethodKey: "agent", grantKind: "agent", subjectAgentId: "agent-1",
+        ...(auth === "api_key" ? { credentialValues } : {}) }));
+    } finally {
+      setPluginAppDefinitions([]);
+    }
+  });
+
   it("opens the saved AI sign-in and reuses a completed account", async () => {
     mockSearch.value = "aiLogin=saved-login";
     const setup = vi.spyOn(aiConnectionsApi, "loginSetup").mockResolvedValue({

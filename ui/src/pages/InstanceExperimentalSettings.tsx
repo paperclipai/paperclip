@@ -321,6 +321,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="AWS connector"
+          description="Let agents work in AWS through AWS's hosted MCP server, with short-lived credentials made for each connection."
+          footnote="Off by default. While off, the AWS connector cannot be set up or run."
+          checked={experimentalQuery.data?.enableAwsConnector === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAwsConnector: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAwsConnector"
+          managed={managedKeys.enableAwsConnector}
+          ariaLabel="Toggle AWS connector experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Beta skills"
           description="Allow agents to pin beta releases of the Paperclip core skill. Disabling this returns every agent to the default live skill without removing saved pins."
           checked={enableBetaSkills}
@@ -517,6 +529,7 @@ export function InstanceExperimentalSettings() {
           managed={managedKeys.enableGoogleWorkspaceConnector}
           ariaLabel="Toggle Paperclip Google Workspace connector experimental setting"
         />
+
 
         <ExperimentalToggleCard
           title="Grok Bot"

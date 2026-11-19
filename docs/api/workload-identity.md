@@ -26,8 +26,9 @@ Responses are cacheable for five minutes.
 
 The issuer is `https://{instance}/oidc/companies/{companyId}`. Tokens have
 `sub` set to `connection:{connectionId}`, an `aud` chosen by the connection
-type, and a lifetime of five minutes. Only an enabled, active connection can get a token,
-so disabling a connection stops new tokens at once.
+type, and a lifetime of five minutes. A disabled, archived or switched-off connection gets no token, so
+turning a connection off stops new tokens at once. A draft can get one, so
+setup can test it before it goes live; agents cannot use a draft.
 
 ## Board endpoints
 

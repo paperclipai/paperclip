@@ -67,6 +67,14 @@ export const smallEditChanges: ResponsibilityDashboardChange[] = [
   change(3, { op: "rename_area", groupAreaId: "area-team", groupName: "Team", fromName: "Team", name: "People", sharedWith: 2 }),
 ];
 
+export const mixedAreaChanges: ResponsibilityDashboardChange[] = [
+  change(0, { op: "add_responsibility", groupAreaId: "area-product", groupName: "Product", sentence: "Every launch has a named owner and a clear release date." }),
+  change(1, { op: "add_area", groupRef: "quality", groupName: "Quality & Reliability", name: "Quality & Reliability", reason: "Give the health of the product its own home." }),
+  change(2, { op: "add_responsibility", groupRef: "quality", groupName: "Quality & Reliability", dependsOn: [1], sentence: "The core product journeys pass their daily checks.", reason: "Keep a clear signal for the work customers depend on." }),
+  change(3, { op: "move_responsibility", groupRef: "quality", groupName: "Quality & Reliability", dependsOn: [1], responsibilityId: "resp-speed", fromSentence: "Key pages load quickly and stay fast.", fromAreaId: "area-product", fromAreaName: "Product" }),
+  change(4, { op: "add_area", groupRef: "community", groupName: "Community", name: "Community", reason: "An area can start empty; add responsibilities when you are ready." }),
+];
+
 function payload(changes: ResponsibilityDashboardChange[], mode: ProposeDashboardChangesPayload["mode"], message: string | null): ProposeDashboardChangesPayload {
   return { version: 1, ownerUserId: RESPONSIBILITY_FIXTURE_OWNER_ID, mode, message, changes };
 }

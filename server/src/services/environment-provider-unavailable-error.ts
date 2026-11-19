@@ -19,7 +19,7 @@ export const ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE = "environment_provider_unava
  * the provider reported a provisional creation that did not finish, or a
  * control-plane database query failed while the lease was taken.
  */
-type TransientLeaseFailureReason = "acquisition_incomplete" | "database_error";
+type TransientLeaseFailureReason = "acquisition_incomplete" | "provider_start_failed" | "database_error";
 type TransientProviderEvidence = { httpStatus?: number; errorCode?: string; acquisitionTimedOut?: true; reason?: TransientLeaseFailureReason };
 
 function own(value: unknown, key: string): unknown {
@@ -104,7 +104,8 @@ export function readTransientLeaseAcquisitionFailure(
   for (let cause = error, depth = 0; cause && depth < 5; cause = own(cause, "cause"), depth++) {
     const acquisition = getEnvironmentAcquisitionDiagnostic(cause, run);
     if (acquisition) {
-      return acquisition.elapsedMs >= acquisition.budgetMs ? { acquisitionTimedOut: true } : { reason: "acquisition_incomplete" };
+      if (acquisition.elapsedMs >= acquisition.budgetMs) return { acquisitionTimedOut: true };
+      return { reason: acquisition.phase === "create" && acquisition.providerState === "error" ? "provider_start_failed" : "acquisition_incomplete" };
     }
     if (cause instanceof JsonRpcCallError && cause.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return { acquisitionTimedOut: true };
   }
@@ -113,6 +114,7 @@ export function readTransientLeaseAcquisitionFailure(
 
 const REASON_LABELS: Record<TransientLeaseFailureReason, string> = {
   acquisition_incomplete: "sandbox creation did not finish",
+  provider_start_failed: "the provider could not start the sandbox",
   database_error: "a database query failed while recording the lease",
 };
 

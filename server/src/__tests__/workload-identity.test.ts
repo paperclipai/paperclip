@@ -74,7 +74,7 @@ describe("company workload identity issuer", () => {
     return id;
   }
 
-  async function connection(companyId: string, state: { status?: "draft" | "active" | "disabled"; enabled?: boolean } = {}) {
+  async function connection(companyId: string, state: { status?: "draft" | "active" | "disabled" | "archived"; enabled?: boolean } = {}) {
     const [application] = await db.insert(toolApplications).values({
       companyId, applicationKey: `aws-${randomUUID()}`, name: `AWS ${randomUUID().slice(0, 8)}`, type: "mcp_http", status: "active",
     }).returning();
@@ -273,13 +273,16 @@ describe("company workload identity issuer", () => {
     ))).toHaveLength(0);
   });
 
-  it("stops issuing tokens for a disabled, draft or switched-off connection", async () => {
+  it("stops issuing tokens for a disabled, archived or switched-off connection, but lets setup test a draft", async () => {
     const companyId = await company();
-    for (const state of [{ status: "disabled" as const }, { status: "draft" as const }, { enabled: false }]) {
+    for (const state of [{ status: "disabled" as const }, { status: "archived" as const }, { enabled: false }]) {
       const connectionId = await connection(companyId, state);
       await expect(service().signConnectionToken({ companyId, connectionId, audience: "sts.amazonaws.com" }))
         .rejects.toMatchObject({ status: 422, details: { code: "workload_identity_connection_inactive" } });
     }
+    const draft = await connection(companyId, { status: "draft", enabled: false });
+    expect((await service().signConnectionToken({ companyId, connectionId: draft, audience: "sts.amazonaws.com" })).subject)
+      .toBe(`connection:${draft}`);
   });
 
   it("writes a rotation's activity entry only when the key change commits", async () => {
