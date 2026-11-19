@@ -60,7 +60,10 @@ export function validateManifest(value, now = Date.now(), { admission = true } =
     if (model.price.longContext) { fields(model.price.longContext, ['aboveInputTokens', 'rates']); fields(model.price.longContext.rates, rateFields); }
     const url = new URL(model.price.sourceUrl);
     const key = `${model.provider}:${model.price.model}`;
-    if (!['openai', 'anthropic'].includes(model.provider) || !model.provisionalBound || url.protocol !== 'https:'
+    // Model-request readiness accounts every request from its receipt; a self-hashed
+    // full-lifecycle bound is required only when unresolved requests may settle against it.
+    const boundRequired = value.overhead.accountingReadiness !== 'model_requests';
+    if (!['openai', 'anthropic'].includes(model.provider) || boundRequired && !model.provisionalBound || url.protocol !== 'https:'
         || url.username || url.password || url.search || url.hash || prices.has(key)) throw new Error('Invalid controller model pricing');
     prices.set(key, units(costRuntime.evalRequestReservation({ ...model, mode: value.route, apiKey: 'validation' })));
   }

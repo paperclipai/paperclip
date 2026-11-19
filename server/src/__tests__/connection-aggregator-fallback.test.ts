@@ -1,9 +1,10 @@
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { requestHumanInputAction } from "../../../packages/paperclip-runner/src/protocol-actions/request-human-input.js";
+import { toolInputVariantError } from "../../../packages/paperclip-runner/src/contracts/tool-input-variants.js";
 import { questionSetToAskUserQuestionsPayload } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   authUsers,
@@ -338,14 +339,14 @@ const support = await getEmbeddedPostgresTestSupport();
     it("keeps an external typo as a discovery suggestion until its app is selected", async () => {
       await resetQuestions();
       const result = await connectionIntentService(db).search(claims,
-        "Find Circlebak meeting transcripts and action items from yesterday");
-      expect(result.results.some(item => item.service === "via:composio:circleback-mcp")).toBe(true);
+        "Find Fathm meeting transcripts and action items from yesterday");
+      expect(result.results.some(item => item.service === "via:composio:fathom")).toBe(true);
       expect(result.providerQuestion).toBeUndefined();
       expect(result.instruction).toContain("aggregator.targetService");
     });
     it.each([
-      ["help me find tools for circle back", "circleback-mcp"],
-      ["Can you connect Circleback MCP to get all our meeting notes?", "circleback-mcp"],
+      ["help me find tools for otter ai", "otter-ai-mcp"],
+      ["Can you connect Fathom to get all our meeting notes?", "fathom"],
       ["Find Attio tools to review all our customer contacts before next week's meeting", "attio"],
       ["Help me find a ClickUp connection to organize our team's projects", "clickup"],
     ])("finds verified aggregator apps in natural-language queries: %s", async (query, target) => {
@@ -379,18 +380,32 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     it("returns multiple aggregator apps without inventing a combined route or choosing consent", async () => {
       await resetQuestions();
-      const result = await connectionIntentService(db).search(claims, "Find Circleback and Attio tools");
-      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["via:composio:circleback-mcp", "via:composio:attio"]));
+      const result = await connectionIntentService(db).search(claims, "Find Fathom and Attio tools");
+      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["via:composio:fathom", "via:composio:attio"]));
       expect(result.providerQuestion).toBeUndefined();
       expect(result.instruction).toContain("aggregator.targetService");
     });
     it("keeps native and aggregator app matches from the same query", async () => {
       await resetQuestions();
-      const result = await connectionIntentService(db).search(claims, "Find Notion and Circleback tools");
-      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["notion", "via:composio:circleback-mcp"]));
+      const result = await connectionIntentService(db).search(claims, "Find Notion and Fathom tools");
+      expect(result.results.map(item => item.service)).toEqual(expect.arrayContaining(["notion", "via:composio:fathom"]));
       expect(result.providerQuestion).toBeUndefined();
     });
 
+    // Composio lists Circleback too (circleback_mcp), but with fewer tools and no
+    // meeting cards; the built-in connection answers these requests directly.
+    it.each([
+      "help me find tools for circle back",
+      "Can you connect Circleback MCP to get all our meeting notes?",
+      "Find Circleback meeting transcripts and action items from yesterday",
+    ])("prefers the built-in Circleback connection over its aggregator listing: %s", async (query) => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, query);
+      expect(result.results[0]?.service).toBe("circleback");
+      expect(result.results.some(item => item.service.startsWith("via:"))).toBe(false);
+      expect(result.providerQuestion).toBeUndefined();
+      expect(result.instruction).toContain("connection_request");
+    });
     it("prefers the built-in Jira connection and returns a direct instruction", async () => {
       await resetQuestions();
       const result = await connectionIntentService(db).search(
@@ -400,6 +415,70 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(result.results[0]?.service).toBe("jira");
       expect(result.providerQuestion).toBeUndefined();
       expect(result.instruction).toContain("connection_request");
+    });
+    // BUG-06: on Paperclip Cloud, the native Slack tool path requires a customer-created
+    // Slack OAuth app and managed Slack chat setup is behind the Chat connectors opt-in.
+    // Agents must offer the one-click aggregator routes instead of that card.
+    describe("Slack on Paperclip Cloud", () => {
+      const slackQuery = "Slack (team updates / notifications)";
+      beforeAll(() => { vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "cloud-test-token"); });
+      afterAll(() => { vi.unstubAllEnvs(); });
+      it("offers aggregator Slack routes while native Slack only supports a customer-created OAuth app", async () => {
+        await resetQuestions();
+        const result = await connectionIntentService(db).search(claims, slackQuery);
+        expect(result.results.map((item) => item.service)).toEqual([
+          "via:composio:slack",
+          "via:arcade:slack",
+          "via:zapier:slack",
+        ]);
+        expect(result.providerQuestion?.prompt).toContain("Slack");
+      });
+      it("keeps native Slack when Chat connectors provide its own setup path", async () => {
+        await resetQuestions();
+        await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+        try {
+          const result = await connectionIntentService(db).search(claims, slackQuery);
+          expect(result.results[0]).toMatchObject({ service: "slack", state: "available" });
+          expect(result.providerQuestion).toBeUndefined();
+        } finally {
+          await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
+        }
+      });
+      it("does not offer native Slack setup beside another app's native match", async () => {
+        await resetQuestions();
+        const result = await connectionIntentService(db).search(claims, "Find Notion and Slack tools");
+        const services = result.results.map((item) => item.service);
+        expect(services).toEqual(expect.arrayContaining(["notion", "via:composio:slack"]));
+        expect(services).not.toContain("slack");
+      });
+      it("keeps Slack's aggregator routes in capability-only discovery", async () => {
+        await resetQuestions();
+        const result = await connectionIntentService(db).search(claims, "start and continue Paperclip work");
+        const services = result.results.map((item) => item.service);
+        expect(services).toContain("via:composio:slack");
+        expect(services).not.toContain("slack");
+        // A route needs the provider-choice flow before connection_request.
+        expect(result.instruction).toContain("search its aggregator.targetService");
+      });
+      it("keeps native connectors that declare a Paperclip Cloud managed method", async () => {
+        await resetQuestions();
+        const result = await connectionIntentService(db).search(claims, "asana");
+        expect(result.results[0]).toMatchObject({ service: "asana" });
+        expect(result.providerQuestion).toBeUndefined();
+      });
+      it("keeps native Slack for a company that already saved a Slack connection", async () => {
+        await resetQuestions();
+        await seedProvider("slack", "slack_send_message");
+        const result = await connectionIntentService(db).search(claims, slackQuery);
+        expect(result.results[0]).toMatchObject({ service: "slack" });
+        expect(result.providerQuestion).toBeUndefined();
+      });
+    });
+    it("keeps native Slack on self-hosted instances, where operators register their own Slack app", async () => {
+      await resetQuestions();
+      const result = await connectionIntentService(db).search(claims, "Slack (team updates / notifications)");
+      expect(result.results[0]).toMatchObject({ service: "slack", state: "available" });
+      expect(result.providerQuestion).toBeUndefined();
     });
     it("returns ranked verified routes and does not create questions or connections during search", async () => {
       await resetQuestions();
@@ -422,7 +501,9 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(questionSetToAskUserQuestionsPayload(result.providerQuestionSet!).questions).toEqual([result.providerQuestion]);
       expect(result.instruction).toContain("questionSet:providerQuestionSet");
       expect(result.instruction).not.toContain("do not add questionSet");
-      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1 } })).toBe(false);
+      // The advertised schema is a plain object; the questions rule is a server-checked variant.
+      expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1 } })
+        && toolInputVariantError("request_human_input", { ...input, payload: { version: 1 } }) === null).toBe(false);
       expect(ajv.validate(requestHumanInputAction.live.descriptor.inputSchema, { ...input, payload: { version: 1,
         questionSet: { ...result.providerQuestionSet, questions: [{ ...result.providerQuestionSet!.questions[0], answerMode: "text" }] } } })).toBe(false);
       expect(result.results.every((item) => item.state !== "ready")).toBe(true);

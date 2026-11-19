@@ -61,3 +61,9 @@ export function retainMcpConnectionFailure<T extends Error>(source: unknown, tar
 export function isExpectedMcpConnectionFailure(error: unknown): boolean {
   return error instanceof HttpError && error.status === 502 && !hasUnclassifiedRemoteConnectionAttempts(error) && failures.has(error);
 }
+
+/** Why an outbound MCP request did not reach its server, when that is known. */
+export function mcpConnectionFailureReason(error: unknown): Reason | null {
+  if (!(error instanceof Error) || hasUnclassifiedRemoteConnectionAttempts(error)) return null;
+  return failures.get(error)?.reason ?? readRemoteConnectionFailure(error);
+}

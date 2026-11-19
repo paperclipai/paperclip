@@ -121,11 +121,12 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: true,
   },
   enablePublicMcp: {
-    title: "Assistant connections (MCP)",
-    description: "Let external assistants connect as a person to review work, delegate tasks, add feedback, and follow results.",
+    title: "Assistant connections (compatibility)",
+    description:
+      "Deprecated compatibility key. Assistant connections (MCP) are always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableGitHubReviewBots: {
     title: "GitHub review bots",
@@ -136,14 +137,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   },
   enableOpenAiDot: {
     title: "OpenAI Dot",
-    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL.",
+    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires an authenticated instance with a public HTTPS URL.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },
   enableGrokBot: {
     title: "Grok Bot",
-    description: "Connect an existing Grok Bot as an experimental Paperclip agent. Requires Assistant connections (MCP), Paperclip Runner, and an authenticated public HTTPS instance. Provider spending is not reported.",
+    description: "Connect an existing Grok Bot as an experimental Paperclip agent. Requires Paperclip Runner and an authenticated public HTTPS instance. Provider spending is not reported.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -175,6 +176,20 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableGoogleWorkspaceConnector: {
+    title: "Google Workspace connector (Paperclip)",
+    description: "Show and allow the built-in Google Workspace connector while its Google app verification is pending. When off, Google apps are offered through Composio and Arcade instead.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableAwsConnector: {
+    title: "AWS connector",
+    description: "Show and allow the AWS connector, which reaches AWS's hosted MCP server with short-lived credentials minted for each connection.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableMcpAggregators: {
     title: "MCP aggregators (compatibility)",
     description: "Deprecated compatibility key. MCP aggregators are always enabled; stored and managed values are ignored.",
@@ -191,12 +206,11 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableAgentChat: {
-    title: "Agent Chat",
-    description:
-      "Persistent task-backed conversations that clarify goals and hand work off to tasks. Chat leads the Work group with an agent rail, and each chat's side panel shows the agent's tasks and artifacts as cards.",
+    title: "Agent Chat (compatibility)",
+    description: "Deprecated compatibility key. Agent Chat is always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableCombinedInboxTasks: {
     title: "Combined Inbox + Task List",
@@ -211,8 +225,8 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "The artifact presentation from the artifact directions lab: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableConferenceRoomChat: {
     title: "Conference Room Chat",
@@ -226,6 +240,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Classic Task Interface",
     description:
       "Restore the pre-chat task detail page: the page-level header with inline description editor, the plain comment thread, and the fixed Properties sidebar. Chat-only features (streaming activity folding, inline plan/question cards, the three-mode composer) are unavailable in the classic view.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableLegacyComposerSubmit: {
+    title: "Command/Ctrl+Enter to Submit",
+    description:
+      "Require Command/Ctrl+Enter to submit task replies and new tasks. Enter inserts a new line.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -249,6 +271,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Status Cards",
     description:
       "Enable the experimental shared status-card board, update engine, and gated API.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableResponsibilities: {
+    title: "Areas & Responsibilities dashboard",
+    description:
+      "Replace the classic dashboard with the experimental one built on areas and responsibilities, and enable its API: per-person areas with the projects, tasks and routines under them, rolled-up health, agent proposals and delegation.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -369,6 +399,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
       "On cloud-managed instances, grant the stack owner instance-admin access to their own dedicated instance. Elevation is computed at the trusted-header auth boundary; no instance admin role rows are created. Inert on self-hosted instances.",
     tier: "managed",
     cloudDefault: true,
+    selfHostedDefault: false,
+  },
+  enableMcpTasks: {
+    title: "Durable app actions (MCP Tasks)",
+    description:
+      "Let connected apps run long actions, such as CI runs or deploys, as tasks that Paperclip keeps track of across timeouts, restarts, and deploys, so the work is never started twice.",
+    tier: "managed",
+    cloudDefault: false,
     selfHostedDefault: false,
   },
   enableSandboxDuplexBridge: {

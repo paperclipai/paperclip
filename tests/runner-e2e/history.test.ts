@@ -902,3 +902,17 @@ describe("historical publication security", () => {
     );
   });
 });
+
+// These PNGs are synthetic controls; no retained incident image is inspected.
+describe("privacy findings override screenshot route admission", () => {
+  it.each([
+    { failureClass: "secret_leak", screenshotPrivacy: undefined },
+    { failureClass: "cleanup_failure", screenshotPrivacy: { withheld: true, reasons: ["inner-secret-finding"] } },
+    { failureClass: "cleanup_failure", screenshotPrivacy: { withheld: true, reasons: ["reporter-evidence-withheld"] } },
+  ])("withholds marked screenshots despite terminal wrapper: %j", signal => {
+    const execution = runnerMatrix[0]!;
+    const original = { ...result(execution, "failed"), ...signal, screenshots: [{ id: "failure", label: "Synthetic failure", file: "failure.png", publication: "public-runner-fixture" }] } as RunnerE2EResult;
+    const campaign = buildRunnerCampaign({ campaignId: "privacy-withheld", generatedAt: "2026-08-28T00:01:00.000Z", expected: [execution.id], results: [original] });
+    expect([...publicScreenshotPaths(campaign)]).toEqual([]);
+  });
+});

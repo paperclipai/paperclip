@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { useQueryView } from "@/components/QueryView";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { queryKeys } from "@/lib/queryKeys";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function SlackIdentityStep({ endpointId, command, testStartedAt, onConnected, onSaveExit }: {
   endpointId: string;
@@ -77,7 +79,7 @@ export function SlackIdentityStep({ endpointId, command, testStartedAt, onConnec
             const mine = identity.status === "linked" && identity.paperclipUserId === userId;
             return (
               <div key={identity.principalId} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3">
-                <div className="min-w-0">
+                <div className={cn("min-w-0", ANALYTICS_MASK_CLASS)}>
                   <p className="text-sm font-medium">{identity.externalLabel}</p>
                   <p className="text-xs text-muted-foreground">{identity.externalDetail}</p>
                 </div>

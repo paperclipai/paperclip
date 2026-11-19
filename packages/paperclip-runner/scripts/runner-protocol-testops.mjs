@@ -139,6 +139,15 @@ export function filterCatalog(catalog, selection) {
       caseIds: [...selectedIds], allureJobRunId: selection.allureJobRunId } };
 }
 
+export function payloadFromSanitizedRun(score, artifact, cell) {
+  if (score?.schema !== "paperclip-runner/eval-score/v1" || artifact?.schema !== "paperclip-runner/eval-session-artifact/v1"
+    || score.attemptId !== cell.finalAttemptId || artifact.attemptId !== cell.finalAttemptId || score.caseId !== cell.caseId
+    || typeof score.passed !== "boolean" || artifact.publication?.schema !== "paperclip.runner-protocol-eval.public-chat/v1"
+    || artifact.requestedModel !== contract.model || artifact.provider !== contract.provider || artifact.driver !== contract.driver) fail("sanitized_payload_binding");
+  return { attemptId: score.attemptId, caseId: score.caseId, disposition: score.disposition, passed: score.passed,
+    publication: { schema: artifact.publication.schema }, checks: score.checks };
+}
+
 export function projectResults({ selection, campaign, payloads = new Map() }) {
   validateSelection(selection);
   const campaignUrl = runUrl(selection.runId);
@@ -244,27 +253,36 @@ async function main() {
     await githubOutputs({ matrix_0: JSON.stringify(catalog.matrices[0]), matrix_1: JSON.stringify(catalog.matrices[1]),
       matrix_1_present: String(catalog.matrices[1].include.length > 0), selected: catalog.cells.length });
     console.log(json({ selected: catalog.cells.length, fullPlan: catalog.selection.fullPlan }));
-  } else if (command === "export") {
+  } else if (command === "export" || command === "export-runs") {
+    const structured = command === "export-runs";
+    if (args.length !== (structured ? 4 : 3)) fail("arguments");
     const selection = await readJson(args[0]);
+    const output = args[structured ? 3 : 2];
     let campaign;
-    try { campaign = await readJson(join(args[1], "campaign.json")); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    try { campaign = await readJson(structured ? args[1] : join(args[1], "campaign.json")); } catch (error) { if (error.code !== "ENOENT") throw error; }
     const payloads = new Map();
     for (const row of campaign?.results ?? []) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(row.finalAttemptId)) fail("attempt_path");
       try {
-        const html = await readFile(join(args[1], "attempts", row.finalAttemptId, "index.html"), "utf8");
-        const match = /<script type="application\/json" id="paperclip-eval-report">([^<]*)<\/script>/.exec(html);
-        if (!match) fail("public_payload_missing");
-        payloads.set(row.finalAttemptId, JSON.parse(match[1]));
+        if (structured) {
+          const directory = join(args[2], row.finalAttemptId);
+          payloads.set(row.finalAttemptId, payloadFromSanitizedRun(await readJson(join(directory, "score.json")),
+            await readJson(join(directory, "artifact.json")), row));
+        } else {
+          const html = await readFile(join(args[1], "attempts", row.finalAttemptId, "index.html"), "utf8");
+          const match = /<script type="application\/json" id="paperclip-eval-report">([^<]*)<\/script>/.exec(html);
+          if (!match) fail("public_payload_missing");
+          payloads.set(row.finalAttemptId, JSON.parse(match[1]));
+        }
       } catch (error) { if (error.code !== "ENOENT") throw error; }
     }
     const rows = projectResults({ selection, campaign, payloads });
-    await mkdir(args[2], { recursive: false, mode: 0o700 });
+    await mkdir(output, { recursive: false, mode: 0o700 });
     for (const row of rows) {
-      await writeFile(join(args[2], row.file), json(row.result));
-      await writeFile(join(args[2], row.attachment), json(row.evidence));
+      await writeFile(join(output, row.file), json(row.result));
+      await writeFile(join(output, row.attachment), json(row.evidence));
     }
-    await writeFile(`${args[2]}-receipt.json`, json({ selection, results: rows.map(row => ({
+    await writeFile(`${output}-receipt.json`, json({ selection, results: rows.map(row => ({
       testCaseId: Number(row.result.labels[0].value), fullName: row.result.fullName, status: row.result.status })) }));
     console.log(json({ reported: rows.length, passed: rows.filter(row => row.result.status === "passed").length }));
   } else if (command === "verify") {

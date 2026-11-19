@@ -60,7 +60,8 @@ const supported = Boolean(externalUrl) || (await getEmbeddedPostgresTestSupport(
     const saved = source();
     await db.insert(heartbeatRuns).values([saved, run(1), run(2)]);
     const result = await select();
-    expect(result).toEqual({ ...saved, runnerProfileJson: { nativeExecutionInput, sessionCheckpoint: checkpoint, nativeToolContractFingerprint: "fingerprint", nativeControllerRecovery: null },
+    expect(result).toEqual({ ...saved, runnerProfileJson: { nativeExecutionInput, sessionCheckpoint: checkpoint, nativeToolContractFingerprint: "fingerprint", nativeControllerRecovery: null,
+      nativeProviderStateUnsaved: null },
       contextSnapshot: { paperclipWake, paperclipIssue } });
     const stored = await db.select({ profile: heartbeatRuns.runnerProfileJson, context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, saved.id));
     expect(stored[0].profile).toEqual(profile);

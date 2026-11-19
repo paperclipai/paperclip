@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assertInterruptedChat, prepareChatBrief, publishChatBrief } from "./chat-stories.js";
+import { assertInterruptedChat, prepareChatBrief, publishChatBrief, workspaceChatBrief } from "./chat-stories.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,6 +34,28 @@ describe("active chat follow-up oracle", () => {
         await publishChatBrief(gate, "BRIEF fixture result");
         expect((await command).stdout.trim()).toBe("BRIEF fixture result");
       }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it("waits for a brief inside the agent's own working directory without host paths", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "chat-brief-relative-"));
+    try {
+      const brief = workspaceChatBrief("fixture-1", 5_000);
+      // A sandboxed agent can read only its own workspace. The command must
+      // not name the fixture host directory, and must resolve from its cwd.
+      expect(brief.command).not.toContain(root);
+      expect(brief.command).not.toContain(path.sep + "tmp");
+      const { gate, ready } = brief.at(root);
+      const command = promisify(execFile)("/bin/sh", ["-c", brief.command], { cwd: root, timeout: 5_000 });
+      try {
+        await expect.poll(() => readFile(ready, "utf8").catch(() => "")).toBe("waiting");
+      } finally {
+        await publishChatBrief(gate, "BRIEF relative result");
+        expect((await command).stdout.trim()).toBe("BRIEF relative result");
+      }
+      expect(() => workspaceChatBrief("../escape")).toThrow();
+      expect(() => workspaceChatBrief("ok", 0)).toThrow("bounded");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

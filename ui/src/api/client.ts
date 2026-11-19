@@ -262,6 +262,11 @@ export function detachInflightGet(path: string): void {
   inflightGets.delete(path);
 }
 
+/** End the sharing scope when identity changes; existing callers still settle. */
+export function detachInflightGets(): void {
+  inflightGets.clear();
+}
+
 function isRequestOptions(value: unknown): value is RequestOptions {
   return typeof value === "object" && value !== null && "signal" in value;
 }

@@ -4,7 +4,7 @@ navigation: {"section":"Getting started and access","sectionOrder":10,"order":10
 
 # Onboarding and first work
 
-An operator can start an instance, create a company, configure its first agent, and reach a real first task. Instance setup and company onboarding are separate steps.
+An operator can start an instance, create a company, configure its first agent, and start in chat. Execution work begins after an accepted task proposal or an explicit task-creation request. Instance setup and company onboarding are separate steps.
 
 Feature ID: `onboarding`.
 
@@ -17,7 +17,7 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 - `instance`: `onboarding/instance` — choose local instance configuration and start the server.
 - `company`: `onboarding/company` — create a company with its identity and initial agent.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
-- `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+- `first-task`: `onboarding/first-task` — leave setup in chat, clarify the goal and exit criteria, and accept or explicitly request the first task.
 
 - `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
 
@@ -64,12 +64,17 @@ Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cov
 
 Manual: Create a disposable company and first agent. Leave midway, reopen the
 company's onboarding route, and finish; drafts save automatically. Follow the
-created first task, verify the selected agent and company, and inspect its output
-or explicit authentication gate. Reload both company and task.
+agent chat, verify the selected agent and company, and watch the live welcome.
+No execution tasks or projects should exist yet. Request an interview or describe
+a goal and clear exit criteria, then accept the suggested task. Verify one
+standalone task is created. Reload chat and ensure the welcome is not repeated.
+Also verify an explicit task-creation request uses the normal handoff directly.
+See [chat-first onboarding](../../doc/onboarding-chat.md). Legacy first-task asset
+evaluations cover existing task-based onboarding, not this chat landing.
 
-For Codex or Claude, choose the harness and leave runner selection automatic to prove the
-first-agent default. On a qualified target it saves Paperclip Runner; Advanced
-also permits Legacy. Do not switch runners after onboarding when claiming proof
+For Codex or Claude, choose the harness to prove automatic first-agent runner
+selection. On a qualified target it saves Paperclip Runner. The wizard has no
+runner dropdown or empty Advanced section. Do not switch runners after onboarding when claiming proof
 of that default. Test the selected runtime and account, then complete a bounded
 useful task and follow-up with an independently checked file artifact. Saved
 execution configuration and recorded run identity must match after reload.
@@ -108,7 +113,7 @@ uses the existing saved environment probe when authoritative qualification is
 absent. The board actor needs the existing instance-environment administration
 permission. Refresh company/environment-scoped discovery before testing the
 selected runtime. A denied probe, unconfirmed cleanup or setup failure must be
-visible; selecting Legacy remains an explicit choice. Creation and discovery
+visible and retryable through setup. Creation and discovery
 themselves allocate no target. A valid measured unsupported target follows the
 server's Legacy default. Named Cloud snapshots remain a separate unqualified
 boot-identity and fresh-signup gap.
@@ -141,8 +146,10 @@ self-contained description. The onboarding run must yield through the existing
 dependency/block disposition so the child's own execution can publish its file.
 Native file registration remains bound to the executing task. On completion,
 the original conversation must receive the actual child and downloadable file
-links. Document-only child work may finish inline; a plan-only request must not
-start implementation. Existing first-task asset controls check the instructions,
+links. Document-only child work may finish inline. Interview execution proposals
+must start their selected work after acceptance; a saved plan alone is not the
+requested result. Only an explicitly plan-only request stops at planning.
+Existing first-task asset controls check the instructions,
 not model compliance. Inspect the child's execution, document, downloaded file
 and source-correlated completion reply in the real journey.
 

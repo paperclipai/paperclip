@@ -82,7 +82,7 @@ it("uses the native request, exact question command ID and durable answer receip
     execution: input, stateDirectory: join(root, "state"), runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
       normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
-    onSpawn: process => { spawned = process; },
+    onSpawn: async process => { spawned = process; },
     controlPlaneRegistration: async authority => { await authority.start(controllerPort); controllerPort = Number(new URL(authority.connectUrl).port);
       return { connectUrl: authority.connectUrl, release: () => authority.stop() }; },
     port: { dispatch: async () => {}, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
@@ -95,7 +95,7 @@ it("uses the native request, exact question command ID and durable answer receip
   });
   const commandSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "queueCommand");
   let driver = new RunnerdMuseDriver(options);
-  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
   try {
     const prepared = commandSpy.mock.calls.find(call => call[0] === "run.prepare");
     expect(JSON.stringify(prepared?.[1])).not.toContain("connections_search");
@@ -166,7 +166,7 @@ it("bounds default Muse question answer command IDs at the native queue boundary
     execution: input, stateDirectory: join(root, "state"), runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
       normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
-    onSpawn: process => { spawned = process; },
+    onSpawn: async process => { spawned = process; },
     controlPlaneRegistration: async authority => { await authority.start(controllerPort); controllerPort = Number(new URL(authority.connectUrl).port);
       return { connectUrl: authority.connectUrl, release: () => authority.stop() }; },
     port: { dispatch: async () => {}, settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome); },
@@ -182,7 +182,7 @@ it("bounds default Muse question answer command IDs at the native queue boundary
   const response = { schema: "paperclip.question_response.v1" as const, answers: { environment: { selectedOptionIds: ["test"] } } };
   const commandSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "queueCommand");
   let driver = new RunnerdMuseDriver(options);
-  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+  let session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
   try {
     await session.startTurn({ message: { role: "user", text: "Answer boundary questions." } });
     await send!(operation("accept", {}));
@@ -253,7 +253,7 @@ it("rejects bridge-unsupported questions at native admission without a stored re
     execution: input, stateDirectory: join(root, "state"), runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
       normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
-    onSpawn: process => { spawned = process; },
+    onSpawn: async process => { spawned = process; },
     port: { dispatch: async () => {}, settle: async () => {}, inputAvailable: async () => {},
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },
   };
@@ -263,7 +263,7 @@ it("rejects bridge-unsupported questions at native admission without a stored re
     action: "request_user_input", input: args, digest: externalOperationDigest("request_user_input", args),
   });
   const driver = new RunnerdMuseDriver(options);
-  const session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId! });
+  const session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
   const events: PrpEvent[] = [];
   let eventReadFailure: unknown;
   const reading = (async () => { for await (const event of session.events()) events.push(event); })()
@@ -315,8 +315,8 @@ it("keeps the exact Muse question and assignment alive past the native live wind
   await writeFile(join(root, "AGENTS.md"), "Use only first-party tools.");
   const input = execution(root);
   const events: PrpEvent[] = [];
-  const dispatches: PrpEvent[] = [];
-  const deliveries: PrpEvent[] = [];
+  const dispatches: Array<{ sourceEventId: string; payload: Record<string, unknown> }> = [];
+  const deliveries: Array<{ sourceEventId: string; payload: Record<string, unknown> }> = [];
   const settlements = new Map<string, Record<string, unknown>>();
   let send: ((operation: ExternalProviderOperation) => Promise<void>) | undefined;
   let spawned: { pid: number; processGroupId: number | null; startedAt: string } | undefined;
@@ -327,7 +327,7 @@ it("keeps the exact Muse question and assignment alive past the native live wind
     normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId };
   const driver = new RunnerdMuseDriver({
     execution: input, stateDirectory: join(root, "state"), identity,
-    runnerBinary: resolve("runner/target/debug/paperclip-runnerd"), onSpawn: process => { spawned = process; },
+    runnerBinary: resolve("runner/target/debug/paperclip-runnerd"), onSpawn: async process => { spawned = process; },
     port: { dispatch: async event => { dispatches.push(event); }, inputAvailable: async event => { deliveries.push(event); },
       settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome as Record<string, unknown>); },
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },

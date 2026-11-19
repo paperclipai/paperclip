@@ -17,8 +17,17 @@ function managedConfig(features: ManagedInstanceConfig["features"] = {}): Manage
     features,
     plugins: { autoInstall: [] },
     environments: [],
+    pluginEnvironments: [],
   };
 }
+
+describe("Artifacts V1 defaults", () => {
+  it("is on for self-hosted and Cloud instances that never stored it", () => {
+    expect(INSTANCE_FEATURE_CATALOG.enableArtifactsV1).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
+    expect(applyCloudCatalogDefaults(normalizeExperimentalSettings({}), {}, null).enableArtifactsV1).toBe(true);
+    expect(applyCloudCatalogDefaults(normalizeExperimentalSettings({}), {}, managedConfig()).enableArtifactsV1).toBe(true);
+  });
+});
 
 describe("applyCloudCatalogDefaults", () => {
   it("pins the catalog so this rule has something to guard", () => {

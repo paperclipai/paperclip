@@ -366,12 +366,12 @@ it("provides a readable prompt and copy retry when the clipboard fails", async (
   expect(invites.createCompanyInvite).toHaveBeenCalledTimes(1);
 });
 
-it.each([{ enableOpenAiDot: false, enablePublicMcp: true }, { enableOpenAiDot: true, enablePublicMcp: false }])("requires both Dot experimental prerequisites: %j", async flags => {
-  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, flags));
+it("requires the Dot experimental setting", async () => {
+  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableOpenAiDot: false }));
   await click("Invite an external agent");
   const dot = [...document.querySelectorAll("button")].find(b => b.textContent?.startsWith("Dot"));
   expect(dot?.disabled).toBe(true);
-  expect(document.body.textContent).toContain("Assistant connections (MCP)");
+  expect(document.body.textContent).toContain("Enable OpenAI Dot in experimental settings.");
   expect(dotApi.create).not.toHaveBeenCalled();
 });
 

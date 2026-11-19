@@ -88,7 +88,8 @@ Policy: Instance setup is operator work; company creation is board; agent creati
 creation retain their individual permissions.
 
 The wizard selects the Codex harness and lets the server resolve an automatic
-new-agent runner; explicit Legacy remains available. Supported-platform and
+new-agent runner without a runner dropdown. Explicit runner requests remain
+available through the agent creation API. Supported-platform and
 immutable sandbox evidence follow [environment probe policy](./execution-environments.md#probe).
 Creation/discovery do not provision a target to determine this default. Adapter
 setup validation requires `agents:create`, plus saved-agent update access when
@@ -184,13 +185,22 @@ API: `present` — representative operation IDs:
 
 - `POST /api/companies/{companyId}/issues`.
 - `POST /api/issues/{issueId}/children`.
+- `POST /api/companies/{companyId}/chats/{agentRef}/onboarding` (board only).
+- `POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting` (board only).
 
 Agent access: `available` — Native create_task / agent REST / CLI issue.
 
 Policy: Instance setup is operator work; company creation is board; agent creation/task
 creation retain their individual permissions.
 
-An authenticated run bound to the server-created onboarding first task must
+The company wizard opens the owner's standing chat without an execution task or
+project. Its board client requests a live welcome only once the thread is
+visible. Agents use the existing chat interactions to propose work; acceptance
+creates standalone tasks, and explicit task requests permit direct creation.
+See [chat-first onboarding](../../doc/onboarding-chat.md). The new board routes
+do not grant agents authority to start another person's onboarding conversation.
+
+For historical task-based onboarding, an authenticated run bound to an onboarding first task must
 obtain persisted human acceptance of the latest ordinary proposal before creating
 new tasks through native `create_task` or REST. Its authenticated run determines
 this admission even for an explicit standalone task. A card decision or a saved
@@ -249,8 +259,11 @@ Scoped source review: 2026-10-13, the first-task asset correction against
 send file-producing work through the child's own execution and existing
 dependency/block controls. Native `register_deliverable` retains its current-task
 binding; this adds no cross-task file-registration authority or permission.
-Document-only work may use the existing child-document API inline, and plan-only
-approval does not authorize implementation. The existing asset tests check
+Document-only work may use the existing child-document API inline. Acceptance
+of an execution proposal authorizes its selected tasks and proposed team within
+existing hiring, budget, and connection controls. An explicitly plan-only
+approval does not authorize implementation; requested separate approvals remain
+in force. The existing asset tests check
 wording only. The literal baseline live attempt failed child-file delivery and
 completion reporting; revised live authorization and execution remain `not-run`.
 
