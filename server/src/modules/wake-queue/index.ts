@@ -30,6 +30,7 @@ export type {
   ReleaseOutcome,
   RunSummary,
 } from "./application/types.js";
+export { createAutomaticGoalCommentSteering } from "./application/automatic-goal-comment-steering.js";
 export { WakeQueueApplicationError } from "./application/types.js";
 export { hasRetainedExternalChatRetry } from "./domain/context.js";
 export { QUEUED_MESSAGES_DELIVERED_REASON } from "./domain/policy.js";
