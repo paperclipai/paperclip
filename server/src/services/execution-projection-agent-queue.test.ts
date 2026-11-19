@@ -4,7 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
-import { agentQueuedRunLine, clearAgentQueueLineCache, worktreeExecutionCutoff } from "./heartbeat/queued-run-line.js";
+import { agentQueuedRunLine, clearAgentQueueLineCache, queuedRunDispatchFacts, worktreeExecutionCutoff } from "./heartbeat/queued-run-line.js";
+import { queuedRunDispatchClass } from "./heartbeat/queued-run-dispatch-order.js";
 import { issueService } from "./issues.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -209,6 +210,12 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
 
     const loopTask = await personTask("in_progress");
     const continuation = await queued(loopTask, 10, loopContinuation(await sourceRun(loopTask, "succeeded")));
+    const [alone] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuation));
+    const { facts: [aloneFacts] } = await queuedRunDispatchFacts(db, { agent: { id: f.agentId, companyId: f.companyId },
+      queuedRuns: [alone!], dependencyReadiness: new Map(), issueById: new Map([[loopTask, { status: "in_progress", priority: "medium",
+        createdByUserId: "board-user" }]]), now });
+    expect(aloneFacts!.cleanContinuation).toBe(true);
+    expect(queuedRunDispatchClass(aloneFacts!, now)).toBe("person");
     const retryTask = await personTask("in_progress");
     const failedRun = await sourceRun(retryTask, "failed");
     const failureRetry = await queued(retryTask, 20, { ...loopContinuation(failedRun), retryReason: "issue_continuation_needed" },

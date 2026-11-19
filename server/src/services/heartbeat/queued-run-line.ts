@@ -176,10 +176,8 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
       return issueId && issueById.has(issueId) && !issueById.get(issueId)?.createdByUserId ? [issueId] : [];
     }))
     : new Set<string>();
-  const cleanSources = personOriginChecked
-    ? await listCleanContinuationSourceRunIds(db, agent.companyId,
-      [...new Set(queuedRuns.flatMap(run => cleanContinuationSourceRunId(run) ?? []))])
-    : new Set<string>();
+  const cleanSources = await listCleanContinuationSourceRunIds(db, agent.companyId,
+    [...new Set(queuedRuns.flatMap(run => cleanContinuationSourceRunId(run) ?? []))]);
   const facts = queuedRuns.map(run => {
     const issueId = issueIdOf(run);
     const cleanSourceRunId = cleanContinuationSourceRunId(run);
