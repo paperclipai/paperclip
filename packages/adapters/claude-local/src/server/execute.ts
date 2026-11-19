@@ -490,9 +490,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const modelEnv = executionTargetIsRemote ? env : effectiveEnv;
-  const model = resolveClaudeModel(config.model, modelEnv);
-  const { biller, billingType } = claudeBillingIdentity(resolveClaudeAuthMode(effectiveEnv));
+  // The env the Claude process receives: the host merge for a local target,
+  // only the explicit env for a remote one. Model and billing both read it.
+  const launchEnv = executionTargetIsRemote ? env : effectiveEnv;
+  const model = resolveClaudeModel(config.model, launchEnv);
+  const { biller, billingType } = claudeBillingIdentity(resolveClaudeAuthMode(launchEnv));
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
   // Keep per-run working-copy paths out of the content-addressed system prompt.
@@ -853,7 +855,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       context,
     };
     const passesConfiguredModel = Boolean(
-      model && (resolveClaudeAuthMode(modelEnv) !== "bedrock" || isBedrockModelId(model)),
+      model && (resolveClaudeAuthMode(launchEnv) !== "bedrock" || isBedrockModelId(model)),
     );
 
     const buildClaudeArgs = (
