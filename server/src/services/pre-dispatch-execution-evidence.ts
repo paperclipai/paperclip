@@ -2,6 +2,7 @@ import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { readRunCancellation } from "./run-cancellation.js";
 
 export function isPreDispatchResourceWait(run: Pick<typeof heartbeatRuns.$inferSelect,
   "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
@@ -29,6 +30,42 @@ export function agentDirectoryPreparationWaitPredicate() {
     and ${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}' = 'false'::jsonb
     and ${heartbeatRuns.resultJson}#>>'{cancellation,source}' = 'control_plane'
     and ${heartbeatRuns.resultJson}#>'{cancellation,expected}' = 'true'::jsonb)`;
+}
+
+/** The control plane cancels a run that is still waiting, for example a
+ * scheduled retry superseded by a task change. This row check only selects a
+ * candidate; `unclaimedControlPlaneCancellationPredicate` is the proof. */
+export function isUnclaimedControlPlaneCancellationCandidate(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "runtimeMode" | "status" | "errorCode" | "resultJson">): boolean {
+  const cancellation = readRunCancellation(run.resultJson);
+  return run.runtimeMode === "legacy" && run.status === "cancelled" && run.errorCode === "cancelled" &&
+    cancellation?.source === "control_plane" && cancellation.expected && cancellation.initiator.type === "system";
+}
+
+/** A retry continues its chain, so its own missing execution evidence is not
+ * enough: the run it retries must be settled too. The scheduler only retries a
+ * run that needs no reconciliation; this records the two outcomes it can prove
+ * from the row: the predecessor succeeded, or its setup failed before provider
+ * work. Resource-wait chains keep their own proof (cancelled-native-startup). */
+export function settledRetryPredecessorPredicate() {
+  return sql`(${heartbeatRuns.retryOfRunId} is null or exists (select 1 from heartbeat_runs predecessor
+    where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
+      and predecessor.agent_id = ${heartbeatRuns.agentId} and predecessor.finished_at is not null
+      and (predecessor.status = 'succeeded' or (predecessor.status in ('failed', 'cancelled', 'interrupted', 'timed_out')
+        and predecessor.result_json #>> '{executionRecovery,kind}' = 'bootstrap'
+        and predecessor.result_json #> '{executionRecovery,providerWorkStarted}' = 'false'::jsonb
+        and coalesce(predecessor.result_json->>'workspaceRestoreFailure', '') = ''
+        and predecessor.result_json->'workspaceRestoreRecovery' is null))))`;
+}
+
+/** SQL proof for `isUnclaimedControlPlaneCancellationCandidate`. Callers add
+ * `noRetainedExecutionPredicate` for the run's own execution evidence. */
+export function unclaimedControlPlaneCancellationPredicate() {
+  return sql`(${heartbeatRuns.errorCode} = 'cancelled'
+    and ${heartbeatRuns.resultJson}#>>'{cancellation,source}' = 'control_plane'
+    and ${heartbeatRuns.resultJson}#>'{cancellation,expected}' = 'true'::jsonb
+    and ${heartbeatRuns.resultJson}#>>'{cancellation,initiator,type}' = 'system'
+    and ${settledRetryPredecessorPredicate()})`;
 }
 
 export function executionStartedEventPredicate() {

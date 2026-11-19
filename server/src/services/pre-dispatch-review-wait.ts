@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
-import { executionStartedEventPredicate, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
+import { executionStartedEventPredicate, isUnclaimedControlPlaneCancellationCandidate, noRetainedExecutionPredicate,
+  unclaimedControlPlaneCancellationPredicate } from "./pre-dispatch-execution-evidence.js";
 import type { QueuedRunStalenessErrorCode } from "../modules/run-dispatch/index.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -28,29 +29,12 @@ const staleDispatchReconciliationExemptions = {
 const staleDispatchErrorCodes = Object.entries(staleDispatchReconciliationExemptions)
   .filter(([, exempt]) => exempt).map(([errorCode]) => errorCode);
 
-/** The control plane cancels a run that is still waiting, for example a
- * scheduled retry when its task moves to backlog. Unclaimed, it has no actions
- * whose outcome could be unknown; the shared retained-evidence proof decides that.
- * A retry also carries its chain: the SQL proof requires a succeeded predecessor. */
-function isControlPlaneCancellation(run: Pick<Run, "errorCode" | "resultJson">) {
-  const cancellation = run.resultJson?.cancellation as Record<string, unknown> | undefined;
-  const initiator = cancellation?.initiator as Record<string, unknown> | undefined;
-  return run.errorCode === "cancelled" && cancellation?.source === "control_plane" &&
-    cancellation.expected === true && initiator?.type === "system";
-}
-
 /** A dispatch cancellation is not an interrupted provider attempt. Historical
  * rows need no new receipt, but every retained execution reference must agree. */
 export function neverStartedDispatchCancellationPredicate() {
   return and(
     eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "cancelled"),
-    or(inArray(heartbeatRuns.errorCode, staleDispatchErrorCodes), sql`(${heartbeatRuns.errorCode} = 'cancelled'
-      and ${heartbeatRuns.resultJson}#>>'{cancellation,source}' = 'control_plane'
-      and ${heartbeatRuns.resultJson}#>'{cancellation,expected}' = 'true'::jsonb
-      and ${heartbeatRuns.resultJson}#>>'{cancellation,initiator,type}' = 'system'
-      and (${heartbeatRuns.retryOfRunId} is null or exists (select 1 from ${heartbeatRuns} as predecessor
-        where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
-          and predecessor.agent_id = ${heartbeatRuns.agentId} and predecessor.status = 'succeeded')))`),
+    or(inArray(heartbeatRuns.errorCode, staleDispatchErrorCodes), unclaimedControlPlaneCancellationPredicate()),
     isNotNull(heartbeatRuns.finishedAt),
     noRetainedExecutionPredicate(),
   );
@@ -88,7 +72,7 @@ export function isPreDispatchReviewWait(
  * checked against the same evidence that gates explicit user admission. */
 export async function isPreDispatchReviewWaitVerified(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode === "legacy" && run.status === "cancelled" && run.finishedAt !== null &&
-      (staleDispatchErrorCodes.some(errorCode => errorCode === run.errorCode) || isControlPlaneCancellation(run)) &&
+      (staleDispatchErrorCodes.some(errorCode => errorCode === run.errorCode) || isUnclaimedControlPlaneCancellationCandidate(run)) &&
       [run.startedAt, run.runtimeModeResolvedAt, run.processPid, run.processGroupId, run.processStartedAt,
         run.nativeIssueId, run.nativeSessionId, run.sessionIdAfter, run.controllerBootId,
         run.controllerLeaseExpiresAt, run.executionStage].every(value => value === null) &&

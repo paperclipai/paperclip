@@ -23,7 +23,10 @@ const support = await getEmbeddedPostgresTestSupport();
   }, 90_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
-  async function seed() {
+  // The scheduler retries only a run that needs no reconciliation. A transient
+  // failure before provider work is the usual source; a resource wait can also
+  // retry a run that succeeded.
+  async function seed(predecessor: "failed_before_provider_work" | "succeeded" = "failed_before_provider_work") {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const sourceRunId = randomUUID(), retryRunId = randomUUID(), wakeupRequestId = randomUUID();
     const now = Date.now();
@@ -34,8 +37,10 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(issues).values({ id: issueId, companyId, title: "Answer the customer", status: "in_progress",
       assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, issueId, runtimeMode: "legacy",
-      status: "succeeded", startedAt: new Date(now - 120_000), finishedAt: new Date(now - 90_000),
-      createdAt: new Date(now - 120_000), contextSnapshot: { issueId } });
+      startedAt: new Date(now - 120_000), finishedAt: new Date(now - 90_000),
+      createdAt: new Date(now - 120_000), contextSnapshot: { issueId },
+      ...(predecessor === "succeeded" ? { status: "succeeded" } : { status: "failed", errorCode: "adapter_failed",
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }) });
     // The scheduler's placeholder: it only waits for its time and has never
     // been claimed, so it has no process, lease, stage or execution events.
     // Its chain has already spent two automatic retries.
@@ -54,7 +59,8 @@ const support = await getEmbeddedPostgresTestSupport();
     return { companyId, agentId, issueId, sourceRunId, retryRunId };
   }
 
-  /** The task moved to backlog: the control plane cancels its pending retry. */
+  /** The task moved to backlog: the control plane cancels its pending retry
+   * with the same call the issue route makes for a superseded scheduled retry. */
   async function moveToBacklog(f: Awaited<ReturnType<typeof seed>>) {
     await db.update(issues).set({ status: "backlog" }).where(eq(issues.id, f.issueId));
     const cancelled = await heartbeatService(db).cancelRun(f.retryRunId, undefined, { expectedStatus: "scheduled_retry" });
@@ -64,8 +70,9 @@ const support = await getEmbeddedPostgresTestSupport();
   const holds = (issueId: string) => db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.sourceIssueId, issueId), eq(issueRecoveryActions.cause, "legacy_execution_requires_reconciliation")));
 
-  it("does not hold the task for reconciliation, so todo and Retry continue it", async () => {
-    const f = await seed();
+  it.each(["failed_before_provider_work", "succeeded"] as const)(
+    "does not hold the task for reconciliation, so todo and Retry continue it (predecessor %s)", async predecessor => {
+    const f = await seed(predecessor);
     await moveToBacklog(f);
     // Red before the fix: an unverified-outcome hold named the cancelled retry.
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
@@ -130,13 +137,13 @@ const support = await getEmbeddedPostgresTestSupport();
       .toMatchObject({ status: "resolved", outcome: "blocked" });
   });
 
-  it.each(["started", "process", "stage", "execution_event", "unexpected_cancellation", "unsettled_parent"] as const)(
+  it.each(["started", "process", "stage", "execution_event", "unexpected_cancellation", "predecessor_did_provider_work"] as const)(
     "keeps the hold when the cancelled retry shows it may have run: %s", async evidence => {
       const f = await seed();
       await moveToBacklog(f);
       // The retry continues its chain. A predecessor that did not succeed
       // may have left actions with an unknown outcome, so the hold stays.
-      if (evidence === "unsettled_parent") await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed" })
+      if (evidence === "predecessor_did_provider_work") await db.update(heartbeatRuns).set({ resultJson: null })
         .where(eq(heartbeatRuns.id, f.sourceRunId));
       else if (evidence === "execution_event") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
         agentId: f.agentId, runId: f.retryRunId, seq: 1000, eventType: "tool.execution.started" });

@@ -365,8 +365,11 @@ backlog. This run has no actions with an unknown outcome. If the run has
 of the retained execution evidence that the dispatch-gate cancellations also check
 (start time, stage, process, controller, session, lease, finalization or execution
 events), it does not create a reconciliation hold. A retry also continues its
-chain, so its predecessor must have succeeded. Otherwise the predecessor can
-have actions with an unknown outcome, and the hold stays. A hold that an earlier
+chain, so its predecessor must be settled: it succeeded, or its setup failed
+before provider work (`executionRecovery.kind = bootstrap`,
+`providerWorkStarted = false`). The scheduler only retries such runs. Otherwise
+the predecessor can have actions with an unknown outcome, and the hold stays.
+Resource-wait chains keep their own proof. A hold that an earlier
 release recorded for such a run no longer blocks execution, so the next wake or
 Retry starts normally. The failure-retry count of the chain does not change this,
 because the cancelled run did not make an attempt.
