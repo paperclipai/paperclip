@@ -109,9 +109,6 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   // Other person-owned decisions have their own card on the task (approval,
   // project access, ...). A budget hold has none, so name it here and keep the
   // failure visible. The saved attempt starts by itself once the budget allows.
-  // A blocker the agent hands to a person ("unblock") is not a failed attempt:
-  // like any person-owned blocker, the Blocked status, the agent's comment and
-  // a reply carry it, so it falls through to no notice.
   if (!optimistic && presentation && isBudgetWait(presentation)) return (
     <div className={cn("pt-4", className)}>
       <div role="status" aria-label="Task status" data-testid="task-execution-waiting"

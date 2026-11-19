@@ -39,8 +39,6 @@ describe("ordinary task interruption", () => {
     expect(container.textContent).not.toMatch(/service attention|process|receipt|workspace/i);
   });
   it("does not report a failed attempt for a task the agent handed to a person", async () => {
-    // Like any person-owned blocker: the Blocked status, the agent's comment
-    // and a reply carry it. Nothing failed, so there is no error notice.
     await render({ ...failed, responsibility: "user", state: "waiting_for_user", userAction: "unblock" });
     expect(container.textContent).toBe("");
   });
