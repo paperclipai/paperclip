@@ -3487,6 +3487,13 @@
       "when": 1795048062306,
       "tag": "0499_numerous_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 506,
+      "version": "7",
+      "when": 1795113822331,
+      "tag": "0506_pool_failover",
+      "breakpoints": true
     }
   ]
 }
