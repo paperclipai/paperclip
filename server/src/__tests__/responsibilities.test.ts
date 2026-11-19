@@ -918,6 +918,39 @@ describeEmbeddedPostgres("responsibility routes", () => {
     expect(deleted?.entityId).toBe(area.id);
   });
 
+  it("files a company skill by hand beside the computed ones, finds it, and moves or unfiles it", async () => {
+    await enable();
+    const company = await seedCompany();
+    const app = createApp(db, localBoardActor());
+    const [deck, crm] = await db.insert(companySkills).values([
+      { companyId: company.id, key: "acme/skills/deck-writing", slug: "deck-writing", name: "Deck writing", markdown: "# Deck" },
+      { companyId: company.id, key: "acme/skills/crm", slug: "crm", name: "CRM upkeep", markdown: "# CRM" },
+    ]).returning();
+    const runner = await seedAgent(company.id, "Runner", ["acme/skills/deck-writing"]);
+    const fundraising = await createResponsibility(app, company.id, { runByAgentId: runner.id });
+    const sales = await createResponsibility(app, company.id, { title: "Sales" });
+
+    const linked = await request(app).post(`/api/responsibilities/${fundraising.id}/links`).send({ skillId: deck!.id });
+    expect(linked.status).toBe(201);
+    expect((await request(app).post(`/api/responsibilities/${fundraising.id}/file`).send({ items: [{ kind: "skill", id: crm!.id }] })).status).toBe(200);
+
+    const detail = await request(app).get(`/api/responsibilities/${fundraising.id}`);
+    const byName = Object.fromEntries(detail.body.skills.map((skill: { name: string }) => [skill.name, skill]));
+    // Filed and held by the agent that runs it: one card, both ways.
+    expect(byName["Deck writing"]).toMatchObject({ linkId: linked.body.link.id, computed: true, agentIds: [runner.id] });
+    expect(byName["CRM upkeep"]).toMatchObject({ computed: false, agentIds: [] });
+    expect(byName["CRM upkeep"].linkId).toEqual(expect.any(String));
+
+    const lookup = await request(app).get(`/api/companies/${company.id}/responsibility-links/lookup?skillId=${crm!.id}`);
+    expect(lookup.body.responsibilities).toEqual([expect.objectContaining({ id: fundraising.id, via: "direct" })]);
+
+    const moved = await request(app).post(`/api/responsibilities/${sales.id}/file`).send({ items: [{ kind: "skill", id: crm!.id }], moveFrom: fundraising.id });
+    expect(moved.body.unfiled).toHaveLength(1);
+    const unfiled = await request(app).post(`/api/responsibilities/${sales.id}/unfile`).send({ items: [{ kind: "skill", id: crm!.id }] });
+    expect(unfiled.body.unfiled).toEqual([expect.objectContaining({ skillId: crm!.id })]);
+    expect((await request(app).post(`/api/responsibilities/${sales.id}/links`).send({ skillId: randomUUID() })).status).toBe(404);
+  });
+
   describe("an agent acting for the person its run works for", () => {
     function actingAgent(companyId: string, agentId: string, personUserId = OWNER, role = "owner") {
       return createApp(db, {
@@ -1046,6 +1079,21 @@ describeEmbeddedPostgres("responsibility routes", () => {
       const areaCard = await card(`responsibility-area-delete:${area.body.id}`, "accepted");
       const removedArea = await request(app).delete(`/api/responsibility-areas/${area.body.id}?confirmationId=${areaCard.id}`);
       expect(removedArea.status).toBe(200);
+    });
+
+    it("undoes filing a skill from the Dashboard history", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agent = await seedAgent(company.id);
+      const app = actingAgent(company.id, agent.id);
+      const hiring = await createResponsibility(createApp(db, localBoardActor()), company.id, { title: "Hiring" });
+      const [skill] = await db.insert(companySkills).values({ companyId: company.id, key: "acme/skills/interviews", slug: "interviews", name: "Interviews", markdown: "# Interviews" }).returning();
+      expect((await request(app).post(`/api/responsibilities/${hiring.id}/file`).send({ items: [{ kind: "skill", id: skill!.id }] })).status).toBe(200);
+      const version = await latestVersion(company.id);
+      expect(version?.summary).toMatch(/filed 1 item/i);
+      const versions = responsibilityDashboardVersionService(db);
+      await versions.restore((await versions.getById(version!.previousVersionId!))!, { userId: OWNER });
+      expect(await db.select().from(responsibilityLinks).where(eq(responsibilityLinks.skillId, skill!.id))).toHaveLength(0);
     });
 
     it("moves an area's responsibilities when the area is deleted", async () => {

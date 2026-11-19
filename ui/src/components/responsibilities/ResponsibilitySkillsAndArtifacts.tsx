@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Agent, CompanyArtifact, ResponsibilitySkillSummary } from "@paperclipai/shared";
 import { RESPONSIBILITY_ARTIFACT_COUNT_LIMIT } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -10,13 +11,16 @@ import { skillRoute } from "@/lib/company-skill-routes";
 import { Link } from "@/lib/router";
 import { issueUrl } from "@/lib/utils";
 
-function SectionHeading({ id, title, count, question }: { id: string; title: string; count: number; question: string }) {
+function SectionHeading({ id, title, count, question, action }: { id: string; title: string; count: number; question: string; action?: ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
-      <h2 id={id} className="text-base font-semibold text-foreground">
-        {title} <span className="text-sm font-normal tabular-nums text-muted-foreground">{count}</span>
-      </h2>
-      <p className="text-sm text-muted-foreground">{question}</p>
+    <div className="flex flex-wrap items-end justify-between gap-2">
+      <div className="flex min-w-0 flex-col gap-1">
+        <h2 id={id} className="text-base font-semibold text-foreground">
+          {title} <span className="text-sm font-normal tabular-nums text-muted-foreground">{count}</span>
+        </h2>
+        <p className="text-sm text-muted-foreground">{question}</p>
+      </div>
+      {action}
     </div>
   );
 }
@@ -38,16 +42,22 @@ function Holders({ agentIds, agentsById }: { agentIds: readonly string[]; agents
 }
 
 /**
- * The skills held by the agents working under a responsibility: the agents
- * assigned its tasks and routines and the leads of its projects, as a grid
- * of cards. Derived by the server; nothing is attached by hand.
+ * The skills under a responsibility, as a grid of cards: those filed here by
+ * hand (which can be removed), and those held by the agents working under it
+ * (the agents assigned its tasks and routines and the leads of its projects).
  */
 export function ResponsibilitySkills({
   skills,
   agentsById,
+  addControl,
+  removeControl,
 }: {
   skills: readonly ResponsibilitySkillSummary[];
   agentsById: ReadonlyMap<string, Agent>;
+  /** Files a skill here; absent where the page cannot change it. */
+  addControl?: ReactNode;
+  /** Removes a filed skill; null for one that is only held by an agent. */
+  removeControl?: (skill: ResponsibilitySkillSummary) => ReactNode;
 }) {
   return (
     <section aria-labelledby="responsibility-skills-heading" className="flex flex-col gap-2">
@@ -55,7 +65,8 @@ export function ResponsibilitySkills({
         id="responsibility-skills-heading"
         title="Skills"
         count={skills.length}
-        question="What can the agents working on this do?"
+        question="What does this need, and what can the agents working on it do?"
+        action={addControl}
       />
       {skills.length > 0 ? (
         <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="responsibility-skills">
@@ -74,15 +85,22 @@ export function ResponsibilitySkills({
                     ) : null}
                   </span>
                 </Link>
-                <Holders agentIds={skill.agentIds} agentsById={agentsById} />
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  {skill.agentIds.length > 0 ? (
+                    <Holders agentIds={skill.agentIds} agentsById={agentsById} />
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Filed here</span>
+                  )}
+                  {skill.linkId ? removeControl?.(skill) : null}
+                </div>
               </Card>
             </li>
           ))}
         </ul>
       ) : (
         <p className="text-sm text-muted-foreground">
-          No skills yet. They appear here from the agents doing the work: the ones assigned its tasks and
-          routines, and the leads of its projects.
+          No skills yet. Add one this needs, or they appear here from the agents doing the work: the ones
+          assigned its tasks and routines, and the leads of its projects.
         </p>
       )}
     </section>

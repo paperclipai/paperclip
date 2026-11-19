@@ -159,8 +159,9 @@ export function ResponsibilityPageLayout({
       project: new Set(responsibility.projects.map((project) => project.id)),
       task: new Set(responsibility.tasks.filter((task) => task.membership === "direct").map((task) => task.id)),
       routine: new Set(responsibility.routines.filter((routine) => routine.membership === "direct").map((routine) => routine.id)),
+      skill: new Set(responsibility.skills.filter((skill) => skill.linkId).map((skill) => skill.id)),
     }),
-    [responsibility.projects, responsibility.tasks, responsibility.routines],
+    [responsibility.projects, responsibility.tasks, responsibility.routines, responsibility.skills],
   );
 
   const isActive = responsibility.status === "active";
@@ -368,7 +369,12 @@ export function ResponsibilityPageLayout({
         )}
       </section>
 
-      <ResponsibilitySkills skills={responsibility.skills} agentsById={agentsById} />
+      <ResponsibilitySkills
+        skills={responsibility.skills}
+        agentsById={agentsById}
+        addControl={editable ? picker("skill") : null}
+        removeControl={(skill) => unlinkRow(skill.linkId, skill.name, { skillId: skill.id })}
+      />
 
       <section aria-labelledby="responsibility-projects-heading" className="flex flex-col gap-2">
         <SectionHeading

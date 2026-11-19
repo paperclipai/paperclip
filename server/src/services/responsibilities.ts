@@ -97,7 +97,7 @@ export interface ResponsibilityReadScope {
   issueReadCondition: SQL<boolean>;
   projectReadCondition: SQL<boolean>;
   /** Company skills the reader may see; reads that list no skills leave it out. */
-  skillReadCondition?: SQL<boolean>;
+  skillReadCondition?: SQL;
 }
 
 export type ResponsibilityLinkTarget =

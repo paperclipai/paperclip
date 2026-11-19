@@ -97,6 +97,8 @@ export const everyCaseDetail: ResponsibilityDetail = responsibilityDetailFixture
   skills: [
     ...fundraisingDetail.skills,
     {
+      linkId: null,
+      computed: true,
       id: "skill-market-scan",
       key: "paperclip/market-scan",
       slug: "market-scan",

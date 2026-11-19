@@ -493,6 +493,8 @@ export function responsibilityDetailFixture(
 export const fundraisingDetail: ResponsibilityDetail = responsibilityDetailFixture(fundraisingBehind, {
   skills: [
     {
+      linkId: null,
+      computed: true,
       id: "skill-investor-research",
       key: "paperclip/investor-research",
       slug: "investor-research",
@@ -504,6 +506,8 @@ export const fundraisingDetail: ResponsibilityDetail = responsibilityDetailFixtu
       agentIds: ["agent-codex", RESPONSIBILITY_FIXTURE_GUIDE_AGENT_ID],
     },
     {
+      linkId: null,
+      computed: true,
       id: "skill-deck-builder",
       key: "paperclip/deck-builder",
       slug: "deck-builder",

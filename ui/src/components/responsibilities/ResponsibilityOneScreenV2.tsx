@@ -236,7 +236,8 @@ export function ResponsibilityOneScreenV2({
     project: new Set(responsibility.projects.map((project) => project.id)),
     task: new Set(responsibility.tasks.filter((task) => task.membership === "direct").map((task) => task.id)),
     routine: new Set(responsibility.routines.filter((routine) => routine.membership === "direct").map((routine) => routine.id)),
-  }), [responsibility.projects, responsibility.tasks, responsibility.routines]);
+    skill: new Set(responsibility.skills.filter((skill) => skill.linkId).map((skill) => skill.id)),
+  }), [responsibility.projects, responsibility.tasks, responsibility.routines, responsibility.skills]);
   const routines = responsibility.routines.filter((routine) => routine.status !== "archived");
   const projects = responsibility.projects.filter((project) => !isFinishedProject(project));
   const { open: openTasks, done: doneTasks } = useMemo(() => splitTasksForTable(responsibility.tasks), [responsibility.tasks]);

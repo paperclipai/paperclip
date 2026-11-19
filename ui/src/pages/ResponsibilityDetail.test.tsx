@@ -404,6 +404,26 @@ describe("ResponsibilityDetail: the work, skills and artifacts", () => {
     expect(skills.querySelector('a[href="/skills/deck-builder"]')).not.toBeNull();
   });
 
+  it("shows a skill filed by hand, lets the person remove it, and offers to add one", async () => {
+    const filed = {
+      linkId: "link-skill-pitch", computed: false, id: "skill-pitch", key: "paperclip/pitch", slug: "pitch",
+      name: "Pitch coach", description: "Rehearses a pitch.", tagline: null, iconUrl: null, color: null, agentIds: [],
+    };
+    mocks.api.get.mockImplementation(async (id: string) => ({
+      ...RESPONSIBILITY_DETAIL_FIXTURES[id], skills: [...RESPONSIBILITY_DETAIL_FIXTURES[id]!.skills, filed],
+    }));
+    await render();
+    const skills = section("Skills");
+    expect(skills.querySelectorAll('[data-testid="responsibility-skills"] > li [data-slot="card"]')).toHaveLength(3);
+    expect(skills.textContent).toContain("Filed here");
+    expect(buttonByText("Add existing skill", skills)).not.toBeNull();
+    // Only the skill filed by hand can be removed; the computed ones come from the agents.
+    expect(skills.querySelectorAll('button[aria-label$="from this responsibility"]')).toHaveLength(1);
+    await act(async () => skills.querySelector<HTMLButtonElement>('button[aria-label="Remove Pitch coach from this responsibility"]')!.click());
+    await flush();
+    expect(mocks.api.unlink).toHaveBeenCalledExactlyOnceWith("resp-fundraising", "link-skill-pitch");
+  });
+
   it("lists artifacts newest first, each opening in its task, and says the list is cut short", async () => {
     await render();
     const artifacts = section("Artifacts");

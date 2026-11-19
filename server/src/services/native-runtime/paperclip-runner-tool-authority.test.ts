@@ -211,10 +211,10 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(56);
+    expect(authority.definitions()).toHaveLength(57);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
-      "search_skills", "load_skill", "list_routines", "update_routine",
+      "search_skills", "load_skill", "list_routines", "update_routine", "update_skill_details",
     ]));
     // The read-only response export is its own tool, so call_api offers no save flag on writes.
     const save = authority.definitions().find(tool => tool.name === "save_api_response")!;
