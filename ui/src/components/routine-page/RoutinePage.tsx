@@ -116,7 +116,7 @@ function Field({ label, children, action }: { label: string; children: ReactNode
   return (
     <section className="flex min-w-0 flex-col gap-2" aria-labelledby={headingId}>
       <div className="flex items-center justify-between gap-2">
-        <h2 id={headingId} className="text-sm text-muted-foreground">{label}</h2>
+        <h2 id={headingId} className="text-sm font-medium text-foreground">{label}</h2>
         {action}
       </div>
       {children}
