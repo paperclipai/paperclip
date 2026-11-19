@@ -513,6 +513,7 @@ export function RoutineEditDialog({
                 hideDraftActions
                 startWithEmptyRow
                 addLabel="Add secret"
+                addButtonVariant="outline"
               />
             ) : (
               <Button type="button" variant="outline" size="sm" className="w-fit" onClick={() => setSecretsOpen(true)}>

@@ -113,6 +113,13 @@ describe("RoutineEditDialog", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("keeps the same Add secret button after the first secret", async () => {
+    await render();
+    expect(button("Add secret")?.dataset.variant).toBe("outline");
+    await act(async () => { button("Add secret")!.click(); await flush(); });
+    expect(button("Add secret")?.dataset.variant).toBe("outline");
+  });
+
   it("saves a change made only to Secrets", async () => {
     await render();
     expect(button("Save changes")?.disabled).toBe(true);
