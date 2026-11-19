@@ -172,8 +172,10 @@ issue carries that requirement in two fields:
 - `completionRequirement`: `"workspace_delivery"` or `null`
 - `completionRequirementRevision`: integer that increments whenever the requirement changes
 
-`"workspace_delivery"` means the task cannot reach `done` without a delivery
-attestation for the completing run. The attestation only satisfies the
+`"workspace_delivery"` means the task cannot reach `done` without a successful
+delivery attestation recorded for the issue. The check is issue-wide, not tied
+to the completing run: any successful attestation for the same issue, requirement
+revision and repository target satisfies it. The attestation only satisfies the
 declaration it was recorded against, so a changed requirement invalidates an
 older attestation. Only a value that differs from the stored one counts as a
 change: resending the same value neither advances the revision nor invalidates
