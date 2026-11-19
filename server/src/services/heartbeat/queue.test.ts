@@ -284,10 +284,30 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admit(target,
       (tx, admission) => evaluate(tx, otherIssue ? {
         ...admission,
-        admitFreshIssueRun: (input) => admission.admitFreshIssueRun({ ...input,
-          issue: { ...input.issue, id: otherIssue.id }, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
-        admitWakeBehindIssueExecution: (input) => admission.admitWakeBehindIssueExecution({ ...input,
-          issueId: otherIssue.id, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
+        async prepareRecovery(input) {
+          const recovery = await admission.prepareRecovery(input);
+          return {
+            ...recovery,
+            async checkBusyAdmission() {
+              const busy = await recovery.checkBusyAdmission();
+              if (busy.kind !== "allowed") return busy;
+              return {
+                ...busy,
+                admitBusy: (input) => busy.admitBusy({ ...input, issueId: otherIssue.id,
+                  contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
+                async checkFreshAdmission() {
+                  const fresh = await busy.checkFreshAdmission();
+                  if (fresh.kind !== "allowed") return fresh;
+                  return {
+                    ...fresh,
+                    admitFresh: (input) => fresh.admitFresh({ ...input,
+                      issue: { ...input.issue, id: otherIssue.id }, contextSnapshot: { ...input.contextSnapshot, issueId: otherIssue.id } }),
+                  };
+                },
+              };
+            },
+          };
+        },
       } : admission), { ...effects, publishIssueActivity }));
 
     const wake = queue.enqueueWakeup(agent.id, {
@@ -1013,9 +1033,16 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     });
     const busyAdmission = vi.fn();
     deps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) => admission.admitIssueWake(target,
-      (tx, stores) => evaluate(tx, { ...stores, admitWakeBehindIssueExecution(input) {
-        busyAdmission(input.activeExecutionRun.id, input.issueExecutionAgentNameKey);
-        return stores.admitWakeBehindIssueExecution(input);
+      (tx, stores) => evaluate(tx, { ...stores, async prepareRecovery(input) {
+        const recovery = await stores.prepareRecovery(input);
+        return { ...recovery, async checkBusyAdmission() {
+          const busy = await recovery.checkBusyAdmission();
+          if (busy.kind !== "allowed") return busy;
+          return { ...busy, admitBusy(input) {
+            busyAdmission(input.activeExecutionRun.id, input.issueExecutionAgentNameKey);
+            return busy.admitBusy(input);
+          } };
+        } };
       } }), effects));
     const queue = createHeartbeatQueue(db, deps);
     if (scenario === "running") {
