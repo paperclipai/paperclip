@@ -14,7 +14,7 @@ import {
   invalidateTaskArchiveQueries,
 } from "@/lib/inboxArchiveCache";
 
-type ArchiveChange = { companyId: string; issueId: string; archive: boolean; owner: string };
+type ArchiveChange = { companyId: string; issueId: string; reference: string; archive: boolean; owner: string };
 
 function changeKey({ companyId, issueId, owner }: ArchiveChange) {
   return JSON.stringify([companyId, issueId, owner]);
@@ -61,7 +61,10 @@ export function useTaskArchiveAction(companyId: string | null, userId: string | 
       await change.mutateAsync(input);
       if (input.archive && account.isCurrentAccount()) {
         toast?.pushToast({
+          id: `archive:${input.companyId}:${input.issueId}`,
+          dedupe: false,
           title: "Task archived",
+          body: input.reference,
           tone: "success",
           ttlMs: 8000,
           action: {
@@ -82,7 +85,7 @@ export function useTaskArchiveAction(companyId: string | null, userId: string | 
 
   return (issue: Issue): IssueRowArchiveAction | undefined => {
     if (!companyId || !userId || issue.companyId !== companyId || issue.isArchivedForMe === undefined) return;
-    const input = { companyId, issueId: issue.id, archive: !issue.isArchivedForMe, owner: userId };
+    const input = { companyId, issueId: issue.id, reference: issue.identifier ?? issue.id, archive: !issue.isArchivedForMe, owner: userId };
     return {
       archived: issue.isArchivedForMe,
       disabled: pending.has(changeKey(input)),

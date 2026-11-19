@@ -133,6 +133,38 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(mocks.restore).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps separate Undo actions for consecutive task archives", async () => {
+    const tasks = [
+      createIssue({ id: "first-archive", identifier: "TASK-1", companyId: "company", parentId: null }),
+      createIssue({ id: "second-archive", identifier: "TASK-2", companyId: "company", parentId: null }),
+    ];
+    const archived = new Set<string>();
+    mocks.list.mockImplementation(async () => tasks.map(task => ({ ...task, isArchivedForMe: archived.has(task.id) })));
+    mocks.archive.mockImplementation(async (id: string) => { archived.add(id); });
+    mocks.restore.mockImplementation(async (id: string) => { archived.delete(id); });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "person" } });
+
+    function UndoActions() {
+      return useToastState().filter(toast => toast.action?.label === "Undo").map(toast =>
+        <button key={toast.id} data-undo-task={toast.body ?? ""} onClick={toast.action?.onClick}>Undo</button>,
+      );
+    }
+    flushSync(() => root.render(
+      <QueryClientProvider client={client}><ToastProvider><MemoryRouter initialEntries={["/issues?view=all"]}>
+        <UndoActions /><CoordinatorTasks />
+      </MemoryRouter></ToastProvider></QueryClientProvider>,
+    ));
+    const archiveButton = (id: string) => host.querySelector<HTMLButtonElement>(`[data-task-id="${id}"] button`);
+    await vi.waitFor(() => expect(archiveButton(tasks[0]!.id)?.textContent).toBe("Archive"));
+    flushSync(() => archiveButton(tasks[0]!.id)!.click());
+    await vi.waitFor(() => expect(host.querySelectorAll("[data-undo-task]")).toHaveLength(1));
+    flushSync(() => archiveButton(tasks[1]!.id)!.click());
+    await vi.waitFor(() => expect(host.querySelectorAll("[data-undo-task]")).toHaveLength(2));
+    flushSync(() => host.querySelector<HTMLButtonElement>('[data-undo-task="TASK-2"]')!.click());
+    await vi.waitFor(() => expect(mocks.restore).toHaveBeenCalledExactlyOnceWith(tasks[1]!.id));
+    expect(archived.has(tasks[0]!.id)).toBe(true);
+  });
+
   it.each([
     { url: "/issues", view: "all", ids: ["parent", "mine", "assigned", "unrelated"] },
     { url: "/issues?view=inbox", view: "inbox", ids: ["parent", "mine", "assigned"] },

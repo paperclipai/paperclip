@@ -2197,7 +2197,10 @@ function StreamlinedInbox({
       if (surfaceLabel === "Tasks" && context?.account) {
         const { account } = context;
         pushToast({
+          id: `archive:${context.companyId}:${id}`,
+          dedupe: false,
           title: "Task archived",
+          body: issueById.get(id)?.identifier ?? id,
           tone: "success",
           ttlMs: 8000,
           action: {
