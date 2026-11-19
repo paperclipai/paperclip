@@ -68,6 +68,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
   nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted", "adopted restart"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const,
     ["codex", "cached cancellation"] as const, ["codex", "cached held claim"] as const, ["claude", "cached held claim"] as const,
     ["codex", "cached relaunch"] as const, ["claude", "cached relaunch"] as const, ["codex", "adopted relaunch"] as const,
+    ["codex", "adopted restart relaunch"] as const, ["claude", "adopted restart relaunch"] as const,
     ["codex", "cached managed GitHub"] as const, ["codex", "adopted managed GitHub"] as const, ["codex", "adopted restart managed GitHub"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const thisCase: { teardown?: () => Promise<void> } = {};
@@ -263,7 +264,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         return { kind: "resume", taskId, outcome: "resumed", runner: artifact, archivedState };
       }
       if (operation.kind === "resume") {
-        expect(relaunch && !adopted).toBe(false);
+        expect(relaunch).toBe(false);
         const retainedProviderCount = await providerStarts();
         const reply = await host.request({ op: "claim", id: `claim_${sha(operation.bootstrapTicket)}`, parkId: parkId(operation.identity), bootstrapTicket: operation.bootstrapTicket });
         if (reply.status !== "claimed") throw new Error("Fixture native claim refused");
@@ -386,19 +387,21 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       expect(releases[1]!.environmentLeaseId).toBe(leaseA); expect(submissions).toBe(1);
       if (relaunch) {
         expect(handle!.child.pid).not.toBe(pid);
-        const relaunched = adopted ? releases[1]! : releases[0]!;
-        expect(relaunches).toEqual([{ source: relaunched, runId: adopted ? runC : runB, archivedRunId: relaunched.runId }]);
+        const relaunched = adopted ? [[releases[0]!, runB], [releases[1]!, runC!]] as const : [[releases[0]!, runB]] as const;
+        expect(relaunches).toEqual(relaunched.map(([source, next]) => ({ source, runId: next, archivedRunId: source.runId })));
         expect((await state()).runId).toBe(releases.at(-1)!.runId);
-        expect(JSON.parse(await readFile(join(runnerRoot, `archived-${relaunched.runId}.json`), "utf8"))).toMatchObject(relaunched);
+        for (const [source] of relaunched) {
+          expect(JSON.parse(await readFile(join(runnerRoot, `archived-${source.runId}.json`), "utf8"))).toMatchObject(source);
+        }
       } else expect(handle!.child.pid).toBe(pid);
       expect([...new Set(preparedBrokers.map(prepared => prepared.runId))]).toEqual(releases.map(release => release.runId));
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       if (harness === "codex") {
-        expect(methods.filter(method => method === "process-start")).toHaveLength(relaunch ? 2 : 1);
+        expect(methods.filter(method => method === "process-start")).toHaveLength(1 + relaunches.length);
         expect(methods.filter(method => method === "turn/start")).toHaveLength(adopted ? 3 : 2);
       } else {
         const journal = methods.map(line => JSON.parse(line));
-        expect(journal.filter(entry => entry.processStart)).toHaveLength(adopted || relaunch ? 4 : 3);
+        expect(journal.filter(entry => entry.processStart)).toHaveLength((adopted ? 4 : 3) + relaunches.length);
         if (relaunch) {
           const attach = journal.findIndex(entry => entry.command === "run.attach" && entry.params?.runId === runB);
           const turn = journal.findIndex((entry, index) => index > attach && entry.command === "turn.start");
