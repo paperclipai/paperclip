@@ -252,6 +252,7 @@ suite("fresh-continuation fallback", () => {
           observedRunId: f.runId, idempotencyKey: randomUUID() });
         await expect(retry()).rejects.toThrow("Waiting for a compatible Runner");
         expect(await successors(f.runId)).toHaveLength(0);
+        expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
         await install(ACPX_RELEASE_PROFILE_DIGESTS.codex);
         expect(await taskInterruptionPresentation(db, await issue(f.issueId))).toMatchObject({ canRetry: true });
         if (mode === "manual") {
