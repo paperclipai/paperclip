@@ -54,6 +54,8 @@ export function trimSlash(s: string): string {
 export function buildPairingCodeMessage(input: {
   code: string;
   chatLabel: string;
+  /** Group code posted in the group: no member is verified as the operator. */
+  noVerifiedOperator?: boolean;
 }): { text: string; keyboard: InlineKeyboard } {
   return {
     text: [
@@ -65,6 +67,25 @@ export function buildPairingCodeMessage(input: {
       `Paste this code into the Paperclip *Confirm pairing* form to finish linking *${escapeMd(input.chatLabel)}*\\.`,
       "",
       "_Code expires in 10 minutes\\._",
+      ...(input.noVerifiedOperator
+        ? [
+            "",
+            "_I could not message you privately, so approvals, replies and /unpair from this group stay off\\. To turn them on, press Start in a private chat with me, then pair again\\._",
+          ]
+        : []),
+    ].join("\n"),
+    keyboard: [],
+  };
+}
+
+/** Group notice: the code went to the sender's private chat, not the group. */
+export function buildPairingCodeSentPrivately(input: {
+  userLabel: string;
+}): { text: string; keyboard: InlineKeyboard } {
+  return {
+    text: [
+      "*🔐 Paperclip pairing*",
+      `I sent the verification code to *${escapeMd(input.userLabel)}* in a private chat\\. That person becomes the operator of this group for Paperclip approvals and replies\\.`,
     ].join("\n"),
     keyboard: [],
   };

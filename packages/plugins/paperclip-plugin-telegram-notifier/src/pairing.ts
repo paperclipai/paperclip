@@ -363,18 +363,32 @@ export async function setApprovalConfig(
   }));
 }
 
+/** Telegram gives private chats the user's own (positive) id; groups are negative. */
+export function isPrivateChatId(chatId: number | string): boolean {
+  const id = Number(chatId);
+  return Number.isSafeInteger(id) && id > 0;
+}
+
+/**
+ * The Telegram user verified as the operator of a paired chat: the user who
+ * received the verification code in a private chat, recorded at pairing. A
+ * private chat has one member, so its id stands in for chats paired before
+ * the id was recorded. A group paired without a verified operator has none.
+ */
+export function pairingOperatorId(chat: PairedChat | undefined): number | undefined {
+  if (!chat) return undefined;
+  if (chat.pairedByTelegramUserId != null) return chat.pairedByTelegramUserId;
+  return isPrivateChatId(chat.chatId) ? Number(chat.chatId) : undefined;
+}
+
 /**
  * Whether a Telegram user is allowed to resolve (approve/decline) plan
  * confirmations for a company.
  *
  * Precedence:
  *   1. Explicit `ApprovalConfig.approverTelegramUserId` — only that user.
- *   2. Otherwise the operator who completed pairing
- *      (`PairedChat.pairedByTelegramUserId`).
- *   3. Legacy chats with neither recorded fall back to the chat-membership
- *      boundary (allow) so an upgrade doesn't lock out already-paired
- *      operators. New pairings always capture the operator id, so the hole
- *      ("anyone in a group chat can approve") closes for them.
+ *   2. Otherwise the verified pairing operator (`pairingOperatorId`).
+ *   3. Nobody, when the chat has no verified operator (fail closed).
  */
 export function isAuthorizedApprover(
   approval: ApprovalConfig | undefined,
@@ -384,28 +398,38 @@ export function isAuthorizedApprover(
   if (approval?.approverTelegramUserId != null) {
     return fromUserId === approval.approverTelegramUserId;
   }
-  if (chat?.pairedByTelegramUserId != null) {
-    return fromUserId === chat.pairedByTelegramUserId;
-  }
-  return true;
+  return isPairingOperator(chat, fromUserId);
 }
 
 /**
- * Whether a Telegram user may run destructive connection-management commands
- * (currently `/unpair`) for a paired chat. Only the operator who completed the
- * handshake qualifies; chats paired before that id was captured fall back to
- * allow so the command keeps working after an upgrade. Note this is the
- * pairing operator specifically — not the plan-approval approver, which is a
+ * Whether a Telegram user is the verified operator of a paired chat. Gates
+ * `/unpair`, and decides which replies are posted as the Paperclip user. This
+ * is the pairing operator specifically — not the plan-approval approver, a
  * separate role configured per company.
  */
 export function isPairingOperator(
   chat: PairedChat | undefined,
   fromUserId: number | undefined,
 ): boolean {
-  if (chat?.pairedByTelegramUserId != null) {
-    return fromUserId === chat.pairedByTelegramUserId;
-  }
-  return true;
+  const operatorId = pairingOperatorId(chat);
+  return operatorId != null && fromUserId === operatorId;
+}
+
+/**
+ * Whether a Telegram reply may be posted as an issue comment: only from the
+ * pairing operator or the company's explicit approver. Other chat members
+ * are ignored.
+ */
+export function isAllowedReplySender(
+  approval: ApprovalConfig | undefined,
+  chat: PairedChat | undefined,
+  fromUserId: number | undefined,
+): boolean {
+  if (isPairingOperator(chat, fromUserId)) return true;
+  return (
+    approval?.approverTelegramUserId != null &&
+    fromUserId === approval.approverTelegramUserId
+  );
 }
 
 /** Constant-time-ish equality for short verification codes. */

@@ -37,7 +37,7 @@ The settings page works on the company selected in the dashboard. Plugin config 
 
 1. Install the plugin and paste your bot token in **Settings → Telegram Notifier → Telegram bot token**. After saving the token is masked (`1234567890:••••AAAA`); click the eye icon to reveal. Companies can use the same bot or different bots.
 2. On the company card, click **Start pairing**. The plugin enters `awaiting_chat` mode for 10 minutes. Only one handshake runs at a time per instance; while another company is pairing, **Start pairing** is disabled until that window ends.
-3. Open your bot in Telegram and send any message. The bot replies with a 6-character verification code addressed to that company.
+3. Open your bot in Telegram and send any message. The bot replies with a 6-character verification code addressed to that company. In a group, the bot sends the code to the sender's private chat instead, so press **Start** in a private chat with the bot first; that sender becomes the chat's operator. If the bot cannot reach the sender privately, it posts the code in the group and the group has no operator: Approve/Decline, replies and `/unpair` from the group stay off until you pair again.
 4. Paste the code into the **Confirm pairing** input back in Paperclip. The bot sends a confirmation in Telegram, the company card shows ✅ paired. The Paperclip user who confirms is recorded as the chat's operator (see *Replies* below).
 5. Click **Edit** and pick the operate-as agent for that company so `/new`, `/inbox`, and the morning digest can attribute and assign work correctly. Different companies can have different operate-as agents.
 6. Repeat for each company you want covered.
@@ -63,7 +63,7 @@ The bot publishes these via `setMyCommands` so they show up in the Telegram comm
 
 After `/new` succeeds the bot replies with a confirmation card that has a 👤 *Reassign* callback button. Tapping it swaps the keyboard to a list of agents in that company — pick one and the issue is reassigned in Paperclip without leaving Telegram.
 
-Comment notifications include a 💬 *Reply* button that prompts you for text (Telegram's force-reply); send the reply and the plugin posts it back as a comment on the same issue. A reply from the operator who paired the chat is posted as the Paperclip user who confirmed the pairing, so the issue's assignee wakes up exactly as for a dashboard comment. Replies from anyone else, and chats paired before that user was recorded, are attributed to the operate-as agent and do not wake the assignee. If the comment body is too long for one Telegram message, the notification gets a 📄 *Show full* button that fetches the rest in chunks. You can also use Telegram's standard quote-reply on the notification — the plugin treats both paths identically.
+Comment notifications include a 💬 *Reply* button that prompts you for text (Telegram's force-reply); send the reply and the plugin posts it back as a comment on the same issue. Only the operator who paired the chat (or the company's explicit Telegram approver) can reply; replies from other chat members are ignored. The operator's reply is posted as the Paperclip user who confirmed the pairing, so the issue's assignee wakes up exactly as for a dashboard comment. If that user was not recorded or cannot post, the reply is attributed to the operate-as agent and does not wake the assignee. If the comment body is too long for one Telegram message, the notification gets a 📄 *Show full* button that fetches the rest in chunks. You can also use Telegram's standard quote-reply on the notification — the plugin treats both paths identically.
 
 ## Configuration
 
@@ -105,7 +105,7 @@ The plugin requests a deliberately narrow surface:
 - `agents.read` — populate the Operate-as-agent dropdown and enrich run-failure notifications.
 - `issues.read` / `issues.create` / `issues.update` — list the inbox, create issues from `/new`, and reassign via the inline picker.
 - `issue.comments.read` — read the full comment body and author when building comment notifications.
-- `issue.comments.create` — post a Paperclip comment when someone replies to a comment notification in Telegram.
+- `issue.comments.create` — post a Paperclip comment when the chat's operator replies to a comment notification in Telegram.
 - `issue.comments.create_human_attributed` — post the pairing operator's replies as the Paperclip user who confirmed the pairing, so the assignee wakes up.
 - `agent.tools.register` — expose the six agent tools.
 - `instance.settings.register` — render the settings page.

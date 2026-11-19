@@ -105,10 +105,9 @@ export interface ApprovalConfig {
   /**
    * Telegram user id allowed to press [Approve]/[Decline] for this company.
    * When set, only this user can resolve confirmations — everyone else in the
-   * chat is rejected. When unset, authority falls back to the operator who
-   * paired the chat (`PairedChat.pairedByTelegramUserId`), and only to the
-   * whole-chat membership boundary for chats paired before that id was
-   * captured. The approver in Paperclip is an *agent*, not a Telegram user, so
+   * chat is rejected. When unset, authority falls back to the verified
+   * pairing operator (`pairingOperatorId`); a group paired without one has no
+   * Telegram approver. The approver in Paperclip is an *agent*, not a Telegram user, so
    * this is the explicit bridge between the two identities.
    */
   approverTelegramUserId?: number;
@@ -208,7 +207,11 @@ export type PairingHandshake =
       /** Telegram chat ID that proved control by sending us the first message. */
       candidateChatId: string;
       candidateLabel: string;
-      /** Telegram user id of the sender who proved control (for approver gating). */
+      /**
+       * Telegram user who alone received the code: the private chat's owner,
+       * or a group sender the bot reached privately. Unset when the code was
+       * posted in a group, so no member becomes the operator.
+       */
       candidateUserId?: number;
       /** Code the bot already echoed to the candidate chat. The operator
        *  pastes it back via confirmPairing to complete the handshake. */
@@ -233,10 +236,10 @@ export interface PairedChat {
   /** Display name of the company this chat is paired with. */
   companyName?: string;
   /**
-   * Telegram user id of the operator who completed the pairing handshake.
-   * Used as the default authorized approver for plan confirmations when no
-   * explicit `ApprovalConfig.approverTelegramUserId` is set. Absent on chats
-   * paired before this was captured (those fall back to chat membership).
+   * Telegram user verified as the chat's operator at pairing (see
+   * `PairingHandshake.candidateUserId`). The default approver for plan
+   * confirmations when no explicit `ApprovalConfig.approverTelegramUserId`
+   * is set. Absent on a group paired without a verified operator.
    */
   pairedByTelegramUserId?: number;
   /**

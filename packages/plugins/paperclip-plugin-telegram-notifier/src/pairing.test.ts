@@ -184,10 +184,15 @@ describe("isAuthorizedApprover", () => {
     expect(isAuthorizedApprover(undefined, chat, 7)).toBe(true);
   });
 
-  it("allows anyone for legacy chats with neither id recorded (no lock-out on upgrade)", () => {
-    expect(isAuthorizedApprover(undefined, pairedChat(), 123)).toBe(true);
-    expect(isAuthorizedApprover(approval(), pairedChat(), 123)).toBe(true);
-    expect(isAuthorizedApprover(undefined, undefined, 123)).toBe(true);
+  it("admits only the owner of a private chat with no recorded operator", () => {
+    expect(isAuthorizedApprover(undefined, pairedChat({ chatId: "100" }), 100)).toBe(true);
+    expect(isAuthorizedApprover(approval(), pairedChat({ chatId: "100" }), 123)).toBe(false);
+  });
+
+  it("admits nobody in a group with no verified operator", () => {
+    expect(isAuthorizedApprover(undefined, pairedChat({ chatId: "-100200" }), 123)).toBe(false);
+    expect(isAuthorizedApprover(approval(), pairedChat({ chatId: "-100200" }), undefined)).toBe(false);
+    expect(isAuthorizedApprover(undefined, undefined, 123)).toBe(false);
   });
 });
 
@@ -206,9 +211,11 @@ describe("isPairingOperator", () => {
     expect(isPairingOperator(chat, 42)).toBe(false);
   });
 
-  it("allows anyone for legacy chats with no recorded operator", () => {
-    expect(isPairingOperator(pairedChat(), 123)).toBe(true);
-    expect(isPairingOperator(undefined, 123)).toBe(true);
+  it("falls back to a private chat's owner, never to a group member", () => {
+    expect(isPairingOperator(pairedChat({ chatId: "100" }), 100)).toBe(true);
+    expect(isPairingOperator(pairedChat({ chatId: "100" }), 123)).toBe(false);
+    expect(isPairingOperator(pairedChat({ chatId: "-100200" }), 123)).toBe(false);
+    expect(isPairingOperator(undefined, 123)).toBe(false);
   });
 });
 

@@ -62,6 +62,7 @@ import {
   buildMorningDigest,
   buildPairedConfirmation,
   buildPairingCodeMessage,
+  buildPairingCodeSentPrivately,
   buildPairingExpired,
   buildPairingNotInitiated,
   buildRunFailedMessage,
@@ -80,6 +81,7 @@ import {
   getBotState,
   getMessageContext,
   getPaired,
+  isAllowedReplySender,
   isAuthorizedApprover,
   isChatPairedToCompany,
   isPairingOperator,
@@ -630,7 +632,7 @@ async function onCommentCreated(
   }
   // A reply relayed from this chat comes back as a comment event; the chat
   // already got "✅ Comment posted", so echoing it would be noise.
-  if (issueId && consumeRelayedComment(issueId, commentId, fullBody)) return;
+  if (issueId && (await consumeRelayedComment(issueId, commentId))) return;
 
   if (!authorName) {
     // The comment record is authoritative; the event actor covers a failed
@@ -841,6 +843,58 @@ async function replyTo(
   });
 }
 
+/**
+ * Send the verification code and return the Telegram user it verifies.
+ *
+ * Whoever reads the code can have the Paperclip operator confirm it, so the
+ * code may verify only a user who alone received it. In a private chat that
+ * is the chat's owner. In a group every member would see it, so the code goes
+ * to the sender's private chat; when the bot cannot reach it, the code is
+ * posted in the group and the pairing verifies nobody.
+ */
+async function deliverPairingCode(
+  ctx: PluginContext,
+  config: PluginConfig,
+  message: TelegramMessage,
+  code: string,
+  label: string,
+): Promise<number | undefined> {
+  const chatId = String(message.chat.id);
+  const from = message.from;
+  if (message.chat.type === "private") {
+    await replyTo(ctx, config, chatId, buildPairingCodeMessage({ code, chatLabel: label }));
+    return from?.id;
+  }
+  let sentPrivately = false;
+  if (from && !from.is_bot) {
+    try {
+      await replyTo(ctx, config, String(from.id), buildPairingCodeMessage({ code, chatLabel: label }));
+      sentPrivately = true;
+    } catch (err) {
+      // Usually the sender has no private chat with the bot yet.
+      ctx.logger.info("telegram-notifier: pairing code not sent privately", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (from && sentPrivately) {
+    await replyTo(
+      ctx,
+      config,
+      chatId,
+      buildPairingCodeSentPrivately({ userLabel: telegramUserLabel(from) }),
+    );
+    return from.id;
+  }
+  await replyTo(
+    ctx,
+    config,
+    chatId,
+    buildPairingCodeMessage({ code, chatLabel: label, noVerifiedOperator: true }),
+  );
+  return undefined;
+}
+
 async function handleHandshakeMessage(
   ctx: PluginContext,
   config: PluginConfig,
@@ -894,6 +948,7 @@ async function handleHandshakeMessage(
   if (state.pairing.stage === "awaiting_chat") {
     const code = generateVerificationCode();
     const label = chatLabel(message.chat);
+    const candidateUserId = await deliverPairingCode(ctx, config, message, code, label);
     await patchPairing(ctx, {
       pairing: {
         stage: "code_sent",
@@ -901,17 +956,11 @@ async function handleHandshakeMessage(
         targetCompanyName: state.pairing.targetCompanyName,
         candidateChatId: incomingChatId,
         candidateLabel: label,
-        candidateUserId: message.from?.id,
+        candidateUserId,
         code,
         expiresAt: newHandshakeExpiry(),
       },
     });
-    await replyTo(
-      ctx,
-      config,
-      incomingChatId,
-      buildPairingCodeMessage({ code, chatLabel: label }),
-    );
     ctx.logger.info("telegram-notifier: code sent to candidate chat", {
       chatId: incomingChatId,
       companyId: state.pairing.targetCompanyId,
@@ -926,14 +975,25 @@ async function handleHandshakeMessage(
       // A different chat is trying to interfere; ignore them silently.
       return true;
     }
+    const { code, candidateLabel, candidateUserId } = state.pairing;
+    const isGroup = message.chat.type !== "private";
+    if (isGroup && candidateUserId != null) {
+      // The code stays private: resend it to the verified sender only.
+      if (message.from?.id === candidateUserId) {
+        await replyTo(
+          ctx,
+          config,
+          String(candidateUserId),
+          buildPairingCodeMessage({ code, chatLabel: candidateLabel }),
+        ).catch(() => undefined);
+      }
+      return true;
+    }
     await replyTo(
       ctx,
       config,
       incomingChatId,
-      buildPairingCodeMessage({
-        code: state.pairing.code,
-        chatLabel: state.pairing.candidateLabel,
-      }),
+      buildPairingCodeMessage({ code, chatLabel: candidateLabel, noVerifiedOperator: isGroup }),
     );
     return true;
   }
@@ -1240,48 +1300,48 @@ async function handleConfirmationDeclineReply(
   return true;
 }
 
-// Comments this worker posted from Telegram replies. The host emits
-// `issue.comment.created` for them and may deliver it before createComment
-// resolves, so a reply is marked by issue + body before the call and by
-// comment id after it.
+// Comments this worker posted from Telegram replies, by comment id. The host
+// emits `issue.comment.created` for them and may deliver it before
+// createComment resolves, so the event handler first waits for the relays in
+// flight on that issue. Matching by id alone keeps a different comment with
+// the same text from being swallowed.
 const RELAY_TTL_MS = 5 * 60_000;
-const relayedComments = new Map<string, number>();
+const relayedCommentIds = new Map<string, number>();
+const relaysInFlight = new Map<string, Set<Promise<unknown>>>();
 
-function relayKeys(issueId: string, commentId?: string, body?: string): string[] {
-  const keys: string[] = [];
-  if (commentId) keys.push(`id:${commentId}`);
-  if (body !== undefined) keys.push(`body:${issueId}:${body.trim()}`);
-  return keys;
-}
-
-function markRelayedComment(issueId: string, commentId?: string, body?: string) {
-  const now = Date.now();
-  for (const [key, expires] of relayedComments) {
-    if (expires <= now) relayedComments.delete(key);
+async function relayComment(
+  issueId: string,
+  create: () => Promise<{ id: string }>,
+): Promise<void> {
+  const relay = create().then((comment) => {
+    const now = Date.now();
+    for (const [id, expires] of relayedCommentIds) {
+      if (expires <= now) relayedCommentIds.delete(id);
+    }
+    relayedCommentIds.set(comment.id, now + RELAY_TTL_MS);
+  });
+  const inFlight = relaysInFlight.get(issueId) ?? new Set<Promise<unknown>>();
+  relaysInFlight.set(issueId, inFlight);
+  inFlight.add(relay);
+  try {
+    await relay;
+  } finally {
+    inFlight.delete(relay);
+    if (inFlight.size === 0) relaysInFlight.delete(issueId);
   }
-  for (const key of relayKeys(issueId, commentId, body)) {
-    relayedComments.set(key, now + RELAY_TTL_MS);
-  }
-}
-
-function unmarkRelayedComment(issueId: string, body: string) {
-  for (const key of relayKeys(issueId, undefined, body)) relayedComments.delete(key);
 }
 
 /** True (once) when the comment is one this worker relayed from Telegram. */
-function consumeRelayedComment(
+async function consumeRelayedComment(
   issueId: string,
   commentId: string | undefined,
-  body: string,
-): boolean {
-  const now = Date.now();
-  const hit = relayKeys(issueId, commentId, body).some(
-    (key) => (relayedComments.get(key) ?? 0) > now,
-  );
-  if (hit) {
-    for (const key of relayKeys(issueId, commentId, body)) relayedComments.delete(key);
-  }
-  return hit;
+): Promise<boolean> {
+  if (!commentId) return false;
+  const inFlight = relaysInFlight.get(issueId);
+  if (inFlight) await Promise.allSettled([...inFlight]);
+  const expires = relayedCommentIds.get(commentId);
+  relayedCommentIds.delete(commentId);
+  return expires !== undefined && expires > Date.now();
 }
 
 /**
@@ -1290,9 +1350,10 @@ function consumeRelayedComment(
  * A reply from the operator who paired the chat is posted as the Paperclip
  * user who confirmed that pairing (`actorUserId`). The host treats that as a
  * human comment and wakes the issue assignee, the same as a dashboard
- * comment. Agent-attributed plugin comments never wake anyone, so other
- * senders (or chats paired before the user id was captured) fall back to the
- * operate-as agent, then to plugin attribution.
+ * comment. Agent-attributed plugin comments never wake anyone, so the
+ * company's explicit approver (or chats paired before the user id was
+ * captured) fall back to the operate-as agent, then to plugin attribution.
+ * Callers admit only allowed senders (`isAllowedReplySender`).
  */
 export async function postTelegramReplyComment(
   ctx: PluginContext,
@@ -1301,13 +1362,13 @@ export async function postTelegramReplyComment(
   context: { companyId: string; issueId: string },
   body: string,
 ): Promise<"user" | "agent" | "plugin"> {
-  markRelayedComment(context.issueId, undefined, body);
   if (chat.pairedByUserId && isPairingOperator(chat, message.from?.id)) {
     try {
-      const comment = await ctx.issues.createComment(context.issueId, body, context.companyId, {
-        actorUserId: chat.pairedByUserId,
-      });
-      markRelayedComment(context.issueId, comment.id);
+      await relayComment(context.issueId, () =>
+        ctx.issues.createComment(context.issueId, body, context.companyId, {
+          actorUserId: chat.pairedByUserId,
+        }),
+      );
       return "user";
     } catch (err) {
       // The user may have left the company or lost write access; keep the
@@ -1319,18 +1380,14 @@ export async function postTelegramReplyComment(
     }
   }
   const operateAsAgentId = chat.operateAsAgentId;
-  try {
-    const comment = await ctx.issues.createComment(
+  await relayComment(context.issueId, () =>
+    ctx.issues.createComment(
       context.issueId,
       body,
       context.companyId,
       operateAsAgentId ? { authorAgentId: operateAsAgentId } : undefined,
-    );
-    markRelayedComment(context.issueId, comment.id);
-  } catch (err) {
-    unmarkRelayedComment(context.issueId, body);
-    throw err;
-  }
+    ),
+  );
   return operateAsAgentId ? "agent" : "plugin";
 }
 
@@ -1346,6 +1403,10 @@ async function handleCommentReply(
   const pairing = await readPairing(ctx);
   const found = findCompanyForChat(pairing, incomingChatId);
   if (!found || found.companyId !== context.companyId) return false;
+  // Other members of a paired group cannot write to Paperclip: their reply
+  // is dropped without a comment or an answer.
+  const approval = getApprovalConfig(pairing, context.companyId);
+  if (!isAllowedReplySender(approval, found.chat, message.from?.id)) return true;
   const body = (message.text ?? "").trim();
   if (!body) return false;
   try {

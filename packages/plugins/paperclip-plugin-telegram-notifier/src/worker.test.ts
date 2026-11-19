@@ -9,7 +9,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JOB_KEYS, STATE_KEY, TOOL_NAMES } from "./constants.js";
 import manifest from "./manifest.js";
-import { readPairing, setApprovalConfig, setPairedChat } from "./pairing.js";
+import { readPairing, saveMessageContext, setApprovalConfig, setPairedChat } from "./pairing.js";
 import type { PairingState, TelegramUpdate } from "./types.js";
 import { applyConfigPatch } from "./ui/index.js";
 import plugin, { postTelegramReplyComment, resolveUpdateConfig } from "./worker.js";
@@ -230,6 +230,7 @@ describe("agent tools are bound to the calling agent's company", () => {
 
     expect(result.data.paired?.companyId).toBe("company-a");
     expect(JSON.stringify(result)).not.toContain("company-b");
+    expect(JSON.stringify(result)).not.toContain("chatId");
   });
 
   it("does not let another company confirm or cancel a live handshake", async () => {
@@ -396,7 +397,7 @@ describe("Telegram replies", () => {
     expect(comment?.authorAgentId).toBeNull();
   });
 
-  it("keeps agent attribution for other chat members", async () => {
+  it("attributes an allowed non-operator sender to the operate-as agent", async () => {
     const harness = await replySetup();
     const author = await postTelegramReplyComment(
       harness.ctx,
@@ -408,6 +409,115 @@ describe("Telegram replies", () => {
     const [comment] = await harness.ctx.issues.listComments("issue-1", "company-a");
     expect(author).toBe("agent");
     expect(comment?.authorAgentId).toBe("agent-1");
+  });
+
+  it("posts only the operator's reply in a paired group and ignores other members", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { harness, calls, pendingUpdates } = await setup(
+      { "company-a": { botToken: TOKEN_A } },
+      ["issue.comments.read"],
+    );
+    harness.seed({
+      issues: [{ id: "issue-1", companyId: "company-a", title: "T" } as unknown as Issue],
+      accessMembers: [
+        {
+          companyId: "company-a",
+          principalType: "user",
+          principalId: "user-1",
+          status: "active",
+          membershipRole: "owner",
+        } as unknown as PluginAccessMember,
+      ],
+    });
+    await setPairedChat(harness.ctx, "company-a", { ...chat, chatId: "-500" });
+    await saveMessageContext(harness.ctx, "-500", 9, {
+      kind: "comment_thread",
+      companyId: "company-a",
+      issueId: "issue-1",
+      identifier: "ALP-1",
+      createdAt: new Date().toISOString(),
+    });
+    const groupReply = (updateId: number, fromId: number, text: string) =>
+      ({
+        update_id: updateId,
+        message: {
+          message_id: 10 + updateId,
+          from: { id: fromId },
+          chat: { id: -500, type: "group" },
+          date: 0,
+          text,
+          reply_to_message: { message_id: 9 },
+        },
+      }) as unknown as TelegramUpdate;
+    pendingUpdates.set("111111", [groupReply(1, 99, "from a member"), groupReply(2, 42, "from the operator")]);
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    const comments = await harness.ctx.issues.listComments("issue-1", "company-a");
+    expect(comments.map((c) => c.body)).toEqual(["from the operator"]);
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+  });
+});
+
+describe("group pairing", () => {
+  const groupMessage = (fromId: number): TelegramUpdate => ({
+    update_id: 1,
+    message: {
+      message_id: 3,
+      from: { id: fromId, first_name: "Ann" },
+      chat: { id: -500, type: "group", title: "Team" },
+      date: 0,
+      text: "/start",
+    },
+  });
+
+  async function startGroupPairing(privateChatReachable: boolean) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { harness, calls, pendingUpdates } = await setup({ "company-a": { botToken: TOKEN_A } });
+    const fetch = harness.ctx.http.fetch;
+    harness.ctx.http.fetch = async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (!privateChatReachable && body.chat_id === "42") {
+        return new Response(
+          JSON.stringify({ ok: false, description: "Forbidden: bot can't initiate conversation with a user" }),
+          { status: 403 },
+        );
+      }
+      return fetch(url, init);
+    };
+    await harness.performAction("startPairing", {}, { companyId: "company-a" });
+    pendingUpdates.set("111111", [groupMessage(42)]);
+    await harness.runJob(JOB_KEYS.pollUpdates);
+    const pairing = state(harness).pairing;
+    if (pairing?.stage !== "code_sent") throw new Error("expected code_sent");
+    const sentTo = (chatId: string) =>
+      calls
+        .filter((c) => c.method === "sendMessage" && c.body.chat_id === chatId)
+        .map((c) => String(c.body.text))
+        .join("\n");
+    await harness.performAction(
+      "confirmPairing",
+      { code: pairing.code },
+      { companyId: "company-a", actor: { type: "user", userId: "user-1" } },
+    );
+    return { pairing, sentTo, paired: state(harness).pairedByCompany?.["company-a"] };
+  }
+
+  it("sends the code to the sender's private chat and makes that sender the operator", async () => {
+    const { pairing, sentTo, paired } = await startGroupPairing(true);
+
+    expect(sentTo("42")).toContain(pairing.code);
+    expect(sentTo("-500")).not.toContain(pairing.code);
+    expect(paired?.chatId).toBe("-500");
+    expect(paired?.pairedByTelegramUserId).toBe(42);
+  });
+
+  it("pairs the group with no operator when the sender cannot be reached privately", async () => {
+    const { pairing, sentTo, paired } = await startGroupPairing(false);
+
+    expect(sentTo("-500")).toContain(pairing.code);
+    expect(paired?.chatId).toBe("-500");
+    expect(paired?.pairedByTelegramUserId).toBeUndefined();
   });
 });
 
@@ -520,6 +630,38 @@ describe("comment notifications", () => {
       actorUserId: "user-1",
     });
     await emitComment(harness, next.id, { actorType: "user", actorId: "user-1" });
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+  });
+
+  it("notifies a same-text comment created while a relay is in flight", async () => {
+    const { harness, calls } = await commentSetup();
+    const chat = (await readPairing(harness.ctx)).pairedByCompany!["company-a"]!;
+    const createComment = harness.ctx.issues.createComment.bind(harness.ctx.issues);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    harness.ctx.issues.createComment = (async (...args: Parameters<typeof createComment>) => {
+      await held;
+      return createComment(...args);
+    }) as typeof createComment;
+
+    const relaying = postTelegramReplyComment(
+      harness.ctx,
+      chat,
+      { message_id: 5, from: { id: 42 }, chat: { id: 100, type: "private" }, date: 0, text: "ship it" },
+      { companyId: "company-a", issueId: "issue-1" },
+      "ship it",
+    );
+    const board = await createComment("issue-1", "ship it", "company-a", { actorUserId: "user-1" });
+    const notifying = emitComment(harness, board.id, { actorType: "user", actorId: "user-1" });
+    release();
+    await Promise.all([relaying, notifying]);
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+
+    // The relayed reply itself is still not echoed.
+    const relayed = (await harness.ctx.issues.listComments("issue-1", "company-a")).find(
+      (c) => c.id !== board.id,
+    );
+    await emitComment(harness, relayed!.id, { actorType: "user", actorId: "user-1" });
     expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
   });
 });
