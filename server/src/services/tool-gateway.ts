@@ -8723,9 +8723,6 @@ export function createToolGatewayService(
         // deadline; it must not turn a received protocol error into a timeout.
         clearTimeout(timer);
         const errorRecord = asRecord(payloadRecord.error);
-        // -32602 also answers a call to a tool the server has since removed,
-        // so a stale catalog entry fails on every call. The provider's own text
-        // can be withheld by screening: say what the agent can check or report.
         const fallback = errorRecord?.code === -32602
           ? "The app rejected the arguments for this tool. Check them against the tool's input schema. If they match, the app may have removed or changed this tool: ask a person who manages this connection to refresh its catalog"
           : "Remote MCP server returned an error";

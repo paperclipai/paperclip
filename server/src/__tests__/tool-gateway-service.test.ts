@@ -3109,8 +3109,6 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const { company, agent, run } = await createRunFixture(db);
     const { connection } = await createRemoteMcpToolFixture(db, company.id);
     await db.insert(toolPolicies).values(readPolicyRow(company, "Allow read tools"));
-    // A provider that removed a tool answers -32602 with advice the screening
-    // model can classify as instructions, so the provider text is withheld.
     const actual = injectionPreventionModule.promptInjectionPreventionService;
     const screening = vi.spyOn(injectionPreventionModule, "promptInjectionPreventionService")
       .mockImplementation((...args) => ({ ...actual(...args), classify: async () => ({
