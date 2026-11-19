@@ -1639,6 +1639,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/email/tasks/issue-1" },
       { method: "GET", path: "/api/companies/co-1/email/deliveries/send-1" },
       { method: "POST", path: "/api/companies/co-1/email/send" },
+      { method: "POST", path: "/api/companies/co-1/slack/tasks/issue-1/tools" },
       // Hire skill (paperclip-create-agent): discovery + submit + issue linking
       { method: "GET", path: "/llms/agent-configuration.txt" },
       { method: "GET", path: "/llms/agent-configuration/claude_local.txt" },
