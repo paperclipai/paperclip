@@ -29,7 +29,8 @@ function volumeFreeConfigurationBlocker(): { blocker: string | null; decisionSig
       PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    return { blocker: configurationBlockers.find(([pattern]) => pattern.test(message))?.[1] ?? "volume_free_configuration_required" };
+    const blocker = configurationBlockers.find(([pattern]) => pattern.test(message))?.[1] ?? "volume_free_configuration_required";
+    if (blocker !== "volume_free_database_listener_required" || process.env.PAPERCLIP_DATABASE_LISTEN_URL?.trim()) return { blocker };
   }
   return { blocker: null, decisionSigningSecret };
 }
