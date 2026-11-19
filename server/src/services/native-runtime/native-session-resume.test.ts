@@ -314,6 +314,60 @@ describe("a source whose saved provider session the runner proved incompatible",
   });
 });
 
+describe("a session saved by the previous Claude or Codex ACPX runtime", () => {
+  // The previous release bundled Agent SDK 0.3.286 and Codex 0.160.0 behind the
+  // same bridge command digests. The saved provider records that runtime, so the
+  // next run after the upgrade starts a fresh provider session in the same
+  // workspace instead of resuming a conversation the new runtime cannot restore.
+  const acpxExecution = (runId: string, acpxAgent: "claude" | "codex", model: string) =>
+    buildNativeExecutionInput({
+      companyId,
+      runId,
+      issue: { id: issueId, identifier: "DOT-2", title: "Test", description: null, workMode: "standard" },
+      taskPrompt: "Only the current turn",
+      agentId,
+      workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId,
+      provider: "acpx",
+      acpxAgent,
+      model,
+      acpxPermissionMode: "approve-all",
+      completionContract: execution(runId).completionContract,
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+  const sourceWith = (nativeExecutionInput: ReturnType<typeof acpxExecution>) => {
+    const source = previousRun();
+    return { ...source, runnerProfileJson: { ...source.runnerProfileJson, nativeExecutionInput } };
+  };
+
+  it.each([
+    ["claude", "claude-opus-5-5", "0.3.286"],
+    ["codex", "gpt-6.1-sol", "0.160.0"],
+  ] as const)("starts a fresh %s provider session in the same workspace", (acpxAgent, model, priorRuntime) => {
+    const current = acpxExecution(currentRunId, acpxAgent, model);
+    const sameRelease = sourceWith(acpxExecution(previousRunId, acpxAgent, model));
+    expect(rebindNativeSessionCheckpoint({ previousRun: sameRelease, currentExecution: current })).not.toBeNull();
+
+    const saved = acpxExecution(previousRunId, acpxAgent, model);
+    const profile = (saved.provider as { profile: { agentRuntimeVersion: string | null } }).profile;
+    expect(profile.agentRuntimeVersion).not.toBe(priorRuntime);
+    profile.agentRuntimeVersion = priorRuntime;
+    const source = sourceWith(saved);
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: current })).toBeNull();
+
+    const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+      const built = acpxExecution(currentRunId, acpxAgent, model);
+      built.session.normalizedSessionId = sessionId;
+      built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+      return built;
+    });
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: source, normalizedSessionId, buildExecution });
+    expect(result.checkpoint).toBeNull();
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(result.execution.workspace).toEqual(current.workspace);
+  });
+});
+
 describe("a source whose provider state was not saved after its result was accepted", () => {
   const unsaved = { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
     reason: "harness_backup_not_saved", recordedAt: "2026-11-11T00:00:00.000Z" } };
