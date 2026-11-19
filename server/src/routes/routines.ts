@@ -1,4 +1,6 @@
 import { Router, type Request } from "express";
+import { triggerUpdateActivityAction } from "../services/routine-trigger-update-plan.js";
+import { listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
@@ -13,9 +15,9 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
-import { accessService, documentAnnotationService, logActivity, routineService } from "../services/index.js";
+import { accessService, documentAnnotationService, instanceSettingsService, logActivity, routineService } from "../services/index.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { badRequest, forbidden, unauthorized, unsupportedMediaType } from "../errors.js";
+import { badRequest, forbidden, unauthorized, unprocessable, unsupportedMediaType } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -200,7 +202,9 @@ export function routineRoutes(
       changeSummary: "Created routine",
       triggerCount: 0,
     });
-    res.status(201).json(created);
+    const configurationWarnings = req.body.env !== undefined
+      ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), req.body.env, "env") : [];
+    res.status(201).json({ ...created, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.get("/routines/:id", async (req, res) => {
@@ -441,7 +445,9 @@ export function routineRoutes(
     }
     if (updated) {
       const { previousResponsibleUserId: _previousResponsibleUserId, ...response } = updated;
-      res.json(response);
+      const configurationWarnings = req.body.env !== undefined
+        ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), req.body.env, "env") : [];
+      res.json({ ...response, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
     } else {
       res.json(null);
     }
@@ -497,6 +503,11 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
+    // A standing check runs on its agent's heartbeat wake-ups, which only
+    // happens while the responsibilities experiment is on.
+    if (req.body.kind === "heartbeat" && (await instanceSettingsService(db).getExperimental()).enableResponsibilities !== true) {
+      throw unprocessable("Standing checks are not enabled", { code: "standing_checks_not_enabled" });
+    }
     const created = await svc.createTrigger(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -551,7 +562,7 @@ export function routineRoutes(
       agentId: actor.agentId,
       runId: actor.runId,
       agentApiKeyId: actor.agentApiKeyId,
-      action: req.body.archived === true ? "routine.trigger_removed" : req.body.archived === false ? "routine.trigger_restored" : req.body.setupPending === false ? "routine.trigger_setup_finished" : "routine.trigger_updated",
+      action: triggerUpdateActivityAction(req.body),
       entityType: "routine",
       entityId: routine.id,
       details: { triggerId: trigger.id, kind: updated?.trigger.kind ?? trigger.kind },
@@ -662,7 +673,8 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
-    const run = await svc.runRoutine(routine.id, req.body, {
+    const input = req.actor.type === "agent" ? { ...req.body, source: "manual" as const } : req.body;
+    const run = await svc.runRoutine(routine.id, input, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
       runId: req.actor.runId ?? null,

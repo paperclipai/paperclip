@@ -20,6 +20,9 @@ mod turn_end_restart;
 #[path = "support/acpx_cut_turn_start.rs"]
 mod cut_turn_start;
 
+#[path = "support/acpx_quiet_turn_restart.rs"]
+mod quiet_turn_restart;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -30,6 +33,10 @@ impl Drop for Fixture {
 impl Fixture {
     fn fault(&self, fault: &str) {
         fs::write(self.0.join("fault"), fault).unwrap();
+    }
+
+    fn background(&self, mode: &str) {
+        fs::write(self.0.join("background-tasks"), mode).unwrap();
     }
 
     fn journal(&self) -> Vec<Value> {
@@ -82,10 +89,11 @@ impl Harness {
         fs::write(
             &sidecar,
             format!(
-                "#!/bin/sh\nexec '{}' --mode source-reconcile --emit-process --journal '{}' --source-fault '{}' \"$@\"\n",
+                "#!/bin/sh\nexec '{}' --mode source-reconcile --emit-process --journal '{}' --source-fault '{}' --background-tasks '{}' \"$@\"\n",
                 native.display(),
                 fixture.0.join("sidecar.jsonl").display(),
-                fixture.0.join("fault").display()
+                fixture.0.join("fault").display(),
+                fixture.0.join("background-tasks").display()
             ),
         )
         .unwrap();
@@ -122,6 +130,7 @@ impl Harness {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(30),
             turn_scoped: false,
+            controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
         };
         let descriptor = json!({
             "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",

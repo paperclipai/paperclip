@@ -46,6 +46,12 @@ cancellation propagates after accounting settlement. Existing argument checks,
 result return values, summary hashes, signatures, and ignored paths are unchanged.
 A blocked tool result cannot undo a write already performed by the tool.
 
+MCP resource contents that an agent reads through a named MCP gateway
+(`resources/read`) pass the same guard as tool results, and the agent receives
+the same redacted value a tool result would deliver. A blocked read returns
+`prompt_injection_blocked` and is recorded in the audit log. A client disconnect
+cancels the read's model check.
+
 **Test model checks** uses two fixed samples (benign code and malicious
 instructions) from saved settings. Both must receive correct model verdicts to
 pass; fallback is a failed model test. Save edits before testing. The test is
@@ -91,3 +97,40 @@ releases the hold. Uncertain billing stays unpriced and retains its reservation
 until billing reconciliation. Agent deletion cannot discard unresolved classifier
 holds. Recovery marks invocations running for more than 120 seconds interrupted
 without rerunning the request. This change adds no first-party Telemetry.
+
+## Google Workspace content
+
+Email bodies, documents, files and calendar events returned by the built-in
+Google Workspace connection are treated as untrusted. Before an agent receives
+a Google result, Paperclip checks the whole result, including structured data,
+text inside embedded file resources and error text from Google. If it finds
+instructions aimed at the agent, such as "ignore previous instructions" or a
+request to send credentials, it withholds the entire result and the agent gets a
+`prompt_injection_blocked` error instead. One detector decides each result. By
+default it is the built-in pattern detection. If the company has turned on model
+checks, the selected model classifies the result, and a valid model verdict
+replaces the pattern verdict: an unsafe verdict blocks the result, and a safe
+verdict lets it through even if a pattern matched. When the model check cannot
+give a valid verdict (for example a timeout, a provider failure, a missing
+budget, a result too large for the model request, or redaction that would hide
+delivered text from the model), the built-in patterns decide instead.
+
+The check runs on every path that hands Google content to an agent: direct tool
+calls, repeated calls that collect a long-running result, ask-first actions when
+they run after approval (a later replay returns only the already-checked
+result), board test calls, calls made from an MCP Apps view, and resource reads
+through a named MCP gateway. Results larger than 1,000,000 bytes are rejected
+without being delivered. Results too large for the model request (256 KiB) are
+still checked in full by the built-in patterns.
+
+The check does not guarantee that every attack is caught. Built-in patterns
+cover a small set of common English phrasings; reworded, translated or
+obfuscated instructions can pass. A model verdict can also be wrong, and a
+safe model verdict is final even when a pattern matched. Text is checked as it appears in the result: base64-encoded file bytes and
+images are not decoded or read. Blocking a result cannot undo a write the same
+call already made. Not checked: tool names and descriptions that Google
+publishes, prompt templates (`prompts/get`), questions Google asks a person
+during a call, failure messages of long-running Google tasks (at most 500
+characters), and MCP Apps view documents, which go to the browser rather than
+to the agent. Arguments an agent sends to Google are not checked for injected
+instructions.

@@ -9,7 +9,8 @@ import { chatQueryWithAttachments, resolveChatQueryAttachments, verifyChatQueryA
 import { CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS, chatCatalogNeverStartedTerminalTaskRun, chatCatalogProviderRuns, chatCatalogReassignedQueuedRun, chatCatalogRunStatusAllowed, chatCatalogSupersededQueuedRuns, gradeChatCatalogRuns, createChatCatalogFinalRunVerifier } from "./chat-catalog-run-policy.js";
 import { chatCatalogCaseFingerprint, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
 import { expect, type Page } from "@playwright/test";
-import { pollUntil } from "./api.js";
+import { pollUntil, type RunnerApi } from "./api.js";
+import { collectRunEvents } from "./run-observations.js";
 import { collectChatRunEvidence, sendChatMessage } from "./chat-flow.js";
 import { prepareNativeStopCanonicalBoundary } from "./chat-native-stop-boundary.js";
 import { collectChatCatalogCompanySecretApprovalActivity, verifyChatCatalogCompanySecretBindingApproval, chatCatalogHumanHistoryMatches, chatCatalogAllowsHumanQuestionAnswer, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
@@ -220,9 +221,10 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
           || chatCatalogSupersededQueuedRuns(result.runs, result.issue).length > CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS) return "Scenario exceeded its declared run bound";
         // A queued run retired by reassignment before it started is graded, not rejected:
         // the run policy admits it only once the new assignee's run exists.
-        if (result.runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status) && !chatCatalogNeverStartedTerminalTaskRun(run, result.issue)
+        const ended = result.runs.find(run => ["failed", "cancelled", "timed_out"].includes(run.status) && !chatCatalogNeverStartedTerminalTaskRun(run, result.issue)
           && !chatCatalogReassignedQueuedRun(run, result.issue) && !chatCatalogRunStatusAllowed({ implementation,
-          run, companyId: input.fixtures.company.id, leadId: input.fixtures.agent.id, source: result.issue, observation }))) return "Observed provider run failed";
+          run, companyId: input.fixtures.company.id, leadId: input.fixtures.agent.id, source: result.issue, observation }));
+        if (ended) return chatCatalogEndedRunRejection(ended);
         if (result.runs.length && result.runs.every(run => !["queued", "running"].includes(run.status)) && result.issue?.conversationState === "waiting") settledAt ??= Date.now();
         else settledAt = undefined;
         // A passing grade is still inside accept()'s stability window; let it finish.
@@ -253,13 +255,21 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
       const failureSnapshot: Record<string, unknown> = { capturePhase: "failure" };
       try {
         failureSnapshot.observation = observation === undefined ? null : structuredClone(observation);
-        await input.retireFailedAttempt?.(failure);
+        let ledgerTimer: ReturnType<typeof setTimeout> | undefined;
+        const ledger = await Promise.race([rawRuns().catch(() => undefined), new Promise<undefined>(resolve => { ledgerTimer = setTimeout(() => resolve(undefined), 2_000); })]);
+        if (ledgerTimer) clearTimeout(ledgerTimer);
+        if (ledger) await input.evidence("chat-catalog-failure-run-ledger.json", { capturePhase: "before_retirement", runs: ledger }).catch(() => {});
+        try { await input.retireFailedAttempt?.(failure); }
+        catch (error) { failureSnapshot.retirementError = error instanceof Error ? error.message : String(error); }
+        const collected: unknown[] = [];
         const collection = (async () => {
           const finalConversation = await conversation(false);
           Object.assign(failureSnapshot, finalConversation);
           const interactions = finalConversation.issue ? await input.api.get(`/api/issues/${finalConversation.issue.id}/interactions`) : [];
           failureSnapshot.interactions = interactions;
-          const runEvidence = await Promise.all(finalConversation.runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)));
+          const runEvidence = await Promise.all(finalConversation.runs.map(run => collectChatRunEvidence(chatRunEvidenceApi(input), run)
+            .catch(() => failedRunEvidence(chatRunEvidenceApi(input), run.id))
+            .then(row => { collected.push(row); return row; })));
           return { ...failureSnapshot, runEvidence };
         })();
         const evidence = await Promise.race([collection, new Promise<undefined>(resolve => {
@@ -269,7 +279,9 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
           await input.evidence("chat-catalog-runs.json", evidence.runEvidence);
           await input.evidence("api-state.json", evidence);
         } else {
-          await input.evidence("api-state.json", structuredClone({ ...failureSnapshot, incomplete: true }));
+          const partial = structuredClone(collected);
+          if (partial.length) await input.evidence("chat-catalog-runs.json", partial);
+          await input.evidence("api-state.json", structuredClone({ ...failureSnapshot, runEvidence: partial, incomplete: true }));
           await input.evidence("chat-catalog-evidence-error.json", { incomplete: true, scenarioId: scenario.id, reason: "failure_collection_deadline" });
         }
       } catch {
@@ -318,4 +330,21 @@ async function reopenConversation(page: Page, url: string) {
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: 30_000 });
     await page.locator('[data-testid="task-chat-thread"], [data-testid="thread-root"]').first().waitFor({ state: "attached", timeout: 30_000 });
   } catch { /* Evidence is still collected; a page that cannot reopen yields an honest empty link read. */ }
+}
+
+export async function failedRunEvidence(api: Pick<RunnerApi, "get" | "getRunObservation">, runId: string) {
+  const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+  const [log, events] = await Promise.all([
+    api.get(`/api/heartbeat-runs/${runId}/log?limitBytes=1048576`).then(value => ({ value }), (error: unknown) => ({ error: message(error) })),
+    collectRunEvents((afterSeq, limit) => api.getRunObservation(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`))
+      .then(value => ({ value }), (error: unknown) => ({ error: message(error) })),
+  ]);
+  return { runId, log: "value" in log ? log.value : null, events: "value" in events ? events.value : [],
+    ...("error" in log ? { logError: log.error } : {}), ...("error" in events ? { eventsError: events.error } : {}) };
+}
+export function chatCatalogEndedRunRejection(run: { status: string; errorCode?: string | null; resultJson?: Record<string, unknown> | null }) {
+  if (run.status !== "cancelled") return "Observed provider run failed";
+  const cancellation = run.resultJson?.cancellation as { source?: unknown } | undefined;
+  const source = typeof cancellation?.source === "string" ? cancellation.source : "unknown";
+  return `Observed run was cancelled by ${source} (${run.errorCode ?? "no code"})`;
 }

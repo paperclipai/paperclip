@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -59,51 +58,82 @@ export async function publishRetainedUiAssetsAtStartup(
   }
 }
 
+/** Assets published at once: enough to hide per-request latency, small enough
+ * that a throttling bucket sees a steady stream rather than a burst. */
+export const RETAINED_UI_ASSET_PUBLISH_CONCURRENCY = 8;
+
 /** Public, immutable build assets only. Publishing before readiness lets an
  * older tab fetch its chunks after the last old container has disappeared.
  * Objects have no automatic expiry: retain them at least 30 days after the
  * last serving deployment, including rollback, before operator reclamation. */
-export function retainedUiAssets(provider: StorageProvider, options: { sleep?: (ms: number) => Promise<void> } = {}): { publish(directory: string): Promise<void>; serve: RequestHandler } {
+export function retainedUiAssets(provider: StorageProvider, options: { sleep?: (ms: number) => Promise<void>; concurrency?: number } = {}): { publish(directory: string): Promise<void>; serve: RequestHandler } {
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  const concurrency = Math.max(1, Math.floor(options.concurrency ?? RETAINED_UI_ASSET_PUBLISH_CONCURRENCY));
   if (provider.id !== "s3" || !provider.putObjectConditional) throw new Error("Retained UI assets require conditional shared object storage");
+  async function publishAsset(filename: string, objectKey: string) {
+    // Build assets are small: read each once into a Buffer. The storage client
+    // can replay a Buffer body; it cannot replay a stream, and every refused
+    // stream upload, including the 412 each already-published asset answers
+    // on a restart, logged a "non-retryable streaming request" warning.
+    const bytes = await fs.readFile(filename);
+    const expected = createHash("sha256").update(bytes).digest("hex");
+    // Storage throttles a burst: retry the whole asset instead of failing startup.
+    for (let attempt = 0; ; attempt++) {
+      const signal = AbortSignal.timeout(30_000);
+      try {
+        try {
+          await provider.putObjectConditional!({ objectKey, body: bytes, contentLength: bytes.length, contentType: "application/octet-stream", ifNoneMatch: "*", signal });
+        } catch (error) {
+          // An existing key or uncertain upload may be accepted only if its
+          // complete bytes match. Never overwrite a colliding build asset.
+          // A read that storage could not serve proves nothing either way:
+          // keep it, so the asset is tried again instead of being judged.
+          const existing = await provider.getObject({ objectKey, signal })
+            .catch(readError => { throw isTransientStorageError(readError) ? readError : error; });
+          if (await digest(existing.stream) !== expected) throw new Error("Static build asset name collides with different published bytes");
+        }
+        return;
+      } catch (error) {
+        if (!isTransientStorageError(error) || attempt >= publishRetryDelaysMs.length) throw error;
+        await sleep(publishRetryDelaysMs[attempt]!);
+      }
+    }
+  }
   async function publish(directory: string) {
+    const assets: Array<{ filename: string; objectKey: string }> = [];
     async function visit(relativeDirectory: string) {
       for (const entry of await fs.readdir(path.join(directory, relativeDirectory), { withFileTypes: true })) {
         const relative = path.posix.join(relativeDirectory, entry.name);
         if (entry.isDirectory()) { await visit(relative); continue; }
         if (relative.endsWith(".map")) continue;
         if (!entry.isFile() || !assetPath(relative)) throw new Error("Unsupported static build asset");
-        const filename = path.join(directory, relative);
-        const objectKey = `${prefix}${relative}`;
-        // A build has hundreds of assets and storage throttles a burst. The
-        // upload body is a stream, so the client cannot replay it: retry the
-        // whole asset here, with a fresh stream, instead of failing startup.
-        for (let attempt = 0; ; attempt++) {
-          const signal = AbortSignal.timeout(30_000);
-          const contentLength = (await fs.stat(filename)).size;
-          const expected = await digest(createReadStream(filename, { signal }));
-          const body = createReadStream(filename, { signal });
-          try {
-            try {
-              await provider.putObjectConditional!({ objectKey, body, contentLength, contentType: "application/octet-stream", ifNoneMatch: "*", signal });
-            } catch (error) {
-              // An existing key or uncertain upload may be accepted only if its
-              // complete bytes match. Never overwrite a colliding build asset.
-              // A read that storage could not serve proves nothing either way:
-              // keep it, so the asset is tried again instead of being judged.
-              const existing = await provider.getObject({ objectKey, signal })
-                .catch(readError => { throw isTransientStorageError(readError) ? readError : error; });
-              if (await digest(existing.stream) !== expected) throw new Error("Static build asset name collides with different published bytes");
-            }
-            break;
-          } catch (error) {
-            if (!isTransientStorageError(error) || attempt >= publishRetryDelaysMs.length) throw error;
-            await sleep(publishRetryDelaysMs[attempt]!);
-          } finally { body.destroy(); }
-        }
+        assets.push({ filename: path.join(directory, relative), objectKey: `${prefix}${relative}` });
       }
     }
     await visit("");
+    // Each asset is an independent conditional write. A build has hundreds, so
+    // a bounded pool replaces hundreds of serial round trips with a few dozen.
+    // The first failure stops new assets from starting; ones in flight finish,
+    // and a collision among them outranks an outage.
+    let next = 0;
+    const failure: { found: boolean; error: unknown } = { found: false, error: null };
+    const worker = async () => {
+      while (!failure.found && next < assets.length) {
+        const asset = assets[next++]!;
+        try { await publishAsset(asset.filename, asset.objectKey); }
+        // A collision refuses the build; an outage only lets it start on local
+        // files. A storage outage on one asset must never hide a collision
+        // found on another.
+        catch (error) {
+          if (!failure.found || (isTransientStorageError(failure.error) && !isTransientStorageError(error))) {
+            failure.found = true;
+            failure.error = error;
+          }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, assets.length) }, worker));
+    if (failure.found) throw failure.error;
   }
   const serve: RequestHandler = async (req, res, next) => {
     if (req.method !== "GET" && req.method !== "HEAD") { next(); return; }

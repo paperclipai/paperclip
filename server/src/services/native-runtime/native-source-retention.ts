@@ -3,7 +3,7 @@ import { agentWakeupRequests, environmentLeases, heartbeatRuns, issueRecoveryAct
 import { persistActivity } from "../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
-import { createSystemRecovery, readSystemRecovery, SystemRecoveryFailure, type SystemRecoveryState } from "../system-recovery-state.js";
+import { canAdoptNativeSourceRetention, createSystemRecovery, readSystemRecovery, SystemRecoveryFailure, type SystemRecoveryState } from "../system-recovery-state.js";
 import { updateSystemRecovery } from "../system-recovery.js";
 import { readTaskRetryIntent, taskRetryMutationAllowed } from "../task-retry.js";
 import { inspectWorkspaceRecoverySource, type WorkspaceRecoverySourceIdentity } from "../workspace-recovery-source.js";
@@ -12,12 +12,7 @@ import { verifiedWorkspaceSnapshotReceipt } from "../workspace-recovery-snapshot
 import type { NativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 
-export function canAdoptNativeSourceRetention(state: SystemRecoveryState) {
-  return state.state === "exhausted" && state.phase === "verify_execution" && state.attempts === 1
-    && state.retriesUsed === 0 && state.failure?.code === "source_binding_invalid"
-    && (!state.failure.sourceVerification || state.failure.sourceVerification.reason === "lease_policy_not_retained")
-    && state.preservationOperationIds.length === 0 && !state.freshAttemptRunId;
-}
+export { canAdoptNativeSourceRetention };
 
 export async function retainNativeRecoverySource(db: Db, input: WorkspaceRecoverySourceIdentity,
   previous: SystemRecoveryState, ownership: NativeWorkspaceFinalizationOwnership): Promise<SystemRecoveryState | null> {

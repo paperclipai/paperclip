@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { acpxInstructionsAdmissionError } from "./admission-diagnostics.js";
 import { admitAcpxSessionContext } from "./session-context-admission.js";
 
 const SCHEMA = "paperclip.cursor.instructions.v1";
@@ -6,7 +7,7 @@ const MAX_BYTES = 32 * 1024;
 
 export function cursorInstructionBinding(content: string): { payload: string; digest: string; byteLength: number } {
   if (typeof content !== "string" || content.includes("\0") || Buffer.byteLength(content) > MAX_BYTES) {
-    throw new Error("Cursor instructions exceed their bounded size or contain NUL");
+    throw acpxInstructionsAdmissionError("Cursor instructions exceed their bounded size or contain NUL");
   }
   const digest = `sha256:${createHash("sha256").update(content, "utf8").digest("hex")}`;
   return { payload: JSON.stringify({ schema: SCHEMA, content, digest }), digest, byteLength: Buffer.byteLength(content) };

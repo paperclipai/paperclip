@@ -5,6 +5,7 @@ import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
 import { prefetchIssueIdBatches } from "@/hooks/useIssueIdBatches";
 import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
+import { isRestoredSavedRead } from "@/lib/persisted-query-cache";
 import { queryKeys } from "@/lib/queryKeys";
 
 // The compact task chat reveals its first frame only after these reads settle
@@ -54,7 +55,9 @@ export function prefetchIssueCommentInputFacts(queryClient: QueryClient, issueRe
 
 /** Recent activity, merged with events already observed while the task is open. */
 export async function fetchRecentIssueActivity(queryClient: QueryClient, issueRef: string) {
-  const cached = queryClient.getQueryData<ActivityEvent[]>(recentIssueActivityQueryKey(issueRef));
+  const key = recentIssueActivityQueryKey(issueRef);
+  // Restored (saved) events are replaced by the first read, never merged.
+  const cached = isRestoredSavedRead(queryClient, key) ? undefined : queryClient.getQueryData<ActivityEvent[]>(key);
   // A cold open may already have this in a loading bootstrap; a refresh asks the server.
   const recent = cached
     ? await activityApi.recentForIssue(issueRef)
@@ -70,7 +73,8 @@ export async function fetchRecentIssueRunWindow(
   options: { conversationMode?: boolean } = {},
 ): Promise<RecentIssueRunWindow> {
   const key = recentIssueRunWindowQueryKey(issueRef);
-  const previousWindow = queryClient.getQueryData<RecentIssueRunWindow>(key);
+  // A restored (saved) window is replaced by the first read, never merged.
+  const previousWindow = isRestoredSavedRead(queryClient, key) ? undefined : queryClient.getQueryData<RecentIssueRunWindow>(key);
   let recent = previousWindow
     ? await activityApi.recentRunsForIssue(issueRef)
     : await readFromIssueChatBootstrap(queryClient, key, issueRef, (item) => item.recentRuns, () => activityApi.recentRunsForIssue(issueRef));

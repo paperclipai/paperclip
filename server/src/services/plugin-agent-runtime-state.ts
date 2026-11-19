@@ -85,7 +85,7 @@ export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyI
     if (environmentSkills.some(key => !skills.some(skill => skill.key === key && skill.sourceStatus !== "missing"))) {
       throw unprocessable("An environment skill is unavailable to this agent");
     }
-    const connectionAssignments = await pluginAgentConnectionAssignments(db, companyId, agentId, { publicMcp: settings.enablePublicMcp, chatConnectors: settings.enableChatConnectors });
+    const connectionAssignments = await pluginAgentConnectionAssignments(db, companyId, agentId, { publicMcp: true, chatConnectors: settings.enableChatConnectors });
     const fallback = !state.instructionsRootPath ? await agentInstructionsService(db).exportFiles(state.agent, { rejectSymlinks: true }) : null;
     const entryFile = fallback?.entryFile ?? state.instructionsEntryFile;
     const entryContent = fallback?.files[entryFile];

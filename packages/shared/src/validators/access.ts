@@ -199,6 +199,45 @@ export const currentUserProfileSchema = z.object({
 
 export type CurrentUserProfile = z.infer<typeof currentUserProfileSchema>;
 
+/**
+ * Browser performance tracing settings for a hosted Paperclip Cloud instance.
+ * The server sends a value only when the instance is cloud managed and an
+ * operator configured an endpoint; see `doc/browser-performance-tracing.md`.
+ * `ingestKey` is a Honeycomb ingest-only key (or null for a collector that
+ * needs no key); it is never a configuration key.
+ */
+export const browserTracingConfigSchema = z.object({
+  tracesUrl: z.string().url(),
+  ingestKey: z.string().min(1).nullable(),
+  serviceName: z.string().min(1),
+  environment: z.string().min(1).nullable(),
+  sampleRate: z.number().gt(0).max(1),
+});
+
+export type BrowserTracingConfig = z.infer<typeof browserTracingConfigSchema>;
+
+/**
+ * Browser product analytics (PostHog) settings for a hosted Paperclip Cloud
+ * instance. The server sends a value only when the instance is cloud managed,
+ * `PAPERCLIP_POSTHOG_PROJECT_TOKEN` and `PAPERCLIP_CLOUD_STACK_ID` are set, and
+ * `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`. `token` is a PostHog project token,
+ * which is public by design (it can only send events). `apiHost` is the
+ * same-origin reverse proxy path, and `uiHost` is the PostHog app host for
+ * links, or null when it is not a PostHog Cloud host. `environment` is
+ * always set, so every browser event carries it.
+ */
+export const browserAnalyticsConfigSchema = z.object({
+  token: z.string().min(1),
+  apiHost: z.string().min(1),
+  uiHost: z.string().url().nullable(),
+  environment: z.string().min(1),
+  stackId: z.string().min(1),
+  replayEnabled: z.boolean(),
+  consentRequired: z.boolean().nullable().optional(),
+});
+
+export type BrowserAnalyticsConfig = z.infer<typeof browserAnalyticsConfigSchema>;
+
 export const authSessionSchema = z.object({
   session: z.object({
     id: z.string().min(1),
@@ -214,6 +253,12 @@ export const authSessionSchema = z.object({
   sentryDsn: z.string().min(1).nullable(),
   // Optional for browser/server version skew; null leaves the SDK default.
   sentryEnvironment: z.string().nullable().optional(),
+  // Null or absent leaves browser performance tracing off. Optional for
+  // browser/server version skew.
+  browserTracing: browserTracingConfigSchema.nullable().optional(),
+  // Null or absent leaves browser product analytics off; the browser then never
+  // downloads posthog-js. Optional for browser/server version skew.
+  browserAnalytics: browserAnalyticsConfigSchema.nullable().optional(),
 });
 
 export type AuthSession = z.infer<typeof authSessionSchema>;

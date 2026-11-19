@@ -6,48 +6,60 @@ import { MemoryRouter, useNavigate, type NavigateFunction } from "react-router-d
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type { HealthStatus } from "@/api/health";
+import { queryKeys } from "@/lib/queryKeys";
 import { GitHubStarPrompt, STAR_PROMPT_SEEN_KEY } from "./GitHubStarPrompt";
 
-const state = vi.hoisted(() => ({ companyId: "company", loading: false, onboardingOpen: false, onboardingStatus: null as string | null, done: 5, listCompact: vi.fn() }));
+const state = vi.hoisted(() => ({ companyId: "company", loading: false, onboardingOpen: false, onboardingStatus: null as string | null, done: 4, listCompact: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: state.companyId, loading: state.loading }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogState: () => ({ onboardingOpen: state.onboardingOpen }) }));
 vi.mock("@/api/issues", () => ({ issuesApi: {
   list: () => Promise.resolve(state.onboardingStatus ? [{ id: "onboarding", originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND, status: state.onboardingStatus }] : []),
-  listCompact: (...args: unknown[]) => {
-    state.listCompact(...args);
-    return Promise.resolve(Array.from({ length: state.done }, (_, i) => ({ id: `issue-${i}` })));
-  },
+  listCompact: state.listCompact,
 } }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("GitHub star prompt", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let client: QueryClient;
   let navigate: NavigateFunction | null = null;
   function NavigateHandle() { navigate = useNavigate(); return null; }
   const render = async (health: Partial<HealthStatus> | null = { deploymentMode: "local_trusted" }, path = "/CHA/dashboard") => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     if (health) client.setQueryData(["health"], health);
     await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>
       <NavigateHandle /><GitHubStarPrompt />
     </MemoryRouter></QueryClientProvider>));
+    await settleQueries();
+  };
+  const settleQueries = async () => {
     // Let the onboarding and done-count queries settle, however slow the run.
     for (let idle = 0, tick = 0; idle < 2 && tick < 100; tick++) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
       idle = client.isFetching() === 0 ? idle + 1 : 0;
     }
   };
+  const completeTasks = async (count = 5) => {
+    state.done = count;
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.starPromptDone(state.companyId) }); });
+    await settleQueries();
+  };
   const visible = () => Boolean(document.querySelector('[data-testid="github-star-prompt"]'));
   beforeEach(() => {
-    Object.assign(state, { companyId: "company", loading: false, onboardingOpen: false, onboardingStatus: null, done: 5 });
-    state.listCompact.mockClear();
+    Object.assign(state, { companyId: "company", loading: false, onboardingOpen: false, onboardingStatus: null, done: 4 });
+    state.listCompact.mockReset();
+    state.listCompact.mockImplementation((_companyId, filters) => Promise.resolve(
+      Array.from({ length: Math.min(state.done, filters.limit) }, (_, i) => ({ id: `issue-${i}` })),
+    ));
     window.localStorage.clear();
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 
-  it("opens once a self-hosted company has five done tasks, and only once", async () => {
+  it("opens when a self-hosted company reaches five done tasks, and only once", async () => {
     await render();
+    expect(visible()).toBe(false);
+    await completeTasks();
     expect(visible()).toBe(true);
     expect(state.listCompact).toHaveBeenCalledWith("company", { status: "done", limit: 5 }, expect.anything());
     expect(window.localStorage.getItem(STAR_PROMPT_SEEN_KEY)).not.toBeNull();
@@ -65,6 +77,7 @@ describe("GitHub star prompt", () => {
     other.setAttribute("role", "dialog"); other.setAttribute("data-state", "open");
     document.body.append(other);
     await render();
+    await completeTasks();
     expect(visible()).toBe(false);
     await act(async () => { other.remove(); });
     expect(visible()).toBe(true);
@@ -77,6 +90,7 @@ describe("GitHub star prompt", () => {
     document.body.append(banner);
     try {
       await render();
+      await completeTasks();
       expect(visible()).toBe(false);
       expect(banner.closest('[aria-hidden="true"]')).toBeNull();
       await act(async () => { banner.remove(); });
@@ -86,6 +100,7 @@ describe("GitHub star prompt", () => {
 
   it("does not interrupt while the user is looking at a task or a chat", async () => {
     await render(undefined, "/CHA/issues/CHA-4");
+    await completeTasks();
     expect(visible()).toBe(false);
     await act(async () => { navigate!("/CHA/chats/claude"); });
     expect(visible()).toBe(false);
@@ -96,6 +111,7 @@ describe("GitHub star prompt", () => {
 
   it("closes when the user goes back to a task, or a task asks for Retry", async () => {
     await render();
+    await completeTasks();
     expect(visible()).toBe(true);
     await act(async () => { navigate!("/CHA/issues/CHA-4"); });
     expect(visible()).toBe(false);
@@ -103,7 +119,9 @@ describe("GitHub star prompt", () => {
     window.localStorage.clear();
     await act(async () => root.unmount());
     root = createRoot(container);
+    state.done = 4;
     await render();
+    await completeTasks();
     expect(visible()).toBe(true);
     const retry = document.createElement("button");
     retry.setAttribute("data-testid", "task-execution-retry");
@@ -120,6 +138,7 @@ describe("GitHub star prompt", () => {
     other.setAttribute("role", "dialog"); other.setAttribute("data-state", "open");
     document.body.append(other);
     await render();
+    await completeTasks();
     window.localStorage.setItem(STAR_PROMPT_SEEN_KEY, new Date().toISOString());
     await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: STAR_PROMPT_SEEN_KEY })); });
     await act(async () => { other.remove(); });
@@ -135,6 +154,7 @@ describe("GitHub star prompt", () => {
     root = createRoot(container);
     state.onboardingStatus = "done";
     await render();
+    await completeTasks();
     expect(visible()).toBe(true);
   });
 
@@ -143,6 +163,50 @@ describe("GitHub star prompt", () => {
     await render();
     expect(visible()).toBe(false);
     expect(window.localStorage.getItem(STAR_PROMPT_SEEN_KEY)).toBeNull();
+  });
+
+  it.each([5, 100])("does not prompt an existing company with %i completed tasks", async (count) => {
+    state.done = count;
+    await render();
+    expect(visible()).toBe(false);
+    expect(window.localStorage.getItem(STAR_PROMPT_SEEN_KEY)).toBeNull();
+    await completeTasks(4);
+    await completeTasks(5);
+    expect(visible()).toBe(false);
+  });
+
+  it("remembers a company observed below five across visits", async () => {
+    await render();
+    expect(visible()).toBe(false);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    state.done = 5;
+    await render();
+    expect(visible()).toBe(true);
+  });
+
+  it("does not carry milestone eligibility to a different company", async () => {
+    await render();
+    state.companyId = "established-company";
+    state.done = 100;
+    await act(async () => { navigate!("/EST/dashboard"); });
+    await settleQueries();
+    expect(visible()).toBe(false);
+
+    state.companyId = "company";
+    state.done = 5;
+    await act(async () => { navigate!("/CHA/dashboard"); });
+    await completeTasks();
+    expect(visible()).toBe(true);
+  });
+
+  it("waits for a successful task read before deciding eligibility", async () => {
+    state.listCompact.mockRejectedValueOnce(new Error("offline"));
+    await render();
+    expect(visible()).toBe(false);
+    await completeTasks(4);
+    await completeTasks(5);
+    expect(visible()).toBe(true);
   });
 
   it("stays hidden on cloud, during onboarding, and before health is known", async () => {

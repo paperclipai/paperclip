@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
+import { createActionsReader, readSourceVerification, runnerChaosEvalsJob, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 
 import { releaseAdmitted, deferredProducer, requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
@@ -376,6 +376,27 @@ describe("image build source monitor", () => {
     const f = fixture({ jobs: [{ ...proof, name: "General tests", conclusion: "failure" }] });
     await assert.rejects(watchReleaseSource(f), /General tests/);
     assert.deepEqual(f.cancellations, ["/repos/paperclipai/paperclip/actions/runs/99/cancel", `/repos/paperclipai/paperclip/actions/runs/${runId}/cancel`]);
+  });
+
+  // Owner decision 2026-11-12: Runner chaos evals run and report, but do not
+  // gate image publication or the exact-source proof.
+  const chaosJob = { ...proof, id: 112, name: `${runnerChaosEvalsJob} / Restart, replay, trace, and recovery faults` };
+
+  test("a failed Runner chaos eval neither cancels image work nor blocks the source proof", async () => {
+    const f = fixture({ jobs: [{ ...chaosJob, conclusion: "failure" }, proof] });
+    assert.equal((await watchReleaseSource(f)).jobId, proof.id);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a failed Runner chaos eval while the proof is pending keeps waiting instead of failing", async () => {
+    const f = fixture({ jobs: [{ ...chaosJob, conclusion: "failure" }, { ...proof, status: "in_progress", conclusion: null }] });
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true }), undefined);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a required check that only resembles the chaos job name still fails fast", async () => {
+    const f = fixture({ jobs: [{ ...proof, name: "Runner chaos evals / Restart", conclusion: "failure" }] });
+    await assert.rejects(watchReleaseSource(f), /Runner chaos evals \/ Restart/);
   });
 
   test("a superseded readiness attempt cancels image work with no deployable future", async () => {
