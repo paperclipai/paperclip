@@ -26,13 +26,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import {
-  createAdmissionTransactionScope,
   createPostgresWakeQueueAdapter,
   createWakeAdmissionWriter,
 } from "./postgres.js";
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
 import { createReleaseIssueExecution } from "../application/use-cases.js";
-import type { TransactionScope } from "../application/ports.js";
 import { withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
 
 // Proves the atomicity and company-scope properties the security review
@@ -1426,8 +1424,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       }).returning();
       await db.update(heartbeatRuns).set({ wakeupRequestId: wake.id }).where(eq(heartbeatRuns.id, runId));
       const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-      const operation = db.transaction(async tx => createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
-        createAdmissionTransactionScope(companyId, tx as unknown as Db), {
+      const operation = db.transaction(async tx => createWakeAdmissionWriter(tx, companyId).coalesceIntoActiveExecutionRun({
           companyId, agentId, activeExecutionRunId: runId, activeExecutionRunStatus: "queued",
           mergedContextSnapshot: withQueuedCommentIdsInRunContext({ issueId }, [oldComment.id, newComment.id]),
           source: "on_demand", triggerDetail: "manual", payload: { issueId, commentId: newComment.id },
@@ -1463,15 +1460,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.companyId, companyId))
         .orderBy(agentWakeupRequests.id);
-      const writer = createWakeAdmissionWriter();
 
       await expect(
         db.transaction(async (tx) => {
-          const scope = createAdmissionTransactionScope(
-            companyId,
-            tx as unknown as Db,
-          );
-          await writer.mergeIntoExistingDeferredWake(scope, {
+          await createWakeAdmissionWriter(tx, companyId).mergeIntoExistingDeferredWake({
             companyId,
             existingDeferredWakeId: wakeId,
             mergedPayload: { issueId, changedByMerge: true },
@@ -1512,12 +1504,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       const agentId = await seedAgent({ companyId });
       const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
       const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
-      const writer = createWakeAdmissionWriter();
 
       await expect(
         db.transaction(async (tx) => {
-          const scope = createAdmissionTransactionScope(otherCompanyId, tx as unknown as Db);
-          await writer.mergeIntoExistingDeferredWake(scope, {
+          await createWakeAdmissionWriter(tx, otherCompanyId).mergeIntoExistingDeferredWake({
             companyId: otherCompanyId,
             existingDeferredWakeId: wakeId,
             mergedPayload: { issueId, foo: "bar" },
@@ -1543,7 +1533,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       });
       try {
         await db.transaction(async tx => {
-          await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(companyId, tx as unknown as Db), {
+          await createWakeAdmissionWriter(tx, companyId).coalesceIntoActiveExecutionRun({
             companyId, activeExecutionRunId: runId, activeExecutionRunStatus: "running", mergedContextSnapshot: { commentId: "fresh-input" },
             agentId, source: "on_demand", triggerDetail: null, payload: null,
             requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null,
@@ -1565,8 +1555,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         paperclipOutputSecretRedactions: [{ fingerprintSha256: "b".repeat(64), material: { scheme: "synthetic" } }],
       };
       const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { taskKey: "issue-1", ...history } });
-      await db.transaction(async (tx) => createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
-        createAdmissionTransactionScope(companyId, tx as unknown as Db), {
+      await db.transaction(async (tx) => createWakeAdmissionWriter(tx, companyId).coalesceIntoActiveExecutionRun({
           companyId, agentId, activeExecutionRunId: runId, activeExecutionRunStatus: "running",
           mergedContextSnapshot: { taskKey: "issue-1", commentId: "fresh-input" },
           source: "on_demand", triggerDetail: null, payload: null,
@@ -1583,12 +1572,10 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       const otherCompanyId = await seedCompany();
       const agentId = await seedAgent({ companyId });
       const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { taskKey: "issue-1" } });
-      const writer = createWakeAdmissionWriter();
 
       await expect(
         db.transaction(async (tx) => {
-          const scope = createAdmissionTransactionScope(otherCompanyId, tx as unknown as Db);
-          await writer.coalesceIntoActiveExecutionRun(scope, {
+          await createWakeAdmissionWriter(tx, otherCompanyId).coalesceIntoActiveExecutionRun({
             companyId: otherCompanyId,
             activeExecutionRunId: runId,
             activeExecutionRunStatus: "running",
@@ -1610,15 +1597,11 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(wakeRows).toHaveLength(0);
     });
 
-    // Review test (d): a transaction-port call cannot use the root database
-    // executor. The module rejects a missing scope handle and a mismatched
-    // scope handle, and neither case writes a row.
-    it("rejects a missing transaction scope and a mismatched one, without writing through the root executor", async () => {
+    it("rejects input for another company before writing a deferred receipt", async () => {
       const companyId = await seedCompany();
       const otherCompanyId = await seedCompany();
       const agentId = await seedAgent({ companyId });
       const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
-      const writer = createWakeAdmissionWriter();
       const newWakeInput = {
         companyId,
         agentId,
@@ -1631,13 +1614,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       };
 
       await expect(
-        writer.insertNewDeferredWake(undefined as unknown as TransactionScope, newWakeInput),
-      ).rejects.toThrow(/transaction scope/);
-
-      await expect(
         db.transaction(async (tx) => {
-          const mismatchedScope = createAdmissionTransactionScope(otherCompanyId, tx as unknown as Db);
-          await writer.insertNewDeferredWake(mismatchedScope, newWakeInput);
+          await createWakeAdmissionWriter(tx, otherCompanyId).insertNewDeferredWake(newWakeInput);
         }),
       ).rejects.toThrow(/different company/);
 
