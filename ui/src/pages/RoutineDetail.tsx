@@ -14,7 +14,7 @@ import { PageSkeleton } from "@/components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { RoutineHistoryTab } from "@/components/RoutineHistoryTab";
 import { RoutineRunVariablesDialog, type RoutineRunDialogSubmitData } from "@/components/RoutineRunVariablesDialog";
-import { RoutineEditDialog, type RoutineFormDraft } from "@/components/routine-page/RoutineEditDialog";
+import { RoutineEditDialog, type RoutineEditFocus, type RoutineFormDraft } from "@/components/routine-page/RoutineEditDialog";
 import {
   RoutinePage,
   RoutinePageActions,
@@ -84,6 +84,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
   const options = useRoutineFormOptions(companyId);
 
   const [editOpen, setEditOpen] = useState(false);
+  const [editFocus, setEditFocus] = useState<RoutineEditFocus | undefined>(undefined);
   const [editInitial, setEditInitial] = useState<RoutineFormDraft | null>(null);
   const [saveConflict, setSaveConflict] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -314,7 +315,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     return links.responsibilities.find((entry) => entry.via === "direct")?.id ?? "";
   }, [companyId, options.responsibilitiesOn, queryClient, routineId]);
 
-  const openEdit = useCallback(async () => {
+  const openEdit = useCallback(async (focus?: RoutineEditFocus) => {
     const current = routineRef.current;
     if (!current) return;
     let responsibilityId = "";
@@ -331,6 +332,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
     setSaveConflict(false);
     setSaveError(null);
     setRemovedWebhooks([]);
+    setEditFocus(focus);
     setEditOpen(true);
   }, [loadDirectResponsibility, toastError]);
 
@@ -656,6 +658,7 @@ function RoutineDetailPage({ companyId, routineId, view }: { companyId: string; 
           onRemoveWebhook={(trigger) => removeWebhook.mutate(trigger)}
           removedWebhooks={removedWebhooks}
           onRestoreWebhook={(trigger) => restoreWebhook.mutate(trigger)}
+          initialFocus={editFocus}
         >
           {editOpen ? webhookDialog : null}
         </RoutineEditDialog>

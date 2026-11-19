@@ -80,9 +80,12 @@ export type RoutineEditDialogProps = {
   /** Webhooks removed while this form is open, offered back with Undo. */
   removedWebhooks?: readonly RoutineTrigger[];
   onRestoreWebhook?: (trigger: RoutineTrigger) => void;
+  initialFocus?: RoutineEditFocus;
   /** The webhook dialog, rendered inside this one so both stay open together. */
   children?: ReactNode;
 };
+
+export type RoutineEditFocus = "instructions";
 
 const SCHEDULE_TIMEZONES = ["America/Los_Angeles", "America/Chicago", "America/New_York", "Europe/London", "UTC"];
 
@@ -117,6 +120,7 @@ export function RoutineEditDialog({
   onRemoveWebhook,
   removedWebhooks = [],
   onRestoreWebhook,
+  initialFocus,
   children,
 }: RoutineEditDialogProps) {
   const [draft, setDraft] = useState(initial);
@@ -183,7 +187,14 @@ export function RoutineEditDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? onOpenChange(true) : requestClose())}>
-      <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+      <DialogContent
+        className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl"
+        onOpenAutoFocus={(event) => {
+          if (initialFocus !== "instructions") return;
+          event.preventDefault();
+          editorRef.current?.focus();
+        }}
+      >
         <DialogHeader className="px-6 pb-4 pt-6">
           <DialogTitle>{mode === "create" ? "New routine" : "Edit routine"}</DialogTitle>
           <DialogDescription className="sr-only">

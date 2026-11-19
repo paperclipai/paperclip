@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { forwardRef, useImperativeHandle } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +8,13 @@ import { EMPTY_ROUTINE_FORM_DRAFT, RoutineEditDialog, type RoutineFormDraft } fr
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-vi.mock("@/components/MarkdownEditor", () => ({ MarkdownEditor: () => <div data-testid="markdown-editor" /> }));
+const focusEditor = vi.hoisted(() => vi.fn());
+vi.mock("@/components/MarkdownEditor", () => ({
+  MarkdownEditor: forwardRef(function MarkdownEditor(_props, ref) {
+    useImperativeHandle(ref, () => ({ focus: focusEditor }));
+    return <div data-testid="markdown-editor" />;
+  }),
+}));
 vi.mock("@/components/RoutineVariablesEditor", () => ({ RoutineVariablesEditor: () => null }));
 
 async function act(callback: () => void | Promise<void>) {
@@ -45,11 +52,12 @@ describe("RoutineEditDialog", () => {
   let root: Root;
   const onSave = vi.fn();
 
-  async function render(draft: RoutineFormDraft = initial) {
+  async function render(draft: RoutineFormDraft = initial, initialFocus?: "instructions") {
     await act(async () => {
       root.render(
         <RoutineEditDialog
           open
+          initialFocus={initialFocus}
           onOpenChange={() => {}}
           initial={draft}
           agents={[]}
@@ -66,6 +74,7 @@ describe("RoutineEditDialog", () => {
 
   beforeEach(() => {
     onSave.mockReset();
+    focusEditor.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -75,6 +84,12 @@ describe("RoutineEditDialog", () => {
     await act(() => root.unmount());
     container.remove();
     document.body.innerHTML = "";
+  });
+
+  it("puts the cursor in Instructions when opened to add instructions", async () => {
+    await render(initial, "instructions");
+    expect(focusEditor).toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(document.querySelector("input"));
   });
 
   it("saves a change made only to Secrets", async () => {
